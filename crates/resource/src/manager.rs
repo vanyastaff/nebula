@@ -5,19 +5,20 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 
+use crate::autoscale::{AutoScalePolicy, AutoScaler};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::events::{EventBus, ResourceEvent};
 use crate::guard::Guard;
-use crate::health::HealthState;
+use crate::health::{HealthCheckConfig, HealthState};
 use crate::hooks::{HookEvent, HookRegistry};
 use crate::metadata::ResourceMetadata;
 use crate::pool::{Pool, PoolConfig};
-use crate::quarantine::{QuarantineConfig, QuarantineManager};
+use crate::quarantine::{QuarantineConfig, QuarantineManager, QuarantineReason};
 use crate::resource::Resource;
 use crate::scope::{Scope, Strategy};
 
@@ -484,18 +485,25 @@ where
 
 /// Type-erased pool interface so the manager can store pools of different
 /// resource types in a single map.
+#[allow(clippy::type_complexity)]
 trait AnyPool: Send + Sync {
-    /// Acquire a type-erased instance.
+    /// Acquire a type-erased instance. Returns the guard and the wait duration.
     fn acquire_any<'a>(
         &'a self,
         ctx: &'a Context,
-    ) -> Pin<Box<dyn Future<Output = Result<AnyGuard>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(AnyGuard, Duration)>> + Send + 'a>>;
 
     /// Shut down the pool.
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
 
     /// Current pool utilization: (active, idle, max_size).
     fn utilization_snapshot(&self) -> (usize, usize, usize);
+
+    /// Pre-create up to `count` idle instances, respecting `max_size`.
+    fn scale_up(&self, count: usize) -> Pin<Box<dyn Future<Output = usize> + Send + '_>>;
+
+    /// Remove up to `count` idle instances, respecting `min_size`.
+    fn scale_down(&self, count: usize) -> Pin<Box<dyn Future<Output = usize> + Send + '_>>;
 }
 
 /// Concrete adapter from `Pool<R>` to `AnyPool`.
@@ -510,10 +518,13 @@ where
     fn acquire_any<'a>(
         &'a self,
         ctx: &'a Context,
-    ) -> Pin<Box<dyn Future<Output = Result<AnyGuard>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(AnyGuard, Duration)>> + Send + 'a>> {
         Box::pin(async move {
-            let guard = self.pool.acquire(ctx).await?;
-            Ok(Box::new(TypedGuard::<R> { guard }) as AnyGuard)
+            let (guard, wait_duration) = self.pool.acquire(ctx).await?;
+            Ok((
+                Box::new(TypedGuard::<R> { guard }) as AnyGuard,
+                wait_duration,
+            ))
         })
     }
 
@@ -523,6 +534,14 @@ where
 
     fn utilization_snapshot(&self) -> (usize, usize, usize) {
         self.pool.utilization_snapshot()
+    }
+
+    fn scale_up(&self, count: usize) -> Pin<Box<dyn Future<Output = usize> + Send + '_>> {
+        Box::pin(async move { self.pool.scale_up(count).await })
+    }
+
+    fn scale_down(&self, count: usize) -> Pin<Box<dyn Future<Output = usize> + Send + '_>> {
+        Box::pin(async move { self.pool.scale_down(count).await })
     }
 }
 
@@ -571,77 +590,187 @@ pub struct Manager {
     /// Event bus for lifecycle events.
     event_bus: Arc<EventBus>,
     /// Quarantine manager for unhealthy resources.
-    quarantine: QuarantineManager,
+    quarantine: Arc<QuarantineManager>,
     /// Per-resource health states (set externally or by health checker events).
     health_states: DashMap<String, HealthState>,
     /// Per-resource metadata (from `Resource::metadata()` at registration).
     metadata: DashMap<String, ResourceMetadata>,
     /// Hook registry for lifecycle hooks.
     hooks: HookRegistry,
+    /// Per-resource auto-scalers (resource_id → JoinHandle).
+    auto_scalers: DashMap<String, tokio::task::JoinHandle<()>>,
+}
+
+// ---------------------------------------------------------------------------
+// ManagerBuilder
+// ---------------------------------------------------------------------------
+
+/// Builder for constructing a [`Manager`] with custom configuration.
+///
+/// Replaces the combinatorial `with_*` constructors and allows adding
+/// new options without API explosion.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let manager = ManagerBuilder::new()
+///     .health_config(HealthCheckConfig { failure_threshold: 5, ..Default::default() })
+///     .event_bus(Arc::new(EventBus::new(2048)))
+///     .quarantine_config(QuarantineConfig::default())
+///     .build();
+/// ```
+#[derive(Default)]
+pub struct ManagerBuilder {
+    health_config: HealthCheckConfig,
+    event_bus: Option<Arc<EventBus>>,
+    quarantine_config: QuarantineConfig,
+}
+
+impl ManagerBuilder {
+    /// Create a new builder with default settings.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set a custom health check configuration.
+    #[must_use]
+    pub fn health_config(mut self, config: HealthCheckConfig) -> Self {
+        self.health_config = config;
+        self
+    }
+
+    /// Set a custom event bus.
+    #[must_use]
+    pub fn event_bus(mut self, event_bus: Arc<EventBus>) -> Self {
+        self.event_bus = Some(event_bus);
+        self
+    }
+
+    /// Set a custom quarantine configuration.
+    #[must_use]
+    pub fn quarantine_config(mut self, config: QuarantineConfig) -> Self {
+        self.quarantine_config = config;
+        self
+    }
+
+    /// Build the [`Manager`].
+    ///
+    /// Wires the `HealthChecker`'s threshold callback to automatically
+    /// quarantine resources and update health states when consecutive
+    /// failures exceed the configured threshold.
+    #[must_use]
+    pub fn build(self) -> Manager {
+        let event_bus = self
+            .event_bus
+            .unwrap_or_else(|| Arc::new(EventBus::default()));
+        let quarantine = Arc::new(QuarantineManager::new(self.quarantine_config));
+        let health_states: DashMap<String, HealthState> = DashMap::new();
+
+        // Build the health checker with threshold callback wired to
+        // quarantine + health_states + event_bus.
+        let mut health_checker = crate::health::HealthChecker::with_event_bus(
+            self.health_config,
+            Arc::clone(&event_bus),
+        );
+
+        // Wire: when threshold exceeded → quarantine resource + set Unhealthy.
+        {
+            let q = Arc::clone(&quarantine);
+            let hs = health_states.clone();
+            let bus = Arc::clone(&event_bus);
+            health_checker.set_threshold_callback(move |resource_id, consecutive_failures| {
+                let newly_quarantined = q.quarantine(
+                    resource_id,
+                    QuarantineReason::HealthCheckFailed {
+                        consecutive_failures,
+                    },
+                );
+                if newly_quarantined {
+                    bus.emit(ResourceEvent::Quarantined {
+                        resource_id: resource_id.to_string(),
+                        reason: format!("health check failed ({consecutive_failures} consecutive)"),
+                    });
+                }
+                hs.insert(
+                    resource_id.to_string(),
+                    HealthState::Unhealthy {
+                        reason: format!(
+                            "Health check failed ({consecutive_failures} consecutive failures)"
+                        ),
+                        recoverable: true,
+                    },
+                );
+            });
+        }
+
+        Manager {
+            pools: DashMap::new(),
+            deps: parking_lot::RwLock::new(DependencyGraph::default()),
+            health_checker: Arc::new(health_checker),
+            event_bus,
+            quarantine,
+            health_states,
+            metadata: DashMap::new(),
+            hooks: HookRegistry::default(),
+            auto_scalers: DashMap::new(),
+        }
+    }
 }
 
 impl Default for Manager {
     fn default() -> Self {
-        Self {
-            pools: DashMap::new(),
-            deps: parking_lot::RwLock::new(DependencyGraph::default()),
-            health_checker: Arc::new(crate::health::HealthChecker::new(
-                crate::health::HealthCheckConfig::default(),
-            )),
-            event_bus: Arc::new(EventBus::default()),
-            quarantine: QuarantineManager::default(),
-            health_states: DashMap::new(),
-            metadata: DashMap::new(),
-            hooks: HookRegistry::default(),
-        }
+        ManagerBuilder::default().build()
     }
 }
 
 impl Manager {
     /// Create a new empty resource manager.
+    ///
+    /// For customization, prefer [`ManagerBuilder`].
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create a manager with a custom health check configuration.
+    ///
+    /// **Deprecated:** prefer [`ManagerBuilder::new().health_config(c).build()`].
     #[must_use]
     pub fn with_health_config(config: crate::health::HealthCheckConfig) -> Self {
-        Self {
-            health_checker: Arc::new(crate::health::HealthChecker::new(config)),
-            ..Self::default()
-        }
+        ManagerBuilder::new().health_config(config).build()
     }
 
     /// Create a manager with a custom event bus.
+    ///
+    /// **Deprecated:** prefer [`ManagerBuilder::new().event_bus(b).build()`].
     #[must_use]
     pub fn with_event_bus(event_bus: Arc<EventBus>) -> Self {
-        Self {
-            event_bus,
-            ..Self::default()
-        }
+        ManagerBuilder::new().event_bus(event_bus).build()
     }
 
     /// Create a manager with a custom quarantine configuration.
+    ///
+    /// **Deprecated:** prefer [`ManagerBuilder::new().quarantine_config(c).build()`].
     #[must_use]
     pub fn with_quarantine_config(quarantine_config: QuarantineConfig) -> Self {
-        Self {
-            quarantine: QuarantineManager::new(quarantine_config),
-            ..Self::default()
-        }
+        ManagerBuilder::new()
+            .quarantine_config(quarantine_config)
+            .build()
     }
 
     /// Create a manager with both a custom event bus and quarantine config.
+    ///
+    /// **Deprecated:** prefer [`ManagerBuilder`].
     #[must_use]
     pub fn with_event_bus_and_quarantine(
         event_bus: Arc<EventBus>,
         quarantine_config: QuarantineConfig,
     ) -> Self {
-        Self {
-            event_bus,
-            quarantine: QuarantineManager::new(quarantine_config),
-            ..Self::default()
-        }
+        ManagerBuilder::new()
+            .event_bus(event_bus)
+            .quarantine_config(quarantine_config)
+            .build()
     }
 
     /// Register a resource with its config and pool settings under [`Scope::Global`].
@@ -725,6 +854,7 @@ impl Manager {
     /// Checks quarantine status, health state, and scope compatibility
     /// before delegating to the pool.
     pub async fn acquire(&self, resource_id: &str, ctx: &Context) -> Result<AnyGuard> {
+        let _acquire_start = Instant::now();
         // Check quarantine -- quarantined resources cannot be acquired.
         if self.quarantine.is_quarantined(resource_id) {
             return Err(Error::Unavailable {
@@ -798,20 +928,39 @@ impl Manager {
             .await?;
 
         match pool.acquire_any(ctx).await {
-            Ok(guard) => {
+            Ok((guard, wait_duration)) => {
                 #[cfg(feature = "tracing")]
-                tracing::debug!(resource_id, "Acquired resource instance");
+                tracing::debug!(
+                    resource_id,
+                    wait_ms = wait_duration.as_millis() as u64,
+                    "Acquired resource instance"
+                );
 
                 self.event_bus.emit(ResourceEvent::Acquired {
                     resource_id: resource_id.to_string(),
+                    wait_duration,
                 });
 
-                // Run after-hooks; errors are logged but never propagated.
+                // Run after-hooks for Acquire; errors are logged but never propagated.
                 self.hooks
                     .run_after(&HookEvent::Acquire, resource_id, ctx, true)
                     .await;
 
-                Ok(guard)
+                // Run Release hooks when the guard is dropped.
+                // We capture what we need and fire hooks in the drop path.
+                let release_resource_id = resource_id.to_string();
+                let release_hooks = self.hooks_ref();
+                let release_bus = Arc::clone(&self.event_bus);
+                let release_ctx = ctx.clone();
+                let guard_with_release = self.wrap_guard_with_release_hook(
+                    guard,
+                    release_resource_id,
+                    release_hooks,
+                    release_bus,
+                    release_ctx,
+                );
+
+                Ok(guard_with_release)
             }
             Err(err) => {
                 // Run after-hooks for the failure path too.
@@ -852,6 +1001,59 @@ impl Manager {
             guard,
             _marker: std::marker::PhantomData,
         })
+    }
+
+    /// Get an Arc reference to the hooks registry for use in spawned tasks.
+    fn hooks_ref(&self) -> Vec<Arc<dyn crate::hooks::ResourceHook>> {
+        self.hooks.snapshot()
+    }
+
+    /// Wrap an AnyGuard so that Release hooks fire when it is dropped.
+    fn wrap_guard_with_release_hook(
+        &self,
+        inner: AnyGuard,
+        resource_id: String,
+        hooks: Vec<Arc<dyn crate::hooks::ResourceHook>>,
+        event_bus: Arc<EventBus>,
+        ctx: Context,
+    ) -> AnyGuard {
+        Box::new(ReleaseHookGuard {
+            inner: Some(inner),
+            resource_id,
+            hooks,
+            event_bus,
+            ctx,
+        })
+    }
+
+    /// Check whether a resource is registered (without acquiring an instance).
+    ///
+    /// This is a lightweight check that does not acquire from the pool.
+    #[must_use]
+    pub fn is_registered(&self, resource_id: &str) -> bool {
+        self.pools.contains_key(resource_id)
+    }
+
+    /// Deregister a resource, shutting down its pool and removing all
+    /// dependency edges.
+    ///
+    /// Returns `true` if the resource was registered, `false` otherwise.
+    pub async fn deregister(&self, resource_id: &str) -> bool {
+        let removed = self.pools.remove(resource_id);
+        self.deps.write().remove_all_for(resource_id);
+        self.metadata.remove(resource_id);
+        self.health_states.remove(resource_id);
+
+        if let Some((_, entry)) = removed {
+            let _ = entry.pool.shutdown().await;
+            self.event_bus.emit(ResourceEvent::CleanedUp {
+                resource_id: resource_id.to_string(),
+                reason: crate::events::CleanupReason::Evicted,
+            });
+            true
+        } else {
+            false
+        }
     }
 
     /// Shut down all pools whose scope is contained by `scope`.
@@ -917,7 +1119,7 @@ impl Manager {
 
     /// Get a reference to the quarantine manager.
     #[must_use]
-    pub fn quarantine(&self) -> &QuarantineManager {
+    pub fn quarantine(&self) -> &Arc<QuarantineManager> {
         &self.quarantine
     }
 
@@ -989,8 +1191,74 @@ impl Manager {
         self.deps.read().topological_sort()
     }
 
+    /// Enable auto-scaling for a registered resource pool.
+    ///
+    /// The auto-scaler monitors pool utilization and triggers scale-up /
+    /// scale-down operations based on the given [`AutoScalePolicy`].
+    ///
+    /// Returns `Ok(())` if the scaler was started, or an error if the
+    /// resource is not registered or the policy is invalid.
+    pub fn enable_autoscaling(&self, resource_id: &str, policy: AutoScalePolicy) -> Result<()> {
+        policy.validate()?;
+
+        let pool_entry = self
+            .pools
+            .get(resource_id)
+            .ok_or_else(|| Error::Unavailable {
+                resource_id: resource_id.to_string(),
+                reason: "Resource not registered".to_string(),
+                retryable: false,
+            })?;
+        let pool = Arc::clone(&pool_entry.pool);
+        drop(pool_entry);
+
+        // Cancel any existing scaler for this resource.
+        if let Some((_, old_handle)) = self.auto_scalers.remove(resource_id) {
+            old_handle.abort();
+        }
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let scaler = AutoScaler::new(policy, cancel);
+
+        let pool_for_stats = Arc::clone(&pool);
+        let pool_for_up = Arc::clone(&pool);
+        let pool_for_down = Arc::clone(&pool);
+
+        let handle = scaler.start(
+            move || pool_for_stats.utilization_snapshot(),
+            move |count| {
+                let p = Arc::clone(&pool_for_up);
+                async move { p.scale_up(count).await }
+            },
+            move |count| {
+                let p = Arc::clone(&pool_for_down);
+                async move { p.scale_down(count).await }
+            },
+        );
+
+        self.auto_scalers.insert(resource_id.to_string(), handle);
+
+        #[cfg(feature = "tracing")]
+        tracing::info!(resource_id, "Auto-scaling enabled");
+
+        Ok(())
+    }
+
+    /// Disable auto-scaling for a resource.
+    pub fn disable_autoscaling(&self, resource_id: &str) {
+        if let Some((_, handle)) = self.auto_scalers.remove(resource_id) {
+            handle.abort();
+        }
+    }
+
     /// Shut down all registered pools (simple, non-phased).
     pub async fn shutdown(&self) -> Result<()> {
+        // Cancel all auto-scalers first.
+        for entry in self.auto_scalers.iter() {
+            entry.value().abort();
+        }
+        self.auto_scalers.clear();
+
         let pools: Vec<(String, Arc<dyn AnyPool>)> = self
             .pools
             .iter()
@@ -1107,7 +1375,7 @@ impl Manager {
             },
         );
 
-        self.event_bus.emit(ResourceEvent::Created {
+        self.event_bus.emit(ResourceEvent::ConfigReloaded {
             resource_id: id,
             scope: existing_scope,
         });
@@ -1120,7 +1388,75 @@ impl std::fmt::Debug for Manager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Manager")
             .field("pool_count", &self.pools.len())
+            .field("auto_scalers", &self.auto_scalers.len())
             .finish()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ReleaseHookGuard — fires Release hooks on drop
+// ---------------------------------------------------------------------------
+
+/// Wrapper around an [`AnyGuard`] that fires Release hooks when dropped.
+struct ReleaseHookGuard {
+    inner: Option<AnyGuard>,
+    resource_id: String,
+    hooks: Vec<Arc<dyn crate::hooks::ResourceHook>>,
+    event_bus: Arc<EventBus>,
+    ctx: Context,
+}
+
+impl AnyGuardTrait for ReleaseHookGuard {
+    fn as_any(&self) -> &dyn Any {
+        self.inner.as_ref().expect("guard used after drop").as_any()
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self.inner
+            .as_mut()
+            .expect("guard used after drop")
+            .as_any_mut()
+    }
+}
+
+impl Drop for ReleaseHookGuard {
+    fn drop(&mut self) {
+        let inner = self.inner.take();
+        if inner.is_none() {
+            return;
+        }
+
+        let resource_id = self.resource_id.clone();
+        let hooks = self.hooks.clone();
+        let event_bus = Arc::clone(&self.event_bus);
+        let ctx = self.ctx.clone();
+
+        // Fire Release hooks in a spawned task since Drop is sync.
+        tokio::spawn(async move {
+            // Run before-hooks for Release (result ignored — can't cancel a drop).
+            for hook in &hooks {
+                if hook.events().contains(&HookEvent::Release)
+                    && hook.filter().matches(&resource_id)
+                {
+                    let _ = hook.before(&HookEvent::Release, &resource_id, &ctx).await;
+                }
+            }
+
+            // Drop the inner guard (returns instance to pool).
+            drop(inner);
+
+            // Run after-hooks for Release.
+            for hook in &hooks {
+                if hook.events().contains(&HookEvent::Release)
+                    && hook.filter().matches(&resource_id)
+                {
+                    hook.after(&HookEvent::Release, &resource_id, &ctx, true)
+                        .await;
+                }
+            }
+
+            let _ = &event_bus;
+        });
     }
 }
 

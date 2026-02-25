@@ -84,7 +84,7 @@ proptest! {
             for op_is_acquire in &ops {
                 if *op_is_acquire {
                     // Acquire (may fail if pool is exhausted -- that is fine)
-                    if let Ok(guard) = pool.acquire(&ctx()).await {
+                    if let Ok((guard, _)) = pool.acquire(&ctx()).await {
                         guards.push(guard);
                     }
                 } else if !guards.is_empty() {
@@ -136,7 +136,7 @@ async fn rapid_acquire_release_preserves_invariants() {
     let pool = Pool::new(CountingResource::new(), TestConfig, pool_config).unwrap();
 
     for _ in 0..20 {
-        let g = pool.acquire(&ctx()).await.unwrap();
+        let (g, _) = pool.acquire(&ctx()).await.unwrap();
         drop(g);
         tokio::time::sleep(Duration::from_millis(10)).await;
 
@@ -177,7 +177,7 @@ proptest! {
 
             for op_is_acquire in &ops {
                 if *op_is_acquire {
-                    if let Ok(guard) = pool.acquire(&ctx()).await {
+                    if let Ok((guard, _)) = pool.acquire(&ctx()).await {
                         guards.push(guard);
                     }
                 } else if !guards.is_empty() {
@@ -235,7 +235,7 @@ proptest! {
             let mut guards = Vec::new();
 
             for _ in 0..acquire_count {
-                if let Ok(guard) = pool.acquire(&ctx()).await {
+                if let Ok((guard, _)) = pool.acquire(&ctx()).await {
                     guards.push(guard);
                 }
             }
@@ -284,7 +284,7 @@ proptest! {
 
             for op_is_acquire in &ops {
                 if *op_is_acquire {
-                    if let Ok(guard) = pool.acquire(&ctx()).await {
+                    if let Ok((guard, _)) = pool.acquire(&ctx()).await {
                         guards.push(guard);
                     }
                 } else if !guards.is_empty() {
@@ -328,7 +328,8 @@ async fn acquisitions_equal_releases_after_cleanup() {
 
     let mut guards = Vec::new();
     for _ in 0..3 {
-        guards.push(pool.acquire(&ctx()).await.unwrap());
+        let (__g, _) = pool.acquire(&ctx()).await.unwrap();
+        guards.push(__g);
     }
 
     let stats = pool.stats();

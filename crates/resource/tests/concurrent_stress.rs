@@ -79,7 +79,7 @@ async fn stress_50_tasks_random_acquire_release() {
             let ctx = ctx();
             // Each task does 20 acquire/release cycles
             for _ in 0..20 {
-                let guard = pool.acquire(&ctx).await.expect("task should acquire");
+                let (guard, _) = pool.acquire(&ctx).await.expect("task should acquire");
                 // Simulate some work
                 tokio::time::sleep(Duration::from_millis(1)).await;
                 let _val: u64 = *guard;

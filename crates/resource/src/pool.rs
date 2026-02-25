@@ -5,6 +5,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -157,6 +158,12 @@ pub struct PoolStats {
     pub created: u64,
     /// Total instances ever destroyed.
     pub destroyed: u64,
+    /// Cumulative wait time across all acquisitions (milliseconds).
+    pub total_wait_time_ms: u64,
+    /// Maximum observed wait time for a single acquisition (milliseconds).
+    pub max_wait_time_ms: u64,
+    /// Number of times the pool was exhausted (acquire timed out).
+    pub exhausted_count: u64,
 }
 
 /// Combined pool state: idle queue + statistics under a single lock.
@@ -182,6 +189,8 @@ struct PoolInner<R: Resource> {
     cancel: CancellationToken,
     /// Optional event bus for emitting lifecycle events.
     event_bus: Option<Arc<EventBus>>,
+    /// Number of callers currently waiting to acquire an instance.
+    waiting_count: Arc<AtomicUsize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +274,7 @@ impl<R: Resource> Pool<R> {
                 semaphore: Semaphore::new(max),
                 cancel: cancel.clone(),
                 event_bus,
+                waiting_count: Arc::new(AtomicUsize::new(0)),
             }),
         };
 
@@ -292,11 +302,11 @@ impl<R: Resource> Pool<R> {
     /// Returns an RAII `Guard` that returns the instance to the pool
     /// when dropped. Respects `ctx.cancellation` — if the token is
     /// cancelled while waiting, returns `Error::Unavailable` immediately.
-    pub async fn acquire(&self, ctx: &Context) -> Result<Guard<R::Instance>> {
+    pub async fn acquire(&self, ctx: &Context) -> Result<(Guard<R::Instance>, Duration)> {
         let start = Instant::now();
 
-        let result = tokio::select! {
-            result = self.acquire_inner(ctx) => result,
+        let result: Result<Guard<R::Instance>> = tokio::select! {
+            result = self.acquire_inner(ctx, start) => result,
             () = ctx.cancellation.cancelled() => {
                 Err(Error::Unavailable {
                     resource_id: self.inner.resource.id().to_string(),
@@ -328,39 +338,51 @@ impl<R: Resource> Pool<R> {
         // Suppress unused variable warning when tracing is off
         let _ = start;
 
-        result
+        result.map(|guard| (guard, start.elapsed()))
     }
 
     /// Inner acquire logic, separated so `acquire` can wrap it in a
     /// cancellation-aware `select!`.
-    async fn acquire_inner(&self, ctx: &Context) -> Result<Guard<R::Instance>> {
+    async fn acquire_inner(&self, ctx: &Context, start: Instant) -> Result<Guard<R::Instance>> {
         let inner = &self.inner;
+
+        // Track that we are waiting for a permit.
+        inner.waiting_count.fetch_add(1, Ordering::SeqCst);
 
         // Acquire a permit (limits concurrent active instances)
         let permit =
             tokio::time::timeout(inner.pool_config.acquire_timeout, inner.semaphore.acquire())
                 .await
                 .map_err(|_| {
-                    let state = inner.state.lock();
+                    inner.waiting_count.fetch_sub(1, Ordering::SeqCst);
+                    let mut state = inner.state.lock();
                     let resource_id = inner.resource.id().to_string();
+                    let waiters = inner.waiting_count.load(Ordering::SeqCst);
+                    state.stats.exhausted_count += 1;
                     if let Some(bus) = &inner.event_bus {
                         bus.emit(ResourceEvent::PoolExhausted {
                             resource_id: resource_id.clone(),
-                            waiters: 0,
+                            waiters,
                         });
                     }
                     Error::PoolExhausted {
                         resource_id,
                         current_size: state.stats.active,
                         max_size: inner.pool_config.max_size,
-                        waiters: 0,
+                        waiters,
                     }
                 })?
-                .map_err(|_| Error::Internal {
-                    resource_id: inner.resource.id().to_string(),
-                    message: "Pool semaphore closed".to_string(),
-                    source: None,
+                .map_err(|_| {
+                    inner.waiting_count.fetch_sub(1, Ordering::SeqCst);
+                    Error::Internal {
+                        resource_id: inner.resource.id().to_string(),
+                        message: "Pool semaphore closed".to_string(),
+                        source: None,
+                    }
                 })?;
+
+        // We got a permit, no longer waiting.
+        inner.waiting_count.fetch_sub(1, Ordering::SeqCst);
 
         // Try to get an idle instance, tracking created_at for recycled entries.
         let (instance, created_at) = loop {
@@ -406,11 +428,17 @@ impl<R: Resource> Pool<R> {
             }
         };
 
+        // Record wait time stats now that we have an instance.
+        let wait_ms = start.elapsed().as_millis() as u64;
         {
             let mut state = inner.state.lock();
             state.stats.total_acquisitions += 1;
             state.stats.active += 1;
             state.stats.idle = state.idle.len();
+            state.stats.total_wait_time_ms += wait_ms;
+            if wait_ms > state.stats.max_wait_time_ms {
+                state.stats.max_wait_time_ms = wait_ms;
+            }
         }
 
         // Forget the permit — we'll add it back when the guard drops.
@@ -619,6 +647,12 @@ impl<R: Resource> Pool<R> {
         )
     }
 
+    /// Get the current number of callers waiting to acquire an instance.
+    #[must_use]
+    pub fn waiting_count(&self) -> usize {
+        self.inner.waiting_count.load(Ordering::SeqCst)
+    }
+
     /// Run maintenance: evict expired idle instances, ensure min_size.
     pub async fn maintain(&self, ctx: &Context) -> Result<()> {
         #[cfg(feature = "tracing")]
@@ -810,7 +844,8 @@ mod tests {
     #[tokio::test]
     async fn acquire_returns_instance() {
         let pool = Pool::new(TestResource, test_config(), PoolConfig::default()).unwrap();
-        let guard = pool.acquire(&test_ctx()).await.unwrap();
+        let ctx = test_ctx();
+        let (guard, _wait) = pool.acquire(&ctx).await.unwrap();
         assert_eq!(*guard, "test-instance");
     }
 
@@ -820,7 +855,7 @@ mod tests {
 
         // Acquire and drop to return to pool
         {
-            let _guard = pool.acquire(&test_ctx()).await.unwrap();
+            let (_guard, _) = pool.acquire(&test_ctx()).await.unwrap();
         }
         // Give the spawn a moment to return the instance
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -829,7 +864,7 @@ mod tests {
         assert_eq!(stats.created, 1);
 
         // Acquire again — should reuse
-        let _guard = pool.acquire(&test_ctx()).await.unwrap();
+        let (_guard, _) = pool.acquire(&test_ctx()).await.unwrap();
         let stats = pool.stats();
         assert_eq!(stats.total_acquisitions, 2);
         // May be 1 or 2 created depending on timing, but should be <= 2
@@ -846,8 +881,8 @@ mod tests {
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
 
-        let _g1 = pool.acquire(&test_ctx()).await.unwrap();
-        let _g2 = pool.acquire(&test_ctx()).await.unwrap();
+        let (_g1, _) = pool.acquire(&test_ctx()).await.unwrap();
+        let (_g2, _) = pool.acquire(&test_ctx()).await.unwrap();
 
         // Third acquire should timeout
         let result = pool.acquire(&test_ctx()).await;
@@ -859,7 +894,7 @@ mod tests {
         let pool = Pool::new(TestResource, test_config(), PoolConfig::default()).unwrap();
 
         {
-            let _g = pool.acquire(&test_ctx()).await.unwrap();
+            let (_g, _) = pool.acquire(&test_ctx()).await.unwrap();
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -896,6 +931,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exhausted_count_tracked() {
+        let pool_config = PoolConfig {
+            min_size: 0,
+            max_size: 1,
+            acquire_timeout: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
+        let ctx = test_ctx();
+
+        // Hold a guard so pool is full
+        let (_g, _) = pool.acquire(&ctx).await.unwrap();
+
+        // This should fail and increment exhausted_count
+        let _ = pool.acquire(&ctx).await;
+
+        let stats = pool.stats();
+        assert_eq!(stats.exhausted_count, 1);
+    }
+
+    #[tokio::test]
     async fn acquire_skips_invalid_idle_and_creates_new() {
         let resource = InvalidatingResource {
             // First is_valid call returns false, subsequent ones return true (underflow wraps)
@@ -911,7 +967,7 @@ mod tests {
 
         // Acquire, drop, wait for return to idle
         {
-            let _g = pool.acquire(&test_ctx()).await.unwrap();
+            let (_g, _) = pool.acquire(&test_ctx()).await.unwrap();
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -919,7 +975,7 @@ mod tests {
         assert_eq!(stats.idle, 1, "instance should be in idle pool");
 
         // Next acquire: idle instance fails is_valid, gets destroyed, new one created
-        let _g = pool.acquire(&test_ctx()).await.unwrap();
+        let (_g, _) = pool.acquire(&test_ctx()).await.unwrap();
 
         let stats = pool.stats();
         assert_eq!(stats.destroyed, 1, "invalid instance should be destroyed");
@@ -963,7 +1019,7 @@ mod tests {
 
         // Acquire and drop — recycle will fail, so instance should be destroyed
         {
-            let _g = pool.acquire(&test_ctx()).await.unwrap();
+            let (_g, _) = pool.acquire(&test_ctx()).await.unwrap();
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -987,12 +1043,12 @@ mod tests {
 
         // Acquire and drop — recycle fails, instance destroyed, permit returned
         {
-            let _g = pool.acquire(&test_ctx()).await.unwrap();
+            let (_g2, _) = pool.acquire(&test_ctx()).await.unwrap();
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Should still be able to acquire (permit was returned even though recycle failed)
-        let _g = pool
+        let (_g, _) = pool
             .acquire(&test_ctx())
             .await
             .expect("should acquire after recycle failure");
@@ -1016,7 +1072,7 @@ mod tests {
 
         // Acquire and return 3 instances
         for _ in 0..3 {
-            let _g = pool.acquire(&test_ctx()).await.unwrap();
+            let (_g, _) = pool.acquire(&test_ctx()).await.unwrap();
             // drop returns to pool
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1073,7 +1129,7 @@ mod tests {
     async fn concurrent_acquires_respect_max_size() {
         let pool_config = PoolConfig {
             min_size: 0,
-            max_size: 3,
+            max_size: 5,
             acquire_timeout: Duration::from_millis(200),
             ..Default::default()
         };
@@ -1081,8 +1137,10 @@ mod tests {
 
         // Acquire max_size instances concurrently
         let mut guards = Vec::new();
-        for _ in 0..3 {
-            guards.push(pool.acquire(&test_ctx()).await.unwrap());
+        let ctx = test_ctx();
+        for _ in 0..5 {
+            let (g, _) = pool.acquire(&ctx).await.unwrap();
+            guards.push(g);
         }
 
         // Next acquire should fail
@@ -1094,7 +1152,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Should succeed now
-        let _g = pool
+        let (_g, _) = pool
             .acquire(&test_ctx())
             .await
             .expect("should acquire after release");
@@ -1134,9 +1192,10 @@ mod tests {
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
+        let ctx = test_ctx();
 
         // Acquire a guard, then shutdown the pool while still holding it
-        let guard = pool.acquire(&test_ctx()).await.unwrap();
+        let (guard, _wait) = pool.acquire(&ctx).await.unwrap();
         pool.shutdown().await.unwrap();
 
         // Drop the guard — should NOT reinsert into idle, should clean up
@@ -1182,6 +1241,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wait_time_stats_tracked() {
+        let pool = Pool::new(
+            TestResource,
+            test_config(),
+            PoolConfig {
+                min_size: 0,
+                max_size: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let ctx = test_ctx();
+
+        let (guard, wait) = pool.acquire(&ctx).await.unwrap();
+        drop(guard);
+
+        // wait_duration should be reasonable (sub-second on fast machines)
+        assert!(
+            wait < Duration::from_secs(5),
+            "wait should be reasonable, got {wait:?}"
+        );
+
+        let stats = pool.stats();
+        assert_eq!(stats.total_acquisitions, 1);
+        // total_wait_time_ms might be 0 if acquire was instant
+        assert!(stats.total_wait_time_ms <= 1000);
+    }
+
+    #[tokio::test]
     async fn create_failure_does_not_leak_semaphore_permit() {
         let resource = FailingCreateResource {
             remaining_failures: std::sync::atomic::AtomicU32::new(1),
@@ -1196,10 +1284,10 @@ mod tests {
 
         // First acquire should fail (create returns Err)
         let result = pool.acquire(&test_ctx()).await;
-        assert!(result.is_err(), "first acquire should fail");
+        assert!(result.is_err(), "first acquire should fail (create error)");
 
         // Second acquire should succeed (permit was returned, create now works)
-        let guard = pool
+        let (guard, _) = pool
             .acquire(&test_ctx())
             .await
             .expect("second acquire should succeed — permit must not be leaked");
@@ -1217,7 +1305,7 @@ mod tests {
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
 
         // Hold one guard so the pool is exhausted
-        let _g = pool.acquire(&test_ctx()).await.unwrap();
+        let (_g, _) = pool.acquire(&test_ctx()).await.unwrap();
 
         // Create a context with a cancellation token
         let token = tokio_util::sync::CancellationToken::new();
@@ -1365,8 +1453,8 @@ mod tests {
         .unwrap();
 
         // Acquire two instances: inst-0, inst-1
-        let g0 = pool.acquire(&test_ctx()).await.unwrap();
-        let g1 = pool.acquire(&test_ctx()).await.unwrap();
+        let (g0, _) = pool.acquire(&test_ctx()).await.unwrap();
+        let (g1, _) = pool.acquire(&test_ctx()).await.unwrap();
         assert_eq!(*g0, "inst-0");
         assert_eq!(*g1, "inst-1");
 
@@ -1377,7 +1465,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
 
         // FIFO: next acquire should return inst-0 (oldest)
-        let g_next = pool.acquire(&test_ctx()).await.unwrap();
+        let (g_next, _) = pool.acquire(&test_ctx()).await.unwrap();
         assert_eq!(*g_next, "inst-0", "FIFO should return oldest idle first");
     }
 
@@ -1414,8 +1502,8 @@ mod tests {
         .unwrap();
 
         // Acquire two instances: inst-0, inst-1
-        let g0 = pool.acquire(&test_ctx()).await.unwrap();
-        let g1 = pool.acquire(&test_ctx()).await.unwrap();
+        let (g0, _) = pool.acquire(&test_ctx()).await.unwrap();
+        let (g1, _) = pool.acquire(&test_ctx()).await.unwrap();
         assert_eq!(*g0, "inst-0");
         assert_eq!(*g1, "inst-1");
 
@@ -1426,7 +1514,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
 
         // LIFO: next acquire should return inst-1 (most recently used)
-        let g_next = pool.acquire(&test_ctx()).await.unwrap();
+        let (g_next, _) = pool.acquire(&test_ctx()).await.unwrap();
         assert_eq!(*g_next, "inst-1", "LIFO should return newest idle first");
     }
 }

@@ -86,6 +86,7 @@ async fn event_bus_multiple_event_types_received_in_order() {
     });
     bus.emit(ResourceEvent::Acquired {
         resource_id: "r1".to_string(),
+        wait_duration: Duration::from_millis(1),
     });
     bus.emit(ResourceEvent::Released {
         resource_id: "r1".to_string(),
@@ -337,7 +338,7 @@ async fn pool_exhaustion_emits_pool_exhausted_event() {
     .unwrap();
 
     // Hold the only permit
-    let _guard = pool.acquire(&ctx()).await.unwrap();
+    let (_guard, _) = pool.acquire(&ctx()).await.unwrap();
 
     // Second acquire should fail with PoolExhausted
     let result = pool.acquire(&ctx()).await;
@@ -378,7 +379,7 @@ async fn pool_shutdown_emits_cleaned_up_shutdown_events() {
 
     // Acquire and return to create an idle instance
     {
-        let _guard = pool.acquire(&ctx()).await.unwrap();
+        let (_guard, _) = pool.acquire(&ctx()).await.unwrap();
     }
     // Wait for the guard's spawned drop task to return the instance to idle
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -429,7 +430,7 @@ async fn pool_guard_drop_emits_released_event() {
     .unwrap();
 
     {
-        let _guard = pool.acquire(&ctx()).await.unwrap();
+        let (_guard, _) = pool.acquire(&ctx()).await.unwrap();
         // Hold for a bit to get a measurable duration
         tokio::time::sleep(Duration::from_millis(10)).await;
     }

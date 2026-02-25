@@ -73,8 +73,8 @@ async fn shutdown_cleans_idle_then_guard_drop_cleans_active() {
     .unwrap();
 
     // Acquire two instances
-    let g1 = pool.acquire(&ctx()).await.unwrap();
-    let g2 = pool.acquire(&ctx()).await.unwrap();
+    let (g1, _) = pool.acquire(&ctx()).await.unwrap();
+    let (g2, _) = pool.acquire(&ctx()).await.unwrap();
 
     // Return g1 to create an idle instance
     drop(g1);

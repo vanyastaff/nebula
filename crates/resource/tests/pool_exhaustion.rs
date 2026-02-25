@@ -76,13 +76,13 @@ async fn pool_reuses_after_drop() {
 
     // Acquire and drop to return to pool
     {
-        let _r1 = pool.acquire(&ctx()).await.unwrap();
+        let (_r1, _) = pool.acquire(&ctx()).await.unwrap();
     }
     // Give the spawn a moment to return the instance
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Should be able to acquire again
-    let _r2 = pool.acquire(&ctx()).await.expect("should reuse after drop");
+    let (_r2, _) = pool.acquire(&ctx()).await.expect("should reuse after drop");
 
     let stats = pool.stats();
     assert_eq!(stats.total_acquisitions, 2);
@@ -98,7 +98,7 @@ async fn pool_exhausted_error_is_retryable() {
     };
     let pool = Pool::new(TestResource, TestConfig, pool_config).unwrap();
 
-    let _r1 = pool.acquire(&ctx()).await.unwrap();
+    let (_r1, _) = pool.acquire(&ctx()).await.unwrap();
     let err = pool.acquire(&ctx()).await.unwrap_err();
 
     assert!(err.is_retryable(), "PoolExhausted should be retryable");

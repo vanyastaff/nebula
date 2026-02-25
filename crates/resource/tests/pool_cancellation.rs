@@ -66,7 +66,7 @@ async fn acquire_cancelled_mid_wait_no_slot_leak() {
     let pool = Pool::new(SimpleResource::new(), TestConfig, pool_config).unwrap();
 
     // Hold the only slot
-    let g1 = pool.acquire(&ctx()).await.unwrap();
+    let (g1, _) = pool.acquire(&ctx()).await.unwrap();
 
     // Start a second acquire that will block waiting for the semaphore.
     // Use a CancellationToken to cancel it after 10ms.
@@ -91,7 +91,7 @@ async fn acquire_cancelled_mid_wait_no_slot_leak() {
 
     // Third acquire must succeed: the cancelled acquire must NOT have
     // consumed the semaphore permit
-    let g3 = pool
+    let (g3, _) = pool
         .acquire(&ctx())
         .await
         .expect("pool should still work after cancelled acquire");

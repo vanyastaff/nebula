@@ -218,7 +218,7 @@ async fn cleanup_is_called_on_shutdown() {
 
     // Acquire and return so there is an idle instance to clean up.
     {
-        let _guard = pool.acquire(&ctx()).await.unwrap();
+        let (_guard, _) = pool.acquire(&ctx()).await.unwrap();
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -253,7 +253,7 @@ async fn full_lifecycle_through_pool() {
     let pool = Pool::new(ReferenceResource::new(), config(), pool_config()).unwrap();
 
     // Acquire
-    let guard = pool.acquire(&ctx()).await.unwrap();
+    let (guard, _) = pool.acquire(&ctx()).await.unwrap();
     assert_eq!(guard.id, "ref-0");
     assert_eq!(guard.counter, 42);
 
@@ -262,7 +262,7 @@ async fn full_lifecycle_through_pool() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Re-acquire: should get recycled instance with counter reset to 0.
-    let guard2 = pool.acquire(&ctx()).await.unwrap();
+    let (guard2, _) = pool.acquire(&ctx()).await.unwrap();
     assert_eq!(
         guard2.counter, 0,
         "recycled instance should have counter reset"

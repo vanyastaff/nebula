@@ -3,6 +3,7 @@
 //! This module provides:
 //! - Health status types (`HealthCheckable`, `HealthStatus`, `HealthState`)
 //! - Background health monitoring (`HealthChecker`)
+//! - Threshold callbacks for quarantine / health-state integration
 
 use dashmap::DashMap;
 use std::future::Future;
@@ -195,8 +196,19 @@ impl Default for HealthCheckConfig {
     }
 }
 
+/// Callback invoked when an instance's consecutive failures reach the
+/// configured `failure_threshold`.
+///
+/// Parameters: `(resource_id, consecutive_failures)`.
+///
+/// Typically used to wire quarantine and health-state propagation into
+/// the [`HealthChecker`] without creating a direct dependency on
+/// [`QuarantineManager`](crate::quarantine::QuarantineManager) or
+/// [`Manager`](crate::manager::Manager).
+pub type ThresholdCallback = Arc<dyn Fn(&str, u32) + Send + Sync>;
+
 /// Background health checker for resource instances
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HealthChecker {
     /// Configuration
     config: HealthCheckConfig,
@@ -208,6 +220,22 @@ pub struct HealthChecker {
     cancel: CancellationToken,
     /// Optional event bus for emitting health state transitions.
     event_bus: Option<Arc<EventBus>>,
+    /// Optional callback fired when consecutive failures reach the threshold.
+    on_threshold_exceeded: Option<ThresholdCallback>,
+}
+
+impl std::fmt::Debug for HealthChecker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HealthChecker")
+            .field("config", &self.config)
+            .field("records_count", &self.records.len())
+            .field("instance_tokens_count", &self.instance_tokens.len())
+            .field(
+                "has_threshold_callback",
+                &self.on_threshold_exceeded.is_some(),
+            )
+            .finish()
+    }
 }
 
 impl HealthChecker {
@@ -220,6 +248,7 @@ impl HealthChecker {
             instance_tokens: Arc::new(DashMap::new()),
             cancel: CancellationToken::new(),
             event_bus: None,
+            on_threshold_exceeded: None,
         }
     }
 
@@ -232,10 +261,35 @@ impl HealthChecker {
             instance_tokens: Arc::new(DashMap::new()),
             cancel: CancellationToken::new(),
             event_bus: Some(event_bus),
+            on_threshold_exceeded: None,
         }
     }
 
+    /// Set a callback that fires when an instance exceeds the failure threshold.
+    ///
+    /// The callback receives `(resource_id, consecutive_failures)` and is
+    /// called from the monitoring task. Use this to wire quarantine and
+    /// health-state propagation:
+    ///
+    /// ```rust,ignore
+    /// let quarantine = Arc::clone(&manager.quarantine);
+    /// let health_states = Arc::clone(&manager.health_states);
+    /// checker.set_threshold_callback(move |resource_id, failures| {
+    ///     quarantine.quarantine(resource_id, QuarantineReason::HealthCheckFailed {
+    ///         consecutive_failures: failures,
+    ///     });
+    ///     // ... set_health_state(resource_id, Unhealthy { ... })
+    /// });
+    /// ```
+    pub fn set_threshold_callback<F>(&mut self, callback: F)
+    where
+        F: Fn(&str, u32) + Send + Sync + 'static,
+    {
+        self.on_threshold_exceeded = Some(Arc::new(callback));
+    }
+
     /// Start background health checking for an instance
+    #[allow(clippy::excessive_nesting)]
     pub fn start_monitoring<T: HealthCheckable + 'static>(
         &self,
         instance_id: uuid::Uuid,
@@ -248,6 +302,7 @@ impl HealthChecker {
         let records = Arc::clone(&self.records);
         let instance_tokens = Arc::clone(&self.instance_tokens);
         let event_bus = self.event_bus.clone();
+        let on_threshold = self.on_threshold_exceeded.clone();
         // Cancel any previous monitoring task for this instance_id
         // to avoid orphaned tasks that run until shutdown.
         if let Some((_, old_token)) = self.instance_tokens.remove(&instance_id) {
@@ -296,14 +351,20 @@ impl HealthChecker {
                     },
                 );
 
-                // If we've exceeded failure threshold, log warning
+                // If we've exceeded failure threshold, invoke callback and log
+                #[allow(clippy::collapsible_if)]
                 if consecutive_failures >= failure_threshold {
+                    if let Some(cb) = &on_threshold {
+                        cb(&resource_id, consecutive_failures);
+                    }
+
                     #[cfg(feature = "tracing")]
                     tracing::warn!(
-                        "Instance {} of resource {} has failed {} consecutive health checks",
+                        "Instance {} of resource {} has failed {} consecutive health checks (threshold: {})",
                         instance_id,
                         resource_id,
-                        consecutive_failures
+                        consecutive_failures,
+                        failure_threshold
                     );
                 }
             }

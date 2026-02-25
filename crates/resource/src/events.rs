@@ -32,6 +32,8 @@ pub enum ResourceEvent {
     Acquired {
         /// The resource identifier.
         resource_id: String,
+        /// How long the caller waited to acquire the instance.
+        wait_duration: Duration,
     },
     /// A resource instance was released back to the pool.
     Released {
@@ -76,6 +78,13 @@ pub enum ResourceEvent {
         resource_id: String,
         /// How many recovery attempts it took.
         recovery_attempts: u32,
+    },
+    /// A resource's configuration was reloaded (hot-reload).
+    ConfigReloaded {
+        /// The resource identifier.
+        resource_id: String,
+        /// The scope the resource is registered under.
+        scope: Scope,
     },
     /// An error occurred during a resource operation.
     Error {
@@ -203,6 +212,20 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn config_reloaded_event_received() {
+        let bus = EventBus::new(16);
+        let mut rx = bus.subscribe();
+
+        bus.emit(ResourceEvent::ConfigReloaded {
+            resource_id: "db".to_string(),
+            scope: Scope::Global,
+        });
+
+        let event = rx.recv().await.expect("should receive event");
+        assert!(matches!(event, ResourceEvent::ConfigReloaded { .. }));
     }
 
     #[tokio::test]

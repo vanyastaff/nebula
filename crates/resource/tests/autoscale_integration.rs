@@ -116,7 +116,8 @@ async fn pool_scales_up_on_high_utilization() {
     // We want high_watermark at 0.4, so 50% > 40% triggers scale-up.
     let mut guards = Vec::new();
     for _ in 0..4 {
-        guards.push(pool.acquire(&ctx()).await.unwrap());
+        let (__g, _) = pool.acquire(&ctx()).await.unwrap();
+        guards.push(__g);
     }
     assert_eq!(pool.stats().active, 4);
 
@@ -286,7 +287,7 @@ async fn scale_up_capped_at_max_size() {
     let pool = Pool::new(resource, TestConfig, pool_config).unwrap();
 
     // Acquire 1, so 1 active + 0 idle = 1 total. max_size = 3.
-    let _g = pool.acquire(&ctx()).await.unwrap();
+    let (_g, _) = pool.acquire(&ctx()).await.unwrap();
 
     // scale_up(10) should only create 2 (3 - 1 = 2 headroom).
     let created = pool.scale_up(10).await;
@@ -336,7 +337,7 @@ async fn scale_down_counts_active_towards_min() {
     let pool = Pool::new(resource, TestConfig, pool_config).unwrap();
 
     // Acquire 1 active, then scale_up 4 idle. Total = 5.
-    let _g = pool.acquire(&ctx()).await.unwrap();
+    let (_g, _) = pool.acquire(&ctx()).await.unwrap();
     pool.scale_up(4).await;
     assert_eq!(pool.stats().active, 1);
     assert_eq!(pool.stats().idle, 4);

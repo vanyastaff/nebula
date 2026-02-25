@@ -67,9 +67,17 @@ impl MetricsCollector {
                 metrics::counter!("resource.create.total", "resource_id" => resource_id.clone())
                     .increment(1);
             }
-            ResourceEvent::Acquired { resource_id, .. } => {
+            ResourceEvent::Acquired {
+                resource_id,
+                wait_duration,
+            } => {
                 metrics::counter!("resource.acquire.total", "resource_id" => resource_id.clone())
                     .increment(1);
+                metrics::histogram!(
+                    "resource.acquire.wait_duration_seconds",
+                    "resource_id" => resource_id.clone()
+                )
+                .record(wait_duration.as_secs_f64());
             }
             ResourceEvent::Released {
                 resource_id,
@@ -91,12 +99,57 @@ impl MetricsCollector {
                 metrics::counter!("resource.error.total", "resource_id" => resource_id.clone())
                     .increment(1);
             }
-            // HealthChanged and PoolExhausted are informational; we don't
-            // record dedicated metrics for them (tracing handles these).
-            ResourceEvent::HealthChanged { .. }
-            | ResourceEvent::PoolExhausted { .. }
-            | ResourceEvent::Quarantined { .. }
-            | ResourceEvent::QuarantineReleased { .. } => {}
+            ResourceEvent::HealthChanged {
+                resource_id, to, ..
+            } => {
+                let score = match to {
+                    crate::health::HealthState::Healthy => 1.0,
+                    crate::health::HealthState::Degraded { .. } => 0.5,
+                    crate::health::HealthState::Unhealthy { .. } => 0.0,
+                    crate::health::HealthState::Unknown => 0.5,
+                };
+                metrics::gauge!(
+                    "resource.health.state",
+                    "resource_id" => resource_id.clone()
+                )
+                .set(score);
+            }
+            ResourceEvent::PoolExhausted {
+                resource_id,
+                waiters,
+            } => {
+                metrics::counter!(
+                    "resource.pool.exhausted.total",
+                    "resource_id" => resource_id.clone()
+                )
+                .increment(1);
+                metrics::gauge!(
+                    "resource.pool.waiters",
+                    "resource_id" => resource_id.clone()
+                )
+                .set(*waiters as f64);
+            }
+            ResourceEvent::Quarantined { resource_id, .. } => {
+                metrics::counter!(
+                    "resource.quarantine.total",
+                    "resource_id" => resource_id.clone()
+                )
+                .increment(1);
+            }
+            ResourceEvent::QuarantineReleased { resource_id, .. } => {
+                metrics::counter!(
+                    "resource.quarantine.released.total",
+                    "resource_id" => resource_id.clone()
+                )
+                .increment(1);
+            }
+            ResourceEvent::ConfigReloaded { resource_id, .. } => {
+                metrics::counter!(
+                    "resource.config.reloaded.total",
+                    "resource_id" => resource_id.clone()
+                )
+                .increment(1);
+            }
         }
     }
 }
@@ -142,6 +195,7 @@ mod tests {
         });
         bus.emit(ResourceEvent::Acquired {
             resource_id: "db".to_string(),
+            wait_duration: Duration::from_millis(5),
         });
         bus.emit(ResourceEvent::Released {
             resource_id: "db".to_string(),

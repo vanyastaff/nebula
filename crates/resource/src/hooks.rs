@@ -153,6 +153,15 @@ impl HookRegistry {
         hooks.sort_by_key(|h| h.priority());
     }
 
+    /// Return a snapshot of all registered hooks (cloned `Arc`s).
+    ///
+    /// Useful for passing hooks into spawned tasks without holding the
+    /// registry lock across `.await` points.
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<Arc<dyn ResourceHook>> {
+        self.hooks.read().clone()
+    }
+
     /// Run all matching before-hooks in priority order.
     ///
     /// Short-circuits on the first [`HookResult::Cancel`] result.

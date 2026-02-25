@@ -89,7 +89,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // 3. Acquire a cache instance.
     let ctx = Context::new(Scope::Global, "demo-wf", "demo-ex");
-    let mut cache = pool.acquire(&ctx).await?;
+    let (mut cache, _wait) = pool.acquire(&ctx).await?;
     println!("Cache acquired");
 
     // 4. Use it.

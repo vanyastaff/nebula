@@ -165,11 +165,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let ctx = Context::new(Scope::Global, "demo-wf", "demo-ex");
 
     println!("Acquiring connections...");
-    let mut conn1 = pool.acquire(&ctx).await?;
+    let (mut conn1, _wait) = pool.acquire(&ctx).await?;
     conn1.query_count += 5;
     println!("  conn #{}: ran {} queries", conn1.id, conn1.query_count);
 
-    let mut conn2 = pool.acquire(&ctx).await?;
+    let (mut conn2, _wait) = pool.acquire(&ctx).await?;
     conn2.query_count += 3;
     println!("  conn #{}: ran {} queries", conn2.id, conn2.query_count);
 
@@ -179,7 +179,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // With LIFO, the next acquire returns the most recently released.
-    let conn3 = pool.acquire(&ctx).await?;
+    let (conn3, _wait) = pool.acquire(&ctx).await?;
     println!("  LIFO re-acquired conn #{} (most recent)", conn3.id);
 
     drop(conn3);

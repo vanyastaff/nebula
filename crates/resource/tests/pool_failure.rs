@@ -183,7 +183,7 @@ async fn create_failure_after_expired_cleanup() {
 
     // First acquire succeeds (call 0)
     {
-        let guard = pool.acquire(&ctx()).await.unwrap();
+        let (guard, _) = pool.acquire(&ctx()).await.unwrap();
         assert_eq!(*guard, "inst-0");
     }
     // Return to pool, then wait well beyond idle_timeout (50ms) for expiration
@@ -201,7 +201,7 @@ async fn create_failure_after_expired_cleanup() {
     );
 
     // Pool should recover: next create (call 2) succeeds
-    let guard = pool.acquire(&ctx()).await.expect("pool should recover");
+    let (guard, _) = pool.acquire(&ctx()).await.expect("pool should recover");
     assert_eq!(*guard, "inst-2");
 }
 
@@ -226,7 +226,7 @@ async fn intermittent_create_failure_recovery() {
     assert_eq!(stats.active, 0);
 
     // Fourth acquire should succeed (call 3 succeeds)
-    let guard = pool
+    let (guard, _) = pool
         .acquire(&ctx())
         .await
         .expect("pool should recover after transient failures");
@@ -237,7 +237,7 @@ async fn intermittent_create_failure_recovery() {
     assert_eq!(stats.created, 1, "only one successful create");
 
     // Can acquire second instance too (max_size=2)
-    let guard2 = pool
+    let (guard2, _) = pool
         .acquire(&ctx())
         .await
         .expect("second acquire should work");

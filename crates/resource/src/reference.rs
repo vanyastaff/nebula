@@ -141,13 +141,50 @@ pub trait ResourceProvider: Send + Sync {
     ) -> impl Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send;
 
     /// Check if a resource exists by type.
+    ///
+    /// # Default implementation
+    ///
+    /// The default performs a full `resource::<R>()` acquire, which takes
+    /// a connection from the pool and immediately drops it. Implementations
+    /// should override this with a lightweight check (e.g.
+    /// [`Manager::is_registered`](crate::Manager::is_registered)) to avoid
+    /// side effects.
     fn has_resource<R: Resource>(&self, ctx: &Context) -> impl Future<Output = bool> + Send {
         async move { self.resource::<R>(ctx).await.is_ok() }
     }
 
     /// Check if a resource exists by ID.
+    ///
+    /// # Default implementation
+    ///
+    /// The default performs a full `acquire()`, which takes a connection
+    /// from the pool and immediately drops it. Implementations should
+    /// override this with a lightweight check (e.g.
+    /// [`Manager::is_registered`](crate::Manager::is_registered)) to avoid
+    /// side effects.
     fn has(&self, id: &str, ctx: &Context) -> impl Future<Output = bool> + Send {
         async move { self.acquire(id, ctx).await.is_ok() }
+    }
+
+    /// Lightweight existence check by ID — no pool acquire.
+    ///
+    /// Returns `true` if the resource is registered, regardless of
+    /// health or quarantine status. Providers that wrap a
+    /// [`Manager`](crate::Manager) should delegate to
+    /// [`Manager::is_registered`](crate::Manager::is_registered).
+    ///
+    /// The default falls back to [`has`](Self::has), which does a full
+    /// acquire. Override for a side-effect-free check.
+    fn exists(&self, id: &str, ctx: &Context) -> impl Future<Output = bool> + Send {
+        async move { self.has(id, ctx).await }
+    }
+
+    /// Lightweight typed existence check — no pool acquire.
+    ///
+    /// The default falls back to [`has_resource`](Self::has_resource).
+    /// Override for a side-effect-free check.
+    fn exists_resource<R: Resource>(&self, ctx: &Context) -> impl Future<Output = bool> + Send {
+        async move { self.has_resource::<R>(ctx).await }
     }
 }
 
@@ -196,7 +233,7 @@ mod tests {
     fn test_resource_ref_clone_copy() {
         let ref1 = ResourceRef::of::<DbConnection>();
         let ref2 = ref1; // Copy
-        let ref3 = ref1.clone(); // Clone
+        let ref3 = ref1; // Also Copy
 
         assert_eq!(ref1, ref2);
         assert_eq!(ref1, ref3);

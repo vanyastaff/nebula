@@ -28,6 +28,7 @@ async fn metrics_collector_processes_all_event_types() {
     });
     bus.emit(ResourceEvent::Acquired {
         resource_id: "db".to_string(),
+        wait_duration: Duration::from_millis(1),
     });
     bus.emit(ResourceEvent::Released {
         resource_id: "db".to_string(),

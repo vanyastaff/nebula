@@ -82,7 +82,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let ctx = Context::new(Scope::Global, "example-wf", "example-ex");
 
     println!("Acquiring resource...");
-    let resource = pool.acquire(&ctx).await?;
+    let (resource, _wait) = pool.acquire(&ctx).await?;
     println!("  Resource acquired: {}\n", *resource);
 
     // Check pool stats

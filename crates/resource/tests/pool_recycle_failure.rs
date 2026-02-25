@@ -87,7 +87,7 @@ async fn recycle_failure_destroys_instance() {
 
     // Acquire and drop: recycle fails → instance destroyed, not returned to idle
     {
-        let guard = pool.acquire(&ctx()).await.unwrap();
+        let (guard, _) = pool.acquire(&ctx()).await.unwrap();
         assert_eq!(*guard, "inst-0");
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -126,7 +126,7 @@ async fn recycle_failure_does_not_block_next_acquire() {
 
     // Acquire and drop: recycle fails → instance destroyed, permit returned
     {
-        let guard = pool.acquire(&ctx()).await.unwrap();
+        let (guard, _) = pool.acquire(&ctx()).await.unwrap();
         assert_eq!(*guard, "inst-0");
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -134,7 +134,7 @@ async fn recycle_failure_does_not_block_next_acquire() {
     assert_eq!(pool.stats().destroyed, 1);
 
     // Next acquire should work: creates a fresh instance (permit was returned)
-    let guard = pool
+    let (guard, _) = pool
         .acquire(&ctx())
         .await
         .expect("pool should be usable after recycle failure");

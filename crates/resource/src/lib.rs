@@ -98,7 +98,7 @@ pub use events::{CleanupReason, EventBus, ResourceEvent};
 #[cfg(feature = "tokio")]
 pub use health::{
     ConnectivityStage, HealthCheckConfig, HealthCheckable, HealthChecker, HealthPipeline,
-    HealthRecord, HealthStage, HealthState, HealthStatus, PerformanceStage,
+    HealthRecord, HealthStage, HealthState, HealthStatus, PerformanceStage, ThresholdCallback,
 };
 #[cfg(feature = "tokio")]
 pub use hooks::{
@@ -106,8 +106,8 @@ pub use hooks::{
 };
 #[cfg(feature = "tokio")]
 pub use manager::{
-    AnyGuard, AnyGuardTrait, DependencyGraph, Manager, ResourceHandle, ShutdownConfig,
-    TypedResourceGuard,
+    AnyGuard, AnyGuardTrait, DependencyGraph, Manager, ManagerBuilder, ResourceHandle,
+    ShutdownConfig, TypedResourceGuard,
 };
 #[cfg(feature = "tokio")]
 #[cfg(feature = "metrics")]
@@ -143,7 +143,7 @@ pub mod prelude {
     #[cfg(feature = "tokio")]
     pub use crate::hooks::{HookEvent, HookFilter, HookRegistry, HookResult, ResourceHook};
     #[cfg(feature = "tokio")]
-    pub use crate::manager::{Manager, ResourceHandle, TypedResourceGuard};
+    pub use crate::manager::{Manager, ManagerBuilder, ResourceHandle, TypedResourceGuard};
     #[cfg(feature = "tokio")]
     pub use crate::pool::{Pool, PoolConfig, PoolStats, PoolStrategy};
 }

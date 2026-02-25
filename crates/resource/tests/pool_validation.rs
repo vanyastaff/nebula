@@ -147,7 +147,7 @@ async fn invalid_idle_instance_replaced_on_acquire() {
 
     // Acquire and release to put instance in idle pool
     {
-        let guard = pool.acquire(&ctx()).await.unwrap();
+        let (guard, _) = pool.acquire(&ctx()).await.unwrap();
         assert_eq!(*guard, "inst-0");
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -158,7 +158,7 @@ async fn invalid_idle_instance_replaced_on_acquire() {
     reject.store(true, Ordering::SeqCst);
 
     // Acquire: idle instance fails is_valid, gets destroyed, new one created
-    let guard = pool.acquire(&ctx()).await.unwrap();
+    let (guard, _) = pool.acquire(&ctx()).await.unwrap();
     assert_eq!(*guard, "inst-1", "should get a fresh instance");
 
     let stats = pool.stats();
@@ -193,7 +193,7 @@ async fn all_idle_instances_invalid_creates_fresh() {
 
     // Acquire and release 3 instances to fill idle pool
     for _ in 0..3 {
-        let _g = pool.acquire(&ctx()).await.unwrap();
+        let (_g, _) = pool.acquire(&ctx()).await.unwrap();
         // drop returns to pool
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -206,7 +206,7 @@ async fn all_idle_instances_invalid_creates_fresh() {
     reject_all.store(true, Ordering::SeqCst);
 
     // Acquire: all idle instances should be discarded, one new created
-    let guard = pool.acquire(&ctx()).await.unwrap();
+    let (guard, _) = pool.acquire(&ctx()).await.unwrap();
 
     let stats = pool.stats();
     assert!(
@@ -249,7 +249,7 @@ async fn is_valid_error_treated_as_invalid() {
 
     // Acquire and release to idle
     {
-        let guard = pool.acquire(&ctx()).await.unwrap();
+        let (guard, _) = pool.acquire(&ctx()).await.unwrap();
         assert_eq!(*guard, "inst-0");
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -258,7 +258,7 @@ async fn is_valid_error_treated_as_invalid() {
     error_flag.store(true, Ordering::SeqCst);
 
     // Acquire: is_valid returns Err -> treated same as false -> cleanup + new create
-    let guard = pool.acquire(&ctx()).await.unwrap();
+    let (guard, _) = pool.acquire(&ctx()).await.unwrap();
     assert_eq!(
         *guard, "inst-1",
         "should get a fresh instance after Err validation"
