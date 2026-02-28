@@ -41,6 +41,10 @@ Those belong to runtime/engine/sandbox/resource/credential crates.
 - [DECISIONS.md](./DECISIONS.md): accepted architectural decisions
 - [ROADMAP.md](./ROADMAP.md): phased path to hardened production state
 - [PROPOSALS.md](./PROPOSALS.md): candidate breaking and non-breaking extensions
+- [SECURITY.md](./SECURITY.md): threat model and controls
+- [RELIABILITY.md](./RELIABILITY.md): SLO and failure handling model
+- [TEST_STRATEGY.md](./TEST_STRATEGY.md): contract and integration test plan
+- [MIGRATION.md](./MIGRATION.md): compatibility and rollout/rollback guide
 
 ## Archive
 

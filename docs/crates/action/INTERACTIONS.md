@@ -1,74 +1,84 @@
 # Interactions
 
-## Primary integrations
+## Ecosystem Map (Current + Planned)
 
-## `nebula-action` <-> `nebula-core`
+## Existing crates
 
-- uses core IDs and interface versioning primitives
-- must follow core compatibility rules for versioned contracts
+- `core`: ids, interface versioning primitives.
+- `parameter`: parameter schema declarations consumed via metadata.
+- `credential`: typed credential refs in action dependency declarations.
+- `resource`: typed resource refs in action dependency declarations.
+- `runtime` / `engine`: orchestration and execution lifecycle.
+- `sandbox`: capability enforcement boundary for action execution.
+- `resilience`: retry/backoff/circuit decisions using action signals.
+- `log` / `metrics` / `telemetry`: observability around action execution and failures.
+- `workflow`: graph compilation and node contract compatibility.
+- `api` / `cli` / `ui`: control plane surfaces using metadata/contracts.
 
-Contract:
-- metadata version increments only on schema/port contract changes
+## Planned crates
 
-## `nebula-action` <-> `nebula-parameter`
+- `action-dx` (proposed):
+  - optional authoring helpers (specialized traits/macros/builders)
+  - keeps `nebula-action` as protocol core.
 
-- action metadata contains parameter definitions (`ParameterCollection`)
-- parameter validation should happen before action execution
+## Downstream Consumers
 
-Contract:
-- invalid parameter payload maps to `ActionError::Validation`
+- `runtime`/`engine` consume `ActionResult` and `ActionOutput` semantics.
+- UI/editor consumes metadata and port model for graph building.
+- plugin/sdk consumers rely on stable action contract APIs.
 
-## `nebula-action` <-> `nebula-credential`
+## Upstream Dependencies
 
-- action declares credential needs via `ActionComponents::credential(...)`
-- runtime resolves and injects credentials according to sandbox policy
+- `nebula-core`: interface version compatibility rules.
+- `nebula-parameter`: parameter definition model.
+- `nebula-credential`/`nebula-resource`: typed dependency refs.
 
-Contract:
-- missing or forbidden credential access must fail predictably (fatal or sandbox violation)
+## Interaction Matrix
 
-## `nebula-action` <-> `nebula-resource`
+| This crate <-> Other crate | Direction | Contract | Sync/Async | Failure handling | Notes |
+|---|---|---|---|---|---|
+| action <-> core | in | ids + interface version semantics | sync | fail on incompatible version | compatibility-critical |
+| action <-> parameter | out | parameter declaration in metadata | sync | validation error mapping in runtime | pre-execution path |
+| action <-> credential | out | dependency declaration via `CredentialRef` | sync declaration, async resolve in runtime | missing/denied -> fatal/sandbox violation | no direct storage logic |
+| action <-> resource | out | dependency declaration via `ResourceRef` | sync declaration, async acquire in runtime | unavailable -> runtime mapping | no direct pooling logic |
+| action <-> sandbox | both | capability-enforced context access | async execution | `SandboxViolation` on deny | deterministic policy boundary |
+| action <-> runtime/engine | out | execution protocol (`ActionResult`, `ActionOutput`, `ActionError`) | async | retry/degrade handled by runtime/resilience | core integration path |
+| action <-> resilience | out | retryability hints/errors | async orchestration | resilience policy decides retries | action provides signal, not policy |
 
-- action declares resource needs via `ActionComponents::resource(...)`
-- runtime provides scoped resource access through context adapters
+## Runtime Sequence
 
-Contract:
-- resource unavailability should surface as retryable or fatal according to runtime mapping policy
-
-## `nebula-action` <-> `nebula-sandbox`
-
-- sandbox wraps context calls and enforces declared capabilities
-- undeclared access becomes `ActionError::SandboxViolation`
-
-Contract:
-- same action code can run in-process or sandboxed with identical semantic outcomes
-
-## `nebula-action` <-> `nebula-runtime` / `nebula-engine`
-
-- engine interprets `ActionResult` and advances workflow graph
-- runtime resolves deferred/streaming outputs per resolution contract
-
-Contract:
-- action crate never directly orchestrates retries, scheduling, or DAG transitions
-
-## `nebula-action` <-> `nebula-resilience`
-
-- resilience policy consumes `ActionError` and `ActionResult::Retry` hints
-- retries/backoff/budgets stay outside action crate
-
-Contract:
-- retryability signal from action remains advisory but explicit
-
-## `nebula-action` <-> `nebula-log`
-
-- action code and runtime adapters emit structured logs/traces
-- log crate is optional integration, not part of action trait contract
-
-## Interaction sequence (target)
-
-1. Runtime validates parameters and capability envelope.
-2. Runtime prepares sandbox-aware context.
-3. Action executes and returns `ActionResult<ActionOutput<T>>`.
-4. Engine interprets control flow.
+1. Runtime validates params and capability envelope.
+2. Runtime builds context (sandboxed or in-process adapter).
+3. Action executes and returns `ActionResult<ActionOutput<T>>` or `ActionError`.
+4. Engine applies flow-control semantics and scheduling.
 5. Runtime resolves deferred/streaming outputs if required.
-6. Resilience layer applies retry strategy on retryable failures/signals.
-7. Observability layer emits structured events/metrics.
+6. Resilience layer applies retry/backoff policy.
+
+## Cross-Crate Ownership
+
+- `action`: contract semantics and stable protocol surface.
+- `runtime`/`engine`: orchestration, lifecycle, persistence, scheduling.
+- `sandbox`: policy enforcement.
+- `resource`/`credential`: operational resolution and lifecycle of dependencies.
+
+## Failure Propagation
+
+- action-level deterministic failures -> `ActionError`.
+- policy/capability failures -> `SandboxViolation`.
+- retry signals:
+  - explicit `ActionResult::Retry`
+  - transient `ActionError::Retryable`
+
+## Versioning and Compatibility
+
+- any change to serialized meaning of `ActionResult`/`ActionOutput` is protocol-sensitive.
+- breaking-change protocol:
+  - major version bump
+  - migration doc update
+  - compatibility tests with runtime/engine.
+
+## Contract Tests Needed
+
+- serialization compatibility tests for result/output variants.
+- metadata/port compatibility tests across interface versions.
+- sandbox violation mapping tests in runtime adapters.

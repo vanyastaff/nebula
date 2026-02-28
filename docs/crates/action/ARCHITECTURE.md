@@ -78,3 +78,17 @@ Proposals from archive are kept as staged evolution:
 - advanced orchestration variants (`Fork`, `Join`, `Delegate`) gated for later phases
 
 These will be introduced only with compatibility policy and migration tooling.
+
+## Comparative Analysis
+
+References: n8n, Node-RED, Activepieces/Activeflow, Temporal/Airflow style orchestration.
+
+- Adopt:
+  - n8n/Node-RED style explicit node metadata and port contracts for graph tooling.
+  - workflow orchestrator style deterministic execution state contracts (`Wait`, retry signals, resumability-friendly outputs).
+- Reject:
+  - runtime-implicit action behavior with hidden side channels (hard to replay/debug and unsafe for sandbox policy).
+  - weakly-typed action contracts centered on untyped maps only.
+- Defer:
+  - full advanced orchestration variants (`Fork/Join/Delegate`) until engine persistence protocol is stabilized.
+  - a full DX macro layer inside core crate (prefer optional sibling crate to keep protocol boundary lean).
