@@ -182,14 +182,15 @@ impl From<FieldError> for CombinatorError<ValidationError> {
 /// Convert `FieldError` to `ValidationError`
 impl From<FieldError> for ValidationError {
     fn from(error: FieldError) -> Self {
-        let mut validation_error =
-            ValidationError::new("field_validation", format!("{}", error.inner));
-
+        let mut inner = error.inner;
         if let Some(field_name) = error.field_name {
-            validation_error = validation_error.with_field(field_name);
+            let composed_field = match inner.field.as_deref() {
+                Some(existing) if !existing.is_empty() => format!("{field_name}.{existing}"),
+                _ => field_name.into_owned(),
+            };
+            inner = inner.with_field(composed_field);
         }
-
-        validation_error
+        inner
     }
 }
 
@@ -300,7 +301,11 @@ impl<T> MultiField<T> {
         self.validators.push(Box::new(move |input: &T| {
             let field_value = accessor(input);
             validator.validate(field_value).map_err(|err| {
-                ValidationError::new("field_validation", format!("{err}")).with_field(name.clone())
+                let composed_field = match err.field.as_deref() {
+                    Some(existing) if !existing.is_empty() => format!("{name}.{existing}"),
+                    _ => name.to_string(),
+                };
+                err.with_field(composed_field)
             })
         }));
         self

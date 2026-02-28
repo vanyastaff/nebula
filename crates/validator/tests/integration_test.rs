@@ -2,6 +2,8 @@
 //!
 //! These tests verify the public API works correctly
 
+mod contract;
+
 use nebula_validator::combinators::and::and;
 use nebula_validator::foundation::Validate;
 use nebula_validator::validators::{max_length, min_length};

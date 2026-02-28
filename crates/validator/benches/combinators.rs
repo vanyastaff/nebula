@@ -5,7 +5,6 @@
 //! - Advanced combinators (When)
 //! - Nested compositions
 
-use criterion::BenchmarkId;
 use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_validator::foundation::{Validate, ValidateExt};
 use nebula_validator::validators::*;

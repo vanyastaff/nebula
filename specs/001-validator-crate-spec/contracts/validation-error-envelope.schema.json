@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nebula.dev/contracts/validator/validation-error-envelope.schema.json",
+  "title": "ValidationErrorEnvelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "code",
+    "message"
+  ],
+  "properties": {
+    "code": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable machine-readable error code."
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable diagnostic without sensitive value leakage."
+    },
+    "field": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Field path pointer used by downstream consumers (current serialized key)."
+    },
+    "field_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Field path pointer alias for adapter compatibility."
+    },
+    "params": {
+      "type": "object",
+      "description": "Optional structured details for consumers.",
+      "additionalProperties": true
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "error",
+        "warning",
+        "info"
+      ]
+    },
+    "help": {
+      "type": "string"
+    },
+    "nested": {
+      "type": "array",
+      "items": {
+        "$ref": "#"
+      },
+      "description": "Nested validation failures."
+    }
+  }
+}

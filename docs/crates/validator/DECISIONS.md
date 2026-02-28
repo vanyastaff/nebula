@@ -77,13 +77,14 @@ Validation plan:
 
 ## D004: Error code registry governance
 
-Status: Defer
+Status: Adopt (baseline)
 
 Context:
 - code stability rules exist conceptually but not yet formalized as registry.
 
 Decision:
-- defer full registry rollout until compatibility suite is in place.
+- adopt baseline canonical code catalog + compatibility fixtures now.
+- enforce additive-only minor evolution for code registry.
 
 Alternatives considered:
 - immediate hard enforcement.
@@ -92,13 +93,41 @@ Trade-offs:
 - faster current iteration vs delayed strictness.
 
 Consequences:
-- short-term risk of accidental code drift.
+- reduces accidental code drift in minor releases.
+- governance overhead increases with fixture maintenance.
 
 Migration impact:
 - future minor-to-major planning required.
 
 Validation plan:
-- add registry in roadmap phase with backward mapping tests.
+- enforce through contract tests in `tests/contract/compatibility_fixtures_test.rs`.
+- require migration mapping in `MIGRATION.md` for behavior-significant changes.
+
+## D006: Minor release compatibility policy
+
+Status: Adopt
+
+Context:
+- downstream crates depend on validator behavior and diagnostics as a contract.
+
+Decision:
+- minor releases are additive only for validators/combinators/helpers.
+- behavior-significant semantic changes require major release + migration map.
+
+Alternatives considered:
+- allowing silent semantic adjustments in minor releases.
+
+Trade-offs:
+- slower feature rollout, higher integration safety.
+
+Consequences:
+- release process requires explicit compatibility checks.
+
+Migration impact:
+- none for additive changes; required for major changes.
+
+Validation plan:
+- governance checks in `tests/contract/governance_policy_test.rs`.
 
 ## D005: FieldPath typed model
 

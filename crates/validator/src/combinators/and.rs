@@ -78,6 +78,7 @@ where
 {
     #[inline]
     fn validate(&self, input: &T) -> Result<(), ValidationError> {
+        // Contract: left side evaluates first and short-circuits on failure.
         self.left.validate(input)?;
         self.right.validate(input)
     }

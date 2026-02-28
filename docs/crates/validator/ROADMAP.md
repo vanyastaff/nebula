@@ -18,10 +18,12 @@
   - machine-readable error code registry
   - compatibility tests for error codes/field paths
   - deprecation and migration policy enforcement
+  - governance checks requiring migration mapping for behavior-significant changes
 - risks:
   - legacy consumers relying on undocumented error details
 - exit criteria:
   - backward compatibility CI checks in place
+  - migration-map checks running for release candidates
 
 ## Phase 3: Performance and Capacity Hardening
 
