@@ -49,6 +49,7 @@ let port_val  = any_of![in_range(80, 80), in_range(443, 443), in_range(1024, 655
 - [macros.md](macros.md) — `validator!`, `compose!`, `any_of!`
 - [context.md](context.md) — `ValidationContext`, `ContextualValidator`
 - [archive-ideas.md](archive-ideas.md) — unimplemented design ideas from early docs (`#[validate(...)]` attribute macro, etc.)
+- `pre-spec-README.md`, `pre-spec-ARCHITECTURE.md`, `pre-spec-API.md`, `pre-spec-DECISIONS.md`, `pre-spec-ROADMAP.md`, `pre-spec-PROPOSALS.md` — first docs refresh before root `SPEC.md` template migration
 
 ---
 

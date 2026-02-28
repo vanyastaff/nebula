@@ -1,61 +1,101 @@
-# Proposals (Senior Review)
+# Proposals
 
-## P-001: Typed Value Layer Above Raw JSON (Potential Breaking)
+Use this for non-accepted ideas before they become decisions.
 
-Problem:
-- `ParameterValues` stores raw `serde_json::Value`, which pushes type mismatch detection later.
+## P001: Typed Value Layer Above Raw JSON
 
-Proposal:
-- add typed runtime value enum (`ParameterRuntimeValue`) aligned to `ParameterKind`.
+Type: Breaking
 
-Impact:
-- cleaner runtime contracts and better error locality; migration required for direct JSON access patterns.
+Motivation: `ParameterValues` stores raw `serde_json::Value`; type mismatch detection is late. A typed runtime value enum aligned to `ParameterKind` would improve contracts and error locality.
 
-Migration:
-1. introduce typed API in parallel.
-2. keep JSON API as compatibility layer.
-3. phase out direct JSON in major release.
+Proposal: Introduce `ParameterRuntimeValue` enum; add typed API in parallel; keep JSON API as compatibility layer; phase out direct JSON in major release.
 
-## P-002: Deterministic Error Path and Ordering Contract
+Expected benefits: Cleaner runtime contracts; better error locality; compile-time-like guarantees at value boundary.
 
-Problem:
-- nested validation error ordering can drift with internal iteration details.
+Costs: Migration for direct JSON access patterns; increased API surface.
 
-Proposal:
-- define stable traversal and ordering contract for error output.
+Risks: Breaking changes for consumers using `ParameterValues::get`/`set` with raw Value.
 
-Impact:
-- non-breaking now, prevents future accidental behavioral breaks in API/UI.
+Compatibility impact: Major version bump; deprecation window 6+ months.
 
-## P-003: Compile-time-safe Parameter Keys (Potential Breaking)
+Status: Draft
 
-Problem:
-- keys are plain strings; typos are discovered late.
+---
 
-Proposal:
-- introduce `ParameterKey` newtype and optional registry helpers.
+## P002: Deterministic Error Path and Ordering Contract
 
-Impact:
-- signature changes possible, but improves reliability in large schemas.
+Type: Non-breaking
 
-## P-004: Schema Lint Pass
+Motivation: Nested validation error ordering can drift with internal iteration details; API/UI may rely on stable ordering.
 
-Problem:
-- invalid/contradictory schema setups (duplicate keys, dead display rules) are not fully preflighted.
+Proposal: Define stable traversal and ordering contract for error output (e.g., depth-first, key order).
 
-Proposal:
-- add `ParameterCollection::lint()` returning warnings/errors before runtime usage.
+Expected benefits: Prevents future accidental behavioral breaks; predictable error presentation.
 
-Impact:
-- non-breaking additive feature with strong DX benefits.
+Costs: May constrain internal refactoring.
 
-## P-005: ValidationRule Versioning
+Risks: Low.
 
-Problem:
-- rule enum evolution may break persisted schemas if not managed explicitly.
+Compatibility impact: None if additive; document contract.
 
-Proposal:
-- introduce schema/rule version metadata and migration utilities.
+Status: Draft
 
-Impact:
-- upfront complexity, but safer long-term compatibility.
+---
+
+## P003: Compile-time-safe Parameter Keys
+
+Type: Breaking
+
+Motivation: Keys are plain strings; typos discovered late in large schemas.
+
+Proposal: Introduce `ParameterKey` newtype and optional registry helpers.
+
+Expected benefits: Improved reliability; earlier typo detection.
+
+Costs: Signature changes for lookup APIs; migration for key-heavy code.
+
+Risks: Breaking changes for `get`, `get_by_key`, `contains`, etc.
+
+Compatibility impact: Major version bump.
+
+Status: Draft
+
+---
+
+## P004: Schema Lint Pass
+
+Type: Non-breaking
+
+Motivation: Invalid/contradictory schema setups (duplicate keys, dead display rules, cycles) are not fully preflighted.
+
+Proposal: Add `ParameterCollection::lint()` returning warnings/errors before runtime usage.
+
+Expected benefits: Strong DX; catch schema bugs early.
+
+Costs: Implementation effort; cycle detection complexity.
+
+Risks: May surface issues in existing schemas.
+
+Compatibility impact: Additive; non-breaking.
+
+Status: Draft
+
+---
+
+## P005: ValidationRule Versioning
+
+Type: Non-breaking
+
+Motivation: Rule enum evolution may break persisted schemas if not managed explicitly.
+
+Proposal: Introduce schema/rule version metadata and migration utilities.
+
+Expected benefits: Safer long-term compatibility; explicit upgrade path.
+
+Costs: Upfront complexity; version field in persisted data.
+
+Risks: Low.
+
+Compatibility impact: Additive if optional; migration for existing schemas.
+
+Status: Draft

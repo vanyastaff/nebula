@@ -1,63 +1,97 @@
-# Proposals (Senior Review)
+# Proposals
 
-## P-001: Introduce Fail-fast vs Collect-all Execution Mode (Breaking Behavior)
+## P001: Explicit fail-fast vs collect-all policy
 
-Problem:
-- current composition often implies specific error aggregation behavior that may not fit all high-load paths.
+Type: Breaking (behavioral)
 
-Proposal:
-- add explicit execution mode to key combinators:
-  - `FailFast`
-  - `CollectAll`
-
-Impact:
-- behavior change in error output ordering/volume for some existing pipelines.
-
-Migration:
-1. default to legacy behavior initially.
-2. add explicit mode APIs.
-3. switch defaults only in major release.
-
-## P-002: Stable Machine-readable Error Code Registry
-
-Problem:
-- API/UI layers rely on error codes for mapping, but code stability rules are implicit.
+Motivation:
+- different consumers need different error accumulation semantics.
 
 Proposal:
-- define and version a formal error code registry in crate docs/tests.
+- add explicit policy API for combinator chains and collection validators.
 
-Impact:
-- non-breaking now; prevents accidental breaking API changes later.
+Expected benefits:
+- deterministic behavior by intent, fewer surprises across crates.
 
-## P-003: Typed FieldPath Instead of Raw String Paths (Potential Breaking)
+Costs:
+- API expansion and migration work for existing compositions.
 
-Problem:
-- field paths are represented as strings and manipulated manually.
+Risks:
+- accidental behavior shifts if defaults change silently.
 
-Proposal:
-- add `FieldPath` type with validated segments and conversion to display string.
+Compatibility impact:
+- major-version candidate if default semantics change.
 
-Impact:
-- stronger correctness and less path formatting drift; API signatures may change.
+Status: Review
 
-## P-004: Macro Expansion Debug Mode
+## P002: Error code registry with compatibility checks
 
-Problem:
-- complex `validator!` expansions are hard to inspect in large projects.
+Type: Non-breaking (initially)
 
-Proposal:
-- add optional macro debugging helpers/docs (`cargo expand` recipes and internal markers).
-
-Impact:
-- non-breaking developer-experience improvement.
-
-## P-005: Context Key Typing Strategy
-
-Problem:
-- `ValidationContext` currently uses string keys; typo risk and weak discoverability.
+Motivation:
+- downstream API/UI layers depend on stable codes.
 
 Proposal:
-- introduce typed key wrappers or module-level constants for context keys.
+- maintain canonical registry and tests to block accidental code drift.
 
-Impact:
-- can be introduced backward-compatibly, then tightened in a future major.
+Expected benefits:
+- predictable integration and safer upgrades.
+
+Costs:
+- governance overhead and test maintenance.
+
+Risks:
+- false positives if registry process is too rigid.
+
+Compatibility impact:
+- low if introduced as additive enforcement.
+
+Status: Review
+
+## P003: Typed FieldPath
+
+Type: Breaking (potential)
+
+Motivation:
+- string paths are error-prone and inconsistent.
+
+Proposal:
+- introduce `FieldPath` with validated segments + display conversion.
+
+Expected benefits:
+- safer nested/object validation tooling.
+
+Costs:
+- migration for APIs currently expecting `String` paths.
+
+Risks:
+- friction for simple consumers if adapter layer is poor.
+
+Compatibility impact:
+- likely major-version change.
+
+Status: Draft
+
+## P004: Schema bridge layer for plugin ecosystem
+
+Type: Non-breaking (if additive)
+
+Motivation:
+- plugin and UI ecosystems may need declarative schema exchange.
+
+Proposal:
+- provide optional schema bridge over existing typed validators.
+
+Expected benefits:
+- better interoperability without giving up typed core model.
+
+Costs:
+- additional maintenance surface.
+
+Risks:
+- dual source of truth if not tightly coupled to typed validators.
+
+Compatibility impact:
+- low if strictly additive and clearly scoped.
+
+Status: Draft

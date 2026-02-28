@@ -1,51 +1,126 @@
 # Decisions
 
-## D-001: Trait-bound Driven Type Safety
+## D001: Type-bound validation as primary API
 
-Status: accepted
+Status: Adopt
 
-Decision:
-- validators declare input constraints through trait bounds instead of runtime type checks.
-
-Reason:
-- fail invalid combinations at compile time.
-
-## D-002: Combinator-first Composition Model
-
-Status: accepted
+Context:
+- Rust platform needs compile-time safety and low runtime ambiguity.
 
 Decision:
-- compose validators via typed combinators and extension methods.
+- keep `Validate<T>` + trait bounds as primary contract.
 
-Reason:
-- supports reusable and testable validation pipelines.
+Alternatives considered:
+- dynamic schema-only validation as primary model.
 
-## D-003: Structured Error Model with Nesting
+Trade-offs:
+- stronger safety, but more generic type complexity.
 
-Status: accepted
+Consequences:
+- robust refactoring and fewer runtime type errors.
 
-Decision:
-- keep `ValidationError` rich (code/message/field/params/nested/severity/help).
+Migration impact:
+- none.
 
-Reason:
-- required for API-grade diagnostics and nested object validation.
+Validation plan:
+- compile-time tests + integration tests across consuming crates.
 
-## D-004: Context Support for Cross-field Rules
+## D002: Combinator-first composition
 
-Status: accepted
+Status: Adopt
 
-Decision:
-- provide `ValidationContext` + contextual validator trait.
-
-Reason:
-- many business rules depend on multiple fields or external context.
-
-## D-005: Macro-based Ergonomics
-
-Status: accepted
+Context:
+- workflows require reusable rule pipelines.
 
 Decision:
-- keep `validator!` for common validator definitions.
+- compose via `and/or/not/when/unless/optional/field/json_field/cached`.
 
-Reason:
-- reduces boilerplate while preserving static typing and explicit generated behavior.
+Alternatives considered:
+- custom monolithic validators per use-case.
+
+Trade-offs:
+- excellent reuse, but bigger types and more compile-time cost.
+
+Consequences:
+- expressive and maintainable validation graphs.
+
+Migration impact:
+- none.
+
+Validation plan:
+- combinator law tests + behavior regression tests.
+
+## D003: Structured error model with nested context
+
+Status: Adopt
+
+Context:
+- downstream crates need machine-readable and human-readable diagnostics.
+
+Decision:
+- preserve `ValidationError` rich schema (code/message/field/params/nested/help/severity).
+
+Alternatives considered:
+- plain string errors.
+
+Trade-offs:
+- richer output with modest allocation overhead.
+
+Consequences:
+- easier API/UI mapping and debugging.
+
+Migration impact:
+- must keep code semantics stable.
+
+Validation plan:
+- serialization and compatibility tests for error payloads.
+
+## D004: Error code registry governance
+
+Status: Defer
+
+Context:
+- code stability rules exist conceptually but not yet formalized as registry.
+
+Decision:
+- defer full registry rollout until compatibility suite is in place.
+
+Alternatives considered:
+- immediate hard enforcement.
+
+Trade-offs:
+- faster current iteration vs delayed strictness.
+
+Consequences:
+- short-term risk of accidental code drift.
+
+Migration impact:
+- future minor-to-major planning required.
+
+Validation plan:
+- add registry in roadmap phase with backward mapping tests.
+
+## D005: FieldPath typed model
+
+Status: Defer
+
+Context:
+- plain string field paths can drift in formatting.
+
+Decision:
+- evaluate typed `FieldPath` model after current docs/contract stabilization.
+
+Alternatives considered:
+- keep raw strings forever.
+
+Trade-offs:
+- typed path improves safety but may require API changes.
+
+Consequences:
+- maintain current compatibility now; prepare for eventual major upgrade.
+
+Migration impact:
+- likely breaking if introduced broadly.
+
+Validation plan:
+- prototype in proposal + adapter compatibility layer.

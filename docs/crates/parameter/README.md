@@ -1,39 +1,47 @@
 # nebula-parameter
 
-`nebula-parameter` defines node input schemas for Nebula.
+Node input schema definition for Nebula workflow platform.
 
-It describes:
-- parameter kinds and capabilities
-- metadata (name/key/hints/required/sensitive)
-- declarative validation rules
-- conditional display logic
-- runtime value container and diff/snapshot utilities
+## Scope
 
-## Role in Platform
+- **In scope:**
+  - Parameter kinds and capabilities (19 variants: Text, Number, Select, Object, List, Mode, etc.)
+  - Metadata (key, name, hints, required, sensitive)
+  - Declarative validation rules (min, max, pattern, OneOf, etc.)
+  - Conditional display logic (show_when, hide_when)
+  - Runtime value container (`ParameterValues`) with snapshot/diff utilities
+  - Schema collection and validation pipeline
+- **Out of scope:**
+  - UI widget dimensions, styling, layout
+  - Expression resolution (handled by `nebula-expression`)
+  - Credential resolution (handled by `nebula-credential`)
+  - Workflow orchestration
 
-For a Rust n8n-like platform, this crate is the canonical schema layer between:
-- action/plugin/credential parameter declarations
-- UI form rendering
-- engine-side validation before execution
+## Current State
 
-## Main Surface
+- **Maturity:** Stable schema layer; used by action, credential, engine, macros, sdk
+- **Key strengths:** JSON-serializable schema, capability-based kind semantics, error aggregation, recursive containers
+- **Key risks:** Raw JSON values push type mismatch detection late; display rule cycles not preflighted
 
-- `ParameterDef` (tagged enum for all parameter types)
-- `ParameterKind` and `ParameterCapability`
-- `ParameterMetadata`
-- `ParameterCollection` (`validate`, lookup, mutation, iteration)
-- `ParameterValues` (flat key->JSON value map with snapshot/diff)
-- `ValidationRule` (declarative constraints)
-- display APIs (`ParameterDisplay`, `DisplayRuleSet`, `DisplayCondition`)
+## Target State
 
-## Dependencies
+- **Production criteria:** Stable error codes, deterministic validation order, schema lint pass, typed value layer (optional)
+- **Compatibility guarantees:** Patch/minor preserve API; breaking changes in MIGRATION.md
 
-- `nebula-validator` for rule execution in collection validation
+## Document Map
 
-## Document Set
+- [ARCHITECTURE.md](./ARCHITECTURE.md)
+- [API.md](./API.md)
+- [INTERACTIONS.md](./INTERACTIONS.md)
+- [DECISIONS.md](./DECISIONS.md)
+- [ROADMAP.md](./ROADMAP.md)
+- [PROPOSALS.md](./PROPOSALS.md)
+- [SECURITY.md](./SECURITY.md)
+- [RELIABILITY.md](./RELIABILITY.md)
+- [TEST_STRATEGY.md](./TEST_STRATEGY.md)
+- [MIGRATION.md](./MIGRATION.md)
 
-- [ARCHITECTURE.md](ARCHITECTURE.md)
-- [API.md](API.md)
-- [DECISIONS.md](DECISIONS.md)
-- [ROADMAP.md](ROADMAP.md)
-- [PROPOSALS.md](PROPOSALS.md)
+## Archive
+
+Legacy material:
+- [`_archive/`](./_archive/)

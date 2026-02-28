@@ -1,42 +1,50 @@
 # nebula-validator
 
-`nebula-validator` is the composable validation framework for Nebula.
+Composable validation framework for Nebula crates and runtime boundaries.
 
-It is designed for:
-- type-safe validation through trait bounds
-- reusable primitive validators (`length`, `range`, `pattern`, `network`, `temporal`, etc.)
-- combinator-based composition (`and`, `or`, `not`, `when`, `optional`, `cached`, `field`, `json_field`)
-- structured errors with nesting and metadata
+## Scope
 
-## Role in Platform
+- In scope: typed validators, combinators, structured validation errors, contextual validation helpers.
+- Out of scope: API transport formatting, retry policy, workflow orchestration.
 
-For a Rust-first workflow automation platform (n8n-like), this crate provides a shared validation language for API inputs, workflow definitions, plugin configs, and runtime data contracts.
+## Current State
 
-## Main Surface
+- maturity: good core design, rich validator set, strong tests/benches.
+- strengths:
+  - type-safe `Validate<T>` model with composable `ValidateExt`
+  - structured `ValidationError` with nested errors and metadata
+  - dynamic bridge via `AnyValidator` and `validate_any`
+  - macro ergonomics (`validator!`, `compose!`, `any_of!`)
+- risks:
+  - docs drift vs actual module names in older materials
+  - large generic combinator types can hurt compile times and debuggability
+  - cross-crate error code governance not fully formalized yet
 
-- Foundation:
-  - `Validate<T>`
-  - `ValidateExt<T>`
-  - `Validatable` (`.validate_with(...)`)
-  - `ValidationError`, `ValidationErrors`
-  - `ValidationContext`, `ContextualValidator`
-- Built-in validators:
-  - string/content/pattern/length
-  - numeric range validators
-  - collection size validators
-  - boolean/nullable validators
-  - network and temporal validators
-- Combinators:
-  - logical/conditional/optional/cached/field/json-field/nested
-- Macros:
-  - `validator!`
-  - `compose!`
-  - `any_of!`
+## Target State
 
-## Document Set
+- production criteria:
+  - stable API contract for action/api/workflow/plugin consumers
+  - explicit compatibility policy for error codes and field paths
+  - tested performance budgets for hot validation paths
+  - deterministic failure semantics across crates
+- compatibility guarantees:
+  - minor versions: additive validators/combinators only
+  - major versions: explicit migration guide for behavior-significant changes
 
-- [ARCHITECTURE.md](ARCHITECTURE.md)
-- [API.md](API.md)
-- [DECISIONS.md](DECISIONS.md)
-- [ROADMAP.md](ROADMAP.md)
-- [PROPOSALS.md](PROPOSALS.md)
+## Document Map
+
+- [ARCHITECTURE.md](./ARCHITECTURE.md)
+- [API.md](./API.md)
+- [INTERACTIONS.md](./INTERACTIONS.md)
+- [DECISIONS.md](./DECISIONS.md)
+- [ROADMAP.md](./ROADMAP.md)
+- [PROPOSALS.md](./PROPOSALS.md)
+- [SECURITY.md](./SECURITY.md)
+- [RELIABILITY.md](./RELIABILITY.md)
+- [TEST_STRATEGY.md](./TEST_STRATEGY.md)
+- [MIGRATION.md](./MIGRATION.md)
+
+## Archive
+
+Legacy material:
+- [`_archive/`](./_archive/)

@@ -1,73 +1,103 @@
-# API Reference (Human-Oriented)
+# API
 
-## Schema Types
+## Public Surface
 
-- `ParameterDef`
-  - tagged enum with variants for all parameter types
-  - shared accessors: `key`, `name`, `kind`, `metadata`, `display`, `validation_rules`, `children`
-- `ParameterKind`
-  - kind taxonomy (`Text`, `Number`, `Select`, `Object`, `List`, `Mode`, ...)
-  - capability helpers (`has_value`, `is_editable`, `is_container`, `supports_expressions`, ...)
-- `ParameterMetadata`
-  - key/name/description/required/placeholder/hint/sensitive
+- **Stable APIs:** `ParameterDef`, `ParameterKind`, `ParameterCapability`, `ParameterMetadata`, `ParameterCollection`, `ParameterValues`, `ValidationRule`, `ParameterDisplay`, `DisplayRuleSet`, `DisplayCondition`, `DisplayContext`, `ParameterError`, `SelectOption`, `OptionsSource`
+- **Experimental APIs:** None
+- **Hidden/internal APIs:** `ParameterSnapshot`, `ParameterDiff` (returned by public methods but not primary surface)
 
-## Runtime Values
+## Usage Patterns
 
-- `ParameterValues`
-  - flat key->`serde_json::Value`
-  - typed getters (`get_string`, `get_f64`, `get_bool`)
-  - `snapshot`/`restore`
-  - `diff` producing `added`/`removed`/`changed`
+- Build schema with `ParameterCollection::new().with(...)` or `.add(...)`
+- Populate values with `ParameterValues::set(key, value)`
+- Validate before execution: `collection.validate(&values)`
+- Use `prelude::*` for common imports
 
-## Schema Collections
+## Minimal Example
 
-- `ParameterCollection`
-  - add/get/remove/contains/iter APIs
-  - `validate(&ParameterValues) -> Result<(), Vec<ParameterError>>`
+```rust
+use nebula_parameter::prelude::*;
+use serde_json::json;
 
-Validation behavior:
-- skips display-only kinds (`notice`, `group`)
-- enforces required/missing semantics
-- checks JSON type compatibility
-- applies `ValidationRule`s
-- recursively validates nested `object` and `list` values
+let col = ParameterCollection::new()
+    .with(ParameterDef::Text(TextParameter::new("host", "Host")))
+    .with(ParameterDef::Number(NumberParameter::new("port", "Port")
+        .with_validation(ValidationRule::range(1.0, 65535.0))));
 
-## Validation Rules
+let mut values = ParameterValues::new();
+values.set("host", json!("localhost"));
+values.set("port", json!(5432));
 
-- `ValidationRule` variants:
-  - `MinLength`, `MaxLength`, `Pattern`
-  - `Min`, `Max`
-  - `OneOf`
-  - `MinItems`, `MaxItems`
-  - `Custom` (external evaluation path)
-- builder helpers:
-  - `min_length`, `max_length`, `pattern`, `min`, `max`, `range`, `min_items`, `max_items`
-  - `.with_message(...)`
+match col.validate(&values) {
+    Ok(()) => println!("valid"),
+    Err(errors) => {
+        for e in &errors {
+            eprintln!("{} [{}]", e, e.code());
+        }
+    }
+}
+```
 
-## Display Rules
+## Advanced Example
 
-- `ParameterDisplay`
-- `DisplayRuleSet`
-- `DisplayCondition`
-- `DisplayContext`
+```rust
+use nebula_parameter::prelude::*;
+use nebula_parameter::display::DisplayRule;
+use serde_json::json;
 
-Used to compute parameter visibility from current sibling values and validation context.
+// Nested object with display rules
+let mut cert_path = TextParameter::new("cert_path", "Certificate Path");
+cert_path.display = Some(ParameterDisplay {
+    show_when: vec![DisplayRuleSet::Single(DisplayRule {
+        field: "tls".into(),
+        condition: DisplayCondition::IsTrue,
+    })],
+    hide_when: vec![],
+});
 
-## Errors
+let mut host = TextParameter::new("host", "Host");
+host.metadata.required = true;
 
-- `ParameterError`:
-  - lookup/existence errors
-  - type/value/required violations
-  - validation errors
-  - serialization/deserialization errors
-- helpers:
-  - `category()`
-  - `code()`
-  - `is_retryable()` (always false)
+let mut port = NumberParameter::new("port", "Port");
+port.default = Some(5432.0);
+port.validation = ValidationRule::range(1.0, 65535.0);
 
-## Options and Select Support
+let connection = ObjectParameter::new("connection", "Connection")
+    .with_field(ParameterDef::Text(host))
+    .with_field(ParameterDef::Number(port))
+    .with_field(ParameterDef::Checkbox(CheckboxParameter::new("tls", "Use TLS")))
+    .with_field(ParameterDef::Text(cert_path));
 
-- `SelectOption`
-- `OptionsSource`
+let col = ParameterCollection::new()
+    .with(ParameterDef::Object(connection));
 
-Supports static options and dynamic option loader references.
+// Values for nested object: key "connection" holds JSON object
+let mut values = ParameterValues::new();
+values.set("connection", json!({
+    "host": "db.example.com",
+    "port": 5432,
+    "tls": true,
+    "cert_path": "/path/to/cert.pem"
+}));
+
+// Diff between two value sets
+let mut updated = ParameterValues::new();
+updated.set("connection", json!({
+    "host": "db.example.com",
+    "port": 99999,
+    "tls": true
+}));
+let diff = values.diff(&updated);
+// diff.changed contains "connection"
+```
+
+## Error Semantics
+
+- **Retryable errors:** None (`ParameterError::is_retryable()` always false)
+- **Fatal errors:** All validation/type errors; caller must fix input
+- **Validation errors:** `MissingValue`, `InvalidType`, `ValidationError` — use `category()` and `code()` for mapping
+
+## Compatibility Rules
+
+- **Major version bump:** Changes to `ParameterDef` enum variants, `ValidationRule` variants, `ParameterError` variants, removal of public APIs
+- **Deprecation policy:** Deprecate in minor; remove in next major; minimum 6 months (see MIGRATION.md)

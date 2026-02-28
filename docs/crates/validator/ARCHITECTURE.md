@@ -1,41 +1,68 @@
 # Architecture
 
-## Positioning
+## Problem Statement
 
-`nebula-validator` is a shared domain-infra crate. It should be consumed by many crates, but remain independent from business/runtime orchestration.
+- Business problem: multiple Nebula crates need consistent, reusable, machine-readable validation.
+- Technical problem: avoid ad-hoc validation logic and fragmented error semantics across API/runtime/plugin boundaries.
 
-Dependency direction:
-- `api`, `workflow`, `plugin`, `engine`, etc. -> `nebula-validator`
-- `nebula-validator` should not depend on workflow runtime internals
+## Current Architecture
 
-## Internal Structure
+- module map:
+  - `foundation/`: `Validate`, `ValidateExt`, context, error, type erasure
+  - `validators/`: domain validators (`length`, `pattern`, `content`, `range`, `size`, `network`, `temporal`, `nullable`, `boolean`)
+  - `combinators/`: composition and control (`and`, `or`, `not`, `when`, `unless`, `optional`, `each`, `field`, `json_field`, `cached`, `lazy`)
+  - `macros.rs`: `validator!` + compose helpers
+  - `prelude.rs`: ergonomic imports
+- data/control flow:
+  - input -> typed validator chain -> `Result<(), ValidationError>`
+  - optionally aggregate to `ValidationErrors` for collect-all scenarios
+- known bottlenecks:
+  - deeply nested generic types (compile time and diagnostics)
+  - regex-heavy and nested JSON validations can dominate runtime CPU
 
-- `foundation/`
-  - core traits and types (`Validate`, `ValidateExt`, `Validatable`, `ValidationError`, context APIs)
-- `validators/`
-  - ready-to-use validator primitives by domain
-- `combinators/`
-  - composition layer (`and`, `or`, `not`, `when`, `optional`, `cached`, `field`, `json_field`, ...)
-- `macros.rs`
-  - codegen macro for creating validators with low boilerplate
-- `prelude.rs`
-  - ergonomic import surface for consumers
+## Target Architecture
 
-## Core Design Properties
+- target module map:
+  - preserve current split; do not over-fragment into many micro-modules
+  - add stricter docs and compatibility contracts rather than structural churn
+- public contract boundaries:
+  - `Validate<T>`/`ValidateExt` as primary stable API
+  - `ValidationError` code/field-path schema as cross-crate contract
+- internal invariants:
+  - validators are side-effect free
+  - combinators preserve deterministic evaluation semantics
+  - error codes remain stable unless major migration is declared
 
-- compile-time type safety through trait bounds (`AsRef<str>`, `Ord`, etc.)
-- composability through combinator types and extension traits
-- structured error reporting with nested failures
-- context-based validation support for cross-field rules
-- performance-conscious error model (`ValidationError` size optimization)
+## Design Reasoning
 
-## Runtime Characteristics
+- trade-off 1: static typing vs dynamic flexibility
+  - chosen: static first (`Validate<T>`), dynamic bridge via `AnyValidator` and `validate_any`
+- trade-off 2: rich errors vs allocation cost
+  - chosen: rich `ValidationError` with boxed extras and smallvec optimization
+- rejected alternatives:
+  - stringly-typed validator registry as primary model (reject: unsafe and hard to refactor)
 
-- supports both simple single-rule validations and complex composed validators
-- optional caching combinator for expensive/repeated checks
-- broad test/bench coverage in crate (`tests/`, `benches/`, `examples/`)
+## Comparative Analysis
 
-## Known Constraints
+Sources considered: n8n, Node-RED, Activepieces/Activeflow, Temporal/Airflow style systems.
 
-- complex combinator nesting can produce very large generic types
-- heterogeneous validator collections require type erasure patterns (e.g., `AnyValidator`)
+- Adopt:
+  - Node-based platforms’ need for human-readable validation errors and field-path mapping.
+  - Workflow platforms’ need for deterministic, replay-safe validation behavior.
+- Reject:
+  - JS-style runtime schema-only validation as sole source of truth (too weak for Rust compile-time guarantees).
+  - heavily implicit coercion behavior (causes hidden bugs in automation flows).
+- Defer:
+  - declarative schema DSL on top of current typed API, if demand from plugin SDK grows.
+
+## Breaking Changes (if any)
+
+- currently none required.
+- potential future break candidates:
+  - formalized `FieldPath` type in place of plain string paths
+  - stricter error code registry enforcement
+
+## Open Questions
+
+- should `collect-all` vs `fail-fast` be first-class in combinator API or policy wrapper?
+- should validator catalogs be exported as machine-readable metadata for UI generation?

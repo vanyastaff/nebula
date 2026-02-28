@@ -2,32 +2,34 @@
 
 `nebula-parameter` roadmap targets stronger contracts between schema, UI, and runtime execution.
 
-## Phase 1: Contract Cleanup
+## Phase 1: Contract and Safety Baseline
 
-- align all docs/examples with actual API and kind/capability semantics
-- publish stable naming conventions for keys/paths and display dependencies
-- document required vs nullable behavior per kind
+- **Deliverables:** Align docs/examples with actual API; publish stable naming conventions for keys/paths; document required vs nullable behavior per kind; schema lint pass (P-004)
+- **Risks:** Lint may surface breaking schema issues in existing definitions
+- **Exit criteria:** All consumers pass lint; error code stability documented
 
-## Phase 2: Validation Depth and Performance
+## Phase 2: Runtime Hardening
 
-- benchmark deep nested `object/list` validation
-- optimize recursive path building and error allocation in large schemas
-- add stress tests for large collections and high error counts
+- **Deliverables:** Benchmark deep nested object/list validation; optimize recursive path building and error allocation; stress tests for large collections and high error counts; deterministic error ordering (P-002)
+- **Risks:** Performance regressions in hot paths
+- **Exit criteria:** Benchmarks in CI; no allocation regression in common cases
 
-## Phase 3: Stronger Type Bridges
+## Phase 3: Scale and Performance
 
-- improve typed extraction helpers from `ParameterValues`
-- define clearer conversion contracts for numbers/integers/decimals
-- reduce ambiguity in `"any"`-typed parameter flows
+- **Deliverables:** Improve typed extraction helpers; clearer conversion contracts for numbers/integers/decimals; reduce ambiguity in "any"-typed flows; optional typed value layer (P-001)
+- **Risks:** Typed layer migration complexity
+- **Exit criteria:** Typed API available; migration path documented
 
-## Phase 4: Display/Dependency Engine Improvements
+## Phase 4: Ecosystem and DX
 
-- formalize dependency graph extraction from display rules
-- detect cycles/contradictory visibility rules at schema build time
-- add diagnostics for unreachable parameters
+- **Deliverables:** Formalize dependency graph extraction from display rules; detect cycles/contradictory visibility at schema build time; diagnostics for unreachable parameters; ValidationRule versioning (P-005); ParameterKey newtype (P-003)
+- **Risks:** Display rule analysis may be expensive for large schemas
+- **Exit criteria:** Display rule lint; version metadata in persisted schemas
 
-## Phase 5: Toolchain and Stability
+## Metrics of Readiness
 
-- workspace baseline today: Rust `1.92`
-- prepare migration path to Rust `1.93+`
-- lock machine-readable error/code compatibility expectations
+- **Correctness:** All validation paths covered; error codes stable
+- **Latency:** Validation &lt;1ms for typical node configs
+- **Throughput:** N/A (sync, per-request)
+- **Stability:** No breaking changes without MIGRATION.md
+- **Operability:** Workspace baseline Rust 1.92; migration path to 1.93+

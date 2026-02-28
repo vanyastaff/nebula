@@ -1,73 +1,64 @@
-# API Reference (Human-Oriented)
+# API
 
-## Foundation
+## Public Surface
 
-- `Validate<T>`
-  - core trait: `fn validate(&self, input: &T) -> Result<(), ValidationError>`
-  - includes `validate_any` bridge for adaptable/dynamic inputs
-- `Validatable`
-  - extension trait for values: `value.validate_with(&validator)`
-- `ValidateExt<T>`
-  - combinator methods: `.and()`, `.or()`, `.not()`, `.when()`
+- stable APIs:
+  - `foundation::Validate<T>`
+  - `foundation::ValidateExt<T>`
+  - `foundation::Validatable`
+  - `foundation::ValidationError`, `ValidationErrors`
+  - built-in validators from `validators::*`
+  - core combinators from `combinators::*`
+- experimental APIs:
+  - none explicitly marked yet; treat advanced combinator internals as non-contract
+- hidden/internal APIs:
+  - internal macro plumbing and erased trait internals
 
-## Error Types
+## Usage Patterns
 
-- `ValidationError`
-  - code/message/field + optional parameters
-  - nested errors
-  - severity/help metadata
-  - utility constructors (`required`, `min_length`, `max_length`, `type_mismatch`, ...)
-- `ValidationErrors`
-  - collection type for accumulating multiple failures
+- direct typed validation:
+  - `validator.validate(&value)`
+- extension style:
+  - `value.validate_with(&validator)`
+- composition style:
+  - `min_length(3).and(max_length(20)).and(alphanumeric())`
 
-## Context APIs
+## Minimal Example
 
-- `ValidationContext`
-  - key-value typed storage for cross-field validation logic
-  - parent/child context chain
-  - field path tracking helpers
-- `ContextualValidator`
-  - trait for validators that need external context
-- `ContextAdapter`
-  - bridge: regular `Validate<T>` into contextual interface
+```rust
+use nebula_validator::prelude::*;
 
-## Built-in Validator Families
+let username = min_length(3).and(max_length(20)).and(alphanumeric());
+username.validate("alice123")?;
+```
 
-- `validators::length`
-  - `min_length`, `max_length`, `exact_length`, `length_range`, `not_empty`
-- `validators::pattern`
-  - `contains`, `starts_with`, `ends_with`, `alphanumeric`, etc.
-- `validators::content`
-  - `email`, `url`, `matches_regex`
-- `validators::range`
-  - `min`, `max`, `in_range`, `exclusive_range`, `greater_than`, `less_than`
-- `validators::size`
-  - `min_size`, `max_size`, `exact_size`, `size_range`, `not_empty_collection`
-- `validators::boolean`
-  - `is_true`, `is_false`
-- `validators::nullable`
-  - `required`, `not_null`
-- `validators::network`
-  - `ip_addr`, `ipv4`, `ipv6`, `hostname`
-- `validators::temporal`
-  - `date`, `time`, `date_time`, `uuid`
+## Advanced Example
 
-## Combinators
+```rust
+use nebula_validator::prelude::*;
+use serde_json::json;
 
-- logical: `and`, `or`, `not`
-- conditional: `when`, `unless`
-- optional: `optional`
-- collection/object helpers: `each`, `field`, `json_field`, `nested`
-- error/message shaping: `with_code`, `with_message`
-- performance: `cached`, `lazy`
-- factories: `all_of`, `any_of`
+let password_rule = min_length(12).and(contains("@"));
+let payload = json!("very@secure");
+password_rule.validate_any(&payload)?;
+```
 
-## Macros
+## Error Semantics
 
-- `validator!`
-  - generates struct + impl + constructors/factories
-  - supports unit/field/generic/phantom/fallible constructor variants
-- `compose!`
-  - AND-chain helper
-- `any_of!`
-  - OR-chain helper
+- retryable errors:
+  - not applicable at validator layer; validation failures are deterministic contract failures.
+- fatal errors:
+  - invalid input/shape/range/pattern failures.
+- validation errors:
+  - represented by `ValidationError` (single) and `ValidationErrors` (aggregate).
+
+## Compatibility Rules
+
+- major bump required when:
+  - behavior changes for existing validator semantics
+  - existing error code meanings change
+  - existing field-path format contract changes
+- minor versions:
+  - additive validators/combinators/error helpers only
+- deprecation policy:
+  - mark deprecated APIs with migration path and maintain for at least one minor cycle

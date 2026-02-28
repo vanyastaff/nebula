@@ -1,36 +1,59 @@
 # Roadmap
 
-`nebula-validator` roadmap focuses on correctness, ergonomics, and high-throughput behavior.
+## Phase 1: Contract and Docs Baseline
 
-## Phase 1: Contract Clarity
+- deliverables:
+  - full template-aligned docs with cross-crate contracts
+  - canonical API examples aligned to current implementation
+  - explicit compatibility policy draft
+- risks:
+  - hidden behavior assumptions in downstream crates
+- exit criteria:
+  - docs accepted as single source of truth for current API
+  - no stale naming mismatch in public docs
 
-- align all docs/examples with current trait names and extension methods
-- add explicit compatibility guidelines for error codes used by API layer
-- document canonical validator composition patterns for workflow/plugin configs
+## Phase 2: Compatibility and Governance
 
-## Phase 2: Performance and Allocation Profiling
+- deliverables:
+  - machine-readable error code registry
+  - compatibility tests for error codes/field paths
+  - deprecation and migration policy enforcement
+- risks:
+  - legacy consumers relying on undocumented error details
+- exit criteria:
+  - backward compatibility CI checks in place
 
-- benchmark hot paths:
-  - common string validators
-  - combinator chains
-  - nested error construction
-- add allocation-focused benchmarks for `ValidationError` heavy paths
-- define performance budgets and regression thresholds in CI
+## Phase 3: Performance and Capacity Hardening
 
-## Phase 3: Schema-aware Validation Layer
+- deliverables:
+  - benchmark budgets for common validator chains
+  - cache strategy guidance (`cached`) for expensive checks
+  - allocation-focused profiling for heavy failure paths
+- risks:
+  - regressions in deeply nested combinator usage
+- exit criteria:
+  - benchmark thresholds enforced in CI
 
-- improve JSON/object path validation ergonomics (`json_field`, nested paths)
-- add stronger typed bridges for `serde_json::Value` validation flows
-- standardize field-path formatting across nested errors
+## Phase 4: Ecosystem and DX
 
-## Phase 4: Safety and Reliability
+- deliverables:
+  - advanced patterns for workflow/plugin/sdk consumers
+  - optional schema/policy layer evaluation
+  - macro debugging and authoring guidance
+- risks:
+  - over-expansion of API surface
+- exit criteria:
+  - clear stable core vs optional extension boundaries
 
-- stress-test deep nested combinators and large error trees
-- formalize limits for recursion depth / nested error explosion
-- add guidance for fail-fast vs collect-all strategies per use case
+## Metrics of Readiness
 
-## Phase 5: Toolchain and API Stability
-
-- current workspace baseline: Rust `1.92`
-- prepare controlled migration to Rust `1.93+`
-- stabilize public API for long-lived validator definitions in plugins
+- correctness:
+  - zero known semantic drift in contract tests
+- latency:
+  - p95 validation latency budget for representative pipelines
+- throughput:
+  - benchmarked sustained validations/sec for hot paths
+- stability:
+  - no flaky contract tests
+- operability:
+  - actionable error telemetry with stable code mapping
