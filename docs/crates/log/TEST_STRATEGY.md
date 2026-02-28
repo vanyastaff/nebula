@@ -30,7 +30,7 @@
 - **Property testing:** proptest for config (optional)
 - **Fuzzing:** Config deserialization (optional)
 - **Benchmarks:** criterion for event emission (no hooks / inline / bounded), context propagation (`current_contexts`, `scope_sync`), timing utilities (`TimerGuard`, thresholded `Timer`)
-- **CI quality gates:** `cargo test --workspace`; `cargo clippy`; format check
+- **CI quality gates:** `cargo test --workspace`; `cargo clippy`; format check; benchmark threshold gate for `nebula-log` hot-path benches
 
 ## Exit Criteria
 

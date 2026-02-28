@@ -26,7 +26,7 @@
 - **Deliverables:**
   - Benchmark hot paths: event emission, context propagation, timing macros (expanded criterion bench coverage added)
   - Reduce per-event allocations in observability hooks
-  - Criterion benchmarks in CI with regression thresholds
+  - Criterion benchmarks in CI with regression thresholds (implemented for `nebula-log` hot-path suite)
 - **Risks:** Optimization may complicate code
 - **Exit criteria:** Benchmarks stable; no regressions beyond threshold
 
