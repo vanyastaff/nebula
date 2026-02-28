@@ -21,7 +21,7 @@ jobs:
           regex: '^(feat|fix|docs|style|refactor|perf|test|chore)(\(.+\))?: .+'
 
       - name: Auto label PR
-        uses: actions/labeler@v4
+        uses: actions/labeler@v6
         with:
           repo-token: '${{ secrets.GITHUB_TOKEN }}'
 
