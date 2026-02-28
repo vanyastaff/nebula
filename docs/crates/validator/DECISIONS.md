@@ -153,3 +153,29 @@ Migration impact:
 
 Validation plan:
 - prototype in proposal + adapter compatibility layer.
+
+## D007: Shared category baseline with config crate
+
+Status: Adopt
+
+Context:
+- config lifecycle now depends on validator outcome categories for compatibility checks.
+
+Decision:
+- keep shared category names stable and publish constants in validator core.
+- changes to category semantics require major version + migration mapping.
+
+Alternatives considered:
+- leave categories implicit in docs only.
+
+Trade-offs:
+- stronger compatibility guarantees with added governance overhead.
+
+Consequences:
+- cross-crate fixtures can enforce deterministic mapping behavior.
+
+Migration impact:
+- category drift requires explicit old->new mapping.
+
+Validation plan:
+- `crates/config/tests/contract/validator_category_compatibility_test.rs`.

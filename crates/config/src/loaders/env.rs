@@ -71,6 +71,8 @@ impl EnvLoader {
             || key_lower.contains("secret")
             || key_lower.contains("token")
             || key_lower.contains("api_key")
+            || key_lower.contains("passphrase")
+            || key_lower.contains("client_secret")
             || key_lower.contains("private")
             || key_lower.contains("credential")
     }

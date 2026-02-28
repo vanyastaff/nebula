@@ -51,12 +51,29 @@
 - consumer crates own domain-specific config schemas.
 - `validator` owns validation rule mechanics.
 - `runtime` owns reconfiguration rollout strategy.
+- `config` owns validator invocation lifecycle (startup/reload gate + fallback).
 
 ## Failure Propagation
 
 - source/load/parse errors bubble as `ConfigError`.
 - validation errors block activation.
 - consumers should treat missing required config as startup/runtime fatal.
+- optional source failure contract:
+  - optional source failure (`Env`, `EnvWithPrefix`, `Default`) does not activate partial invalid state.
+  - diagnostics must include source identity and failure reason, without sensitive values.
+
+## Path and Typed Retrieval Contract
+
+- path traversal:
+  - dot notation for object traversal (`a.b.c`)
+  - numeric segments for arrays (`items.0.name`)
+- stable categories:
+  - `missing_path`: unresolved key/index path
+  - `type_mismatch`: typed decode failed on existing path
+  - `validation_failed`: validator rejected merged candidate
+- consumer guidance:
+  - treat `missing_path` as contract drift or rollout sequencing issue
+  - treat `type_mismatch` as schema/config mismatch requiring rollback or migration
 
 ## Versioning and Compatibility
 
@@ -71,3 +88,7 @@
 - precedence matrix tests across multiple source types.
 - reload atomicity tests (last-valid snapshot preserved).
 - typed access compatibility tests for consumer crates.
+- downstream consumer requirements:
+  - each consumer crate must maintain at least one fixture asserting required paths.
+  - consumer CI must fail on precedence/path category drift.
+  - consumers integrating validator-driven config must pin category mapping fixtures.

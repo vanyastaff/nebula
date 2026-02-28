@@ -2,6 +2,7 @@
 
 use super::{ConfigError, ConfigResult, ConfigSource, SourceMetadata};
 use async_trait::async_trait;
+use nebula_validator::foundation::{Validate, ValidationError};
 use serde_json::Value;
 
 /// Configuration loader trait
@@ -31,6 +32,23 @@ pub trait ConfigValidator: Send + Sync {
     /// Get validation rules description
     fn rules(&self) -> Option<String> {
         None
+    }
+}
+
+fn map_validation_error(err: ValidationError) -> ConfigError {
+    ConfigError::validation_error(
+        err.message.into_owned(),
+        err.field.map(|field| field.into_owned()),
+    )
+}
+
+#[async_trait]
+impl<T> ConfigValidator for T
+where
+    T: Validate<Value> + Send + Sync,
+{
+    async fn validate(&self, data: &Value) -> ConfigResult<()> {
+        Validate::validate(self, data).map_err(map_validation_error)
     }
 }
 

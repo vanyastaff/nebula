@@ -52,3 +52,19 @@
   - bursty reloads during deployments
 - scaling constraints:
   - reload path is CPU/IO bound; ensure validation cost and source count budgets are known.
+
+## Reload Failure Runbook (Contract)
+
+- trigger:
+  - reload error or validator rejection on candidate update.
+- mandatory behavior:
+  - reject candidate atomically.
+  - preserve last-known-good active snapshot.
+- operator steps:
+  1. capture failing source id/path and validator message.
+  2. compare candidate delta against precedence layers.
+  3. fix source or revert change.
+  4. rerun validation and reload.
+- diagnostics contract:
+  - include source and path context for validator failures.
+  - do not include sensitive values in validation diagnostics.

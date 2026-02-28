@@ -42,6 +42,27 @@
 - CI quality gates:
   - fmt, clippy, tests, selected benchmark regression checks.
 
+## Validator and Reload Quality Gates
+
+- validator-focused CI gates:
+  - every validator change must run contract reload rejection tests.
+  - no merge if invalid candidate activation is observed.
+- reload/backoff guidance:
+  - failed reload attempts should be retried by caller/runtime with bounded backoff.
+  - contract tests must assert failed reload leaves active snapshot unchanged.
+- downstream contract requirements:
+  - consumer crates must pin required config paths in fixtures.
+  - CI should fail on `missing_path`/`type_mismatch` category drift.
+  - config-validator category mapping fixtures must pass before release.
+
+Validator integration contract suite:
+
+- `tests/contract/validator_activation_contract_test.rs`
+- `tests/contract/validator_reload_rejection_contract_test.rs`
+- `tests/contract/validator_last_known_good_test.rs`
+- `tests/contract/validator_category_compatibility_test.rs`
+- `tests/contract/validator_redaction_contract_test.rs`
+
 ## Exit Criteria
 
 - coverage goals:

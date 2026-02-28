@@ -1,0 +1,40 @@
+use super::helpers::StaticFixtureLoader;
+use nebula_config::{ConfigBuilder, ConfigSource};
+use serde_json::json;
+use std::sync::Arc;
+
+async fn build_snapshot() -> serde_json::Value {
+    let file_source = ConfigSource::File("contract-file.toml".into());
+    let env_source = ConfigSource::EnvWithPrefix("CONTRACT".to_string());
+    let inline_source = ConfigSource::Inline("contract-inline".to_string());
+
+    let loader = StaticFixtureLoader::default()
+        .with_payload(
+            file_source.clone(),
+            json!({"a": 2, "shared": {"b": "file"}}),
+        )
+        .with_payload(env_source.clone(), json!({"shared": {"b": "env", "c": 3}}))
+        .with_payload(inline_source.clone(), json!({"shared": {"c": 4}}));
+
+    ConfigBuilder::new()
+        .with_defaults_json(json!({"a": 1, "shared": {"b": "default"}}))
+        .with_source(file_source)
+        .with_source(env_source)
+        .with_source(inline_source)
+        .with_loader(Arc::new(loader))
+        .build()
+        .await
+        .expect("config should build")
+        .get_raw(None)
+        .await
+        .expect("snapshot should be readable")
+}
+
+#[tokio::test]
+async fn identical_inputs_produce_identical_merged_outputs() {
+    let expected = build_snapshot().await;
+    for _ in 0..5 {
+        let actual = build_snapshot().await;
+        assert_eq!(actual, expected);
+    }
+}

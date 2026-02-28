@@ -73,6 +73,12 @@ Benchmark policy:
 
 - regressions above agreed budget on hot combinator chains must fail CI.
 
+Config integration gates:
+
+- run config-validator compatibility fixtures before release.
+- ensure shared category constants match config contract fixture baseline.
+- fail release readiness if migration mapping is missing for category changes.
+
 ## Exit Criteria
 
 - coverage goals:

@@ -32,6 +32,7 @@ Consumer mapping expectations:
 - `workflow` maps `code` + nested tree to compile-time style diagnostics.
 - `plugin/sdk` maps `code` + field path to manifest/config feedback.
 - `runtime` consumes deterministic pass/fail semantics for preflight checks.
+- `config` consumes validator outcome categories through adapter lifecycle contract.
 
 ## Upstream Dependencies
 
@@ -91,3 +92,8 @@ Field-path compatibility:
   - `tests/contract/typed_dynamic_equivalence_test.rs`
   - `tests/contract/governance_policy_test.rs`
   - `tests/contract/migration_requirements_test.rs`
+
+Downstream consumer requirements:
+
+- config integration must pin shared category mapping fixtures.
+- consumer CI should fail if category names drift without migration mapping.

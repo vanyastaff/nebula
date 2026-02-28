@@ -53,3 +53,15 @@
   - no flaky reload/validation contract tests.
 - operability:
   - actionable logging and metadata visibility for source/load state.
+
+## Release-Path Requirements
+
+- every behavior-significant change must declare:
+  - compatibility class (`additive` or `breaking`)
+  - migration mapping reference (`docs/crates/config/MIGRATION.md`)
+  - fixture delta (`crates/config/tests/fixtures/compat/*`)
+- release checklist:
+  1. contract tests pass for precedence/reload/path categories
+  2. migration docs updated when contract changes
+  3. downstream consumers verified against pinned fixtures
+  4. config-validator shared category fixture remains compatible

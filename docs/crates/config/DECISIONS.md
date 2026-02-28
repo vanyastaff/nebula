@@ -124,3 +124,55 @@ Migration impact:
 
 Validation plan:
 - provider contract tests + chaos/failure simulations before GA.
+
+## D006: Compatibility governance for contract evolution
+
+Status: Adopt
+
+Context:
+- precedence/path/error semantics are consumed across multiple crates and releases.
+
+Decision:
+- minor releases remain additive; contract-semantic changes require major release.
+- any proposed breaking change requires migration mapping and updated fixtures.
+
+Alternatives considered:
+- implicit compatibility enforcement via release notes only.
+
+Trade-offs:
+- stronger release discipline and higher upfront documentation effort.
+
+Consequences:
+- earlier detection of downstream breakage risk.
+
+Migration impact:
+- old -> new behavior mapping becomes mandatory for breaking changes.
+
+Validation plan:
+- governance and migration contract tests in `crates/config/tests/contract/*`.
+
+## D007: Validator crate integration via trait bridge
+
+Status: Adopt
+
+Context:
+- config lifecycle needs explicit integration with `nebula-validator` semantics.
+
+Decision:
+- provide direct trait-bridge integration for validator types under `ConfigValidator`.
+- preserve config-owned activation and fallback semantics while reusing validator contracts.
+
+Alternatives considered:
+- direct dependency on validator internals in config core lifecycle.
+
+Trade-offs:
+- adapter introduces small mapping layer, but keeps boundaries clean.
+
+Consequences:
+- consistent cross-crate validation behavior and simpler compatibility testing.
+
+Migration impact:
+- bridge behavior changes are contract-significant and require mapping updates.
+
+Validation plan:
+- validator integration contract tests in `crates/config/tests/contract/validator_*`.

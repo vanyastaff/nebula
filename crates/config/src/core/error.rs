@@ -285,6 +285,27 @@ impl ConfigError {
         }
     }
 
+    /// Get the stable contract-level category for this error.
+    pub fn contract_category(&self) -> ContractErrorCategory {
+        match self {
+            ConfigError::FileNotFound { .. }
+            | ConfigError::FileReadError { .. }
+            | ConfigError::SourceError { .. }
+            | ConfigError::EnvVarNotFound { .. }
+            | ConfigError::EnvVarParseError { .. }
+            | ConfigError::ParseError { .. }
+            | ConfigError::FormatNotSupported { .. }
+            | ConfigError::ReloadError { .. }
+            | ConfigError::EncryptionError { .. }
+            | ConfigError::DecryptionError { .. } => ContractErrorCategory::SourceLoadFailed,
+            ConfigError::MergeError { .. } => ContractErrorCategory::MergeFailed,
+            ConfigError::ValidationError { .. } => ContractErrorCategory::ValidationFailed,
+            ConfigError::PathError { .. } => ContractErrorCategory::MissingPath,
+            ConfigError::TypeError { .. } => ContractErrorCategory::TypeMismatch,
+            ConfigError::WatchError { .. } => ContractErrorCategory::WatcherFailed,
+        }
+    }
+
     /// Create a simple validation error
     pub fn validation(message: impl Into<String>) -> Self {
         Self::ValidationError {
@@ -334,6 +355,42 @@ pub enum ErrorCategory {
     Operation,
     /// Security error
     Security,
+}
+
+/// Contract-level error categories used by compatibility fixtures and docs.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractErrorCategory {
+    /// Source loading and availability failure.
+    SourceLoadFailed,
+    /// Merge operation failed.
+    MergeFailed,
+    /// Validation gate rejected candidate configuration.
+    ValidationFailed,
+    /// Requested path is missing or unreachable.
+    MissingPath,
+    /// Typed conversion failed for an existing path.
+    TypeMismatch,
+    /// Value is present but semantically invalid.
+    InvalidValue,
+    /// Watcher lifecycle failed.
+    WatcherFailed,
+}
+
+impl ContractErrorCategory {
+    /// Stable string representation used in fixtures and cross-crate contracts.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ContractErrorCategory::SourceLoadFailed => "source_load_failed",
+            ContractErrorCategory::MergeFailed => "merge_failed",
+            ContractErrorCategory::ValidationFailed => "validation_failed",
+            ContractErrorCategory::MissingPath => "missing_path",
+            ContractErrorCategory::TypeMismatch => "type_mismatch",
+            ContractErrorCategory::InvalidValue => "invalid_value",
+            ContractErrorCategory::WatcherFailed => "watcher_failed",
+        }
+    }
 }
 
 // Implement From for common error types
