@@ -54,6 +54,21 @@ fn main() -> LogResult<()> {
 - **Fatal errors:** `LogError::Config`, `LogError::Filter` — invalid config; `LogError::Telemetry` — telemetry setup failure.
 - **Validation errors:** `LogError::Filter` for invalid `RUST_LOG`/`NEBULA_LOG` filter strings.
 
+## Non-Blocking File Writer Policy
+
+When `WriterConfig::File { non_blocking: true, .. }` is used:
+
+- writes are dispatched through `tracing_appender::non_blocking(...)`
+- events are enqueued into a bounded background queue
+- under sustained overload, queue saturation may lead to dropped log events
+- `WorkerGuard` must be held for the process lifetime to flush buffered events on shutdown
+
+Current contract:
+
+- default behavior is best-effort throughput with bounded memory
+- no per-event backpressure signal is exposed through `nebula-log` public API
+- applications requiring strict durability should use `non_blocking: false` and accept sync I/O latency
+
 ## Compatibility Rules
 
 - **Major version bump:** Removal of deprecated APIs, config schema breaking changes, trait signature changes.

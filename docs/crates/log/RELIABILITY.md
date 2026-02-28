@@ -9,7 +9,7 @@
 ## Failure Modes
 
 - **Dependency outage:** OTLP/Sentry unreachable — telemetry degrades; logging continues
-- **Timeout/backpressure:** File writer blocking — consider non-blocking writer; document drop policy
+- **Timeout/backpressure:** Non-blocking file mode uses bounded queue and may drop events under sustained overload; blocking mode trades throughput for durability
 - **Partial degradation:** One hook panics — isolated; others continue
 - **Data corruption:** Config parse failure — init returns error; no partial state
 
@@ -19,6 +19,13 @@
 - **Circuit breaking:** N/A for init; hook policy supports bounded execution budgets with over-budget diagnostics
 - **Fallback behavior:** `auto_init` falls back to dev/prod preset if env unset
 - **Graceful degradation:** Telemetry features disabled → logging still works
+
+Backpressure/drop operations guidance:
+
+- use `non_blocking: true` for high-throughput workloads where occasional log loss is acceptable
+- use `non_blocking: false` for strict durability paths
+- keep logger guard alive until shutdown to maximize flush completeness
+- treat log loss during sustained overload as an SLO signal and scale sink/IO capacity
 
 ## Operational Runbook
 

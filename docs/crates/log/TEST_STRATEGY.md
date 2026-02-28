@@ -21,7 +21,7 @@
 - **Happy path:** `auto_init` → log → guard drop
 - **Retry path:** N/A (init is one-shot)
 - **Cancellation path:** `shutdown_hooks` during active emission
-- **Timeout path:** N/A
+- **Timeout path:** non-blocking file queue saturation under sustained overload (verify documented drop behavior and process stability)
 - **Upgrade/migration path:** Config schema changes; see MIGRATION.md
 
 ## Tooling

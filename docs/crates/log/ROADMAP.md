@@ -15,7 +15,7 @@
 ## Phase 2: Runtime Hardening (Next)
 
 - **Deliverables:**
-  - Backpressure/drop policy docs for non-blocking file mode
+  - Backpressure/drop policy docs for non-blocking file mode (completed)
   - Hook execution budget proposal (P-001) implementation or deferral
   - Stronger shutdown ordering guarantees for hooks
 - **Risks:** Hook policy changes may affect custom hooks
