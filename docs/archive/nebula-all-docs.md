@@ -56,7 +56,7 @@ Nebula построена как модульная система с четки
                             │
 ┌─────────────────────────────────────────────────────────┐
 │                      API Layer                           │
-│              (REST / GraphQL / WebSocket)                │
+│                  (REST + WebSocket)                       │
 └─────────────────────────────────────────────────────────┘
                             │
 ┌─────────────────────────────────────────────────────────┐
@@ -92,7 +92,7 @@ Nebula построена как модульная система с четки
 
 #### Core Components
 - **nebula-core**: Базовые trait'ы и типы
-- **nebula-value**: Типизированная система значений
+- **serde / serde_json::Value**: Значения и сериализация (crate nebula-value не используется)
 - **nebula-memory**: In-memory состояние и кеширование
 
 #### Execution Components
@@ -126,7 +126,6 @@ Nebula построена как модульная система с четки
 | Компонент | Статус | Прогресс | Примечания |
 |-----------|--------|----------|------------|
 | nebula-core | 🟡 Проектирование | 0% | Определены основные traits |
-| nebula-value | 🟡 Проектирование | 0% | Спроектированы базовые типы |
 | nebula-memory | 🟡 Проектирование | 0% | Определена архитектура |
 | nebula-derive | 🔴 Не начато | 0% | Ожидает nebula-core |
 | nebula-expression | 🔴 Не начато | 0% | Требует дизайн грамматики |
@@ -163,7 +162,6 @@ Nebula построена как модульная система с четки
 
 **Компоненты**:
 - [ ] nebula-core
-- [ ] nebula-value  
 - [ ] nebula-memory
 - [ ] nebula-derive (basic)
 
@@ -218,48 +216,10 @@ Nebula построена как модульная система с четки
   - [ ] 1.5.5 Add builder patterns
   - [ ] 1.5.6 Add validation logic
 
-#### 2. nebula-value (Week 1-2)
-- [ ] 2.1 **Basic Value Types**
-  - [ ] 2.1.1 Create Value enum
-  - [ ] 2.1.2 Implement StringValue with constraints
-  - [ ] 2.1.3 Implement IntegerValue with ranges
-  - [ ] 2.1.4 Implement FloatValue with precision
-  - [ ] 2.1.5 Implement BooleanValue
-  - [ ] 2.1.6 Add conversion methods
-  - [ ] 2.1.7 Add equality and ordering
-
-- [ ] 2.2 **Temporal Types**
-  - [ ] 2.2.1 Implement DateTimeValue with timezone
-  - [ ] 2.2.2 Implement DateValue
-  - [ ] 2.2.3 Implement TimeValue
-  - [ ] 2.2.4 Add formatting options
-  - [ ] 2.2.5 Add parsing from strings
-  - [ ] 2.2.6 Add arithmetic operations
-
-- [ ] 2.3 **Complex Types**
-  - [ ] 2.3.1 Implement ArrayValue with type checking
-  - [ ] 2.3.2 Implement ObjectValue with schema
-  - [ ] 2.3.3 Implement BinaryReference
-  - [ ] 2.3.4 Add nested value support
-  - [ ] 2.3.5 Add path-based access
-  - [ ] 2.3.6 Add mutation methods
-
-- [ ] 2.4 **Special Types**
-  - [ ] 2.4.1 Implement CodeValue with syntax highlighting
-  - [ ] 2.4.2 Implement RegexValue with compilation cache
-  - [ ] 2.4.3 Implement ColorValue with format conversion
-  - [ ] 2.4.4 Implement ExpressionValue placeholder
-  - [ ] 2.4.5 Add specialized validation
-  - [ ] 2.4.6 Add helper methods
-
-- [ ] 2.5 **Validation System**
-  - [ ] 2.5.1 Create Validator trait
-  - [ ] 2.5.2 Implement StringValidator
-  - [ ] 2.5.3 Implement NumberValidator
-  - [ ] 2.5.4 Implement DateTimeValidator
-  - [ ] 2.5.5 Create validation builder API
-  - [ ] 2.5.6 Add custom validator support
-  - [ ] 2.5.7 Write validation error messages
+#### 2. Value layer: serde / serde_json::Value (Week 1-2)
+Отдельный crate nebula-value не используется.
+- [ ] 2.1 Использовать `serde_json::Value` для данных workflow, serde для сериализации
+- [ ] 2.2 Валидаторы поверх Value (nebula-validator / core), интеграция с параметрами
 
 #### 3. nebula-memory (Week 2)
 - [ ] 3.1 **Core Structure**
@@ -562,116 +522,18 @@ impl Action for MyAction {
 - Efficient serialization
 
 ---
-## FILE: docs/crates/nebula-value.md
+## FILE: docs/crates/value-layer.md (serde / serde_json::Value)
 ---
 
-# nebula-value
+# Value layer: serde / serde_json::Value
 
-## Назначение
-
-`nebula-value` предоставляет строго типизированную систему значений с встроенной валидацией для безопасной работы с данными в workflows.
+Отдельный crate nebula-value не используется. Единый тип данных в runtime — `serde_json::Value`, сериализация — через serde.
 
 ## Ответственность
 
-- Типизированные значения (StringValue, IntegerValue, etc.)
-- Валидация значений
-- Преобразование между типами
-- Сериализация/десериализация
-
-## Архитектура
-
-### Type Hierarchy
-
-```rust
-pub enum Value {
-    Null,
-    String(StringValue),
-    Integer(IntegerValue),
-    Float(FloatValue),
-    Boolean(BooleanValue),
-    DateTime(DateTimeValue),
-    Date(DateValue),
-    Time(TimeValue),
-    Code(CodeValue),
-    Regex(RegexValue),
-    Color(ColorValue),
-    Expression(ExpressionValue),
-    Array(ArrayValue),
-    Object(ObjectValue),
-    Binary(BinaryReference),
-}
-```
-
-### Validation System
-
-```rust
-pub trait Validator<T> {
-    fn validate(&self, value: &T) -> Result<(), ValidationError>;
-}
-
-pub struct StringValidator {
-    min_length: Option<usize>,
-    max_length: Option<usize>,
-    pattern: Option<Regex>,
-}
-```
-
-## Roadmap
-
-### Milestone 1: Basic Types (Week 1)
-- [ ] Value enum
-- [ ] Basic type structs
-- [ ] Serialization
-- [ ] Basic validation
-
-### Milestone 2: Advanced Types (Week 2)
-- [ ] CodeValue with syntax
-- [ ] RegexValue with compilation
-- [ ] ColorValue with formats
-- [ ] ExpressionValue
-
-### Milestone 3: Validation (Week 2-3)
-- [ ] Validator trait
-- [ ] Built-in validators
-- [ ] Custom validators
-- [ ] Error messages
-
-### Milestone 4: Conversions (Week 3)
-- [ ] Type coercion rules
-- [ ] Conversion methods
-- [ ] Compatibility checks
-- [ ] Tests
-
-## API Examples
-
-```rust
-use nebula_value::prelude::*;
-
-// Creating values
-let name = StringValue::new("John Doe")
-    .with_validation(StringValidator {
-        min_length: Some(1),
-        max_length: Some(100),
-        pattern: None,
-    });
-
-// Type conversions
-let number = IntegerValue::new(42);
-let as_string: StringValue = number.convert()?;
-
-// Validation
-match name.validate() {
-    Ok(()) => println!("Valid!"),
-    Err(e) => println!("Invalid: {}", e),
-}
-```
-
-## Performance Goals
-
-- Minimal allocation for small values
-- Efficient validation caching
-- Fast serialization
-- Copy-on-write for large values
+- Данные workflow: `serde_json::Value`
+- Сериализация/десериализация: serde
+- Валидация: nebula-validator или core поверх Value
 
 ---
 ## FILE: docs/crates/nebula-memory.md
@@ -816,49 +678,21 @@ Phase 1 устанавливает фундамент для всей систе
   - [ ] Error conversion traits
   - [ ] Result type alias
 
-#### nebula-value (Days 4-5)
-- **Day 4**: Basic value types
-  - [ ] Value enum
-  - [ ] StringValue
-  - [ ] IntegerValue
-  - [ ] BooleanValue
-  - [ ] FloatValue
-
-- **Day 5**: Serialization
-  - [ ] Serde implementation
-  - [ ] JSON support
-  - [ ] Custom serialization for efficiency
-  - [ ] Deserialization validation
+#### Value layer: serde / serde_json::Value (Days 4-5)
+- **Day 4**: Единый тип значений — `serde_json::Value`, интеграция с параметрами
+- **Day 5**: Сериализация (serde), валидация поверх Value
 
 ### Week 1 Checklist
 - [ ] CI/CD работает
 - [ ] Все ID types готовы
 - [ ] Error handling complete
-- [ ] Basic value types работают
+- [ ] serde_json::Value в контуре данных
 - [ ] Serialization тесты проходят
 
 ### Week 2: Advanced Types and Memory
 
-#### nebula-value (Days 6-8)
-- **Day 6**: Complex value types
-  - [ ] DateTimeValue
-  - [ ] DateValue
-  - [ ] TimeValue
-  - [ ] ArrayValue
-  - [ ] ObjectValue
-
-- **Day 7**: Special value types
-  - [ ] CodeValue с language support
-  - [ ] RegexValue с компиляцией
-  - [ ] ColorValue с форматами
-  - [ ] BinaryReference
-
-- **Day 8**: Validation system
-  - [ ] Validator trait
-  - [ ] StringValidator
-  - [ ] NumberValidator
-  - [ ] Custom validators
-  - [ ] Validation errors
+#### Доп. валидация (Days 6-8)
+- Валидаторы поверх serde_json::Value, извлечение типизированных полей
 
 #### nebula-memory (Days 9-10)
 - **Day 9**: Basic structure
@@ -1017,7 +851,7 @@ Welcome to Nebula! This guide will help you get started with creating your first
 ## Installation
 
 ### Prerequisites
-- Rust 1.75 or higher
+- Rust 1.93 or higher
 - PostgreSQL 14+
 - Kafka (optional for development)
 

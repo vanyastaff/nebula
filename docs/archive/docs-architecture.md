@@ -101,7 +101,7 @@ Nebula построена как модульная система с четки
                             │
 ┌─────────────────────────────────────────────────────────┐
 │                      API Layer                           │
-│              (REST / GraphQL / WebSocket)                │
+│                  (REST + WebSocket)                       │
 └─────────────────────────────────────────────────────────┘
                             │
 ┌─────────────────────────────────────────────────────────┐
@@ -137,7 +137,7 @@ Nebula построена как модульная система с четки
 
 #### Core Components
 - **nebula-core**: Базовые trait'ы и типы
-- **nebula-value**: Типизированная система значений
+- **serde / serde_json::Value**: Значения и сериализация (crate nebula-value не используется)
 - **nebula-memory**: In-memory состояние и кеширование
 
 #### Execution Components
@@ -171,7 +171,6 @@ Nebula построена как модульная система с четки
 | Компонент | Статус | Прогресс | Примечания |
 |-----------|--------|----------|------------|
 | nebula-core | 🟡 Проектирование | 0% | Определены основные traits |
-| nebula-value | 🟡 Проектирование | 0% | Спроектированы базовые типы |
 | nebula-memory | 🟡 Проектирование | 0% | Определена архитектура |
 | nebula-derive | 🔴 Не начато | 0% | Ожидает nebula-core |
 | nebula-expression | 🔴 Не начато | 0% | Требует дизайн грамматики |
@@ -208,7 +207,6 @@ Nebula построена как модульная система с четки
 
 **Компоненты**:
 - [ ] nebula-core
-- [ ] nebula-value  
 - [ ] nebula-memory
 - [ ] nebula-derive (basic)
 
@@ -250,7 +248,6 @@ gantt
 ### Deliverables
 - ✅ Архитектурная документация
 - ⬜ nebula-core implementation
-- ⬜ nebula-value implementation
 - ⬜ nebula-memory implementation
 - ⬜ Basic nebula-derive
 
@@ -591,115 +588,11 @@ impl Action for MyAction {
 
 ---
 
-# 📁 docs/crates/nebula-value.md
+# 📁 docs/crates/value-layer.md
 
-# nebula-value
+# Value layer: serde / serde_json::Value
 
-## Назначение
-
-`nebula-value` предоставляет строго типизированную систему значений с встроенной валидацией для безопасной работы с данными в workflows.
-
-## Ответственность
-
-- Типизированные значения (StringValue, IntegerValue, etc.)
-- Валидация значений
-- Преобразование между типами
-- Сериализация/десериализация
-
-## Архитектура
-
-### Type Hierarchy
-
-```rust
-pub enum Value {
-    Null,
-    String(StringValue),
-    Integer(IntegerValue),
-    Float(FloatValue),
-    Boolean(BooleanValue),
-    DateTime(DateTimeValue),
-    Date(DateValue),
-    Time(TimeValue),
-    Code(CodeValue),
-    Regex(RegexValue),
-    Color(ColorValue),
-    Expression(ExpressionValue),
-    Array(ArrayValue),
-    Object(ObjectValue),
-    Binary(BinaryReference),
-}
-```
-
-### Validation System
-
-```rust
-pub trait Validator<T> {
-    fn validate(&self, value: &T) -> Result<(), ValidationError>;
-}
-
-pub struct StringValidator {
-    min_length: Option<usize>,
-    max_length: Option<usize>,
-    pattern: Option<Regex>,
-}
-```
-
-## Roadmap
-
-### Milestone 1: Basic Types (Week 1)
-- [ ] Value enum
-- [ ] Basic type structs
-- [ ] Serialization
-- [ ] Basic validation
-
-### Milestone 2: Advanced Types (Week 2)
-- [ ] CodeValue with syntax
-- [ ] RegexValue with compilation
-- [ ] ColorValue with formats
-- [ ] ExpressionValue
-
-### Milestone 3: Validation (Week 2-3)
-- [ ] Validator trait
-- [ ] Built-in validators
-- [ ] Custom validators
-- [ ] Error messages
-
-### Milestone 4: Conversions (Week 3)
-- [ ] Type coercion rules
-- [ ] Conversion methods
-- [ ] Compatibility checks
-- [ ] Tests
-
-## API Examples
-
-```rust
-use nebula_value::prelude::*;
-
-// Creating values
-let name = StringValue::new("John Doe")
-    .with_validation(StringValidator {
-        min_length: Some(1),
-        max_length: Some(100),
-        pattern: None,
-    });
-
-// Type conversions
-let number = IntegerValue::new(42);
-let as_string: StringValue = number.convert()?;
-
-// Validation
-match name.validate() {
-    Ok(()) => println!("Valid!"),
-    Err(e) => println!("Invalid: {}", e),
-}
-```
-
-## Performance Goals
-
-- Minimal allocation for small values
-- Efficient validation caching
-- Fast serialization
-- Copy-on-write for large values
+Отдельный crate nebula-value не используется. Единый тип данных — `serde_json::Value`, сериализация — serde, валидация — nebula-validator/core поверх Value.
 
 ---
 
@@ -842,49 +735,20 @@ Phase 1 устанавливает фундамент для всей систе
   - [ ] Error conversion traits
   - [ ] Result type alias
 
-#### nebula-value (Days 4-5)
-- **Day 4**: Basic value types
-  - [ ] Value enum
-  - [ ] StringValue
-  - [ ] IntegerValue
-  - [ ] BooleanValue
-  - [ ] FloatValue
-
-- **Day 5**: Serialization
-  - [ ] Serde implementation
-  - [ ] JSON support
-  - [ ] Custom serialization for efficiency
-  - [ ] Deserialization validation
+#### Value layer: serde / serde_json::Value (Days 4-5)
+- **Day 4–5**: `serde_json::Value`, serde, валидация поверх Value
 
 ### Week 1 Checklist
 - [ ] CI/CD работает
 - [ ] Все ID types готовы
 - [ ] Error handling complete
-- [ ] Basic value types работают
+- [ ] serde_json::Value в контуре данных
 - [ ] Serialization тесты проходят
 
 ### Week 2: Advanced Types and Memory
 
-#### nebula-value (Days 6-8)
-- **Day 6**: Complex value types
-  - [ ] DateTimeValue
-  - [ ] DateValue
-  - [ ] TimeValue
-  - [ ] ArrayValue
-  - [ ] ObjectValue
-
-- **Day 7**: Special value types
-  - [ ] CodeValue с language support
-  - [ ] RegexValue с компиляцией
-  - [ ] ColorValue с форматами
-  - [ ] BinaryReference
-
-- **Day 8**: Validation system
-  - [ ] Validator trait
-  - [ ] StringValidator
-  - [ ] NumberValidator
-  - [ ] Custom validators
-  - [ ] Validation errors
+#### Доп. валидация (Days 6-8)
+- Валидаторы поверх Value, извлечение типизированных полей
 
 #### nebula-memory (Days 9-10)
 - **Day 9**: Basic structure

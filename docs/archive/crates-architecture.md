@@ -4,7 +4,7 @@
 
 ```
 crates/
-├── nebula-api/          # REST/GraphQL/gRPC API server
+├── nebula-api/          # REST + WebSocket API server
 ├── nebula-core/         # Core types, traits, and abstractions
 ├── nebula-derive/       # Procedural macros for nodes and parameters
 ├── nebula-log/          # Structured logging and tracing
@@ -15,7 +15,6 @@ crates/
 ├── nebula-storage-postgres/ # PostgreSQL implementation
 ├── nebula-template/     # Template engine for expressions
 ├── nebula-ui/           # egui-based UI application
-├── nebula-value/        # Value types and transformations
 └── nebula-worker/       # Worker processes for distributed execution
 ```
 
@@ -167,17 +166,12 @@ pub fn node(args: TokenStream, input: TokenStream) -> TokenStream {
 }
 ```
 
-## 3. nebula-value
+## 3. Value layer (serde / serde_json::Value)
 
-**Purpose**: Value types, serialization, and expression evaluation.
+Отдельный crate nebula-value не используется. Значения и сериализация — через **serde** и **serde_json::Value**.
 
 ```rust
-// nebula-value/src/lib.rs
-pub mod expression;
-pub mod transform;
-pub mod types;
-
-// nebula-value/src/types.rs
+// Типы данных workflow — serde_json::Value
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -188,43 +182,7 @@ pub struct WorkflowDataItem {
     pub metadata: DataMetadata,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BinaryData {
-    pub location: BinaryDataLocation,
-    pub filename: Option<String>,
-    pub mime_type: Option<String>,
-    pub size: Option<usize>,
-    pub checksum: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum BinaryDataLocation {
-    InMemory(Vec<u8>),
-    Remote { path: String, storage_id: String },
-    Url(String),
-}
-
-// nebula-value/src/expression.rs
-pub struct ExpressionEngine {
-    evaluator: Box<dyn ExpressionEvaluator>,
-}
-
-#[async_trait]
-pub trait ExpressionEvaluator: Send + Sync {
-    async fn evaluate(
-        &self,
-        expression: &str,
-        context: &ExpressionContext,
-    ) -> Result<JsonValue, ExpressionError>;
-}
-
-// nebula-value/src/transform.rs
-pub enum Transformation {
-    JmesPath { expression: String },
-    JsonPath { expression: String },
-    JavaScript { code: String },
-    Template { template: String, engine: TemplateEngine },
-}
+// Expression/transform — в nebula-expression, nebula-template; работают с JsonValue
 ```
 
 ## 4. nebula-runtime
@@ -899,7 +857,6 @@ members = [
     "crates/nebula-storage-postgres",
     "crates/nebula-template",
     "crates/nebula-ui",
-    "crates/nebula-value",
     "crates/nebula-worker",
 ]
 

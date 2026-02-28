@@ -17,7 +17,7 @@ docs/
 │   └── security.md
 ├── crates/
 │   ├── nebula-core.md
-│   ├── nebula-value.md
+│   ├── value-layer.md   # serde/serde_json::Value (nebula-value не используется)
 │   ├── nebula-memory.md
 │   ├── nebula-derive.md
 │   ├── nebula-expression.md
@@ -102,8 +102,8 @@ cat > docs/crates/nebula-core.md << 'EOF'
 # [Вставьте содержимое nebula-core.md из первого артефакта]
 EOF
 
-cat > docs/crates/nebula-value.md << 'EOF'
-# [Вставьте содержимое nebula-value.md из первого артефакта]
+cat > docs/crates/value-layer.md << 'EOF'
+# Value layer: serde / serde_json::Value (см. TECHNICAL_NOTES.md)
 EOF
 
 cat > docs/crates/nebula-memory.md << 'EOF'

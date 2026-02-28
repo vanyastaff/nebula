@@ -1257,12 +1257,11 @@ impl NodeRegistry {
 
 ## Purpose
 
-`nebula-api` provides the external API layer for Nebula, supporting REST, GraphQL, and WebSocket protocols for workflow management and real-time updates.
+`nebula-api` provides the external API layer for Nebula: **REST + WebSocket** (GraphQL не планируется в текущей фазе).
 
 ## Responsibilities
 
 - REST API endpoints
-- GraphQL schema and resolvers
 - WebSocket real-time communication
 - Authentication and authorization
 - Rate limiting
@@ -1277,9 +1276,8 @@ pub struct ApiServer {
     // HTTP server
     server: Server,
     
-    // API implementations
+    // API implementations (REST + WebSocket only)
     rest_api: Arc<RestApi>,
-    graphql_api: Arc<GraphqlApi>,
     websocket_handler: Arc<WebSocketHandler>,
     
     // Shared services
@@ -1407,7 +1405,12 @@ async fn execute_workflow(
 }
 ```
 
-### GraphQL API
+### GraphQL — отложен
+
+API только REST + WebSocket. GraphQL при необходимости можно добавить позже.
+
+<details>
+<summary>Возможная будущая структура GraphQL (не в текущем плане)</summary>
 
 ```rust
 pub struct GraphqlApi {
@@ -1577,6 +1580,8 @@ impl Subscription {
     }
 }
 ```
+
+</details>
 
 ### WebSocket Handler
 

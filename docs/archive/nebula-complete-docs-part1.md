@@ -103,7 +103,7 @@ pub enum SystemEvent {
 
 ### Core Layer
 - **nebula-core**: Фундаментальные типы и traits
-- **nebula-value**: Type-safe value system
+- **serde / serde_json::Value**: Значения (crate nebula-value не используется)
 - **nebula-memory**: Memory management и caching
 
 ### Execution Layer

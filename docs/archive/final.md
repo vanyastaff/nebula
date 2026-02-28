@@ -411,7 +411,7 @@ async fn test_registration_workflow() {
 ## Presentation Layer
 
 ### nebula-api
-**Назначение:** REST/GraphQL API для управления workflows.
+**Назначение:** REST + WebSocket API для управления workflows (GraphQL не в текущем плане).
 
 ```rust
 // REST endpoints
@@ -432,8 +432,8 @@ pub fn configure_routes(cfg: &mut ServiceConfig) {
         .route("/actions/search", get(search_actions));
 }
 
-// GraphQL schema
-#[derive(GraphQLObject)]
+// (GraphQL отложен; при необходимости — позже)
+// #[derive(GraphQLObject)]
 pub struct Workflow {
     pub id: String,
     pub name: String,
@@ -441,16 +441,11 @@ pub struct Workflow {
     pub executions: Vec<Execution>,
 }
 
-#[derive(GraphQLQuery)]
-impl Query {
-    async fn workflow(&self, id: String) -> Result<Workflow> {
-        // Implementation
-    }
-    
-    async fn search_actions(&self, query: String) -> Vec<Action> {
-        // Implementation
-    }
-}
+// GraphQL Query/Mutation отложены; API — REST + WebSocket
+// impl Query {
+//     async fn workflow(&self, id: String) -> Result<Workflow> { ... }
+//     async fn search_actions(&self, query: String) -> Vec<Action> { ... }
+// }
 ```
 
 ---

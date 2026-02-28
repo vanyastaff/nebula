@@ -46,7 +46,7 @@ Unlike n8n/Zapier/Make, Nebula provides:
 ┌─────────────────────────────────────────────────────────┐
 │                    UI Layer (egui)                      │
 ├─────────────────────────────────────────────────────────┤
-│                    API Layer (REST/GraphQL/gRPC)        │
+│                    API Layer (REST + WebSocket)         │
 ├─────────────────────────────────────────────────────────┤
 │                    Orchestration Layer                   │
 │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐ │
@@ -716,8 +716,7 @@ pub enum TransformErrorHandling {
 pub enum ProtocolHandler {
     Http(HttpHandler),
     Grpc(GrpcHandler),
-    GraphQL(GraphQLHandler),
-    WebSocket(WebSocketHandler),
+    WebSocket(WebSocketHandler),  // GraphQL отложен; API: REST + WebSocket
     Mqtt(MqttHandler),
     Amqp(AmqpHandler),
     Kafka(KafkaHandler),

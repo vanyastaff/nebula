@@ -671,7 +671,6 @@ jobs:
       matrix:
         crate:
           - nebula-core
-          - nebula-value
           - nebula-memory
           - nebula-engine
           - nebula-worker

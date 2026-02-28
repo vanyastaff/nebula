@@ -4,6 +4,11 @@
 
 Phase 4 focuses on creating an exceptional developer experience for Nebula users, making it easy and enjoyable to create, test, deploy, and maintain workflow nodes.
 
+### Scope & decisions (current)
+
+- **Values & parameters:** Use **serde** / **serde_json::Value** everywhere. Custom `nebula-value` is not used (migration completed).
+- **API layer:** **GraphQL is postponed.** Phase 4 implements REST + WebSocket only; GraphQL can be added later if needed.
+
 ## Timeline: Weeks 10-12
 
 ### Week 10: SDK Core and CLI
@@ -86,10 +91,10 @@ Phase 4 focuses on creating an exceptional developer experience for Nebula users
 
 - **Day 73**: Generators
   - [ ] OpenAPI generator
-  - [ ] GraphQL generator
   - [ ] Database schema generator
   - [ ] Type generators
   - [ ] Documentation generator
+  - [ ] _(GraphQL generator postponed)_
 
 ### Week 11 Checklist
 - [ ] Dev server running
@@ -108,12 +113,11 @@ Phase 4 focuses on creating an exceptional developer experience for Nebula users
   - [ ] Response formatting
   - [ ] Error handling
 
-- **Day 75**: GraphQL API
-  - [ ] Schema definition
-  - [ ] Query resolvers
-  - [ ] Mutation resolvers
-  - [ ] Subscription resolvers
-  - [ ] DataLoader integration
+- **Day 75**: REST polish & OpenAPI
+  - [ ] OpenAPI spec generation
+  - [ ] Request/response validation
+  - [ ] API versioning
+  - [ ] _(GraphQL postponed)_
 
 - **Day 76**: WebSocket API
   - [ ] Connection handling
@@ -138,8 +142,7 @@ Phase 4 focuses on creating an exceptional developer experience for Nebula users
   - [ ] Community features
 
 ### Week 12 Checklist
-- [ ] All APIs implemented
-- [ ] GraphQL fully functional
+- [ ] REST API complete
 - [ ] WebSocket streaming works
 - [ ] Documentation complete
 - [ ] Portal launched
@@ -166,8 +169,8 @@ nebula-sdk/
 │   ├── codegen/            # Code generation
 │   │   ├── templates/
 │   │   ├── openapi.rs
-│   │   ├── graphql.rs
-│   │   └── types.rs
+│   │   ├── types.rs
+│   │   └── # graphql generator postponed
 │   ├── server/             # Dev server
 │   │   ├── app.rs
 │   │   ├── handlers.rs
@@ -189,17 +192,11 @@ nebula-sdk/
 nebula-api/
 ├── src/
 │   ├── lib.rs              # API server
-│   ├── rest/               # REST API
+│   ├── rest/               # REST API (primary)
 │   │   ├── routes.rs
 │   │   ├── handlers/
 │   │   ├── middleware/
 │   │   └── openapi.rs
-│   ├── graphql/            # GraphQL API
-│   │   ├── schema.rs
-│   │   ├── query.rs
-│   │   ├── mutation.rs
-│   │   ├── subscription.rs
-│   │   └── context.rs
 │   ├── websocket/          # WebSocket API
 │   │   ├── handler.rs
 │   │   ├── messages.rs
@@ -243,7 +240,7 @@ nebula-api/
 ### 4. Code Generation
 - Reduce boilerplate
 - Type-safe generation
-- Multiple sources (OpenAPI, GraphQL, etc.)
+- Multiple sources (OpenAPI, DB schema, etc.)
 - Customizable templates
 - Preview before generate
 
@@ -264,7 +261,6 @@ nebula-api/
 
 ### API Performance
 - REST latency: <50ms
-- GraphQL query time: <100ms
 - WebSocket latency: <10ms
 - Concurrent connections: >10k
 
@@ -278,7 +274,7 @@ nebula-api/
 
 ### With Existing Crates
 - Use nebula-core types everywhere
-- Leverage nebula-value for parameters
+- Use serde / serde_json::Value for parameters and node I/O
 - Integrate with nebula-node-registry
 - Support nebula-worker execution
 
@@ -299,10 +295,9 @@ nebula-api/
 
 ### API Testing
 1. REST endpoint tests
-2. GraphQL query tests
-3. WebSocket connection tests
-4. Load testing
-5. Security testing
+2. WebSocket connection tests
+3. Load testing
+4. Security testing
 
 ## Documentation Plan
 
@@ -314,11 +309,10 @@ nebula-api/
 5. Best Practices
 
 ### API Documentation
-1. REST API Reference
-2. GraphQL Schema
-3. WebSocket Protocol
-4. Authentication Guide
-5. Rate Limiting
+1. REST API Reference (OpenAPI)
+2. WebSocket Protocol
+3. Authentication Guide
+4. Rate Limiting
 
 ## Rollout Strategy
 

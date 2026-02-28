@@ -38,8 +38,8 @@ pub struct NebulaSDK {
 // Main entry point for developers
 pub mod prelude {
     pub use nebula_core::prelude::*;
-    pub use nebula_value::prelude::*;
-    pub use nebula_derive::{Node, Trigger, Parameter};
+    pub use serde_json::Value;
+    pub use nebula_macros::{node, action};
     
     pub use crate::builders::{NodeBuilder, TriggerBuilder};
     pub use crate::testing::{TestContext, MockExecution};

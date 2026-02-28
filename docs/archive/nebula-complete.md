@@ -45,48 +45,10 @@
   - [ ] 1.5.5 Add builder patterns
   - [ ] 1.5.6 Add validation logic
 
-#### 2. nebula-value (Week 1-2)
-- [ ] 2.1 **Basic Value Types**
-  - [ ] 2.1.1 Create Value enum
-  - [ ] 2.1.2 Implement StringValue with constraints
-  - [ ] 2.1.3 Implement IntegerValue with ranges
-  - [ ] 2.1.4 Implement FloatValue with precision
-  - [ ] 2.1.5 Implement BooleanValue
-  - [ ] 2.1.6 Add conversion methods
-  - [ ] 2.1.7 Add equality and ordering
-
-- [ ] 2.2 **Temporal Types**
-  - [ ] 2.2.1 Implement DateTimeValue with timezone
-  - [ ] 2.2.2 Implement DateValue
-  - [ ] 2.2.3 Implement TimeValue
-  - [ ] 2.2.4 Add formatting options
-  - [ ] 2.2.5 Add parsing from strings
-  - [ ] 2.2.6 Add arithmetic operations
-
-- [ ] 2.3 **Complex Types**
-  - [ ] 2.3.1 Implement ArrayValue with type checking
-  - [ ] 2.3.2 Implement ObjectValue with schema
-  - [ ] 2.3.3 Implement BinaryReference
-  - [ ] 2.3.4 Add nested value support
-  - [ ] 2.3.5 Add path-based access
-  - [ ] 2.3.6 Add mutation methods
-
-- [ ] 2.4 **Special Types**
-  - [ ] 2.4.1 Implement CodeValue with syntax highlighting
-  - [ ] 2.4.2 Implement RegexValue with compilation cache
-  - [ ] 2.4.3 Implement ColorValue with format conversion
-  - [ ] 2.4.4 Implement ExpressionValue placeholder
-  - [ ] 2.4.5 Add specialized validation
-  - [ ] 2.4.6 Add helper methods
-
-- [ ] 2.5 **Validation System**
-  - [ ] 2.5.1 Create Validator trait
-  - [ ] 2.5.2 Implement StringValidator
-  - [ ] 2.5.3 Implement NumberValidator
-  - [ ] 2.5.4 Implement DateTimeValidator
-  - [ ] 2.5.5 Create validation builder API
-  - [ ] 2.5.6 Add custom validator support
-  - [ ] 2.5.7 Write validation error messages
+#### 2. Value layer: serde / serde_json::Value (Week 1-2)
+Отдельный crate nebula-value не используется.
+- [ ] 2.1 Использовать `serde_json::Value` для данных workflow, serde для сериализации
+- [ ] 2.2 Валидация поверх Value (nebula-validator / core)
 
 #### 3. nebula-memory (Week 2)
 - [ ] 3.1 **Core Structure**
@@ -421,13 +383,7 @@
   - [ ] 13.1.5 Add authentication
   - [ ] 13.1.6 Add rate limiting
 
-- [ ] 13.2 **GraphQL API**
-  - [ ] 13.2.1 Define GraphQL schema
-  - [ ] 13.2.2 Implement resolvers
-  - [ ] 13.2.3 Add subscriptions
-  - [ ] 13.2.4 Add pagination
-  - [ ] 13.2.5 Add filtering
-  - [ ] 13.2.6 Add introspection
+- [ ] 13.2 **GraphQL** — отложен; API только REST + WebSocket
 
 - [ ] 13.3 **WebSocket Support**
   - [ ] 13.3.1 Implement WebSocket handler
@@ -439,7 +395,7 @@
 
 - [ ] 13.4 **API Documentation**
   - [ ] 13.4.1 Add OpenAPI spec
-  - [ ] 13.4.2 Add GraphQL schema docs
+  - [ ] 13.4.2 Add OpenAPI/WebSocket docs
   - [ ] 13.4.3 Add example requests
   - [ ] 13.4.4 Add error codes
   - [ ] 13.4.5 Add rate limit docs
@@ -822,19 +778,17 @@ pub struct NodeRegistry {
 ## nebula-api
 
 ### Purpose
-API layer для взаимодействия с системой через REST, GraphQL и WebSocket.
+API layer: **REST + WebSocket** (GraphQL не планируется в текущей фазе).
 
 ### Responsibilities
 - REST endpoints
-- GraphQL resolvers
-- WebSocket streaming
+- WebSocket streaming (real-time, execution logs)
 - Authentication
 
 ### Architecture
 ```rust
 pub struct ApiServer {
     rest: RestApi,
-    graphql: GraphQLApi,
     websocket: WebSocketHandler,
     auth: AuthManager,
 }
