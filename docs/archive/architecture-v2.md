@@ -174,45 +174,6 @@ pub trait ParameterResolver: Send + Sync {
 }
 ```
 
-### 3.2 Advanced Validation System
-
-```rust
-// Compile-time validation attributes
-#[derive(Parameters)]
-struct AdvancedNodeParams {
-    #[validate(regex = r"^[A-Z][A-Z0-9_]*$")]
-    #[validate(custom = "validate_env_var_name")]
-    env_var_name: String,
-    
-    #[validate(range = 1..=1000)]
-    #[validate(multiple_of = 10)]
-    batch_size: u32,
-    
-    #[validate(url)]
-    #[validate(custom = "validate_accessible_url")]
-    webhook_url: String,
-    
-    #[validate(json_schema = "schemas/user.json")]
-    user_data: serde_json::Value,
-    
-    // Cross-field validation
-    #[validate(greater_than = "start_date")]
-    end_date: DateTime<Utc>,
-    
-    #[validate(required_if(field = "mode", value = "advanced"))]
-    advanced_options: Option<AdvancedOptions>,
-}
-
-// Runtime validation with context
-pub trait ContextualValidator {
-    fn validate_with_context(
-        &self,
-        value: &ParameterValue,
-        context: &ValidationContext,
-    ) -> Result<(), ValidationError>;
-}
-```
-
 ### 3.3 Type-Safe Node Connections
 
 ```rust

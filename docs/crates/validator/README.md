@@ -48,6 +48,7 @@ let port_val  = any_of![in_range(80, 80), in_range(443, 443), in_range(1024, 655
 - [combinators.md](combinators.md) — composition combinators
 - [macros.md](macros.md) — `validator!`, `compose!`, `any_of!`
 - [context.md](context.md) — `ValidationContext`, `ContextualValidator`
+- [archive-ideas.md](archive-ideas.md) — unimplemented design ideas from early docs (`#[validate(...)]` attribute macro, etc.)
 
 ---
 

@@ -162,59 +162,6 @@ impl Action for HttpRequestNode {
 }
 ```
 
-## Validation Attributes
-
-### Field Validation
-
-```rust
-#[derive(Parameters)]
-struct ValidationExample {
-    #[validate(min_length = 3, max_length = 50)]
-    #[validate(regex = r"^[a-zA-Z0-9_]+$")]
-    username: String,
-    
-    #[validate(email)]
-    email: String,
-    
-    #[validate(url)]
-    webhook_url: String,
-    
-    #[validate(range = 1..=100)]
-    percentage: u8,
-    
-    #[validate(custom = "validate_api_key")]
-    api_key: String,
-}
-
-fn validate_api_key(value: &str) -> Result<(), ValidationError> {
-    if value.starts_with("sk_") && value.len() == 32 {
-        Ok(())
-    } else {
-        Err(ValidationError::Custom("Invalid API key format"))
-    }
-}
-```
-
-### Cross-field Validation
-
-```rust
-#[derive(Parameters)]
-#[validate(custom = "validate_dates")]
-struct DateRangeParams {
-    start_date: DateTime<Utc>,
-    
-    #[validate(greater_than = "start_date")]
-    end_date: DateTime<Utc>,
-}
-
-fn validate_dates(params: &DateRangeParams) -> Result<(), ValidationError> {
-    if params.end_date <= params.start_date {
-        return Err(ValidationError::Custom("End date must be after start date"));
-    }
-    Ok(())
-}
-```
-
 ## Display Control
 
 ### Conditional Display
