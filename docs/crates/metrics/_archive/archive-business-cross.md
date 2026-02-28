@@ -44,6 +44,3 @@ let user = ctx.measure("database.query", async {
     db.get_user(user_id).await
 }).await?;
 ```
-
----
-
