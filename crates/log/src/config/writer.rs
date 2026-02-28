@@ -60,7 +60,7 @@ pub enum Rolling {
     Hourly,
     /// Roll daily
     Daily,
-    /// Roll by size in MB (not yet implemented)
+    /// Roll by size in MB
     Size(u64),
 }
 

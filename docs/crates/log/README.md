@@ -18,24 +18,25 @@ Logging and observability foundation for the Nebula workflow platform.
 
 ## Current State
 
-- **Maturity:** Production-ready core; some features (Multi fanout, Size rolling) incomplete
+- **Maturity:** Production-ready core; baseline writer fanout and size rolling are implemented
 - **Key strengths:**
   - tracing-first design with structured spans/events
   - feature-gated integrations (minimal footprint)
   - panic-isolated hook dispatch
   - config presets (dev/prod/env)
+  - multi-destination writer fanout with explicit failure policy
+  - size-based rolling file writer
 - **Key risks:**
-  - `WriterConfig::Multi` uses first writer only
-  - `Rolling::Size` declared but not implemented
+  - non-blocking file mode backpressure/drop semantics need clearer operator guidance
+  - hook execution remains inline by default (tail-latency sensitivity)
   - global observability registry requires test serialization
 
 ## Target State
 
 - **Production criteria:**
-  - full Multi writer fanout with failure policy
-  - size-based rolling support
   - formal env var and config precedence contract
   - benchmarked hot paths with CI thresholds
+  - documented hook/runtime failure behavior under load
 - **Compatibility guarantees:**
   - config schema stability via versioning and snapshot tests
   - deprecation window for breaking API changes

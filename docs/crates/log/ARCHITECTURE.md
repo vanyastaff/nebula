@@ -25,8 +25,8 @@
 
 - **Known bottlenecks:**
   - hooks execute inline; slow hooks increase tail latency
-  - `WriterConfig::Multi` falls back to first writer only
-  - size-based rolling not implemented
+  - non-blocking writer behavior under sustained overload needs explicit operational policy
+  - size-based rolling currently keeps a single rotated backup (`.1`) only
 
 ## Target Architecture
 

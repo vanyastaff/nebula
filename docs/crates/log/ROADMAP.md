@@ -1,16 +1,19 @@
 # Roadmap
 
-## Phase 1: Contract and Safety Baseline
+## Phase 1: Contract and Safety Baseline (Mostly Done)
 
-- **Deliverables:**
-  - Implement real fanout for `WriterConfig::Multi` with failure policy
-  - Implement `Rolling::Size(u64)`
-  - Formalize env var contract (`NEBULA_LOG`, `RUST_LOG`) and config precedence
-  - Add config schema versioning and snapshot tests
-- **Risks:** Multi writer behavior change may affect existing deployments
-- **Exit criteria:** All writers in Multi receive events; Size rolling works; snapshot tests pass
+- **Completed:**
+  - Real fanout for `WriterConfig::Multi` with failure policy (`FailFast`, `BestEffort`, `PrimaryWithFallback`)
+  - `Rolling::Size(u64)` implementation
+  - Env/config precedence behavior with explicit compatibility tests
+  - Config schema version guard (`schema_version`) and compatibility checks
+- **Remaining in this phase:**
+  - Add stable schema snapshot tests (not only compatibility/unit checks)
+  - Publish formal env var contract table in API/ops docs
+- **Risks:** Snapshot governance drift if contract fixtures are not versioned per release
+- **Exit criteria:** Snapshot contract tests pass and docs specify precedence unambiguously
 
-## Phase 2: Runtime Hardening
+## Phase 2: Runtime Hardening (Next)
 
 - **Deliverables:**
   - Backpressure/drop policy docs for non-blocking file mode
@@ -48,7 +51,7 @@
 
 ## Metrics of Readiness
 
-- **Correctness:** All tests pass; snapshot tests for config
+- **Correctness:** All tests pass; schema snapshot contract tests for config
 - **Latency:** Hot path benchmarks within threshold
 - **Throughput:** Event emission and hook dispatch measured
 - **Stability:** No flaky tests; panic isolation verified

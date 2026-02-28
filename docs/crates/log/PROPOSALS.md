@@ -64,7 +64,7 @@
 
 **Type:** Non-breaking
 
-**Motivation:** `WriterConfig::Multi` currently uses first writer only.
+**Motivation:** Needed deterministic multi-destination delivery behavior.
 
 **Proposal:** Implement true fanout with policy: `FailFast`, `BestEffort`, `PrimaryWithFallback`.
 
@@ -76,7 +76,7 @@
 
 **Compatibility impact:** None if behind enriched config; default preserves current behavior.
 
-**Status:** Review
+**Status:** Implemented
 
 ---
 
