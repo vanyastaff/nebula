@@ -2,32 +2,45 @@
 
 `nebula-resilience` provides fault-tolerance patterns for Nebula services.
 
-Main capabilities:
-- retry strategies and retry conditions
-- circuit breaker
-- timeout and bulkhead isolation
-- rate limiting (token/leaky/sliding/adaptive + governor)
-- fallback and hedge patterns
-- centralized resilience manager and policy model
-- observability hooks/spans integration
+## Scope
 
-## Role in Platform
+- **In scope:** retry, circuit breaker, timeout, bulkhead, rate limiting, fallback, hedge; composition; policy model; observability hooks.
+- **Out of scope:** business logic, workflow orchestration, persistence, credential storage.
 
-For a Rust n8n-like automation platform, this crate is the execution safety layer around unstable IO and dependency boundaries (HTTP, DB, queues, external APIs).
+## Current State
+
+- **Maturity:** production-ready patterns; manager API evolving; policy serialization stable.
+- **Key strengths:** type-safe patterns (const generics, typestate), composable layers, async-first.
+- **Key risks:** large API surface; typed/untyped manager duality; pattern ordering semantics.
+
+## Target State
+
+- **Production criteria:** canonical pattern order contract; fail-open/fail-closed defaults per pattern; observability schema versioning.
+- **Compatibility guarantees:** stable policy serialization; semantic versioning for public APIs.
 
 ## Main Surface
 
-- Core: `ResilienceError`, `ResilienceResult`, config/traits/types
-- Patterns: `CircuitBreaker`, `RetryStrategy`, `Bulkhead`, `RateLimiter`, `timeout`, `fallback`, `hedge`
-- Manager: `ResilienceManager`, `PolicyBuilder`, typed/untyped service execution
-- Policy: `ResiliencePolicy`, `RetryPolicyConfig`, `PolicyMetadata`
-- Composition: `LayerBuilder`, `ResilienceChain`, `ResilienceLayer`
-- Observability: events/hooks/spans utilities
+- **Core:** `ResilienceError`, `ResilienceResult`, config/traits/types
+- **Patterns:** `CircuitBreaker`, `RetryStrategy`, `Bulkhead`, `RateLimiter`, `timeout`, `fallback`, `hedge`
+- **Manager:** `ResilienceManager`, `PolicyBuilder`, typed/untyped service execution
+- **Policy:** `ResiliencePolicy`, `RetryPolicyConfig`, `PolicyMetadata`
+- **Composition:** `LayerBuilder`, `ResilienceChain`, `ResilienceLayer`
+- **Observability:** events/hooks/spans utilities
 
-## Document Set
+## Document Map
 
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [API.md](API.md)
+- [INTERACTIONS.md](INTERACTIONS.md)
 - [DECISIONS.md](DECISIONS.md)
 - [ROADMAP.md](ROADMAP.md)
 - [PROPOSALS.md](PROPOSALS.md)
+- [SECURITY.md](SECURITY.md)
+- [RELIABILITY.md](RELIABILITY.md)
+- [TEST_STRATEGY.md](TEST_STRATEGY.md)
+- [MIGRATION.md](MIGRATION.md)
+
+## Archive
+
+Legacy material:
+- [`_archive/`](./_archive/)
