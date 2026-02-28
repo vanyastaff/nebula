@@ -1,39 +1,55 @@
 # Roadmap
 
-`nebula-log` roadmap is focused on throughput, reliability, and operational safety.
+## Phase 1: Contract and Safety Baseline
 
-## Phase 1: Production Hardening
+- **Deliverables:**
+  - Implement real fanout for `WriterConfig::Multi` with failure policy
+  - Implement `Rolling::Size(u64)`
+  - Formalize env var contract (`NEBULA_LOG`, `RUST_LOG`) and config precedence
+  - Add config schema versioning and snapshot tests
+- **Risks:** Multi writer behavior change may affect existing deployments
+- **Exit criteria:** All writers in Multi receive events; Size rolling works; snapshot tests pass
 
-- implement real fanout for `WriterConfig::Multi`
-- implement `Rolling::Size(u64)`
-- add backpressure/drop policy docs for non-blocking file mode
-- formalize env var contract and config precedence
+## Phase 2: Runtime Hardening
 
-## Phase 2: Performance and Allocation Control
+- **Deliverables:**
+  - Backpressure/drop policy docs for non-blocking file mode
+  - Hook execution budget proposal (P-001) implementation or deferral
+  - Stronger shutdown ordering guarantees for hooks
+- **Risks:** Hook policy changes may affect custom hooks
+- **Exit criteria:** Documented failure modes; no hook deadlocks on shutdown
 
-- benchmark hot paths:
-  - event emission
-  - context propagation
-  - timing macros in tight loops
-- reduce per-event allocations in observability hooks
-- add criterion benchmarks to CI threshold checks
+## Phase 3: Scale and Performance
 
-## Phase 3: Telemetry and Correlation
+- **Deliverables:**
+  - Benchmark hot paths: event emission, context propagation, timing macros
+  - Reduce per-event allocations in observability hooks
+  - Criterion benchmarks in CI with regression thresholds
+- **Risks:** Optimization may complicate code
+- **Exit criteria:** Benchmarks stable; no regressions beyond threshold
 
-- unify trace/log correlation fields across API/engine/runtime
-- add stable semantic field naming convention
-- provide default OTLP resource attributes and stronger validation
+## Phase 4: Ecosystem and DX
 
-## Phase 4: Safety and Isolation
-
-- tighten hook execution limits (timeouts/budget/circuit-breaker for external hooks)
-- add stronger guarantees for hook shutdown ordering
-- document and test failure modes under panic storms
+- **Deliverables:**
+  - Unify trace/log correlation fields across API/engine/runtime
+  - Stable semantic field naming convention
+  - Default OTLP resource attributes and validation
+  - Typed event names (P-002) or context IDs from core (P-003) migration
+- **Risks:** Breaking changes for custom hooks/contexts
+- **Exit criteria:** Correlation fields documented; migration guide for breaking changes
 
 ## Phase 5: Toolchain Baseline
 
-- workspace baseline today: Rust `1.92`
-- prepare controlled migration to Rust `1.93+` with:
-  - CI matrix updates
-  - clippy/rustdoc policy revalidation
-  - performance regression check
+- **Deliverables:**
+  - Workspace baseline: Rust 1.92 (MSRV)
+  - Controlled migration to Rust 1.93+ with CI matrix, clippy/rustdoc revalidation
+- **Risks:** MSRV bump may affect downstream
+- **Exit criteria:** CI passes on new MSRV; no performance regression
+
+## Metrics of Readiness
+
+- **Correctness:** All tests pass; snapshot tests for config
+- **Latency:** Hot path benchmarks within threshold
+- **Throughput:** Event emission and hook dispatch measured
+- **Stability:** No flaky tests; panic isolation verified
+- **Operability:** Env/config contract documented; runbook in RELIABILITY.md

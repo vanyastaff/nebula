@@ -1,0 +1,42 @@
+# Migration
+
+## Versioning Policy
+
+- **Compatibility promise:** Patch/minor releases preserve config schema and public API
+- **Deprecation window:** Minimum 6 months for breaking changes; migration guide in release notes
+
+## Breaking Changes
+
+- **Typed event names (P-002):**
+  - Old behavior: `ObservabilityEvent::name() -> &str`
+  - New behavior: Add `EventKind` or typed key; deprecate string-only
+  - Migration steps: Implement new trait method; migrate call sites; remove deprecated in next major
+
+- **Context ID types (P-003):**
+  - Old behavior: `ExecutionContext` etc. take `String` IDs
+  - New behavior: Typed IDs from `nebula-core`
+  - Migration steps: Add typed constructors; deprecate string constructors; migrate; remove
+
+- **Hook policy (P-001):**
+  - Old behavior: Inline hook execution only
+  - New behavior: Optional `BoundedAsync` mode
+  - Migration steps: Default unchanged; opt-in for new behavior
+
+## Rollout Plan
+
+1. **Preparation:** Document change; add deprecation warnings; migration guide
+2. **Dual-run / feature-flag stage:** New API available; old API deprecated
+3. **Cutover:** Consumers migrate; deprecation period elapses
+4. **Cleanup:** Remove deprecated API in next major
+
+## Rollback Plan
+
+- **Trigger conditions:** Critical bug in new implementation; compatibility issue
+- **Rollback steps:** Revert release; consumers pin previous version
+- **Data/state reconciliation:** N/A; no persistent state in log crate
+
+## Validation Checklist
+
+- **API compatibility checks:** `cargo check` with dependent crates
+- **Integration checks:** Full workspace test
+- **Performance checks:** Criterion benchmarks; no regression

@@ -1,69 +1,60 @@
-# API Reference (Human-Oriented)
+# API
 
-## Initialization
+## Public Surface
 
-- `auto_init() -> LogResult<LoggerGuard>`
-  - chooses env/dev/prod config automatically
-- `init() -> LogResult<LoggerGuard>`
-  - default compact+info setup
-- `init_with(config: Config) -> LogResult<LoggerGuard>`
-  - full custom setup
+- **Stable APIs:** `auto_init`, `init`, `init_with`, `Config`, `Format`, `Level`, `WriterConfig`, `Context`, `Timer`, `TimerGuard`, `LogError`, `LogResult`, tracing macros (`info!`, `error!`, `span!`, etc.), `ObservabilityEvent`, `ObservabilityHook`, `register_hook`, `emit_event`, `shutdown_hooks`, `OperationTracker`, `OperationStarted`, `OperationCompleted`, `OperationFailed`
+- **Experimental APIs:** `ResourceAwareHook`, `EventFilter`, `FilteredHook`, `current_contexts`
+- **Hidden/internal APIs:** builder internals, layer composition, registry implementation
 
-## Config Surface
+## Usage Patterns
 
-- `Config`
-  - `level: String`
-  - `format: Format` (`Pretty | Compact | Json | Logfmt`)
-  - `writer: WriterConfig`
-  - `display: DisplayConfig`
-  - `fields: Fields`
-  - `reloadable: bool`
-  - optional telemetry config (feature-gated)
-- `WriterConfig`
-  - `Stderr`, `Stdout`, `File{...}` (feature `file`), `Multi(Vec<WriterConfig>)`
-- `Rolling`
-  - `Never | Hourly | Daily | Size(u64)` (`Size` currently not implemented)
+- **Quick start:** `auto_init()` for env/dev/prod auto-detection
+- **Production:** `init_with(Config::production())` with custom fields and reload
+- **Tests:** `init_test()` or `Config::test()` for captured output
 
-## Errors
+## Minimal Example
 
-- `LogError`
-  - `Config`, `Filter`, `Io`, `Telemetry`, `Internal`
-- `LogResult<T>`
-- `LogResultExt`, `LogIoResultExt`
+```rust
+use nebula_log::prelude::*;
 
-## Context and Timing
+fn main() -> LogResult<()> {
+    nebula_log::auto_init()?;
+    info!(port = 8080, "Server starting");
+    Ok(())
+}
+```
 
-- `Context` (request/user/session + custom fields)
-- `Timer`, `TimerGuard`, `Timed` / `TimedFuture`
-- Macros:
-  - `timed!`
-  - `async_timed!`
-  - `timed_span!`
-  - `measure!`
-  - `with_context!`
-  - `log_error!`
+## Advanced Example
 
-## Observability
+```rust
+use nebula_log::{Config, init_with};
+use serde_json::json;
 
-- Traits:
-  - `ObservabilityEvent`
-  - `ObservabilityHook`
-  - `ResourceAwareHook`
-- Registry:
-  - `register_hook`
-  - `emit_event`
-  - `shutdown_hooks`
-- Built-ins:
-  - `LoggingHook`
-  - `MetricsHook` (feature `observability`)
-  - `OperationStarted`, `OperationCompleted`, `OperationFailed`, `OperationTracker`
-- Context model:
-  - `GlobalContext`
-  - `ExecutionContext`
-  - `NodeContext`
-  - `ResourceMap`
-  - `current_contexts()`
+fn main() -> LogResult<()> {
+    let mut config = Config::production();
+    config.fields.service = Some("api-gateway".to_string());
+    config.fields.env = Some("production".to_string());
+    config.fields.custom.insert("datacenter".to_string(), json!("us-west-2"));
+    config.reloadable = true;
 
-## Prelude
+    let _guard = init_with(config)?;
 
-`nebula_log::prelude::*` re-exports common logging macros/types and observability primitives for fast integration in other crates.
+    tracing::info!(
+        endpoint = "/api/v1/users",
+        method = "GET",
+        "Request received"
+    );
+    Ok(())
+}
+```
+
+## Error Semantics
+
+- **Retryable errors:** None; init is typically one-shot. I/O errors from file writer may be retried by caller.
+- **Fatal errors:** `LogError::Config`, `LogError::Filter` — invalid config; `LogError::Telemetry` — telemetry setup failure.
+- **Validation errors:** `LogError::Filter` for invalid `RUST_LOG`/`NEBULA_LOG` filter strings.
+
+## Compatibility Rules
+
+- **Major version bump:** Removal of deprecated APIs, config schema breaking changes, trait signature changes.
+- **Deprecation policy:** Minimum 6 months with `#[deprecated]` and migration guide in MIGRATION.md.

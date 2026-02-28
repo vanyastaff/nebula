@@ -1,77 +1,99 @@
-# Proposals (Senior Review)
+# Proposals
 
-## P-001: Hook Execution Isolation with Budget (Breaking Runtime Behavior)
+## P001: Hook Execution Isolation with Budget
 
-Problem:
-- hooks execute inline during `emit_event`, so slow hooks can increase tail latency.
+**Type:** Breaking (runtime behavior)
 
-Proposal:
-- introduce optional hook budget policy:
-  - max execution time per hook
-  - optional async offload queue
-  - drop/shed strategy with counters
+**Motivation:** Hooks execute inline during `emit_event`; slow hooks increase tail latency.
 
-Impact:
-- behavioral change in hook timing/order when budget mode is enabled.
+**Proposal:** Introduce optional hook budget policy: max execution time per hook, optional async offload queue, drop/shed strategy with counters.
 
-Implementation:
-1. add `HookPolicy` config (`Inline`, `BoundedAsync`).
-2. default remains `Inline` for compatibility.
-3. expose hook lag/drop metrics.
+**Expected benefits:** Bounded latency; protection from slow hooks.
 
-## P-002: Typed Event Names Instead of Free Strings (Breaking API)
+**Costs:** New config surface; behavioral change when enabled.
 
-Problem:
-- string event names are typo-prone and hard to refactor.
+**Risks:** Hook order/timing changes; possible event drops.
 
-Proposal:
-- introduce typed event identifiers (`EventKind` enum or interned key type).
+**Compatibility impact:** Default remains `Inline`; opt-in `BoundedAsync` mode.
 
-Impact:
-- custom hook/event implementations need migration.
+**Status:** Draft
 
-Implementation:
-1. add dual API supporting old `name()` and new typed key.
-2. deprecate string-only trait method.
-3. remove old method in next major.
+---
 
-## P-003: Context ID Types from `nebula-core` (Potential Breaking)
+## P002: Typed Event Names Instead of Free Strings
 
-Problem:
-- execution/node/workflow IDs in observability contexts are currently plain `String`.
+**Type:** Breaking (API)
 
-Proposal:
-- migrate to typed IDs from `nebula-core` where feasible.
+**Motivation:** String event names are typo-prone and hard to refactor.
 
-Impact:
-- signature changes for context constructors and integrations.
+**Proposal:** Introduce typed event identifiers (`EventKind` enum or interned key type).
 
-Implementation:
-1. add typed constructor variants while preserving string constructors temporarily.
-2. migrate internal callers.
-3. deprecate string-only constructors.
+**Expected benefits:** Type safety; easier refactoring.
 
-## P-004: Writer Multi-Fanout with Explicit Failure Policy
+**Costs:** Custom hook/event implementations need migration.
 
-Problem:
-- `WriterConfig::Multi` currently uses first writer only.
+**Risks:** Dual API maintenance during deprecation.
 
-Proposal:
-- implement true fanout with policy:
-  - `FailFast`
-  - `BestEffort`
-  - `PrimaryWithFallback`
+**Compatibility impact:** Add dual API; deprecate string-only trait method; remove in next major.
 
-Impact:
-- non-breaking API if implemented behind enriched config; behavior improves materially.
+**Status:** Draft
 
-## P-005: Config Schema Stability Contract
+---
 
-Problem:
-- many deployment configs depend on serde schema stability.
+## P003: Context ID Types from nebula-core
 
-Proposal:
-- version config schema and add snapshot tests for config serialization/deserialization.
+**Type:** Potential Breaking
 
-Impact:
-- prevents accidental breaking config changes in releases.
+**Motivation:** Execution/node/workflow IDs in observability contexts are plain `String`.
+
+**Proposal:** Migrate to typed IDs from `nebula-core` where feasible.
+
+**Expected benefits:** Type safety; consistency with core.
+
+**Costs:** Signature changes; possible new dependency on core.
+
+**Risks:** Log crate may need to depend on core (currently it does not).
+
+**Compatibility impact:** Add typed constructor variants; deprecate string-only constructors.
+
+**Status:** Draft
+
+---
+
+## P004: Writer Multi-Fanout with Explicit Failure Policy
+
+**Type:** Non-breaking
+
+**Motivation:** `WriterConfig::Multi` currently uses first writer only.
+
+**Proposal:** Implement true fanout with policy: `FailFast`, `BestEffort`, `PrimaryWithFallback`.
+
+**Expected benefits:** Multi-destination logging; configurable failure behavior.
+
+**Costs:** Implementation complexity.
+
+**Risks:** Low; additive config.
+
+**Compatibility impact:** None if behind enriched config; default preserves current behavior.
+
+**Status:** Review
+
+---
+
+## P005: Config Schema Stability Contract
+
+**Type:** Non-breaking
+
+**Motivation:** Deployment configs depend on serde schema stability.
+
+**Proposal:** Version config schema; add snapshot tests for config serialization/deserialization.
+
+**Expected benefits:** Prevents accidental breaking config changes.
+
+**Costs:** Maintenance of snapshot files.
+
+**Risks:** Low.
+
+**Compatibility impact:** None.
+
+**Status:** Review

@@ -1,51 +1,99 @@
 # Decisions
 
-## D-001: tracing-first Observability
+## D001: tracing-first Observability
 
-Status: accepted
+**Status:** Adopt
 
-Decision:
-- Use `tracing` + `tracing-subscriber` as primary abstraction.
+**Context:** Need structured logging with spans, async compatibility, and ecosystem maturity for a Rust workflow platform.
 
-Reason:
-- structured events/spans, ecosystem maturity, async compatibility.
+**Decision:** Use `tracing` + `tracing-subscriber` as primary abstraction.
 
-## D-002: Feature-gated Integrations
+**Alternatives considered:** `log` crate only (no spans, weaker structure); `slog` (smaller ecosystem).
 
-Status: accepted
+**Trade-offs:** Larger dependency surface; re-exports of tracing macros for ergonomics.
 
-Decision:
-- Keep telemetry/file/metrics/sentry optional behind feature flags.
+**Consequences:** All logging goes through tracing; `log-compat` feature bridges legacy `log` callers.
 
-Reason:
-- minimal core footprint, controllable binary size, deployment-specific enablement.
+**Migration impact:** None; initial design.
 
-## D-003: Panic-isolated Hook Dispatch
+**Validation plan:** All examples and tests use tracing macros.
 
-Status: accepted
+---
 
-Decision:
-- Catch panics in hook lifecycle and event dispatch.
+## D002: Feature-gated Integrations
 
-Reason:
-- one faulty hook must not break entire logging path.
+**Status:** Adopt
 
-## D-004: Async-safe Context Propagation
+**Context:** Binary size and deployment flexibility vary (CLI vs server, with/without OTLP).
 
-Status: accepted
+**Decision:** Keep telemetry/file/metrics/sentry optional behind feature flags.
 
-Decision:
-- Use task-local context in async mode, thread-local in sync mode.
+**Alternatives considered:** Monolithic build; separate crates per integration.
 
-Reason:
-- preserve context across `.await` while maintaining zero-cost path for non-async setups.
+**Trade-offs:** Feature matrix complexity; conditional compilation in docs.
 
-## D-005: Config-first Initialization
+**Consequences:** Consumers enable only needed features; `full` feature for convenience.
 
-Status: accepted
+**Migration impact:** None.
 
-Decision:
-- expose explicit `Config` + presets (`from_env`, `development`, `production`) rather than hardcoded global behavior.
+**Validation plan:** `cargo check --all-features`; CI with default and full.
 
-Reason:
-- predictable operations in high-load and multi-environment deployments.
+---
+
+## D003: Panic-isolated Hook Dispatch
+
+**Status:** Adopt
+
+**Context:** Hooks are third-party extensions; one faulty hook must not break logging.
+
+**Decision:** Catch panics in hook lifecycle and event dispatch via `catch_unwind`.
+
+**Alternatives considered:** Let panics propagate; abort on hook panic.
+
+**Trade-offs:** Panic cost on hot path; possible silent hook failures.
+
+**Consequences:** Hook bugs do not crash process; monitoring should track hook errors.
+
+**Migration impact:** None.
+
+**Validation plan:** Unit test with panicking hook verifies emission continues.
+
+---
+
+## D004: Async-safe Context Propagation
+
+**Status:** Adopt
+
+**Context:** Workflow execution spans `.await`; context (request/user/session) must persist.
+
+**Decision:** Use task-local context in async mode, thread-local in sync mode.
+
+**Alternatives considered:** Manual context passing; global only.
+
+**Trade-offs:** Tokio dependency for async; two code paths.
+
+**Consequences:** `with_context!` and `current_contexts()` work across `.await`.
+
+**Migration impact:** None.
+
+**Validation plan:** Async integration test with context across await.
+
+---
+
+## D005: Config-first Initialization
+
+**Status:** Adopt
+
+**Context:** Predictable behavior in multi-environment and high-load deployments.
+
+**Decision:** Expose explicit `Config` + presets (`from_env`, `development`, `production`) rather than hardcoded global behavior.
+
+**Alternatives considered:** Env-only; builder-only without presets.
+
+**Trade-offs:** More API surface; clearer contract.
+
+**Consequences:** `auto_init` uses presets; production configs are explicit.
+
+**Migration impact:** None.
+
+**Validation plan:** Config round-trip and preset tests.
