@@ -24,7 +24,7 @@
 ## Phase 3: Scale and Performance
 
 - **Deliverables:**
-  - Benchmark hot paths: event emission, context propagation, timing macros
+  - Benchmark hot paths: event emission, context propagation, timing macros (expanded criterion bench coverage added)
   - Reduce per-event allocations in observability hooks
   - Criterion benchmarks in CI with regression thresholds
 - **Risks:** Optimization may complicate code
