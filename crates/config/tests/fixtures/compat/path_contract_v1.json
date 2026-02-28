@@ -1,0 +1,42 @@
+{
+  "fixture_version": "1.0.0",
+  "contract": "path_access",
+  "data": {
+    "server": {
+      "port": 8080,
+      "host": "localhost"
+    },
+    "features": {
+      "enabled": true
+    }
+  },
+  "typed_access": [
+    {
+      "path": "server.port",
+      "kind": "u16",
+      "expected": 8080
+    },
+    {
+      "path": "server.host",
+      "kind": "string",
+      "expected": "localhost"
+    },
+    {
+      "path": "features.enabled",
+      "kind": "bool",
+      "expected": true
+    }
+  ],
+  "error_cases": [
+    {
+      "path": "server.missing",
+      "category": "missing_path"
+    },
+    {
+      "path": "server.port",
+      "kind": "string",
+      "category": "type_mismatch"
+    }
+  ]
+}
+

@@ -1,0 +1,11 @@
+mod activation_atomicity_test;
+mod env_precedence_contract_test;
+mod governance_policy_test;
+mod helpers;
+mod last_known_good_preservation_test;
+mod merge_determinism_test;
+mod migration_requirements_test;
+mod path_error_categories_test;
+mod precedence_matrix_contract_test;
+mod reload_rejection_contract_test;
+mod typed_access_compatibility_test;

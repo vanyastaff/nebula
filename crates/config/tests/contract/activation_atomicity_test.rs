@@ -1,0 +1,55 @@
+use super::helpers::write_temp_file;
+use nebula_config::{ConfigBuilder, ConfigError, ConfigSource, FunctionValidator};
+use std::sync::Arc;
+
+#[tokio::test]
+async fn activation_is_atomic_on_reload() {
+    let path = write_temp_file(
+        "atomicity",
+        "json",
+        r#"{"service":{"host":"127.0.0.1","port":8080}}"#,
+    );
+
+    let validator = FunctionValidator::new(|value| {
+        let host_ok = value
+            .get("service")
+            .and_then(|service| service.get("host"))
+            .and_then(serde_json::Value::as_str)
+            .is_some();
+        let port_ok = value
+            .get("service")
+            .and_then(|service| service.get("port"))
+            .and_then(serde_json::Value::as_u64)
+            .is_some();
+        if host_ok && port_ok {
+            Ok(())
+        } else {
+            Err(ConfigError::validation(
+                "service.host and service.port are both required",
+            ))
+        }
+    });
+
+    let config = ConfigBuilder::new()
+        .with_source(ConfigSource::File(path.clone()))
+        .with_validator(Arc::new(validator))
+        .build()
+        .await
+        .expect("initial valid config should build");
+
+    std::fs::write(&path, r#"{"service":{"host":"10.0.0.1"}}"#)
+        .expect("should write invalid candidate missing port");
+
+    assert!(config.reload().await.is_err());
+
+    let host: String = config
+        .get("service.host")
+        .await
+        .expect("host should remain");
+    let port: u16 = config
+        .get("service.port")
+        .await
+        .expect("port should remain");
+    assert_eq!(host, "127.0.0.1");
+    assert_eq!(port, 8080);
+}

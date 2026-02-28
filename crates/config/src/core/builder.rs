@@ -144,9 +144,12 @@ impl ConfigBuilder {
             .loader
             .unwrap_or_else(|| Arc::new(CompositeLoader::default()));
 
+        // Keep defaults for reload baselines.
+        let defaults = self.defaults;
+
         // Add default source if defaults are provided
         let mut sources = self.sources;
-        if self.defaults.is_some() {
+        if defaults.is_some() {
             sources.insert(0, ConfigSource::Default);
         }
 
@@ -157,13 +160,13 @@ impl ConfigBuilder {
         let mut merged_data = serde_json::Value::Object(serde_json::Map::new());
 
         // Add defaults first if present
-        if let Some(defaults) = self.defaults {
+        if let Some(ref defaults) = defaults {
             nebula_log::debug!(
                 action = "applying_defaults",
                 default_keys = defaults.as_object().map(|o| o.len()).unwrap_or(0),
                 "Applying default configuration"
             );
-            merged_data = defaults;
+            merged_data = defaults.clone();
         }
 
         // Load all sources concurrently, then merge in priority order
@@ -211,6 +214,7 @@ impl ConfigBuilder {
         let config = Config::new(
             merged_data,
             sources,
+            defaults,
             loader,
             self.validator,
             self.watcher,

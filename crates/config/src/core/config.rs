@@ -18,6 +18,9 @@ pub struct Config {
     /// Configuration sources
     sources: Vec<ConfigSource>,
 
+    /// Default values captured at build time and reused during reload.
+    defaults: Option<serde_json::Value>,
+
     /// Source metadata
     metadata: Arc<DashMap<ConfigSource, SourceMetadata>>,
 
@@ -42,6 +45,7 @@ impl Config {
     pub(crate) fn new(
         data: serde_json::Value,
         sources: Vec<ConfigSource>,
+        defaults: Option<serde_json::Value>,
         loader: Arc<dyn ConfigLoader>,
         validator: Option<Arc<dyn ConfigValidator>>,
         watcher: Option<Arc<dyn ConfigWatcher>>,
@@ -50,6 +54,7 @@ impl Config {
         Self {
             data: Arc::new(RwLock::new(data)),
             sources,
+            defaults,
             metadata: Arc::new(DashMap::new()),
             loader,
             validator,
@@ -167,9 +172,22 @@ impl Config {
             self.sources.len()
         );
 
+        // Start from defaults captured during the initial build.
+        let mut merged_data = self
+            .defaults
+            .clone()
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+
+        // Skip pseudo default marker source, it has no loader representation.
+        let loadable: Vec<_> = self
+            .sources
+            .iter()
+            .filter(|source| !matches!(source, ConfigSource::Default))
+            .collect();
+
         // Load all sources concurrently
         let loader = &self.loader;
-        let load_futures = self.sources.iter().map(|source| async move {
+        let load_futures = loadable.iter().map(|source| async move {
             let data = loader.load(source).await;
             let metadata = loader.metadata(source).await.ok();
             (source, data, metadata)
@@ -177,14 +195,13 @@ impl Config {
         let results = futures::future::join_all(load_futures).await;
 
         // Merge in priority order (sources are pre-sorted at construction time)
-        let mut merged_data = serde_json::Value::Object(serde_json::Map::new());
         for (source, result, metadata) in results {
             match result {
                 Ok(data) => {
                     nebula_log::debug!("Loaded configuration from source: {}", source);
 
                     if let Some(metadata) = metadata {
-                        self.metadata.insert(source.clone(), metadata);
+                        self.metadata.insert((*source).clone(), metadata);
                     }
 
                     merge_json(&mut merged_data, data)?;
@@ -551,6 +568,7 @@ mod tests {
         Config::new(
             data,
             vec![ConfigSource::Default],
+            None,
             Arc::new(crate::loaders::CompositeLoader::default()),
             None,
             None,

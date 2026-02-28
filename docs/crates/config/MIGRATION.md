@@ -43,3 +43,18 @@
   - startup and reload scenarios with mixed source sets.
 - performance checks:
   - compare load/reload/read latency against baseline.
+
+## Mapping Template (Required For Breaking Contract Changes)
+
+Use this template for precedence/path/validation semantic changes:
+
+| Contract Surface | Old Behavior | New Behavior | Consumer Impact | Mitigation | Removal Release |
+|---|---|---|---|---|---|
+| precedence | `defaults < file < env < inline` | ... | ... | ... | ... |
+| path access | missing key -> `PathError` | ... | ... | ... | ... |
+| typed retrieval | decode failure -> `TypeError` | ... | ... | ... | ... |
+| validation gate | invalid candidate rejected | ... | ... | ... | ... |
+
+Minimum requirements:
+- include explicit old -> new mapping for every behavior-significant change.
+- provide rollout and rollback steps for consumer crates.

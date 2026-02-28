@@ -95,3 +95,14 @@ Compatibility impact:
 - major-version candidate if default profile changes.
 
 Status: Draft
+
+## Governance Notes For All Proposals
+
+- minor release path:
+  - proposal must stay additive and preserve precedence/path/error contracts.
+- major release path:
+  - required if proposal changes precedence, path traversal, or validation activation semantics.
+- required artifacts before merge:
+  - migration mapping (old -> new behavior)
+  - updated compatibility fixtures
+  - downstream consumer impact notes

@@ -36,6 +36,16 @@ Unified configuration system for Nebula services and runtime components.
   - additive source/format support in minor versions
   - breaking precedence/path/error behavior only in major versions with migration guide
 
+## Config Contract Hardening Summary
+
+- contract test suite now lives in `crates/config/tests/contract/*`.
+- versioned compatibility fixtures are tracked in `crates/config/tests/fixtures/compat/*`.
+- deterministic contracts are explicitly locked for:
+  - precedence: `defaults < file < env < inline`
+  - reload safety: validator-gated atomic activation and last-known-good retention
+  - typed access: stable path traversal and error category mapping
+- governance and migration requirements are enforced by doc-backed contract tests.
+
 ## Document Map
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md)

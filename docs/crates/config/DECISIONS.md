@@ -124,3 +124,29 @@ Migration impact:
 
 Validation plan:
 - provider contract tests + chaos/failure simulations before GA.
+
+## D006: Compatibility governance for contract evolution
+
+Status: Adopt
+
+Context:
+- precedence/path/error semantics are consumed across multiple crates and releases.
+
+Decision:
+- minor releases remain additive; contract-semantic changes require major release.
+- any proposed breaking change requires migration mapping and updated fixtures.
+
+Alternatives considered:
+- implicit compatibility enforcement via release notes only.
+
+Trade-offs:
+- stronger release discipline and higher upfront documentation effort.
+
+Consequences:
+- earlier detection of downstream breakage risk.
+
+Migration impact:
+- old -> new behavior mapping becomes mandatory for breaking changes.
+
+Validation plan:
+- governance and migration contract tests in `crates/config/tests/contract/*`.
