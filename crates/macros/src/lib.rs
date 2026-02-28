@@ -12,6 +12,7 @@
 //! | [`Credential`](derive@Credential) | Implements the `Credential` trait |
 //! | [`Parameters`](derive@Parameters) | Generates parameter definitions |
 //! | [`Validator`](derive@Validator) | Implements field-based validation |
+//! | [`Config`](derive@Config) | Loads from env and validates fields |
 //!
 //! ## Examples
 //!
@@ -47,6 +48,7 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 
 mod action;
+mod config;
 mod credential;
 mod parameter;
 mod plugin;
@@ -285,4 +287,48 @@ pub fn derive_parameters(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Validator, attributes(validator, validate))]
 pub fn derive_validator(input: TokenStream) -> TokenStream {
     validator::derive(input)
+}
+
+/// Derive macro for env-backed configuration types with field validation.
+///
+/// Generates:
+/// - `from_env()` and `from_env_with_prefix(prefix)` constructors
+/// - `validate_fields()` helper
+/// - `nebula_validator::foundation::Validate<Self>` implementation
+///
+/// # Container attributes (`#[config(...)]`)
+///
+/// - `source = "env" | "dotenv" | "file"` - single source selector (`from` also accepted)
+/// - `sources = ["dotenv", "file", "env"]` - ordered loader chain (`loaders` also accepted)
+/// - `prefix = "..."` - env prefix (for example `NEBULA_APP`)
+/// - `path = "..."` - base file path for `dotenv`/`file` loaders (`file` also accepted)
+/// - `profile_var = "APP_ENV"` - env var used to resolve active profile (`profile_env` also accepted)
+/// - `profile = "dev"` - default profile when profile env var is missing
+/// - `separator = "..."` - segment separator between prefix and key (default: `_`)
+///
+/// # Field attributes
+///
+/// - `#[config(key = "...")]` - explicit config key (`name`/`env` also accepted)
+/// - `#[config(default = ...)]` - field-level default value override
+/// - `#[validate(...)]` - same rules as `#[derive(Validator)]`
+///
+/// # Example
+///
+/// ```ignore
+/// use nebula_macros::Config;
+///
+/// #[derive(Config, Default)]
+/// #[config(sources = ["dotenv", "env"], path = ".env", prefix = "NEBULA_APP")]
+/// struct AppConfig {
+///     #[validate(min = 1, max = 65535)]
+///     port: u16,
+///
+///     #[config(key = "NEBULA_APP_ADMIN_EMAIL")]
+///     #[validate(email)]
+///     admin_email: String,
+/// }
+/// ```
+#[proc_macro_derive(Config, attributes(config, validator, validate))]
+pub fn derive_config(input: TokenStream) -> TokenStream {
+    config::derive(input)
 }

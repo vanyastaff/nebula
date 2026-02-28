@@ -12,6 +12,7 @@ This crate provides derive macros for simplifying the implementation of core Neb
 - `Credential` - For credential types
 - `Parameters` - For parameter definitions
 - `Validator` - For field-based validation rules
+- `Config` - For env-backed config loading + validation
 
 ## Usage
 
@@ -205,6 +206,52 @@ pub struct UserInput {
 - `max_length = N` - Requires `len() <= N`
 - `min = N` - Requires numeric value `>= N`
 - `max = N` - Requires numeric value `<= N`
+
+### Config
+
+Generate env-backed config loading and field validation:
+
+```rust
+use nebula_macros::Config;
+
+#[derive(Config, Default)]
+#[config(
+    sources = ["dotenv", "file", "env"],
+    path = ".env",
+    prefix = "NEBULA_APP",
+    profile_var = "APP_ENV"
+)]
+pub struct AppConfig {
+    #[validate(min = 1, max = 65535)]
+    port: u16,
+
+    #[config(key = "NEBULA_APP_ADMIN_EMAIL", default = "admin@example.com")]
+    #[validate(email)]
+    admin_email: String,
+}
+```
+
+Generated API:
+
+- `from_env() -> Result<Self, String>` (requires `Default`)
+- `from_env_with_prefix(Option<&str>) -> Result<Self, String>`
+- `validate_fields() -> Result<(), ValidationErrors>`
+- `load() -> Result<Self, String>` (ordered loaders chain)
+- `load_with_profile(Option<&str>) -> Result<Self, String>`
+
+Container attribute names (standard + compatibility aliases):
+- `source` (`from`)
+- `sources` (`loaders`)
+- `path` (`file`)
+- `profile_var` (`profile_env`)
+
+Field attribute names:
+- `key` (`name`/`env`)
+- `default`
+
+Profile naming follows suffix style:
+- `.env` -> `.env.dev`
+- `config.json` -> `config.dev.json`
 
 ## License
 
