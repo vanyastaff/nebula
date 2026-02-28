@@ -27,6 +27,11 @@ Backpressure/drop operations guidance:
 - keep logger guard alive until shutdown to maximize flush completeness
 - treat log loss during sustained overload as an SLO signal and scale sink/IO capacity
 
+Hook shutdown guarantees:
+
+- hooks are shutdown in reverse registration order (LIFO)
+- new event dispatch is quiesced before hook shutdown callbacks execute
+
 ## Operational Runbook
 
 - **Alert conditions:** Log init failure (app won't start); hook error rate (if metrics exposed)

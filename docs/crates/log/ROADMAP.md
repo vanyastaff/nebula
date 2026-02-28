@@ -17,7 +17,7 @@
 - **Deliverables:**
   - Backpressure/drop policy docs for non-blocking file mode (completed)
   - Hook execution budget proposal (P-001): v1 budget diagnostics implemented; async offload deferred and tracked
-  - Stronger shutdown ordering guarantees for hooks
+  - Stronger shutdown ordering guarantees for hooks (completed: LIFO shutdown + shutdown-time dispatch quiesce)
 - **Risks:** Hook policy changes may affect custom hooks
 - **Exit criteria:** Documented failure modes; no hook deadlocks on shutdown
 

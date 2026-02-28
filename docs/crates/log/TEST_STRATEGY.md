@@ -10,6 +10,7 @@
 ## Critical Invariants
 
 - Hook panic does not abort event emission
+- Hook shutdown order is deterministic (reverse registration order)
 - Context propagates across `.await` in async mode
 - Init with valid config always succeeds
 - Config round-trip (serialize/deserialize) preserves semantics

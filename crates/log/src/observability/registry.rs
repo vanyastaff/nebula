@@ -7,6 +7,7 @@ use super::HookPolicy;
 use super::hooks::{ObservabilityEvent, ObservabilityHook};
 use arc_swap::ArcSwap;
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Instant;
 
@@ -94,7 +95,9 @@ fn shutdown_hooks_list(hooks: &HookList, policy: HookPolicy) {
         HookPolicy::Bounded { timeout_ms, .. } => Some(timeout_ms),
     };
 
-    for hook in hooks.iter() {
+    // Shutdown in reverse registration order (LIFO) so dependencies can
+    // be torn down in the opposite order of startup.
+    for hook in hooks.iter().rev() {
         let started = Instant::now();
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
             hook.shutdown();
@@ -137,6 +140,7 @@ static HOOKS: LazyLock<ArcSwap<HookList>> = LazyLock::new(|| ArcSwap::from_point
 static WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static HOOK_POLICY: LazyLock<RwLock<HookPolicy>> =
     LazyLock::new(|| RwLock::new(HookPolicy::Inline));
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 /// Register a global observability hook.
 ///
@@ -202,6 +206,9 @@ pub fn register_hook(hook: Arc<dyn ObservabilityHook>) {
 /// ```
 #[inline]
 pub fn emit_event(event: &dyn ObservabilityEvent) {
+    if SHUTTING_DOWN.load(Ordering::Acquire) {
+        return;
+    }
     let hooks = HOOKS.load();
     let policy = *HOOK_POLICY.read().expect("hook policy lock poisoned");
     emit_to_hooks(&hooks, event, policy);
@@ -232,10 +239,13 @@ pub fn set_hook_policy(policy: HookPolicy) {
 /// ```
 pub fn shutdown_hooks() {
     let _guard = WRITE_LOCK.lock().expect("registry write lock poisoned");
+    SHUTTING_DOWN.store(true, Ordering::Release);
     let current = HOOKS.load();
+    // Quiesce future dispatches first, then drain current snapshot.
+    HOOKS.store(Arc::new(Vec::new()));
     let policy = *HOOK_POLICY.read().expect("hook policy lock poisoned");
     shutdown_hooks_list(&current, policy);
-    HOOKS.store(Arc::new(Vec::new()));
+    SHUTTING_DOWN.store(false, Ordering::Release);
 }
 
 /// Get the number of registered hooks (for testing)
@@ -453,5 +463,41 @@ mod tests {
         assert_eq!(hook_count(), initial_count);
 
         shutdown_hooks();
+    }
+
+    struct OrderedShutdownHook {
+        id: u8,
+        order: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl ObservabilityHook for OrderedShutdownHook {
+        fn on_event(&self, _event: &dyn ObservabilityEvent) {}
+
+        fn shutdown(&self) {
+            self.order.lock().unwrap().push(self.id);
+        }
+    }
+
+    #[test]
+    fn test_shutdown_order_is_lifo() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        shutdown_hooks();
+
+        let order = Arc::new(Mutex::new(Vec::new()));
+        register_hook(Arc::new(OrderedShutdownHook {
+            id: 1,
+            order: Arc::clone(&order),
+        }));
+        register_hook(Arc::new(OrderedShutdownHook {
+            id: 2,
+            order: Arc::clone(&order),
+        }));
+        register_hook(Arc::new(OrderedShutdownHook {
+            id: 3,
+            order: Arc::clone(&order),
+        }));
+
+        shutdown_hooks();
+        assert_eq!(*order.lock().unwrap(), vec![3, 2, 1]);
     }
 }

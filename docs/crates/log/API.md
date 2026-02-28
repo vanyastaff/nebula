@@ -79,6 +79,11 @@ Hook policy note:
 - `set_hook_policy(HookPolicy::Bounded { ... })` currently keeps inline dispatch and adds budget-overrun diagnostics.
 - async hook offload is planned separately and is not part of current contract.
 
+Hook shutdown ordering contract:
+
+- `shutdown_hooks()` drains registered hooks in reverse registration order (LIFO).
+- registry is quiesced before shutdown callbacks run, so new dispatches are not started during shutdown.
+
 ## Env and Precedence Contract
 
 Startup precedence is deterministic:
