@@ -132,7 +132,10 @@ pub fn get_process(pid: u32) -> SystemResult<ProcessInfo> {
                 gid: None,
             })
         } else {
-            Err(SystemError::resource_not_found(format!("Process {} not found", pid)))
+            Err(SystemError::resource_not_found(format!(
+                "Process {} not found",
+                pid
+            )))
         }
     }
 
