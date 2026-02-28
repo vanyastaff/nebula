@@ -80,10 +80,12 @@ Validation plan:
 Status: Adopt (baseline)
 
 Context:
-- code stability rules exist conceptually but not yet formalized as registry.
+- code stability rules require a single machine-readable source of truth.
 
 Decision:
 - adopt baseline canonical code catalog + compatibility fixtures now.
+- publish canonical registry artifact:
+  - `crates/validator/tests/fixtures/compat/error_registry_v1.json`
 - enforce additive-only minor evolution for code registry.
 
 Alternatives considered:
@@ -101,6 +103,8 @@ Migration impact:
 
 Validation plan:
 - enforce through contract tests in `tests/contract/compatibility_fixtures_test.rs`.
+- enforce registry integrity and documentation references in:
+  - `tests/contract/governance_policy_test.rs`.
 - require migration mapping in `MIGRATION.md` for behavior-significant changes.
 
 ## D006: Minor release compatibility policy

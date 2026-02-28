@@ -5,6 +5,7 @@ This directory stores versioned contract fixtures used by `tests/contract`.
 ## File Contract
 
 - `minor_contract_v1.json`: Baseline fixtures for minor-release compatibility.
+- `error_registry_v1.json`: Canonical machine-readable registry for stable error codes and cross-crate categories.
 
 Each fixture entry defines:
 
@@ -20,3 +21,4 @@ These fixtures are used to detect behavioral drift in:
 - validator outcomes (`pass`/`fail`)
 - error codes
 - field-path formatting
+- cross-crate category compatibility baselines

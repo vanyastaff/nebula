@@ -60,6 +60,10 @@ password_rule.validate_any(&payload)?;
 
 ## Canonical Error Code Catalog (Baseline)
 
+Canonical machine-readable source:
+
+- `crates/validator/tests/fixtures/compat/error_registry_v1.json`
+
 - `required`: missing required value
 - `min_length`: string shorter than minimum bound
 - `max_length`: string longer than maximum bound
@@ -116,7 +120,9 @@ Serialized envelope note:
 
 - compatibility fixture source:
   - `crates/validator/tests/fixtures/compat/minor_contract_v1.json`
+  - `crates/validator/tests/fixtures/compat/error_registry_v1.json`
 - contract tests:
   - `crates/validator/tests/contract/compatibility_fixtures_test.rs`
   - `crates/validator/tests/contract/typed_dynamic_equivalence_test.rs`
   - `crates/validator/tests/contract/error_envelope_schema_test.rs`
+  - `crates/validator/tests/contract/governance_policy_test.rs`

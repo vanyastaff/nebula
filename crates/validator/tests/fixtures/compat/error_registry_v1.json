@@ -1,0 +1,93 @@
+{
+  "version": "1.0.0",
+  "artifact": "validator_error_registry",
+  "error_codes": [
+    {
+      "code": "required",
+      "meaning": "missing required value",
+      "stability": "minor_additive"
+    },
+    {
+      "code": "min_length",
+      "meaning": "string shorter than minimum bound",
+      "stability": "minor_additive"
+    },
+    {
+      "code": "max_length",
+      "meaning": "string longer than maximum bound",
+      "stability": "minor_additive"
+    },
+    {
+      "code": "invalid_format",
+      "meaning": "pattern/content format failure",
+      "stability": "minor_additive"
+    },
+    {
+      "code": "type_mismatch",
+      "meaning": "dynamic bridge type conversion mismatch",
+      "stability": "minor_additive"
+    },
+    {
+      "code": "out_of_range",
+      "meaning": "numeric range failure",
+      "stability": "minor_additive"
+    },
+    {
+      "code": "exact_length",
+      "meaning": "string length not equal to fixed bound",
+      "stability": "minor_additive"
+    },
+    {
+      "code": "length_range",
+      "meaning": "string length outside inclusive range",
+      "stability": "minor_additive"
+    },
+    {
+      "code": "custom",
+      "meaning": "user-defined validation error",
+      "stability": "minor_additive"
+    }
+  ],
+  "categories": [
+    {
+      "name": "source_load_failed",
+      "owner": "validator",
+      "cross_crate_contract": true
+    },
+    {
+      "name": "merge_failed",
+      "owner": "validator",
+      "cross_crate_contract": true
+    },
+    {
+      "name": "validation_failed",
+      "owner": "validator",
+      "cross_crate_contract": true
+    },
+    {
+      "name": "missing_path",
+      "owner": "validator",
+      "cross_crate_contract": true
+    },
+    {
+      "name": "type_mismatch",
+      "owner": "validator",
+      "cross_crate_contract": true
+    },
+    {
+      "name": "invalid_value",
+      "owner": "validator",
+      "cross_crate_contract": true
+    },
+    {
+      "name": "watcher_failed",
+      "owner": "validator",
+      "cross_crate_contract": true
+    }
+  ],
+  "change_policy": {
+    "minor_rule": "additive_only",
+    "major_rule": "semantic_change_or_removal_requires_migration_mapping",
+    "migration_authority": "docs/crates/validator/MIGRATION.md"
+  }
+}

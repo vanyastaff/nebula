@@ -56,6 +56,10 @@
 - `tests/contract/governance_policy_test.rs`
 - `tests/contract/migration_requirements_test.rs`
 
+Canonical registry artifact under contract:
+
+- `tests/fixtures/compat/error_registry_v1.json`
+
 Cross-crate parity checks:
 
 - macro-generated validation parity (consumer crates using `#[derive(Config)]` + `#[validate(...)]`)
