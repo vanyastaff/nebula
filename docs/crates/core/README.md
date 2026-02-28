@@ -1,75 +1,63 @@
 # nebula-core
 
-Foundation crate. Provides the identifiers, scope system, base traits, common types, error
-handling, and validated key types shared by every crate in the workspace.
+`nebula-core` is the foundation crate for the Nebula automation platform (n8n-like, but in Rust).
 
-**No other Nebula crate depends on it as a peer; everything else depends on this.**
+It defines the shared language that every other crate uses:
+- typed IDs (`ExecutionId`, `WorkflowId`, `NodeId`, ...)
+- scope model (`ScopeLevel`)
+- base traits (`Scoped`, `HasContext`, `Identifiable`, ...)
+- common domain types (`Status`, `Priority`, `OperationContext`, ...)
+- common error model (`CoreError`)
+- validated keys (`PluginKey`, `ParameterKey`, `CredentialKey`)
+- system defaults and limits (`constants`)
 
----
+## Current Reality (from code)
 
-## Role in the Workspace
+- Crate: `crates/core`
+- Rust edition: `2024`
+- Workspace minimum Rust: `1.92` (see root `Cargo.toml`)
+- Main modules:
+  - `id`
+  - `scope`
+  - `traits`
+  - `types`
+  - `error`
+  - `keys`
+  - `constants`
 
-```
-nebula-core
-  └─ depended on by ALL other crates
-       ├─ nebula-log
-       ├─ nebula-action
-       ├─ nebula-expression
-       ├─ nebula-parameter
-       ├─ nebula-credential
-       ├─ nebula-memory
-       ├─ nebula-resource
-       ├─ nebula-storage
-       └─ … (every other crate)
-```
+## Why It Exists
 
-Its purpose is to prevent cyclic dependencies by providing a shared vocabulary layer.
-Crates communicate via the types defined here without importing each other.
+For a workflow platform with many crates (`engine`, `runtime`, `storage`, `api`, `sdk`, ...), this crate prevents cyclic dependencies by keeping shared primitives in one place.
 
----
+Every higher-level crate should depend on `nebula-core`, and almost never depend on each other for fundamental types.
 
-## Module Map
-
-| Module | File | What it provides |
-|---|---|---|
-| `id` | `id.rs` | 11 strongly-typed UUID wrappers |
-| `scope` | `scope.rs` | `ScopeLevel` enum — resource lifecycle hierarchy |
-| `traits` | `traits.rs` | Base traits: `Scoped`, `HasContext`, `Identifiable`, etc. |
-| `types` | `types.rs` | `Version`, `Status`, `Priority`, `OperationResult`, etc. |
-| `error` | `error.rs` | `CoreError` enum (26 variants), `CoreResult<T>` |
-| `keys` | `keys.rs` | `PluginKey`, `ParameterKey`, `CredentialKey` |
-| `constants` | `constants.rs` | System-wide defaults, limits, patterns |
-
----
-
-## Topic Files
-
-- [ids.md](ids.md) — Identifier system (`UserId`, `WorkflowId`, `ExecutionId`, …)
-- [scope.md](scope.md) — `ScopeLevel` and resource lifecycle scoping
-- [traits.md](traits.md) — Base traits used across the workspace
-- [types.md](types.md) — `Version`, `Status`, `Priority`, `OperationResult`, etc.
-- [error.md](error.md) — `CoreError` and error classification
-- [keys.md](keys.md) — `PluginKey`, `ParameterKey`, `CredentialKey`
-- [constants.md](constants.md) — All system-wide constants and limits
-
----
-
-## Prelude
+## Quick Example
 
 ```rust
-use nebula_core::prelude::*;
-// CoreError, all IDs, InterfaceVersion, HasContext, Identifiable,
-// ProjectType, Result, RoleId, RoleScope, ScopeLevel, Scoped,
-// TenantId, UserId, UuidParseError, WorkflowId, PluginKey, PluginKeyError
+use nebula_core::{
+    ExecutionId, WorkflowId, NodeId, ScopeLevel, OperationContext, Priority,
+};
+
+let execution_id = ExecutionId::v4();
+let workflow_id = WorkflowId::v4();
+let node_id = NodeId::v4();
+
+let scope = ScopeLevel::Action(execution_id, node_id);
+
+let ctx = OperationContext::new("op_run_node")
+    .with_execution_id(execution_id)
+    .with_workflow_id(workflow_id)
+    .with_node_id(node_id)
+    .with_priority(Priority::High);
+
+assert!(ctx.has_execution_context());
+assert!(scope.is_action());
 ```
 
----
+## Document Set
 
-## Design Goals
-
-1. **Zero cyclic dependencies** — this crate has no Nebula dependencies.
-2. **Shared vocabulary** — IDs, scopes, traits defined once, reused everywhere.
-3. **Type safety** — distinct wrapper types prevent `WorkflowId` from being passed
-   where a `NodeId` is expected.
-4. **Serializable** — all public types implement `serde::Serialize/Deserialize`.
-5. **Copy-friendly IDs** — UUID wrappers are `Copy` (16 bytes), zero heap allocation.
+- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [API.md](API.md)
+- [DECISIONS.md](DECISIONS.md)
+- [ROADMAP.md](ROADMAP.md)
+- [PROPOSALS.md](PROPOSALS.md)
