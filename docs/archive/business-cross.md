@@ -330,52 +330,6 @@ let result = executor.execute(async {
 
 ---
 
-### nebula-validator
-**Назначение:** Универсальная система валидации.
-
-**Ключевые возможности:**
-- Composable validators
-- Async validation
-- Custom rules
-- Derive macros
-
-```rust
-// Встроенные валидаторы
-let email = EmailValidator::new();
-let range = RangeValidator::new(18, 150);
-let pattern = PatternValidator::new(r"^[A-Z][a-z]+$");
-
-// Композиция
-let validator = RequiredValidator
-    .and(email)
-    .and(LengthValidator::max(255));
-
-// Derive валидация
-#[derive(Validate)]
-pub struct UserInput {
-    #[validate(required, email)]
-    pub email: String,
-    
-    #[validate(required, length(min = 8, max = 128))]
-    pub password: String,
-    
-    #[validate(range(min = 18, max = 150))]
-    pub age: Option<u8>,
-    
-    #[validate(custom = "validate_username")]
-    pub username: String,
-}
-
-// Async валидация
-async fn validate_unique_email(email: &str) -> Result<()> {
-    let exists = db.email_exists(email).await?;
-    ensure!(!exists, "Email already registered");
-    Ok(())
-}
-```
-
----
-
 ### nebula-locale
 **Назначение:** Локализация и интернационализация.
 
