@@ -12,6 +12,3 @@ sqlx = { version = "0.7", features = ["postgres", "runtime-tokio"] }
 redis = { version = "0.23", features = ["aio", "tokio-comp"] }
 aws-sdk-s3 = "0.35"
 ```
-
-## Cross-Cutting Concerns Layer
-

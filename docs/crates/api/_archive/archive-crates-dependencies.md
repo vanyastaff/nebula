@@ -14,4 +14,3 @@ axum = "0.7"
 tower = "0.4"
 serde_json = "1.0"
 ```
-
