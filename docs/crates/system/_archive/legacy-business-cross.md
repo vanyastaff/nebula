@@ -27,4 +27,3 @@ if detector.detect_pressure(&metrics).contains(&ResourcePressure::MemoryCritical
     // Trigger cleanup or scale-out
 }
 ```
-

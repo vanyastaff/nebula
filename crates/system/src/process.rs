@@ -87,8 +87,8 @@ pub fn current() -> SystemResult<ProcessInfo> {
 
     #[cfg(not(feature = "process"))]
     {
-        Err(SystemError::NotSupported(
-            "Process feature not enabled".to_string(),
+        Err(SystemError::feature_not_supported(
+            "Process feature not enabled",
         ))
     }
 }
@@ -132,14 +132,14 @@ pub fn get_process(pid: u32) -> SystemResult<ProcessInfo> {
                 gid: None,
             })
         } else {
-            Err(SystemError::NotFound(format!("Process {} not found", pid)))
+            Err(SystemError::resource_not_found(format!("Process {} not found", pid)))
         }
     }
 
     #[cfg(not(feature = "process"))]
     {
-        Err(SystemError::NotSupported(
-            "Process feature not enabled".to_string(),
+        Err(SystemError::feature_not_supported(
+            "Process feature not enabled",
         ))
     }
 }
@@ -263,13 +263,10 @@ pub fn kill(pid: u32) -> SystemResult<()> {
             if process.kill() {
                 Ok(())
             } else {
-                Err(SystemError::PlatformError {
-                    message: "Failed to kill process".to_string(),
-                    code: None,
-                })
+                Err(SystemError::platform_error("Failed to kill process"))
             }
         } else {
-            Err(SystemError::NotFound(format!(
+            Err(SystemError::resource_not_found(format!(
                 "Process {} not found",
                 pid.as_u32()
             )))
@@ -278,8 +275,8 @@ pub fn kill(pid: u32) -> SystemResult<()> {
 
     #[cfg(not(feature = "process"))]
     {
-        Err(SystemError::NotSupported(
-            "Process feature not enabled".to_string(),
+        Err(SystemError::feature_not_supported(
+            "Process feature not enabled",
         ))
     }
 }
@@ -325,10 +322,10 @@ pub fn set_priority(pid: u32, priority: Priority) -> SystemResult<()> {
         // The syscall returns 0 on success or -1 on failure (sets errno).
         unsafe {
             if setpriority(PRIO_PROCESS, pid as u32, nice_value) != 0 {
-                return Err(SystemError::PlatformError {
-                    message: "Failed to set process priority".to_string(),
-                    code: Some(std::io::Error::last_os_error().raw_os_error().unwrap_or(0)),
-                });
+                return Err(SystemError::platform_error(format!(
+                    "Failed to set process priority: {}",
+                    std::io::Error::last_os_error()
+                )));
             }
         }
 
@@ -337,8 +334,8 @@ pub fn set_priority(pid: u32, priority: Priority) -> SystemResult<()> {
 
     #[cfg(not(all(feature = "process", unix)))]
     {
-        Err(SystemError::NotSupported(
-            "Process priority not supported on this platform".to_string(),
+        Err(SystemError::feature_not_supported(
+            "Process priority not supported on this platform",
         ))
     }
 }
