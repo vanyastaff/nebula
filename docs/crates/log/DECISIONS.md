@@ -97,3 +97,25 @@
 **Migration impact:** None.
 
 **Validation plan:** Config round-trip and preset tests.
+
+---
+
+## D006: Staged Hook Budget Policy
+
+**Status:** Adopt
+
+**Context:** Phase 2 needs bounded hook execution behavior without immediate async queue complexity.
+
+**Decision:** Keep current staged model:
+- v1: `HookPolicy::Bounded` uses inline dispatch with execution-budget diagnostics.
+- v2: async offload queue and drop accounting are deferred until explicit rollout.
+
+**Alternatives considered:** Ship only full async offload; keep inline-only policy indefinitely.
+
+**Trade-offs:** Faster delivery and lower risk now; incomplete latency isolation until v2.
+
+**Consequences:** Operators can detect slow hooks today; throughput isolation remains future work.
+
+**Migration impact:** None for current API; future async mode remains opt-in.
+
+**Validation plan:** `tests/hook_policy.rs` plus runtime docs for budget/backpressure semantics.

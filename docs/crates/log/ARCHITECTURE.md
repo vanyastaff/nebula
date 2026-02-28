@@ -30,7 +30,9 @@
 
 ## Target Architecture
 
-- **Target module map:** Same structure; add `HookPolicy` (inline vs bounded-async) and typed event keys.
+- **Target module map:** Same structure; keep `HookPolicy` with staged evolution:
+  - current: `Inline` and `Bounded` (inline dispatch + budget diagnostics)
+  - planned: optional async offload mode with queue accounting and drop strategy
 - **Public contract boundaries:**
   - `nebula-log` is a leaf infra crate; no domain crates as dependencies
   - consumers: `core`, `action`, `config`, `credential`, `expression`, `memory`, `resilience`
@@ -61,5 +63,5 @@ Sources: n8n, Node-RED, Activepieces/Activeflow, Temporal/Prefect/Airflow.
 
 ## Open Questions
 
-- Q1: Should hook budget policy be opt-in or default for high-throughput deployments?
+- Q1: Should async hook offload remain opt-in even after implementation for high-throughput deployments?
 - Q2: Preferred deprecation window for string-only event names (6 or 12 months)?

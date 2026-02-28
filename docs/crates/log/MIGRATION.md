@@ -19,8 +19,9 @@
 
 - **Hook policy (P-001):**
   - Old behavior: Inline hook execution only
-  - New behavior: Optional `BoundedAsync` mode
-  - Migration steps: Default unchanged; opt-in for new behavior
+  - Current behavior: Optional `Bounded` mode with budget diagnostics (inline dispatch)
+  - Deferred behavior: Optional async offload mode with queue/drop accounting
+  - Migration steps: Default unchanged; opt-in for bounded policy, and later opt-in for async offload when available
 
 ## Rollout Plan
 

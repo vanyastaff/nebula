@@ -6,17 +6,19 @@
 
 **Motivation:** Hooks execute inline during `emit_event`; slow hooks increase tail latency.
 
-**Proposal:** Introduce optional hook budget policy: max execution time per hook, optional async offload queue, drop/shed strategy with counters.
+**Proposal:** Introduce optional hook budget policy:
+- v1 (implemented): max execution time budget per hook with over-budget diagnostics
+- v2 (deferred): async offload queue with explicit drop/shed strategy and counters
 
-**Expected benefits:** Bounded latency; protection from slow hooks.
+**Expected benefits:** Better visibility of slow hooks now; bounded-latency controls later.
 
-**Costs:** New config surface; behavioral change when enabled.
+**Costs:** New policy surface; deferred async queue adds future complexity.
 
 **Risks:** Hook order/timing changes; possible event drops.
 
-**Compatibility impact:** Default remains `Inline`; opt-in `BoundedAsync` mode.
+**Compatibility impact:** Default remains `Inline`; current opt-in `Bounded` mode is non-breaking.
 
-**Status:** Draft
+**Status:** Partially Implemented (v1 in place, async offload deferred)
 
 ---
 

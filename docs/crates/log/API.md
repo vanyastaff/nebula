@@ -74,6 +74,11 @@ Current contract:
 - **Major version bump:** Removal of deprecated APIs, config schema breaking changes, trait signature changes.
 - **Deprecation policy:** Minimum 6 months with `#[deprecated]` and migration guide in MIGRATION.md.
 
+Hook policy note:
+
+- `set_hook_policy(HookPolicy::Bounded { ... })` currently keeps inline dispatch and adds budget-overrun diagnostics.
+- async hook offload is planned separately and is not part of current contract.
+
 ## Env and Precedence Contract
 
 Startup precedence is deterministic:
