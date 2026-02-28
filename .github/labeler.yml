@@ -1,0 +1,20 @@
+# Basic labeler configuration for PRs.
+#
+# Example:
+# - Touching only docs -> label "docs"
+# - Touching only workflows -> label "ci"
+
+docs:
+  - 'docs/**'
+
+ci:
+  - '.github/workflows/**'
+
+rust:
+  - 'crates/**'
+  - 'plugins/**'
+
+release:
+  - 'CHANGELOG.md'
+  - 'Cargo.toml'
+

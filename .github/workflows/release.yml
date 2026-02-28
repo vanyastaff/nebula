@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: 'Release level (patch, minor, major)'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Install cargo-release
+        run: cargo install cargo-release
+
+      - name: Bump version with cargo-release
+        run: |
+          cargo release version ${{ github.event.inputs.level }} \
+            --no-confirm \
+            --execute
+
+      - name: Install git-cliff
+        run: cargo install git-cliff
+
+      - name: Generate CHANGELOG
+        run: git cliff -o CHANGELOG.md
+
+      - name: Commit changelog and version
+        run: |
+          git add Cargo.toml **/Cargo.toml CHANGELOG.md
+          git commit -m "chore: release"
+
+      - name: Push changes
+        run: git push
+
+      - name: Tag release
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "v$VERSION"
+

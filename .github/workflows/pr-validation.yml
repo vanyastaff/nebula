@@ -1,0 +1,27 @@
+name: PR Validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  lint-metadata:
+    name: Validate PR metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check commit messages
+        uses: wagoid/commitlint-github-action@v5
+
+      - name: Check PR title
+        uses: deepakputhraya/action-pr-title@master
+        with:
+          regex: '^(feat|fix|docs|style|refactor|perf|test|chore)(\(.+\))?: .+'
+
+      - name: Auto label PR
+        uses: actions/labeler@v4
+        with:
+          repo-token: '${{ secrets.GITHUB_TOKEN }}'
+
