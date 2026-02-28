@@ -44,3 +44,11 @@ Dependency direction:
 - wide feature matrix for providers and protocols
 - large rotation subsystem with many safety components
 - extensive internal docs in `crates/credential/docs/` require synchronization discipline
+
+## Comparative Analysis
+
+Sources: n8n, Node-RED, Activepieces/Activeflow, Temporal/Prefect/Airflow (credential-relevant parts).
+
+- **Adopt:** Encrypted credential storage; scope/tenant isolation; provider abstraction; OAuth2 flows; credential type schemas; rotation with grace period
+- **Reject:** Plaintext credential storage; global credential namespace; credentials in workflow JSON
+- **Defer:** Credential sharing between workflows; credential versioning UI; HSM integration

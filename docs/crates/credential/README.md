@@ -2,12 +2,21 @@
 
 `nebula-credential` is Nebula's secure credential management system.
 
-It covers:
-- credential lifecycle (store/retrieve/update/delete)
-- multi-tenant scoped access via `CredentialContext`
-- protocol abstractions (`OAuth2`, API key, basic/header auth, DB, LDAP, mTLS, SAML, Kerberos)
-- pluggable storage providers (local/AWS/Vault/Kubernetes, feature-gated)
-- caching, validation, and rotation orchestration
+## Scope
+
+- **In scope:** Credential lifecycle (store/retrieve/update/delete); multi-tenant scoped access; protocol abstractions (OAuth2, API key, basic/header auth, DB, LDAP, mTLS, SAML, Kerberos); pluggable storage providers (local/AWS/Vault/Kubernetes); caching; validation; rotation orchestration
+- **Out of scope:** Workflow business logic; API/CLI transport; UI rendering
+
+## Current State
+
+- **maturity:** Production-oriented; manager, providers, rotation subsystem implemented
+- **key strengths:** Provider abstraction; scope isolation; encryption at rest; protocol extensibility
+- **key risks:** Wide feature matrix; rotation state machine complexity; provider capability variance
+
+## Target State
+
+- **production criteria:** Stable API subsets; formal scope enforcement; provider capability matrix; audit coverage
+- **compatibility guarantees:** See MIGRATION.md
 
 ## Role in Platform
 
@@ -24,10 +33,20 @@ Actions/plugins should access credentials through provider abstractions, not dir
 - `traits` - storage/locking/credential behavior traits
 - `utils` - crypto/secret/time/retry helpers
 
-## Document Set
+## Document Map
 
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [API.md](API.md)
+- [INTERACTIONS.md](INTERACTIONS.md)
 - [DECISIONS.md](DECISIONS.md)
 - [ROADMAP.md](ROADMAP.md)
 - [PROPOSALS.md](PROPOSALS.md)
+- [SECURITY.md](SECURITY.md)
+- [RELIABILITY.md](RELIABILITY.md)
+- [TEST_STRATEGY.md](TEST_STRATEGY.md)
+- [MIGRATION.md](MIGRATION.md)
+
+## Archive
+
+Legacy material:
+- [`_archive/`](./_archive/)
