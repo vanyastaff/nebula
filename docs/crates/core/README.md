@@ -1,35 +1,22 @@
 # nebula-core
 
-`nebula-core` is the foundation crate for the Nebula automation platform (n8n-like, but in Rust).
+Foundation crate for the Nebula workflow automation platform (n8n-class). Defines the shared vocabulary used by every other crate.
 
-It defines the shared language that every other crate uses:
-- typed IDs (`ExecutionId`, `WorkflowId`, `NodeId`, ...)
-- scope model (`ScopeLevel`)
-- base traits (`Scoped`, `HasContext`, `Identifiable`, ...)
-- common domain types (`Status`, `Priority`, `OperationContext`, ...)
-- common error model (`CoreError`)
-- validated keys (`PluginKey`, `ParameterKey`, `CredentialKey`)
-- system defaults and limits (`constants`)
+## Scope
 
-## Current Reality (from code)
+- **In scope:** Typed IDs, scope model, base traits, common domain types, error model, validated keys, system constants. Zero business logic, orchestration, storage, or transport.
+- **Out of scope:** Workflow execution, node scheduling, persistence, API/CLI/UI, plugin runtime.
 
-- Crate: `crates/core`
-- Rust edition: `2024`
-- Workspace minimum Rust: `1.92` (see root `Cargo.toml`)
-- Main modules:
-  - `id`
-  - `scope`
-  - `traits`
-  - `types`
-  - `error`
-  - `keys`
-  - `constants`
+## Current State
 
-## Why It Exists
+- **Maturity:** Stable foundation; APIs aligned with workspace usage.
+- **Key strengths:** Zero cyclic dependencies; type-safe IDs; serde-first types; comprehensive error taxonomy.
+- **Key risks:** `CoreError` mixes foundation and domain variants (see PROPOSALS); scope containment semantics simplified in some cases.
 
-For a workflow platform with many crates (`engine`, `runtime`, `storage`, `api`, `sdk`, ...), this crate prevents cyclic dependencies by keeping shared primitives in one place.
+## Target State
 
-Every higher-level crate should depend on `nebula-core`, and almost never depend on each other for fundamental types.
+- **Production criteria:** Explicit compatibility policy; stable serialized schemas; strict scope containment where security matters.
+- **Compatibility guarantees:** Patch/minor preserve public API and serialized forms; breaking changes via major version and MIGRATION.md.
 
 ## Quick Example
 
@@ -54,10 +41,20 @@ assert!(ctx.has_execution_context());
 assert!(scope.is_action());
 ```
 
-## Document Set
+## Document Map
 
-- [ARCHITECTURE.md](ARCHITECTURE.md)
-- [API.md](API.md)
-- [DECISIONS.md](DECISIONS.md)
-- [ROADMAP.md](ROADMAP.md)
-- [PROPOSALS.md](PROPOSALS.md)
+- [ARCHITECTURE.md](./ARCHITECTURE.md)
+- [API.md](./API.md)
+- [INTERACTIONS.md](./INTERACTIONS.md)
+- [DECISIONS.md](./DECISIONS.md)
+- [ROADMAP.md](./ROADMAP.md)
+- [PROPOSALS.md](./PROPOSALS.md)
+- [SECURITY.md](./SECURITY.md)
+- [RELIABILITY.md](./RELIABILITY.md)
+- [TEST_STRATEGY.md](./TEST_STRATEGY.md)
+- [MIGRATION.md](./MIGRATION.md)
+
+## Archive
+
+Legacy material:
+- [`_archive/`](./_archive/)

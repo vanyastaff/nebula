@@ -1,52 +1,82 @@
 # Architecture
 
+## Problem Statement
+
+- **Business problem:** A workflow automation platform (n8n-class) needs many crates (engine, runtime, storage, credential, action, api, etc.). Without a shared foundation, crates would depend on each other for primitives, leading to cyclic dependencies and fragile evolution.
+- **Technical problem:** How to provide a single, stable vocabulary layer that all crates can depend on without introducing cycles or coupling to domain logic.
+
 ## Role in the Workspace
 
 `nebula-core` is the canonical vocabulary layer for the whole platform.
 
-Dependency direction should be:
+Dependency direction:
 
-`nebula-*` domain crates -> `nebula-core`
-
-and not:
-
-`nebula-core` -> domain crates
+- `nebula-*` domain crates → `nebula-core`
+- `nebula-core` → no Nebula crates
 
 This keeps the graph acyclic and allows independent evolution of engine/runtime/storage/api layers.
 
-## Internal Module Boundaries
+## Current Architecture
 
-- `id.rs`
-  - strongly typed UUID wrappers via `domain-key`
-  - compile-time separation between ID domains
-- `scope.rs`
-  - lifecycle and ownership hierarchy (`Global` -> `Organization` -> `Project` -> `Workflow` -> `Execution` -> `Action`)
-  - `ScopedId` helper for scope-bound identifiers
-- `traits.rs`
-  - shared behavior contracts used across crates
-  - includes `Scoped`, `HasContext`, `Identifiable`, `Validatable`, `Serializable`, metadata traits
-- `types.rs`
-  - shared data/value types and utility functions
-  - versioning, status, priorities, operation metadata
-- `error.rs`
-  - `CoreError` classification and conversions from common std/library errors
-- `keys.rs`
-  - normalized and validated plugin/key types
-- `constants.rs`
-  - default values, limits, env var names, and reusable platform constants
+### Module Map
 
-## Design Constraints
+| Module | File | Responsibility |
+|--------|------|----------------|
+| `id` | `id.rs` | Strongly typed UUID wrappers via `domain-key`; compile-time separation between ID domains |
+| `scope` | `scope.rs` | Lifecycle hierarchy (`Global` → `Organization` → `Project` → `Workflow` → `Execution` → `Action`); `ScopedId` |
+| `traits` | `traits.rs` | `Scoped`, `HasContext`, `Identifiable`, `Validatable`, `Serializable`, metadata traits |
+| `types` | `types.rs` | `Version`, `InterfaceVersion`, `Status`, `Priority`, `OperationResult`, `OperationContext` |
+| `error` | `error.rs` | `CoreError` taxonomy; conversions from std/serde/uuid/chrono |
+| `keys` | `keys.rs` | `PluginKey`, `ParameterKey`, `CredentialKey` with normalization/validation |
+| `constants` | `constants.rs` | Defaults, limits, env vars, patterns |
 
-- Foundation APIs must be stable and conservative.
-- Types should be serde-friendly for API/storage boundaries.
-- IDs should remain cheap-to-copy and misuse-resistant.
-- Error surface should stay explicit and machine-classifiable.
+### Data/Control Flow
 
-## Non-Goals
+- **Data:** IDs and context flow outward from core into consumers. No data flows into core from other Nebula crates.
+- **Control:** Core is passive; consumers call into core types and traits. No callbacks or plugins in core.
 
-- No business logic orchestration.
-- No storage backend logic.
-- No runtime scheduling.
-- No transport/API framework concerns.
+### Known Bottlenecks
 
-Those belong to other crates (`engine`, `runtime`, `storage`, `api`, etc.).
+- `ScopeLevel::is_contained_in` uses simplified semantics (e.g., execution/workflow containment not fully verified).
+- `constants.rs` contains domain-specific defaults that may belong in owning crates.
+
+## Target Architecture
+
+- **Target module map:** Same structure; stricter boundaries. Foundation-only `CoreError`; domain variants moved to owning crates (see PROPOSALS).
+- **Public contract boundaries:** IDs, scope, traits, types, keys, constants. No runtime, storage, or transport.
+- **Internal invariants:** All public types `Serialize + Deserialize`; IDs `Copy`; no heap in ID hot paths.
+
+## Design Reasoning
+
+- **Typed IDs vs strings:** Adopt typed IDs. Compile-time safety outweighs minor conversion overhead at boundaries.
+- **Single error enum vs per-crate errors:** Core keeps broad `CoreError` for foundation concerns; domain crates define their own. Defer full split (P-001).
+- **Scope as enum vs trait:** Adopt enum. Explicit hierarchy; serde-friendly; no dynamic dispatch.
+
+### Rejected Alternatives
+
+- **Generic ID type:** Rejected. Loses domain semantics and type safety.
+- **Core depending on domain crates:** Rejected. Would create cycles.
+
+## Comparative Analysis
+
+Sources: n8n, Node-RED, Activepieces/Activeflow, Temporal/Prefect/Airflow.
+
+| Pattern | Decision | Rationale |
+|---------|----------|-----------|
+| Typed identifiers | **Adopt** | n8n/Temporal use string IDs; Rust enables type safety without runtime cost |
+| Scope/lifecycle hierarchy | **Adopt** | Similar to workflow/execution scoping in Temporal; explicit cleanup boundaries |
+| Central error vocabulary | **Adopt** | Common in platform codebases; enables consistent retry/classification |
+| Plugin key normalization | **Adopt** | n8n-style plugin keys; prevents casing/whitespace bugs |
+| Domain errors in core | **Reject** | P-001 proposes moving to owning crates; cleaner boundaries |
+| Dynamic scope resolution | **Defer** | P-002 proposes strict containment; requires resolver trait |
+
+## Breaking Changes (if any)
+
+- P-001: Moving `CoreError` domain variants to owning crates — major version; migration in MIGRATION.md.
+- P-002: Strict scope containment — major version; runtime/engine must provide resolver.
+- P-003: Constants migration — major version; import path changes.
+
+## Open Questions
+
+- Q1: Should `ScopeLevel` include `Session` or `Request` scopes for API layer?
+- Q2: Should `InterfaceVersion` be used for all cross-boundary types, or only plugin/API schemas?
