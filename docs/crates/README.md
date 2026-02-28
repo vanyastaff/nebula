@@ -56,7 +56,11 @@ nebula-log ◄── everything (no business logic)
 ## Per-Crate Documentation
 
 - [core.md](./core.md) — `nebula-core`
-- [action.md](./action.md) — `nebula-action`
-- [resource.md](./resource.md) — `nebula-resource`
+- [execution/README.md](./execution/README.md) — `nebula-execution`
+- [action/README.md](./action/README.md) — `nebula-action`
+- [parameter/README.md](./parameter/README.md) — `nebula-parameter`
+- [resource/README.md](./resource/README.md) — `nebula-resource`
 - [credential.md](./credential.md) — `nebula-credential`
-- [sdk.md](./sdk.md) — `nebula-sdk`
+- [sdk/README.md](./sdk/README.md) — `nebula-sdk`
+- [validator/README.md](./validator/README.md) — `nebula-validator`
+

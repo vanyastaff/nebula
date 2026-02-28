@@ -137,3 +137,31 @@ pub enum Error {
 
 Every other crate may depend on `nebula-core`, but `nebula-core` depends on nothing in the
 workspace.
+
+## Archived Ideas (from `docs/archive/architecture-v2.md`)
+
+These are intentionally kept as historical design notes, not current implementation.
+
+### Workflow graph model
+
+```rust
+pub struct Workflow {
+    pub id: WorkflowId,
+    pub name: String,
+    pub version: Version,
+    pub graph: WorkflowGraph,
+    pub metadata: WorkflowMetadata,
+}
+
+pub struct WorkflowGraph {
+    pub nodes: HashMap<NodeId, Node>,
+    pub edges: Vec<Edge>,
+    pub subgraphs: HashMap<SubgraphId, WorkflowGraph>,
+}
+```
+
+### Type-safe connections idea
+
+- `TypedConnection<From, To>` with `PhantomData` was proposed for compile-time port compatibility.
+- `TypedPort` trait was proposed to validate connection rules by data type.
+- This is still a design direction; current runtime graph compatibility checks remain the source of truth.
