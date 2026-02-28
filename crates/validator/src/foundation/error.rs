@@ -15,6 +15,19 @@ use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::fmt;
 
+// Canonical error codes used by built-in validators and combinators.
+pub mod codes {
+    pub const REQUIRED: &str = "required";
+    pub const MIN_LENGTH: &str = "min_length";
+    pub const MAX_LENGTH: &str = "max_length";
+    pub const INVALID_FORMAT: &str = "invalid_format";
+    pub const TYPE_MISMATCH: &str = "type_mismatch";
+    pub const OUT_OF_RANGE: &str = "out_of_range";
+    pub const EXACT_LENGTH: &str = "exact_length";
+    pub const LENGTH_RANGE: &str = "length_range";
+    pub const CUSTOM: &str = "custom";
+}
+
 // ============================================================================
 // ERROR EXTRAS (Boxed for rare fields)
 // ============================================================================
@@ -64,7 +77,7 @@ impl Default for ErrorExtras {
 /// - `code`: 24 bytes (Cow<'static, str>)
 /// - `message`: 24 bytes (Cow<'static, str>)
 /// - `field`: 24 bytes (Option<Cow<'static, str>>)
-/// - `extras`: 8 bytes (Option<Box<ErrorExtras>>)
+/// - `extras`: 8 bytes (`Option<Box<ErrorExtras>>`)
 ///
 /// # Examples
 ///
@@ -111,7 +124,7 @@ pub struct ValidationError {
 
     /// Optional field path for nested object validation.
     ///
-    /// Examples: "user.email", "address.zipcode", "items[0].name"
+    /// Examples: "user.email", "address.zipcode", "items\[0\].name"
     pub field: Option<Cow<'static, str>>,
 
     /// Extended error data (params, nested, severity, help).
@@ -178,7 +191,9 @@ impl ValidationError {
         key: impl Into<Cow<'static, str>>,
         value: impl Into<Cow<'static, str>>,
     ) -> Self {
-        self.extras_mut().params.push((key.into(), value.into()));
+        let key = key.into();
+        let value = redact_if_sensitive(&key, value.into());
+        self.extras_mut().params.push((key, value));
         self
     }
 
@@ -373,25 +388,31 @@ impl ValidationError {
     /// Creates a "required" error.
     #[inline]
     pub fn required(field: impl Into<Cow<'static, str>>) -> Self {
-        Self::new("required", "This field is required").with_field(field)
+        Self::new(codes::REQUIRED, "This field is required").with_field(field)
     }
 
     /// Creates a "min_length" error.
     #[inline]
     pub fn min_length(field: impl Into<Cow<'static, str>>, min: usize, actual: usize) -> Self {
-        Self::new("min_length", format!("Must be at least {min} characters"))
-            .with_field(field)
-            .with_param("min", min.to_string())
-            .with_param("actual", actual.to_string())
+        Self::new(
+            codes::MIN_LENGTH,
+            format!("Must be at least {min} characters"),
+        )
+        .with_field(field)
+        .with_param("min", min.to_string())
+        .with_param("actual", actual.to_string())
     }
 
     /// Creates a "max_length" error.
     #[inline]
     pub fn max_length(field: impl Into<Cow<'static, str>>, max: usize, actual: usize) -> Self {
-        Self::new("max_length", format!("Must be at most {max} characters"))
-            .with_field(field)
-            .with_param("max", max.to_string())
-            .with_param("actual", actual.to_string())
+        Self::new(
+            codes::MAX_LENGTH,
+            format!("Must be at most {max} characters"),
+        )
+        .with_field(field)
+        .with_param("max", max.to_string())
+        .with_param("actual", actual.to_string())
     }
 
     /// Creates an "invalid_format" error.
@@ -400,7 +421,7 @@ impl ValidationError {
         field: impl Into<Cow<'static, str>>,
         expected: impl Into<Cow<'static, str>>,
     ) -> Self {
-        Self::new("invalid_format", "Invalid format")
+        Self::new(codes::INVALID_FORMAT, "Invalid format")
             .with_field(field)
             .with_param("expected", expected)
     }
@@ -412,7 +433,7 @@ impl ValidationError {
         expected: impl Into<Cow<'static, str>>,
         actual: impl Into<Cow<'static, str>>,
     ) -> Self {
-        Self::new("type_mismatch", "Type mismatch")
+        Self::new(codes::TYPE_MISMATCH, "Type mismatch")
             .with_field(field)
             .with_param("expected", expected)
             .with_param("actual", actual)
@@ -427,7 +448,7 @@ impl ValidationError {
         actual: T,
     ) -> Self {
         Self::new(
-            "out_of_range",
+            codes::OUT_OF_RANGE,
             format!("Value must be between {min} and {max}"),
         )
         .with_field(field)
@@ -444,7 +465,7 @@ impl ValidationError {
         actual: usize,
     ) -> Self {
         Self::new(
-            "exact_length",
+            codes::EXACT_LENGTH,
             format!("Must be exactly {expected} characters"),
         )
         .with_field(field)
@@ -461,7 +482,7 @@ impl ValidationError {
         actual: usize,
     ) -> Self {
         Self::new(
-            "length_range",
+            codes::LENGTH_RANGE,
             format!("Must be between {min} and {max} characters"),
         )
         .with_field(field)
@@ -473,7 +494,25 @@ impl ValidationError {
     /// Creates a "custom" error with a message.
     #[inline]
     pub fn custom(message: impl Into<Cow<'static, str>>) -> Self {
-        Self::new("custom", message)
+        Self::new(codes::CUSTOM, message)
+    }
+}
+
+#[inline]
+fn redact_if_sensitive(key: &str, value: Cow<'static, str>) -> Cow<'static, str> {
+    let lowered = key.to_ascii_lowercase();
+    let sensitive = [
+        "password",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "credential",
+    ];
+    if sensitive.iter().any(|pattern| lowered.contains(pattern)) {
+        Cow::Borrowed("[REDACTED]")
+    } else {
+        value
     }
 }
 
@@ -732,5 +771,17 @@ mod tests {
         let error_with = ValidationError::new("test", "Test")
             .with_nested(vec![ValidationError::new("child", "Child")]);
         assert!(error_with.has_nested());
+    }
+
+    #[test]
+    fn test_sensitive_params_are_redacted() {
+        let error = ValidationError::new("auth", "Authentication failed")
+            .with_param("password", "super-secret")
+            .with_param("token", "api-token-123")
+            .with_param("username", "alice");
+
+        assert_eq!(error.param("password"), Some("[REDACTED]"));
+        assert_eq!(error.param("token"), Some("[REDACTED]"));
+        assert_eq!(error.param("username"), Some("alice"));
     }
 }

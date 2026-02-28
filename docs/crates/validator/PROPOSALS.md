@@ -46,7 +46,12 @@ Risks:
 Compatibility impact:
 - low if introduced as additive enforcement.
 
-Status: Review
+Status: In Progress (baseline adopted)
+
+Governance classification:
+
+- minor release: additive code registration only.
+- major release: code meaning changes or removals with migration map.
 
 ## P003: Typed FieldPath
 
@@ -70,7 +75,7 @@ Risks:
 Compatibility impact:
 - likely major-version change.
 
-Status: Draft
+Status: Draft (major-version candidate only)
 
 ## P004: Schema bridge layer for plugin ecosystem
 

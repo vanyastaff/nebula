@@ -44,6 +44,35 @@
 - CI quality gates:
   - `cargo fmt`, `clippy`, `test`, selected benches for regression checks.
 
+## Contract Suite (Current)
+
+- `tests/contract/compatibility_fixtures_test.rs`
+- `tests/contract/typed_dynamic_equivalence_test.rs`
+- `tests/contract/combinator_semantics_contract_test.rs`
+- `tests/contract/adversarial_inputs_test.rs`
+- `tests/contract/error_envelope_schema_test.rs`
+- `tests/contract/safe_diagnostics_test.rs`
+- `tests/contract/error_tree_bounds_test.rs`
+- `tests/contract/governance_policy_test.rs`
+- `tests/contract/migration_requirements_test.rs`
+
+## CI Quality Gates (Validator-focused)
+
+Recommended commands:
+
+```bash
+cargo test -p nebula-validator
+cargo bench -p nebula-validator
+cargo fmt --all -- --check
+cargo clippy --workspace -- -D warnings
+cargo check --workspace --all-targets
+cargo doc --no-deps --workspace
+```
+
+Benchmark policy:
+
+- regressions above agreed budget on hot combinator chains must fail CI.
+
 ## Exit Criteria
 
 - coverage goals:

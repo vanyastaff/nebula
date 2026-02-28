@@ -301,4 +301,22 @@ mod tests {
 
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
+
+    #[test]
+    fn test_cached_preserves_validation_semantics() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let raw = CountingValidator {
+            min: 5,
+            call_count: call_count.clone(),
+        };
+        let wrapped = Cached::new(CountingValidator { min: 5, call_count });
+
+        let raw_ok = raw.validate("hello");
+        let cached_ok = wrapped.validate("hello");
+        assert_eq!(raw_ok.is_ok(), cached_ok.is_ok());
+
+        let raw_err = raw.validate("hi").unwrap_err();
+        let cached_err = wrapped.validate("hi").unwrap_err();
+        assert_eq!(raw_err.code, cached_err.code);
+    }
 }

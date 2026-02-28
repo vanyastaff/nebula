@@ -19,6 +19,8 @@
   - optional memoization/cache may degrade performance if disabled.
 - data corruption:
   - incorrect validation acceptance/rejection is the primary reliability risk.
+- oversized diagnostics:
+  - deeply nested invalid payloads can create large nested error trees.
 
 ## Resilience Strategies
 
@@ -30,6 +32,8 @@
   - callers may fall back to simplified validation profile under pressure.
 - graceful degradation:
   - switch to fail-fast mode to cap resource usage in overload conditions.
+- bounded diagnostics:
+  - cap nested error-tree size at caller policy boundary for large payloads.
 
 ## Operational Runbook
 
@@ -40,8 +44,13 @@
 - incident triage steps:
   1. identify impacted validators and input patterns
   2. isolate regression vs attack traffic pattern
-  3. apply temporary policy caps/fail-fast
-  4. ship targeted fix and regression tests
+3. apply temporary policy caps/fail-fast
+4. ship targeted fix and regression tests
+
+Error-tree handling notes:
+
+- use collect-all only where downstream consumers need full diagnostics.
+- use fail-fast profile on high-traffic boundaries under stress.
 
 ## Capacity Planning
 

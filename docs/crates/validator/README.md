@@ -31,6 +31,14 @@ Composable validation framework for Nebula crates and runtime boundaries.
   - minor versions: additive validators/combinators only
   - major versions: explicit migration guide for behavior-significant changes
 
+## Contract Hardening Baseline
+
+- canonical public contract: `Validate<T>`, `ValidateExt<T>`, `ValidationError`, `ValidationErrors`
+- compatibility fixtures: `crates/validator/tests/fixtures/compat/minor_contract_v1.json`
+- contract test suite: `crates/validator/tests/contract/*`
+- migration authority: `MIGRATION.md` with explicit old->new mapping for behavior-significant changes
+- minor release rule: additive-only changes to validators/combinators and helpers
+
 ## Document Map
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md)

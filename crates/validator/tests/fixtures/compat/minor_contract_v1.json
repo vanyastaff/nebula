@@ -1,0 +1,32 @@
+[
+  {
+    "id": "username-valid",
+    "scenario": "alphanumeric username in allowed length",
+    "input": "alice123",
+    "expected": {
+      "pass": true,
+      "error_code": null,
+      "field_path": null
+    }
+  },
+  {
+    "id": "username-too-short",
+    "scenario": "username shorter than minimum",
+    "input": "ab",
+    "expected": {
+      "pass": false,
+      "error_code": "min_length",
+      "field_path": null
+    }
+  },
+  {
+    "id": "username-invalid-char",
+    "scenario": "username contains unsupported character",
+    "input": "alice_123",
+    "expected": {
+      "pass": false,
+      "error_code": "alphanumeric",
+      "field_path": null
+    }
+  }
+]

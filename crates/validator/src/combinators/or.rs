@@ -57,6 +57,7 @@ where
     R: Validate<T>,
 {
     fn validate(&self, input: &T) -> Result<(), ValidationError> {
+        // Contract: right side is evaluated only if the left side fails.
         match self.left.validate(input) {
             Ok(()) => Ok(()),
             Err(left_error) => match self.right.validate(input) {

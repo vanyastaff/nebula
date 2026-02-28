@@ -4,6 +4,7 @@
 
 - compatibility promise:
   - minor releases keep behavior-compatible validator semantics.
+  - minor releases are additive only for validators/combinators/error helpers.
   - major releases may change semantics with explicit migration steps.
 - deprecation window:
   - at least one minor release before removal of deprecated APIs (unless security-critical).
@@ -45,3 +46,18 @@
   - consumer fixtures for `api`, `workflow`, `plugin`.
 - performance checks:
   - benchmark comparison against previous baseline.
+
+## Breaking Change Mapping Template
+
+Use this table for any behavior-significant change:
+
+| Contract Area | Old Behavior | New Behavior | Version | Consumer Impact | Migration Action |
+|---|---|---|---|---|---|
+| error code | `<old_code>` | `<new_code>` | `vX.Y.0` | API/UI mapping break | map old->new in adapter |
+| field-path format | `<old_path_format>` | `<new_path_format>` | `vX.Y.0` | parser break | update path parser and fixtures |
+| combinator semantics | `<old_semantic>` | `<new_semantic>` | `vX.Y.0` | behavior drift | update tests and rollout notes |
+
+Rules:
+
+- major version required for any row that changes semantics.
+- mapping section is required before release candidate is cut.

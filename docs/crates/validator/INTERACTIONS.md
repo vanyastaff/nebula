@@ -26,6 +26,13 @@
 - Workflow compiler: expects deterministic validation output.
 - Plugin runtime: expects predictable compatibility checks.
 
+Consumer mapping expectations:
+
+- `api` maps validator `code` + `field_path` to HTTP error envelopes.
+- `workflow` maps `code` + nested tree to compile-time style diagnostics.
+- `plugin/sdk` maps `code` + field path to manifest/config feedback.
+- `runtime` consumes deterministic pass/fail semantics for preflight checks.
+
 ## Upstream Dependencies
 
 - `regex`, `serde`, `serde_json`, `smallvec`, `moka`, `thiserror`.
@@ -70,7 +77,17 @@
   - major version bump
   - provide code mapping table old -> new.
 
+Field-path compatibility:
+
+- dot-path and JSON pointer contracts are consumer-visible.
+- format changes must follow major-version migration protocol.
+
 ## Contract Tests Needed
 
 - cross-crate fixture tests for API error mapping.
 - compatibility tests for workflow/plugin configs across versions.
+- contract suite in this crate:
+  - `tests/contract/compatibility_fixtures_test.rs`
+  - `tests/contract/typed_dynamic_equivalence_test.rs`
+  - `tests/contract/governance_policy_test.rs`
+  - `tests/contract/migration_requirements_test.rs`

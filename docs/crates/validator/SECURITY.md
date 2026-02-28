@@ -20,6 +20,7 @@
   - validator logic is pure and does not require privileged side effects.
 - secret handling:
   - validators should avoid embedding sensitive values in error messages.
+  - sensitive param keys (`password`, `token`, `secret`, `api_key`, `credential`) must be redacted in diagnostics.
 - input validation:
   - strict typed validators and explicit combinator semantics.
 
@@ -54,5 +55,8 @@
   - clippy + lint checks + dependency audit.
 - dynamic tests:
   - adversarial inputs for regex/json/path validators.
+- contract tests:
+  - `tests/contract/safe_diagnostics_test.rs` to ensure diagnostics do not leak secrets.
+  - `tests/contract/error_tree_bounds_test.rs` to keep nested error structures bounded and parseable.
 - fuzz/property tests:
   - property tests for combinator invariants and error tree shape limits.
