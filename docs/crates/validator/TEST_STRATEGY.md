@@ -56,6 +56,11 @@
 - `tests/contract/governance_policy_test.rs`
 - `tests/contract/migration_requirements_test.rs`
 
+Cross-crate parity checks:
+
+- macro-generated validation parity (consumer crates using `#[derive(Config)]` + `#[validate(...)]`)
+- config category compatibility fixture checks in `nebula-config`
+
 ## CI Quality Gates (Validator-focused)
 
 Recommended commands:
@@ -68,6 +73,14 @@ cargo clippy --workspace -- -D warnings
 cargo check --workspace --all-targets
 cargo doc --no-deps --workspace
 ```
+
+Recommended split:
+
+- PR/fast profile:
+  - `cargo test -p nebula-validator`
+  - `cargo test -p nebula-macros config_derive`
+- release/full profile:
+  - full workspace checks + benches + contract fixture matrix
 
 Benchmark policy:
 

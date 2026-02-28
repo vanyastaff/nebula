@@ -31,6 +31,12 @@ Composable validation framework for Nebula crates and runtime boundaries.
   - minor versions: additive validators/combinators only
   - major versions: explicit migration guide for behavior-significant changes
 
+## Near-Term Plan
+
+- governance automation for compatibility registry and migration policy checks.
+- contract hardening for cross-crate category and field-path fixtures.
+- benchmark policy split into fast PR profile and full release profile.
+
 ## Contract Hardening Baseline
 
 - canonical public contract: `Validate<T>`, `ValidateExt<T>`, `ValidationError`, `ValidationErrors`

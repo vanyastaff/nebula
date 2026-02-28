@@ -46,12 +46,18 @@ Risks:
 Compatibility impact:
 - low if introduced as additive enforcement.
 
-Status: In Progress (baseline adopted)
+Status: In Progress (baseline adopted, automation pending)
 
 Governance classification:
 
 - minor release: additive code registration only.
 - major release: code meaning changes or removals with migration map.
+
+Remaining work:
+
+- finalize machine-readable registry artifact and ownership.
+- add CI policy check for additive-only minor changes.
+- enforce migration mapping presence for behavior-significant semantic edits.
 
 ## P003: Typed FieldPath
 
@@ -100,3 +106,30 @@ Compatibility impact:
 - low if strictly additive and clearly scoped.
 
 Status: Draft
+
+## P005: Macro ergonomics alignment (`#[derive(Config)]` + `#[validate(...)]`)
+
+Type: Non-breaking (if additive)
+
+Motivation:
+- config + validator usage should stay concise without losing explicit contracts.
+
+Proposal:
+- keep `#[validate(...)]` rules as shared field-level syntax.
+- maintain macro-generated validation pipeline aligned with canonical validator semantics.
+- document loader/format coverage and precedence guarantees as contract notes.
+
+Expected benefits:
+- lower boilerplate in consumer crates.
+- better consistency between typed/manual and macro-generated validation flows.
+
+Costs:
+- macro maintenance and additional compatibility tests.
+
+Risks:
+- silent semantic drift if macro behavior diverges from typed validators.
+
+Compatibility impact:
+- low if behavior remains semantically equivalent and additive.
+
+Status: In Progress
