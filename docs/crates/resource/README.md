@@ -1,36 +1,57 @@
 # nebula-resource
 
-Runtime resource lifecycle for Nebula workflows.
+Lifecycle and pooling runtime for external and internal resources used by workflow execution.
 
-This crate owns:
-- resource registration and dependency ordering (`Manager`, `DependencyGraph`)
-- bounded pooling with back-pressure (`Pool`, `PoolConfig`, `PoolStrategy`)
-- scope-safe access control (`Scope`, `Strategy`)
-- health monitoring and threshold callbacks (`HealthChecker`, `HealthPipeline`)
-- lifecycle observability (events, hooks, optional metrics/tracing)
-- quarantine and auto-scaling extensions
+## Scope
 
-## Why it exists
+- In scope:
+  - resource registration and dependency ordering
+  - scoped access control (tenant/workflow/execution/action)
+  - pooling, acquire back-pressure, recycling, cleanup
+  - health, quarantine, hooks, events, optional metrics/autoscaling
+  - provider contracts for runtime/action crates
+- Out of scope:
+  - business logic of actions/triggers
+  - persistence of workflow state
+  - transport-specific drivers (should live in separate crates)
 
-Workflow nodes should not construct expensive clients/connections directly.  
-`nebula-resource` centralizes creation, reuse, cleanup, and failure handling so actions/triggers can request resources safely and consistently.
+## Current State
 
-## Public entry points
+- maturity: advanced implementation with broad integration and stress test coverage.
+- key strengths:
+  - `ManagerBuilder` and `Manager` expose practical runtime knobs
+  - `Pool` handles cancellation, fairness strategy, and lifecycle transitions
+  - strict scope containment prevents cross-tenant leakage by default
+  - rich test suite covers races, shutdown, exhaustion, hooks, health, autoscaling
+- key risks:
+  - API surface is large and some paths are feature-gated, increasing integration complexity
+  - `reload_config` performs full pool swap, which can be disruptive for some resources
 
-- `Manager` / `ManagerBuilder` for registration, acquire/release, shutdown
-- `Resource` and `Config` traits for custom resource types
-- `ResourceProvider` and `ResourceRef` for decoupled access from runtime/action layers
-- `Context` and `Scope` for isolation and policy checks
+## Target State
 
-## Docs map
+- production criteria:
+  - stable cross-crate contract for runtime/action/resource usage
+  - deterministic failure semantics under load and during shutdown
+  - documented policy profiles for acquire behavior and scoping
+  - hard guarantees for no secret leakage and no resource leaks
+- compatibility guarantees:
+  - additive traits/methods/events in minor releases
+  - scope semantics, error taxonomy, and acquire contracts change only in major releases
 
-- [ARCHITECTURE.md](./ARCHITECTURE.md) - current design and runtime flow
-- [API.md](./API.md) - practical API reference with usage patterns
-- [DECISIONS.md](./DECISIONS.md) - key architectural decisions and tradeoffs
-- [ROADMAP.md](./ROADMAP.md) - staged implementation plan
-- [PROPOSALS.md](./PROPOSALS.md) - candidate improvements and breaking changes
+## Document Map
+
+- [ARCHITECTURE.md](./ARCHITECTURE.md)
+- [API.md](./API.md)
+- [INTERACTIONS.md](./INTERACTIONS.md)
+- [DECISIONS.md](./DECISIONS.md)
+- [ROADMAP.md](./ROADMAP.md)
+- [PROPOSALS.md](./PROPOSALS.md)
+- [SECURITY.md](./SECURITY.md)
+- [RELIABILITY.md](./RELIABILITY.md)
+- [TEST_STRATEGY.md](./TEST_STRATEGY.md)
+- [MIGRATION.md](./MIGRATION.md)
 
 ## Archive
 
-Previous docs and imported legacy notes were moved to:
+Legacy material:
 - [`_archive/`](./_archive/)

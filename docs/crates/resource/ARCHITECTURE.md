@@ -1,63 +1,78 @@
 # Architecture
 
-## Current structure
+## Problem Statement
 
-`nebula-resource` is organized around a central coordinator:
+- business problem:
+  - workflow nodes need stable access to expensive clients (DB, HTTP, queue, SDK) without recreating them per action.
+  - multi-tenant execution must enforce isolation while keeping high throughput.
+- technical problem:
+  - centralize lifecycle, scope checks, back-pressure, health, and observability with low runtime overhead.
 
-1. `Manager`
-2. `Pool<R>`
-3. `HealthChecker`
-4. `EventBus` + `HookRegistry`
-5. `QuarantineManager` + optional `AutoScaler`
+## Current Architecture
 
-`Manager` stores resource pools by string id, validates dependencies, enforces scope compatibility, runs hooks/events, and delegates acquire/release to pools.
+- module map:
+  - `manager`: registry/orchestration, dependency graph, shutdown, hot-reload
+  - `pool`: bounded concurrency (`Semaphore`), idle queue, recycle/cleanup, latency stats
+  - `scope`: containment model + compatibility strategies
+  - `health`, `quarantine`, `autoscale`: runtime safety controls
+  - `hooks`, `events`, `metrics`: observability and extension points
+  - `reference`: `ResourceProvider` and `ResourceRef` abstraction layer
+- data/control flow:
+  1. caller builds `Context` with scope and cancellation token.
+  2. `Manager::acquire` validates quarantine, health state, and scope compatibility.
+  3. acquire hooks run; pool acquires or creates instance; events emitted.
+  4. guard returned; on drop, release hooks and recycle/cleanup path executes.
+- known bottlenecks:
+  - contention around hot resources under strict `max_size`
+  - expensive `create()` paths during spikes
+  - full pool replacement on `reload_config`
 
-## Request flow
+## Target Architecture
 
-1. Caller builds `Context` with requested `Scope`.
-2. `Manager::acquire(resource_id, ctx)` checks:
-- quarantine status
-- health state
-- scope compatibility (`Strategy::Hierarchical`)
-3. `before` hooks run (`HookEvent::Acquire`).
-4. Pool acquires (reuse idle, or create new, or timeout/back-pressure error).
-5. `after` hooks run.
-6. Guard is returned; on drop it returns instance to pool and runs release-side hook/event logic.
+- target module map:
+  - keep current modules, add clearer policy layer for acquire modes and reload classes.
+- public contract boundaries:
+  - `Manager`, `ManagerBuilder`, `Resource`, `Config`, `ResourceProvider`, `PoolConfig`, `Scope` are stable integration contracts.
+  - hooks/events are extensibility contracts and must be versioned explicitly.
+- internal invariants:
+  - no acquire bypasses scope + quarantine + health checks.
+  - no dropped guard leaks permits or instances.
+  - failed register/reload cannot leave dependency graph in dirty state.
 
-## Scope model
+## Design Reasoning
 
-`Scope` includes parent chain information:
-- `Global`
-- `Tenant { tenant_id }`
-- `Workflow { workflow_id, tenant_id }`
-- `Execution { execution_id, workflow_id, tenant_id }`
-- `Action { action_id, execution_id, workflow_id, tenant_id }`
-- `Custom { key, value }`
+- key trade-off 1:
+  - string resource IDs keep dynamic runtime flexibility; typed wrappers reduce mismatch risk.
+- key trade-off 2:
+  - centralized manager gives uniform policy enforcement but adds a hot-path coordination layer.
+- rejected alternatives:
+  - per-node ad-hoc pools in action crates were rejected due to duplicated policy and weak isolation guarantees.
 
-Containment is deny-by-default when parent chain is incomplete. This prevents cross-tenant or cross-workflow leakage.
+## Comparative Analysis
 
-## Pool model
+Sources: n8n, Node-RED, Activepieces, Temporal, Prefect, Airflow.
 
-`Pool<R>` is generic over `Resource`:
-- bounded concurrency via `Semaphore`
-- idle queue with FIFO/LIFO strategy
-- recycle/cleanup lifecycle
-- acquire timeout and pool exhausted errors
-- optional maintenance loop for min-size replenishment and expiration cleanup
-- latency window for p50/p95/p99 stats
+- Adopt:
+  - n8n/Activepieces style centralized credential+resource access with explicit runtime contracts.
+  - Temporal style explicit failure classification and operational visibility.
+  - Airflow/Prefect style operator-level observability hooks (adapted as `hooks` + `events`).
+- Reject:
+  - Node-RED style broad mutable global context for connection objects; too risky for strict tenant isolation.
+  - implicit auto-magic retries in resource layer without policy visibility.
+- Defer:
+  - distributed global resource scheduler across workers (valuable later, not required for single-node contract stability).
+  - live zero-drop reconfiguration for all resource classes.
 
-## Health model
+## Breaking Changes (if any)
 
-Two levels:
-- inline validation in pool (`Resource::is_valid`)
-- background monitoring (`HealthChecker`, `HealthCheckConfig`)
+- change:
+  - future major may introduce typed resource keys as primary API, with string IDs as compatibility layer.
+- impact:
+  - runtime/action crates using raw IDs may require adapter migration.
+- mitigation:
+  - dual API window (`ResourceKey<T>` + existing string paths) with compile-time lint warnings.
 
-When failure threshold is exceeded, callback can quarantine resource and propagate unhealthy state.
+## Open Questions
 
-`HealthPipeline` allows staged checks with short-circuit on `Unhealthy`.
-
-## Integration boundaries
-
-- `nebula-resource` exposes `ResourceProvider` so runtime/action layers depend on trait, not concrete manager internals.
-- `nebula-credential` is optional feature (`credentials`) for secure config integration.
-- tracing/metrics are optional features and should stay additive.
+- Q1: should `reload_config` support classified in-place updates for non-destructive fields?
+- Q2: should back-pressure policy be configured per resource class or per caller context?

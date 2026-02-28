@@ -1,48 +1,61 @@
 # Roadmap
 
-## R1: Stabilize contracts (short term)
+## Phase 1: Contract and Safety Baseline
 
-- finalize `ResourceProvider` semantics for typed and dynamic acquire
-- document invariants for `Scope::contains` and compatibility checks
-- tighten error taxonomy usage (`Unavailable` vs `PoolExhausted` vs `Timeout`)
+- deliverables:
+  - finalize and publish `resource` cross-crate contracts (`INTERACTIONS`, `API`, `MIGRATION`).
+  - formalize error handling guidance (`retryable`, fatal, validation).
+  - lock scope invariants and deny-by-default behavior.
+- risks:
+  - hidden assumptions in action/runtime integration paths.
+- exit criteria:
+  - contract docs map 1:1 with implementation.
+  - no unresolved scope or error taxonomy ambiguities.
 
-Exit criteria:
-- API docs match behavior 1:1
-- no ambiguous state transitions in manager/pool tests
+## Phase 2: Runtime Hardening
 
-## R2: Production hardening
+- deliverables:
+  - strengthen shutdown and reload behavior tests under in-flight load.
+  - improve health-to-quarantine propagation observability.
+  - add operational guardrails for invalid config reload attempts.
+- risks:
+  - regressions in pool swap and long-tail create/cleanup failures.
+- exit criteria:
+  - deterministic shutdown in stress tests.
+  - no leaked permit/instance in CI race scenarios.
 
-- complete graceful shutdown test matrix (in-flight, draining, timeout paths)
-- increase property/concurrency tests around acquire/release races
-- enforce redaction guidance for credential-bearing configs
+## Phase 3: Scale and Performance
 
-Exit criteria:
-- deterministic shutdown under load
-- no leaked instances/semaphore permits in stress tests
+- deliverables:
+  - benchmark-driven tuning for acquire latency and pool contention.
+  - back-pressure policy profiles (`fail-fast`, bounded wait, adaptive) if accepted.
+  - high-cardinality metrics hygiene for multi-tenant workloads.
+- risks:
+  - policy complexity and incorrect defaults under burst traffic.
+- exit criteria:
+  - p95 acquire latency and exhaustion rates within SLO targets.
+  - no perf regressions versus current throughput baseline.
 
-## R3: Observability maturity
+## Phase 4: Ecosystem and DX
 
-- standardize event schema and versioning strategy
-- publish recommended metrics naming and labels
-- provide example dashboards and alert thresholds
+- deliverables:
+  - adapter crate guidance (`resource-postgres`, `resource-redis`, etc.).
+  - typed key migration path (if approved) and developer ergonomics updates.
+  - cookbook for runtime/action integration patterns.
+- risks:
+  - ecosystem fragmentation if adapter contracts diverge.
+- exit criteria:
+  - at least one reference adapter and end-to-end sample integration.
 
-Exit criteria:
-- health, pool, and failure signals are enough for incident triage
+## Metrics of Readiness
 
-## R4: Runtime integrations
-
-- formal integration contract with action/runtime context injection
-- typed resource aliases for common platform resources
-- improve docs for tenant/workflow/execution scoping patterns
-
-Exit criteria:
-- end-to-end examples from action call to managed resource usage
-
-## R5: Ecosystem expansion
-
-- keep drivers as separate crates (`resource-postgres`, `resource-redis`, etc.)
-- avoid duplicating pooling when upstream client already has pool
-- add compatibility matrix by driver capability (health, tls, auth, tracing)
-
-Exit criteria:
-- clear, minimal, maintainable driver ecosystem around `nebula-resource`
+- correctness:
+  - invariant tests pass for scope, shutdown, health cascade, and dependency graph consistency.
+- latency:
+  - acquire p95/p99 tracked and bounded in benchmark profile.
+- throughput:
+  - sustained concurrent acquire/release without leak or starvation.
+- stability:
+  - no flaky critical-path tests in release CI.
+- operability:
+  - actionable events/metrics for triage and capacity planning.

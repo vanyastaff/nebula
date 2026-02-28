@@ -1,62 +1,153 @@
 # Proposals
 
-## P001: Strongly typed registration keys
+Use this for non-accepted ideas before they become decisions.
 
-Idea:
-- add optional typed key wrapper for registration (`ResourceKey<T>`)
-- keep string id compatibility for dynamic runtime paths
+## P001: Typed Resource Keys
 
-Benefit:
-- fewer id mismatch bugs, clearer compile-time intent.
+Type: Breaking
 
-Potential break:
-- if made mandatory, existing string-only registration code breaks.
+Motivation:
 
-## P002: Unified resource state machine
+Reduce runtime ID mismatch and improve compile-time safety.
 
-Idea:
-- formalize instance states (`Created`, `Ready`, `Borrowed`, `Recycling`, `Quarantined`, `Destroyed`)
-- expose state transition metrics/events consistently
+Proposal:
 
-Benefit:
-- easier debugging and correctness auditing.
+Introduce `ResourceKey<T>` and dual-mode registry API (`&str` + typed) for one major cycle.
 
-Potential break:
-- event schema and hook contracts may change.
+Expected benefits:
 
-## P003: Back-pressure policy profiles
+Clearer contracts for action/runtime integration and safer refactors.
 
-Idea:
-- add explicit acquire policies: `FailFast`, `WaitWithTimeout`, `Adaptive`
-- map policies to queue length and timeout behavior
+Costs:
 
-Benefit:
-- predictable behavior for high-load workflows.
+Additional generic surface, migration complexity for plugin-driven dynamic flows.
 
-Potential break:
-- default acquire behavior may change if profile defaults are updated.
+Risks:
 
-## P004: Credential refresh hook contract
+Over-constraining dynamic workflows if migration is forced too early.
 
-Idea:
-- define first-class hook for pre-acquire credential freshness check
-- integrate with `nebula-credential` provider for short-lived tokens
+Compatibility impact:
 
-Benefit:
-- safer long-running workloads with rotating secrets.
+Major if string-only API is removed.
 
-Potential break:
-- resources that assume static credentials may need explicit opt-out.
+Status: Draft
 
-## P005: Config reload without full pool swap
+## P002: Acquire Policy Profiles
 
-Idea:
-- support partial config update categories:
-  - runtime-safe (timeouts, limits) applied in place
-  - destructive (dsn/auth) requiring staged replacement
+Type: Non-breaking
 
-Benefit:
-- lower disruption for operational tuning.
+Motivation:
 
-Potential break:
-- `reload_config` semantics and guarantees become more complex.
+Operators need explicit and predictable back-pressure modes under high load.
+
+Proposal:
+
+Add policy enum for acquire semantics: `FailFast`, `BoundedWait`, `Adaptive`.
+
+Expected benefits:
+
+Easier SLO tuning and incident response without ad-hoc timeout tuning.
+
+Costs:
+
+More configuration matrix and docs complexity.
+
+Risks:
+
+Misconfigured adaptive policy can increase tail latency.
+
+Compatibility impact:
+
+Non-breaking if default behavior remains equivalent.
+
+Status: Review
+
+## P003: Classified Reload (In-place vs Destructive)
+
+Type: Non-breaking
+
+Motivation:
+
+Current `reload_config` always swaps pool, which is heavier than needed for some changes.
+
+Proposal:
+
+Classify config fields into in-place safe updates vs destructive replacements.
+
+Expected benefits:
+
+Lower disruption and fewer cold-start penalties during operational tuning.
+
+Costs:
+
+Higher implementation complexity and stronger invariants needed.
+
+Risks:
+
+Incorrect classification can cause subtle runtime inconsistencies.
+
+Compatibility impact:
+
+Non-breaking if old behavior remains available as explicit mode.
+
+Status: Draft
+
+## P004: Resilience Bridge
+
+Type: Non-breaking
+
+Motivation:
+
+Resource and resilience crates need explicit contract for circuit state and retry budget sharing.
+
+Proposal:
+
+Define adapter interface mapping `Error` variants to resilience policies and telemetry labels.
+
+Expected benefits:
+
+Consistent behavior across runtime modules and fewer duplicated wrappers.
+
+Costs:
+
+Coordination across crates and contract testing overhead.
+
+Risks:
+
+Tight coupling if adapter API leaks resilience internals.
+
+Compatibility impact:
+
+Non-breaking with additive traits.
+
+Status: Review
+
+## P005: Distributed Resource Coordination
+
+Type: Breaking
+
+Motivation:
+
+Future multi-worker deployments may require global lease/placement for scarce resources.
+
+Proposal:
+
+Introduce optional distributed coordinator for selected resource classes.
+
+Expected benefits:
+
+Improved fairness and predictable global capacity control.
+
+Costs:
+
+Significant complexity, external dependencies, and operational burden.
+
+Risks:
+
+Availability and consistency trade-offs can degrade local reliability.
+
+Compatibility impact:
+
+Likely major for APIs exposing placement/lease semantics.
+
+Status: Defer
