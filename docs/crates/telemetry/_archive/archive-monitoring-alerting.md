@@ -392,4 +392,4 @@ impl TraceContextPropagator {
             .and_then(|traceparent| parse_traceparent(traceparent))
     }
 }
-
+```
