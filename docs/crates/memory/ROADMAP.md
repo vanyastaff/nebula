@@ -1,31 +1,58 @@
 # Roadmap
 
-## R1: API coherence pass
+## Phase 1: Contract and Safety Baseline
 
-- align naming across allocator/pool/cache config builders
-- reduce duplicated stats type names between modules
-- document stable API subset intended for external crates
+- deliverables:
+  - finalize SPEC-aligned docs and cross-crate memory contracts.
+  - define stable API subset and explicit unstable surface.
+  - document safety invariants for unsafe-heavy internals.
+- risks:
+  - hidden assumptions in consumer crates.
+- exit criteria:
+  - docs map to real code and are review-ready for runtime/action teams.
 
-## R2: Runtime safety and correctness
+## Phase 2: Runtime Hardening
 
-- expand stress/property tests for concurrent pool/cache paths
-- add explicit invariants for unsafe allocator internals
-- verify shutdown semantics for async + monitoring combinations
+- deliverables:
+  - expand concurrency/stress tests for shared pools/caches.
+  - validate pressure handling and budget enforcement under spikes.
+  - tighten error-path behavior consistency.
+- risks:
+  - contention regressions and flaky concurrency tests.
+- exit criteria:
+  - deterministic behavior in stress scenarios and no critical flaky tests.
 
-## R3: Performance profile hardening
+## Phase 3: Scale and Performance
 
-- benchmark suites per allocator strategy and workload pattern
-- clarify when to use allocator-level pool vs object pool abstractions
-- tune default configs for realistic Nebula workflow workloads
+- deliverables:
+  - benchmark-guided tuning across allocator/pool/cache modes.
+  - published sizing profiles for common workflow load classes.
+  - optimize feature-on overhead for monitoring/stats paths.
+- risks:
+  - over-optimization for synthetic benches.
+- exit criteria:
+  - measurable p95/p99 improvement on representative scenarios.
 
-## R4: Integration ergonomics
+## Phase 4: Ecosystem and DX
 
-- improve integration guides with `nebula-core` and runtime contexts
-- standardize instrumentation hooks for `nebula-log`/metrics backends
-- provide canonical examples for high-throughput action execution
+- deliverables:
+  - reference integration patterns for runtime and action crates.
+  - optional unified config bootstrap if proposal accepted.
+  - improve migration tooling/checklists for feature and API evolution.
+- risks:
+  - breaking consumer assumptions during API cleanup.
+- exit criteria:
+  - at least one fully documented end-to-end integration flow.
 
-## R5: Incremental advanced features
+## Metrics of Readiness
 
-- mature adaptive pressure policies
-- stabilize async support surface
-- evaluate split of optional experimental APIs into sibling crates if surface becomes too large
+- correctness:
+  - all critical invariants covered by tests.
+- latency:
+  - stable tail-latency behavior in benchmark suites.
+- throughput:
+  - no regressions in high-churn allocation scenarios.
+- stability:
+  - low flake rate in concurrency-heavy test sets.
+- operability:
+  - actionable metrics and pressure diagnostics in production.

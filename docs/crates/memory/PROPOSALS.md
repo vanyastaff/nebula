@@ -1,56 +1,153 @@
 # Proposals
 
-## P001: Unified config schema
+Use this for non-accepted ideas before they become decisions.
 
-Idea:
-- introduce a crate-level `MemoryRuntimeConfig` that composes allocator/pool/cache/budget configs.
+## P001: Unified Memory Runtime Config
 
-Benefit:
-- simpler integration in engine/runtime bootstrap.
+Type: Non-breaking
 
-Potential break:
-- constructor APIs may shift toward builder-based configuration.
+Motivation:
 
-## P002: Policy-driven allocator selection
+Bootstrap of allocator/pool/cache/budget configs is fragmented in runtime code.
 
-Idea:
-- route allocations through policy (`LatencyOptimized`, `ReuseOptimized`, `ThroughputOptimized`).
+Proposal:
 
-Benefit:
-- runtime can switch memory strategy without touching call sites.
+Introduce optional `MemoryRuntimeConfig` that composes existing config objects.
 
-Potential break:
-- direct allocator usage patterns may need migration to selector APIs.
+Expected benefits:
 
-## P003: Budget-to-backpressure integration
+Simpler integration and clearer policy ownership in runtime bootstrap.
 
-Idea:
-- connect memory budget pressure events to queue/scheduler backpressure decisions.
+Costs:
 
-Benefit:
-- avoids OOM-like conditions by reducing admission rate earlier.
+Additional abstraction layer and mapping complexity.
 
-Potential break:
-- behavior changes in overload scenarios (intentional but visible).
+Risks:
 
-## P004: Consistent async trait surface
+Inconsistent defaults between unified and per-module configs.
 
-Idea:
-- stabilize async wrappers around pool/cache/budget with one trait family.
+Compatibility impact:
 
-Benefit:
-- less ad-hoc async integration for runtime code.
+Non-breaking if existing constructors remain supported.
 
-Potential break:
-- existing async support module APIs may be replaced or renamed.
+Status: Review
 
-## P005: Extract experimental modules
+## P002: Policy-driven Memory Mode Selection
 
-Idea:
-- move unstable/highly experimental capabilities into sibling crates behind explicit adoption.
+Type: Non-breaking
 
-Benefit:
-- tighter core crate with clearer support guarantees.
+Motivation:
 
-Potential break:
-- import paths and feature flags for experimental APIs will change.
+Different workloads need predictable strategy profiles.
+
+Proposal:
+
+Add policy profiles (`Latency`, `Throughput`, `Reuse`, `Constrained`) that choose internal defaults.
+
+Expected benefits:
+
+Faster and safer tuning for operators.
+
+Costs:
+
+Need strong docs and benchmark-backed defaults.
+
+Risks:
+
+Wrong defaults can degrade production behavior.
+
+Compatibility impact:
+
+Non-breaking if opt-in.
+
+Status: Draft
+
+## P003: Adaptive Pressure Controller
+
+Type: Breaking
+
+Motivation:
+
+Pressure handling is currently signal-first; future may need tighter automation.
+
+Proposal:
+
+Add optional adaptive controller that can enforce budget/pool throttling policies automatically.
+
+Expected benefits:
+
+Better survival under extreme load spikes.
+
+Costs:
+
+Higher behavioral complexity and potential surprises.
+
+Risks:
+
+Implicit throttling may violate caller expectations.
+
+Compatibility impact:
+
+Potentially breaking if enabled by default.
+
+Status: Defer
+
+## P004: Async Contract Unification
+
+Type: Non-breaking
+
+Motivation:
+
+Async surfaces are useful but currently fragmented.
+
+Proposal:
+
+Define one coherent async trait family for pool/cache/budget interactions.
+
+Expected benefits:
+
+Cleaner integration with async runtime crates.
+
+Costs:
+
+Refactoring and migration adapters.
+
+Risks:
+
+Over-constraining sync-first consumers if poorly isolated.
+
+Compatibility impact:
+
+Non-breaking with additive API and adapters.
+
+Status: Review
+
+## P005: Experimental Surface Extraction
+
+Type: Breaking
+
+Motivation:
+
+Main crate size and complexity may outgrow stable-core expectations.
+
+Proposal:
+
+Move unstable experimental modules into sibling crates once contracts stabilize.
+
+Expected benefits:
+
+Tighter stable core and clearer support guarantees.
+
+Costs:
+
+Migration and import-path churn.
+
+Risks:
+
+Fragmented developer experience if split too early.
+
+Compatibility impact:
+
+Major version impact for moved APIs.
+
+Status: Defer

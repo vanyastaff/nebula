@@ -1,55 +1,66 @@
 # API
 
-## Core imports
+## Public Surface
+
+- stable APIs:
+  - `MemoryError`, `MemoryResult`, `init()`, `shutdown()`, `prelude`
+  - allocator traits and common allocators
+  - `pool::ObjectPool`, `cache::ComputeCache`, `budget::MemoryBudget`
+- experimental APIs:
+  - some `monitoring`, `profiling`, and async support surfaces are still evolving.
+- hidden/internal APIs:
+  - sealed internals and low-level implementation details in internal modules.
+
+## Usage Patterns
+
+- reuse-first: combine pools/caches with bounded budgets.
+- short-lived allocations: arena and bump-based workflows.
+- high-throughput shared paths: thread-safe pool/cache variants.
+
+## Minimal Example
 
 ```rust
 use nebula_memory::prelude::*;
+
+fn main() -> MemoryResult<()> {
+    nebula_memory::init()?;
+
+    let mut pool = ObjectPool::new(32, String::new);
+    let _item = pool.get().ok_or_else(|| MemoryError::pool_exhausted("strings", 32))?;
+
+    nebula_memory::shutdown()?;
+    Ok(())
+}
 ```
 
-## Object pool
-
-```rust
-use nebula_memory::pool::ObjectPool;
-
-let mut pool = ObjectPool::new(32, String::new);
-let value = pool.get().unwrap();
-```
-
-`PooledValue` returns to the pool on drop.
-
-## Allocators
-
-```rust
-use nebula_memory::allocator::{Allocator, BumpAllocator};
-use std::alloc::Layout;
-
-let alloc = BumpAllocator::new(4096)?;
-let layout = Layout::from_size_align(64, 8)?;
-let ptr = unsafe { alloc.allocate(layout)? };
-unsafe { alloc.deallocate(ptr.cast(), layout) };
-```
-
-## Cache
-
-```rust
-use nebula_memory::cache::{CacheConfig, ComputeCache};
-
-let mut cache = ComputeCache::new(CacheConfig::default());
-```
-
-## Budget
+## Advanced Example
 
 ```rust
 use nebula_memory::budget::{BudgetConfig, MemoryBudget};
+use nebula_memory::cache::{CacheConfig, ComputeCache};
+use nebula_memory::pool::ThreadSafePool;
 
-let budget = MemoryBudget::new(BudgetConfig::default());
+let budget = MemoryBudget::new(BudgetConfig::new("workflow-a", 64 * 1024 * 1024));
+let cache: ComputeCache<String, Vec<u8>> = ComputeCache::new(CacheConfig::default());
+let pool = ThreadSafePool::new(128, || Vec::<u8>::with_capacity(4096));
+
+let _ = (budget, cache, pool);
 ```
 
-## Lifecycle helpers
+## Error Semantics
 
-- `nebula_memory::init()` initializes global allocator manager.
-- `nebula_memory::shutdown()` performs crate-level shutdown cleanup.
+- retryable errors:
+  - `PoolExhausted`, `ArenaExhausted`, `CacheOverflow`, `BudgetExceeded`, `CacheMiss`.
+- fatal errors:
+  - `Corruption`, invalid operation/state classes, initialization failures.
+- validation errors:
+  - layout/config/alignment/size errors should fail fast.
 
-## Error model
+## Compatibility Rules
 
-Use `MemoryResult<T>` / `MemoryError` from crate root or `prelude`.
+- what changes require major version bump:
+  - meaning of `MemoryError` variants
+  - behavior guarantees of core allocator/pool/cache/budget contracts
+  - default feature behavior that changes runtime semantics
+- deprecation policy:
+  - one minor release minimum for non-critical removals.
