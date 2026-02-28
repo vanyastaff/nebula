@@ -124,7 +124,7 @@ metrics-exporter-prometheus = "0.18.1"
 # Testing
 pretty_assertions = "1.4"
 mockall = "0.14.0"
-tempfile = "3.24.0"
+tempfile = "3.26.0"
 proptest = "1.9"
 criterion = "0.8.1"
 
