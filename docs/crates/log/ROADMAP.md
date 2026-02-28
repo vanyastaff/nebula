@@ -7,8 +7,8 @@
   - `Rolling::Size(u64)` implementation
   - Env/config precedence behavior with explicit compatibility tests
   - Config schema version guard (`schema_version`) and compatibility checks
+  - Stable config schema snapshot contract tests with versioned fixtures
 - **Remaining in this phase:**
-  - Add stable schema snapshot tests (not only compatibility/unit checks)
   - Publish formal env var contract table in API/ops docs
 - **Risks:** Snapshot governance drift if contract fixtures are not versioned per release
 - **Exit criteria:** Snapshot contract tests pass and docs specify precedence unambiguously

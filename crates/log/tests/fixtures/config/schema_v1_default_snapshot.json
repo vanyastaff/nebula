@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "level": "info",
+  "format": "compact",
+  "writer": {
+    "type": "stderr"
+  },
+  "display": {
+    "time": true,
+    "time_format": null,
+    "source": false,
+    "target": true,
+    "thread_ids": false,
+    "thread_names": false,
+    "colors": false,
+    "span_list": true,
+    "flatten": true
+  },
+  "fields": {
+    "service": null,
+    "env": null,
+    "version": null,
+    "instance": null,
+    "region": null
+  },
+  "reloadable": false
+}

@@ -4,7 +4,7 @@
 
 - **Unit:** Config presets, error types, timing helpers, hook registry (with serialization)
 - **Integration:** Init with each preset; file writer; multi-writer fanout policy; rolling size writer; observability hooks; context propagation
-- **Contract:** Init API contract; config compatibility fixtures and schema-version checks (snapshot contract to be added)
+- **Contract:** Init API contract; config compatibility fixtures; schema-version checks; schema snapshot contract fixtures
 - **End-to-end:** Examples as smoke tests; multi-crate observability example
 
 ## Critical Invariants
@@ -36,4 +36,4 @@
 - **Coverage goals:** Critical paths covered; init, hooks, context
 - **Flaky test budget:** Zero; use `OnceLock` and test init guard
 - **Performance regression thresholds:** Criterion benchmarks with CI baseline
-- **Contract maturity:** Add and enforce schema snapshot contract in CI
+- **Contract maturity:** Enforce schema snapshot contract fixtures in CI

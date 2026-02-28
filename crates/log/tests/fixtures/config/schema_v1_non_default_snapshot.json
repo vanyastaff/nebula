@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "level": "debug,hyper=warn",
+  "format": "json",
+  "writer": {
+    "type": "multi",
+    "policy": "primary_with_fallback",
+    "writers": [
+      {
+        "type": "stdout"
+      },
+      {
+        "type": "stderr"
+      }
+    ]
+  },
+  "display": {
+    "time": true,
+    "time_format": "%Y-%m-%dT%H:%M:%S%.3fZ",
+    "source": true,
+    "target": true,
+    "thread_ids": true,
+    "thread_names": true,
+    "colors": false,
+    "span_list": false,
+    "flatten": false
+  },
+  "fields": {
+    "service": "nebula-api",
+    "env": "prod",
+    "version": "1.2.3",
+    "instance": "i-abc123",
+    "region": "us-east-1",
+    "shard": 3,
+    "tenant": "acme"
+  },
+  "reloadable": true
+}
