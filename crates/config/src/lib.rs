@@ -66,7 +66,9 @@ pub use core::{
 };
 
 // Re-export concrete implementations
-pub use loaders::{CompositeLoader, EnvLoader, FileLoader};
+#[cfg(feature = "env")]
+pub use loaders::EnvLoader;
+pub use loaders::{CompositeLoader, FileLoader};
 
 pub use validators::{CompositeValidator, FunctionValidator, NoOpValidator, SchemaValidator};
 
@@ -95,7 +97,9 @@ pub mod prelude {
     };
 
     // Common loaders
-    pub use crate::loaders::{CompositeLoader, EnvLoader, FileLoader};
+    #[cfg(feature = "env")]
+    pub use crate::loaders::EnvLoader;
+    pub use crate::loaders::{CompositeLoader, FileLoader};
 
     // Common validators
     pub use crate::validators::{NoOpValidator, SchemaValidator};
@@ -109,7 +113,9 @@ pub mod prelude {
 /// Builder pattern helpers for configuration
 pub mod builders {
     use crate::core::{ConfigBuilder, ConfigSource};
-    use crate::loaders::{EnvLoader, FileLoader};
+    #[cfg(feature = "env")]
+    use crate::loaders::EnvLoader;
+    use crate::loaders::FileLoader;
     use crate::validators::SchemaValidator;
     use crate::watchers::FileWatcher;
     use std::path::PathBuf;
@@ -123,6 +129,7 @@ pub mod builders {
     }
 
     /// Create a configuration from environment variables
+    #[cfg(feature = "env")]
     pub fn from_env() -> ConfigBuilder {
         ConfigBuilder::new()
             .with_source(ConfigSource::Env)
@@ -130,6 +137,7 @@ pub mod builders {
     }
 
     /// Create a configuration from environment with prefix
+    #[cfg(feature = "env")]
     pub fn from_env_prefix(prefix: impl Into<String>) -> ConfigBuilder {
         let prefix: String = prefix.into();
         ConfigBuilder::new()
@@ -139,6 +147,7 @@ pub mod builders {
 
     /// Create a standard application configuration
     /// (config file + environment overrides)
+    #[cfg(feature = "env")]
     pub fn standard_app_config(config_file: impl Into<PathBuf>) -> ConfigBuilder {
         ConfigBuilder::new()
             .with_source(ConfigSource::File(config_file.into()))
@@ -227,6 +236,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "env")]
     async fn test_builder_helpers() {
         use crate::builders;
 

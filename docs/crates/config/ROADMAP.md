@@ -1,37 +1,41 @@
 # Roadmap
 
-## Phase 1: Contract Baseline and Documentation
+## Phase 1: Contract Baseline and Documentation (Done)
 
-- deliverables:
-  - full SPEC-template docs and interaction contracts
-  - precedence/path semantics formally documented
-- risks:
-  - hidden assumptions in consumers
+- completed:
+  - SPEC-template docs and interaction contracts aligned
+  - precedence/path semantics documented in API + fixtures
+  - governance/migration requirements codified in contract tests
+- residual risks:
+  - downstream consumers may still rely on undocumented local conventions
 - exit criteria:
-  - docs accepted as source of truth
+  - docs and fixtures treated as source of truth in CI
 
-## Phase 2: Compatibility and Validation Hardening
+## Phase 2: Compatibility and Validation Hardening (Done)
 
-- deliverables:
-  - compatibility fixtures for precedence, path access, and type conversion
-  - stricter validation integration patterns for consumers
-- risks:
-  - stricter validation can expose latent config debt
+- completed:
+  - compatibility fixtures for precedence/path/type conversion are present
+  - direct validator trait bridge integrated into `ConfigValidator`
+  - validator compatibility + governance contract tests added
+- residual risks:
+  - stricter validation may still expose latent config debt in late-adopting consumers
 - exit criteria:
-  - CI contract suite passes for representative consuming crates
+  - contract suite remains green across crate changes and releases
 
-## Phase 3: Reliability and Reload Semantics
+## Phase 3: Reliability and Reload Semantics (Mostly Done)
 
-- deliverables:
+- completed:
   - atomic reload behavior verification
-  - watcher lifecycle and reload backoff strategy guidance
-  - failure-mode runbooks
+  - reload failure preservation of last-known-good state
+  - failure-mode guidance documented
+- remaining:
+  - stronger watcher lifecycle/backoff guidance for high-frequency reload workloads
 - risks:
   - race conditions in high-frequency reload scenarios
 - exit criteria:
-  - reload failure preserves last-known-good config in all tested scenarios
+  - explicit watcher/backoff guidance and targeted stress tests
 
-## Phase 4: Source Ecosystem Expansion
+## Phase 4: Source Ecosystem Expansion (Next)
 
 - deliverables:
   - production-ready remote/database/kv source adapters

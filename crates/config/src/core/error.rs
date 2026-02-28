@@ -415,12 +415,14 @@ impl From<serde_json::Error> for ConfigError {
     }
 }
 
+#[cfg(feature = "toml")]
 impl From<toml::de::Error> for ConfigError {
     fn from(err: toml::de::Error) -> Self {
         ConfigError::parse_error(PathBuf::from("toml"), format!("TOML error: {err}"))
     }
 }
 
+#[cfg(feature = "yaml")]
 impl From<yaml_rust2::ScanError> for ConfigError {
     fn from(err: yaml_rust2::ScanError) -> Self {
         ConfigError::parse_error(PathBuf::from("yaml"), format!("YAML error: {err:?}"))

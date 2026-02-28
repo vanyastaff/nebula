@@ -305,6 +305,7 @@ pub fn derive_validator(input: TokenStream) -> TokenStream {
 /// - `profile_var = "APP_ENV"` - env var used to resolve active profile (`profile_env` also accepted)
 /// - `profile = "dev"` - default profile when profile env var is missing
 /// - `separator = "..."` - segment separator between prefix and key (default: `_`)
+/// - `file` loader format by extension: `.json`, `.toml`, `.yaml`/`.yml`, `.env`
 ///
 /// # Field attributes
 ///

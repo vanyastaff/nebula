@@ -24,6 +24,7 @@ Unified configuration system for Nebula services and runtime components.
 - key risks:
   - docs previously drifted and lacked full operational governance sections
   - dynamic path model can cause runtime errors if contracts are weakly documented
+  - remote/database/kv source adapters are still placeholder contracts, not production-ready defaults
 
 ## Target State
 
@@ -35,6 +36,14 @@ Unified configuration system for Nebula services and runtime components.
 - compatibility guarantees:
   - additive source/format support in minor versions
   - breaking precedence/path/error behavior only in major versions with migration guide
+
+## Feature Flags
+
+- `default`: `json`, `toml`, `yaml`, `env`
+- `json`: enable JSON file format support
+- `toml`: enable TOML file format support
+- `yaml`: enable YAML file format support
+- `env`: enable environment source loader (`ConfigSource::Env*`)
 
 ## Config Contract Hardening Summary
 

@@ -329,13 +329,49 @@ impl ConfigFormat {
     /// Detect format from file extension
     pub fn from_extension(ext: &str) -> Self {
         match ext.to_lowercase().as_str() {
-            "json" => ConfigFormat::Json,
-            "toml" => ConfigFormat::Toml,
-            "yml" | "yaml" => ConfigFormat::Yaml,
+            "json" => {
+                #[cfg(feature = "json")]
+                {
+                    ConfigFormat::Json
+                }
+                #[cfg(not(feature = "json"))]
+                {
+                    ConfigFormat::Unknown(ext.to_string())
+                }
+            }
+            "toml" => {
+                #[cfg(feature = "toml")]
+                {
+                    ConfigFormat::Toml
+                }
+                #[cfg(not(feature = "toml"))]
+                {
+                    ConfigFormat::Unknown(ext.to_string())
+                }
+            }
+            "yml" | "yaml" => {
+                #[cfg(feature = "yaml")]
+                {
+                    ConfigFormat::Yaml
+                }
+                #[cfg(not(feature = "yaml"))]
+                {
+                    ConfigFormat::Unknown(ext.to_string())
+                }
+            }
             "ini" | "cfg" => ConfigFormat::Ini,
             "hcl" | "tf" => ConfigFormat::Hcl,
             "properties" | "props" => ConfigFormat::Properties,
-            "env" => ConfigFormat::Env,
+            "env" => {
+                #[cfg(feature = "env")]
+                {
+                    ConfigFormat::Env
+                }
+                #[cfg(not(feature = "env"))]
+                {
+                    ConfigFormat::Unknown(ext.to_string())
+                }
+            }
             _ => ConfigFormat::Unknown(ext.to_string()),
         }
     }

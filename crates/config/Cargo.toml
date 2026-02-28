@@ -12,6 +12,13 @@ homepage.workspace = true
 documentation.workspace = true
 publish = false
 
+[features]
+default = ["json", "toml", "yaml", "env"]
+json = []
+toml = ["dep:toml"]
+yaml = ["dep:yaml-rust2"]
+env = []
+
 [dependencies]
 # Async and concurrency
 async-trait = { workspace = true }
@@ -23,8 +30,8 @@ tokio-util = { workspace = true }
 thiserror = { workspace = true }
 
 # Format parsers
-toml = { version = "0.9.7" }
-yaml-rust2 = { version = "0.9" }
+toml = { version = "0.9.7", optional = true }
+yaml-rust2 = { version = "0.9", optional = true }
 
 # Notifications
 notify = { version = "8.2.0" }

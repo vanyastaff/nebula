@@ -13,6 +13,11 @@
 - hidden/internal APIs:
   - parser internals in loader modules
 
+Feature flags:
+
+- `json`, `toml`, `yaml`, `env` (all enabled by default)
+- disabled format/source features return `FormatNotSupported` or become unsupported source paths at runtime
+
 ## Usage Patterns
 
 - startup assembly:

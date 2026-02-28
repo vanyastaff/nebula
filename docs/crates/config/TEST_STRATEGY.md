@@ -7,7 +7,7 @@
 - integration:
   - builder + loader + validator + watcher combinations.
 - contract:
-  - precedence semantics and typed access compatibility.
+  - precedence semantics, typed access compatibility, reload safety, governance/migration requirements.
 - end-to-end:
   - consumer crate fixture tests (runtime/resource/credential initialization flows).
 
@@ -17,6 +17,8 @@
 - invalid config never becomes active.
 - reload preserves last-valid state on failure.
 - typed `get<T>` behavior is stable across versions.
+- validator integration rejects invalid candidates without replacing active config.
+- diagnostics/redaction contracts never leak sensitive validation payload values.
 
 ## Scenario Matrix
 
@@ -62,6 +64,23 @@ Validator integration contract suite:
 - `tests/contract/validator_last_known_good_test.rs`
 - `tests/contract/validator_category_compatibility_test.rs`
 - `tests/contract/validator_redaction_contract_test.rs`
+- `tests/contract/validator_diagnostics_context_test.rs`
+- `tests/contract/validator_governance_policy_test.rs`
+- `tests/contract/validator_migration_requirements_test.rs`
+- `tests/contract/validator_runbook_requirements_test.rs`
+
+Core contract suite additionally covers:
+
+- `tests/contract/activation_atomicity_test.rs`
+- `tests/contract/last_known_good_preservation_test.rs`
+- `tests/contract/reload_rejection_contract_test.rs`
+- `tests/contract/env_precedence_contract_test.rs`
+- `tests/contract/precedence_matrix_contract_test.rs`
+- `tests/contract/typed_access_compatibility_test.rs`
+- `tests/contract/path_error_categories_test.rs`
+- `tests/contract/merge_determinism_test.rs`
+- `tests/contract/governance_policy_test.rs`
+- `tests/contract/migration_requirements_test.rs`
 
 ## Exit Criteria
 

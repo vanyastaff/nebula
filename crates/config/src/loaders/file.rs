@@ -68,11 +68,41 @@ pub(crate) fn parse_content(
     path: &Path,
 ) -> ConfigResult<serde_json::Value> {
     match format {
-        ConfigFormat::Json => serde_json::from_str(content)
-            .map_err(|e| ConfigError::parse_error(path, format!("JSON parse error: {}", e))),
-        ConfigFormat::Toml => toml::from_str::<serde_json::Value>(content)
-            .map_err(|e| ConfigError::parse_error(path, format!("TOML parse error: {}", e))),
-        ConfigFormat::Yaml => parse_yaml(content, path),
+        ConfigFormat::Json => {
+            #[cfg(feature = "json")]
+            {
+                serde_json::from_str(content)
+                    .map_err(|e| ConfigError::parse_error(path, format!("JSON parse error: {}", e)))
+            }
+            #[cfg(not(feature = "json"))]
+            {
+                let _ = content;
+                Err(ConfigError::format_not_supported("json"))
+            }
+        }
+        ConfigFormat::Toml => {
+            #[cfg(feature = "toml")]
+            {
+                toml::from_str::<serde_json::Value>(content)
+                    .map_err(|e| ConfigError::parse_error(path, format!("TOML parse error: {}", e)))
+            }
+            #[cfg(not(feature = "toml"))]
+            {
+                let _ = content;
+                Err(ConfigError::format_not_supported("toml"))
+            }
+        }
+        ConfigFormat::Yaml => {
+            #[cfg(feature = "yaml")]
+            {
+                parse_yaml(content, path)
+            }
+            #[cfg(not(feature = "yaml"))]
+            {
+                let _ = content;
+                Err(ConfigError::format_not_supported("yaml"))
+            }
+        }
         ConfigFormat::Ini => parse_ini(content, path),
         ConfigFormat::Properties => parse_properties(content, path),
         _ => Err(ConfigError::format_not_supported(format.to_string())),
@@ -80,6 +110,7 @@ pub(crate) fn parse_content(
 }
 
 /// Parse YAML content into JSON
+#[cfg(feature = "yaml")]
 fn parse_yaml(content: &str, path: &Path) -> ConfigResult<serde_json::Value> {
     use yaml_rust2::YamlLoader;
 
@@ -94,6 +125,7 @@ fn parse_yaml(content: &str, path: &Path) -> ConfigResult<serde_json::Value> {
 }
 
 /// Convert YAML value to JSON value
+#[cfg(feature = "yaml")]
 fn yaml_to_json(yaml: &yaml_rust2::Yaml, path: &Path) -> ConfigResult<serde_json::Value> {
     use yaml_rust2::Yaml;
 

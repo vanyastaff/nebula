@@ -239,6 +239,12 @@ Generated API:
 - `load() -> Result<Self, String>` (ordered loaders chain)
 - `load_with_profile(Option<&str>) -> Result<Self, String>`
 
+Supported file formats for `sources = ["file"]`:
+- `.json`
+- `.toml`
+- `.yaml` / `.yml`
+- `.env`
+
 Container attribute names (standard + compatibility aliases):
 - `source` (`from`)
 - `sources` (`loaders`)

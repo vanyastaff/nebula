@@ -134,6 +134,50 @@ impl Default for DotenvConfig {
     }
 }
 
+#[derive(Config, Clone, Debug, Serialize, Deserialize)]
+#[config(
+    sources = ["file"],
+    path = "target/config_derive_test.toml",
+    profile_var = "NEBULA_PROFILE"
+)]
+struct TomlConfig {
+    #[validate(min = 1, max = 65535)]
+    port: u16,
+    #[validate(min_length = 3)]
+    mode: String,
+}
+
+impl Default for TomlConfig {
+    fn default() -> Self {
+        Self {
+            port: 7000,
+            mode: "default".to_string(),
+        }
+    }
+}
+
+#[derive(Config, Clone, Debug, Serialize, Deserialize)]
+#[config(
+    sources = ["file"],
+    path = "target/config_derive_test.yaml",
+    profile_var = "NEBULA_PROFILE"
+)]
+struct YamlConfig {
+    #[validate(min = 1, max = 65535)]
+    port: u16,
+    #[validate(min_length = 3)]
+    mode: String,
+}
+
+impl Default for YamlConfig {
+    fn default() -> Self {
+        Self {
+            port: 7000,
+            mode: "default".to_string(),
+        }
+    }
+}
+
 #[test]
 fn config_load_with_profile_suffix_and_loader_precedence() {
     let _guard = ENV_LOCK.lock().expect("env test lock poisoned");
@@ -187,6 +231,58 @@ fn config_load_supports_dotenv_loader_with_profile_suffix() {
 
     let _ = std::fs::remove_file("target/config_derive_test.env");
     let _ = std::fs::remove_file("target/config_derive_test.dev.env");
+    unsafe {
+        std::env::remove_var("NEBULA_PROFILE");
+    }
+}
+
+#[test]
+fn config_load_supports_toml_with_profile_suffix() {
+    let _guard = ENV_LOCK.lock().expect("env test lock poisoned");
+    clear_env();
+    unsafe {
+        std::env::set_var("NEBULA_PROFILE", "dev");
+    }
+
+    std::fs::create_dir_all("target").expect("target dir");
+    std::fs::write(
+        "target/config_derive_test.toml",
+        "port = 8200\nmode = \"base\"\n",
+    )
+    .expect("write base toml");
+    std::fs::write("target/config_derive_test.dev.toml", "mode = \"dev\"\n")
+        .expect("write dev toml");
+
+    let cfg = TomlConfig::load().expect("toml config should load");
+    assert_eq!(cfg.port, 8200);
+    assert_eq!(cfg.mode, "dev");
+
+    let _ = std::fs::remove_file("target/config_derive_test.toml");
+    let _ = std::fs::remove_file("target/config_derive_test.dev.toml");
+    unsafe {
+        std::env::remove_var("NEBULA_PROFILE");
+    }
+}
+
+#[test]
+fn config_load_supports_yaml_with_profile_suffix() {
+    let _guard = ENV_LOCK.lock().expect("env test lock poisoned");
+    clear_env();
+    unsafe {
+        std::env::set_var("NEBULA_PROFILE", "dev");
+    }
+
+    std::fs::create_dir_all("target").expect("target dir");
+    std::fs::write("target/config_derive_test.yaml", "port: 8300\nmode: base\n")
+        .expect("write base yaml");
+    std::fs::write("target/config_derive_test.dev.yaml", "mode: dev\n").expect("write dev yaml");
+
+    let cfg = YamlConfig::load().expect("yaml config should load");
+    assert_eq!(cfg.port, 8300);
+    assert_eq!(cfg.mode, "dev");
+
+    let _ = std::fs::remove_file("target/config_derive_test.yaml");
+    let _ = std::fs::remove_file("target/config_derive_test.dev.yaml");
     unsafe {
         std::env::remove_var("NEBULA_PROFILE");
     }

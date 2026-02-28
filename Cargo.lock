@@ -6343,7 +6343,9 @@ dependencies = [
  "serde",
  "serde_json",
  "syn 2.0.112",
+ "toml 0.9.10+spec-1.1.0",
  "trybuild",
+ "yaml-rust2",
 ]
 
 [[package]]

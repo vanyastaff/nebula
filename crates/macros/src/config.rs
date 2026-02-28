@@ -506,6 +506,54 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                     prefix: ::std::option::Option<&str>,
                     separator: &str,
                 ) -> ::std::result::Result<::serde_json::Map<::std::string::String, ::serde_json::Value>, ::std::string::String> {
+                    fn yaml_to_json_value(
+                        yaml: &::yaml_rust2::Yaml,
+                        path: &str,
+                    ) -> ::std::result::Result<::serde_json::Value, ::std::string::String> {
+                        match yaml {
+                            ::yaml_rust2::Yaml::Real(s) | ::yaml_rust2::Yaml::String(s) => {
+                                if let Ok(num) = s.parse::<f64>()
+                                    && let Some(json_num) = ::serde_json::Number::from_f64(num)
+                                {
+                                    return Ok(::serde_json::Value::Number(json_num));
+                                }
+                                Ok(::serde_json::Value::String(s.clone()))
+                            }
+                            ::yaml_rust2::Yaml::Integer(i) => Ok(::serde_json::Value::Number(
+                                ::serde_json::Number::from(*i),
+                            )),
+                            ::yaml_rust2::Yaml::Boolean(b) => Ok(::serde_json::Value::Bool(*b)),
+                            ::yaml_rust2::Yaml::Array(arr) => {
+                                let mut out = ::std::vec::Vec::with_capacity(arr.len());
+                                for item in arr {
+                                    out.push(yaml_to_json_value(item, path)?);
+                                }
+                                Ok(::serde_json::Value::Array(out))
+                            }
+                            ::yaml_rust2::Yaml::Hash(hash) => {
+                                let mut obj = ::serde_json::Map::new();
+                                for (k, v) in hash {
+                                    let key = match k {
+                                        ::yaml_rust2::Yaml::String(s) => s.clone(),
+                                        ::yaml_rust2::Yaml::Integer(i) => i.to_string(),
+                                        _ => {
+                                            return Err(format!(
+                                                "YAML config file `{path}` has non-string key type"
+                                            ))
+                                        }
+                                    };
+                                    obj.insert(key, yaml_to_json_value(v, path)?);
+                                }
+                                Ok(::serde_json::Value::Object(obj))
+                            }
+                            ::yaml_rust2::Yaml::Null => Ok(::serde_json::Value::Null),
+                            ::yaml_rust2::Yaml::BadValue => {
+                                Err(format!("YAML config file `{path}` contains invalid value"))
+                            }
+                            _ => Err(format!("YAML config file `{path}` contains unsupported type")),
+                        }
+                    }
+
                     let ext = ::std::path::Path::new(path)
                         .extension()
                         .and_then(|s| s.to_str())
@@ -525,8 +573,33 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                         return Ok(obj.clone());
                     }
 
+                    if ext == "toml" {
+                        let value: ::toml::Value = ::toml::from_str(content)
+                            .map_err(|e| format!("failed to parse TOML file `{path}`: {e}"))?;
+                        let value = ::serde_json::to_value(value)
+                            .map_err(|e| format!("failed to convert TOML file `{path}` to JSON: {e}"))?;
+                        let obj = value
+                            .as_object()
+                            .ok_or_else(|| format!("TOML config file `{path}` must contain a table at root"))?;
+                        return Ok(obj.clone());
+                    }
+
+                    if ext == "yaml" || ext == "yml" {
+                        let docs = ::yaml_rust2::YamlLoader::load_from_str(content)
+                            .map_err(|e| format!("failed to parse YAML file `{path}`: {e:?}"))?;
+                        if docs.is_empty() {
+                            return Ok(::serde_json::Map::new());
+                        }
+
+                        let value = yaml_to_json_value(&docs[0], path)?;
+                        let obj = value
+                            .as_object()
+                            .ok_or_else(|| format!("YAML config file `{path}` must contain a mapping at root"))?;
+                        return Ok(obj.clone());
+                    }
+
                     Err(format!(
-                        "unsupported config file extension for `{path}`; supported: .json, .env"
+                        "unsupported config file extension for `{path}`; supported: .json, .toml, .yaml, .yml, .env"
                     ))
                 }
 

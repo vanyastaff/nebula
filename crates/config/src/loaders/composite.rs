@@ -57,12 +57,21 @@ impl CompositeLoader {
     }
 
     /// Create default composite loader with file and env loaders
+    #[cfg(feature = "env")]
     pub fn default_loaders() -> Self {
         use super::{EnvLoader, FileLoader};
 
         Self::new()
             .add_loader(FileLoader::new())
             .add_loader(EnvLoader::new())
+    }
+
+    /// Create default composite loader with file-only support when `env` feature is disabled.
+    #[cfg(not(feature = "env"))]
+    pub fn default_loaders() -> Self {
+        use super::FileLoader;
+
+        Self::new().add_loader(FileLoader::new())
     }
 
     /// Get the first loader that supports the source
@@ -146,17 +155,28 @@ impl ConfigLoader for CompositeLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::loaders::{EnvLoader, FileLoader};
+    #[cfg(feature = "env")]
+    use crate::loaders::EnvLoader;
+    use crate::loaders::FileLoader;
 
     #[test]
     fn test_composite_loader_creation() {
+        #[cfg(feature = "env")]
         let loader = CompositeLoader::new()
             .add_loader(FileLoader::new())
             .add_loader(EnvLoader::new())
             .with_fail_fast(false);
 
+        #[cfg(not(feature = "env"))]
+        let loader = CompositeLoader::new()
+            .add_loader(FileLoader::new())
+            .with_fail_fast(false);
+
         assert!(!loader.fail_fast);
+        #[cfg(feature = "env")]
         assert_eq!(loader.loaders.len(), 2);
+        #[cfg(not(feature = "env"))]
+        assert_eq!(loader.loaders.len(), 1);
     }
 
     #[test]
@@ -164,8 +184,12 @@ mod tests {
         let loader = CompositeLoader::default_loaders();
 
         assert!(loader.supports(&ConfigSource::File("config.json".into())));
+        #[cfg(feature = "env")]
         assert!(loader.supports(&ConfigSource::Env));
+        #[cfg(feature = "env")]
         assert!(loader.supports(&ConfigSource::EnvWithPrefix("APP".to_string())));
+        #[cfg(not(feature = "env"))]
+        assert!(!loader.supports(&ConfigSource::Env));
         assert!(!loader.supports(&ConfigSource::Remote("http://example.com".to_string())));
     }
 }
