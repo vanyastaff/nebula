@@ -53,6 +53,15 @@
 - downstream contract requirements:
   - consumer crates must pin required config paths in fixtures.
   - CI should fail on `missing_path`/`type_mismatch` category drift.
+  - config-validator category mapping fixtures must pass before release.
+
+Validator integration contract suite:
+
+- `tests/contract/validator_activation_contract_test.rs`
+- `tests/contract/validator_reload_rejection_contract_test.rs`
+- `tests/contract/validator_last_known_good_test.rs`
+- `tests/contract/validator_category_compatibility_test.rs`
+- `tests/contract/validator_redaction_contract_test.rs`
 
 ## Exit Criteria
 

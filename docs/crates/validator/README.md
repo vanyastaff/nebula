@@ -39,6 +39,13 @@ Composable validation framework for Nebula crates and runtime boundaries.
 - migration authority: `MIGRATION.md` with explicit old->new mapping for behavior-significant changes
 - minor release rule: additive-only changes to validators/combinators and helpers
 
+## Config Integration Baseline
+
+- config crate consumes validator semantics through direct trait bridge contract.
+- category naming compatibility with config is pinned by fixtures:
+  - `crates/config/tests/fixtures/compat/validator_contract_v1.json`
+- validator-side category constants are defined for cross-crate consistency.
+
 ## Document Map
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md)

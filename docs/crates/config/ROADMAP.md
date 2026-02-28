@@ -64,3 +64,4 @@
   1. contract tests pass for precedence/reload/path categories
   2. migration docs updated when contract changes
   3. downstream consumers verified against pinned fixtures
+  4. config-validator shared category fixture remains compatible

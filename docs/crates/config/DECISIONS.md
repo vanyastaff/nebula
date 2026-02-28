@@ -150,3 +150,29 @@ Migration impact:
 
 Validation plan:
 - governance and migration contract tests in `crates/config/tests/contract/*`.
+
+## D007: Validator crate integration via trait bridge
+
+Status: Adopt
+
+Context:
+- config lifecycle needs explicit integration with `nebula-validator` semantics.
+
+Decision:
+- provide direct trait-bridge integration for validator types under `ConfigValidator`.
+- preserve config-owned activation and fallback semantics while reusing validator contracts.
+
+Alternatives considered:
+- direct dependency on validator internals in config core lifecycle.
+
+Trade-offs:
+- adapter introduces small mapping layer, but keeps boundaries clean.
+
+Consequences:
+- consistent cross-crate validation behavior and simpler compatibility testing.
+
+Migration impact:
+- bridge behavior changes are contract-significant and require mapping updates.
+
+Validation plan:
+- validator integration contract tests in `crates/config/tests/contract/validator_*`.

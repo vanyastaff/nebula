@@ -19,3 +19,9 @@ This directory contains versioned contract fixtures for `nebula-config`.
   - migration mapping update in `docs/crates/config/MIGRATION.md`
   - corresponding contract test updates
 
+## Config-Validator Fixtures
+
+- `validator_activation_v1.json`:
+  - startup/reload activation gate expectations for validator integration.
+- `validator_contract_v1.json`:
+  - cross-crate category-name compatibility baseline (`config` <-> `validator`).

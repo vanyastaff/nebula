@@ -82,10 +82,7 @@ impl CompositeValidator {
         }
 
         if !errors.is_empty() {
-            return Err(crate::core::ConfigError::validation_error(
-                format!("Validation failed: {} errors", errors.len()),
-                None,
-            ));
+            return Err(Self::aggregate_validation_errors(errors));
         }
 
         Ok(())
@@ -116,13 +113,24 @@ impl CompositeValidator {
         }
 
         if !errors.is_empty() {
-            return Err(crate::core::ConfigError::validation_error(
-                format!("Validation failed: {} errors", errors.len()),
-                None,
-            ));
+            return Err(Self::aggregate_validation_errors(errors));
         }
 
         Ok(())
+    }
+
+    fn aggregate_validation_errors(
+        errors: Vec<crate::core::ConfigError>,
+    ) -> crate::core::ConfigError {
+        let count = errors.len();
+        let first = errors
+            .first()
+            .map(std::string::ToString::to_string)
+            .unwrap_or_else(|| "unknown validation error".to_string());
+        crate::core::ConfigError::validation_error(
+            format!("Validation failed: {count} errors; first error: {first}"),
+            None,
+        )
     }
 }
 

@@ -61,3 +61,13 @@ Rules:
 
 - major version required for any row that changes semantics.
 - mapping section is required before release candidate is cut.
+
+## Config Integration Mapping Requirements
+
+For changes that impact config-validator compatibility:
+
+| Surface | Old Behavior | New Behavior | Impacted Consumer | Required Fixture Update |
+|---|---|---|---|---|
+| category constants | `<old_category_set>` | `<new_category_set>` | `nebula-config` | `validator_contract_v*.json` |
+| validation message semantics | `<old_message_shape>` | `<new_message_shape>` | operator tooling | validator diagnostics contract tests |
+| field-path meaning | `<old_field_path_rule>` | `<new_field_path_rule>` | config and API adapters | category/path compatibility tests |

@@ -65,3 +65,6 @@
   2. compare candidate delta against precedence layers.
   3. fix source or revert change.
   4. rerun validation and reload.
+- diagnostics contract:
+  - include source and path context for validator failures.
+  - do not include sensitive values in validation diagnostics.

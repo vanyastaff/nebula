@@ -58,3 +58,13 @@ Use this template for precedence/path/validation semantic changes:
 Minimum requirements:
 - include explicit old -> new mapping for every behavior-significant change.
 - provide rollout and rollback steps for consumer crates.
+
+## Config-Validator Contract Mapping (Required)
+
+For changes that affect config-validator trait bridge behavior or category naming:
+
+| Surface | Old Behavior | New Behavior | Consumer Impact | Required Action |
+|---|---|---|---|---|
+| validator gate | `<old_activation_rule>` | `<new_activation_rule>` | startup/reload behavior shift | update contract tests + runbook |
+| category names | `<old_category>` | `<new_category>` | error envelope parser drift | add old->new mapping fixture |
+| diagnostics context | `<old_context_format>` | `<new_context_format>` | operator tooling changes | update incident docs and consumers |

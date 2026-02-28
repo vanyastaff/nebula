@@ -378,6 +378,21 @@ pub enum ContractErrorCategory {
     WatcherFailed,
 }
 
+impl ContractErrorCategory {
+    /// Stable string representation used in fixtures and cross-crate contracts.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ContractErrorCategory::SourceLoadFailed => "source_load_failed",
+            ContractErrorCategory::MergeFailed => "merge_failed",
+            ContractErrorCategory::ValidationFailed => "validation_failed",
+            ContractErrorCategory::MissingPath => "missing_path",
+            ContractErrorCategory::TypeMismatch => "type_mismatch",
+            ContractErrorCategory::InvalidValue => "invalid_value",
+            ContractErrorCategory::WatcherFailed => "watcher_failed",
+        }
+    }
+}
+
 // Implement From for common error types
 impl From<std::io::Error> for ConfigError {
     fn from(err: std::io::Error) -> Self {

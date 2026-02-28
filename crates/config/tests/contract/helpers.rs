@@ -68,3 +68,15 @@ pub fn unique_env_prefix() -> String {
         .as_nanos();
     format!("NEBULA_CONFIG_CONTRACT_{timestamp}")
 }
+
+pub fn assert_validation_failed(err: &ConfigError) {
+    assert!(matches!(err, ConfigError::ValidationError { .. }));
+    assert_eq!(
+        err.contract_category(),
+        nebula_config::core::error::ContractErrorCategory::ValidationFailed
+    );
+}
+
+pub fn assert_contract_category(err: &ConfigError, expected: &'static str) {
+    assert_eq!(err.contract_category().as_str(), expected);
+}

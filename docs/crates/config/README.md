@@ -46,6 +46,15 @@ Unified configuration system for Nebula services and runtime components.
   - typed access: stable path traversal and error category mapping
 - governance and migration requirements are enforced by doc-backed contract tests.
 
+## Validator Integration Summary
+
+- `nebula-validator` integration is supported directly through `ConfigValidator` bridge impl for validator traits.
+- activation contract:
+  - validator pass => candidate can activate.
+  - validator fail => candidate rejected, active snapshot unchanged.
+- cross-crate category contract is pinned by fixtures:
+  - `crates/config/tests/fixtures/compat/validator_contract_v1.json`.
+
 ## Document Map
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md)

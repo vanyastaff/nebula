@@ -51,6 +51,7 @@
 - consumer crates own domain-specific config schemas.
 - `validator` owns validation rule mechanics.
 - `runtime` owns reconfiguration rollout strategy.
+- `config` owns validator invocation lifecycle (startup/reload gate + fallback).
 
 ## Failure Propagation
 
@@ -90,3 +91,4 @@
 - downstream consumer requirements:
   - each consumer crate must maintain at least one fixture asserting required paths.
   - consumer CI must fail on precedence/path category drift.
+  - consumers integrating validator-driven config must pin category mapping fixtures.

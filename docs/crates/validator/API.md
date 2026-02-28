@@ -73,6 +73,19 @@ password_rule.validate_any(&payload)?;
 
 Code meanings are compatibility-critical for downstream mappings.
 
+## Cross-Crate Category Contract (Config Integration)
+
+- canonical category names shared with config compatibility fixtures:
+  - `source_load_failed`
+  - `merge_failed`
+  - `validation_failed`
+  - `missing_path`
+  - `type_mismatch`
+  - `invalid_value`
+  - `watcher_failed`
+- validator exposes these via:
+  - documented stable category literals validated by config compatibility fixtures
+
 ## Field-Path Contract
 
 - typed field combinators (`field`, `named_field`) use dot notation:

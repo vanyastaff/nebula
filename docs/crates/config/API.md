@@ -38,6 +38,18 @@
   - deserialization mismatch returns `ConfigError::TypeError` (`type_mismatch`)
   - validation rejection returns `ConfigError::ValidationError` (`validation_failed`)
 
+## Validator Integration Contract
+
+- supported integration:
+  - `ConfigValidator` implementations
+  - direct use of `nebula-validator` validators via trait bridge
+- validation gate behavior:
+  - startup/reload activation requires validator pass
+  - validator failure rejects candidate atomically
+  - previously active snapshot remains available to consumers
+- category naming baseline:
+  - `source_load_failed`, `merge_failed`, `validation_failed`, `missing_path`, `type_mismatch`, `invalid_value`, `watcher_failed`
+
 ## Minimal Example
 
 ```rust
@@ -69,6 +81,38 @@ let cfg = ConfigBuilder::new()
 cfg.reload().await?;
 ```
 
+Validator crate integration example:
+
+```rust
+use nebula_config::ConfigBuilder;
+use nebula_validator::foundation::{Validate, ValidationError};
+use std::sync::Arc;
+
+#[derive(Clone)]
+struct RequireEnabled;
+
+impl Validate<serde_json::Value> for RequireEnabled {
+    fn validate(&self, input: &serde_json::Value) -> Result<(), ValidationError> {
+        let enabled = input
+            .get("feature")
+            .and_then(|f| f.get("enabled"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if enabled {
+            Ok(())
+        } else {
+            Err(ValidationError::new("validation_failed", "feature.enabled must be true"))
+        }
+    }
+}
+
+let _cfg = ConfigBuilder::new()
+    .with_defaults_json(serde_json::json!({"feature":{"enabled": true}}))
+    .with_validator(Arc::new(RequireEnabled))
+    .build()
+    .await?;
+```
+
 ## Error Semantics
 
 - retryable errors:
@@ -95,3 +139,5 @@ cfg.reload().await?;
   - `crates/config/tests/fixtures/compat/path_contract_v1.json`
 - error envelope schema:
   - `specs/001-config-crate-spec/contracts/config-error-envelope.schema.json`
+- config-validator compatibility fixture:
+  - `crates/config/tests/fixtures/compat/validator_contract_v1.json`
