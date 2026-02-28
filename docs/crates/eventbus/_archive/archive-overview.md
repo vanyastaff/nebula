@@ -40,4 +40,3 @@ context.emit_event(NodeEvent::NodeStarted {
 ```
 
 ---
-

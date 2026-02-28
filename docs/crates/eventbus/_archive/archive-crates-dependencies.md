@@ -10,4 +10,3 @@ async-trait = "0.1"
 tokio = { version = "1.0", features = ["sync", "rt"] }
 futures = "0.3"
 ```
-
