@@ -24,7 +24,7 @@
 
 - **Alert conditions:** Log init failure (app won't start); hook error rate (if metrics exposed)
 - **Dashboards:** Standard tracing/metrics dashboards from OTLP/Prometheus
-- **Incident triage:** Check config/env; verify writer permissions; inspect hook registry
+- **Incident triage:** Check config/env (see API env contract table); verify writer permissions; inspect hook registry
 
 ## Capacity Planning
 

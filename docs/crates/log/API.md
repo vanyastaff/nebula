@@ -58,3 +58,39 @@ fn main() -> LogResult<()> {
 
 - **Major version bump:** Removal of deprecated APIs, config schema breaking changes, trait signature changes.
 - **Deprecation policy:** Minimum 6 months with `#[deprecated]` and migration guide in MIGRATION.md.
+
+## Env and Precedence Contract
+
+Startup precedence is deterministic:
+
+1. explicit config passed to `init_with`/`resolve_startup(Some(...))`
+2. environment overrides on top of preset
+3. preset (`development` in debug builds, `production` in release builds)
+
+Source marker returned by resolution:
+
+- `ResolvedSource::Explicit`
+- `ResolvedSource::Environment`
+- `ResolvedSource::Preset`
+
+Environment variable contract:
+
+| Variable | Target field | Accepted values | Notes |
+|---|---|---|---|
+| `NEBULA_LOG` | `Config.level` | any tracing filter string | takes precedence over `RUST_LOG` |
+| `RUST_LOG` | `Config.level` | any tracing filter string | used only when `NEBULA_LOG` is unset |
+| `NEBULA_LOG_FORMAT` | `Config.format` | `pretty`, `compact`, `json`, `logfmt` | case-insensitive; invalid value is ignored |
+| `NEBULA_LOG_TIME` | `Config.display.time` | boolean-ish string | `0/false/FALSE/False` => `false`, everything else => `true` |
+| `NEBULA_LOG_SOURCE` | `Config.display.source` | boolean-ish string | same bool parsing rules |
+| `NEBULA_LOG_COLORS` | `Config.display.colors` | boolean-ish string | same bool parsing rules |
+| `NEBULA_SERVICE` | `Config.fields.service` | string | via `Fields::from_env()` |
+| `NEBULA_ENV` | `Config.fields.env` | string | via `Fields::from_env()` |
+| `NEBULA_VERSION` | `Config.fields.version` | string | fallback to crate version when env is unset |
+| `NEBULA_INSTANCE` | `Config.fields.instance` | string | via `Fields::from_env()` |
+| `NEBULA_REGION` | `Config.fields.region` | string | via `Fields::from_env()` |
+
+Contract notes:
+
+- env override is applied as a single layer; if any supported env var is applied, source is `Environment`.
+- field overrides from `Fields::from_env()` replace `Config.fields` as a whole.
+- explicit runtime config always wins and bypasses env/preset resolution.

@@ -34,7 +34,7 @@ Logging and observability foundation for the Nebula workflow platform.
 ## Target State
 
 - **Production criteria:**
-  - formal env var and config precedence contract
+  - formal env var and config precedence contract (published in API.md)
   - benchmarked hot paths with CI thresholds
   - documented hook/runtime failure behavior under load
 - **Compatibility guarantees:**

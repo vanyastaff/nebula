@@ -1,6 +1,6 @@
 # Roadmap
 
-## Phase 1: Contract and Safety Baseline (Mostly Done)
+## Phase 1: Contract and Safety Baseline (Completed)
 
 - **Completed:**
   - Real fanout for `WriterConfig::Multi` with failure policy (`FailFast`, `BestEffort`, `PrimaryWithFallback`)
@@ -8,8 +8,7 @@
   - Env/config precedence behavior with explicit compatibility tests
   - Config schema version guard (`schema_version`) and compatibility checks
   - Stable config schema snapshot contract tests with versioned fixtures
-- **Remaining in this phase:**
-  - Publish formal env var contract table in API/ops docs
+  - Formal env var contract table published in API docs
 - **Risks:** Snapshot governance drift if contract fixtures are not versioned per release
 - **Exit criteria:** Snapshot contract tests pass and docs specify precedence unambiguously
 
