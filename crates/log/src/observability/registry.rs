@@ -3,10 +3,12 @@
 //! This module provides a thread-safe global registry for managing
 //! observability hooks and emitting events.
 
+use super::HookPolicy;
 use super::hooks::{ObservabilityEvent, ObservabilityHook};
 use arc_swap::ArcSwap;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::time::Instant;
 
 /// Hook list stored inside [`ArcSwap`] for lock-free reads.
 ///
@@ -27,8 +29,14 @@ type HookList = Vec<Arc<dyn ObservabilityHook>>;
 /// registry catches the panic and continues dispatching to remaining hooks,
 /// but the panicked hook's internal state may be corrupted. Consider wrapping
 /// fallible hook internals in `catch_unwind` or using lock-free data structures.
-fn emit_to_hooks(hooks: &HookList, event: &dyn ObservabilityEvent) {
+fn emit_to_hooks(hooks: &HookList, event: &dyn ObservabilityEvent, policy: HookPolicy) {
+    let timeout_ms = match policy {
+        HookPolicy::Inline => None,
+        HookPolicy::Bounded { timeout_ms, .. } => Some(timeout_ms),
+    };
+
     for hook in hooks.iter() {
+        let started = Instant::now();
         // No Arc::clone needed — we borrow through the slice reference,
         // which is kept alive by the ArcSwap guard for the duration of emit.
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
@@ -42,6 +50,19 @@ fn emit_to_hooks(hooks: &HookList, event: &dyn ObservabilityEvent) {
                 panic = ?panic_info,
                 "Hook panicked while processing event"
             );
+            continue;
+        }
+
+        if let Some(timeout) = timeout_ms {
+            let elapsed = started.elapsed().as_millis() as u64;
+            if elapsed > timeout {
+                tracing::warn!(
+                    event_name = event.name(),
+                    elapsed_ms = elapsed,
+                    timeout_ms = timeout,
+                    "Hook exceeded configured execution budget"
+                );
+            }
         }
     }
 }
@@ -67,8 +88,14 @@ fn try_initialize_hook(hook: &dyn ObservabilityHook) -> bool {
 }
 
 /// Shutdown all hooks in a list, catching panics.
-fn shutdown_hooks_list(hooks: &HookList) {
+fn shutdown_hooks_list(hooks: &HookList, policy: HookPolicy) {
+    let timeout_ms = match policy {
+        HookPolicy::Inline => None,
+        HookPolicy::Bounded { timeout_ms, .. } => Some(timeout_ms),
+    };
+
     for hook in hooks.iter() {
+        let started = Instant::now();
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
             hook.shutdown();
         }));
@@ -79,6 +106,18 @@ fn shutdown_hooks_list(hooks: &HookList) {
                 panic = ?panic_info,
                 "Hook panicked during shutdown"
             );
+            continue;
+        }
+
+        if let Some(timeout) = timeout_ms {
+            let elapsed = started.elapsed().as_millis() as u64;
+            if elapsed > timeout {
+                tracing::warn!(
+                    elapsed_ms = elapsed,
+                    timeout_ms = timeout,
+                    "Hook shutdown exceeded configured execution budget"
+                );
+            }
         }
     }
 }
@@ -96,6 +135,8 @@ static HOOKS: LazyLock<ArcSwap<HookList>> = LazyLock::new(|| ArcSwap::from_point
 
 /// Mutex for coordinating write operations (register/shutdown).
 static WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static HOOK_POLICY: LazyLock<RwLock<HookPolicy>> =
+    LazyLock::new(|| RwLock::new(HookPolicy::Inline));
 
 /// Register a global observability hook.
 ///
@@ -162,7 +203,14 @@ pub fn register_hook(hook: Arc<dyn ObservabilityHook>) {
 #[inline]
 pub fn emit_event(event: &dyn ObservabilityEvent) {
     let hooks = HOOKS.load();
-    emit_to_hooks(&hooks, event);
+    let policy = *HOOK_POLICY.read().expect("hook policy lock poisoned");
+    emit_to_hooks(&hooks, event, policy);
+}
+
+/// Set hook execution policy for subsequent emissions.
+pub fn set_hook_policy(policy: HookPolicy) {
+    let mut current = HOOK_POLICY.write().expect("hook policy lock poisoned");
+    *current = policy;
 }
 
 /// Shutdown all registered hooks.
@@ -185,7 +233,8 @@ pub fn emit_event(event: &dyn ObservabilityEvent) {
 pub fn shutdown_hooks() {
     let _guard = WRITE_LOCK.lock().expect("registry write lock poisoned");
     let current = HOOKS.load();
-    shutdown_hooks_list(&current);
+    let policy = *HOOK_POLICY.read().expect("hook policy lock poisoned");
+    shutdown_hooks_list(&current, policy);
     HOOKS.store(Arc::new(Vec::new()));
 }
 

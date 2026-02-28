@@ -16,7 +16,7 @@
 ## Resilience Strategies
 
 - **Retry policy:** Init is not retried by crate; caller may retry
-- **Circuit breaking:** N/A for init; future hook budget (P-001) may add per-hook limits
+- **Circuit breaking:** N/A for init; hook policy supports bounded execution budgets with over-budget diagnostics
 - **Fallback behavior:** `auto_init` falls back to dev/prod preset if env unset
 - **Graceful degradation:** Telemetry features disabled → logging still works
 
@@ -29,4 +29,4 @@
 ## Capacity Planning
 
 - **Load profile assumptions:** High event rate in workflow execution; bursts during workflow runs
-- **Scaling constraints:** Global subscriber; single registry; consider async offload for very high throughput (P-001)
+- **Scaling constraints:** Global subscriber; single registry; bounded hook policy mitigates slow-hook latency amplification

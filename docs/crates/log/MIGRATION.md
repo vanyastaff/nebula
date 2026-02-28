@@ -3,7 +3,7 @@
 ## Versioning Policy
 
 - **Compatibility promise:** Patch/minor releases preserve config schema and public API
-- **Deprecation window:** Minimum 6 months for breaking changes; migration guide in release notes
+- **Deprecation window:** Minimum 12 months for breaking changes; migration guide in release notes
 
 ## Breaking Changes
 
@@ -40,3 +40,4 @@
 - **API compatibility checks:** `cargo check` with dependent crates
 - **Integration checks:** Full workspace test
 - **Performance checks:** Criterion benchmarks; no regression
+- **Schema compatibility checks:** Config fixtures and compatibility tests must pass for supported minor versions

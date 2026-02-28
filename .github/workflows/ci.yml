@@ -7,6 +7,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  NEBULA_LOG_BENCH_EMIT_MAX_NS: "20000"
+  NEBULA_LOG_BENCH_CONTEXT_MAX_NS: "50000"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -60,3 +62,44 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --no-deps --workspace
+
+  bench:
+    name: Benchmark Thresholds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo bench -p nebula-log --bench log_hot_path
+      - name: Validate benchmark thresholds
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, sys
+
+          bases = [pathlib.Path("target/criterion"), pathlib.Path("crates/log/target/criterion")]
+          checks = [
+              ("log_emit_event_no_hooks/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_EMIT_MAX_NS"])),
+              ("log_context_snapshot/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_CONTEXT_MAX_NS"])),
+          ]
+          failures = []
+          for rel, threshold in checks:
+              path = None
+              for base in bases:
+                  candidate = base / rel
+                  if candidate.exists():
+                      path = candidate
+                      break
+              if path is None:
+                  failures.append(f"missing benchmark output: {rel}")
+                  continue
+              data = json.loads(path.read_text(encoding="utf-8"))
+              mean_ns = int(data["mean"]["point_estimate"])
+              if mean_ns > threshold:
+                  failures.append(f"{rel}: mean {mean_ns}ns > threshold {threshold}ns")
+          if failures:
+              print("Benchmark threshold check failed:")
+              for f in failures:
+                  print(" -", f)
+              sys.exit(1)
+          print("Benchmark thresholds passed")
+          PY

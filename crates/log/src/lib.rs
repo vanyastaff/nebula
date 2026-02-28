@@ -41,7 +41,10 @@ pub mod observability;
 
 // Public API
 pub use builder::{LoggerBuilder, LoggerGuard};
-pub use config::{Config, Format, Level, Rolling, WriterConfig};
+pub use config::{
+    Config, DestinationFailurePolicy, Format, Level, ResolvedConfig, ResolvedSource, Rolling,
+    WriterConfig,
+};
 pub use layer::context::{Context, Fields};
 pub use timing::{Timed, Timer, TimerGuard};
 
@@ -99,13 +102,9 @@ pub fn auto_init() -> LogResult<LoggerGuard> {
         }
     }
 
-    if std::env::var("NEBULA_LOG").is_ok() || std::env::var("RUST_LOG").is_ok() {
-        init_with(Config::from_env())
-    } else if cfg!(debug_assertions) {
-        init_with(Config::development())
-    } else {
-        init_with(Config::production())
-    }
+    let (guard, source) = LoggerBuilder::build_startup(None)?;
+    info!(source = ?source, "logging initialized");
+    Ok(guard)
 }
 
 /// Initialize with default configuration

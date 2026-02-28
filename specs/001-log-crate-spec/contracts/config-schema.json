@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nebula.dev/schemas/log-config/v1",
+  "title": "Nebula Log Configuration",
+  "description": "Configuration schema for nebula-log. Used for YAML/JSON config files.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "default": 1,
+      "description": "Schema version for compatibility checks"
+    },
+    "format": {
+      "type": "string",
+      "enum": ["human", "json", "logfmt"],
+      "default": "human",
+      "description": "Output format: human (pretty), json (structured), logfmt"
+    },
+    "level": {
+      "type": "string",
+      "enum": ["trace", "debug", "info", "warn", "error"],
+      "default": "info",
+      "description": "Minimum log level"
+    },
+    "writer": {
+      "$ref": "#/$defs/WriterConfig",
+      "description": "Output destination(s)"
+    },
+    "display": {
+      "$ref": "#/$defs/DisplayConfig",
+      "description": "Display options (time, source, colors)"
+    },
+    "fields": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Global enrichment fields"
+    }
+  },
+  "required": ["schema_version"],
+  "$defs": {
+    "WriterConfig": {
+      "oneOf": [
+        { "const": "stderr" },
+        { "const": "stdout" },
+        { "$ref": "#/$defs/FileWriter" },
+        { "$ref": "#/$defs/MultiWriter" }
+      ]
+    },
+    "FileWriter": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "file" },
+        "path": { "type": "string", "format": "uri-reference" },
+        "rolling": { "$ref": "#/$defs/Rolling" },
+        "non_blocking": { "type": "boolean", "default": true }
+      },
+      "required": ["type", "path"]
+    },
+    "MultiWriter": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "multi" },
+        "policy": {
+          "type": "string",
+          "enum": ["fail_fast", "best_effort", "primary_with_fallback"],
+          "description": "Behavior when a destination fails"
+        },
+        "writers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/WriterConfig" },
+          "minItems": 1
+        }
+      },
+      "required": ["type", "policy", "writers"]
+    },
+    "Rolling": {
+      "oneOf": [
+        { "const": "never" },
+        { "const": "hourly" },
+        { "const": "daily" },
+        {
+          "type": "object",
+          "properties": {
+            "size": { "type": "integer", "minimum": 1, "description": "Max size in MB" }
+          },
+          "required": ["size"]
+        }
+      ]
+    },
+    "DisplayConfig": {
+      "type": "object",
+      "properties": {
+        "time": { "type": "boolean", "default": true },
+        "time_format": { "type": "string" },
+        "source": { "type": "boolean", "default": false },
+        "target": { "type": "boolean", "default": true },
+        "thread_ids": { "type": "boolean", "default": false },
+        "thread_names": { "type": "boolean", "default": false },
+        "colors": { "type": "boolean" },
+        "span_list": { "type": "boolean", "default": true },
+        "flatten": { "type": "boolean", "default": true }
+      }
+    }
+  }
+}

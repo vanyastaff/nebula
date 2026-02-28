@@ -26,7 +26,27 @@ pub enum WriterConfig {
         non_blocking: bool,
     },
     /// Write to multiple destinations
-    Multi(Vec<WriterConfig>),
+    Multi {
+        /// Behavior when one destination fails.
+        #[serde(default)]
+        policy: DestinationFailurePolicy,
+        /// Destination writers.
+        writers: Vec<WriterConfig>,
+    },
+}
+
+/// Failure policy for multi-destination writer behavior.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DestinationFailurePolicy {
+    /// Stop and return the first destination error.
+    FailFast,
+    /// Continue writing to remaining destinations and report best-effort behavior.
+    #[default]
+    BestEffort,
+    /// Try the first destination and fallback to remaining ones on failure.
+    PrimaryWithFallback,
 }
 
 /// File rolling strategy
@@ -85,21 +105,6 @@ impl Default for DisplayConfig {
             colors: cfg!(feature = "ansi") && std::io::IsTerminal::is_terminal(&std::io::stderr()),
             span_list: true,
             flatten: true,
-        }
-    }
-}
-
-impl DisplayConfig {
-    /// Parse display configuration from environment variables
-    pub(super) fn parse_env(&mut self) {
-        if let Ok(v) = std::env::var("NEBULA_LOG_TIME") {
-            self.time = v != "0" && v != "false";
-        }
-        if let Ok(v) = std::env::var("NEBULA_LOG_SOURCE") {
-            self.source = v != "0" && v != "false";
-        }
-        if let Ok(v) = std::env::var("NEBULA_LOG_COLORS") {
-            self.colors = v != "0" && v != "false";
         }
     }
 }

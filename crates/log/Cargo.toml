@@ -82,3 +82,7 @@ uuid = { workspace = true }
 name = "sentry_test"
 path = "examples/sentry_test.rs"
 required-features = ["sentry"]
+
+[[bench]]
+name = "log_hot_path"
+harness = false

@@ -7,6 +7,7 @@
 //! - `presets`: Pre-configured setups (development, production, test)
 
 mod base;
+mod env;
 mod fields;
 mod presets;
 mod writer;
@@ -15,5 +16,6 @@ mod writer;
 #[cfg(feature = "telemetry")]
 pub use base::TelemetryConfig;
 pub use base::{Config, Format, Level};
+pub use env::{ResolvedConfig, ResolvedSource};
 pub use fields::Fields;
-pub use writer::{DisplayConfig, Rolling, WriterConfig};
+pub use writer::{DestinationFailurePolicy, DisplayConfig, Rolling, WriterConfig};

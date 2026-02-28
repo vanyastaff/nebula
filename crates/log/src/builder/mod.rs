@@ -20,7 +20,7 @@ use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt, util::Subscr
 // Internal crates
 use crate::core::LogResult;
 use crate::{
-    config::{Config, Format},
+    config::{Config, Format, ResolvedSource},
     writer,
 };
 
@@ -79,6 +79,16 @@ macro_rules! init_subscriber {
 }
 
 impl LoggerBuilder {
+    /// Build logger from startup precedence resolution.
+    ///
+    /// Precedence order: explicit > environment > preset.
+    pub fn build_startup(explicit: Option<Config>) -> LogResult<(LoggerGuard, ResolvedSource)> {
+        let resolved = Config::resolve_startup(explicit);
+        let source = resolved.source;
+        let guard = Self::from_config(resolved.config).build()?;
+        Ok((guard, source))
+    }
+
     /// Create builder from config
     #[must_use]
     pub fn from_config(config: Config) -> Self {
@@ -94,6 +104,8 @@ impl LoggerBuilder {
     /// - File writer initialization fails
     /// - Telemetry setup fails
     pub fn build(self) -> LogResult<LoggerGuard> {
+        self.config.ensure_compatible()?;
+
         let mut inner = Inner {
             #[cfg(feature = "file")]
             file_guards: Vec::new(),
@@ -125,6 +137,7 @@ impl LoggerBuilder {
 
         // Initialize telemetry (Sentry + log bridge)
         telemetry::init_telemetry(&mut inner);
+        crate::observability::set_hook_policy(crate::observability::HookPolicy::default());
 
         // Build subscriber based on format
         match self.config.format {

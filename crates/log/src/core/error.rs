@@ -15,6 +15,12 @@ pub enum LogError {
     /// Filter parsing failed
     #[error("Filter parsing error: {0}")]
     Filter(String),
+    /// Configuration precedence resolution failed
+    #[error("Precedence error: {0}")]
+    Precedence(String),
+    /// Policy parsing/validation failed
+    #[error("Policy error: {0}")]
+    Policy(String),
     /// Writer or I/O operation failed
     #[error("IO error: {0}")]
     Io(String),

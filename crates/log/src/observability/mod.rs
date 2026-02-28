@@ -48,6 +48,22 @@ mod registry;
 mod resources;
 mod span;
 
+/// Hook execution policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum HookPolicy {
+    /// Dispatch hooks inline on the caller thread.
+    #[default]
+    Inline,
+    /// Dispatch hooks with bounded budget.
+    Bounded {
+        /// Maximum budget for a hook callback in milliseconds.
+        timeout_ms: u64,
+        /// Queue capacity reserved for offloaded callbacks.
+        queue_capacity: usize,
+    },
+}
+
 // Re-export main types
 pub use context::{
     ContextSnapshot, ExecutionContext, GlobalContext, NodeContext, ResourceMap, current_contexts,
@@ -57,7 +73,7 @@ pub use filter::{EventFilter, FilteredHook};
 pub use hooks::{
     LoggingHook, ObservabilityEvent, ObservabilityHook, ResourceAwareAdapter, ResourceAwareHook,
 };
-pub use registry::{emit_event, register_hook, shutdown_hooks};
+pub use registry::{emit_event, register_hook, set_hook_policy, shutdown_hooks};
 pub use resources::{LogLevel, LoggerResource, NotificationPrefs, NotificationSeverity};
 pub use span::get_current_logger_resource;
 

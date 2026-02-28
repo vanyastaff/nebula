@@ -1,36 +1,13 @@
 //! Configuration presets for common scenarios
 
-use super::{Config, DisplayConfig, Fields, Format};
+use super::{Config, DisplayConfig, Format};
 
 impl Config {
     /// Create configuration from environment variables
     #[must_use]
     pub fn from_env() -> Self {
         let mut config = Self::default();
-
-        // Parse NEBULA_LOG or RUST_LOG
-        if let Ok(level) = std::env::var("NEBULA_LOG") {
-            config.level = level;
-        } else if let Ok(level) = std::env::var("RUST_LOG") {
-            config.level = level;
-        }
-
-        // Parse format
-        if let Ok(format) = std::env::var("NEBULA_LOG_FORMAT") {
-            config.format = match format.to_lowercase().as_str() {
-                "pretty" => Format::Pretty,
-                "json" => Format::Json,
-                "logfmt" => Format::Logfmt,
-                _ => Format::Compact,
-            };
-        }
-
-        // Parse display options
-        config.display.parse_env();
-
-        // Parse fields from env
-        config.fields = Fields::from_env();
-
+        let _ = config.apply_env_overrides();
         config
     }
 

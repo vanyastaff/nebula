@@ -2,12 +2,18 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::{LogError, LogResult};
+
 use super::{DisplayConfig, Fields, WriterConfig};
 
 /// Logging configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// Configuration schema version.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u16,
+
     /// Log level filter (e.g., "info", "debug,hyper=warn")
     pub level: String,
 
@@ -90,6 +96,7 @@ pub struct TelemetryConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            schema_version: default_schema_version(),
             level: "info".to_string(),
             format: Format::Compact,
             writer: WriterConfig::Stderr,
@@ -100,4 +107,26 @@ impl Default for Config {
             telemetry: None,
         }
     }
+}
+
+impl Config {
+    /// Validate config schema compatibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LogError::Config` when schema version is unsupported.
+    pub fn ensure_compatible(&self) -> LogResult<()> {
+        if self.schema_version != default_schema_version() {
+            return Err(LogError::Config(format!(
+                "Unsupported config schema version {} (expected {})",
+                self.schema_version,
+                default_schema_version()
+            )));
+        }
+        Ok(())
+    }
+}
+
+const fn default_schema_version() -> u16 {
+    1
 }

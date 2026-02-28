@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "level": "info",
+  "format": "compact",
+  "writer": {
+    "type": "stderr"
+  },
+  "display": {
+    "time": true,
+    "source": false,
+    "target": true,
+    "thread_ids": false,
+    "thread_names": false,
+    "colors": false,
+    "span_list": true,
+    "flatten": true
+  },
+  "fields": {},
+  "reloadable": false
+}

@@ -68,7 +68,7 @@ macro_rules! measure {
 
 /// Build a context with additional fields from the current context.
 ///
-/// Returns a [`Context`] — use `.scope(future)` or `.scope_sync(closure)` to activate it.
+/// Returns a [`crate::Context`] — use `.scope(future)` or `.scope_sync(closure)` to activate it.
 ///
 /// ```rust,ignore
 /// let ctx = with_context!(request_id = "req-123", user_id = "user-456");
