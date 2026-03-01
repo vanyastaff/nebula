@@ -843,6 +843,17 @@ impl Evaluator {
         engine_strict || context_strict
     }
 
+    pub(crate) fn max_json_parse_length(&self, context: &EvaluationContext) -> Option<usize> {
+        context
+            .policy()
+            .and_then(EvaluationPolicy::max_json_parse_length)
+            .or_else(|| {
+                self.policy
+                    .as_deref()
+                    .and_then(EvaluationPolicy::max_json_parse_length)
+            })
+    }
+
     fn coerce_boolean(&self, value: &Value, context: &EvaluationContext) -> ExpressionResult<bool> {
         if self.strict_mode_enabled(context) && !value.is_boolean() {
             return Err(ExpressionError::expression_type_error(

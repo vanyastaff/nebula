@@ -88,6 +88,19 @@ let ctx = EvaluationContext::new();
 
 assert!(engine.evaluate("to_number('42')", &ctx).is_err());
 assert!(engine.evaluate("to_boolean(1)", &ctx).is_err());
+assert!(engine.evaluate("to_string([1,2,3])", &ctx).is_err());
+assert!(engine.evaluate("parse_json('42')", &ctx).is_err());
+```
+
+```rust
+use nebula_expression::{EvaluationContext, EvaluationPolicy, ExpressionEngine, Value};
+
+let policy = EvaluationPolicy::new().with_max_json_parse_length(5);
+let engine = ExpressionEngine::new().with_policy(policy);
+let mut ctx = EvaluationContext::new();
+ctx.set_input(Value::String("{\"a\":1}".to_string()));
+
+assert!(engine.evaluate("parse_json($input)", &ctx).is_err());
 ```
 
 ## Cache Observability Example

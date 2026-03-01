@@ -13,6 +13,7 @@ pub struct EvaluationPolicy {
     denied_functions: Arc<HashSet<String>>,
     strict_mode: bool,
     strict_conversion_functions: bool,
+    max_json_parse_length: Option<usize>,
 }
 
 impl EvaluationPolicy {
@@ -70,6 +71,12 @@ impl EvaluationPolicy {
         self
     }
 
+    /// Set max JSON input size for `parse_json`.
+    pub fn with_max_json_parse_length(mut self, max_bytes: usize) -> Self {
+        self.max_json_parse_length = Some(max_bytes);
+        self
+    }
+
     /// Return the optional allowlist.
     pub fn allowed_functions(&self) -> Option<&HashSet<String>> {
         self.allowed_functions.as_deref()
@@ -89,6 +96,11 @@ impl EvaluationPolicy {
     pub fn strict_conversion_functions(&self) -> bool {
         self.strict_conversion_functions
     }
+
+    /// Optional override for JSON parse input size limit.
+    pub fn max_json_parse_length(&self) -> Option<usize> {
+        self.max_json_parse_length
+    }
 }
 
 #[cfg(test)]
@@ -101,12 +113,14 @@ mod tests {
             .with_allowed_functions(["uppercase", "length"])
             .with_denied_functions(["length"])
             .with_strict_mode(true)
-            .with_strict_conversion_functions(true);
+            .with_strict_conversion_functions(true)
+            .with_max_json_parse_length(2048);
 
         assert!(policy.allowed_functions().unwrap().contains("uppercase"));
         assert!(policy.denied_functions().contains("length"));
         assert!(policy.strict_mode());
         assert!(policy.strict_conversion_functions());
+        assert_eq!(policy.max_json_parse_length(), Some(2048));
     }
 }
 

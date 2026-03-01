@@ -13,10 +13,18 @@ const MAX_JSON_PARSE_LENGTH: usize = 1024 * 1024;
 /// Convert value to string
 pub fn to_string(
     args: &[Value],
-    _eval: &Evaluator,
-    _ctx: &EvaluationContext,
+    eval: &Evaluator,
+    ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("to_string", args, 1)?;
+
+    if eval.strict_conversions_enabled(ctx) && matches!(&args[0], Value::Array(_) | Value::Object(_)) {
+        return Err(ExpressionError::expression_type_error(
+            "scalar (string/number/boolean/null)",
+            crate::value_utils::value_type_name(&args[0]),
+        ));
+    }
+
     let string_val = match &args[0] {
         Value::String(s) => s.clone(),
         Value::Number(n) => n.to_string(),
@@ -91,8 +99,8 @@ pub fn to_json(
 /// Parse JSON string to value
 pub fn parse_json(
     args: &[Value],
-    _eval: &Evaluator,
-    _ctx: &EvaluationContext,
+    eval: &Evaluator,
+    ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("parse_json", args, 1)?;
 
@@ -104,17 +112,25 @@ pub fn parse_json(
     })?;
 
     // DoS protection: limit JSON string size
-    if json_str.len() > MAX_JSON_PARSE_LENGTH {
+    let max_len = eval.max_json_parse_length(ctx).unwrap_or(MAX_JSON_PARSE_LENGTH);
+    if json_str.len() > max_len {
         return Err(ExpressionError::expression_eval_error(format!(
             "JSON string too large: {} bytes (max {} bytes)",
             json_str.len(),
-            MAX_JSON_PARSE_LENGTH
+            max_len
         )));
     }
 
     let json: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         ExpressionError::expression_eval_error(format!("Failed to parse JSON: {}", e))
     })?;
+
+    if eval.strict_conversions_enabled(ctx) && !matches!(json, Value::Object(_) | Value::Array(_)) {
+        return Err(ExpressionError::expression_type_error(
+            "object or array",
+            crate::value_utils::value_type_name(&json),
+        ));
+    }
 
     Ok(json)
 }

@@ -683,6 +683,46 @@ mod tests {
     }
 
     #[test]
+    fn test_strict_conversion_functions_reject_complex_to_string() {
+        let policy = EvaluationPolicy::new().with_strict_conversion_functions(true);
+        let engine = ExpressionEngine::new().with_policy(policy);
+        let context = EvaluationContext::new();
+
+        let err = engine.evaluate("to_string([1,2,3])", &context).unwrap_err();
+        assert!(err.to_string().contains("scalar"));
+    }
+
+    #[test]
+    fn test_non_strict_conversion_allows_complex_to_string() {
+        let engine = ExpressionEngine::new();
+        let context = EvaluationContext::new();
+
+        let value = engine.evaluate("to_string([1,2,3])", &context).unwrap();
+        assert_eq!(value.as_str(), Some("[1,2,3]"));
+    }
+
+    #[test]
+    fn test_strict_conversion_functions_reject_scalar_parse_json_result() {
+        let policy = EvaluationPolicy::new().with_strict_conversion_functions(true);
+        let engine = ExpressionEngine::new().with_policy(policy);
+        let context = EvaluationContext::new();
+
+        let err = engine.evaluate("parse_json('42')", &context).unwrap_err();
+        assert!(err.to_string().contains("expected object or array"));
+    }
+
+    #[test]
+    fn test_policy_max_json_parse_length_restricts_parse_json() {
+        let policy = EvaluationPolicy::new().with_max_json_parse_length(5);
+        let engine = ExpressionEngine::new().with_policy(policy);
+        let mut context = EvaluationContext::new();
+        context.set_input(Value::String("{\"a\":1}".to_string()));
+
+        let err = engine.evaluate("parse_json($input)", &context).unwrap_err();
+        assert!(err.to_string().contains("JSON string too large"));
+    }
+
+    #[test]
     fn test_cache_overview_no_cache() {
         let engine = ExpressionEngine::new();
         let overview = engine.cache_overview();
