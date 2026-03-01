@@ -54,9 +54,38 @@
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | /credentials | List credentials |
-| POST | /credentials | Create credential |
-| DELETE | /credentials/:id | Delete credential |
+| GET | /credentials | List credentials (metadata only, no secrets) |
+| GET | /credentials/:id | Get credential status + metadata |
+| POST | /credentials | Create credential; returns 202 + interaction if user action required |
+| POST | /credentials/:id/callback | Continue interactive flow (deliver OAuth code, device confirmation, etc.) |
+| DELETE | /credentials/:id | Delete credential and revoke tokens |
+| GET | /credential-types | List registered credential types with parameter schemas |
+
+**Interactive flow — 202 response pattern:**
+
+When `POST /credentials` triggers an interactive flow (e.g. OAuth2 Authorization Code), the response is:
+
+```json
+HTTP 202 Accepted
+{
+  "id": "cred-abc123",
+  "status": "pending_interaction",
+  "interaction": {
+    "type": "redirect",
+    "url": "https://github.com/login/oauth/authorize?client_id=...&state=..."
+  }
+}
+```
+
+Other `interaction.type` values: `"display_info"` (Device Flow — show user/device code), `"code_input"` (prompt user to paste a code), `"await_confirmation"` (show instructions).
+
+After the user completes the interaction, the client calls `POST /credentials/:id/callback`:
+
+```json
+{ "params": { "code": "ghu_XXX", "state": "YYY" } }
+```
+
+On success: `200 { "id": "cred-abc123", "status": "active", "metadata": { "name": "GitHub", "type": "oauth2_github", "scopes": ["repo"] } }`
 
 #### Nodes *(Phase 4)*
 

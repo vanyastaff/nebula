@@ -105,6 +105,82 @@ authorizing → browser opened, waiting for deep-link
 
 ---
 
+## Credential Interactive Flow
+
+Some credential types (OAuth2 Authorization Code) require the user to authenticate in a browser before the credential can be created. This uses a **separate** deep-link scheme from the user login flow.
+
+- **User login**: `nebula://auth/callback` — handled by `commands/auth.rs::handle_auth_callback`
+- **Credential OAuth**: `nebula://credential/callback` — handled by `commands/credential.rs::handle_credential_callback`
+
+### Sequence diagram (OAuth2 credential)
+
+```
+User clicks "Add GitHub credential"
+        │
+        ▼
+React calls useCreateCredential({ type_id: "oauth2_github", params: { client_id, scope } })
+        │
+        ▼
+POST /credentials { type_id, params }
+        ← 202 { id, status: "pending_interaction",
+                 interaction: { type: "redirect", url: "https://github.com/login/oauth/authorize?..." } }
+        │
+        ▼
+React sets credential status → "pending_interaction"
+Rust opens url in system browser (tauri-plugin-opener)
+  (redirect_uri = "nebula://credential/callback")
+        │
+        ▼ user authenticates in browser
+        │
+        ▼ GitHub redirects → nebula://credential/callback?code=XXX&state=YYY&credential_id=cred-abc123
+        │
+        ▼
+OS delivers deep-link to Tauri (same tauri-plugin-deep-link registration)
+        │
+        ▼
+Rust handle_credential_callback() parses URL, extracts credential_id + params
+        │
+        ▼
+Rust POSTs /credentials/:id/callback { params: { code, state } }
+        ← 200 { id, status: "active", metadata: { name: "GitHub", type: "oauth2_github", scopes: ["repo"] } }
+        │
+        ▼
+React TanStack Query cache updated → credential appears as active
+```
+
+### Deep-link registration
+
+The `nebula://` scheme is shared. Tauri's deep-link handler dispatches based on the URL path:
+
+```rust
+// src-tauri/src/commands/deep_link.rs
+match url.path() {
+    "/auth/callback"       => handle_auth_callback(url, state).await,
+    "/credential/callback" => handle_credential_callback(url, state).await,
+    _                      => warn!("unknown deep-link path: {}", url.path()),
+}
+```
+
+No additional `tauri.conf.json` changes needed — `nebula://` is already registered.
+
+### Device Flow (alternative)
+
+Some providers support Device Flow (no redirect needed):
+
+```
+POST /credentials { type_id: "oauth2_github_device", params: { scope } }
+← 202 { id, status: "pending_interaction",
+          interaction: { type: "display_info",
+                         user_code: "ABCD-1234",
+                         verification_url: "https://github.com/login/device",
+                         expires_in: 900 } }
+
+React shows modal: "Go to github.com/login/device and enter ABCD-1234"
+React polls GET /credentials/:id every 5s until status === "active"
+```
+
+---
+
 ## API Endpoints
 
 Consumed by the desktop app. All relative to `activeBaseUrl`.
@@ -141,8 +217,11 @@ Consumed by the desktop app. All relative to `activeBaseUrl`.
 | Method | Path | Used by |
 |--------|------|---------|
 | GET | `/credentials` | `features/credentials/queries.ts::useCredentials` |
-| POST | `/credentials` | `useCreateCredential` |
+| GET | `/credentials/:id` | `useCredential` — poll status during interactive flow |
+| POST | `/credentials` | `useCreateCredential` — may return 202 for interactive flows |
+| POST | `/credentials/:id/callback` | `commands/credential.rs::handle_credential_callback` |
 | DELETE | `/credentials/:id` | `useDeleteCredential` |
+| GET | `/credential-types` | `useCredentialTypes` — populate "Add credential" form |
 
 ### Nodes *(planned — Phase 4)*
 

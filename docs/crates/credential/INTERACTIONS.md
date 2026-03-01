@@ -18,15 +18,27 @@
 ## Planned Crates
 
 - **workflow / runtime / worker:** Will consume credential for node execution context
-- **api / cli / ui:** Will use credential for auth flows, form rendering, secret input
 - **engine:** Will inject `CredentialProvider` into action context
+- **nebula-api** *(Phase 4)*:
+  - Credential CRUD surface: `GET /credentials`, `GET /credentials/:id`, `POST /credentials`, `POST /credentials/:id/callback`, `DELETE /credentials/:id`
+  - Credential type catalog: `GET /credential-types` — returns registered type schemas from `CredentialManager`
+  - Interactive flow bridge: receives `InitializeResult::RequiresInteraction` → responds 202 with interaction descriptor → accepts callback params → calls `CredentialManager::continue(id, UserInput::Callback { params })`
+  - Expected contract: `CredentialManager::list()`, `get(id)`, `create(type_id, input)`, `continue(id, user_input)`, `delete(id)`
+  - **Security boundary**: api layer never stores or logs raw secrets; only passes opaque params to manager
 
 ## Downstream Consumers
 
 - **action:** Expects `CredentialProvider` trait; `CredentialRef` for type-safe acquisition; `CredentialContext` for scope
 - **resource:** Expects credential resolution via context; `get_credential(id, &ctx)`
 - **engine/runtime (future):** Expects `CredentialManager` or `CredentialProvider` in execution context
-- **api (future):** Expects credential CRUD, validation, rotation APIs
+- **nebula-api** *(Phase 4)*:
+  - `CredentialManager::list(filter)` → `Vec<CredentialMetadata>` for `GET /credentials`
+  - `CredentialManager::get(id)` → `Option<CredentialMetadata>` + status for `GET /credentials/:id`
+  - `CredentialManager::create(type_id, input)` → `InitializeResult` (may be `RequiresInteraction`) for `POST /credentials`
+  - `CredentialManager::continue(id, UserInput)` → `InitializeResult<Complete>` for `POST /credentials/:id/callback`
+  - `CredentialManager::delete(id)` → `Result<()>` for `DELETE /credentials/:id`
+  - `CredentialManager::list_types()` → `Vec<CredentialTypeSchema>` for `GET /credential-types`
+  - **read-only contract on secrets**: api reads metadata and orchestrates flows; never accesses raw secret material
 
 ## Upstream Dependencies
 
@@ -47,8 +59,12 @@
 | action -> credential | in | CredentialProvider, CredentialRef | async | CredentialError, ManagerError | action acquires credentials |
 | resource -> credential | in | get_credential(id, ctx) | async | CredentialError | resource resolves credentials |
 | storage (optional) | in | StorageProvider trait | async | StorageError | credential owns provider impl |
+| credential <-> nebula-api | in | CRUD + interactive flow continuation | async | CredentialError → HTTP 4xx/5xx | Phase 4; api never accesses secrets |
+| credential <-> resource (cascade) | out | CredentialResource::authorize(new_state) | async | resource drain on failure | on rotation: linked resources refresh their instances |
 
 ## Runtime Sequence
+
+### Standard acquire sequence
 
 1. Engine/runtime creates `CredentialManager` with `StorageProvider` (local/AWS/Vault/K8s)
 2. Action/resource receives `CredentialProvider` in execution context
@@ -56,6 +72,45 @@
 4. Manager checks cache; on miss, delegates to `StorageProvider::retrieve`
 5. Decrypt, validate scope, return `SecretString` or protocol-specific state
 6. On rotation: `RotationTransaction` coordinates backup → new credential → grace period → revoke old
+
+### Interactive credential creation (OAuth2 Authorization Code)
+
+This sequence applies when the desktop user adds a new OAuth2 credential (e.g. GitHub, Google) through the UI.
+
+```
+Desktop → POST /credentials { type_id: "oauth2_github", params: { client_id, scope } }
+        ← 202 { id, status: "pending_interaction",
+                 interaction: { type: "redirect", url: "https://github.com/login/oauth/authorize?..." } }
+
+Desktop opens url in system browser
+  (redirect_uri = "nebula://credential/callback")
+
+User authenticates in browser
+Browser → nebula://credential/callback?code=XXX&state=YYY
+
+Tauri deep-link handler parses URL
+Desktop → POST /credentials/:id/callback { params: { code: "XXX", state: "YYY" } }
+
+API → CredentialManager::continue(id, UserInput::Callback { params })
+    → OAuth2Protocol exchanges code for access_token + refresh_token
+    → Manager encrypts and stores state via StorageProvider
+        ← 200 { id, status: "active", metadata: { name, type, scopes } }
+
+Desktop shows credential as active; resources linked to this credential
+receive authorize(new_state) and recreate pool instances if needed
+```
+
+### Credential-Resource refresh cascade
+
+When a credential is rotated (token refresh or manual rotation):
+
+1. `RotationTransaction` completes → new encrypted state persisted
+2. `CredentialManager` emits internal `CredentialRotated { credential_id }` event
+3. Resources registered with `CredentialResource<C>` bound to this credential_id receive `authorize(&new_state)`
+4. Pool instances are drained and recreated with the new auth material
+5. In-flight instances finish naturally; new acquires use updated instances
+
+This ensures resource pools never use stale credentials without manual intervention.
 
 ## Cross-Crate Ownership
 
@@ -84,3 +139,7 @@
 - action/credential: `CredentialProvider` mock; scope enforcement; error propagation
 - resource/credential: credential resolution in resource context
 - parameter/credential: protocol schema validation; `ParameterError` in `SchemaValidation`
+- api/credential: `POST /credentials` returns 202 with redirect interaction for OAuth2 AuthCode flow
+- api/credential: `POST /credentials/:id/callback` completes flow and returns 200 with active status
+- api/credential: `GET /credential-types` returns type schemas
+- cascade: resource instances receive `authorize(new_state)` after credential rotation
