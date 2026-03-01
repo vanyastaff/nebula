@@ -1,0 +1,31 @@
+{
+  "name": "nebula-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:local": "vite --mode local",
+    "dev:selfhosted": "vite --mode selfhosted",
+    "dev:saas": "vite --mode saas",
+    "build": "tsc && vite build",
+    "build:local": "vite build --mode local",
+    "build:selfhosted": "vite build --mode selfhosted",
+    "build:saas": "vite build --mode saas",
+    "preview": "vite preview",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.6.0",
+    "typescript": "^5.9.2",
+    "vite": "^6.4.1",
+    "@tauri-apps/cli": "^2.9.6"
+  }
+}
