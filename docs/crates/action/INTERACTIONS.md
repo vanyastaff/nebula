@@ -44,15 +44,19 @@
 | action <-> sandbox | both | capability-enforced context access | async execution | `SandboxViolation` on deny | deterministic policy boundary |
 | action <-> runtime/engine | out | execution protocol (`ActionResult`, `ActionOutput`, `ActionError`) | async | retry/degrade handled by runtime/resilience | core integration path |
 | action <-> resilience | out | retryability hints/errors | async orchestration | resilience policy decides retries | action provides signal, not policy |
+| action <-> api/nodes endpoint | out | `ActionMetadata` for `GET /nodes` + `GET /nodes/:type` | sync read | N/A | API reads metadata + port schema; action never called by api |
 
 ## Runtime Sequence
 
 1. Runtime validates params and capability envelope.
-2. Runtime builds context (sandboxed or in-process adapter).
-3. Action executes and returns `ActionResult<ActionOutput<T>>` or `ActionError`.
-4. Engine applies flow-control semantics and scheduling.
-5. Runtime resolves deferred/streaming outputs if required.
-6. Resilience layer applies retry/backoff policy.
+2. Runtime resolves `ActionComponents` — acquires credentials and resources declared by the action.
+3. Runtime builds context and passes it to the action execute method.
+   - **Current**: `NodeContext` (doc-hidden temporary bridge) carrying `execution_id`, `node_id`, `workflow_id`, `cancellation`.
+   - **Phase 2 target**: stable context with `resource()`, `credential()`, cancellation access; sandboxed variant capability-checks against declared components.
+4. Action executes and returns `ActionResult<ActionOutput<T>>` or `ActionError`.
+5. Engine applies flow-control semantics: `Branch` activates path, `Wait` persists state and suspends, `Continue` re-enqueues, `Retry` reschedules.
+6. Runtime resolves deferred/streaming outputs before passing to downstream nodes.
+7. Resilience layer applies retry/backoff policy on `ActionError::Retryable` or `ActionResult::Retry`.
 
 ## Cross-Crate Ownership
 
@@ -77,8 +81,18 @@
   - migration doc update
   - compatibility tests with runtime/engine.
 
+## Cross-Crate Ownership
+
+- `action` owns: `Action` trait, metadata/port/component contracts, result/output/error semantics, `Context` base trait
+- `runtime`/`engine` own: context implementations, execution ordering, scheduling, state persistence, deferred/streaming resolution
+- `sandbox` owns: capability enforcement, `SandboxedContext` proxy (Phase 2)
+- `nebula-action-dx` (future): DX sub-traits (StatefulAction, TriggerAction, etc.) and helper macros — keeps `nebula-action` as lean protocol core
+- `resource`/`credential` own: operational lifecycle of dependencies; action only *declares* them via `ActionComponents`
+
 ## Contract Tests Needed
 
 - serialization compatibility tests for result/output variants.
 - metadata/port compatibility tests across interface versions.
 - sandbox violation mapping tests in runtime adapters.
+- `NodeContext` → stable context migration: same execution_id/node_id/workflow_id available post-Phase 2.
+- `ActionComponents` resolution: all declared credentials and resources available before execute is called.
