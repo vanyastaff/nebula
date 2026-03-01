@@ -10,22 +10,68 @@
 
 ## Current Architecture
 
-- module map:
-  - `manager`: registry/orchestration, dependency graph, shutdown, hot-reload
-  - `pool`: bounded concurrency (`Semaphore`), idle queue, recycle/cleanup, latency stats
-  - `scope`: containment model + compatibility strategies
-  - `health`, `quarantine`, `autoscale`: runtime safety controls
-  - `hooks`, `events`, `metrics`: observability and extension points
-  - `reference`: `ResourceProvider` and `ResourceRef` abstraction layer
-- data/control flow:
-  1. caller builds `Context` with scope and cancellation token.
-  2. `Manager::acquire` validates quarantine, health state, and scope compatibility.
-  3. acquire hooks run; pool acquires or creates instance; events emitted.
-  4. guard returned; on drop, release hooks and recycle/cleanup path executes.
-- known bottlenecks:
-  - contention around hot resources under strict `max_size`
-  - expensive `create()` paths during spikes
-  - full pool replacement on `reload_config`
+### Module Map
+
+| Module | Feature flag | Key exported types | Role |
+|--------|-------------|-------------------|------|
+| `resource` | always | `Resource` trait, `Config` trait | Core resource definition |
+| `manager` | always | `Manager`, `ManagerBuilder` | Central registry; dependency ordering; shutdown; hot-reload |
+| `manager_guard` | always | (internal) | Internal RAII guard logic for manager-held locks |
+| `manager_pool` | always | (internal) | Internal pool management per resource type |
+| `pool` | always | `Pool`, `PoolConfig`, `PoolStrategy` | Bounded concurrency (Semaphore); idle queue; recycle/cleanup |
+| `scope` | always | `Scope`, `Strategy` | Containment model; tenant/workflow/execution/action hierarchy |
+| `context` | always | `Context` | Execution context: scope + workflow ID + exec ID + cancellation |
+| `guard` | always | `ResourceGuard` | RAII acquire guard; returns instance to pool on drop |
+| `lifecycle` | always | lifecycle hook traits | Create/destroy/recycle lifecycle callbacks |
+| `health` | always | `HealthState`, `HealthConfig` | Health checks; degraded/unhealthy state transitions |
+| `quarantine` | always | `QuarantineState`, `QuarantineConfig` | Automatic quarantine after repeated failures |
+| `autoscale` | always | `AutoscaleConfig` | Optional pool size scaling based on utilization |
+| `hooks` | always | `HookRegistry`, acquire/release hooks | Pre/post acquire and release callbacks |
+| `events` | always | `EventBus`, `ResourceEvent` | Broadcast lifecycle events via Tokio broadcast channel |
+| `metrics` | always | `ResourceMetrics`, `PoolStats` | Utilization counters; acquire latency stats |
+| `metadata` | always | `ResourceMetadata` | Display name, description, icon, tags — used by API/desktop UI |
+| `reference` | always | `ResourceProvider`, `ResourceRef` | Decoupled typed/dynamic acquire; TypeId-based resource key |
+| `error` | always | `Error`, `Result` | Error taxonomy |
+| `credentials` | `credentials` | credential-backed resource binding | Integration with `nebula-credential` |
+| `dependency_graph` | always | (internal) | Topological ordering for startup/shutdown |
+
+### Data and Control Flow
+
+```
+startup:
+  Manager::register(resource, config, pool_config)?
+    → Config::validate() → fail-fast on invalid config
+    → dependency_graph records ordering
+
+acquire:
+  Manager::acquire(id, &ctx)  or  Manager::acquire_typed(Resource, &ctx)
+    ├─→ scope check (ctx.scope compatible with registration scope?)
+    ├─→ quarantine check → Error::Quarantined if active
+    ├─→ health check → Error::Unavailable if Unhealthy
+    ├─→ run AcquireHooks
+    ├─→ Pool::acquire (Semaphore; timeout if max_size reached)
+    │       → Resource::create(&config, &ctx) on cache miss
+    │       → Error::PoolExhausted / Error::Timeout on back-pressure
+    └─→ emit ResourceEvent::Acquired → return ResourceGuard
+
+guard.drop():
+  ├─→ Resource::recycle(instance) → pool idle queue if successful
+  │   else Resource::cleanup(instance) → permanent removal
+  ├─→ run ReleaseHooks
+  └─→ emit ResourceEvent::Released; Semaphore permit released
+
+shutdown:
+  Manager::shutdown()
+    → dependency_graph reverse order
+    → drain pools → Resource::cleanup per instance
+    → emit ResourceEvent::CleanedUp per resource
+```
+
+### Known Bottlenecks
+
+- contention around hot resources under strict `max_size`
+- expensive `create()` paths during traffic spikes
+- full pool replacement on `reload_config` (in-place non-destructive reload not yet supported: see Open Question Q1)
 
 ## Target Architecture
 
