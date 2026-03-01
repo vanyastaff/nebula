@@ -29,10 +29,7 @@ use tracing::info;
 /// - `GET /api/v1/status` — workers + webhook status
 /// - `POST /webhooks/*` — webhook endpoints (from embedded webhook server)
 pub fn app(webhook_server: Arc<WebhookServer>, workers: Vec<WorkerStatus>) -> Router {
-    let state = server::ApiState {
-        webhook: webhook_server.clone(),
-        workers,
-    };
+    let state = server::ApiState::new(webhook_server.clone(), workers);
     server::api_router()
         .with_state(state)
         .merge(webhook_server.router())

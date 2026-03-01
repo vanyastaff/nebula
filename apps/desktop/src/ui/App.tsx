@@ -85,28 +85,10 @@ export function App() {
         </p>
 
         <button
-          onClick={() => signIn("google")}
-          disabled={auth.status === "authorizing"}
-          style={{
-            width: "100%",
-            padding: "11px 14px",
-            borderRadius: 10,
-            border: "1px solid #93a4d1",
-            background: "#f7f9ff",
-            color: "#17213c",
-            fontWeight: 600,
-            cursor: "pointer",
-          }}
-        >
-          Continue with Google
-        </button>
-
-        <button
           onClick={() => signIn("github")}
           disabled={auth.status === "authorizing"}
           style={{
             width: "100%",
-            marginTop: 10,
             padding: "11px 14px",
             borderRadius: 10,
             border: "1px solid rgba(184, 197, 230, 0.35)",

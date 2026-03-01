@@ -1,13 +1,20 @@
 //! API server and routes.
 
 use axum::{
-    Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::{get, post},
+    Json, Router,
+    extract::{Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Redirect},
+    routing::{get, post},
 };
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc, time::Instant};
 use thiserror::Error;
+use tokio::sync::RwLock;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::debug;
+use url::Url;
 use uuid::Uuid;
 
 use crate::status::{WebhookStatus, WorkerStatus};
@@ -35,6 +42,61 @@ pub struct ApiState {
     pub webhook: Arc<WebhookServer>,
     /// Snapshot of node workers (e.g. 4 workers).
     pub workers: Vec<WorkerStatus>,
+    /// Pending OAuth state values (state -> callback metadata).
+    pub oauth_pending: Arc<RwLock<HashMap<String, PendingOAuthState>>>,
+    /// Shared HTTP client used for OAuth token exchange.
+    pub http_client: Client,
+    /// GitHub OAuth configuration (enabled when env vars are present).
+    pub github_oauth: Option<GithubOAuthConfig>,
+}
+
+impl ApiState {
+    /// Build API state from environment.
+    pub fn new(webhook: Arc<WebhookServer>, workers: Vec<WorkerStatus>) -> Self {
+        Self {
+            webhook,
+            workers,
+            oauth_pending: Arc::new(RwLock::new(HashMap::new())),
+            http_client: Client::new(),
+            github_oauth: GithubOAuthConfig::from_env(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GithubOAuthConfig {
+    client_id: String,
+    client_secret: String,
+    redirect_uri: String,
+    scope: String,
+}
+
+impl GithubOAuthConfig {
+    fn from_env() -> Option<Self> {
+        let client_id = std::env::var("GITHUB_OAUTH_CLIENT_ID").ok()?;
+        let client_secret = std::env::var("GITHUB_OAUTH_CLIENT_SECRET").ok()?;
+        let redirect_uri = std::env::var("GITHUB_OAUTH_REDIRECT_URI")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "http://localhost:5678/auth/github/callback".to_string());
+        let scope = std::env::var("GITHUB_OAUTH_SCOPE")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "read:user user:email".to_string());
+        Some(Self {
+            client_id,
+            client_secret,
+            redirect_uri,
+            scope,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingOAuthState {
+    provider: String,
+    desktop_redirect_uri: String,
+    created_at: Instant,
 }
 
 /// Response for `GET /api/v1/status`.
@@ -53,6 +115,7 @@ pub fn api_router() -> Router<ApiState> {
         .route("/api/v1/status", get(status))
         .route("/auth/oauth/start", post(oauth_start))
         .route("/auth/oauth/callback", post(oauth_callback))
+        .route("/auth/github/callback", get(github_callback))
         .layer(api_cors_layer())
 }
 
@@ -141,7 +204,10 @@ fn is_supported_provider(provider: &str) -> bool {
     matches!(provider, "google" | "github")
 }
 
-async fn oauth_start(Json(req): Json<OAuthStartRequest>) -> impl IntoResponse {
+async fn oauth_start(
+    State(state): State<ApiState>,
+    Json(req): Json<OAuthStartRequest>,
+) -> impl IntoResponse {
     let provider = req.provider.to_lowercase();
     if !is_supported_provider(&provider) {
         return (
@@ -154,17 +220,79 @@ async fn oauth_start(Json(req): Json<OAuthStartRequest>) -> impl IntoResponse {
             .into_response();
     }
 
-    let state = Uuid::new_v4().to_string();
+    if provider == "github" {
+        let Some(github) = state.github_oauth.clone() else {
+            if is_mock_oauth_enabled() {
+                let state_token = Uuid::new_v4().to_string();
+                let auth_url = format!(
+                    "{}?code=mock_{}&provider={}&state={}",
+                    req.redirect_uri, state_token, provider, state_token
+                );
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!(OAuthStartResponse {
+                        auth_url,
+                        state: state_token
+                    })),
+                )
+                    .into_response();
+            }
+
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": "github_oauth_not_configured",
+                    "message": "set GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET"
+                })),
+            )
+                .into_response();
+        };
+
+        let state_token = Uuid::new_v4().to_string();
+        {
+            let mut pending = state.oauth_pending.write().await;
+            pending.insert(
+                state_token.clone(),
+                PendingOAuthState {
+                    provider: "github".to_string(),
+                    desktop_redirect_uri: req.redirect_uri.clone(),
+                    created_at: Instant::now(),
+                },
+            );
+            pending.retain(|_, v| v.created_at.elapsed().as_secs() <= 600);
+        }
+
+        let mut auth_url = Url::parse("https://github.com/login/oauth/authorize")
+            .expect("valid github authorize url");
+        auth_url
+            .query_pairs_mut()
+            .append_pair("client_id", &github.client_id)
+            .append_pair("redirect_uri", &github.redirect_uri)
+            .append_pair("scope", &github.scope)
+            .append_pair("state", &state_token);
+
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!(OAuthStartResponse {
+                auth_url: auth_url.to_string(),
+                state: state_token
+            })),
+        )
+            .into_response();
+    }
 
     if is_mock_oauth_enabled() {
-        // Dev scaffold: emulate provider redirect directly back to desktop deep-link.
+        let state_token = Uuid::new_v4().to_string();
         let auth_url = format!(
             "{}?code=mock_{}&provider={}&state={}",
-            req.redirect_uri, state, provider, state
+            req.redirect_uri, state_token, provider, state_token
         );
         return (
             StatusCode::OK,
-            Json(serde_json::json!(OAuthStartResponse { auth_url, state })),
+            Json(serde_json::json!(OAuthStartResponse {
+                auth_url,
+                state: state_token
+            })),
         )
             .into_response();
     }
@@ -172,15 +300,133 @@ async fn oauth_start(Json(req): Json<OAuthStartRequest>) -> impl IntoResponse {
     (
         StatusCode::NOT_IMPLEMENTED,
         Json(serde_json::json!({
-            "error": "oauth_not_configured",
-            "message": "real OAuth provider config is not implemented yet",
+            "error": "provider_not_implemented",
             "provider": provider
         })),
     )
         .into_response()
 }
 
-async fn oauth_callback(Json(req): Json<OAuthCallbackRequest>) -> impl IntoResponse {
+#[derive(Debug, Deserialize)]
+struct GithubCallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+fn build_deep_link(base: &str, params: &[(&str, &str)]) -> String {
+    if let Ok(mut url) = Url::parse(base) {
+        {
+            let mut pairs = url.query_pairs_mut();
+            for (key, value) in params {
+                pairs.append_pair(key, value);
+            }
+        }
+        return url.to_string();
+    }
+
+    let query = params
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("&");
+    if base.contains('?') {
+        format!("{base}&{query}")
+    } else {
+        format!("{base}?{query}")
+    }
+}
+
+async fn github_callback(
+    State(state): State<ApiState>,
+    Query(query): Query<GithubCallbackQuery>,
+) -> impl IntoResponse {
+    let Some(state_token) = query.state.clone() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "missing_state",
+                "message": "state is required"
+            })),
+        )
+            .into_response();
+    };
+
+    let pending = {
+        let mut map = state.oauth_pending.write().await;
+        map.remove(&state_token)
+    };
+
+    let Some(pending) = pending else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_state",
+                "message": "oauth state is invalid or expired"
+            })),
+        )
+            .into_response();
+    };
+
+    if pending.provider != "github" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_provider_state",
+                "message": "oauth state/provider mismatch"
+            })),
+        )
+            .into_response();
+    }
+
+    if let Some(error) = query.error.as_deref() {
+        let redirect = build_deep_link(
+            &pending.desktop_redirect_uri,
+            &[
+                ("error", error),
+                (
+                    "error_description",
+                    query.error_description.as_deref().unwrap_or("oauth_failed"),
+                ),
+                ("provider", "github"),
+            ],
+        );
+        return Redirect::to(&redirect).into_response();
+    }
+
+    let Some(code) = query.code.as_deref() else {
+        let redirect = build_deep_link(
+            &pending.desktop_redirect_uri,
+            &[("error", "missing_code"), ("provider", "github")],
+        );
+        return Redirect::to(&redirect).into_response();
+    };
+
+    let redirect = build_deep_link(
+        &pending.desktop_redirect_uri,
+        &[
+            ("code", code),
+            ("provider", "github"),
+            ("state", &state_token),
+        ],
+    );
+    Redirect::to(&redirect).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubAccessTokenResponse {
+    access_token: Option<String>,
+    token_type: Option<String>,
+    scope: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+async fn oauth_callback(
+    State(state): State<ApiState>,
+    Json(req): Json<OAuthCallbackRequest>,
+) -> impl IntoResponse {
     let provider = req.provider.to_lowercase();
     if !is_supported_provider(&provider) {
         return (
@@ -199,6 +445,120 @@ async fn oauth_callback(Json(req): Json<OAuthCallbackRequest>) -> impl IntoRespo
             Json(serde_json::json!({
                 "error": "invalid_code",
                 "message": "code is required"
+            })),
+        )
+            .into_response();
+    }
+
+    if provider == "github" {
+        if is_mock_oauth_enabled() && req.code.starts_with("mock_") {
+            let token = format!("mock_token_{}_{}", provider, Uuid::new_v4());
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!(OAuthCallbackResponse {
+                    access_token: token,
+                    token_type: "Bearer".to_string(),
+                    expires_in: 3600
+                })),
+            )
+                .into_response();
+        }
+
+        let Some(github) = state.github_oauth.as_ref() else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": "github_oauth_not_configured",
+                    "message": "set GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET"
+                })),
+            )
+                .into_response();
+        };
+
+        let form = [
+            ("client_id", github.client_id.as_str()),
+            ("client_secret", github.client_secret.as_str()),
+            ("code", req.code.as_str()),
+            ("redirect_uri", github.redirect_uri.as_str()),
+        ];
+
+        let token_response = match state
+            .http_client
+            .post("https://github.com/login/oauth/access_token")
+            .header("Accept", "application/json")
+            .form(&form)
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({
+                        "error": "oauth_provider_unreachable",
+                        "message": err.to_string()
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        let status = token_response.status();
+        let payload = match token_response.json::<GithubAccessTokenResponse>().await {
+            Ok(v) => v,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({
+                        "error": "oauth_provider_invalid_response",
+                        "message": err.to_string()
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        if !status.is_success() {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "error": "oauth_provider_failed",
+                    "status": status.as_u16(),
+                    "providerError": payload.error,
+                    "providerErrorDescription": payload.error_description
+                })),
+            )
+                .into_response();
+        }
+
+        if let Some(error) = payload.error {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": error,
+                    "message": payload.error_description.unwrap_or_else(|| "github oauth failed".to_string())
+                })),
+            )
+                .into_response();
+        }
+
+        let Some(access_token) = payload.access_token else {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "error": "oauth_token_missing",
+                    "message": "provider did not return access token"
+                })),
+            )
+                .into_response();
+        };
+
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!(OAuthCallbackResponse {
+                access_token,
+                token_type: payload.token_type.unwrap_or_else(|| "Bearer".to_string()),
+                expires_in: 3600
             })),
         )
             .into_response();

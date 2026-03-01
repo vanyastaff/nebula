@@ -6131,6 +6131,7 @@ version = "0.1.0"
 dependencies = [
  "axum 0.7.9",
  "nebula-webhook",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
@@ -6138,6 +6139,7 @@ dependencies = [
  "tower-http 0.6.8",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
