@@ -632,6 +632,25 @@ mod tests {
     }
 
     #[test]
+    fn test_strict_mode_rejects_numeric_string_for_math_builtin() {
+        let engine =
+            ExpressionEngine::new().with_policy(EvaluationPolicy::new().with_strict_mode(true));
+        let context = EvaluationContext::new();
+
+        let err = engine.evaluate("sqrt('9')", &context).unwrap_err();
+        assert!(err.to_string().contains("strict mode"));
+    }
+
+    #[test]
+    fn test_non_strict_mode_allows_numeric_string_for_math_builtin() {
+        let engine = ExpressionEngine::new();
+        let context = EvaluationContext::new();
+
+        let value = engine.evaluate("sqrt('9')", &context).unwrap();
+        assert_eq!(value.as_f64(), Some(3.0));
+    }
+
+    #[test]
     fn test_cache_overview_no_cache() {
         let engine = ExpressionEngine::new();
         let overview = engine.cache_overview();

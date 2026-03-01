@@ -269,6 +269,48 @@ pub(crate) fn get_int_arg(
     })
 }
 
+/// Helper to get an integer argument with strict-mode awareness.
+pub(crate) fn get_int_arg_with_policy(
+    func_name: &str,
+    args: &[Value],
+    index: usize,
+    arg_name: &str,
+    eval: &Evaluator,
+    ctx: &EvaluationContext,
+) -> ExpressionResult<i64> {
+    let val = args.get(index).ok_or_else(|| {
+        ExpressionError::expression_invalid_argument(
+            func_name,
+            format!("Missing argument '{}' at position {}", arg_name, index),
+        )
+    })?;
+
+    if eval.is_strict_mode(ctx) {
+        return match val {
+            Value::Number(n) => n.as_i64().ok_or_else(|| {
+                ExpressionError::expression_invalid_argument(
+                    func_name,
+                    format!(
+                        "Argument '{}' must be an integer number in strict mode, got {}",
+                        arg_name,
+                        crate::value_utils::value_type_name(val)
+                    ),
+                )
+            }),
+            _ => Err(ExpressionError::expression_invalid_argument(
+                func_name,
+                format!(
+                    "Argument '{}' must be an integer number in strict mode, got {}",
+                    arg_name,
+                    crate::value_utils::value_type_name(val)
+                ),
+            )),
+        };
+    }
+
+    get_int_arg(func_name, args, index, arg_name)
+}
+
 /// Helper to get a number argument (int or float) with better error message
 pub(crate) fn get_number_arg(
     func_name: &str,
@@ -293,6 +335,48 @@ pub(crate) fn get_number_arg(
             ),
         )
     })
+}
+
+/// Helper to get a number argument with strict-mode awareness.
+pub(crate) fn get_number_arg_with_policy(
+    func_name: &str,
+    args: &[Value],
+    index: usize,
+    arg_name: &str,
+    eval: &Evaluator,
+    ctx: &EvaluationContext,
+) -> ExpressionResult<f64> {
+    let val = args.get(index).ok_or_else(|| {
+        ExpressionError::expression_invalid_argument(
+            func_name,
+            format!("Missing argument '{}' at position {}", arg_name, index),
+        )
+    })?;
+
+    if eval.is_strict_mode(ctx) {
+        return match val {
+            Value::Number(n) => crate::value_utils::number_as_f64(n).ok_or_else(|| {
+                ExpressionError::expression_invalid_argument(
+                    func_name,
+                    format!(
+                        "Argument '{}' must be a number in strict mode, got {}",
+                        arg_name,
+                        crate::value_utils::value_type_name(val)
+                    ),
+                )
+            }),
+            _ => Err(ExpressionError::expression_invalid_argument(
+                func_name,
+                format!(
+                    "Argument '{}' must be a number in strict mode, got {}",
+                    arg_name,
+                    crate::value_utils::value_type_name(val)
+                ),
+            )),
+        };
+    }
+
+    get_number_arg(func_name, args, index, arg_name)
 }
 
 /// Helper to get an array argument with better error message

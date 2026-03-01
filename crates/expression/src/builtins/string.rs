@@ -1,6 +1,6 @@
 //! String manipulation functions
 
-use super::{check_arg_count, check_min_arg_count, get_int_arg, get_string_arg};
+use super::{check_arg_count, check_min_arg_count, get_int_arg_with_policy, get_string_arg};
 use crate::ExpressionError;
 use crate::context::EvaluationContext;
 use crate::error::{ExpressionErrorExt, ExpressionResult};
@@ -90,14 +90,28 @@ pub fn replace(
 /// Get a substring
 pub fn substring(
     args: &[Value],
-    _eval: &Evaluator,
-    _ctx: &EvaluationContext,
+    eval: &Evaluator,
+    ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("substring", args, 2)?;
     let s = get_string_arg("substring", args, 0, "text")?;
-    let start = get_int_arg("substring", args, 1, "start")? as usize;
+    let start = get_int_arg_with_policy("substring", args, 1, "start", eval, ctx)?;
+    if start < 0 {
+        return Err(ExpressionError::expression_invalid_argument(
+            "substring",
+            "Argument 'start' must be non-negative",
+        ));
+    }
+    let start = start as usize;
     let end = if args.len() > 2 {
-        get_int_arg("substring", args, 2, "end")? as usize
+        let end = get_int_arg_with_policy("substring", args, 2, "end", eval, ctx)?;
+        if end < 0 {
+            return Err(ExpressionError::expression_invalid_argument(
+                "substring",
+                "Argument 'end' must be non-negative",
+            ));
+        }
+        end as usize
     } else {
         s.len()
     };

@@ -828,6 +828,10 @@ impl Evaluator {
         engine_strict || context_strict
     }
 
+    pub(crate) fn is_strict_mode(&self, context: &EvaluationContext) -> bool {
+        self.strict_mode_enabled(context)
+    }
+
     fn coerce_boolean(&self, value: &Value, context: &EvaluationContext) -> ExpressionResult<bool> {
         if self.strict_mode_enabled(context) && !value.is_boolean() {
             return Err(ExpressionError::expression_type_error(
