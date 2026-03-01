@@ -90,6 +90,12 @@ impl LoggerBuilder {
     /// Build logger from startup precedence resolution.
     ///
     /// Precedence order: explicit > environment > preset.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if resolved configuration cannot initialize the logging
+    /// pipeline (invalid filter, writer setup failure, or telemetry setup
+    /// failure).
     pub fn build_startup(explicit: Option<Config>) -> LogResult<(LoggerGuard, ResolvedSource)> {
         let resolved = Config::resolve_startup(explicit);
         let source = resolved.source;

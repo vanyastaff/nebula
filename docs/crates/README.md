@@ -60,6 +60,7 @@ nebula-log ◄── everything (no business logic)
 - [action/README.md](./action/README.md) — `nebula-action`
 - [parameter/README.md](./parameter/README.md) — `nebula-parameter`
 - [resource/README.md](./resource/README.md) — `nebula-resource`
+- [../../crates/log/docs/README.md](../../crates/log/docs/README.md) — `nebula-log` (internal docs)
 - [credential.md](./credential.md) — `nebula-credential`
 - [sdk/README.md](./sdk/README.md) — `nebula-sdk`
 - [validator/README.md](./validator/README.md) — `nebula-validator`

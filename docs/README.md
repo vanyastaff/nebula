@@ -36,6 +36,7 @@ extensibility and production performance from the ground up.
 | [crates/resource.md](./crates/resource.md) | Resource lifecycle management |
 | [crates/credential.md](./crates/credential.md) | Credential storage and encryption |
 | [crates/sdk.md](./crates/sdk.md) | Developer SDK reference |
+| [../crates/log/docs/README.md](../crates/log/docs/README.md) | `nebula-log` internal technical docs |
 
 ## Quick Commands
 

@@ -1,207 +1,83 @@
-# Nebula Log
+# nebula-log
 
-A simple, fast, and beautiful logging library for Rust built on top of the `tracing` ecosystem.
+Structured logging and observability foundation for Nebula, built on top of `tracing`.
 
-## Features
+## Capabilities
 
-- 🚀 **Fast and lightweight** - minimal dependencies, maximum performance
-- 🎨 **Beautiful output** - colorful and readable logs with emojis
-- ⏱️ **Built-in timing** - measure execution time with simple macros
-- 🔧 **Easy configuration** - fluent API for quick setup
-- 📊 **Multiple formats** - Pretty, Compact, and JSON output
-- 🎯 **Structured logging** - full tracing support with spans and fields
-- 📈 **Unified Observability** - Events, hooks, and metrics integration (NEW!)
+- startup presets (`development`, `production`, env overrides)
+- formats: `pretty`, `compact`, `json`, `logfmt`
+- writer backends: stderr/stdout/file, fanout with failure policy
+- rolling files: hourly/daily/size/size+retention
+- timing utilities and macros
+- observability hooks/events with typed event kinds
+- optional telemetry integrations: OpenTelemetry OTLP and Sentry
 
 ## Quick Start
 
-Add to your `Cargo.toml`:
+```rust
+use nebula_log::prelude::*;
 
-```toml
-[dependencies]
-nebula-log = "0.1.0"
+fn main() -> LogResult<()> {
+    let _guard = nebula_log::auto_init()?;
+    info!(service = "api", "server started");
+    Ok(())
+}
 ```
 
-## Usage
+`LoggerGuard` must stay alive for the process lifetime (or until you intentionally shut logging down).
 
-### Simple Setup
+## Explicit Configuration
 
 ```rust
-use nebula_log::{info, warn, error, Logger};
+use nebula_log::{Config, Format, WriterConfig};
 
-// Initialize with defaults
-Logger::init();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cfg = Config::production();
+    cfg.format = Format::Json;
+    cfg.writer = WriterConfig::Stderr;
+    cfg.fields.service = Some("nebula-api".to_string());
+    cfg.fields.env = Some("prod".to_string());
 
-// Log some messages
-info!("Application started");
-warn!(user_id = "123", "Invalid input detected");
-error!("Failed to connect to database");
+    let _guard = nebula_log::init_with(cfg)?;
+    Ok(())
+}
 ```
 
-### Development Setup
+## Feature Flags
 
-```rust
-use nebula_log::Logger;
+- `default`: `ansi`, `async`
+- `file`: file writer + rolling support
+- `log-compat`: bridge `log` crate events into `tracing`
+- `observability`: metrics helpers + hook APIs
+- `telemetry`: OpenTelemetry OTLP tracing
+- `sentry`: Sentry integration
+- `full`: enables all major capabilities
 
-// Pretty format with colors, debug level, and source locations
-Logger::init_dev().unwrap();
+## Telemetry and Sentry
 
-// Now all your logs will be colorful and detailed
-info!("This will show file and line number");
-debug!("Debug info is now visible");
-```
-
-### Production Setup
-
-```rust
-use nebula_log::Logger;
-
-// JSON format, info level, no colors
-Logger::init_production().unwrap();
-
-// Logs will be in JSON format for machine processing
-info!("Service started");
-```
-
-### Custom Configuration
-
-```rust
-use nebula_log::{Logger, Format};
-
-Logger::new()
-    .level("debug")
-    .format(Format::Pretty)
-    .with_colors(true)
-    .with_source(true)
-    .with_target(false)
-    .init()
-    .unwrap();
-```
-
-## Timing
-
-Measure execution time easily:
-
-```rust
-use nebula_log::{Timer, timed, info};
-use std::time::Duration;
-
-// Manual timer
-let timer = Timer::new("database_query");
-let result = perform_query().await;
-timer.finish(); // Logs: "⚡ Timer 'database_query' finished in 25ms"
-
-// Macro timer
-let result = timed!("complex_calculation", {
-    expensive_operation()
-});
-
-// Timer with checkpoints
-let timer = Timer::new("multi_step");
-step_1();
-timer.checkpoint("step_1_done");
-step_2(); 
-timer.checkpoint("step_2_done");
-timer.finish();
-```
-
-Timing automatically categorizes operations:
-- ⚡ **Very fast** (0-10ms) - Debug level, green
-- 🏃 **Fast** (11-100ms) - Debug level, cyan
-- 🚶 **Medium** (101-1000ms) - Info level, yellow
-- 🐌 **Slow** (1000ms+) - Warn level, red
-
-## Output Formats
-
-### Pretty Format (Default)
-```
-2024-08-06T10:30:45.123456Z  INFO example: 🚀 Application started
-2024-08-06T10:30:45.123789Z  WARN example: ⚠️ Database connection slow
-    at examples/simple.rs:42
-2024-08-06T10:30:45.124000Z ERROR example: 💥 Failed to process request
-    with user_id: "user123"
-    with error: "Connection timeout"
-    at examples/simple.rs:45
-```
-
-### Compact Format
-```
-2024-08-06T10:30:45Z INFO example: Application started user_id="user123"
-2024-08-06T10:30:45Z WARN example: Database connection slow  
-2024-08-06T10:30:45Z ERROR example: Failed to process request error="timeout"
-```
-
-### JSON Format
-```json
-{"timestamp":"2024-08-06T10:30:45.123456Z","level":"INFO","target":"example","message":"Application started","user_id":"user123"}
-{"timestamp":"2024-08-06T10:30:45.123789Z","level":"WARN","target":"example","message":"Database connection slow"}
-{"timestamp":"2024-08-06T10:30:45.124000Z","level":"ERROR","target":"example","message":"Failed to process request","error":"timeout"}
-```
-
-## Presets
-
-Several presets are available for common scenarios:
-
-```rust
-// Development - pretty, colorful, debug level, shows source
-Logger::init_dev().unwrap();
-
-// Production - JSON, info level, no colors  
-Logger::init_production().unwrap();
-
-// Minimal - compact, warn level, no extras (for CLI tools)
-Logger::init_minimal().unwrap();
-
-// Compact - single line format
-Logger::init_compact().unwrap();
-
-// JSON - machine readable format
-Logger::init_json().unwrap();
-```
+- OTLP endpoint is read from config telemetry section or `OTEL_EXPORTER_OTLP_ENDPOINT`.
+- Sentry is enabled when `sentry` feature is active and `SENTRY_DSN` is set.
+- Useful env vars:
+  - `SENTRY_DSN`
+  - `SENTRY_ENV`
+  - `SENTRY_RELEASE`
+  - `SENTRY_TRACES_SAMPLE_RATE`
 
 ## Environment Variables
 
-You can control logging via environment variables:
+- `NEBULA_LOG` or `RUST_LOG`: log level/filter
+- `NEBULA_LOG_FORMAT`: `pretty|compact|json|logfmt`
+- `NEBULA_LOG_TIME`, `NEBULA_LOG_SOURCE`, `NEBULA_LOG_COLORS`
+- `NEBULA_SERVICE`, `NEBULA_ENV`, `NEBULA_VERSION`, `NEBULA_INSTANCE`, `NEBULA_REGION`
+
+## Development Checks
 
 ```bash
-# Set log level
-RUST_LOG=debug cargo run
-
-# Filter by target
-RUST_LOG=myapp::database=trace cargo run
-
-# Complex filtering  
-RUST_LOG="myapp=debug,hyper=warn,sqlx=error" cargo run
+cargo test -p nebula-log
+cargo clippy -p nebula-log --all-targets --all-features --locked -- -D warnings
 ```
 
-## Features
+## Internal Documentation
 
-- `colors` (default) - Enable colored output
-- `json` - Enhanced JSON formatting support
-
-## Examples
-
-Run the examples to see different logging styles:
-
-```bash
-# Basic example
-cargo run --example simple
-
-# See all timing categories
-cargo run --example simple 2>&1 | grep Timer
-```
-
-## Performance
-
-Nebula Log is designed for performance:
-- Minimal overhead when logging is disabled
-- Efficient structured data handling
-- Fast JSON serialization
-- Lazy evaluation of log messages
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+For architecture decisions, API contracts, reliability notes, and roadmap:
+- [docs/README.md](./docs/README.md)

@@ -1,6 +1,14 @@
-//! # Nebula Log - Production-Ready Rust Logging
+//! # nebula-log
 //!
-//! Zero-config logging that scales from development to production.
+//! Structured logging and observability foundation for Nebula, built on top of
+//! [`tracing`].
+//!
+//! This crate provides a single logging pipeline for development and
+//! production:
+//! - structured logs in multiple formats
+//! - configurable writer backends (stderr/stdout/file/fanout)
+//! - observability hooks and operation events
+//! - optional OpenTelemetry and Sentry integrations
 //!
 //! ## Quick Start
 //!
@@ -8,13 +16,95 @@
 //! use nebula_log::prelude::*;
 //!
 //! fn main() -> LogResult<()> {
-//!     // Auto-detect best configuration
-//!     nebula_log::auto_init()?;
-//!
-//!     info!(port = 8080, "Server starting");
+//!     let _guard = nebula_log::auto_init()?;
+//!     info!(service = "api", "server started");
 //!     Ok(())
 //! }
 //! ```
+//!
+//! Keep [`LoggerGuard`] alive for the process lifetime (or until intentional
+//! shutdown).
+//!
+//! ## Configuration Modes
+//!
+//! - [`auto_init`]: startup auto-resolution (`explicit > env > preset`)
+//! - [`init`]: default config (`Config::default()`)
+//! - [`init_with`]: fully explicit setup with [`Config`]
+//!
+//! Use [`auto_init`] when you want zero-config behavior and environment-driven
+//! overrides. Use [`init_with`] when you need deterministic production setup.
+//!
+//! ## Explicit Configuration Example
+//!
+//! ```rust
+//! use nebula_log::{Config, Format, WriterConfig};
+//!
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let mut cfg = Config::production();
+//!     cfg.format = Format::Json;
+//!     cfg.writer = WriterConfig::Stderr;
+//!     cfg.fields.service = Some("nebula-api".to_string());
+//!     cfg.fields.env = Some("prod".to_string());
+//!
+//!     let _guard = nebula_log::init_with(cfg)?;
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ## Core Capabilities
+//!
+//! - startup presets (`development`, `production`, env overrides)
+//! - formats: `pretty`, `compact`, `json`, `logfmt`
+//! - writer backends: stderr/stdout/file, fanout with failure policy
+//! - rolling files: hourly/daily/size/size+retention
+//! - timing utilities and macros
+//! - observability hooks/events with typed event kinds
+//! - optional telemetry integrations: OpenTelemetry OTLP and Sentry
+//!
+//! ## Feature Flags
+//!
+//! - `default`: `ansi`, `async`
+//! - `file`: file writer + rolling support
+//! - `log-compat`: bridge `log` crate events into `tracing`
+//! - `observability`: metrics helpers + hook APIs
+//! - `telemetry`: OpenTelemetry OTLP tracing
+//! - `sentry`: Sentry integration
+//! - `full`: enables all major capabilities
+//!
+//! ## Environment Variables
+//!
+//! Common runtime controls:
+//! - `NEBULA_LOG` or `RUST_LOG`: log level/filter directives
+//! - `NEBULA_LOG_FORMAT`: `pretty|compact|json|logfmt`
+//! - `NEBULA_LOG_TIME`, `NEBULA_LOG_SOURCE`, `NEBULA_LOG_COLORS`
+//! - `NEBULA_SERVICE`, `NEBULA_ENV`, `NEBULA_VERSION`, `NEBULA_INSTANCE`, `NEBULA_REGION`
+//!
+//! Telemetry/Sentry related:
+//! - `OTEL_EXPORTER_OTLP_ENDPOINT`
+//! - `SENTRY_DSN`
+//! - `SENTRY_ENV`
+//! - `SENTRY_RELEASE`
+//! - `SENTRY_TRACES_SAMPLE_RATE`
+//!
+//! ## Main Entry Points
+//!
+//! - [`auto_init`] for zero-config initialization
+//! - [`init`] for default config initialization
+//! - [`init_with`] for explicit [`Config`]
+//! - [`prelude`] for common imports
+//! - [`LoggerBuilder`] for builder-style initialization
+//!
+//! ## Related API Surface
+//!
+//! - [`Config`], [`Format`], [`WriterConfig`], [`Level`] for pipeline setup
+//! - [`Timer`], [`TimerGuard`], [`Timed`] for timing instrumentation
+//! - [`Context`], [`Fields`] for context propagation helpers
+//! - [`observability`] module for hook/event integration
+//!
+//! ## Internal Design Docs
+//!
+//! For Nebula internal engineering docs, see `crates/log/docs/README.md` in the
+//! repository.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs, rust_2018_idioms)]
@@ -132,7 +222,15 @@ pub fn init_with(config: Config) -> LogResult<LoggerGuard> {
     LoggerBuilder::from_config(config).build()
 }
 
-/// Initialize for tests (captures logs)
+/// Initialize for tests (captures logs).
+///
+/// Safe to call multiple times in test runs: once a dispatcher is already set,
+/// this returns a no-op [`LoggerGuard`].
+///
+/// # Errors
+///
+/// Returns error if test configuration initialization fails for the same
+/// reasons as [`init_with`].
 #[cfg(test)]
 pub fn init_test() -> LogResult<LoggerGuard> {
     TEST_INIT.get_or_init(|| ());
