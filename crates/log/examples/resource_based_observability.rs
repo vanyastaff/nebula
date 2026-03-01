@@ -37,17 +37,16 @@ struct WebhookNotificationHook;
 
 impl ResourceAwareHook for WebhookNotificationHook {
     fn on_event_with_context(&self, event: &dyn ObservabilityEvent, ctx: Option<Arc<NodeContext>>) {
-        if let Some(ctx) = ctx {
-            if let Some(logger) = ctx.get_resource::<LoggerResource>() {
-                if let Some(webhook) = logger.webhook_url() {
-                    println!(
-                        "[WEBHOOK] Node {} - Event: {} -> {}",
-                        ctx.node_id,
-                        event.name(),
-                        webhook
-                    );
-                }
-            }
+        if let Some(ctx) = ctx
+            && let Some(logger) = ctx.get_resource::<LoggerResource>()
+            && let Some(webhook) = logger.webhook_url()
+        {
+            println!(
+                "[WEBHOOK] Node {} - Event: {} -> {}",
+                ctx.node_id,
+                event.name(),
+                webhook
+            );
         }
     }
 }

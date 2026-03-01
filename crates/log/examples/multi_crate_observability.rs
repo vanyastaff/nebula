@@ -141,22 +141,20 @@ impl UnifiedMetricsCollector {
 
 impl ObservabilityHook for UnifiedMetricsCollector {
     fn on_event(&self, event: &dyn ObservabilityEvent) {
-        if let Some(data) = event_data_json(event) {
-            if let (Some(crate_name), Some(success)) = (
+        if let Some(data) = event_data_json(event)
+            && let (Some(crate_name), Some(success)) = (
                 data.get("crate_name").and_then(|v| v.as_str()),
                 data.get("success").and_then(|v| v.as_bool()),
-            ) {
-                let mut metrics = self.metrics.lock().unwrap();
-                let crate_metrics = metrics
-                    .entry(crate_name.to_string())
-                    .or_insert_with(CrateMetrics::default);
+            )
+        {
+            let mut metrics = self.metrics.lock().unwrap();
+            let crate_metrics = metrics.entry(crate_name.to_string()).or_default();
 
-                crate_metrics.total_events += 1;
-                if success {
-                    crate_metrics.success_count += 1;
-                } else {
-                    crate_metrics.failure_count += 1;
-                }
+            crate_metrics.total_events += 1;
+            if success {
+                crate_metrics.success_count += 1;
+            } else {
+                crate_metrics.failure_count += 1;
             }
         }
     }

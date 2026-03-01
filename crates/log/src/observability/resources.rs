@@ -256,9 +256,11 @@ mod tests {
 
     #[test]
     fn test_notification_enabled() {
-        let mut prefs = NotificationPrefs::default();
-        prefs.webhook_enabled = true;
-        prefs.min_severity = NotificationSeverity::Warning;
+        let prefs = NotificationPrefs {
+            webhook_enabled: true,
+            min_severity: NotificationSeverity::Warning,
+            ..NotificationPrefs::default()
+        };
 
         let resource = LoggerResource::new().with_notifications(prefs);
 

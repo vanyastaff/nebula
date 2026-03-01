@@ -25,8 +25,10 @@ fn loads_supported_config_fixture() {
 
 #[test]
 fn rejects_unsupported_schema_version() {
-    let mut config = Config::default();
-    config.schema_version = 999;
+    let config = Config {
+        schema_version: 999,
+        ..Config::default()
+    };
     let err = config
         .ensure_compatible()
         .expect_err("unsupported schema version must fail");

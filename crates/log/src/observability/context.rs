@@ -568,6 +568,19 @@ mod tests {
     mod async_tests {
         use super::*;
 
+        async fn assert_node_context_persists(node_id: &str) {
+            assert!(ExecutionContext::current().is_some());
+            assert_eq!(NodeContext::current().unwrap().node_id, node_id);
+            tokio::task::yield_now().await;
+            assert_eq!(NodeContext::current().unwrap().node_id, node_id);
+        }
+
+        async fn send_current_execution_id(tx: tokio::sync::mpsc::Sender<String>) {
+            tokio::task::yield_now().await;
+            let current = ExecutionContext::current().unwrap();
+            tx.send(current.execution_id.clone()).await.unwrap();
+        }
+
         #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
         async fn test_execution_context_survives_await() {
             let ctx = ExecutionContext::new("exec-async", "wf-async", "tenant-async");
@@ -602,13 +615,7 @@ mod tests {
             let exec = ExecutionContext::new("e1", "wf", "t");
             exec.scope(async {
                 let node = NodeContext::new("n1", "a1");
-                node.scope(async {
-                    assert!(ExecutionContext::current().is_some());
-                    assert_eq!(NodeContext::current().unwrap().node_id, "n1");
-                    tokio::task::yield_now().await;
-                    assert_eq!(NodeContext::current().unwrap().node_id, "n1");
-                })
-                .await;
+                node.scope(assert_node_context_persists("n1")).await;
                 assert!(NodeContext::current().is_none());
             })
             .await;
@@ -620,11 +627,7 @@ mod tests {
             for i in 0..5 {
                 let tx = tx.clone();
                 let ctx = ExecutionContext::new(format!("exec-{i}"), "wf", "tenant");
-                tokio::spawn(ctx.scope(async move {
-                    tokio::task::yield_now().await;
-                    let current = ExecutionContext::current().unwrap();
-                    tx.send(current.execution_id.clone()).await.unwrap();
-                }));
+                tokio::spawn(ctx.scope(send_current_execution_id(tx)));
             }
             drop(tx);
             let mut ids = Vec::new();

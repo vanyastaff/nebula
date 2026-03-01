@@ -4,12 +4,14 @@ use nebula_log::{Config, Format, Rolling, WriterConfig};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "file")]
     {
-        let mut config = Config::default();
-        config.format = Format::Json;
-        config.writer = WriterConfig::File {
-            path: "logs/app.log".into(),
-            rolling: Some(Rolling::Daily),
-            non_blocking: true,
+        let config = Config {
+            format: Format::Json,
+            writer: WriterConfig::File {
+                path: "logs/app.log".into(),
+                rolling: Some(Rolling::Daily),
+                non_blocking: true,
+            },
+            ..Config::default()
         };
 
         let _guard = nebula_log::init_with(config)?;

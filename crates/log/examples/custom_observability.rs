@@ -238,16 +238,14 @@ impl SlackNotificationHook {
 impl ObservabilityHook for SlackNotificationHook {
     fn on_event(&self, event: &dyn ObservabilityEvent) {
         // Only send critical errors to Slack
-        if event.name() == "error_event" {
-            if let Some(data) = event_data_json(event) {
-                if let Some(severity) = data.get("severity").and_then(|v| v.as_str()) {
-                    if severity == "Critical" {
-                        info!(hook = "slack", "Would send notification to Slack");
-                        // In real implementation:
-                        // slack_client.send_message("#alerts", format!("🚨 {}", data))
-                    }
-                }
-            }
+        if event.name() == "error_event"
+            && let Some(data) = event_data_json(event)
+            && let Some(severity) = data.get("severity").and_then(|v| v.as_str())
+            && severity == "Critical"
+        {
+            info!(hook = "slack", "Would send notification to Slack");
+            // In real implementation:
+            // slack_client.send_message("#alerts", format!("🚨 {}", data))
         }
     }
 }
