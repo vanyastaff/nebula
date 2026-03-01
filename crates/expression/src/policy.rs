@@ -12,6 +12,7 @@ pub struct EvaluationPolicy {
     allowed_functions: Option<Arc<HashSet<String>>>,
     denied_functions: Arc<HashSet<String>>,
     strict_mode: bool,
+    strict_conversion_functions: bool,
 }
 
 impl EvaluationPolicy {
@@ -60,6 +61,15 @@ impl EvaluationPolicy {
         self
     }
 
+    /// Enable or disable strict behavior for explicit conversion builtins.
+    ///
+    /// When enabled, conversion builtins like `to_number` / `to_boolean`
+    /// stop coercing non-native types and require native inputs.
+    pub fn with_strict_conversion_functions(mut self, enabled: bool) -> Self {
+        self.strict_conversion_functions = enabled;
+        self
+    }
+
     /// Return the optional allowlist.
     pub fn allowed_functions(&self) -> Option<&HashSet<String>> {
         self.allowed_functions.as_deref()
@@ -74,6 +84,11 @@ impl EvaluationPolicy {
     pub fn strict_mode(&self) -> bool {
         self.strict_mode
     }
+
+    /// Whether strict conversion builtins mode is enabled.
+    pub fn strict_conversion_functions(&self) -> bool {
+        self.strict_conversion_functions
+    }
 }
 
 #[cfg(test)]
@@ -85,11 +100,13 @@ mod tests {
         let policy = EvaluationPolicy::new()
             .with_allowed_functions(["uppercase", "length"])
             .with_denied_functions(["length"])
-            .with_strict_mode(true);
+            .with_strict_mode(true)
+            .with_strict_conversion_functions(true);
 
         assert!(policy.allowed_functions().unwrap().contains("uppercase"));
         assert!(policy.denied_functions().contains("length"));
         assert!(policy.strict_mode());
+        assert!(policy.strict_conversion_functions());
     }
 }
 

@@ -37,6 +37,7 @@ Notes:
 - added strict-mode execution flag in `EvaluationPolicy`.
 - current strict behavior requires boolean operands/results for `if`, `!`, `&&`, `||`, and higher-order predicates (`filter/find/every/some`).
 - strict validation now also covers numeric builtin arguments (e.g. `sqrt`, `round`, `pow`) to avoid implicit string/bool coercion.
+- added `strict_conversion_functions` compatibility flag for explicit conversion builtins (`to_number`, `to_boolean`).
 - remaining arithmetic/comparison coercion hardening is still pending.
 
 ## P002: Function Namespace Versioning

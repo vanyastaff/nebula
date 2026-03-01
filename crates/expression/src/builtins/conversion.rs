@@ -32,10 +32,17 @@ pub fn to_string(
 /// Convert value to number
 pub fn to_number(
     args: &[Value],
-    _eval: &Evaluator,
-    _ctx: &EvaluationContext,
+    eval: &Evaluator,
+    ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("to_number", args, 1)?;
+
+    if eval.strict_conversions_enabled(ctx) && !args[0].is_number() {
+        return Err(ExpressionError::expression_type_error(
+            "number",
+            crate::value_utils::value_type_name(&args[0]),
+        ));
+    }
 
     // Use the helper function from value_utils
     crate::value_utils::to_float(&args[0])
@@ -51,10 +58,18 @@ pub fn to_number(
 /// Convert value to boolean
 pub fn to_boolean(
     args: &[Value],
-    _eval: &Evaluator,
-    _ctx: &EvaluationContext,
+    eval: &Evaluator,
+    ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("to_boolean", args, 1)?;
+
+    if eval.strict_conversions_enabled(ctx) && !args[0].is_boolean() {
+        return Err(ExpressionError::expression_type_error(
+            "boolean",
+            crate::value_utils::value_type_name(&args[0]),
+        ));
+    }
+
     Ok(Value::Bool(crate::value_utils::to_boolean(&args[0])))
 }
 

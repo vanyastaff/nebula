@@ -77,6 +77,19 @@ let ctx = EvaluationContext::new();
 assert!(engine.evaluate("if 1 then 'yes' else 'no'", &ctx).is_err());
 ```
 
+## Policy Example (Strict Conversion Builtins)
+
+```rust
+use nebula_expression::{EvaluationContext, EvaluationPolicy, ExpressionEngine};
+
+let policy = EvaluationPolicy::new().with_strict_conversion_functions(true);
+let engine = ExpressionEngine::new().with_policy(policy);
+let ctx = EvaluationContext::new();
+
+assert!(engine.evaluate("to_number('42')", &ctx).is_err());
+assert!(engine.evaluate("to_boolean(1)", &ctx).is_err());
+```
+
 ## Cache Observability Example
 
 ```rust

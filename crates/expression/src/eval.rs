@@ -832,6 +832,17 @@ impl Evaluator {
         self.strict_mode_enabled(context)
     }
 
+    pub(crate) fn strict_conversions_enabled(&self, context: &EvaluationContext) -> bool {
+        let engine_strict = self
+            .policy
+            .as_deref()
+            .is_some_and(EvaluationPolicy::strict_conversion_functions);
+        let context_strict = context
+            .policy()
+            .is_some_and(EvaluationPolicy::strict_conversion_functions);
+        engine_strict || context_strict
+    }
+
     fn coerce_boolean(&self, value: &Value, context: &EvaluationContext) -> ExpressionResult<bool> {
         if self.strict_mode_enabled(context) && !value.is_boolean() {
             return Err(ExpressionError::expression_type_error(

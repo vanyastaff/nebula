@@ -651,6 +651,38 @@ mod tests {
     }
 
     #[test]
+    fn test_strict_mode_still_allows_explicit_to_number_by_default() {
+        let engine =
+            ExpressionEngine::new().with_policy(EvaluationPolicy::new().with_strict_mode(true));
+        let context = EvaluationContext::new();
+
+        let value = engine.evaluate("to_number('42')", &context).unwrap();
+        assert_eq!(value.as_f64(), Some(42.0));
+    }
+
+    #[test]
+    fn test_strict_conversion_functions_reject_non_numeric_to_number() {
+        let policy = EvaluationPolicy::new()
+            .with_strict_mode(true)
+            .with_strict_conversion_functions(true);
+        let engine = ExpressionEngine::new().with_policy(policy);
+        let context = EvaluationContext::new();
+
+        let err = engine.evaluate("to_number('42')", &context).unwrap_err();
+        assert!(err.to_string().contains("expected number"));
+    }
+
+    #[test]
+    fn test_strict_conversion_functions_reject_non_boolean_to_boolean() {
+        let policy = EvaluationPolicy::new().with_strict_conversion_functions(true);
+        let engine = ExpressionEngine::new().with_policy(policy);
+        let context = EvaluationContext::new();
+
+        let err = engine.evaluate("to_boolean(1)", &context).unwrap_err();
+        assert!(err.to_string().contains("expected boolean"));
+    }
+
+    #[test]
     fn test_cache_overview_no_cache() {
         let engine = ExpressionEngine::new();
         let overview = engine.cache_overview();
