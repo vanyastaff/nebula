@@ -4,7 +4,7 @@
 
 services:
   jaeger:
-    image: jaegertracing/all-in-one:latest
+    image: jaegertracing/all-in-one:1.76.0
     container_name: nebula-jaeger
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
@@ -12,7 +12,7 @@ services:
       - "16686:16686" # Jaeger UI
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    image: otel/opentelemetry-collector-contrib:0.146.1
     container_name: nebula-otel-collector
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     depends_on:

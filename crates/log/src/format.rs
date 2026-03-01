@@ -180,16 +180,20 @@ where
             write!(writer, " source={file}:{line}")?;
         }
 
-        // Span context (key=value from parent spans)
+        // Span context.
+        // NOTE: Do not parse FormattedFields into key/value pairs by splitting
+        // on ", " because values may contain commas and break logfmt output.
         if let Some(scope) = ctx.event_scope() {
             for span in scope.from_root() {
+                write_logfmt_value(&mut writer, "span", span.name())?;
+
                 let fields_str = span
                     .extensions()
                     .get::<tracing_subscriber::fmt::FormattedFields<N>>()
                     .map(|f| f.fields.trim().to_owned())
                     .unwrap_or_default();
-                for pair in fields_str.split(", ").filter(|s| !s.is_empty()) {
-                    write!(writer, " {pair}")?;
+                if !fields_str.is_empty() {
+                    write_logfmt_value(&mut writer, "span_fields", &fields_str)?;
                 }
             }
         }

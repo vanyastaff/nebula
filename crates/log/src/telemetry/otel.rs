@@ -66,19 +66,32 @@ pub fn build_layer(
     // Build OTel resource from config + fields (OTel semantic conventions)
     let resource = build_resource(&config.service_name, fields);
 
-    // Build OTLP span exporter (gRPC via tonic)
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_tonic()
-        .with_endpoint(&endpoint_str)
-        .build()
-        .map_err(|e| LogError::Telemetry(format!("OTLP exporter build failed: {e}")))?;
-
-    // Build tracer provider with batch exporter and resource attributes
-    let provider = SdkTracerProvider::builder()
+    let provider_builder = SdkTracerProvider::builder()
         .with_sampler(sampler)
-        .with_resource(resource)
-        .with_batch_exporter(exporter)
-        .build();
+        .with_resource(resource);
+
+    // Batch export requires an active Tokio runtime.
+    // Fall back to simple export in sync contexts to avoid runtime panics.
+    #[cfg(feature = "async")]
+    let has_runtime = tokio::runtime::Handle::try_current().is_ok();
+    #[cfg(not(feature = "async"))]
+    let has_runtime = false;
+
+    let provider = if has_runtime {
+        let exporter = opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(&endpoint_str)
+            .build()
+            .map_err(|e| LogError::Telemetry(format!("OTLP exporter build failed: {e}")))?;
+        provider_builder.with_batch_exporter(exporter).build()
+    } else {
+        let exporter = opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(&endpoint_str)
+            .build()
+            .map_err(|e| LogError::Telemetry(format!("OTLP exporter build failed: {e}")))?;
+        provider_builder.with_simple_exporter(exporter).build()
+    };
 
     let tracer = provider.tracer("nebula-log");
 
