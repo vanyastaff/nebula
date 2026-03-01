@@ -1,55 +1,25 @@
-import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { handleDeepLinkUrls } from "../application/oauthCallback";
-import { useAuthSnapshot, useConnectionSnapshot } from "../application/hooks";
-import { authManager } from "../application/services";
-import { AuthProvider } from "../domain/auth";
+import { useEffect, useState } from "react";
+import { useAuthStore } from "../features/auth/store";
+import { useConnectionStore } from "../features/connection/store";
 
 export function App() {
-  const connection = useConnectionSnapshot();
-  const auth = useAuthSnapshot();
+  const auth = useAuthStore();
+  const { activeBaseUrl } = useConnectionStore();
   const [version, setVersion] = useState<string>("...");
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-
-    async function setupDeepLinkHandlers() {
-      const current = await getCurrent();
-      if (current && current.length > 0) {
-        await handleDeepLinkUrls(current);
-      }
-
-      unlisten = await onOpenUrl((urls) => {
-        void handleDeepLinkUrls(urls);
-      });
-    }
-
-    setupDeepLinkHandlers().catch((error) => {
-      const message =
-        error instanceof Error ? error.message : "failed to initialize deep-link handlers";
-      authManager.setAuthError(message);
-    });
-
-    return () => {
-      if (unlisten) {
-        unlisten();
-      }
-    };
-  }, []);
-
-  useEffect(() => {
     getVersion()
-      .then((value) => setVersion(value))
+      .then((v) => setVersion(v))
       .catch(() => setVersion("0.1.0"));
   }, []);
 
-  async function signIn(provider: AuthProvider) {
-    await authManager.signInWithOAuth(provider, connection.activeBaseUrl);
+  function signIn() {
+    void auth.startOAuth("github", activeBaseUrl);
   }
 
   function signOut() {
-    authManager.signOut();
+    void auth.signOut();
   }
 
   return (
@@ -90,14 +60,19 @@ export function App() {
 
         {auth.status === "signed_in" ? (
           <>
-            <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12 }}>
+            <div
+              style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12 }}
+            >
               {auth.user?.avatarUrl ? (
                 <img
                   src={auth.user.avatarUrl}
                   alt="avatar"
                   width={42}
                   height={42}
-                  style={{ borderRadius: "50%", border: "1px solid rgba(184, 197, 230, 0.3)" }}
+                  style={{
+                    borderRadius: "50%",
+                    border: "1px solid rgba(184, 197, 230, 0.3)",
+                  }}
                 />
               ) : null}
               <div>
@@ -127,7 +102,7 @@ export function App() {
           </>
         ) : (
           <button
-            onClick={() => signIn("github")}
+            onClick={signIn}
             disabled={auth.status === "authorizing"}
             style={{
               width: "100%",
@@ -146,9 +121,10 @@ export function App() {
 
         {auth.status === "authorizing" ? (
           <p style={{ marginTop: 14, marginBottom: 0, color: "#b8c5e6", fontSize: 13 }}>
-            Waiting for OAuth callback...
+            Waiting for OAuth callback…
           </p>
         ) : null}
+
         {auth.error ? (
           <p style={{ marginTop: 14, marginBottom: 0, color: "#ffb7b7", fontSize: 13 }}>
             {auth.error}
