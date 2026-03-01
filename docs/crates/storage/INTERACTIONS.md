@@ -7,7 +7,7 @@
 | Crate | Relationship | Description |
 |-------|-------------|-------------|
 | `nebula-core` | Upstream | Id types (indirect; storage is generic) |
-| `nebula-credential` | Sibling | Has own StorageProvider; different trait for encrypted credentials |
+| `nebula-credential` | Sibling | Has own `StorageProvider` trait — separate abstraction for encrypted credentials; does NOT use `Storage` trait |
 | `nebula-execution` | Potential consumer | May use storage for execution state (future) |
 | `nebula-workflow` | Potential consumer | May use storage for workflow definitions (future) |
 
@@ -18,7 +18,7 @@
 | `nebula-execution` | Downstream | ExecutionRepo impl using Storage |
 | `nebula-workflow` | Downstream | WorkflowRepo impl using Storage |
 | `nebula-idempotency` | Downstream | IdempotencyStorage impl using Storage |
-| `nebula-credential` | Sibling | StorageProvider is separate; could share backend infra |
+| `nebula-credential` | Sibling | `StorageProvider` trait is a separate, richer abstraction (handles encryption, rotation); may share backend infra in future |
 
 ## Downstream Consumers
 

@@ -18,10 +18,11 @@
 
 ### Data/Control Flow
 
-1. **Consumer** holds `Arc<dyn Storage<Key = K, Value = V>>` or concrete `MemoryStorage`/`MemoryStorageTyped<T>`.
-2. **get(key)** → Option<Value>; **set(key, value)** → (); **delete(key)** → (); **exists(key)** → bool.
-3. **MemoryStorage** uses RwLock<HashMap<String, Vec<u8>>.
-4. **MemoryStorageTyped<T>** wraps MemoryStorage; serializes/deserializes via serde_json.
+1. Consumer holds `Arc<dyn Storage<Key = K, Value = V>>` or concrete `MemoryStorage` / `MemoryStorageTyped<T>`.
+2. `get(key)` → `Ok(None)` absent, `Ok(Some(v))` found; `set` overwrites; `delete` idempotent; `exists` lock-free read.
+3. `MemoryStorage` internals: `RwLock<HashMap<String, Vec<u8>>>` — concurrent reads via shared lock, exclusive writes.
+4. `MemoryStorageTyped<T>` wraps `MemoryStorage` transparently: `set` calls `serde_json::to_vec` then delegates to raw backend; `get` delegates then calls `serde_json::from_slice`. All serialization errors surface as `StorageError::Serialization`.
+5. `MemoryStorageTyped<T>` uses `PhantomData<fn() -> T>` — covariant in `T`, zero runtime cost.
 
 ### Known Bottlenecks
 
