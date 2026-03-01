@@ -160,37 +160,66 @@ BreakReason::ConditionMet     // User-defined stop condition
 BreakReason::Custom(String)   // Custom reason
 ```
 
-## Context (current state)
+## Context design
 
-`Context` is currently a bare marker trait (`Send + Sync`) — no capability methods yet. This is by design: the full context + capability model is Phase 2 work.
+`Context` is the base marker trait (`Send + Sync`). The stable context types are `ActionContext` and `TriggerContext` — they are composed of capability modules rather than extended through inheritance.
 
-The temporary bridge used by the engine today is `NodeContext` (doc-hidden):
+### `ActionContext`
+
+Used by `StatelessAction`, `StatefulAction`, and `ResourceAction`. Composes:
+
 ```rust
-// internal — not stable public API
-pub struct NodeContext {
+pub struct ActionContext {
+    // Execution identity
     pub execution_id: ExecutionId,
     pub node_id: NodeId,
     pub workflow_id: WorkflowId,
+    // Cancellation
     pub cancellation: CancellationToken,
+    // Capability access (composition — not inheritance)
+    pub resources: ResourceAccessor,     // ctx.resource::<R>()
+    pub credentials: CredentialAccessor, // ctx.credential::<C>()
+    pub logger: ActionLogger,
+    // ... additional capabilities added without breaking the core signature
 }
 ```
 
-**Phase 2 target:** `Context` will gain `resource()`, `credential()`, and cancellation access. `NodeContext` will be replaced by a stable adapter. See `ROADMAP.md` Phase 2.
+### `TriggerContext`
+
+Used by `TriggerAction` and its DX sub-types (`WebhookAction`, `PollAction`). Distinct because triggers live **outside** execution graph — not bound to a specific execution:
+
+```rust
+pub struct TriggerContext {
+    pub workflow_id: WorkflowId,
+    pub trigger_id: NodeId,
+    pub cancellation: CancellationToken,
+    // Trigger-specific capabilities
+    pub scheduler: TriggerScheduler,     // schedule next poll
+    pub emitter: ExecutionEmitter,       // spawn new executions
+    pub credentials: CredentialAccessor,
+    pub logger: TriggerLogger,
+}
+```
+
+**Key design decisions:**
+- Composition over inheritance — new capabilities added as fields, not via trait extension
+- `ActionContext` and `TriggerContext` are concrete structs, not traits — easier to construct in tests
+- `NodeContext` (current doc-hidden impl) is a temporary placeholder; `ActionContext` is the target name and shape
 
 ## Planned execution sub-traits (Phase 2)
 
-Currently `Action` has no `execute()` method — that goes in typed sub-traits. These are **not yet in the codebase**; the design is stabilized from the archive:
+Currently `Action` has no `execute()` method — that goes in typed sub-traits. These are **not yet in the codebase**; the design is stabilized:
 
-| Sub-trait | Core / DX | Extends | Purpose |
+| Sub-trait | Core / DX | Context | Purpose |
 |-----------|-----------|---------|---------|
-| `StatelessAction` | Core | `Action` | Pure function: `execute(input, ctx) → ActionResult<Output>` |
-| `StatefulAction` | Core | `Action` | Persistent state: `execute(input, &mut state, ctx)` + `Continue`/`Break` |
-| `TriggerAction` | Core | `StatefulAction` | Workflow starter: `start(ctx)` / `stop(ctx)` — lives outside execution graph |
-| `ResourceAction` | Core | `Action` | Graph-level DI: `configure(ctx)` → Config; `cleanup(instance, ctx)` |
-| `InteractiveAction` | DX | `StatefulAction` | Human-in-the-loop: `Wait { Approval }` with declarative UI helpers |
-| `TransactionalAction` | DX | `StatefulAction` | Saga pattern: `execute_tx()` + `compensate()` with `SagaStepKind` |
-| `WebhookAction` | DX | `TriggerAction` | Incoming HTTP: `register()`, `handle_request()`, `verify_signature()` |
-| `PollAction` | DX | `TriggerAction` | Periodic poll: `poll(cursor, ctx) → PollResult<Event, Cursor>` |
+| `StatelessAction` | Core | `ActionContext` | Pure function: `execute(input, &ctx) → ActionResult<Output>` |
+| `StatefulAction` | Core | `ActionContext` | Persistent state: `execute(input, &mut state, &ctx)` + `Continue`/`Break` |
+| `TriggerAction` | Core | `TriggerContext` | Workflow starter: `start(&ctx)` / `stop(&ctx)` — lives outside execution graph |
+| `ResourceAction` | Core | `ActionContext` | Graph-level DI: `configure(&ctx)` → Config; `cleanup(instance, &ctx)` |
+| `InteractiveAction` | DX | `ActionContext` | Human-in-the-loop: `Wait { Approval }` with declarative UI helpers |
+| `TransactionalAction` | DX | `ActionContext` | Saga pattern: `execute_tx()` + `compensate()` with `SagaStepKind` |
+| `WebhookAction` | DX | `TriggerContext` | Incoming HTTP: `register()`, `handle_request()`, `verify_signature()` |
+| `PollAction` | DX | `TriggerContext` | Periodic poll: `poll(cursor, &ctx) → PollResult<Event, Cursor>` |
 
 DX types will live in `nebula-action-dx` (separate crate) to keep the core protocol lean.
 

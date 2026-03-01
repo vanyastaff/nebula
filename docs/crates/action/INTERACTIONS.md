@@ -51,8 +51,8 @@
 1. Runtime validates params and capability envelope.
 2. Runtime resolves `ActionComponents` — acquires credentials and resources declared by the action.
 3. Runtime builds context and passes it to the action execute method.
-   - **Current**: `NodeContext` (doc-hidden temporary bridge) carrying `execution_id`, `node_id`, `workflow_id`, `cancellation`.
-   - **Phase 2 target**: stable context with `resource()`, `credential()`, cancellation access; sandboxed variant capability-checks against declared components.
+   - **Current**: `NodeContext` (doc-hidden temporary placeholder) carrying `execution_id`, `node_id`, `workflow_id`, `cancellation`.
+   - **Target**: `ActionContext` (for StatelessAction / StatefulAction / ResourceAction) and `TriggerContext` (for TriggerAction) — concrete structs composed of capability modules (`ResourceAccessor`, `CredentialAccessor`, etc.). Designed for composition: new capabilities add fields without breaking existing signatures.
 4. Action executes and returns `ActionResult<ActionOutput<T>>` or `ActionError`.
 5. Engine applies flow-control semantics: `Branch` activates path, `Wait` persists state and suspends, `Continue` re-enqueues, `Retry` reschedules.
 6. Runtime resolves deferred/streaming outputs before passing to downstream nodes.

@@ -26,6 +26,11 @@ The crate is a protocol, not a runtime. It must be small, stable, and explicit.
 5. Graph topology contracts
 - typed input/output/support/dynamic port declarations
 
+6. Context placeholder
+- `Context` base trait (bare marker)
+- `NodeContext` (doc-hidden) — temporary bridge carrying execution_id, node_id, workflow_id, cancellation
+- **Design decision:** target context types are `ActionContext` and `TriggerContext`, both concrete structs composed of capability modules (ResourceAccessor, CredentialAccessor, etc.) — see API.md
+
 ## Target architecture (production-complete)
 
 1. Stable contract layer (`nebula-action`)
@@ -50,20 +55,36 @@ Two-level design: **Core types** (engine treats differently; stable contracts) a
 
 ```
 Action (base trait — metadata + components)
-├── StatelessAction       — pure function: execute(input, ctx)
-├── StatefulAction        — persistent state: execute(input, &mut state, ctx)
-│   └── TriggerAction     — workflow starter: start(ctx) / stop(ctx); TriggerContext
-└── ResourceAction        — graph-level DI: configure(ctx) → Config; cleanup(instance, ctx)
+├── StatelessAction       — ActionContext — pure function: execute(input, &ctx)
+├── StatefulAction        — ActionContext — persistent state: execute(input, &mut state, &ctx)
+│   └── TriggerAction     — TriggerContext — workflow starter: start(&ctx) / stop(&ctx)
+└── ResourceAction        — ActionContext — graph-level DI: configure(&ctx); cleanup(instance, &ctx)
 
 DX types (in nebula-action-dx, over core sub-traits):
 StatefulAction
-├── InteractiveAction     — Wait { Approval } with declarative UI; human-in/on-the-loop
-└── TransactionalAction   — Saga pattern: execute_tx() + compensate() + SagaStepKind
+├── InteractiveAction     — ActionContext  — Wait { Approval } with declarative UI
+└── TransactionalAction   — ActionContext  — Saga: execute_tx() + compensate() + SagaStepKind
 
 TriggerAction
-├── WebhookAction         — register() + handle_request() + verify_signature()
-└── PollAction            — poll(cursor, ctx) → PollResult<Event, Cursor>; cursor persistence
+├── WebhookAction         — TriggerContext — register() + handle_request() + verify_signature()
+└── PollAction            — TriggerContext — poll(cursor, &ctx) → PollResult; cursor persistence
 ```
+
+**Context design — composition over inheritance:**
+
+Each sub-trait receives a concrete struct (`ActionContext` or `TriggerContext`), not a trait object. Contexts grow capabilities by adding fields — no trait extension required:
+
+```
+ActionContext:                       TriggerContext:
+  execution_id, node_id               workflow_id, trigger_id
+  workflow_id                         cancellation
+  cancellation                        scheduler (next poll)
+  resources: ResourceAccessor         emitter (spawn executions)
+  credentials: CredentialAccessor     credentials: CredentialAccessor
+  logger: ActionLogger                logger: TriggerLogger
+```
+
+`TriggerContext` is distinct from `ActionContext` because triggers live **outside** any execution — they are long-lived workflow-scoped processes that *spawn* executions, never inside one.
 
 **Core vs DX distinction** (Rust analogy: `BufReader` is DX over `Read`):
 - Engine speaks only to core types — DX reduces boilerplate without adding engine coupling
