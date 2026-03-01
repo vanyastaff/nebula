@@ -113,6 +113,12 @@ impl Evaluator {
 
             Expr::Not(expr) => {
                 let val = self.eval_with_depth(expr, context, depth + 1)?;
+                if self.strict_mode_enabled(context) && !val.is_boolean() {
+                    return Err(ExpressionError::expression_type_error(
+                        "boolean",
+                        crate::value_utils::value_type_name(&val),
+                    ));
+                }
                 Ok(Value::Bool(!crate::value_utils::to_boolean(&val)))
             }
 
@@ -178,6 +184,12 @@ impl Evaluator {
                 else_expr,
             } => {
                 let cond_val = self.eval_with_depth(condition, context, depth + 1)?;
+                if self.strict_mode_enabled(context) && !cond_val.is_boolean() {
+                    return Err(ExpressionError::expression_type_error(
+                        "boolean",
+                        crate::value_utils::value_type_name(&cond_val),
+                    ));
+                }
                 if crate::value_utils::to_boolean(&cond_val) {
                     self.eval_with_depth(then_expr, context, depth + 1)
                 } else {
@@ -226,20 +238,44 @@ impl Evaluator {
         match op {
             BinaryOp::And => {
                 let left_val = self.eval_with_depth(left, context, depth + 1)?;
+                if self.strict_mode_enabled(context) && !left_val.is_boolean() {
+                    return Err(ExpressionError::expression_type_error(
+                        "boolean",
+                        crate::value_utils::value_type_name(&left_val),
+                    ));
+                }
                 if !crate::value_utils::to_boolean(&left_val) {
                     // Short-circuit: if left is false, don't evaluate right
                     return Ok(Value::Bool(false));
                 }
                 let right_val = self.eval_with_depth(right, context, depth + 1)?;
+                if self.strict_mode_enabled(context) && !right_val.is_boolean() {
+                    return Err(ExpressionError::expression_type_error(
+                        "boolean",
+                        crate::value_utils::value_type_name(&right_val),
+                    ));
+                }
                 Ok(Value::Bool(crate::value_utils::to_boolean(&right_val)))
             }
             BinaryOp::Or => {
                 let left_val = self.eval_with_depth(left, context, depth + 1)?;
+                if self.strict_mode_enabled(context) && !left_val.is_boolean() {
+                    return Err(ExpressionError::expression_type_error(
+                        "boolean",
+                        crate::value_utils::value_type_name(&left_val),
+                    ));
+                }
                 if crate::value_utils::to_boolean(&left_val) {
                     // Short-circuit: if left is true, don't evaluate right
                     return Ok(Value::Bool(true));
                 }
                 let right_val = self.eval_with_depth(right, context, depth + 1)?;
+                if self.strict_mode_enabled(context) && !right_val.is_boolean() {
+                    return Err(ExpressionError::expression_type_error(
+                        "boolean",
+                        crate::value_utils::value_type_name(&right_val),
+                    ));
+                }
                 Ok(Value::Bool(crate::value_utils::to_boolean(&right_val)))
             }
             // For all other operators, evaluate both operands
@@ -820,6 +856,12 @@ impl Evaluator {
             canonical,
             "some" if allowed.contains("any")
         )
+    }
+
+    fn strict_mode_enabled(&self, context: &EvaluationContext) -> bool {
+        let engine_strict = self.policy.as_deref().is_some_and(EvaluationPolicy::strict_mode);
+        let context_strict = context.policy().is_some_and(EvaluationPolicy::strict_mode);
+        engine_strict || context_strict
     }
 
     /// Filter array elements using a lambda predicate

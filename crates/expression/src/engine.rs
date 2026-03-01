@@ -600,6 +600,26 @@ mod tests {
     }
 
     #[test]
+    fn test_strict_mode_requires_boolean_condition() {
+        let engine =
+            ExpressionEngine::new().with_policy(EvaluationPolicy::new().with_strict_mode(true));
+        let context = EvaluationContext::new();
+
+        let err = engine.evaluate("if 1 then 'yes' else 'no'", &context).unwrap_err();
+        assert!(err.to_string().contains("expected boolean"));
+    }
+
+    #[test]
+    fn test_strict_mode_requires_boolean_logical_operands() {
+        let engine =
+            ExpressionEngine::new().with_policy(EvaluationPolicy::new().with_strict_mode(true));
+        let context = EvaluationContext::new();
+
+        let err = engine.evaluate("1 && true", &context).unwrap_err();
+        assert!(err.to_string().contains("expected boolean"));
+    }
+
+    #[test]
     fn test_cache_overview_no_cache() {
         let engine = ExpressionEngine::new();
         let overview = engine.cache_overview();

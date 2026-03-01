@@ -30,7 +30,13 @@ Compatibility impact:
 
 Breaking if strict mode becomes default.
 
-Status: Review
+Status: In Progress
+
+Notes:
+
+- added strict-mode execution flag in `EvaluationPolicy`.
+- current strict behavior requires boolean operands for `if`, `!`, `&&`, and `||`.
+- arithmetic/comparison coercion hardening is still pending.
 
 ## P002: Function Namespace Versioning
 

@@ -47,6 +47,10 @@ Current progress:
 - exit criteria:
   - clear operator guidance and low-friction adoption path.
 
+Current progress:
+- strict mode foundation exists via `EvaluationPolicy::with_strict_mode(true)`.
+- first strict checks are enforced for boolean-only control/logical expressions.
+
 ## Metrics of Readiness
 
 - correctness:

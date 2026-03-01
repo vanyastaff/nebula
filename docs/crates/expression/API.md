@@ -66,6 +66,17 @@ assert!(engine.evaluate("lowercase('ALICE')", &ctx).is_err());
 # Ok::<(), nebula_expression::ExpressionError>(())
 ```
 
+## Policy Example (Strict Mode)
+
+```rust
+use nebula_expression::{EvaluationContext, EvaluationPolicy, ExpressionEngine};
+
+let engine = ExpressionEngine::new().with_policy(EvaluationPolicy::new().with_strict_mode(true));
+let ctx = EvaluationContext::new();
+
+assert!(engine.evaluate("if 1 then 'yes' else 'no'", &ctx).is_err());
+```
+
 ## Cache Observability Example
 
 ```rust
