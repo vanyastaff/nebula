@@ -1,3 +1,5 @@
+mod types;
+
 use tauri::Manager;
 use tauri_plugin_deep_link::DeepLinkExt;
 
