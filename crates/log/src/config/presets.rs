@@ -42,8 +42,10 @@ impl Config {
         }
     }
 
-    /// Test configuration (captures output)
-    #[cfg(test)]
+    /// Test configuration (trace level, compact format, no colors, no timestamps)
+    ///
+    /// Intended for use in test harnesses across the workspace.
+    #[must_use]
     pub fn test() -> Self {
         Self {
             level: "trace".to_string(),

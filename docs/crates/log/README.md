@@ -27,19 +27,22 @@ Logging and observability foundation for the Nebula workflow platform.
   - multi-destination writer fanout with explicit failure policy
   - size-based rolling file writer
 - **Key risks:**
-  - non-blocking file mode backpressure/drop semantics need clearer operator guidance
-  - hook execution remains inline by default (tail-latency sensitivity)
+  - hook execution remains inline by default (tail-latency sensitivity; async offload deferred)
   - global observability registry requires test serialization
 
 ## Target State
 
 - **Production criteria:**
-  - formal env var and config precedence contract (published in API.md)
-  - benchmarked hot paths with CI thresholds
-  - documented hook/runtime failure behavior under load
+  - formal env var and config precedence contract (published in API.md) -- done
+  - benchmarked hot paths with CI thresholds -- done
+  - documented hook/runtime failure behavior under load -- done
+- **Remaining work:**
+  - async hook offload (P-001 v2)
+  - typed event names (P-002) and context IDs (P-003)
+  - trace/log correlation fields across engine/runtime
 - **Compatibility guarantees:**
   - config schema stability via versioning and snapshot tests
-  - deprecation window for breaking API changes
+  - deprecation window (6 months minimum) for breaking API changes
 
 ## Feature Flags
 

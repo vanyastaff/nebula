@@ -232,13 +232,14 @@ fn flush_primary_with_fallback(writers: &mut [Box<dyn Write + '_>]) -> io::Resul
 struct SizeRollingAppender {
     path: PathBuf,
     max_bytes: u64,
+    max_files: u32,
     file: std::fs::File,
     current_size: u64,
 }
 
 #[cfg(feature = "file")]
 impl SizeRollingAppender {
-    fn new(path: PathBuf, max_megabytes: u64) -> io::Result<Self> {
+    fn new(path: PathBuf, max_megabytes: u64, max_files: u32) -> io::Result<Self> {
         let max_bytes = max_megabytes * 1024 * 1024;
         if max_bytes == 0 {
             return Err(io::Error::new(
@@ -246,6 +247,7 @@ impl SizeRollingAppender {
                 "size rolling limit must be greater than zero",
             ));
         }
+        let max_files = max_files.max(1);
 
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -260,6 +262,7 @@ impl SizeRollingAppender {
         Ok(Self {
             path,
             max_bytes,
+            max_files,
             file,
             current_size,
         })
@@ -267,13 +270,28 @@ impl SizeRollingAppender {
 
     fn rotate(&mut self) -> io::Result<()> {
         self.file.flush()?;
-        let rotated = PathBuf::from(format!("{}.1", self.path.display()));
-        if rotated.exists() {
-            std::fs::remove_file(&rotated)?;
+
+        // Remove the oldest backup if at capacity
+        let oldest = PathBuf::from(format!("{}.{}", self.path.display(), self.max_files));
+        if oldest.exists() {
+            std::fs::remove_file(&oldest)?;
         }
+
+        // Shift existing backups: .N-1 → .N, ... .1 → .2
+        for i in (1..self.max_files).rev() {
+            let src = PathBuf::from(format!("{}.{i}", self.path.display()));
+            let dst = PathBuf::from(format!("{}.{}", self.path.display(), i + 1));
+            if src.exists() {
+                std::fs::rename(&src, &dst)?;
+            }
+        }
+
+        // Current → .1
         if self.path.exists() {
-            std::fs::rename(&self.path, &rotated)?;
+            let first_backup = PathBuf::from(format!("{}.1", self.path.display()));
+            std::fs::rename(&self.path, &first_backup)?;
         }
+
         self.file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -338,9 +356,17 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
                     Box::new(tracing_appender::rolling::daily(dir, file_prefix(path)?))
                 }
                 Some(Rolling::Size(megabytes)) => Box::new(
-                    SizeRollingAppender::new(path.clone(), *megabytes).map_err(|e| {
+                    SizeRollingAppender::new(path.clone(), *megabytes, 1).map_err(|e| {
                         LogError::Io(format!("failed to create size rolling writer: {e}"))
                     })?,
+                ),
+                Some(Rolling::SizeRetain {
+                    megabytes,
+                    max_files,
+                }) => Box::new(
+                    SizeRollingAppender::new(path.clone(), *megabytes, *max_files).map_err(
+                        |e| LogError::Io(format!("failed to create size rolling writer: {e}")),
+                    )?,
                 ),
                 _ => Box::new(tracing_appender::rolling::never(".", path)),
             };

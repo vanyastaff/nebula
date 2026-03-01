@@ -58,6 +58,14 @@ pub trait ObservabilityEvent: Send + Sync {
     /// Should be a stable identifier like "operation_started", "validation_failed", etc.
     fn name(&self) -> &str;
 
+    /// Typed event kind for compile-time safe matching.
+    ///
+    /// Returns `Some(EventKind)` for well-known events, `None` for custom/dynamic events.
+    /// Hooks can match on this instead of string comparisons.
+    fn kind(&self) -> Option<super::EventKind> {
+        None
+    }
+
     /// When the event occurred
     ///
     /// Defaults to current time if not overridden.
@@ -276,19 +284,21 @@ impl MetricsHook {
 #[cfg(feature = "observability")]
 impl ObservabilityHook for MetricsHook {
     fn on_event(&self, event: &dyn ObservabilityEvent) {
-        // Increment counter for this event type
-        let event_name = event.name();
-        match event_name {
-            "operation_started" => {
-                crate::metrics::counter!("nebula.events.operation_started").increment(1)
+        use super::semantic::EventKind;
+
+        // Prefer typed matching via kind(), fall back to string name for custom events
+        match event.kind() {
+            Some(EventKind::OperationStarted) => {
+                crate::metrics::counter!("nebula.events.operation_started").increment(1);
             }
-            "operation_completed" => {
-                crate::metrics::counter!("nebula.events.operation_completed").increment(1)
+            Some(EventKind::OperationCompleted) => {
+                crate::metrics::counter!("nebula.events.operation_completed").increment(1);
             }
-            "operation_failed" => {
-                crate::metrics::counter!("nebula.events.operation_failed").increment(1)
+            Some(EventKind::OperationFailed) => {
+                crate::metrics::counter!("nebula.events.operation_failed").increment(1);
             }
-            _ => {
+            None => {
+                let event_name = event.name();
                 let mut metric_name = String::with_capacity(15 + event_name.len());
                 metric_name.push_str("nebula.events.");
                 metric_name.push_str(event_name);

@@ -24,10 +24,18 @@
   - Observability: `emit_event` → registry → hooks (panic-isolated)
 
 - **Known bottlenecks:**
-  - hooks execute inline; slow hooks increase tail latency
-  - legacy JSON-centric event payload flow previously allocated per event; now reduced via visitor payload contract (`visit_fields`) with JSON conversion only on demand
-  - non-blocking writer behavior under sustained overload needs explicit operational policy
+  - hooks execute inline; slow hooks increase tail latency (budget diagnostics via P-001 v1; async offload deferred)
   - size-based rolling currently keeps a single rotated backup (`.1`) only
+- **Implementation gaps:**
+  - `Format::Logfmt` declared but falls through to `Compact` — no distinct logfmt output
+  - `otel::build_layer` exists but is never called from builder; OTLP exporter not attached to provider
+  - `FieldsLayer` is a no-op placeholder (global fields injected via root span instead)
+  - `make_timer` ignores custom time format parameter (type system limitation in `tracing-subscriber`)
+  - `Config::test()` is `#[cfg(test)]` only — not accessible to consuming crates
+  - `otel::shutdown()` is a no-op — no graceful OTLP provider shutdown
+- **Resolved:**
+  - per-event allocation reduced via visitor payload contract (`visit_fields`) with JSON conversion only on demand
+  - non-blocking writer backpressure/drop semantics documented (see RELIABILITY.md)
 
 ## Target Architecture
 

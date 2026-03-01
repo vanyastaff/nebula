@@ -60,8 +60,16 @@ pub enum Rolling {
     Hourly,
     /// Roll daily
     Daily,
-    /// Roll by size in MB
+    /// Roll by size in MB (keeps 1 rotated backup)
     Size(u64),
+    /// Roll by size in MB with configurable retention
+    #[serde(rename = "size_retain")]
+    SizeRetain {
+        /// Maximum file size in megabytes before rotation
+        megabytes: u64,
+        /// Maximum number of rotated backup files to keep (e.g. 5 keeps `.1` through `.5`)
+        max_files: u32,
+    },
 }
 
 /// Display configuration

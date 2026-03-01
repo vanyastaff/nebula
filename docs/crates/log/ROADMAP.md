@@ -12,35 +12,49 @@
 - **Risks:** Snapshot governance drift if contract fixtures are not versioned per release
 - **Exit criteria:** Snapshot contract tests pass and docs specify precedence unambiguously
 
-## Phase 2: Runtime Hardening (Next)
+## Phase 2: Runtime Hardening (Completed)
 
-- **Deliverables:**
-  - Backpressure/drop policy docs for non-blocking file mode (completed)
+- **Completed:**
+  - Backpressure/drop policy docs for non-blocking file mode
   - Hook execution budget proposal (P-001): v1 budget diagnostics implemented; async offload deferred and tracked
-  - Stronger shutdown ordering guarantees for hooks (completed: LIFO shutdown + shutdown-time dispatch quiesce)
+  - Stronger shutdown ordering guarantees for hooks (LIFO shutdown + shutdown-time dispatch quiesce)
 - **Risks:** Hook policy changes may affect custom hooks
 - **Exit criteria:** Documented failure modes; no hook deadlocks on shutdown
 
-## Phase 3: Scale and Performance
+## Phase 3: Scale and Performance (Completed)
 
-- **Deliverables:**
-  - Benchmark hot paths: event emission, context propagation, timing macros (expanded criterion bench coverage added)
-  - Reduce per-event allocations in observability hooks (completed: visitor payload API + logging/metrics hook fast paths)
-  - Criterion benchmarks in CI with regression thresholds (implemented for `nebula-log` hot-path suite)
+- **Completed:**
+  - Benchmark hot paths: event emission, context propagation, timing macros (expanded criterion bench coverage)
+  - Reduced per-event allocations in observability hooks (visitor payload API + logging/metrics hook fast paths)
+  - Criterion benchmarks in CI with regression thresholds (for `nebula-log` hot-path suite)
 - **Risks:** Optimization may complicate code
 - **Exit criteria:** Benchmarks stable; no regressions beyond threshold
 
-## Phase 4: Ecosystem and DX
+## Phase 4: Format and Writer Gaps (Next)
+
+- **Deliverables:**
+  - Implement real `Format::Logfmt` output (currently falls through to `Compact`)
+  - Wire OTLP exporter into `otel::build_layer` and integrate into builder pipeline (`build_layer` exists but is never called; no exporter attached)
+  - Implement `FieldsLayer` properly or remove the no-op placeholder (global fields currently work via root span only)
+  - Support custom time format in `make_timer` (parameter is currently ignored)
+  - Make `Config::test()` available to consumers (currently `#[cfg(test)]` only)
+  - Configurable size rolling retention (currently keeps only 1 rotated backup `.1`)
+  - Implement graceful OTLP shutdown (`otel::shutdown()` is currently a no-op)
+- **Risks:** Logfmt and OTLP changes touch format/telemetry layers; may require type-system workarounds
+- **Exit criteria:** All declared `Format` variants produce distinct output; OTLP pipeline exports spans; size rolling retention configurable
+
+## Phase 5: Ecosystem and DX
 
 - **Deliverables:**
   - Unify trace/log correlation fields across API/engine/runtime
   - Stable semantic field naming convention
   - Default OTLP resource attributes and validation
   - Typed event names (P-002) or context IDs from core (P-003) migration
+  - P-001 v2: async hook offload with queue accounting and drop strategy
 - **Risks:** Breaking changes for custom hooks/contexts
 - **Exit criteria:** Correlation fields documented; migration guide for breaking changes
 
-## Phase 5: Toolchain Baseline
+## Phase 6: Toolchain Baseline
 
 - **Deliverables:**
   - Workspace baseline: Rust 1.92 (MSRV)

@@ -1,23 +1,44 @@
 //! OpenTelemetry integration
+//!
+//! Builds a tracing-compatible OpenTelemetry layer with OTLP gRPC export.
 
-#[cfg(feature = "telemetry")]
-use crate::config::TelemetryConfig;
-use crate::core::LogResult;
-use opentelemetry::global;
+use crate::config::{Fields, TelemetryConfig};
+use crate::core::{LogError, LogResult};
+use opentelemetry::{KeyValue, global};
 use opentelemetry::trace::TracerProvider;
+use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
+    Resource,
     propagation::TraceContextPropagator,
     trace::{Sampler, SdkTracerProvider},
 };
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::Layer;
 
-/// Build OpenTelemetry layer
-#[allow(dead_code)]
+/// Result of building an OpenTelemetry layer.
+///
+/// Contains both the tracing layer (for the subscriber stack) and the
+/// `SdkTracerProvider` (for graceful shutdown on drop).
+pub struct OtelLayer {
+    pub layer: Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>,
+    pub provider: SdkTracerProvider,
+}
+
+/// Build an OpenTelemetry tracing layer with OTLP gRPC export.
+///
+/// Returns `Ok(None)` when the endpoint is `"disabled"` or empty.
+///
+/// The layer is boxed to erase the concrete type, which allows it to compose
+/// with arbitrary subscriber stacks (e.g. when a Sentry layer is added on top).
+///
+/// # Errors
+///
+/// Returns `LogError::Telemetry` if the OTLP exporter or tracer provider cannot
+/// be constructed.
 pub fn build_layer(
     config: &TelemetryConfig,
-) -> LogResult<Option<impl Layer<tracing_subscriber::Registry>>> {
-    // Check if endpoint is configured
+    fields: &Fields,
+) -> LogResult<Option<OtelLayer>> {
     let endpoint_str = match &config.otlp_endpoint {
         Some(endpoint) if !endpoint.is_empty() => endpoint.clone(),
         _ => match std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
@@ -26,15 +47,14 @@ pub fn build_layer(
         },
     };
 
-    // Skip if explicitly disabled
     if endpoint_str == "disabled" || endpoint_str.is_empty() {
         return Ok(None);
     }
 
-    // Set up propagator
+    // Set up W3C trace-context propagator
     global::set_text_map_propagator(TraceContextPropagator::new());
 
-    // Configure sampler based on sampling rate
+    // Configure sampler
     let sampler = if config.sampling_rate >= 1.0 {
         Sampler::AlwaysOn
     } else if config.sampling_rate <= 0.0 {
@@ -43,27 +63,57 @@ pub fn build_layer(
         Sampler::TraceIdRatioBased(config.sampling_rate)
     };
 
-    // Create a simple tracer provider with just the sampler
-    // This is a minimal implementation that works with OpenTelemetry 0.30.0
-    let provider = SdkTracerProvider::builder().with_sampler(sampler).build();
+    // Build OTel resource from config + fields (OTel semantic conventions)
+    let resource = build_resource(&config.service_name, fields);
 
-    // Get a tracer from the provider directly (not using global registry)
-    // This ensures we get an SdkTracer which implements PreSampledTracer
+    // Build OTLP span exporter (gRPC via tonic)
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(&endpoint_str)
+        .build()
+        .map_err(|e| LogError::Telemetry(format!("OTLP exporter build failed: {e}")))?;
+
+    // Build tracer provider with batch exporter and resource attributes
+    let provider = SdkTracerProvider::builder()
+        .with_sampler(sampler)
+        .with_resource(resource)
+        .with_batch_exporter(exporter)
+        .build();
+
     let tracer = provider.tracer("nebula-log");
 
-    // Set the provider as global (for context propagation)
-    global::set_tracer_provider(provider);
+    // Set as global provider (for context propagation)
+    global::set_tracer_provider(provider.clone());
 
-    // Create OpenTelemetry tracing layer
-    let layer = OpenTelemetryLayer::new(tracer);
-
-    Ok(Some(layer))
+    Ok(Some(OtelLayer {
+        layer: Box::new(OpenTelemetryLayer::new(tracer)),
+        provider,
+    }))
 }
 
-/// Shutdown OpenTelemetry provider
-#[allow(dead_code)]
-pub fn shutdown() {
-    // In OpenTelemetry 0.30.0, there's no direct shutdown function
-    // The provider will be cleaned up when dropped
-    // This is a no-op
+/// Build OTel `Resource` from service config and global fields.
+///
+/// Maps to OTel semantic conventions:
+/// - `service.name` ← `TelemetryConfig::service_name`
+/// - `service.version` ← `Fields::version`
+/// - `deployment.environment.name` ← `Fields::env`
+/// - `service.instance.id` ← `Fields::instance`
+/// - `cloud.region` ← `Fields::region`
+fn build_resource(service_name: &str, fields: &Fields) -> Resource {
+    let mut attrs = vec![KeyValue::new("service.name", service_name.to_string())];
+
+    if let Some(version) = &fields.version {
+        attrs.push(KeyValue::new("service.version", version.clone()));
+    }
+    if let Some(env) = &fields.env {
+        attrs.push(KeyValue::new("deployment.environment.name", env.clone()));
+    }
+    if let Some(instance) = &fields.instance {
+        attrs.push(KeyValue::new("service.instance.id", instance.clone()));
+    }
+    if let Some(region) = &fields.region {
+        attrs.push(KeyValue::new("cloud.region", region.clone()));
+    }
+
+    Resource::builder_empty().with_attributes(attrs).build()
 }

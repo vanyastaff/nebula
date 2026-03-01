@@ -26,7 +26,7 @@
   - Response: Sanitize at ingestion if required
 
 - **Hook DoS (slow/malicious hook):**
-  - Prevention: Panic isolation; future hook budget (P-001)
+  - Prevention: Panic isolation; budget diagnostics for slow hooks (P-001 v1); async offload planned (P-001 v2)
   - Detection: Hook lag metrics
   - Response: Unregister hook; circuit breaker
 

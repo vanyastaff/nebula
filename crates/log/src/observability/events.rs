@@ -4,6 +4,7 @@
 //! like operation lifecycle tracking.
 
 use super::hooks::{ObservabilityEvent, ObservabilityFieldValue, ObservabilityFieldVisitor};
+use super::semantic::{EventKind, field};
 use std::time::Duration;
 
 /// Event emitted when an operation starts
@@ -29,12 +30,16 @@ pub struct OperationStarted {
 
 impl ObservabilityEvent for OperationStarted {
     fn name(&self) -> &str {
-        "operation_started"
+        EventKind::OperationStarted.as_str()
+    }
+
+    fn kind(&self) -> Option<EventKind> {
+        Some(EventKind::OperationStarted)
     }
 
     fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
-        visitor.record("operation", ObservabilityFieldValue::Str(&self.operation));
-        visitor.record("context", ObservabilityFieldValue::Str(&self.context));
+        visitor.record(field::OPERATION, ObservabilityFieldValue::Str(&self.operation));
+        visitor.record(field::CONTEXT, ObservabilityFieldValue::Str(&self.context));
     }
 }
 
@@ -62,17 +67,21 @@ pub struct OperationCompleted {
 
 impl ObservabilityEvent for OperationCompleted {
     fn name(&self) -> &str {
-        "operation_completed"
+        EventKind::OperationCompleted.as_str()
+    }
+
+    fn kind(&self) -> Option<EventKind> {
+        Some(EventKind::OperationCompleted)
     }
 
     fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
-        visitor.record("operation", ObservabilityFieldValue::Str(&self.operation));
+        visitor.record(field::OPERATION, ObservabilityFieldValue::Str(&self.operation));
         visitor.record(
-            "duration_ms",
+            field::DURATION_MS,
             ObservabilityFieldValue::U64(self.duration.as_millis() as u64),
         );
         visitor.record(
-            "duration_secs",
+            field::DURATION_SECS,
             ObservabilityFieldValue::F64(self.duration.as_secs_f64()),
         );
     }
@@ -105,18 +114,22 @@ pub struct OperationFailed {
 
 impl ObservabilityEvent for OperationFailed {
     fn name(&self) -> &str {
-        "operation_failed"
+        EventKind::OperationFailed.as_str()
+    }
+
+    fn kind(&self) -> Option<EventKind> {
+        Some(EventKind::OperationFailed)
     }
 
     fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
-        visitor.record("operation", ObservabilityFieldValue::Str(&self.operation));
-        visitor.record("error", ObservabilityFieldValue::Str(&self.error));
+        visitor.record(field::OPERATION, ObservabilityFieldValue::Str(&self.operation));
+        visitor.record(field::ERROR, ObservabilityFieldValue::Str(&self.error));
         visitor.record(
-            "duration_ms",
+            field::DURATION_MS,
             ObservabilityFieldValue::U64(self.duration.as_millis() as u64),
         );
         visitor.record(
-            "duration_secs",
+            field::DURATION_SECS,
             ObservabilityFieldValue::F64(self.duration.as_secs_f64()),
         );
     }

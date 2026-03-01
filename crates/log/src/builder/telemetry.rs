@@ -25,26 +25,20 @@ pub(super) fn init_telemetry(#[allow(unused_variables)] inner: &mut super::Inner
     }
 }
 
-/// Macro to attach Sentry layer if feature is enabled
+/// Macro to push a Sentry layer into the layers Vec if feature is enabled
 #[macro_export]
 macro_rules! attach_sentry {
-    ($subscriber:expr) => {{
+    ($layers:expr) => {{
         #[cfg(feature = "sentry")]
         {
-            use tracing_subscriber::layer::SubscriberExt;
-            $subscriber.with(sentry_tracing::layer().event_filter(|md| {
+            $layers.push(Box::new(sentry_tracing::layer().event_filter(|md| {
                 use sentry_tracing::EventFilter;
                 match *md.level() {
                     tracing::Level::ERROR => EventFilter::Event,
                     tracing::Level::WARN => EventFilter::Breadcrumb,
                     _ => EventFilter::Ignore,
                 }
-            }))
-        }
-
-        #[cfg(not(feature = "sentry"))]
-        {
-            $subscriber
+            })));
         }
     }};
 }
