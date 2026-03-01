@@ -5,8 +5,8 @@
 use crate::ExpressionError;
 use crate::builtins::BuiltinRegistry;
 use crate::context::EvaluationContext;
-use crate::core::ast::{BinaryOp, Expr};
-use crate::core::error::{ExpressionErrorExt, ExpressionResult};
+use crate::ast::{BinaryOp, Expr};
+use crate::error::{ExpressionErrorExt, ExpressionResult};
 use crate::policy::EvaluationPolicy;
 use parking_lot::Mutex;
 #[cfg(feature = "regex")]
@@ -1670,3 +1670,4 @@ mod tests {
         assert_eq!(result.as_bool(), Some(true));
     }
 }
+

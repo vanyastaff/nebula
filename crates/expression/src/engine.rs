@@ -5,8 +5,8 @@
 
 use crate::builtins::BuiltinRegistry;
 use crate::context::EvaluationContext;
-use crate::core::ast::Expr;
-use crate::core::error::ExpressionResult;
+use crate::ast::Expr;
+use crate::error::ExpressionResult;
 use crate::eval::Evaluator;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
@@ -576,3 +576,4 @@ mod tests {
         assert!(engine.policy().unwrap().strict_mode());
     }
 }
+

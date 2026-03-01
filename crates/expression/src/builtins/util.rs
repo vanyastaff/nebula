@@ -3,7 +3,7 @@
 use super::check_arg_count;
 use crate::ExpressionError;
 use crate::context::EvaluationContext;
-use crate::core::error::{ExpressionErrorExt, ExpressionResult};
+use crate::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
 use serde_json::Value;
 
@@ -98,3 +98,4 @@ pub fn uuid(
         ),
     )
 }
+

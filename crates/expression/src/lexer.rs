@@ -3,9 +3,9 @@
 //! This module implements a lexer that converts expression strings into tokens.
 
 use crate::ExpressionError;
-use crate::core::error::{ExpressionErrorExt, ExpressionResult};
-use crate::core::span::Span;
-use crate::core::token::{Token, TokenKind};
+use crate::error::{ExpressionErrorExt, ExpressionResult};
+use crate::span::Span;
+use crate::token::{Token, TokenKind};
 
 /// Lexer for tokenizing expression strings
 pub struct Lexer<'a> {
@@ -677,3 +677,4 @@ mod tests {
         );
     }
 }
+

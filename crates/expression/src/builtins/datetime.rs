@@ -3,7 +3,7 @@
 use super::{check_arg_count, check_min_arg_count};
 use crate::ExpressionError;
 use crate::context::EvaluationContext;
-use crate::core::error::{ExpressionErrorExt, ExpressionResult};
+use crate::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
 use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Timelike, Utc};
 use serde_json::Value;
@@ -406,3 +406,4 @@ fn format_datetime(dt: &DateTime<Utc>, format: &str) -> ExpressionResult<String>
 
     Ok(result.into_owned())
 }
+

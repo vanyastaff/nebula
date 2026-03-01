@@ -12,8 +12,8 @@ pub mod util;
 
 use crate::ExpressionError;
 use crate::context::EvaluationContext;
-use crate::core::ast::Expr;
-use crate::core::error::{ExpressionErrorExt, ExpressionResult};
+use crate::ast::Expr;
+use crate::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -399,3 +399,4 @@ mod tests {
         assert!(msg.contains("Argument 'items' must be an array"));
     }
 }
+

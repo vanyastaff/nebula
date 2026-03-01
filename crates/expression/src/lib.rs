@@ -137,23 +137,17 @@ pub mod maybe;
 pub mod policy;
 pub mod template;
 pub mod value_utils;
+#[doc(hidden)]
+pub mod ast;
+#[doc(hidden)]
+pub mod interner;
+#[doc(hidden)]
+pub mod span;
+#[doc(hidden)]
+pub mod token;
 
 // Internal modules - not part of stable public API
 // These are exposed for advanced use cases but may change between versions
-#[doc(hidden)]
-pub mod core {
-    #[path = "../ast.rs"]
-    pub mod ast;
-    pub mod error {
-        pub use crate::error::{ExpressionError, ExpressionErrorExt, ExpressionResult};
-    }
-    #[path = "../interner.rs"]
-    pub mod interner;
-    #[path = "../span.rs"]
-    pub mod span;
-    #[path = "../token.rs"]
-    pub mod token;
-}
 #[doc(hidden)]
 pub mod eval;
 #[doc(hidden)]
@@ -171,11 +165,11 @@ pub use template::{MaybeTemplate, Template};
 // Internal types - only exported for advanced use cases
 // Most users should not need these types directly
 #[doc(hidden)]
-pub use core::ast::{BinaryOp, Expr};
+pub use ast::{BinaryOp, Expr};
 #[doc(hidden)]
-pub use core::span::Span;
+pub use span::Span;
 #[doc(hidden)]
-pub use core::token::{Token, TokenKind};
+pub use token::{Token, TokenKind};
 #[doc(hidden)]
 pub use template::{Position, TemplatePart};
 
@@ -193,3 +187,4 @@ pub mod prelude {
         Template, Value,
     };
 }
+

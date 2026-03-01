@@ -92,3 +92,4 @@ mod tests {
         assert!(policy.strict_mode());
     }
 }
+

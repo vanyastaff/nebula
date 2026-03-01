@@ -3,10 +3,10 @@
 //! This module implements a recursive descent parser with precedence climbing for operators.
 
 use crate::ExpressionError;
-use crate::core::ast::{BinaryOp, Expr};
-use crate::core::error::{ExpressionErrorExt, ExpressionResult};
-use crate::core::span::Span;
-use crate::core::token::{Token, TokenKind};
+use crate::ast::{BinaryOp, Expr};
+use crate::error::{ExpressionErrorExt, ExpressionResult};
+use crate::span::Span;
+use crate::token::{Token, TokenKind};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -556,3 +556,4 @@ mod tests {
         assert!(matches!(expr, Expr::PropertyAccess { .. }));
     }
 }
+

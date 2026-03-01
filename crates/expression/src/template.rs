@@ -6,7 +6,7 @@
 
 use crate::ExpressionError;
 use crate::context::EvaluationContext;
-use crate::core::error::{ExpressionErrorExt, ExpressionResult};
+use crate::error::{ExpressionErrorExt, ExpressionResult};
 use crate::engine::ExpressionEngine;
 use crate::error_formatter::format_template_error;
 use nebula_log::trace;
@@ -639,3 +639,4 @@ Line 3: Done"#,
         }
     }
 }
+

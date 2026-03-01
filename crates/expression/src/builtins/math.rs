@@ -3,7 +3,7 @@
 use super::{check_arg_count, check_min_arg_count, get_number_arg};
 use crate::ExpressionError;
 use crate::context::EvaluationContext;
-use crate::core::error::{ExpressionErrorExt, ExpressionResult};
+use crate::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
 use serde_json::Value;
 
@@ -121,3 +121,4 @@ pub fn pow(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Expre
     let exp = get_number_arg("pow", args, 1, "exponent")?;
     Ok(serde_json::json!(base.powf(exp)))
 }
+

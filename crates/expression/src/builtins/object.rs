@@ -3,7 +3,7 @@
 use super::{check_arg_count, get_object_arg};
 use crate::ExpressionError;
 use crate::context::EvaluationContext;
-use crate::core::error::{ExpressionErrorExt, ExpressionResult};
+use crate::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
 use serde_json::Value;
 
@@ -50,3 +50,4 @@ pub fn has(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Expre
 
     Ok(Value::Bool(obj.contains_key(key)))
 }
+
