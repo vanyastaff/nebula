@@ -256,10 +256,10 @@ impl Evaluator {
                     BinaryOp::Power => self.power(&left_val, &right_val),
                     BinaryOp::Equal => Ok(Value::Bool(left_val == right_val)),
                     BinaryOp::NotEqual => Ok(Value::Bool(left_val != right_val)),
-                    BinaryOp::LessThan => self.less_than(&left_val, &right_val),
-                    BinaryOp::GreaterThan => self.greater_than(&left_val, &right_val),
-                    BinaryOp::LessEqual => self.less_equal(&left_val, &right_val),
-                    BinaryOp::GreaterEqual => self.greater_equal(&left_val, &right_val),
+                    BinaryOp::LessThan => self.less_than(&left_val, &right_val, context),
+                    BinaryOp::GreaterThan => self.greater_than(&left_val, &right_val, context),
+                    BinaryOp::LessEqual => self.less_equal(&left_val, &right_val, context),
+                    BinaryOp::GreaterEqual => self.greater_equal(&left_val, &right_val, context),
                     BinaryOp::RegexMatch => self.regex_match(&left_val, &right_val),
                     BinaryOp::And | BinaryOp::Or => unreachable!(), // Handled above
                 }
@@ -449,7 +449,24 @@ impl Evaluator {
 
     /// Less than comparison
     #[inline]
-    fn less_than(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
+    fn less_than(
+        &self,
+        left: &Value,
+        right: &Value,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<Value> {
+        if self.strict_numeric_comparisons_enabled(context)
+            && (!left.is_number() || !right.is_number())
+        {
+            return Err(ExpressionError::expression_type_error(
+                "number",
+                format!(
+                    "{} and {}",
+                    crate::value_utils::value_type_name(left),
+                    crate::value_utils::value_type_name(right)
+                ),
+            ));
+        }
         match (left, right) {
             (Value::Number(l), Value::Number(r)) => {
                 let lf = self.number_to_f64(l)?;
@@ -470,7 +487,24 @@ impl Evaluator {
 
     /// Greater than comparison
     #[inline]
-    fn greater_than(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
+    fn greater_than(
+        &self,
+        left: &Value,
+        right: &Value,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<Value> {
+        if self.strict_numeric_comparisons_enabled(context)
+            && (!left.is_number() || !right.is_number())
+        {
+            return Err(ExpressionError::expression_type_error(
+                "number",
+                format!(
+                    "{} and {}",
+                    crate::value_utils::value_type_name(left),
+                    crate::value_utils::value_type_name(right)
+                ),
+            ));
+        }
         match (left, right) {
             (Value::Number(l), Value::Number(r)) => {
                 let lf = self.number_to_f64(l)?;
@@ -490,7 +524,24 @@ impl Evaluator {
     }
 
     /// Less than or equal comparison
-    fn less_equal(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
+    fn less_equal(
+        &self,
+        left: &Value,
+        right: &Value,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<Value> {
+        if self.strict_numeric_comparisons_enabled(context)
+            && (!left.is_number() || !right.is_number())
+        {
+            return Err(ExpressionError::expression_type_error(
+                "number",
+                format!(
+                    "{} and {}",
+                    crate::value_utils::value_type_name(left),
+                    crate::value_utils::value_type_name(right)
+                ),
+            ));
+        }
         match (left, right) {
             (Value::Number(l), Value::Number(r)) => {
                 let lf = self.number_to_f64(l)?;
@@ -510,7 +561,24 @@ impl Evaluator {
     }
 
     /// Greater than or equal comparison
-    fn greater_equal(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
+    fn greater_equal(
+        &self,
+        left: &Value,
+        right: &Value,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<Value> {
+        if self.strict_numeric_comparisons_enabled(context)
+            && (!left.is_number() || !right.is_number())
+        {
+            return Err(ExpressionError::expression_type_error(
+                "number",
+                format!(
+                    "{} and {}",
+                    crate::value_utils::value_type_name(left),
+                    crate::value_utils::value_type_name(right)
+                ),
+            ));
+        }
         match (left, right) {
             (Value::Number(l), Value::Number(r)) => {
                 let lf = self.number_to_f64(l)?;
@@ -840,6 +908,17 @@ impl Evaluator {
         let context_strict = context
             .policy()
             .is_some_and(EvaluationPolicy::strict_conversion_functions);
+        engine_strict || context_strict
+    }
+
+    fn strict_numeric_comparisons_enabled(&self, context: &EvaluationContext) -> bool {
+        let engine_strict = self
+            .policy
+            .as_deref()
+            .is_some_and(EvaluationPolicy::strict_numeric_comparisons);
+        let context_strict = context
+            .policy()
+            .is_some_and(EvaluationPolicy::strict_numeric_comparisons);
         engine_strict || context_strict
     }
 

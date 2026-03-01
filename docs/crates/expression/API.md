@@ -103,6 +103,18 @@ ctx.set_input(Value::String("{\"a\":1}".to_string()));
 assert!(engine.evaluate("parse_json($input)", &ctx).is_err());
 ```
 
+```rust
+use nebula_expression::{EvaluationContext, EvaluationPolicy, ExpressionEngine};
+
+let policy = EvaluationPolicy::new().with_strict_numeric_comparisons(true);
+let engine = ExpressionEngine::new().with_policy(policy);
+let ctx = EvaluationContext::new();
+
+assert!(engine.evaluate("'b' > 'a'", &ctx).is_err());
+assert_eq!(engine.evaluate("3 > 2", &ctx)?.as_bool(), Some(true));
+# Ok::<(), nebula_expression::ExpressionError>(())
+```
+
 ## Cache Observability Example
 
 ```rust

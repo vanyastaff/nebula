@@ -45,7 +45,7 @@
 | This crate <-> Other crate | Direction | Contract | Sync/Async | Failure handling | Notes |
 |---|---|---|---|---|---|
 | resilience <-> engine/runtime | out | `ResilienceManager`, `execute`, policy override | async | retry/circuit/fail-fast per policy | core integration |
-| resilience <-> action | in | `Retryable` trait, `ActionError::Retryable` | sync (trait), async (execution) | resilience decides retries from signals | action provides hints |
+| resilience <-> action | in | `Retryable` trait (`is_retryable()`, `retry_delay()`, `max_retries()`), `ActionError::Retryable` | sync (trait), async (execution) | resilience decides retries from signals | action provides hints; resilience owns policy |
 | resilience <-> config | in | `ConfigSource`, policy deserialization | sync load, async reload | invalid config -> `ConfigError` | optional integration |
 | resilience <-> log | out | `nebula_log::{debug,info,warn,error}` | sync | best-effort; no hard dependency | observability |
 | resilience <-> resource | out | caller wraps resource ops | async | timeout/retry at caller | no direct dependency |

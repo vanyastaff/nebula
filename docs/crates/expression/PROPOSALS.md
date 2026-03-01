@@ -40,6 +40,7 @@ Notes:
 - added `strict_conversion_functions` compatibility flag for explicit conversion builtins (`to_number`, `to_boolean`).
 - strict conversion mode now also constrains `to_string` (complex values) and `parse_json` (requires object/array result).
 - policy can override `parse_json` max input size via `with_max_json_parse_length(...)`.
+- added `strict_numeric_comparisons` flag to enforce numeric-only relational comparisons (`<`, `>`, `<=`, `>=`).
 - remaining arithmetic/comparison coercion hardening is still pending.
 
 ## P002: Function Namespace Versioning

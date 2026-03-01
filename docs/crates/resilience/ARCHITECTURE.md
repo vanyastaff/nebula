@@ -32,6 +32,43 @@ Dependency direction:
 - `retryable.rs`
   - lightweight trait bridge for domain error retry semantics
 
+### Advanced Type System Design
+
+The crate uses Rust's advanced type system features for zero-cost safety:
+
+**Const generics** — compile-time configuration validation; invalid configs are caught before the binary is built:
+```rust
+// FAILURE_THRESHOLD=5, RESET_TIMEOUT_MS=30_000 are type-level constants
+CircuitBreakerConfig::<5, 30_000>::new()
+ExponentialBackoff::<100, 20, 5000>::default()  // base_ms, multiplier_x10, max_ms
+ConservativeCondition::<3>::new()                // max_attempts
+```
+
+**Typestate pattern** — circuit breaker states (`Closed`, `HalfOpen`, `Open`) are tracked at the type level via phantom types. Invalid state transitions are compile errors. `TypestatePolicyBuilder` uses the same pattern: `Unconfigured → WithRetry → WithCircuitBreaker → Complete`.
+
+**Phantom types / zero-cost markers** — strategy markers `Aggressive`, `Balanced`, `Conservative` are ZSTs that guide type inference without runtime cost.
+
+**GATs** — `ResiliencePattern` trait uses generic associated types for flexible async operation handling.
+
+**Sealed traits** — `ServiceCategory` and select internal traits are sealed to prevent external implementation while keeping the API open for consumption.
+
+### Circuit Breaker State Machine
+
+```
+Closed ──(failure_threshold reached)──▶ Open
+  ▲                                        │
+  │                                  (reset_timeout)
+  │                                        ▼
+  └──(half_open_limit successes)──── HalfOpen
+                                          │
+                                  (any failure)
+                                          │
+                                          ▼
+                                        Open
+```
+
+`CircuitState`: `Closed` (normal) | `Open` (fail-fast) | `HalfOpen` (probe).
+
 ### Data/Control Flow
 
 1. Policy loaded (config or code) → `ResilienceManager` registers service.

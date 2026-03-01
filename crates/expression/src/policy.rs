@@ -13,6 +13,7 @@ pub struct EvaluationPolicy {
     denied_functions: Arc<HashSet<String>>,
     strict_mode: bool,
     strict_conversion_functions: bool,
+    strict_numeric_comparisons: bool,
     max_json_parse_length: Option<usize>,
 }
 
@@ -71,6 +72,15 @@ impl EvaluationPolicy {
         self
     }
 
+    /// Enable or disable strict numeric-only relational comparisons.
+    ///
+    /// When enabled, relational operators (`<`, `>`, `<=`, `>=`) only accept
+    /// number-vs-number operands.
+    pub fn with_strict_numeric_comparisons(mut self, enabled: bool) -> Self {
+        self.strict_numeric_comparisons = enabled;
+        self
+    }
+
     /// Set max JSON input size for `parse_json`.
     pub fn with_max_json_parse_length(mut self, max_bytes: usize) -> Self {
         self.max_json_parse_length = Some(max_bytes);
@@ -97,6 +107,11 @@ impl EvaluationPolicy {
         self.strict_conversion_functions
     }
 
+    /// Whether strict numeric-only relational comparisons are enabled.
+    pub fn strict_numeric_comparisons(&self) -> bool {
+        self.strict_numeric_comparisons
+    }
+
     /// Optional override for JSON parse input size limit.
     pub fn max_json_parse_length(&self) -> Option<usize> {
         self.max_json_parse_length
@@ -114,12 +129,14 @@ mod tests {
             .with_denied_functions(["length"])
             .with_strict_mode(true)
             .with_strict_conversion_functions(true)
+            .with_strict_numeric_comparisons(true)
             .with_max_json_parse_length(2048);
 
         assert!(policy.allowed_functions().unwrap().contains("uppercase"));
         assert!(policy.denied_functions().contains("length"));
         assert!(policy.strict_mode());
         assert!(policy.strict_conversion_functions());
+        assert!(policy.strict_numeric_comparisons());
         assert_eq!(policy.max_json_parse_length(), Some(2048));
     }
 }

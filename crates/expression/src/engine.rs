@@ -723,6 +723,35 @@ mod tests {
     }
 
     #[test]
+    fn test_default_allows_string_relational_comparison() {
+        let engine = ExpressionEngine::new();
+        let context = EvaluationContext::new();
+
+        let value = engine.evaluate("'b' > 'a'", &context).unwrap();
+        assert_eq!(value.as_bool(), Some(true));
+    }
+
+    #[test]
+    fn test_strict_numeric_comparisons_reject_string_relational_comparison() {
+        let policy = EvaluationPolicy::new().with_strict_numeric_comparisons(true);
+        let engine = ExpressionEngine::new().with_policy(policy);
+        let context = EvaluationContext::new();
+
+        let err = engine.evaluate("'b' > 'a'", &context).unwrap_err();
+        assert!(err.to_string().contains("expected number"));
+    }
+
+    #[test]
+    fn test_strict_numeric_comparisons_allow_numeric_relational_comparison() {
+        let policy = EvaluationPolicy::new().with_strict_numeric_comparisons(true);
+        let engine = ExpressionEngine::new().with_policy(policy);
+        let context = EvaluationContext::new();
+
+        let value = engine.evaluate("3 > 2", &context).unwrap();
+        assert_eq!(value.as_bool(), Some(true));
+    }
+
+    #[test]
     fn test_cache_overview_no_cache() {
         let engine = ExpressionEngine::new();
         let overview = engine.cache_overview();
