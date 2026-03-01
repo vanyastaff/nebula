@@ -9,22 +9,66 @@
 
 ## Current Architecture
 
-- module map:
-  - `allocator`: low-level allocation strategies and global manager
-  - `arena`: scoped fast allocation and bulk reset semantics
-  - `pool`: reusable object pools with health, ttl, and thread-safe variants
-  - `cache`: compute, concurrent, partitioned, and multi-level caches
-  - `budget`: memory budgets and hierarchy-aware reservation model
-  - `stats` and `monitoring`: usage metrics and system-pressure reactions
-  - `core`, `error`, `utils`: shared contracts and safety helpers
-- data/control flow:
-  1. caller selects feature-backed primitives based on workload.
-  2. operations return `MemoryResult<T>` with typed failure reasons.
-  3. optional stats/monitoring collect pressure and allocator metrics.
-  4. callers adapt behavior (throttle, fallback, cleanup) based on signals.
-- known bottlenecks:
-  - lock contention in shared pool/cache paths under high concurrency
-  - mis-sized pools or budgets causing avoidable `PoolExhausted`/`BudgetExceeded`
+### Module Map
+
+| Module | Feature flag | Key exported types | Role |
+|--------|-------------|-------------------|------|
+| `error` | always | `MemoryError` (#[non_exhaustive], 15+ variants), `MemoryResult<T>`, `Result<T>` | Error taxonomy |
+| `core` | always | `MemoryConfig`, `MemoryManager`, `MemoryUsage`, `Resettable`, `SyncCell` | Shared contracts and config |
+| `allocator` | always | `Allocator`, `TypedAllocator`, `GlobalAllocatorManager`, `AllocError`, `AllocResult`, bump/pool/stack allocators, `MonitoredAllocator`* | Low-level allocation strategies |
+| `arena` | `arena` | `Arena`, `TypedArena`, local/thread-safe/cross-thread/scoped arena variants | Scoped fast allocation; bulk reset |
+| `pool` | `pool` | `ObjectPool`, `PooledValue`, `ThreadSafePool`, priority/TTL/hierarchical/batch pool variants | Reusable object pools |
+| `cache` | `cache` | `ComputeCache`, `CacheConfig`, `CacheKey`, concurrent/partitioned/multi-level/scheduled cache variants; LRU/LFU/FIFO/TTL/random policies | Memoization and multi-level caching |
+| `budget` | `budget` | `MemoryBudget`, `BudgetConfig`, `BudgetMetrics`, `BudgetState`, `BudgetPolicy`, `BudgetReservation` | Bounded memory accounting per tenant/workload |
+| `monitoring` | `monitoring` | `MemoryMonitor`, `MonitoringConfig`, `IntegratedStats`, `PressureAction`, `MonitoredAllocator` | Pressure detection; system-level reactions |
+| `stats` | `stats` | `StatsCollector`, `StatsAggregator`, `MemoryStats`, `Histogram`, `Tracker`, `Snapshot`, `Profiler`, `RealTimeStats` | Usage metrics and profiling |
+| `async_support` | `async` | async arena/pool helpers | Tokio-compatible wrappers |
+| `syscalls` | `std` | host memory queries | Host memory info |
+| `extensions` | `std` | logging/metrics/serialization/async extension traits | Optional integration helpers |
+| `utils` | always | `CheckedArithmetic` | Safe arithmetic helpers |
+
+\* `MonitoredAllocator` requires feature `monitoring`
+
+### Data and Control Flow
+
+```
+startup:
+  nebula_memory::init()
+      └─→ GlobalAllocatorManager::init()
+
+workload (caller selects primitive by workload type):
+  ├─→ ObjectPool::get() / PooledValue (RAII return on drop)
+  │       → PoolExhausted if at capacity (retryable)
+  ├─→ Arena::alloc_slice(&data)
+  │       → ArenaExhausted if space insufficient (retryable)
+  ├─→ ComputeCache::get_or_compute(key, compute_fn)
+  │       → CacheMiss if not present (retryable)
+  └─→ MemoryBudget::reserve(bytes)
+          → BudgetExceeded if over limit (retryable)
+
+monitoring (optional, feature = "monitoring"):
+  MemoryMonitor polls syscalls::MemoryInfo
+    → emits PressureAction (Normal / Warning / Critical / Emergency)
+    → caller/runtime reacts (throttle / shed load / emergency cleanup)
+
+shutdown:
+  nebula_memory::shutdown()  → no-op currently; pools/arenas drop via RAII
+```
+
+### Known Bottlenecks
+
+- lock contention in shared pool/cache paths under high concurrency
+- mis-sized pools or budgets causing avoidable `PoolExhausted`/`BudgetExceeded`
+
+### Key Internal Invariants
+
+- `MemoryError` is `#[non_exhaustive]` — downstream must use `_` match arms
+- `PooledValue` returns item to pool on `Drop`; pool is not responsible for item validity after return
+- `Arena` and `BumpAllocator` offer only forward allocation; reset is bulk (entire arena), not per-item
+- `GlobalAllocatorManager::init()` is idempotent — calling twice is safe
+- `Corruption` errors must never be retried; they must escalate to operator
+- Feature-gated modules compile out cleanly with no behavioral change to always-on modules
+- `SyncCell` provides interior mutability with explicit unsafe boundary — not in public API
 
 ## Target Architecture
 
