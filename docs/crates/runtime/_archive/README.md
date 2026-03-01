@@ -1,17 +1,16 @@
-# archive
+# nebula-runtime — Archive
 
-Legacy runtime documentation and historical drafts.
+Pre-SPEC and legacy notes for `nebula-runtime`. **Mine for insights; do not delete.** See root `docs/SPEC.md` and `docs/docs-deep-pass-checklist.md`.
+
+**Runtime** is the action execution layer (ActionRuntime, ActionRegistry, DataPassingPolicy). **Depends on:** core, action, plugin, ports, telemetry. **Used by:** engine.
 
 **Contents:**
-- `archive-nebula-complete.md` — Week 7 plan: Runtime Core, Trigger Management, Event Processing, Coordination
 - `archive-node-execution.md` — ActionRuntime, ResourceRuntime, isolation levels
-- `archive-crates-dependencies.md` — planned Cargo dependencies
+- `archive-crates-dependencies.md` — Cargo dependencies
 - `archive-layers-interaction.md` — sandbox ↔ runtime ↔ action; capability checks
 - `archive-crates-architecture.md` — WorkflowEngine, Executor, ExecutionContext (legacy layout)
-- `from-archive/nebula-complete-docs-part3/nebula-runtime.md` — full target architecture (TriggerManager, EventProcessor, etc.)
+- `archive-nebula-complete.md` — Week 7 plan: Runtime Core, Trigger Management, Event Processing
+- `from-archive/nebula-complete-docs-part3/nebula-runtime.md` — target architecture (TriggerManager, EventProcessor)
 - `from-core-full/archive-nebula-complete.full.sections.md` — section index
 
-Rules:
-- do not delete source material unless explicitly requested
-- keep filenames descriptive
-- reference archived docs from active docs when needed
+Rules: do not delete; keep filenames descriptive; reference from active docs when needed.

@@ -4,8 +4,13 @@ Composable validation framework for Nebula crates and runtime boundaries.
 
 ## Scope
 
-- In scope: typed validators, combinators, structured validation errors, contextual validation helpers.
-- Out of scope: API transport formatting, retry policy, workflow orchestration.
+- **In scope:**
+  - **foundation:** `Validate<T>`, `ValidateExt`, `Validatable`, `ValidationError`, `ValidationErrors`, `ErrorSeverity`, `ValidationContext`, `ContextualValidator`, `AnyValidator`, `AsValidatable` (GAT bridge for JSON/dynamic input), sealed category traits (`StringValidator`, `NumericValidator`, etc.).
+  - **validators:** length (min_length, max_length, not_empty, …), pattern (alphanumeric, contains, …), content (email, url, matches_regex), range (min, max, in_range), size (min_size, max_size), boolean (is_true, is_false), nullable (required, not_null), network (ipv4, ipv6, hostname), temporal (date, time, date_time, uuid).
+  - **combinators:** And, Or, Not, When, Unless, Optional, Field, JsonField, Each, Cached, Lazy, all_of, any_of, with_message, with_code; nested and MultiField.
+  - **macros:** `validator!`, `compose!`, `any_of!` (in crate; not re-exported from lib root).
+  - Structured errors with code, field path, params, nested; sensitive param redaction; compatibility fixtures (error_registry_v1.json, minor_contract_v1.json).
+- **Out of scope:** API transport formatting, retry policy, workflow orchestration.
 
 ## Current State
 
@@ -55,6 +60,7 @@ Composable validation framework for Nebula crates and runtime boundaries.
 
 ## Document Map
 
+- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [API.md](./API.md)
 - [INTERACTIONS.md](./INTERACTIONS.md)

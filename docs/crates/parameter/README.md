@@ -5,17 +5,17 @@ Node input schema definition for Nebula workflow platform.
 ## Scope
 
 - **In scope:**
-  - Parameter kinds and capabilities (19 variants: Text, Number, Select, Object, List, Mode, etc.)
-  - Metadata (key, name, hints, required, sensitive)
-  - Declarative validation rules (min, max, pattern, OneOf, etc.)
-  - Conditional display logic (show_when, hide_when)
-  - Runtime value container (`ParameterValues`) with snapshot/diff utilities
-  - Schema collection and validation pipeline
-- **Out of scope:**
-  - UI widget dimensions, styling, layout
-  - Expression resolution (handled by `nebula-expression`)
-  - Credential resolution (handled by `nebula-credential`)
-  - Workflow orchestration
+  - **def** — `ParameterDef` (tagged enum, 19 variants: Text, Textarea, Code, Secret, Number, Checkbox, Select, MultiSelect, Color, DateTime, Date, Time, Hidden, Notice, Object, List, Mode, Group, Expirable); delegation to metadata/display/validation_rules/children.
+  - **kind** — `ParameterKind`, `ParameterCapability`; value_type(), capabilities(), predicates (is_editable, is_validatable, etc.).
+  - **types/** — one struct per kind (e.g. `TextParameter`, `NumberParameter`, `SelectParameter`, `ObjectParameter`, `ListParameter`, `ModeParameter`, `GroupParameter`, `ExpirableParameter`); metadata, display, validation, type-specific options.
+  - **metadata** — `ParameterMetadata` (key, name, description, required, placeholder, hint, sensitive).
+  - **validation** — `ValidationRule` (MinLength, MaxLength, Pattern, Min, Max, OneOf, MinItems, MaxItems, Custom); declarative only; evaluation via nebula-validator.
+  - **display** — `ParameterDisplay`, `DisplayCondition`, `DisplayRuleSet`, `DisplayContext`; show_when/hide_when.
+  - **collection** — `ParameterCollection`; validate(&ParameterValues) pipeline.
+  - **values** — `ParameterValues`, `ParameterSnapshot`, `ParameterDiff`.
+  - **option** — `SelectOption`, `OptionsSource`.
+  - **error** — `ParameterError` (variants, category(), code(), is_retryable()).
+- **Out of scope:** UI widget dimensions, styling, layout; expression resolution (nebula-expression); credential resolution (nebula-credential); workflow orchestration.
 
 ## Current State
 
@@ -30,6 +30,7 @@ Node input schema definition for Nebula workflow platform.
 
 ## Document Map
 
+- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [API.md](./API.md)
 - [INTERACTIONS.md](./INTERACTIONS.md)

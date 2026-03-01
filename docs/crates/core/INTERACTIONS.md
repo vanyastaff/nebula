@@ -39,16 +39,17 @@ All consumers expect:
 
 ## Upstream Dependencies
 
-Core depends only on external crates:
+Core depends on:
 
-- **domain-key:** Typed UUID wrappers; hard contract on `define_uuid` macro
-- **serde, serde_json:** Serialization; required
-- **thiserror:** Error derivation; required
-- **chrono:** Timestamps in `EntityMetadata`, `OperationContext`, `OperationResult`
-- **bincode:** Optional binary serialization in `Serializable` trait
-- **uuid:** Re-exported via domain-key
+- **nebula-log** — cross-cutting logging (only Nebula crate allowed).
+- **domain-key:** Typed UUID wrappers; hard contract on `define_uuid` macro; KeyParseError, key_type for ParameterKey, CredentialKey.
+- **serde, serde_json:** Serialization; required.
+- **thiserror:** Error derivation; required.
+- **chrono:** Timestamps in EntityMetadata, OperationContext, OperationResult.
+- **bincode:** Optional binary serialization in Serializable trait.
+- **uuid, async-trait, dashmap:** As in Cargo.toml.
 
-No fallback: core is a leaf in the Nebula dependency graph.
+No other nebula-* crates: core is the foundation; only nebula-log is allowed.
 
 ## Interaction Matrix
 

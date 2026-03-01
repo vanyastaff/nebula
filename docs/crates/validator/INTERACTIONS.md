@@ -2,53 +2,46 @@
 
 ## Ecosystem Map (Current + Planned)
 
-## Existing crates
+### Existing crates (validator has no nebula-* dependencies)
 
-- `core`: shared ids/types consumed by API/runtime layers.
-- `action`: action contracts that need predictable input validation.
-- `workflow`: workflow definition validation (structure, node configs, constraints).
-- `engine`/`runtime`: pre-execution and runtime guard validation.
-- `sandbox`: capability and input boundary checks.
-- `resource`/`credential`: config object validation before registration/use.
-- `parameter`: parameter schema + runtime parameter value checks.
-- `api`/`cli`/`ui`: external input validation and error mapping.
-- `plugin`/`registry`/`sdk`: third-party extension contract validation.
-- `log`/`metrics`/`telemetry`: observability for validation failures.
+- **Upstream (stdlib/vendor only):** `regex`, `serde`, `serde_json`, `smallvec`, `moka`, `thiserror`. No nebula-* crates — validator is a leaf for the platform.
+- **Downstream (depend on nebula-validator):**
+  - `nebula-config` — config load/reload validation via validator trait bridge; category naming compatibility pinned by `crates/config/tests/fixtures/compat/validator_contract_v1.json`.
+  - `nebula-parameter` — parameter schema and runtime value validation; uses Validate + validate_any / AsValidatable for JSON.
+  - `nebula-macros` — may use validator for derive or attribute-based validation.
+  - `nebula-sdk` — re-exports or uses validator for authoring and testing.
 
-## Planned crates
+### Planned / indirect
 
-- `schema` (possible): higher-level schema DSL over typed validators.
-- `policy` (possible): validation policy orchestration (fail-fast vs collect-all profiles).
+- `api`: will validate request payloads; expects stable error codes and field paths.
+- `workflow` / `engine` / `runtime`: may validate workflow definitions or execution input; use ValidationError shape for diagnostics.
 
 ## Downstream Consumers
 
-- API layer: expects stable error codes and field-path mapping.
-- Workflow compiler: expects deterministic validation output.
-- Plugin runtime: expects predictable compatibility checks.
-
-Consumer mapping expectations:
-
-- `api` maps validator `code` + `field_path` to HTTP error envelopes.
-- `workflow` maps `code` + nested tree to compile-time style diagnostics.
-- `plugin/sdk` maps `code` + field path to manifest/config feedback.
-- `runtime` consumes deterministic pass/fail semantics for preflight checks.
-- `config` consumes validator outcome categories through adapter lifecycle contract.
+- **nebula-config:** Uses validator for config validation; category names and error shape must match `validator_contract_v1.json`. Load and reload gate return `ValidationError`/`ValidationErrors`.
+- **nebula-parameter:** Converts parameter rules into validator chains; validates `serde_json::Value` via `validate_any` and `AsValidatable`. Same error codes and field-path conventions.
+- **nebula-macros / nebula-sdk:** Authoring and macro-generated validation; depend on stable `Validate<T>` and error structure.
+- **API (when implemented):** Will map `ValidationError` (code, field, message) to HTTP 400 response body; error code stability is a contract.
 
 ## Upstream Dependencies
 
-- `regex`, `serde`, `serde_json`, `smallvec`, `moka`, `thiserror`.
-- fallback behavior:
-  - if cache/combinator features unavailable, validation must still behave correctly without memoization.
+- **regex:** pattern and content validators (MatchesRegex, Email, Url).
+- **serde / serde_json:** AsValidatable for `serde_json::Value`; error serialization (to_json_value).
+- **smallvec:** ValidationError params (SmallVec for 0–2 params inline).
+- **moka:** optional caching in Cached combinator.
+- **thiserror:** not used for ValidationError (custom Display/Error impl); may be used elsewhere.
+- **Fallback:** Validation works without moka if Cached is not used; no optional nebula feature flags.
 
 ## Interaction Matrix
 
-| This crate <-> Other crate | Direction | Contract | Sync/Async | Failure handling | Notes |
+| This crate ↔ Other | Direction | Contract | Sync/Async | Failure handling | Notes |
 |---|---|---|---|---|---|
-| validator <-> api | out | stable error codes + field paths | sync | fail request with structured error | no retries |
-| validator <-> workflow | out | workflow/node config validation contract | sync | reject invalid definitions | compile-time safety analog in runtime |
-| validator <-> action | out | action input/config validation rules | sync | return `Validation` class errors | used before execution |
-| validator <-> plugin/sdk | out | plugin manifest/config validation | sync | reject load/publish | critical for ecosystem safety |
-| validator <-> runtime/engine | out | preflight + boundary checks | sync | fail-fast before expensive execution | protects reliability budget |
+| validator ↔ config | out | ConfigValidator bridge; error shape + category names match `crates/config/tests/fixtures/compat/validator_contract_v1.json` | sync | ValidationError(s) on load/reload | config does not duplicate rules |
+| validator ↔ parameter | out | ValidationRule → validator chains; validate_any / AsValidatable for JSON | sync | ValidationError(s) on invalid param value | parameter owns rule descriptors |
+| validator ↔ macros | out | Macros may generate validator! / compose! / any_of! usage | sync | same error shape | macros crate may depend on validator |
+| validator ↔ sdk | out | Re-exports or authoring API; stable Validate&lt;T&gt; and error codes | sync | same error shape | sdk depends on validator |
+| validator ↔ api (planned) | out | stable error codes + field paths → HTTP 400 body | sync | fail request with structured error | no retries |
+| validator ↔ workflow/engine (planned) | out | workflow/node config validation | sync | reject invalid definitions | preflight checks |
 
 ## Runtime Sequence
 

@@ -29,6 +29,7 @@
 
 ## Document Map
 
+- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [API.md](API.md)
 - [INTERACTIONS.md](INTERACTIONS.md)

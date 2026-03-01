@@ -1,14 +1,21 @@
-# nebula-parameter
+# nebula-parameter — Archive
 
-Parameter definition system for workflow nodes. Describes _what_ inputs a node accepts: type,
-UI widget, metadata, validation rules, and conditional display logic. Values at runtime are
-plain `serde_json::Value`.
+Pre-SPEC and legacy notes for `nebula-parameter`. **Mine for insights; do not delete.** See root `docs/SPEC.md` and `docs/docs-deep-pass-checklist.md`.
 
-**Depends on:** `nebula-validator`
+**Depends on:** nebula-validator. **Used by:** action, credential, engine, sdk, plugins (e.g. github).
 
 ---
 
-## Design Philosophy
+## Files in this archive
+
+- **Pre-SPEC:** pre-spec-README.md, pre-spec-ARCHITECTURE.md, pre-spec-API.md, pre-spec-DECISIONS.md, pre-spec-ROADMAP.md, pre-spec-PROPOSALS.md
+- **Archive notes:** archive-ideas.md, archive-node-development.md, archive-node-execution.md, archive-crates-dependencies.md, archive-nebula-parameters.md, archive-nebula-parameters-updated.md, archive-nebula-parameters-updated-1.md, archive-nebula-parameters-updated-2.md
+
+Active docs are in the parent folder (CONSTITUTION, README, ARCHITECTURE, API, INTERACTIONS, DECISIONS, ROADMAP, PROPOSALS, SECURITY, RELIABILITY, TEST_STRATEGY, MIGRATION).
+
+---
+
+## Design Philosophy (reference)
 
 Parameters define **data shape and constraints**, not visual appearance.
 

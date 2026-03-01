@@ -2,18 +2,10 @@
 
 ## Ecosystem Map (Current + Planned)
 
-## Existing crates
+## Existing crates (action depends on core, parameter, credential, resource)
 
-- `core`: ids, interface versioning primitives.
-- `parameter`: parameter schema declarations consumed via metadata.
-- `credential`: typed credential refs in action dependency declarations.
-- `resource`: typed resource refs in action dependency declarations.
-- `runtime` / `engine`: orchestration and execution lifecycle.
-- `sandbox`: capability enforcement boundary for action execution.
-- `resilience`: retry/backoff/circuit decisions using action signals.
-- `log` / `metrics` / `telemetry`: observability around action execution and failures.
-- `workflow`: graph compilation and node contract compatibility.
-- `api` / `cli` / `ui`: control plane surfaces using metadata/contracts.
+- **Upstream:** nebula-core (ids, InterfaceVersion), nebula-parameter (ParameterCollection in ActionMetadata), nebula-credential (CredentialRef in ActionComponents), nebula-resource (ResourceRef in ActionComponents); serde, thiserror, tokio, async-trait, chrono, parking_lot, uuid, hmac, sha2, hex, tokio-util.
+- **Downstream (depend on nebula-action):** engine, runtime, execution, plugin, ports, sdk, drivers/sandbox-inprocess — engine/runtime execute actions; plugin implements and registers; ports/sdk expose action contract; sandbox enforces capability boundary.
 
 ## Planned crates
 
@@ -54,9 +46,9 @@
    - **Current**: `NodeContext` (doc-hidden temporary placeholder) carrying `execution_id`, `node_id`, `workflow_id`, `cancellation`.
    - **Target**: `ActionContext` (for StatelessAction / StatefulAction / ResourceAction) and `TriggerContext` (for TriggerAction) — concrete structs composed of capability modules (`ResourceAccessor`, `CredentialAccessor`, etc.). Designed for composition: new capabilities add fields without breaking existing signatures.
 4. Action executes and returns `ActionResult<ActionOutput<T>>` or `ActionError`.
-5. Engine applies flow-control semantics: `Branch` activates path, `Wait` persists state and suspends, `Continue` re-enqueues, `Retry` reschedules.
+5. Engine applies flow-control semantics: `ActionResult::Success` → pass output; `Branch` activates path; `Wait` persists state and suspends; `Continue` re-enqueues (stateful); `Break` finalizes; `Retry` reschedules; `ActionError::Retryable` / `Fatal` drive resilience policy.
 6. Runtime resolves deferred/streaming outputs before passing to downstream nodes.
-7. Resilience layer applies retry/backoff policy on `ActionError::Retryable` or `ActionResult::Retry`.
+7. Resilience layer applies retry/backoff on `ActionError::Retryable` or `ActionResult::Retry`.
 
 ## Cross-Crate Ownership
 

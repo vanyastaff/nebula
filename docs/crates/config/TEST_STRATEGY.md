@@ -69,6 +69,10 @@ Validator integration contract suite:
 - `tests/contract/validator_migration_requirements_test.rs`
 - `tests/contract/validator_runbook_requirements_test.rs`
 
+Canonical compatibility fixtures (see `crates/config/tests/fixtures/compat/`):
+
+- `validator_contract_v1.json` — category/path mapping for validator integration; cross-crate contract.
+
 Core contract suite additionally covers:
 
 - `tests/contract/activation_atomicity_test.rs`

@@ -1,10 +1,11 @@
-# config docs archive
+# nebula-config — Archive
 
-This folder stores legacy and imported notes for `nebula-config`.
+Pre-SPEC and legacy notes for `nebula-config`. **Mine for insights; do not delete.** See root `docs/SPEC.md` and `docs/docs-deep-pass-checklist.md`.
 
-Archived files include:
-- `archive-business-cross.md`
-- `archive-crates-dependencies.md`
-- `archive-layers-interaction.md`
+**Files in this archive:**
 
-Active docs are in the parent folder and follow `SPEC.md` + `_template`.
+- **archive-business-cross.md** — config as cross-cutting concern; business vs technical boundaries.
+- **archive-crates-dependencies.md** — crate dependency and layering (config consumed by many).
+- **archive-layers-interaction.md** — layers and interaction patterns (loaders, validators, watchers).
+
+Active docs are in the parent folder (CONSTITUTION, README, ARCHITECTURE, API, INTERACTIONS, DECISIONS, ROADMAP, PROPOSALS, SECURITY, RELIABILITY, TEST_STRATEGY, MIGRATION).

@@ -56,9 +56,10 @@
 - `tests/contract/governance_policy_test.rs`
 - `tests/contract/migration_requirements_test.rs`
 
-Canonical registry artifact under contract:
+Canonical fixtures under contract (see `tests/fixtures/compat/README.md`):
 
-- `tests/fixtures/compat/error_registry_v1.json`
+- `tests/fixtures/compat/error_registry_v1.json` — error code registry
+- `tests/fixtures/compat/minor_contract_v1.json` — minor-release compatibility baseline
 
 Cross-crate parity checks:
 

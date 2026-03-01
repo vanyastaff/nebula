@@ -30,6 +30,7 @@ Cross-platform system information and utilities for the Nebula workflow ecosyste
 
 ## Document Map
 
+- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [API.md](./API.md)
 - [INTERACTIONS.md](./INTERACTIONS.md)

@@ -1,15 +1,21 @@
-# nebula-validator
+# nebula-validator — Archive
 
-A composable, type-safe validation framework. Validators are plain Rust values that
-implement `Validate<T>`, combined with boolean logic operators (`.and()`, `.or()`,
-`.not()`) and wrapped in higher-level combinators.
+Pre-SPEC and topic-level docs moved here during the docs deep pass (see root `docs/SPEC.md` and `docs/docs-deep-pass-checklist.md`). **Mine for insights; do not delete.**
 
-**Depends on:** nothing from Nebula (standalone)
-**Used by:** `nebula-parameter`, `nebula-credential`, any crate that validates user input
+**Depends on:** nothing from Nebula (standalone)  
+**Used by:** `nebula-config`, `nebula-parameter`, `nebula-macros`, `nebula-sdk`, and any crate that validates user input.
 
 ---
 
-## Quick Start
+## Files in this archive
+
+- **Topic docs:** [traits.md](traits.md), [error.md](error.md), [validators.md](validators.md), [combinators.md](combinators.md), [macros.md](macros.md), [context.md](context.md)
+- **Pre-SPEC:** pre-spec-README.md, pre-spec-ARCHITECTURE.md, pre-spec-API.md, pre-spec-DECISIONS.md, pre-spec-ROADMAP.md, pre-spec-PROPOSALS.md
+- **Archive notes:** archive-ideas.md, archive-phase-1-core.md, archive-crates-dependencies.md
+
+---
+
+## Quick Start (reference)
 
 ```rust
 use nebula_validator::prelude::*;

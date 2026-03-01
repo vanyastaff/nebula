@@ -4,17 +4,18 @@
 
 `nebula-parameter` is a schema-definition crate. Dependency direction: action/credential/engine/macros/sdk → parameter; parameter → validator.
 
-## Existing Crates
+## Existing Crates (parameter depends only on nebula-validator)
 
-- **core:** Shared IDs; parameter does not depend on core
-- **action:** Attaches `ParameterCollection` to action metadata; re-exports `ParameterCollection`, `ParameterDef`
-- **credential:** Uses `ParameterCollection` for credential protocol schemas; `ParameterValues` for credential input; `ParameterError` in credential errors
-- **engine:** Uses parameter for node config validation (planned/partial)
-- **macros:** Generates `ParameterDef` and `ParameterCollection` from derive attributes; uses `ParameterValues` as action input type
-- **sdk:** Re-exports parameter prelude for plugin authors
-- **validator:** Parameter delegates rule evaluation to validator; validator has no dependency on parameter
-- **expression:** Resolves expressions in values before validation; Custom `ValidationRule` evaluated by expression engine
-- **log, config, storage, resource, system:** No direct dependency on parameter
+- **Upstream:** nebula-validator (ValidationRule → validator combinators in `ParameterCollection::validate`); serde, serde_json, thiserror.
+- **Downstream (depend on nebula-parameter):**
+  - **action** — Attaches `ParameterCollection` to action metadata; re-exports `ParameterCollection`, `ParameterDef`; action input = `ParameterValues`.
+  - **credential** — Uses `ParameterCollection` for credential protocol schemas; `ParameterValues` for credential input; `ParameterError` in credential errors.
+  - **engine** — Uses parameter for node config validation (planned/partial).
+  - **sdk** — Re-exports parameter prelude for plugin authors.
+  - **plugins (e.g. github)** — Consume parameter types for plugin node parameters.
+- **validator:** Parameter delegates rule evaluation to validator; validator has no dependency on parameter.
+- **expression:** Resolves expressions in values before validation; Custom `ValidationRule` evaluated by expression engine (parameter does not depend on expression).
+- **macros:** If present, generates `ParameterDef`/`ParameterCollection` from derive attributes; uses `ParameterValues` as action input type.
 
 ## Planned Crates
 
@@ -36,14 +37,15 @@
 
 ## Interaction Matrix
 
-| This crate <-> Other | Direction | Contract | Sync/Async | Failure handling | Notes |
-|---------------------|-----------|----------|------------|------------------|-------|
-| parameter -> validator | out | ValidationRule evaluation | sync | return Vec<ParameterError> | validator evaluates rules |
-| action -> parameter | in | ParameterCollection, ParameterDef | sync | N/A | action owns schema |
-| credential -> parameter | in | ParameterCollection, ParameterValues | sync | ParameterError in credential errors | credential resolves values |
-| macros -> parameter | in | ParameterDef constructors, ParameterValues | sync | N/A | codegen |
-| sdk -> parameter | in | prelude, public API | sync | N/A | re-export |
-| expression -> parameter | out | Custom rule expression | sync | N/A | expression engine evaluates Custom |
+| This crate ↔ Other | Direction | Contract | Sync/Async | Failure handling | Notes |
+|--------------------|-----------|----------|------------|------------------|-------|
+| parameter → validator | out | ValidationRule → validator combinators in ParameterCollection::validate | sync | Vec&lt;ParameterError&gt; | validator evaluates rules; Custom skipped |
+| action → parameter | in | ParameterCollection, ParameterDef, ParameterValues | sync | N/A | action owns schema |
+| credential → parameter | in | ParameterCollection, ParameterValues, ParameterError | sync | ParameterError in credential errors | credential resolves values |
+| engine → parameter | in | ParameterCollection, validate | sync | Vec&lt;ParameterError&gt; | node config validation |
+| sdk → parameter | in | prelude, public API | sync | N/A | re-export for plugin authors |
+| plugins (e.g. github) → parameter | in | ParameterDef, ParameterCollection, ParameterValues | sync | N/A | plugin node parameters |
+| expression → parameter | out | Custom ValidationRule | sync | N/A | expression engine evaluates Custom |
 
 ## Runtime Sequence
 

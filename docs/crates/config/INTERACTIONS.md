@@ -2,40 +2,43 @@
 
 ## Ecosystem Map (Current + Planned)
 
-## Existing crates
+### Upstream (nebula-config depends on)
 
-- `core`: foundational identifiers/types used by consumers.
-- `log`: structured logs used by config loading/reload lifecycle.
-- `validator`: schema/rule validation integration.
-- `runtime` / `engine` / `worker`: consume runtime config and reload behavior.
-- `resource` / `credential` / `resilience`: receive typed sub-configs for initialization.
-- `api` / `cli`: provide operational config entry points and overrides.
+- **nebula-log** — structured logging for load/reload lifecycle (debug, info, warn).
+- **nebula-validator** — `ConfigValidator` blanket impl for `T: Validate<Value>`; validation errors mapped to `ConfigError::ValidationError`; category compatibility pinned by `crates/config/tests/fixtures/compat/validator_contract_v1.json`.
+- **Vendor:** `tokio`, `async-trait`, `futures`, `thiserror`, `serde`, `serde_json`, `chrono`, `url`, `dashmap`, `notify`; optional `toml`, `yaml-rust2`.
 
-## Planned crates
+### Downstream (depend on nebula-config)
 
-- potential remote config providers:
-  - adapter crates for `Remote`, `Database`, `KeyValue` source variants.
+- **nebula-resilience** — consumes config for resilience-related settings (current workspace consumer).
+- **Planned:** runtime, engine, worker, api, resource, credential — will consume Config for typed sub-configs and reload behavior.
+
+### Planned / optional
+
+- Adapter crates for `ConfigSource::Remote`, `Database`, `KeyValue` (no default loader implementation today).
 
 ## Downstream Consumers
 
-- every runtime-facing crate that needs deterministic and validated config.
+- **nebula-resilience:** Uses config for resilience settings; expects stable precedence and typed `get<T>`.
+- **Future consumers:** Same contract: deterministic precedence, validation gate, path-based access; each consumer documents its config paths and required keys.
 
 ## Upstream Dependencies
 
-- parsing stack (`serde_json`, `toml`, `yaml-rust2`)
-- watching/async stack (`notify`, `tokio`, `futures`)
-- fallback behavior:
-  - on optional source failure, continue with available valid sources.
+- **Parsing:** serde_json (always), toml (feature `toml`), yaml-rust2 (feature `yaml`); FileLoader supports JSON/TOML/YAML/INI/Properties.
+- **Async:** tokio, futures, async-trait; ConfigLoader and ConfigWatcher are async.
+- **Watching:** notify (FileWatcher); PollingWatcher uses tokio interval.
+- **Fallback:** Optional sources (`is_optional()`) do not fail build/reload; non-optional source failure returns Err.
 
 ## Interaction Matrix
 
-| This crate <-> Other crate | Direction | Contract | Sync/Async | Failure handling | Notes |
+| This crate ↔ Other | Direction | Contract | Sync/Async | Failure handling | Notes |
 |---|---|---|---|---|---|
-| config <-> log | out | structured load/reload diagnostics | sync/async | never block config API on log failures | observability only |
-| config <-> validator | out | validation hook over merged JSON value | async | reject invalid config atomically | pre-activation safety gate |
-| config <-> runtime/engine | out | typed retrieval + reload lifecycle | async | keep last valid config on reload failure | operational critical path |
-| config <-> resource/credential | out | section-based typed config extraction | async read | initialization fails on invalid/missing required fields | startup dependency |
-| config <-> api/cli | in/out | override ingestion + diagnostics | async | invalid override rejected with field/path errors | control-plane path |
+| config ↔ log | out | nebula_log::debug/info/warn for load/reload | sync | never block on log failure | observability only |
+| config ↔ validator | out | ConfigValidator impl for Validate&lt;Value&gt;; ValidationError → ConfigError | async | reject invalid config at build/reload | category fixture: validator_contract_v1.json |
+| config ↔ resilience | out | Config + get&lt;T&gt; for resilience settings | async | missing/invalid config fails consumer startup | current downstream |
+| config ↔ runtime/engine (planned) | out | typed retrieval + reload lifecycle | async | keep last valid config on reload failure | operational critical path |
+| config ↔ resource/credential (planned) | out | section-based typed config extraction | async read | initialization fails on invalid/missing required fields | startup dependency |
+| config ↔ api/cli (planned) | in/out | override ingestion + diagnostics | async | invalid override rejected with field/path errors | control-plane path |
 
 ## Runtime Sequence
 

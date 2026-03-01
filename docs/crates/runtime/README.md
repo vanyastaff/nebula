@@ -5,11 +5,11 @@ Action execution orchestration for the Nebula workflow engine.
 ## Scope
 
 - **In scope:**
-  - ActionRuntime — executes actions through sandbox with data limits
-  - ActionRegistry — thread-safe lookup of action handlers by key
-  - DataPassingPolicy — max output size, LargeDataStrategy (Reject/SpillToBlob)
-  - RuntimeError — ActionNotFound, ActionError, DataLimitExceeded
-  - Telemetry integration — NodeStarted, NodeCompleted, NodeFailed; action metrics
+  - **runtime** — `ActionRuntime` (registry, sandbox: Arc&lt;dyn SandboxRunner&gt;, data_policy, event_bus, metrics); `execute_action(action_key, input, NodeContext)` → `Result<ActionResult<Value>, RuntimeError>`
+  - **registry** — `ActionRegistry` (DashMap key → Arc&lt;dyn InternalHandler&gt;); `register()`, `get()`
+  - **data_policy** — `DataPassingPolicy` (max_node_output_bytes, max_total_execution_bytes, large_data_strategy), `LargeDataStrategy` (Reject, SpillToBlob)
+  - **error** — `RuntimeError` (ActionNotFound, ActionError, DataLimitExceeded, Internal)
+  - Telemetry: EventBus (NodeStarted, NodeCompleted, NodeFailed), MetricsRegistry
 
 - **Out of scope:**
   - Workflow scheduling (see `nebula-engine`)
@@ -30,6 +30,7 @@ Action execution orchestration for the Nebula workflow engine.
 
 ## Document Map
 
+- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [API.md](./API.md)
 - [INTERACTIONS.md](./INTERACTIONS.md)

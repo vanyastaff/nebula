@@ -215,8 +215,8 @@ A production Nebula deployment runs with:
    spawns a configurable refresh loop (default: every 5s) and exposes
    a `subscribe()` method for pressure change events. Consumers don't poll.
 
-5. **Composable health checks** (Phase 4, from archive insight) — A
-   `HealthChecker` builder that composes system checks:
+5. **Composable health checks** (Phase 4) — From the archives: `legacy-crates-dependencies.md`
+   and system design notes. A `HealthChecker` builder that composes system checks:
    ```rust
    let health = HealthChecker::new()
        .memory_threshold(0.80)          // alert at 80% usage

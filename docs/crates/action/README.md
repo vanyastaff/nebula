@@ -16,13 +16,14 @@ It must stay stable, explicit, and backward-compatible enough for long-lived wor
 
 ## What lives in this crate
 
-- identity and metadata contracts: `Action`, `ActionMetadata`
-- dependency declarations: `ActionComponents` (`CredentialRef`, `ResourceRef`)
-- flow-control model: `ActionResult`, `WaitCondition`, `BreakReason`
-- data model: `ActionOutput` (value/binary/reference/deferred/streaming)
-- error model: `ActionError` (retryable vs fatal)
-- topology model: `InputPort`, `OutputPort`, `SupportPort`, `DynamicPort`
-- minimal context abstraction: `Context` (bridge `NodeContext` exists temporarily)
+- **action** — `Action` trait (metadata, components); execution is in ProcessAction/StatefulAction/TriggerAction etc. (see lib.rs re-exports).
+- **metadata** — `ActionMetadata` (key, name, description, version, inputs, outputs, parameters: ParameterCollection); re-exports `InterfaceVersion` from core.
+- **components** — `ActionComponents` (credentials: Vec&lt;CredentialRef&gt;, resources: Vec&lt;ResourceRef&gt;).
+- **port** — `InputPort`, `OutputPort`, `SupportPort`, `DynamicPort`; `FlowKind`, `ConnectionFilter`, `PortKey`.
+- **result** — `ActionResult&lt;T&gt;`: Success, Skip, Continue, Break, Branch, Route, MultiOutput, Wait, Retry; `WaitCondition`, `BreakReason`, `BranchKey`.
+- **output** — `ActionOutput&lt;T&gt;`, BinaryData, DataReference, DeferredOutput, StreamOutput, OutputMeta, etc.
+- **error** — `ActionError`: Retryable, Fatal, Validation, SandboxViolation, Cancelled, DataLimitExceeded.
+- **context** — `Context`, `NodeContext` (bridge). Re-exports: `ParameterCollection`, `ParameterDef` from nebula-parameter.
 
 ## What does not live here
 
@@ -35,6 +36,7 @@ Those belong to runtime/engine/sandbox/resource/credential crates.
 
 ## Docs map
 
+- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](./ARCHITECTURE.md): current + target architecture
 - [API.md](./API.md): stable API and authoring patterns
 - [INTERACTIONS.md](./INTERACTIONS.md): crate-to-crate integration contracts

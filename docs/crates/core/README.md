@@ -4,7 +4,7 @@ Foundation crate for the Nebula workflow automation platform (n8n-class). Define
 
 ## Scope
 
-- **In scope:** Typed IDs, scope model, base traits, common domain types, error model, validated keys, system constants. Zero business logic, orchestration, storage, or transport.
+- **In scope:** **id** — UserId, TenantId, ExecutionId, WorkflowId, NodeId, ActionId, ResourceId, CredentialId, ProjectId, RoleId, OrganizationId (domain_key); **scope** — ScopeLevel (Global, Organization, Project, Workflow, Execution, Action), containment; **keys** — ParameterKey, CredentialKey, PluginKey, PluginKeyError; **traits** — Scoped, HasContext, Identifiable, OperationContext, OperationResult, Priority; **types** — Version, InterfaceVersion, EntityMetadata, ProjectType, RoleScope; **constants** — SYSTEM_*, DEFAULT_*; **error** — CoreError, Result&lt;T&gt;. Zero business logic, orchestration, storage, or transport.
 - **Out of scope:** Workflow execution, node scheduling, persistence, API/CLI/UI, plugin runtime.
 
 ## Current State
@@ -43,6 +43,7 @@ assert!(scope.is_action());
 
 ## Document Map
 
+- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [API.md](./API.md)
 - [INTERACTIONS.md](./INTERACTIONS.md)

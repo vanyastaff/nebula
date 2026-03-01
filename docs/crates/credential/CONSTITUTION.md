@@ -200,7 +200,7 @@ Behind the scenes:
 
 ### From the archives: full production architecture
 
-The archive `archive-nebula-credential-architecture-2.md` contains a rich
+The archive `_archive/archive-nebula-credential-architecture-2.md` contains a rich
 design with a Rust concept called the "Token Cache" — L1 (in-memory) and L2 (Redis):
 
 ```
