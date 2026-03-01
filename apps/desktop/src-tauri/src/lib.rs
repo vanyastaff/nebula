@@ -1,4 +1,5 @@
 mod commands;
+mod deep_link;
 mod types;
 
 use tauri::Manager;
