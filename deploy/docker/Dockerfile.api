@@ -1,0 +1,34 @@
+FROM rust:1.93-bookworm AS builder
+
+WORKDIR /workspace
+
+# Build dependencies for common Rust crates (TLS, DNS, etc.)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . .
+
+RUN cargo build --release -p nebula-api --bin unified_server
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --create-home --shell /usr/sbin/nologin nebula
+
+WORKDIR /app
+
+COPY --from=builder /workspace/target/release/unified_server /app/nebula-api
+
+USER nebula
+
+ENV RUST_LOG=info
+ENV NEBULA_API_BIND=0.0.0.0:5678
+ENV NEBULA_WORKER_COUNT=4
+
+EXPOSE 5678
+
+ENTRYPOINT ["/app/nebula-api"]
+

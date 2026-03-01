@@ -1,0 +1,15 @@
+.git
+.github
+target
+**/target
+**/*.log
+.idea
+.vscode
+
+# Local env/config secrets
+.env
+deploy/.env
+
+# Generated docs/bench artifacts
+**/criterion
+

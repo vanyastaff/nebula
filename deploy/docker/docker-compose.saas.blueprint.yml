@@ -1,0 +1,24 @@
+# SaaS blueprint (reference only).
+# This file simulates topology, but production SaaS should run on an orchestrator
+# (Kubernetes/ECS/Nomad) with managed Postgres/Redis and proper secret handling.
+
+services:
+  api:
+    image: ghcr.io/nebula/nebula-api:latest
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://nebula:nebula@postgres:5432/nebula}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      RUST_LOG: ${RUST_LOG:-info}
+      NEBULA_LOG: ${NEBULA_LOG:-info}
+      NEBULA_API_BIND: 0.0.0.0:5678
+      NEBULA_WORKER_COUNT: ${NEBULA_WORKER_COUNT:-8}
+      # Multi-tenant and control-plane env should be injected by platform.
+    ports:
+      - "5678:5678"
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+
+  # In real SaaS, ingress/load balancer, secrets manager, metrics stack,
+  # tracing exporters, and centralized logs are mandatory.

@@ -6,6 +6,7 @@
 
 - **`docker/`** — Dockerfile(s) и docker-compose для локального запуска (Postgres, Redis, приложение).
 - **`kubernetes/`** — манифесты K8s (ConfigMap, Secret, Deployment, Service, при необходимости БД в кластере или внешняя БД).
+- **`STACKS.md`** — режимы деплоя в стиле n8n: Local / Self-Hosted / SaaS.
 
 ## Локально: поднять только БД
 
@@ -20,7 +21,7 @@ docker compose -f docker/docker-compose.yml up -d postgres
 ```bash
 export $(grep -v '^#' deploy/.env | xargs)
 sqlx migrate run
-cargo run -p nebula-api --example unified_server
+cargo run -p nebula-api --bin unified_server
 ```
 
 ## Локально: БД + все сервисы (compose)
@@ -29,6 +30,37 @@ cargo run -p nebula-api --example unified_server
 cd deploy
 docker compose -f docker/docker-compose.yml up -d
 ```
+
+С Redis (профиль `cache`):
+
+```bash
+docker compose -f docker/docker-compose.yml --profile cache up -d
+```
+
+## Self-Hosted baseline (compose)
+
+Полноценный single-node стек (Postgres + Redis + API):
+
+```bash
+cd deploy
+docker compose -f docker/docker-compose.selfhosted.yml up -d --build
+```
+
+Примечание: по умолчанию compose собирает локальный образ API через
+`deploy/docker/Dockerfile.api`. Для CI/CD можно переопределить
+`NEBULA_API_IMAGE`.
+
+## SaaS blueprint
+
+Для архитектурного ориентира добавлен файл:
+
+```bash
+deploy/docker/docker-compose.saas.blueprint.yml
+```
+
+Это reference-топология (реплики API c embedded workers). Для реального SaaS нужен
+оркестратор (Kubernetes/ECS/Nomad) и managed сервисы (Postgres/Redis, secrets,
+ingress, observability).
 
 ## Локально: observability для `nebula-log` telemetry (OTLP + Jaeger)
 
