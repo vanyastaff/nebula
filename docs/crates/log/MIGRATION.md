@@ -7,6 +7,15 @@
 
 ## Breaking Changes
 
+- **Observability payload API (implemented):**
+  - Old behavior: `ObservabilityEvent::data() -> Option<serde_json::Value>`
+  - New behavior: `ObservabilityEvent::visit_fields(&mut dyn ObservabilityFieldVisitor)`
+  - Compatibility helper: `event_data_json(&dyn ObservabilityEvent)` for JSON consumers
+  - Migration steps:
+    1. Replace `data()` implementations with `visit_fields()`
+    2. In hooks, prefer visitor-based processing for hot paths
+    3. If JSON is still required, use `event_data_json(event)` at integration boundaries
+
 - **Typed event names (P-002):**
   - Old behavior: `ObservabilityEvent::name() -> &str`
   - New behavior: Add `EventKind` or typed key; deprecate string-only

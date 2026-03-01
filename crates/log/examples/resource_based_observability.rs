@@ -24,10 +24,11 @@ impl ObservabilityEvent for WorkflowEvent {
         &self.name
     }
 
-    fn data(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "workflow_id": self.workflow_id,
-        }))
+    fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
+        visitor.record(
+            "workflow_id",
+            ObservabilityFieldValue::Str(&self.workflow_id),
+        );
     }
 }
 

@@ -32,7 +32,10 @@
 //! - Error rate: `rate(http_errors_total[5m])`
 //! - 95th percentile latency: `histogram_quantile(0.95, http_request_duration_seconds_bucket)`
 
-use nebula_log::observability::{ObservabilityEvent, ObservabilityHook, emit_event, register_hook};
+use nebula_log::observability::{
+    ObservabilityEvent, ObservabilityFieldValue, ObservabilityFieldVisitor, ObservabilityHook,
+    emit_event, register_hook,
+};
 use nebula_log::{info, warn};
 use std::sync::Arc;
 
@@ -138,11 +141,12 @@ impl ObservabilityEvent for OperationEvent {
         "operation_completed"
     }
 
-    fn data(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "operation": self.name,
-            "duration_ms": self.duration_ms,
-        }))
+    fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
+        visitor.record("operation", ObservabilityFieldValue::Str(&self.name));
+        visitor.record(
+            "duration_ms",
+            ObservabilityFieldValue::U64(self.duration_ms),
+        );
     }
 }
 

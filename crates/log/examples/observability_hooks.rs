@@ -7,8 +7,9 @@
 //! 4. Track operation lifecycle
 
 use nebula_log::observability::{
-    LoggingHook, ObservabilityEvent, ObservabilityHook, OperationCompleted, OperationFailed,
-    OperationStarted, OperationTracker, emit_event, register_hook,
+    LoggingHook, ObservabilityEvent, ObservabilityFieldValue, ObservabilityFieldVisitor,
+    ObservabilityHook, OperationCompleted, OperationFailed, OperationStarted, OperationTracker,
+    emit_event, event_data_json, register_hook,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,12 +31,10 @@ impl ObservabilityEvent for ValidationEvent {
         "validation"
     }
 
-    fn data(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "field": self.field,
-            "valid": self.valid,
-            "message": self.message,
-        }))
+    fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
+        visitor.record("field", ObservabilityFieldValue::Str(&self.field));
+        visitor.record("valid", ObservabilityFieldValue::Bool(self.valid));
+        visitor.record("message", ObservabilityFieldValue::Str(&self.message));
     }
 }
 
@@ -50,11 +49,15 @@ impl ObservabilityEvent for AllocationEvent {
         "allocation"
     }
 
-    fn data(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "resource_type": self.resource_type,
-            "size_bytes": self.size_bytes,
-        }))
+    fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
+        visitor.record(
+            "resource_type",
+            ObservabilityFieldValue::Str(&self.resource_type),
+        );
+        visitor.record(
+            "size_bytes",
+            ObservabilityFieldValue::U64(self.size_bytes as u64),
+        );
     }
 }
 
@@ -98,7 +101,7 @@ impl ObservabilityHook for FilteringHook {
     fn on_event(&self, event: &dyn ObservabilityEvent) {
         if event.name().contains(&self.filter) {
             println!("  [FilteringHook] Matched event: {}", event.name());
-            if let Some(data) = event.data() {
+            if let Some(data) = event_data_json(event) {
                 println!("    Data: {}", data);
             }
         }

@@ -84,6 +84,23 @@ Hook shutdown ordering contract:
 - `shutdown_hooks()` drains registered hooks in reverse registration order (LIFO).
 - registry is quiesced before shutdown callbacks run, so new dispatches are not started during shutdown.
 
+## Observability Payload Contract
+
+`ObservabilityEvent` payloads are emitted via visitor API:
+
+- `fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor)`
+- value types: `ObservabilityFieldValue::{Str, Bool, I64, U64, F64}`
+
+Compatibility helper:
+
+- `event_data_json(&dyn ObservabilityEvent) -> Option<serde_json::Value>`
+- use only when JSON payload is required by a consumer; this path allocates
+
+Hot-path guidance:
+
+- hooks should prefer direct visitor processing (or `EventFields` display wrapper)
+- avoid building per-event JSON objects in latency-sensitive hooks
+
 ## Env and Precedence Contract
 
 Startup precedence is deterministic:

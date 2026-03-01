@@ -10,7 +10,10 @@
 //! - Centralized observability configuration
 
 use nebula_log::info;
-use nebula_log::observability::{ObservabilityEvent, ObservabilityHook, emit_event, register_hook};
+use nebula_log::observability::{
+    ObservabilityEvent, ObservabilityFieldValue, ObservabilityFieldVisitor, ObservabilityHook,
+    emit_event, event_data_json, register_hook,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -138,7 +141,7 @@ impl UnifiedMetricsCollector {
 
 impl ObservabilityHook for UnifiedMetricsCollector {
     fn on_event(&self, event: &dyn ObservabilityEvent) {
-        if let Some(data) = event.data() {
+        if let Some(data) = event_data_json(event) {
             if let (Some(crate_name), Some(success)) = (
                 data.get("crate_name").and_then(|v| v.as_str()),
                 data.get("success").and_then(|v| v.as_bool()),
@@ -175,12 +178,10 @@ impl ObservabilityEvent for CrateEvent {
         "crate_event"
     }
 
-    fn data(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "crate_name": self.crate_name,
-            "event_type": self.event_type,
-            "operation": self.operation,
-            "success": self.success,
-        }))
+    fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
+        visitor.record("crate_name", ObservabilityFieldValue::Str(&self.crate_name));
+        visitor.record("event_type", ObservabilityFieldValue::Str(&self.event_type));
+        visitor.record("operation", ObservabilityFieldValue::Str(&self.operation));
+        visitor.record("success", ObservabilityFieldValue::Bool(self.success));
     }
 }

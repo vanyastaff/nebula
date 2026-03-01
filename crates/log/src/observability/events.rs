@@ -3,7 +3,7 @@
 //! This module provides pre-defined event types for common scenarios
 //! like operation lifecycle tracking.
 
-use super::hooks::ObservabilityEvent;
+use super::hooks::{ObservabilityEvent, ObservabilityFieldValue, ObservabilityFieldVisitor};
 use std::time::Duration;
 
 /// Event emitted when an operation starts
@@ -32,11 +32,9 @@ impl ObservabilityEvent for OperationStarted {
         "operation_started"
     }
 
-    fn data(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "operation": self.operation,
-            "context": self.context,
-        }))
+    fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
+        visitor.record("operation", ObservabilityFieldValue::Str(&self.operation));
+        visitor.record("context", ObservabilityFieldValue::Str(&self.context));
     }
 }
 
@@ -67,12 +65,16 @@ impl ObservabilityEvent for OperationCompleted {
         "operation_completed"
     }
 
-    fn data(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "operation": self.operation,
-            "duration_ms": self.duration.as_millis(),
-            "duration_secs": self.duration.as_secs_f64(),
-        }))
+    fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
+        visitor.record("operation", ObservabilityFieldValue::Str(&self.operation));
+        visitor.record(
+            "duration_ms",
+            ObservabilityFieldValue::U64(self.duration.as_millis() as u64),
+        );
+        visitor.record(
+            "duration_secs",
+            ObservabilityFieldValue::F64(self.duration.as_secs_f64()),
+        );
     }
 }
 
@@ -106,13 +108,17 @@ impl ObservabilityEvent for OperationFailed {
         "operation_failed"
     }
 
-    fn data(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "operation": self.operation,
-            "error": self.error,
-            "duration_ms": self.duration.as_millis(),
-            "duration_secs": self.duration.as_secs_f64(),
-        }))
+    fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
+        visitor.record("operation", ObservabilityFieldValue::Str(&self.operation));
+        visitor.record("error", ObservabilityFieldValue::Str(&self.error));
+        visitor.record(
+            "duration_ms",
+            ObservabilityFieldValue::U64(self.duration.as_millis() as u64),
+        );
+        visitor.record(
+            "duration_secs",
+            ObservabilityFieldValue::F64(self.duration.as_secs_f64()),
+        );
     }
 }
 
@@ -205,6 +211,7 @@ impl Drop for OperationTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::observability::event_data_json;
 
     #[test]
     fn test_operation_started() {
@@ -213,7 +220,7 @@ mod tests {
             context: "unit_test".to_string(),
         };
         assert_eq!(event.name(), "operation_started");
-        assert!(event.data().is_some());
+        assert!(event_data_json(&event).is_some());
     }
 
     #[test]
@@ -223,7 +230,7 @@ mod tests {
             duration: Duration::from_millis(100),
         };
         assert_eq!(event.name(), "operation_completed");
-        let data = event.data().unwrap();
+        let data = event_data_json(&event).unwrap();
         assert_eq!(data["operation"], "test");
         assert_eq!(data["duration_ms"], 100);
     }
@@ -236,7 +243,7 @@ mod tests {
             duration: Duration::from_millis(50),
         };
         assert_eq!(event.name(), "operation_failed");
-        let data = event.data().unwrap();
+        let data = event_data_json(&event).unwrap();
         assert_eq!(data["operation"], "test");
         assert_eq!(data["error"], "test error");
     }

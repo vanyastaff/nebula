@@ -25,6 +25,7 @@
 
 - **Known bottlenecks:**
   - hooks execute inline; slow hooks increase tail latency
+  - legacy JSON-centric event payload flow previously allocated per event; now reduced via visitor payload contract (`visit_fields`) with JSON conversion only on demand
   - non-blocking writer behavior under sustained overload needs explicit operational policy
   - size-based rolling currently keeps a single rotated backup (`.1`) only
 

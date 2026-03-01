@@ -95,8 +95,8 @@ fn bench_timing_utilities(c: &mut Criterion) {
 
     c.bench_function("log_timer_threshold_no_emit", |b| {
         b.iter(|| {
-            let timer = nebula_log::Timer::new("bench_timer_threshold")
-                .threshold(Duration::from_secs(60));
+            let timer =
+                nebula_log::Timer::new("bench_timer_threshold").threshold(Duration::from_secs(60));
             black_box(7_u64 * 6);
             black_box(timer.complete());
         });

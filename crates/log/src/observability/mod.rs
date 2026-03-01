@@ -71,7 +71,9 @@ pub use context::{
 pub use events::{OperationCompleted, OperationFailed, OperationStarted, OperationTracker};
 pub use filter::{EventFilter, FilteredHook};
 pub use hooks::{
-    LoggingHook, ObservabilityEvent, ObservabilityHook, ResourceAwareAdapter, ResourceAwareHook,
+    EventFields, LoggingHook, ObservabilityEvent, ObservabilityFieldValue,
+    ObservabilityFieldVisitor, ObservabilityHook, ResourceAwareAdapter, ResourceAwareHook,
+    event_data_json,
 };
 pub use registry::{emit_event, register_hook, set_hook_policy, shutdown_hooks};
 pub use resources::{LogLevel, LoggerResource, NotificationPrefs, NotificationSeverity};

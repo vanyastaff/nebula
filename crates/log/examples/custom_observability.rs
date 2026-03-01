@@ -7,7 +7,10 @@
 //! - Advanced observability patterns
 
 use nebula_log::info;
-use nebula_log::observability::{ObservabilityEvent, ObservabilityHook, emit_event, register_hook};
+use nebula_log::observability::{
+    ObservabilityEvent, ObservabilityFieldValue, ObservabilityFieldVisitor, ObservabilityHook,
+    emit_event, event_data_json, register_hook,
+};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -109,13 +112,12 @@ impl ObservabilityEvent for UserActionEvent {
         "user_action"
     }
 
-    fn data(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "user_id": self.user_id,
-            "action": self.action,
-            "timestamp": self.timestamp,
-            "metadata": self.metadata,
-        }))
+    fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
+        visitor.record("user_id", ObservabilityFieldValue::Str(&self.user_id));
+        visitor.record("action", ObservabilityFieldValue::Str(&self.action));
+        visitor.record("timestamp", ObservabilityFieldValue::U64(self.timestamp));
+        let metadata = self.metadata.to_string();
+        visitor.record("metadata_json", ObservabilityFieldValue::Str(&metadata));
     }
 }
 
@@ -144,14 +146,22 @@ impl ObservabilityEvent for SystemHealthEvent {
         "system_health"
     }
 
-    fn data(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "component": self.component,
-            "status": format!("{:?}", self.status),
-            "cpu_usage": self.metrics.cpu_usage,
-            "memory_usage": self.metrics.memory_usage,
-            "active_connections": self.metrics.active_connections,
-        }))
+    fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
+        visitor.record("component", ObservabilityFieldValue::Str(&self.component));
+        let status = format!("{:?}", self.status);
+        visitor.record("status", ObservabilityFieldValue::Str(&status));
+        visitor.record(
+            "cpu_usage",
+            ObservabilityFieldValue::F64(self.metrics.cpu_usage),
+        );
+        visitor.record(
+            "memory_usage",
+            ObservabilityFieldValue::F64(self.metrics.memory_usage),
+        );
+        visitor.record(
+            "active_connections",
+            ObservabilityFieldValue::U64(self.metrics.active_connections as u64),
+        );
     }
 }
 
@@ -167,13 +177,17 @@ impl ObservabilityEvent for BusinessMetricEvent {
         "business_metric"
     }
 
-    fn data(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "metric": self.metric_name,
-            "value": self.value,
-            "currency": self.currency,
-            "tags": self.tags.iter().map(|(k, v)| format!("{}={}", k, v)).collect::<Vec<_>>(),
-        }))
+    fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
+        visitor.record("metric", ObservabilityFieldValue::Str(&self.metric_name));
+        visitor.record("value", ObservabilityFieldValue::F64(self.value));
+        visitor.record("currency", ObservabilityFieldValue::Str(&self.currency));
+        let tags = self
+            .tags
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        visitor.record("tags", ObservabilityFieldValue::Str(&tags));
     }
 }
 
@@ -198,13 +212,14 @@ impl ObservabilityEvent for ErrorEvent {
         "error_event"
     }
 
-    fn data(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "error_type": self.error_type,
-            "message": self.message,
-            "stack_trace": self.stack_trace,
-            "severity": format!("{:?}", self.severity),
-        }))
+    fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
+        visitor.record("error_type", ObservabilityFieldValue::Str(&self.error_type));
+        visitor.record("message", ObservabilityFieldValue::Str(&self.message));
+        if let Some(stack_trace) = &self.stack_trace {
+            visitor.record("stack_trace", ObservabilityFieldValue::Str(stack_trace));
+        }
+        let severity = format!("{:?}", self.severity);
+        visitor.record("severity", ObservabilityFieldValue::Str(&severity));
     }
 }
 
@@ -224,7 +239,7 @@ impl ObservabilityHook for SlackNotificationHook {
     fn on_event(&self, event: &dyn ObservabilityEvent) {
         // Only send critical errors to Slack
         if event.name() == "error_event" {
-            if let Some(data) = event.data() {
+            if let Some(data) = event_data_json(event) {
                 if let Some(severity) = data.get("severity").and_then(|v| v.as_str()) {
                     if severity == "Critical" {
                         info!(hook = "slack", "Would send notification to Slack");
@@ -260,7 +275,7 @@ impl ObservabilityHook for DatadogHook {
             "Would send event to Datadog"
         );
         // In real implementation:
-        // datadog_client.send_event(event.name(), event.data())
+        // datadog_client.send_event(event.name(), event_data_json(event))
     }
 }
 
@@ -278,7 +293,7 @@ impl ObservabilityHook for CustomAnalyticsHook {
         if event.name() == "business_metric" {
             info!(hook = "analytics", "Would store business metric");
             // In real implementation:
-            // analytics_db.insert(event.name(), event.data(), timestamp)
+            // analytics_db.insert(event.name(), event_data_json(event), timestamp)
         }
     }
 }

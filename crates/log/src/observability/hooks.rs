@@ -4,7 +4,29 @@
 //! - [`ObservabilityEvent`]: Events that can be emitted
 //! - [`ObservabilityHook`]: Hooks that receive events
 
+use std::fmt;
 use std::time::SystemTime;
+
+/// Borrowed field value for observability payload emission.
+#[derive(Debug, Clone, Copy)]
+pub enum ObservabilityFieldValue<'a> {
+    /// UTF-8 string field.
+    Str(&'a str),
+    /// Boolean field.
+    Bool(bool),
+    /// Signed integer field.
+    I64(i64),
+    /// Unsigned integer field.
+    U64(u64),
+    /// Floating-point field.
+    F64(f64),
+}
+
+/// Visitor used by events to expose payload fields without allocating JSON objects.
+pub trait ObservabilityFieldVisitor {
+    /// Record a field with a borrowed value.
+    fn record(&mut self, key: &str, value: ObservabilityFieldValue<'_>);
+}
 
 /// Event that can be emitted through observability system
 ///
@@ -24,11 +46,9 @@ use std::time::SystemTime;
 ///         "validation"
 ///     }
 ///
-///     fn data(&self) -> Option<serde_json::Value> {
-///         Some(serde_json::json!({
-///             "field": self.field,
-///             "valid": self.valid,
-///         }))
+///     fn visit_fields(&self, visitor: &mut dyn nebula_log::observability::ObservabilityFieldVisitor) {
+///         visitor.record("field", nebula_log::observability::ObservabilityFieldValue::Str(&self.field));
+///         visitor.record("valid", nebula_log::observability::ObservabilityFieldValue::Bool(self.valid));
 ///     }
 /// }
 /// ```
@@ -45,11 +65,95 @@ pub trait ObservabilityEvent: Send + Sync {
         SystemTime::now()
     }
 
-    /// Optional: serialize event data for structured logging
+    /// Visit event fields for structured logging/metrics without intermediate JSON allocation.
     ///
-    /// Return `None` if the event has no additional data.
-    fn data(&self) -> Option<serde_json::Value> {
+    /// Default implementation emits no fields.
+    fn visit_fields(&self, _visitor: &mut dyn ObservabilityFieldVisitor) {}
+}
+
+/// Convert event payload into JSON on demand.
+///
+/// This is a compatibility helper for consumers that need JSON payloads.
+/// For hot paths, prefer visitor-based processing to avoid per-event allocations.
+#[must_use]
+pub fn event_data_json(event: &dyn ObservabilityEvent) -> Option<serde_json::Value> {
+    struct JsonCollector {
+        fields: serde_json::Map<String, serde_json::Value>,
+    }
+
+    impl ObservabilityFieldVisitor for JsonCollector {
+        fn record(&mut self, key: &str, value: ObservabilityFieldValue<'_>) {
+            let value = match value {
+                ObservabilityFieldValue::Str(v) => serde_json::Value::String(v.to_string()),
+                ObservabilityFieldValue::Bool(v) => serde_json::Value::Bool(v),
+                ObservabilityFieldValue::I64(v) => serde_json::Value::Number(v.into()),
+                ObservabilityFieldValue::U64(v) => serde_json::Value::Number(v.into()),
+                ObservabilityFieldValue::F64(v) => serde_json::Number::from_f64(v)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or(serde_json::Value::Null),
+            };
+            self.fields.insert(key.to_string(), value);
+        }
+    }
+
+    let mut collector = JsonCollector {
+        fields: serde_json::Map::new(),
+    };
+    event.visit_fields(&mut collector);
+    if collector.fields.is_empty() {
         None
+    } else {
+        Some(serde_json::Value::Object(collector.fields))
+    }
+}
+
+/// Display wrapper that formats event fields without heap allocations.
+pub struct EventFields<'a> {
+    event: &'a dyn ObservabilityEvent,
+}
+
+impl<'a> EventFields<'a> {
+    /// Create a display wrapper for an event payload.
+    #[must_use]
+    pub fn new(event: &'a dyn ObservabilityEvent) -> Self {
+        Self { event }
+    }
+}
+
+impl fmt::Display for EventFields<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        struct FmtVisitor<'a, 'b> {
+            f: &'a mut fmt::Formatter<'b>,
+            first: bool,
+            err: fmt::Result,
+        }
+
+        impl ObservabilityFieldVisitor for FmtVisitor<'_, '_> {
+            fn record(&mut self, key: &str, value: ObservabilityFieldValue<'_>) {
+                if self.err.is_err() {
+                    return;
+                }
+                let sep = if self.first { "" } else { ", " };
+                self.first = false;
+                self.err = match value {
+                    ObservabilityFieldValue::Str(v) => write!(self.f, "{sep}{key}={v}"),
+                    ObservabilityFieldValue::Bool(v) => write!(self.f, "{sep}{key}={v}"),
+                    ObservabilityFieldValue::I64(v) => write!(self.f, "{sep}{key}={v}"),
+                    ObservabilityFieldValue::U64(v) => write!(self.f, "{sep}{key}={v}"),
+                    ObservabilityFieldValue::F64(v) => write!(self.f, "{sep}{key}={v}"),
+                };
+            }
+        }
+
+        write!(f, "{{")?;
+        let mut visitor = FmtVisitor {
+            f,
+            first: true,
+            err: Ok(()),
+        };
+        self.event.visit_fields(&mut visitor);
+        visitor.err?;
+        write!(visitor.f, "}}")
     }
 }
 
@@ -124,22 +228,22 @@ impl LoggingHook {
 impl ObservabilityHook for LoggingHook {
     fn on_event(&self, event: &dyn ObservabilityEvent) {
         let event_name = event.name();
-        let event_data = event.data();
+        let fields = EventFields::new(event);
 
         // Use a helper macro to avoid duplicating the 5-level match twice
         macro_rules! log_at_level {
             ($level:expr, $name:expr, $data:expr) => {
                 match $level {
-                    tracing::Level::ERROR => tracing::error!(event = $name, data = ?$data, "observability event"),
-                    tracing::Level::WARN => tracing::warn!(event = $name, data = ?$data, "observability event"),
-                    tracing::Level::INFO => tracing::info!(event = $name, data = ?$data, "observability event"),
-                    tracing::Level::DEBUG => tracing::debug!(event = $name, data = ?$data, "observability event"),
-                    tracing::Level::TRACE => tracing::trace!(event = $name, data = ?$data, "observability event"),
+                    tracing::Level::ERROR => tracing::error!(event = $name, fields = %$data, "observability event"),
+                    tracing::Level::WARN => tracing::warn!(event = $name, fields = %$data, "observability event"),
+                    tracing::Level::INFO => tracing::info!(event = $name, fields = %$data, "observability event"),
+                    tracing::Level::DEBUG => tracing::debug!(event = $name, fields = %$data, "observability event"),
+                    tracing::Level::TRACE => tracing::trace!(event = $name, fields = %$data, "observability event"),
                 }
             };
         }
 
-        log_at_level!(self.level, event_name, event_data);
+        log_at_level!(self.level, event_name, fields);
     }
 }
 
@@ -174,10 +278,23 @@ impl ObservabilityHook for MetricsHook {
     fn on_event(&self, event: &dyn ObservabilityEvent) {
         // Increment counter for this event type
         let event_name = event.name();
-        let mut metric_name = String::with_capacity(15 + event_name.len());
-        metric_name.push_str("nebula.events.");
-        metric_name.push_str(event_name);
-        crate::metrics::counter!(metric_name).increment(1);
+        match event_name {
+            "operation_started" => {
+                crate::metrics::counter!("nebula.events.operation_started").increment(1)
+            }
+            "operation_completed" => {
+                crate::metrics::counter!("nebula.events.operation_completed").increment(1)
+            }
+            "operation_failed" => {
+                crate::metrics::counter!("nebula.events.operation_failed").increment(1)
+            }
+            _ => {
+                let mut metric_name = String::with_capacity(15 + event_name.len());
+                metric_name.push_str("nebula.events.");
+                metric_name.push_str(event_name);
+                crate::metrics::counter!(metric_name).increment(1);
+            }
+        }
     }
 }
 
@@ -282,7 +399,7 @@ mod tests {
             name: "test_event".to_string(),
         };
         assert_eq!(event.name(), "test_event");
-        assert!(event.data().is_none());
+        assert!(event_data_json(&event).is_none());
     }
 
     #[test]
