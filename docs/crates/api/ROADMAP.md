@@ -1,76 +1,105 @@
 # Roadmap
 
-## Phase 1: Workflow/Execution REST (Current Focus)
+## Phase 0: Foundation ✅
+
+**Done:**
+- Single-port server (API + webhook merged router)
+- GET /health, GET /api/v1/status
+- POST /webhooks/* (nebula-webhook embedded)
+- POST /auth/oauth/start — begin GitHub OAuth, return authUrl
+- POST /auth/oauth/callback — exchange code, return accessToken + user
+
+---
+
+## Phase 1: Workflow + Execution REST (Current Focus)
+
+**Goal:** Desktop app can create, list, execute workflows and see run results.
+**Aligns with:** Desktop Phase 2 — Workflow Management.
 
 **Deliverables:**
-- ApiState extended with engine, storage (or ports)
-- Routes: GET/POST /api/v1/workflows, GET /api/v1/workflows/:id
-- Routes: POST /api/v1/workflows/:id/execute, GET /api/v1/executions/:id
-- Request/response types; error mapping
-- OpenAPI spec (optional)
+- ApiState extended with engine + storage (or port traits)
+- `GET /workflows` — list with pagination
+- `GET /workflows/:id`
+- `POST /workflows` — create
+- `PATCH /workflows/:id` — update
+- `DELETE /workflows/:id`
+- `POST /workflows/:id/activate` — toggle active state
+- `POST /workflows/:id/execute` — manual trigger
+- `GET /runs` — list with filter (workflow, status, date)
+- `GET /runs/:id` — run detail + node-by-node trace
+- Request/response types; standard error shape `{ error, message }`
 
 **Risks:**
 - Coupling api to engine, storage
-- Auth not yet; internal use only initially
+- Auth middleware not yet — internal use only initially (desktop dev environment)
 
 **Exit criteria:**
-- Create workflow, list workflows, execute, get execution status via REST
+- Create a 3-node workflow, execute it, retrieve the run detail via REST
 - Integration test with real engine
+- Desktop app Phase 2 exit criteria pass end-to-end
 
 ---
 
-## Phase 2: Authentication and Rate Limiting
+## Phase 2: Auth Middleware + Rate Limiting
+
+**Goal:** Protected routes; production-ready for self-hosted deployment.
+**Aligns with:** Desktop Phase 2 (multi-connection remote servers need real auth).
 
 **Deliverables:**
-- JWT middleware; API key middleware
-- Rate limiting (tower or custom)
-- CORS config refinement
-- Auth in OpenAPI spec
+- Bearer token middleware (validates tokens issued by `/auth/oauth/callback`)
+- API key middleware for machine-to-machine (CI, scripts)
+- Rate limiting (tower or custom) — 429 on breach
+- CORS refinement (allow desktop `tauri://localhost` origin)
+- 401 response shape: `{ "error": "unauthorized", "message": "..." }`
 
 **Risks:**
-- JWT validation; key management
-- Rate limit storage (in-memory vs Redis)
+- Token validation strategy (JWT claims vs opaque token DB lookup)
+- Rate limit storage (in-memory sufficient for single-instance; Redis for cluster)
 
 **Exit criteria:**
-- Protected routes require auth
-- Rate limit returns 429
-- Docs for auth headers
+- Workflow routes reject unauthenticated requests with 401
+- Rate limit returns 429 with Retry-After header
+- Desktop app auto-signs-out on 401 (existing behavior, now exercised)
 
 ---
 
-## Phase 3: WebSocket and Real-Time
+## Phase 3: Real-Time Streaming
+
+**Goal:** Desktop Monitor screen gets live execution logs within 1 second.
+**Aligns with:** Desktop Phase 3 — Monitor & Registry.
 
 **Deliverables:**
-- WebSocket handler at /ws or /api/v1/ws
-- Execution log streaming
-- Status updates (execution progress)
-- Connection management; heartbeat
+- `GET /runs/:id/logs` — WebSocket upgrade (primary) or SSE (fallback)
+- Execution progress events pushed on node completion
+- Heartbeat / ping-pong; client reconnection supported
+- Connection management (max connections, per-user limit)
 
 **Risks:**
-- Scale (many connections)
-- Message protocol design
+- Scale: many concurrent log streams in cloud deployment
+- Message protocol: define event shape (`{ nodeId, status, output, timestamp }`)
 
 **Exit criteria:**
-- Client connects, receives execution logs
-- Reconnection handling
+- Desktop receives log events within 1 second of backend node completion
+- Reconnection after network drop works without data loss (replay last N events)
 
 ---
 
-## Phase 4: OpenAPI and DX
+## Phase 4: Credentials, Nodes, OpenAPI
+
+**Goal:** Full desktop feature parity. API self-documents.
+**Aligns with:** Desktop Phase 4 — Credentials & Registry.
 
 **Deliverables:**
+- `GET /credentials`, `POST /credentials`, `DELETE /credentials/:id`
+- `GET /nodes` — list node types with category + description
+- `GET /nodes/:type` — full definition + parameter schema
 - OpenAPI 3.0 spec generation (utoipa or similar)
 - Swagger UI at /docs
-- Example requests in docs
-- API versioning guidance (/api/v1, /api/v2)
-
-**Risks:**
-- Spec maintenance
-- Versioning strategy
+- API versioning guidance (/api/v1 → /api/v2 strategy)
 
 **Exit criteria:**
-- /docs serves interactive API docs
-- Spec matches implementation
+- GitHub credential creates + attaches to a GitHub node (desktop flow passes)
+- /docs serves interactive spec that matches implementation
 
 ---
 
@@ -79,7 +108,7 @@
 | Metric | Target |
 |--------|--------|
 | **Correctness** | All routes return expected status/body |
-| **Latency** | /health < 1ms; /status < 5ms |
-| **Throughput** | Scale with axum |
-| **Stability** | No panics; errors propagated |
-| **Operability** | Health for k8s; status for debugging |
+| **Latency** | /health < 1ms; /status < 5ms; /workflows list < 50ms |
+| **Throughput** | Scale with axum (no artificial bottlenecks) |
+| **Stability** | No panics; errors propagated as `{ error, message }` |
+| **Operability** | /health for k8s liveness; /status for debugging |

@@ -27,6 +27,16 @@
 - **Contract:** run() blocks until shutdown; workers are snapshot for status
 - **Usage:** Spawn workers (tokio::spawn), build workers snapshot, call run()
 
+### Desktop App (Tauri)
+
+- **Expectations:** HTTP API at a configurable base URL (default `http://localhost:5678`)
+- **Auth contract:** `POST /auth/oauth/start` + `POST /auth/oauth/callback` — GitHub OAuth flow with deep-link redirect to `nebula://auth/callback`
+- **Token usage:** All authenticated routes require `Authorization: Bearer <access_token>` from the OAuth callback response
+- **Phase 2 contract:** Full workflow CRUD + execution trigger (see `docs/apps/desktop/INTEGRATION.md`)
+- **Phase 3 contract:** Run list, run detail, real-time log streaming via WebSocket (`GET /runs/:id/logs`)
+- **Error shape:** `{ "error": "error_code", "message": "Human readable" }` on all non-2xx responses
+- **401 behavior:** Desktop signs the user out and redirects to login on any 401 response
+
 ## Upstream Dependencies
 
 | Crate | Why needed | Hard contract | Fallback |
@@ -56,6 +66,19 @@
 5. run() binds listener, builds app = api_router + webhook.router(), serves.
 6. Clients: GET /health, GET /api/v1/status, POST /webhooks/*.
 
+### Desktop OAuth sequence (current)
+
+```
+Desktop → POST /auth/oauth/start { provider: "github", redirectUri: "nebula://auth/callback" }
+       ← { authUrl: "https://github.com/login/oauth/authorize?..." }
+Desktop opens authUrl in system browser
+User authenticates → browser redirects → nebula://auth/callback?code=XXX
+Desktop → POST /auth/oauth/callback { provider, code, redirectUri }
+       ← { accessToken, user }
+Desktop stores token in OS-secure store (tauri-plugin-store)
+All subsequent requests: Authorization: Bearer <accessToken>
+```
+
 ## Cross-Crate Ownership
 
 | Responsibility | Owner |
@@ -83,3 +106,6 @@
 - [ ] GET /api/v1/status returns JSON with workers, webhook
 - [ ] Webhook routes merged; POST /webhooks/... reaches webhook handler
 - [ ] run() binds and serves
+- [ ] POST /auth/oauth/start returns 200 + `{ authUrl }`
+- [ ] POST /auth/oauth/callback returns 200 + `{ accessToken, user }`
+- [ ] Unauthenticated request to protected route returns 401 with `{ error, message }`

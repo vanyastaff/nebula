@@ -15,11 +15,55 @@
 
 ### Routes
 
+#### Infrastructure (stable)
+
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | /health | Liveness; 200 OK |
 | GET | /api/v1/status | JSON { workers, webhook } |
 | POST | /webhooks/* | Webhook endpoints (from nebula-webhook) |
+
+#### Auth (implemented)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | /auth/oauth/start | Begin OAuth flow; body `{ provider, redirectUri }`; returns `{ authUrl }` |
+| POST | /auth/oauth/callback | Exchange code; body `{ provider, code, redirectUri }`; returns `{ accessToken, user }` |
+
+#### Workflows *(Phase 2)*
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /workflows | List workflows |
+| GET | /workflows/:id | Get workflow by ID |
+| POST | /workflows | Create workflow |
+| PATCH | /workflows/:id | Update workflow |
+| DELETE | /workflows/:id | Delete workflow |
+| POST | /workflows/:id/activate | Activate / deactivate workflow |
+| POST | /workflows/:id/execute | Manual trigger (test run) |
+
+#### Runs *(Phase 2–3)*
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /runs | List runs (filter by workflow, status, date) |
+| GET | /runs/:id | Get run detail + node-by-node trace |
+| GET | /runs/:id/logs | Stream execution logs (WebSocket upgrade or SSE) |
+
+#### Credentials *(Phase 4)*
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /credentials | List credentials |
+| POST | /credentials | Create credential |
+| DELETE | /credentials/:id | Delete credential |
+
+#### Nodes *(Phase 4)*
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /nodes | List available node types |
+| GET | /nodes/:type | Get node definition + parameter schema |
 
 ## Usage Patterns
 
