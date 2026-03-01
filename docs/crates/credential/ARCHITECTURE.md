@@ -8,22 +8,80 @@ Dependency direction:
 - runtime/action/api layers -> `nebula-credential`
 - `nebula-credential` should not depend on workflow business logic
 
-## Layered Structure
+## Module Map
 
-- `core`
-  - identity, scope, context, metadata, errors, credential references
-- `traits`
-  - contracts for storage, distributed locks, rotatable/testable credentials
-- `providers`
-  - concrete persistence backends selected via feature flags
-- `manager`
-  - main orchestration API with cache + validation + CRUD
-- `protocols`
-  - protocol-specific state/config models and reusable protocol implementations
-- `rotation`
-  - policy-driven credential rotation with safety and failure handling
-- `utils`
-  - crypto + secret handling + time/retry utilities
+| Module | Key types exported | Role |
+|--------|-------------------|------|
+| `core` | `CredentialId`, `ScopeId`, `CredentialContext`, `CredentialMetadata`, `CredentialDescription`, `CredentialFilter`, `CredentialState`, `CredentialRef`, `CredentialProvider`, `CredentialError`, `StorageError`, `CryptoError`, `ValidationError`, `ManagerError`, `SecretString` | Identity, scope, errors, primitives |
+| `traits` | `StorageProvider`, `StateStore`, `DistributedLock`, `CredentialType`, `FlowProtocol`, `StaticProtocol`, `InteractiveCredential`, `Refreshable`, `Revocable`, `RotatableCredential`, `TestableCredential` | Infrastructure contracts |
+| `providers` | `MockStorageProvider`, `LocalStorageProvider`*, `AwsSecretsManagerProvider`*, `HashiCorpVaultProvider`*, `KubernetesSecretsProvider`*, `ProviderConfig`, `StorageMetrics` | Concrete backends (feature-gated) |
+| `manager` | `CredentialManager`, `CredentialManagerBuilder`, `CacheLayer`, `CacheConfig`, `CacheStats`, `ValidationResult`, `ValidationDetails`, `ManagerConfig`, `EvictionStrategy` | High-level CRUD, caching, validation |
+| `protocols` | `ApiKeyProtocol`, `BasicAuthProtocol`, `DatabaseProtocol`, `HeaderAuthProtocol`, `OAuth2Protocol`+config+state+flow, `LdapProtocol`, `SamlConfig`, `KerberosConfig`, `MtlsConfig` | Protocol-specific models |
+| `rotation` | `RotationPolicy`, `RotationTransaction`, `RotationState`, `RotationError`, `GracePeriodConfig`, rotation scheduler, blue-green helpers | Policy-driven rotation orchestration |
+| `utils` | `EncryptionKey`, `EncryptedData`, `encrypt`, `decrypt`, `SecretString`, `RetryPolicy` | Crypto, secret handling, retry |
+
+\* Feature-gated: `storage-local`, `storage-aws`, `storage-vault`, `storage-k8s`
+
+## Data and Control Flow
+
+### Credential Acquire (happy path)
+
+```
+caller
+  │
+  ├─→ CredentialManager::retrieve(id, ctx)
+  │         │
+  │         ├─→ scope check (CredentialContext validates tenant/scope)
+  │         │
+  │         ├─→ CacheLayer::get(id)  ──hit──→ return EncryptedData
+  │         │        │
+  │         │       miss
+  │         │        │
+  │         ├─→ StorageProvider::retrieve(id)
+  │         │        │
+  │         │   StorageError::NotFound → None
+  │         │   StorageError::* → CredentialError::Storage
+  │         │        │
+  │         ├─→ CacheLayer::insert(id, data, ttl)
+  │         │
+  │         └─→ return Some((EncryptedData, CredentialMetadata))
+  │
+  └── caller decrypts with EncryptionKey → SecretString
+```
+
+### Rotation Flow (RotationTransaction)
+
+```
+RotationScheduler detects policy trigger
+  │
+  ├─→ RotationTransaction::begin()
+  │         │
+  │         ├─→ backup current credential
+  │         ├─→ generate/acquire new credential
+  │         ├─→ store new encrypted state via StorageProvider
+  │         ├─→ grace period: old credential still valid
+  │         │
+  │         ├── failure at any point → rollback to backup
+  │         │
+  │         └─→ revoke old credential (end of grace period)
+  │
+  └─→ CredentialManager emits CredentialRotated event
+            │
+            └─→ resource::Manager::notify_credential_rotated(id, &new_state)
+                      → linked CredentialResource instances call authorize(&new_state)
+                      → pool drained; new acquires use updated auth
+```
+
+## Key Internal Invariants
+
+- `#![forbid(unsafe_code)]` enforced at lib root
+- `CredentialManager` is `Clone`; clones share the same `Arc<StorageProvider>` and `Arc<CacheLayer>`
+- Cache is keyed by `(CredentialId, ScopeId)` — scope isolation is enforced at the cache boundary
+- `CryptoError::DecryptionFailed` is never retried; it is fatal (fail-secure)
+- `SecretString` implements `Debug` with redaction; never exposes raw secret in error messages or logs
+- `StorageProvider::retrieve` is idempotent and safe to retry; `store`/`delete` are not
+- Rotation failure always triggers rollback to the backup credential; new state is never partially applied
+- `core::adapter` module is disabled (TODO Phase 5 comment in source)
 
 ## Security Boundaries
 
