@@ -9,20 +9,65 @@
 
 ## Current Architecture
 
-- module map:
-  - `core/`: `Config`, `ConfigBuilder`, source model, errors/results, traits
-  - `loaders/`: file/env/composite loaders
-  - `validators/`: schema/function/composite/noop validators
-  - `watchers/`: file/polling/noop watchers
-- data/control flow:
-  1. `ConfigBuilder` collects sources/defaults/components
-  2. sources loaded concurrently by loader
-  3. values merged by priority into one JSON tree
-  4. validator chain runs
-  5. optional watcher/reload loop updates in-memory state
-- known bottlenecks:
-  - large nested config merges under frequent reloads
-  - user-defined validation complexity in hot paths
+### Module Map
+
+| Module | File(s) | Responsibility |
+|--------|---------|----------------|
+| `core/config` | `core/config.rs` | `Config` struct; `Arc<RwLock<Value>>` storage; dot-path traversal; merge; reload |
+| `core/builder` | `core/builder.rs` | `ConfigBuilder`; source priority sort; concurrent load; validator gate; hot-reload/auto-reload spawn |
+| `core/source` | `core/source.rs` | `ConfigSource` (11 variants, priority, optional flag); `ConfigFormat`; `SourceMetadata` builder |
+| `core/traits` | `core/traits.rs` | `ConfigLoader`, `ConfigValidator`, `ConfigWatcher`; blanket impl bridging `nebula-validator` |
+| `core/error` | `core/error.rs` | `ConfigError` (15 variants, `#[non_exhaustive]`); `ErrorCategory`; `ContractErrorCategory`; `From` impls |
+| `core/result` | `core/result.rs` | `ConfigResult<T>`; `ConfigResultExt`; `ConfigResultAggregator`; `try_sources` |
+| `loaders/` | `loaders/*.rs` | `FileLoader` (JSON/TOML/YAML/INI/HCL/Properties/env); `EnvLoader`; `CompositeLoader` |
+| `validators/` | `validators/*.rs` | `NoOpValidator`, `FunctionValidator`, `SchemaValidator`, `CompositeValidator` |
+| `watchers/` | `watchers/*.rs` | `FileWatcher` (notify); `PollingWatcher`; `NoOpWatcher`; `ConfigWatchEvent`/`ConfigWatchEventType` |
+| `builders` | `lib.rs` | Convenience factory fns: `from_file`, `from_env`, `standard_app_config`, `with_hot_reload`, `with_schema_validation` |
+| `utils` | `lib.rs` | `check_config_file`, `merge_json_values`, `parse_config_string` |
+
+### Data/Control Flow
+
+```
+ConfigBuilder
+  ├── with_defaults_json()   →  in-memory Value (priority 100)
+  ├── with_source()          →  source list (sorted by priority ascending on build)
+  ├── with_validator()       →  Arc<dyn ConfigValidator>
+  ├── with_watcher()         →  Arc<dyn ConfigWatcher>
+  └── build() ─────────────────────────────────────────────────────────────
+        │
+        ├── join_all: loader.load(source) for each non-Default source ──→ Vec<Value>
+        │
+        ├── merge in priority order (deep-merge objects, replace scalars/arrays)
+        │
+        ├── validator.validate(&merged) ──→ Err blocks activation
+        │
+        ├── Config::new(merged, sources, defaults, ...) stored in Arc<RwLock<Value>>
+        │
+        ├── watcher.start_watching() [if hot_reload]
+        │
+        └── tokio::spawn(auto-reload loop) [if auto_reload_interval]
+
+Config::reload()
+  ├── start from defaults.clone()
+  ├── join_all: loader.load(source) for each non-Default source
+  ├── merge in priority order
+  ├── validator.validate() ──→ Err: preserve previous state
+  └── RwLock::write() → atomic swap
+```
+
+### Key Internal Invariants
+
+- **`Config` is `Clone`:** All mutable state is `Arc`-wrapped (`Arc<RwLock<Value>>`, `Arc<DashMap<...>>`). Clones share the same live state.
+- **Source priority is stable:** Sources sorted at `build()` time; never re-sorted on reload. Insertion order is tiebreaker.
+- **Defaults are re-applied on every reload:** Captured at `build()`, used as merge base each `reload()`. Optional sources do not erase defaults.
+- **Validator is atomic gate:** Failure during `build()` aborts construction; failure during `reload()` preserves previous state.
+- **Auto-reload uses `CancellationToken`:** Spawned task holds an `Arc<Config>` clone. `Config::drop` calls `cancel_token.cancel()`, ensuring the task stops even if the original `Config` is dropped.
+- **`nebula-validator` blanket impl:** Any `T: Validate<Value> + Send + Sync` automatically implements `ConfigValidator` via the bridge in `traits.rs`. Maps `ValidationError` → `ConfigError::ValidationError`.
+- **`ConfigError` is `#[non_exhaustive]`:** Match arms must have a wildcard; new variants are non-breaking at the source level.
+- **Path traversal is dot-notation:** Objects use string keys; arrays use numeric string indices. Creates intermediate objects on `set_value`.
+- **known bottlenecks:**
+  - Large nested config merges under frequent reloads (recursive `merge_json`).
+  - User-defined validation complexity in hot paths.
 
 ## Target Architecture
 
