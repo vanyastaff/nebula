@@ -1,18 +1,25 @@
 [package]
 name = "nebula-desktop"
 version = "0.1.0"
-description = "Nebula desktop shell"
-authors = ["Nebula"]
-edition = "2024"
+description = "Nebula desktop shell (Tauri)"
+authors = ["Nebula Team"]
+edition = "2021"
+
+[lib]
+name = "nebula_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
 tauri = { version = "2.0", features = [] }
+tauri-plugin-opener = "2.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+[workspace]
