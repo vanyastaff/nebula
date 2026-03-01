@@ -1,13 +1,14 @@
 //! API server and routes.
 
 use axum::{
-    Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get,
+    Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::{get, post},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::debug;
+use uuid::Uuid;
 
 use crate::status::{WebhookStatus, WorkerStatus};
 use nebula_webhook::WebhookServer;
@@ -50,6 +51,8 @@ pub fn api_router() -> Router<ApiState> {
     Router::new()
         .route("/health", get(health))
         .route("/api/v1/status", get(status))
+        .route("/auth/oauth/start", post(oauth_start))
+        .route("/auth/oauth/callback", post(oauth_callback))
         .layer(api_cors_layer())
 }
 
@@ -95,6 +98,135 @@ async fn status(State(state): State<ApiState>) -> impl IntoResponse {
         webhook,
     };
     Json(response)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuthStartRequest {
+    provider: String,
+    redirect_uri: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuthStartResponse {
+    auth_url: String,
+    state: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuthCallbackRequest {
+    provider: String,
+    code: String,
+    redirect_uri: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuthCallbackResponse {
+    access_token: String,
+    token_type: String,
+    expires_in: u64,
+}
+
+fn is_mock_oauth_enabled() -> bool {
+    std::env::var("NEBULA_OAUTH_MOCK")
+        .ok()
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(true)
+}
+
+fn is_supported_provider(provider: &str) -> bool {
+    matches!(provider, "google" | "github")
+}
+
+async fn oauth_start(Json(req): Json<OAuthStartRequest>) -> impl IntoResponse {
+    let provider = req.provider.to_lowercase();
+    if !is_supported_provider(&provider) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "unsupported_provider",
+                "message": "provider must be one of: google, github"
+            })),
+        )
+            .into_response();
+    }
+
+    let state = Uuid::new_v4().to_string();
+
+    if is_mock_oauth_enabled() {
+        // Dev scaffold: emulate provider redirect directly back to desktop deep-link.
+        let auth_url = format!(
+            "{}?code=mock_{}&provider={}&state={}",
+            req.redirect_uri, state, provider, state
+        );
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!(OAuthStartResponse { auth_url, state })),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({
+            "error": "oauth_not_configured",
+            "message": "real OAuth provider config is not implemented yet",
+            "provider": provider
+        })),
+    )
+        .into_response()
+}
+
+async fn oauth_callback(Json(req): Json<OAuthCallbackRequest>) -> impl IntoResponse {
+    let provider = req.provider.to_lowercase();
+    if !is_supported_provider(&provider) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "unsupported_provider",
+                "message": "provider must be one of: google, github"
+            })),
+        )
+            .into_response();
+    }
+
+    if req.code.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_code",
+                "message": "code is required"
+            })),
+        )
+            .into_response();
+    }
+
+    if is_mock_oauth_enabled() && req.code.starts_with("mock_") {
+        let token = format!("mock_token_{}_{}", provider, Uuid::new_v4());
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!(OAuthCallbackResponse {
+                access_token: token,
+                token_type: "Bearer".to_string(),
+                expires_in: 3600
+            })),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({
+            "error": "oauth_callback_not_configured",
+            "message": "real OAuth code exchange is not implemented yet",
+            "provider": provider,
+            "redirectUri": req.redirect_uri
+        })),
+    )
+        .into_response()
 }
 
 /// Unified API server: holds config and can run the combined app.

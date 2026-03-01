@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default desktop capability set for Nebula Desktop.","local":true,"windows":["main"],"permissions":["core:default","opener:default"]}}
+{"default":{"identifier":"default","description":"Default desktop capability set for Nebula Desktop.","local":true,"windows":["main"],"permissions":["core:default","opener:default","deep-link:default"]}}
