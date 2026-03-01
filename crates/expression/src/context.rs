@@ -3,6 +3,7 @@
 //! This module provides the context in which expressions are evaluated,
 //! including access to $node, $execution, $workflow, and $input variables.
 
+use crate::policy::EvaluationPolicy;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,6 +19,8 @@ pub struct EvaluationContext {
     workflow: Arc<Value>,
     /// Input data ($input.item, $input.all, etc.)
     input: Arc<Value>,
+    /// Optional per-context evaluation policy override.
+    policy: Option<Arc<EvaluationPolicy>>,
 }
 
 impl EvaluationContext {
@@ -28,6 +31,7 @@ impl EvaluationContext {
             execution_vars: HashMap::new(),
             workflow: Arc::new(Value::Object(serde_json::Map::new())),
             input: Arc::new(Value::Object(serde_json::Map::new())),
+            policy: None,
         }
     }
 
@@ -71,6 +75,16 @@ impl EvaluationContext {
     /// Get the input data
     pub fn get_input(&self) -> Arc<Value> {
         Arc::clone(&self.input)
+    }
+
+    /// Set an optional policy override for this context.
+    pub fn set_policy(&mut self, policy: EvaluationPolicy) {
+        self.policy = Some(Arc::new(policy));
+    }
+
+    /// Get the optional policy override.
+    pub fn policy(&self) -> Option<&EvaluationPolicy> {
+        self.policy.as_deref()
     }
 
     /// Resolve a variable by name
@@ -122,6 +136,7 @@ pub struct EvaluationContextBuilder {
     execution_vars: HashMap<Arc<str>, Arc<Value>>,
     workflow: Option<Arc<Value>>,
     input: Option<Arc<Value>>,
+    policy: Option<Arc<EvaluationPolicy>>,
 }
 
 impl EvaluationContextBuilder {
@@ -156,6 +171,12 @@ impl EvaluationContextBuilder {
         self
     }
 
+    /// Set a policy override for contexts created by this builder.
+    pub fn policy(mut self, policy: EvaluationPolicy) -> Self {
+        self.policy = Some(Arc::new(policy));
+        self
+    }
+
     /// Build the evaluation context
     pub fn build(self) -> EvaluationContext {
         EvaluationContext {
@@ -167,6 +188,7 @@ impl EvaluationContextBuilder {
             input: self
                 .input
                 .unwrap_or_else(|| Arc::new(Value::Object(serde_json::Map::new()))),
+            policy: self.policy,
         }
     }
 }
@@ -203,6 +225,18 @@ mod tests {
             ctx.get_execution_var("id").unwrap().as_str(),
             Some("exec-123")
         );
+    }
+
+    #[test]
+    fn test_policy_override_set_and_get() {
+        let policy = EvaluationPolicy::allow_only(["uppercase"]);
+        let mut ctx = EvaluationContext::new();
+        ctx.set_policy(policy.clone());
+        assert!(ctx.policy().is_some());
+        assert!(ctx.policy().unwrap().allowed_functions().unwrap().contains("uppercase"));
+
+        let ctx2 = EvaluationContext::builder().policy(policy).build();
+        assert!(ctx2.policy().is_some());
     }
 
     #[test]

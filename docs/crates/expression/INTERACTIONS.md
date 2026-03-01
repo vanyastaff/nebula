@@ -15,6 +15,7 @@
 - optional `expression-policy` layer:
   - why it will exist: centralized rules for function allowlist, strict modes, and cost budgets.
   - expected owner/boundary: policy composition on top of core engine.
+  - current progress: engine-level MVP allowlist exists via `ExpressionEngine::restrict_to_functions(...)`.
 
 ## Downstream Consumers
 

@@ -7,6 +7,7 @@ use crate::builtins::BuiltinRegistry;
 use crate::context::EvaluationContext;
 use crate::core::ast::{BinaryOp, Expr};
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
+use crate::policy::EvaluationPolicy;
 use parking_lot::Mutex;
 #[cfg(feature = "regex")]
 use regex::Regex;
@@ -29,6 +30,7 @@ const MAX_REGEX_CACHE_SIZE: usize = 100;
 /// Evaluator for expression ASTs
 pub struct Evaluator {
     builtins: Arc<BuiltinRegistry>,
+    policy: Option<Arc<EvaluationPolicy>>,
     /// Regex cache (pattern -> compiled Regex)
     /// Using Mutex for thread-safe interior mutability
     #[cfg(feature = "regex")]
@@ -38,8 +40,17 @@ pub struct Evaluator {
 impl Evaluator {
     /// Create a new evaluator with the given builtin registry
     pub fn new(builtins: Arc<BuiltinRegistry>) -> Self {
+        Self::with_policy(builtins, None)
+    }
+
+    /// Create a new evaluator with an optional policy.
+    pub fn with_policy(
+        builtins: Arc<BuiltinRegistry>,
+        policy: Option<Arc<EvaluationPolicy>>,
+    ) -> Self {
         Self {
             builtins,
+            policy,
             #[cfg(feature = "regex")]
             regex_cache: Mutex::new(HashMap::new()),
         }
@@ -715,6 +726,7 @@ impl Evaluator {
         context: &EvaluationContext,
         _depth: usize,
     ) -> ExpressionResult<Value> {
+        self.ensure_function_allowed(name, context)?;
         self.builtins.call(name, args, self, context)
     }
 
@@ -742,6 +754,10 @@ impl Evaluator {
         context: &EvaluationContext,
         depth: usize,
     ) -> Option<ExpressionResult<Value>> {
+        if let Err(err) = self.ensure_function_allowed(name, context) {
+            return Some(Err(err));
+        }
+
         match name {
             "filter" => Some(self.eval_filter(args, context, depth)),
             "map" => Some(self.eval_map(args, context, depth)),
@@ -751,6 +767,59 @@ impl Evaluator {
             "some" | "any" => Some(self.eval_some(args, context, depth)),
             _ => None,
         }
+    }
+
+    fn canonical_function_name<'a>(&self, name: &'a str) -> &'a str {
+        match name {
+            "all" => "every",
+            "any" => "some",
+            _ => name,
+        }
+    }
+
+    fn ensure_function_allowed(&self, name: &str, context: &EvaluationContext) -> ExpressionResult<()> {
+        let canonical = self.canonical_function_name(name);
+        let policies = [self.policy.as_deref(), context.policy()];
+
+        for policy in policies.into_iter().flatten() {
+            let denied = policy.denied_functions();
+            if denied.contains(name) || denied.contains(canonical) {
+                return Err(ExpressionError::expression_eval_error(format!(
+                    "Function '{}' is denied by policy",
+                    name
+                )));
+            }
+        }
+
+        for policy in policies.into_iter().flatten() {
+            if self.is_allowed_by_policy(policy, name, canonical) {
+                continue;
+            }
+            return Err(ExpressionError::expression_eval_error(format!(
+                "Function '{}' is not allowed by policy",
+                name
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn is_allowed_by_policy(&self, policy: &EvaluationPolicy, name: &str, canonical: &str) -> bool {
+        let Some(allowed) = policy.allowed_functions() else {
+            return true;
+        };
+
+        if allowed.contains(name) || allowed.contains(canonical) {
+            return true;
+        }
+
+        matches!(
+            canonical,
+            "every" if allowed.contains("all")
+        ) || matches!(
+            canonical,
+            "some" if allowed.contains("any")
+        )
     }
 
     /// Filter array elements using a lambda predicate
@@ -1045,10 +1114,17 @@ impl Evaluator {
 mod tests {
     use super::*;
     use crate::builtins::BuiltinRegistry;
+    use crate::policy::EvaluationPolicy;
 
     fn create_evaluator() -> Evaluator {
         let registry = Arc::new(BuiltinRegistry::new());
         Evaluator::new(registry)
+    }
+
+    fn create_evaluator_with_allowlist(functions: &[&str]) -> Evaluator {
+        let registry = Arc::new(BuiltinRegistry::new());
+        let policy = EvaluationPolicy::allow_only(functions.iter().copied());
+        Evaluator::with_policy(registry, Some(Arc::new(policy)))
     }
 
     #[test]
@@ -1560,5 +1636,37 @@ mod tests {
 
         let result2 = evaluator.eval(&expr2, &context).unwrap();
         assert_eq!(result2.as_bool(), Some(false));
+    }
+
+    #[test]
+    fn test_allowlist_alias_for_higher_order_function() {
+        let evaluator = create_evaluator_with_allowlist(&["all"]);
+        let context = EvaluationContext::new();
+
+        let expr = Expr::FunctionCall {
+            name: Arc::from("every"),
+            args: vec![
+                Expr::Array(vec![
+                    Expr::Literal(Value::Number(2.into())),
+                    Expr::Literal(Value::Number(4.into())),
+                    Expr::Literal(Value::Number(6.into())),
+                ]),
+                Expr::Lambda {
+                    param: Arc::from("x"),
+                    body: Box::new(Expr::Binary {
+                        left: Box::new(Expr::Binary {
+                            left: Box::new(Expr::Variable(Arc::from("x"))),
+                            op: BinaryOp::Modulo,
+                            right: Box::new(Expr::Literal(Value::Number(2.into()))),
+                        }),
+                        op: BinaryOp::Equal,
+                        right: Box::new(Expr::Literal(Value::Number(0.into()))),
+                    }),
+                },
+            ],
+        };
+
+        let result = evaluator.eval(&expr, &context).unwrap();
+        assert_eq!(result.as_bool(), Some(true));
     }
 }

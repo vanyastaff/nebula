@@ -134,13 +134,26 @@ pub mod engine;
 pub mod error;
 pub mod error_formatter;
 pub mod maybe;
+pub mod policy;
 pub mod template;
 pub mod value_utils;
 
 // Internal modules - not part of stable public API
 // These are exposed for advanced use cases but may change between versions
 #[doc(hidden)]
-pub mod core;
+pub mod core {
+    #[path = "../ast.rs"]
+    pub mod ast;
+    pub mod error {
+        pub use crate::error::{ExpressionError, ExpressionErrorExt, ExpressionResult};
+    }
+    #[path = "../interner.rs"]
+    pub mod interner;
+    #[path = "../span.rs"]
+    pub mod span;
+    #[path = "../token.rs"]
+    pub mod token;
+}
 #[doc(hidden)]
 pub mod eval;
 #[doc(hidden)]
@@ -152,6 +165,7 @@ pub mod parser;
 pub use context::{EvaluationContext, EvaluationContextBuilder};
 pub use engine::ExpressionEngine;
 pub use maybe::{CachedExpression, MaybeExpression};
+pub use policy::EvaluationPolicy;
 pub use template::{MaybeTemplate, Template};
 
 // Internal types - only exported for advanced use cases
@@ -175,6 +189,7 @@ pub use serde_json::Value;
 pub mod prelude {
     pub use crate::{
         EvaluationContext, EvaluationContextBuilder, ExpressionEngine, ExpressionError,
-        ExpressionErrorExt, ExpressionResult, MaybeExpression, MaybeTemplate, Template, Value,
+        ExpressionErrorExt, ExpressionResult, EvaluationPolicy, MaybeExpression, MaybeTemplate,
+        Template, Value,
     };
 }

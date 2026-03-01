@@ -10,6 +10,7 @@ use crate::core::error::ExpressionResult;
 use crate::eval::Evaluator;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
+use crate::policy::EvaluationPolicy;
 use nebula_log::{debug, trace};
 use nebula_memory::cache::{CacheConfig, ConcurrentComputeCache};
 use serde_json::Value;
@@ -23,29 +24,37 @@ pub struct ExpressionEngine {
     template_cache: Option<ConcurrentComputeCache<Arc<str>, crate::Template>>,
     /// Builtin function registry
     builtins: Arc<BuiltinRegistry>,
+    /// Optional engine-level evaluation policy.
+    policy: Option<Arc<EvaluationPolicy>>,
     /// Evaluator
     evaluator: Evaluator,
 }
 
 impl ExpressionEngine {
-    /// Create a new expression engine with default configuration (no caching)
-    pub fn new() -> Self {
+    fn create(
+        expr_cache: Option<ConcurrentComputeCache<Arc<str>, Expr>>,
+        template_cache: Option<ConcurrentComputeCache<Arc<str>, crate::Template>>,
+        policy: Option<Arc<EvaluationPolicy>>,
+    ) -> Self {
         let builtins = Arc::new(BuiltinRegistry::new());
-        let evaluator = Evaluator::new(Arc::clone(&builtins));
+        let evaluator = Evaluator::with_policy(Arc::clone(&builtins), policy.clone());
 
         Self {
-            expr_cache: None,
-            template_cache: None,
+            expr_cache,
+            template_cache,
             builtins,
+            policy,
             evaluator,
         }
     }
 
+    /// Create a new expression engine with default configuration (no caching)
+    pub fn new() -> Self {
+        Self::create(None, None, None)
+    }
+
     /// Create a new expression engine with caching for both expressions and templates
     pub fn with_cache_size(size: usize) -> Self {
-        let builtins = Arc::new(BuiltinRegistry::new());
-        let evaluator = Evaluator::new(Arc::clone(&builtins));
-
         let expr_config = CacheConfig::new(size);
         let expr_cache = ConcurrentComputeCache::with_config(expr_config);
 
@@ -57,19 +66,11 @@ impl ExpressionEngine {
             "Created expression engine with lock-free concurrent caches"
         );
 
-        Self {
-            expr_cache: Some(expr_cache),
-            template_cache: Some(template_cache),
-            builtins,
-            evaluator,
-        }
+        Self::create(Some(expr_cache), Some(template_cache), None)
     }
 
     /// Create expression engine with separate cache sizes for expressions and templates
     pub fn with_cache_sizes(expr_cache_size: usize, template_cache_size: usize) -> Self {
-        let builtins = Arc::new(BuiltinRegistry::new());
-        let evaluator = Evaluator::new(Arc::clone(&builtins));
-
         let expr_config = CacheConfig::new(expr_cache_size);
         let expr_cache = ConcurrentComputeCache::with_config(expr_config);
 
@@ -82,12 +83,37 @@ impl ExpressionEngine {
             "Created expression engine with lock-free concurrent caches"
         );
 
-        Self {
-            expr_cache: Some(expr_cache),
-            template_cache: Some(template_cache),
-            builtins,
-            evaluator,
-        }
+        Self::create(Some(expr_cache), Some(template_cache), None)
+    }
+
+    /// Restrict the engine to a specific set of allowed builtin function names.
+    ///
+    /// When set, any function call outside this allowlist fails with an evaluation error.
+    /// Use canonical names (`every`, `some`) or aliases (`all`, `any`) for higher-order functions.
+    pub fn restrict_to_functions<I, S>(mut self, allowed_functions: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.policy = Some(Arc::new(EvaluationPolicy::allow_only(allowed_functions)));
+        self.rebuild_evaluator();
+        self
+    }
+
+    /// Set an engine-level policy.
+    pub fn with_policy(mut self, policy: EvaluationPolicy) -> Self {
+        self.policy = Some(Arc::new(policy));
+        self.rebuild_evaluator();
+        self
+    }
+
+    /// Return the current engine-level policy, if configured.
+    pub fn policy(&self) -> Option<&EvaluationPolicy> {
+        self.policy.as_deref()
+    }
+
+    fn rebuild_evaluator(&mut self) {
+        self.evaluator = Evaluator::with_policy(Arc::clone(&self.builtins), self.policy.clone());
     }
 
     /// Register a custom builtin function
@@ -249,6 +275,7 @@ impl Default for ExpressionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::EvaluationPolicy;
 
     #[test]
     fn test_evaluate_literal() {
@@ -496,5 +523,56 @@ mod tests {
         let template1 = engine.parse_template("Test").unwrap();
         let template2 = engine.get_template("Test").unwrap();
         assert_eq!(template1.source(), template2.source());
+    }
+
+    #[test]
+    fn test_function_allowlist_permits_allowed_function() {
+        let engine = ExpressionEngine::new().restrict_to_functions(["uppercase"]);
+        let context = EvaluationContext::new();
+
+        let result = engine.evaluate("uppercase('hello')", &context).unwrap();
+        assert_eq!(result.as_str(), Some("HELLO"));
+    }
+
+    #[test]
+    fn test_function_allowlist_blocks_disallowed_function() {
+        let engine = ExpressionEngine::new().restrict_to_functions(["uppercase"]);
+        let context = EvaluationContext::new();
+
+        let err = engine.evaluate("lowercase('HELLO')", &context).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not allowed by policy"));
+        assert!(msg.contains("lowercase"));
+    }
+
+    #[test]
+    fn test_policy_deny_takes_precedence_over_allow() {
+        let policy = EvaluationPolicy::new()
+            .with_allowed_functions(["uppercase", "lowercase"])
+            .with_denied_functions(["lowercase"]);
+        let engine = ExpressionEngine::new().with_policy(policy);
+        let context = EvaluationContext::new();
+
+        let err = engine.evaluate("lowercase('HELLO')", &context).unwrap_err();
+        assert!(err.to_string().contains("denied by policy"));
+    }
+
+    #[test]
+    fn test_context_policy_restricts_engine_policy() {
+        let engine = ExpressionEngine::new()
+            .with_policy(EvaluationPolicy::new().with_allowed_functions(["uppercase", "length"]));
+
+        let mut context = EvaluationContext::new();
+        context.set_policy(EvaluationPolicy::allow_only(["length"]));
+
+        let err = engine.evaluate("uppercase('hello')", &context).unwrap_err();
+        assert!(err.to_string().contains("not allowed by policy"));
+    }
+
+    #[test]
+    fn test_engine_policy_strict_mode_flag_exposed() {
+        let engine = ExpressionEngine::new()
+            .with_policy(EvaluationPolicy::new().with_strict_mode(true));
+        assert!(engine.policy().unwrap().strict_mode());
     }
 }

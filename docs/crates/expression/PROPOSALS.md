@@ -150,4 +150,9 @@ Compatibility impact:
 
 Additive.
 
-Status: Draft
+Status: In Progress
+
+Notes:
+
+- engine now supports `ExpressionEngine::restrict_to_functions(...)` as an MVP allowlist.
+- current scope is engine-level policy only; per-context and external policy composition remain open.

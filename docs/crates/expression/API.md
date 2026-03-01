@@ -3,7 +3,7 @@
 ## Public Surface
 
 - stable APIs:
-  - `ExpressionEngine` (`new`, `with_cache_size`, `evaluate`, `parse_template`, `render_template`)
+  - `ExpressionEngine` (`new`, `with_cache_size`, `with_cache_sizes`, `restrict_to_functions`, `evaluate`, `parse_template`, `render_template`)
   - `EvaluationContext` + builder
   - `Template` / `MaybeTemplate`
   - `MaybeExpression` / `CachedExpression`
@@ -48,6 +48,20 @@ ctx.set_execution_var("order_id", json!(42));
 let tpl = engine.parse_template("Hello {{ $input | uppercase() }} #{{ $execution.order_id }}")?;
 let rendered = engine.render_template(&tpl, &ctx)?;
 assert_eq!(rendered, "Hello ALICE #42");
+# Ok::<(), nebula_expression::ExpressionError>(())
+```
+
+## Policy Example (Function Allowlist)
+
+```rust
+use nebula_expression::{EvaluationContext, ExpressionEngine};
+
+let engine = ExpressionEngine::new().restrict_to_functions(["uppercase", "length"]);
+let ctx = EvaluationContext::new();
+
+let out = engine.evaluate("uppercase('alice')", &ctx)?;
+assert_eq!(out.as_str(), Some("ALICE"));
+assert!(engine.evaluate("lowercase('ALICE')", &ctx).is_err());
 # Ok::<(), nebula_expression::ExpressionError>(())
 ```
 

@@ -14,20 +14,25 @@ pub struct Span {
 }
 
 impl Span {
+    #[inline]
+    fn usize_to_u32_saturating(value: usize) -> u32 {
+        u32::try_from(value).unwrap_or(u32::MAX)
+    }
+
     /// Create a new span
     pub fn new(start: usize, end: usize) -> Self {
         Self {
-            start: start as u32,
-            end: end as u32,
+            start: Self::usize_to_u32_saturating(start),
+            end: Self::usize_to_u32_saturating(end),
         }
     }
 
     /// Create a span for a single character
     pub fn single(pos: usize) -> Self {
-        let pos = pos as u32;
+        let pos = Self::usize_to_u32_saturating(pos);
         Self {
             start: pos,
-            end: pos + 1,
+            end: pos.saturating_add(1),
         }
     }
 
@@ -87,7 +92,7 @@ impl Span {
         let start = self.start as usize;
         let end = (self.end as usize).min(source.len());
 
-        for ch in source[start..end].chars() {
+        for ch in source.get(start..end).unwrap_or("").chars() {
             if ch == '\n' {
                 line += 1;
                 col = 1;
@@ -173,5 +178,27 @@ mod tests {
         assert_eq!(start_col, 1);
         assert_eq!(end_line, 2);
         assert_eq!(end_col, 6);
+    }
+
+    #[test]
+    fn test_span_new_saturates_large_values() {
+        let span = Span::new(usize::MAX, usize::MAX);
+        assert_eq!(span.start, u32::MAX);
+        assert_eq!(span.end, u32::MAX);
+        assert!(span.is_empty());
+    }
+
+    #[test]
+    fn test_span_single_saturates_end() {
+        let span = Span::single(usize::MAX);
+        assert_eq!(span.start, u32::MAX);
+        assert_eq!(span.end, u32::MAX);
+    }
+
+    #[test]
+    fn test_line_col_range_out_of_bounds_does_not_panic() {
+        let source = "abc";
+        let span = Span::new(1000, 2000);
+        let ((_start_line, _start_col), (_end_line, _end_col)) = span.line_col_range(source);
     }
 }
