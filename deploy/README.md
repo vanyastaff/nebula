@@ -30,6 +30,26 @@ cd deploy
 docker compose -f docker/docker-compose.yml up -d
 ```
 
+## Локально: observability для `nebula-log` telemetry (OTLP + Jaeger)
+
+Поднимает OpenTelemetry Collector и Jaeger UI для проверки трейсов:
+
+```bash
+docker compose -f deploy/docker/docker-compose.observability.yml up -d
+```
+
+После запуска:
+
+- OTLP gRPC endpoint для приложения: `http://localhost:4317`
+- OTLP HTTP endpoint для приложения: `http://localhost:4318`
+- Jaeger UI: `http://localhost:16686`
+
+Остановить и удалить контейнеры:
+
+```bash
+docker compose -f deploy/docker/docker-compose.observability.yml down
+```
+
 ## Kubernetes
 
 Манифесты в `kubernetes/` — для деплоя в кластер. БД может быть внешней (RDS, Cloud SQL) или подниматься в кластере (StatefulSet/оператор). См. комментарии в файлах в `kubernetes/`.
