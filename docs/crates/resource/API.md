@@ -6,11 +6,74 @@
   - `Resource`, `Config`, `Context`, `Scope`, `Strategy`
   - `Manager`, `ManagerBuilder`, `Pool`, `PoolConfig`, `PoolStrategy`
   - `ResourceProvider`, `ResourceRef`
+  - `ResourceMetadata` — display name, description, icon, tags (used by API + desktop UI)
   - `Error` and `Result`
+- observability APIs (stable, used by nebula-api for `GET /resources`):
+  - `Manager::list_status()` → `Vec<ResourceStatus>` *(target — Phase 2)*
+  - `Manager::get_status(id)` → `Option<ResourceStatus>` *(target — Phase 2)*
+  - `Manager::event_bus()` → `&Arc<EventBus>` — subscribe to live `ResourceEvent` stream
+  - `EventBus::subscribe()` → `broadcast::Receiver<ResourceEvent>`
 - experimental APIs:
   - autoscaling and some advanced observability behavior should be treated as evolving contracts.
 - hidden/internal APIs:
   - `manager_guard`, `manager_pool` are internal orchestration details.
+
+## Observability Read Model
+
+### `ResourceStatus` *(target — Phase 2)*
+
+Aggregate snapshot combining metadata, health, pool stats, and quarantine state.
+Used by `nebula-api` to serve `GET /resources` and `GET /resources/:id`.
+
+```rust
+/// Snapshot of a resource's current state for external observers (API, UI).
+#[derive(Debug, Clone, Serialize)]
+pub struct ResourceStatus {
+    /// Static metadata: id, name, description, icon, tags.
+    pub metadata: ResourceMetadata,
+    /// Current health state.
+    pub health: HealthState,            // Healthy | Degraded | Unhealthy
+    /// Pool utilisation counters.
+    pub pool: PoolStats,                // idle, in_use, waiting, max_size
+    /// Whether the resource is currently quarantined.
+    pub quarantined: bool,
+    /// Quarantine reason, if quarantined.
+    pub quarantine_reason: Option<String>,
+    /// Scope this resource is registered under.
+    pub scope: Scope,
+}
+```
+
+`Manager::list_status()` collects a snapshot from `self.pools`, `self.health_states`,
+`self.quarantine`, and `self.metadata` in one call. No locks held across the snapshot.
+
+### `ResourceEvent` — live stream
+
+The `EventBus` emits events on every lifecycle transition:
+
+| Event | Key fields | Meaning |
+|-------|------------|---------|
+| `HealthChanged { from, to }` | resource_id | Health state transition |
+| `Acquired { wait_duration }` | resource_id | Instance handed to caller |
+| `Released { usage_duration }` | resource_id | Instance returned to pool |
+| `PoolExhausted { waiters }` | resource_id | Pool full, callers waiting |
+| `Quarantined { reason }` | resource_id | Resource put in quarantine |
+| `QuarantineReleased` | resource_id, recovery_attempts | Recovered |
+| `Error { error }` | resource_id | Operation failed |
+| `CleanedUp { reason }` | resource_id | Instance permanently removed |
+
+**Streaming pattern (used by `nebula-api` SSE handler):**
+
+```rust
+let mut rx = manager.event_bus().subscribe();
+// In axum SSE handler:
+while let Ok(event) = rx.recv().await {
+    let json = serde_json::to_string(&event)?;
+    yield SseEvent::default().data(json);
+}
+```
+
+Each SSE connection gets its own `broadcast::Receiver` — no shared mutable state.
 
 ## Usage Patterns
 

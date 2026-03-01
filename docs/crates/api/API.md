@@ -65,6 +65,27 @@
 | GET | /nodes | List available node types |
 | GET | /nodes/:type | Get node definition + parameter schema |
 
+#### Resources *(Phase 4)*
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /resources | List all resources with health + pool stats (snapshot) |
+| GET | /resources/:id | Single resource status detail |
+| GET | /resources/events | **SSE** — live stream of `ResourceEvent` (one event per line, JSON) |
+| POST | /resources/:id/drain | Admin: drain all pool instances, block new acquires until complete |
+
+**SSE event shape:**
+
+```json
+{ "type": "HealthChanged", "resource_id": "postgres", "from": "Healthy", "to": "Degraded" }
+{ "type": "Acquired",      "resource_id": "redis",    "wait_duration_ms": 12 }
+{ "type": "PoolExhausted", "resource_id": "postgres", "waiters": 3 }
+{ "type": "Quarantined",   "resource_id": "redis",    "reason": "health check failed 3 times" }
+```
+
+Desktop connects with `EventSource('/resources/events')`, updates TanStack Query cache on each event
+without polling. Each SSE connection subscribes independently to `Manager::event_bus()`.
+
 ## Usage Patterns
 
 ### Run server (blocking)

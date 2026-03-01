@@ -32,6 +32,12 @@
   - expects deterministic shutdown and health propagation.
 - driver crates:
   - expect stable trait contracts (`Resource`, `Config`).
+- `nebula-api` *(Phase 2)*:
+  - expects `Manager::list_status()` → `Vec<ResourceStatus>` for `GET /resources`.
+  - expects `Manager::get_status(id)` → `Option<ResourceStatus>` for `GET /resources/:id`.
+  - expects `Manager::event_bus().subscribe()` for live SSE stream at `GET /resources/events`.
+  - expects `Manager::drain(id)` → `Result<()>` for admin `POST /resources/:id/drain`.
+  - **read-only contract**: api layer never registers or deregisters resources; it only reads state and subscribes to events.
 
 ## Upstream Dependencies
 
@@ -58,6 +64,7 @@
 | resource <-> config | in | typed pool/resource config | sync/async | validation blocks activation | boot and reload path |
 | resource <-> resilience | in/out | retry/circuit-breaker integration | async | avoid hidden retries inside pool | explicit ownership split |
 | resource <-> telemetry/log | out | hooks/events/metrics stream | async | observability errors never block acquire | additive layer |
+| resource <-> nebula-api | out | `list_status()`, `event_bus().subscribe()` | sync/async | api reads snapshot; errors return 503 | read-only; Phase 2 |
 
 ## Runtime Sequence
 
