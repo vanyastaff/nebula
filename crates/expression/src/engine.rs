@@ -620,6 +620,18 @@ mod tests {
     }
 
     #[test]
+    fn test_strict_mode_requires_boolean_higher_order_predicates() {
+        let engine =
+            ExpressionEngine::new().with_policy(EvaluationPolicy::new().with_strict_mode(true));
+        let context = EvaluationContext::new();
+
+        let err = engine
+            .evaluate("filter([1,2,3], x => x)", &context)
+            .unwrap_err();
+        assert!(err.to_string().contains("expected boolean"));
+    }
+
+    #[test]
     fn test_cache_overview_no_cache() {
         let engine = ExpressionEngine::new();
         let overview = engine.cache_overview();

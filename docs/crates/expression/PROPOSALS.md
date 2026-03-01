@@ -35,7 +35,7 @@ Status: In Progress
 Notes:
 
 - added strict-mode execution flag in `EvaluationPolicy`.
-- current strict behavior requires boolean operands for `if`, `!`, `&&`, and `||`.
+- current strict behavior requires boolean operands/results for `if`, `!`, `&&`, `||`, and higher-order predicates (`filter/find/every/some`).
 - arithmetic/comparison coercion hardening is still pending.
 
 ## P002: Function Namespace Versioning

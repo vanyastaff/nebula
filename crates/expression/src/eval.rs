@@ -11,7 +11,7 @@ use crate::policy::EvaluationPolicy;
 use parking_lot::Mutex;
 #[cfg(feature = "regex")]
 use regex::Regex;
-use serde_json::Value;
+use serde_json::{Number, Value};
 #[cfg(feature = "regex")]
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -113,13 +113,7 @@ impl Evaluator {
 
             Expr::Not(expr) => {
                 let val = self.eval_with_depth(expr, context, depth + 1)?;
-                if self.strict_mode_enabled(context) && !val.is_boolean() {
-                    return Err(ExpressionError::expression_type_error(
-                        "boolean",
-                        crate::value_utils::value_type_name(&val),
-                    ));
-                }
-                Ok(Value::Bool(!crate::value_utils::to_boolean(&val)))
+                Ok(Value::Bool(!self.coerce_boolean(&val, context)?))
             }
 
             Expr::Binary { left, op, right } => {
@@ -184,13 +178,7 @@ impl Evaluator {
                 else_expr,
             } => {
                 let cond_val = self.eval_with_depth(condition, context, depth + 1)?;
-                if self.strict_mode_enabled(context) && !cond_val.is_boolean() {
-                    return Err(ExpressionError::expression_type_error(
-                        "boolean",
-                        crate::value_utils::value_type_name(&cond_val),
-                    ));
-                }
-                if crate::value_utils::to_boolean(&cond_val) {
+                if self.coerce_boolean(&cond_val, context)? {
                     self.eval_with_depth(then_expr, context, depth + 1)
                 } else {
                     self.eval_with_depth(else_expr, context, depth + 1)
@@ -238,45 +226,21 @@ impl Evaluator {
         match op {
             BinaryOp::And => {
                 let left_val = self.eval_with_depth(left, context, depth + 1)?;
-                if self.strict_mode_enabled(context) && !left_val.is_boolean() {
-                    return Err(ExpressionError::expression_type_error(
-                        "boolean",
-                        crate::value_utils::value_type_name(&left_val),
-                    ));
-                }
-                if !crate::value_utils::to_boolean(&left_val) {
+                if !self.coerce_boolean(&left_val, context)? {
                     // Short-circuit: if left is false, don't evaluate right
                     return Ok(Value::Bool(false));
                 }
                 let right_val = self.eval_with_depth(right, context, depth + 1)?;
-                if self.strict_mode_enabled(context) && !right_val.is_boolean() {
-                    return Err(ExpressionError::expression_type_error(
-                        "boolean",
-                        crate::value_utils::value_type_name(&right_val),
-                    ));
-                }
-                Ok(Value::Bool(crate::value_utils::to_boolean(&right_val)))
+                Ok(Value::Bool(self.coerce_boolean(&right_val, context)?))
             }
             BinaryOp::Or => {
                 let left_val = self.eval_with_depth(left, context, depth + 1)?;
-                if self.strict_mode_enabled(context) && !left_val.is_boolean() {
-                    return Err(ExpressionError::expression_type_error(
-                        "boolean",
-                        crate::value_utils::value_type_name(&left_val),
-                    ));
-                }
-                if crate::value_utils::to_boolean(&left_val) {
+                if self.coerce_boolean(&left_val, context)? {
                     // Short-circuit: if left is true, don't evaluate right
                     return Ok(Value::Bool(true));
                 }
                 let right_val = self.eval_with_depth(right, context, depth + 1)?;
-                if self.strict_mode_enabled(context) && !right_val.is_boolean() {
-                    return Err(ExpressionError::expression_type_error(
-                        "boolean",
-                        crate::value_utils::value_type_name(&right_val),
-                    ));
-                }
-                Ok(Value::Bool(crate::value_utils::to_boolean(&right_val)))
+                Ok(Value::Bool(self.coerce_boolean(&right_val, context)?))
             }
             // For all other operators, evaluate both operands
             _ => {
@@ -321,8 +285,8 @@ impl Evaluator {
                         })
                 } else {
                     // At least one is float
-                    let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
-                    let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                    let lf = self.number_to_f64(l)?;
+                    let rf = self.number_to_f64(r)?;
                     Ok(serde_json::json!(lf + rf))
                 }
             }
@@ -358,8 +322,8 @@ impl Evaluator {
                             ExpressionError::expression_eval_error("Arithmetic overflow")
                         })
                 } else {
-                    let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
-                    let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                    let lf = self.number_to_f64(l)?;
+                    let rf = self.number_to_f64(r)?;
                     Ok(serde_json::json!(lf - rf))
                 }
             }
@@ -388,8 +352,8 @@ impl Evaluator {
                             ExpressionError::expression_eval_error("Arithmetic overflow")
                         })
                 } else {
-                    let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
-                    let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                    let lf = self.number_to_f64(l)?;
+                    let rf = self.number_to_f64(r)?;
                     Ok(serde_json::json!(lf * rf))
                 }
             }
@@ -410,8 +374,8 @@ impl Evaluator {
         match (left, right) {
             (Value::Number(l), Value::Number(r)) => {
                 // Always use floating point for division
-                let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
-                let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                let lf = self.number_to_f64(l)?;
+                let rf = self.number_to_f64(r)?;
 
                 if rf == 0.0 {
                     return Err(ExpressionError::expression_division_by_zero());
@@ -443,8 +407,8 @@ impl Evaluator {
                     Ok(Value::Number((li % ri).into()))
                 } else {
                     // Fall back to float modulo
-                    let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
-                    let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                    let lf = self.number_to_f64(l)?;
+                    let rf = self.number_to_f64(r)?;
                     if rf == 0.0 {
                         return Err(ExpressionError::expression_division_by_zero());
                     }
@@ -468,8 +432,8 @@ impl Evaluator {
         match (left, right) {
             (Value::Number(l), Value::Number(r)) => {
                 // Always use floating point for power operations
-                let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
-                let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                let lf = self.number_to_f64(l)?;
+                let rf = self.number_to_f64(r)?;
                 Ok(serde_json::json!(lf.powf(rf)))
             }
             _ => Err(ExpressionError::expression_type_error(
@@ -488,8 +452,8 @@ impl Evaluator {
     fn less_than(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
             (Value::Number(l), Value::Number(r)) => {
-                let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
-                let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                let lf = self.number_to_f64(l)?;
+                let rf = self.number_to_f64(r)?;
                 Ok(Value::Bool(lf < rf))
             }
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l < r)),
@@ -509,8 +473,8 @@ impl Evaluator {
     fn greater_than(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
             (Value::Number(l), Value::Number(r)) => {
-                let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
-                let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                let lf = self.number_to_f64(l)?;
+                let rf = self.number_to_f64(r)?;
                 Ok(Value::Bool(lf > rf))
             }
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l > r)),
@@ -529,8 +493,8 @@ impl Evaluator {
     fn less_equal(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
             (Value::Number(l), Value::Number(r)) => {
-                let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
-                let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                let lf = self.number_to_f64(l)?;
+                let rf = self.number_to_f64(r)?;
                 Ok(Value::Bool(lf <= rf))
             }
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l <= r)),
@@ -549,8 +513,8 @@ impl Evaluator {
     fn greater_equal(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
             (Value::Number(l), Value::Number(r)) => {
-                let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
-                let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                let lf = self.number_to_f64(l)?;
+                let rf = self.number_to_f64(r)?;
                 Ok(Value::Bool(lf >= rf))
             }
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l >= r)),
@@ -864,6 +828,22 @@ impl Evaluator {
         engine_strict || context_strict
     }
 
+    fn coerce_boolean(&self, value: &Value, context: &EvaluationContext) -> ExpressionResult<bool> {
+        if self.strict_mode_enabled(context) && !value.is_boolean() {
+            return Err(ExpressionError::expression_type_error(
+                "boolean",
+                crate::value_utils::value_type_name(value),
+            ));
+        }
+        Ok(crate::value_utils::to_boolean(value))
+    }
+
+    fn number_to_f64(&self, num: &Number) -> ExpressionResult<f64> {
+        crate::value_utils::number_as_f64(num).ok_or_else(|| {
+            ExpressionError::expression_eval_error("Number cannot be represented as float")
+        })
+    }
+
     /// Filter array elements using a lambda predicate
     ///
     /// Usage: `filter(array, x => condition)`
@@ -905,7 +885,7 @@ impl Evaluator {
         let mut result = Vec::with_capacity(array.len());
         for item in array.iter() {
             let predicate_result = self.eval_lambda(param, body, item, context)?;
-            if crate::value_utils::to_boolean(&predicate_result) {
+            if self.coerce_boolean(&predicate_result, context)? {
                 result.push(item.clone());
             }
         }
@@ -1053,7 +1033,7 @@ impl Evaluator {
 
         for item in array.iter() {
             let predicate_result = self.eval_lambda(param, body, item, context)?;
-            if crate::value_utils::to_boolean(&predicate_result) {
+            if self.coerce_boolean(&predicate_result, context)? {
                 return Ok(item.clone());
             }
         }
@@ -1098,7 +1078,7 @@ impl Evaluator {
 
         for item in array.iter() {
             let predicate_result = self.eval_lambda(param, body, item, context)?;
-            if !crate::value_utils::to_boolean(&predicate_result) {
+            if !self.coerce_boolean(&predicate_result, context)? {
                 return Ok(Value::Bool(false));
             }
         }
@@ -1143,7 +1123,7 @@ impl Evaluator {
 
         for item in array.iter() {
             let predicate_result = self.eval_lambda(param, body, item, context)?;
-            if crate::value_utils::to_boolean(&predicate_result) {
+            if self.coerce_boolean(&predicate_result, context)? {
                 return Ok(Value::Bool(true));
             }
         }
