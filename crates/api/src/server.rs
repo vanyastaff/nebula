@@ -1,9 +1,12 @@
 //! API server and routes.
 
-use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{
+    Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get,
+};
 use serde::Serialize;
 use std::sync::Arc;
 use thiserror::Error;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::debug;
 
 use crate::status::{WebhookStatus, WorkerStatus};
@@ -47,6 +50,37 @@ pub fn api_router() -> Router<ApiState> {
     Router::new()
         .route("/health", get(health))
         .route("/api/v1/status", get(status))
+        .layer(api_cors_layer())
+}
+
+fn api_cors_layer() -> CorsLayer {
+    // Optional override: comma-separated origins.
+    // Example:
+    // NEBULA_CORS_ALLOW_ORIGINS=http://localhost:5173,tauri://localhost
+    let configured = std::env::var("NEBULA_CORS_ALLOW_ORIGINS")
+        .ok()
+        .unwrap_or_default();
+
+    let mut origins: Vec<axum::http::HeaderValue> = configured
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter_map(|value| axum::http::HeaderValue::from_str(value).ok())
+        .collect();
+
+    if origins.is_empty() {
+        origins = vec![
+            axum::http::HeaderValue::from_static("http://localhost:5173"),
+            axum::http::HeaderValue::from_static("http://127.0.0.1:5173"),
+            axum::http::HeaderValue::from_static("http://tauri.localhost"),
+            axum::http::HeaderValue::from_static("tauri://localhost"),
+        ];
+    }
+
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_methods(Any)
+        .allow_headers(Any)
 }
 
 async fn health() -> impl IntoResponse {

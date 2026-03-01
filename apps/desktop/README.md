@@ -36,6 +36,13 @@ npm run tauri:dev
 ```
 
 Profiles:
-- `local`: `http://127.0.0.1:5678`
-- `selfhosted`: `http://127.0.0.1:5678` (override in real deployment)
+- `local`: `http://localhost:5678`
+- `selfhosted`: `http://localhost:5678` (override in real deployment)
 - `saas`: `https://api.nebula.example.com` (placeholder)
+
+Rust-side profile command:
+- `NEBULA_API_PROFILE` env var is exposed via Tauri invoke command `get_api_profile`.
+
+Backend CORS override:
+- `NEBULA_CORS_ALLOW_ORIGINS` (comma-separated), for example:
+  - `NEBULA_CORS_ALLOW_ORIGINS=http://localhost:5173,tauri://localhost`
