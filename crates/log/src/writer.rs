@@ -4,8 +4,10 @@ use std::io::{self, Write};
 #[cfg(feature = "file")]
 use std::path::{Path, PathBuf};
 #[cfg(feature = "file")]
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
+#[cfg(feature = "file")]
+use parking_lot::{Mutex, MutexGuard};
 use tracing_subscriber::fmt::writer::{BoxMakeWriter, MakeWriter};
 
 #[cfg(feature = "file")]
@@ -54,8 +56,9 @@ impl<'a> MakeWriter<'a> for SharedWriterMakeWriter {
     type Writer = SharedWriterGuard<'a>;
 
     fn make_writer(&'a self) -> Self::Writer {
+        let guard = self.writer.lock();
         SharedWriterGuard {
-            guard: self.writer.lock().expect("writer lock poisoned"),
+            guard,
         }
     }
 }

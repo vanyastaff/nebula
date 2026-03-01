@@ -6,9 +6,10 @@
 use super::HookPolicy;
 use super::hooks::{ObservabilityEvent, ObservabilityHook};
 use arc_swap::ArcSwap;
+use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
 /// Hook list stored inside [`ArcSwap`] for lock-free reads.
@@ -142,6 +143,21 @@ static HOOK_POLICY: LazyLock<RwLock<HookPolicy>> =
     LazyLock::new(|| RwLock::new(HookPolicy::Inline));
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
+#[inline]
+fn lock_write_guard() -> MutexGuard<'static, ()> {
+    WRITE_LOCK.lock()
+}
+
+#[inline]
+fn policy_read_guard() -> RwLockReadGuard<'static, HookPolicy> {
+    HOOK_POLICY.read()
+}
+
+#[inline]
+fn policy_write_guard() -> RwLockWriteGuard<'static, HookPolicy> {
+    HOOK_POLICY.write()
+}
+
 /// Register a global observability hook.
 ///
 /// The hook will receive all events emitted via [`emit_event`].
@@ -172,7 +188,7 @@ pub fn register_hook(hook: Arc<dyn ObservabilityHook>) {
         return;
     }
 
-    let _guard = WRITE_LOCK.lock().expect("registry write lock poisoned");
+    let _guard = lock_write_guard();
     let current = HOOKS.load();
     let mut new_hooks = (**current).clone();
     new_hooks.push(hook);
@@ -210,13 +226,13 @@ pub fn emit_event(event: &dyn ObservabilityEvent) {
         return;
     }
     let hooks = HOOKS.load();
-    let policy = *HOOK_POLICY.read().expect("hook policy lock poisoned");
+    let policy = *policy_read_guard();
     emit_to_hooks(&hooks, event, policy);
 }
 
 /// Set hook execution policy for subsequent emissions.
 pub fn set_hook_policy(policy: HookPolicy) {
-    let mut current = HOOK_POLICY.write().expect("hook policy lock poisoned");
+    let mut current = policy_write_guard();
     *current = policy;
 }
 
@@ -238,12 +254,12 @@ pub fn set_hook_policy(policy: HookPolicy) {
 /// shutdown_hooks();
 /// ```
 pub fn shutdown_hooks() {
-    let _guard = WRITE_LOCK.lock().expect("registry write lock poisoned");
+    let _guard = lock_write_guard();
     SHUTTING_DOWN.store(true, Ordering::Release);
     let current = HOOKS.load();
     // Quiesce future dispatches first, then drain current snapshot.
     HOOKS.store(Arc::new(Vec::new()));
-    let policy = *HOOK_POLICY.read().expect("hook policy lock poisoned");
+    let policy = *policy_read_guard();
     shutdown_hooks_list(&current, policy);
     SHUTTING_DOWN.store(false, Ordering::Release);
 }
@@ -285,7 +301,7 @@ mod tests {
 
     #[test]
     fn test_registry_basic() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock();
 
         // Clean up any hooks from previous tests
         shutdown_hooks();
@@ -313,7 +329,7 @@ mod tests {
 
     #[test]
     fn test_multiple_hooks() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock();
         shutdown_hooks();
 
         let count1 = Arc::new(AtomicUsize::new(0));
@@ -346,7 +362,7 @@ mod tests {
     fn test_thread_safety() {
         use std::thread;
 
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock();
         shutdown_hooks();
 
         let count = Arc::new(AtomicUsize::new(0));
@@ -396,7 +412,7 @@ mod tests {
 
     #[test]
     fn test_panic_safety() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock();
 
         // Clear any existing hooks
         shutdown_hooks();
@@ -450,7 +466,7 @@ mod tests {
 
     #[test]
     fn test_panic_during_initialization() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock();
         shutdown_hooks();
 
         let initial_count = hook_count();
@@ -474,13 +490,13 @@ mod tests {
         fn on_event(&self, _event: &dyn ObservabilityEvent) {}
 
         fn shutdown(&self) {
-            self.order.lock().unwrap().push(self.id);
+            self.order.lock().push(self.id);
         }
     }
 
     #[test]
     fn test_shutdown_order_is_lifo() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock();
         shutdown_hooks();
 
         let order = Arc::new(Mutex::new(Vec::new()));
@@ -498,6 +514,6 @@ mod tests {
         }));
 
         shutdown_hooks();
-        assert_eq!(*order.lock().unwrap(), vec![3, 2, 1]);
+        assert_eq!(*order.lock(), vec![3, 2, 1]);
     }
 }
