@@ -3,6 +3,7 @@
 use anyhow::Result;
 use nebula_log::prelude::*;
 use std::env;
+use tokio::time::{Duration, sleep};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -51,7 +52,7 @@ async fn main() -> Result<()> {
 
     // Give Sentry time to send events
     println!("Waiting for Sentry events to be sent...");
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    sleep(Duration::from_secs(2)).await;
 
     info!("Sentry test completed - check your Sentry dashboard!");
 

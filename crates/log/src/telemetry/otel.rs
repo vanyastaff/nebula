@@ -77,19 +77,10 @@ pub fn build_layer(
     #[cfg(not(feature = "async"))]
     let has_runtime = false;
 
+    let exporter = build_exporter(&endpoint_str)?;
     let provider = if has_runtime {
-        let exporter = opentelemetry_otlp::SpanExporter::builder()
-            .with_tonic()
-            .with_endpoint(&endpoint_str)
-            .build()
-            .map_err(|e| LogError::Telemetry(format!("OTLP exporter build failed: {e}")))?;
         provider_builder.with_batch_exporter(exporter).build()
     } else {
-        let exporter = opentelemetry_otlp::SpanExporter::builder()
-            .with_tonic()
-            .with_endpoint(&endpoint_str)
-            .build()
-            .map_err(|e| LogError::Telemetry(format!("OTLP exporter build failed: {e}")))?;
         provider_builder.with_simple_exporter(exporter).build()
     };
 
@@ -129,4 +120,12 @@ fn build_resource(service_name: &str, fields: &Fields) -> Resource {
     }
 
     Resource::builder_empty().with_attributes(attrs).build()
+}
+
+fn build_exporter(endpoint: &str) -> LogResult<opentelemetry_otlp::SpanExporter> {
+    opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()
+        .map_err(|e| LogError::Telemetry(format!("OTLP exporter build failed: {e}")))
 }
