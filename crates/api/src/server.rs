@@ -191,6 +191,18 @@ struct OAuthCallbackResponse {
     access_token: String,
     token_type: String,
     expires_in: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<OAuthUserProfile>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct OAuthUserProfile {
+    id: String,
+    login: String,
+    name: Option<String>,
+    email: Option<String>,
+    avatar_url: Option<String>,
 }
 
 fn is_mock_oauth_enabled() -> bool {
@@ -418,9 +430,81 @@ async fn github_callback(
 struct GithubAccessTokenResponse {
     access_token: Option<String>,
     token_type: Option<String>,
-    scope: Option<String>,
     error: Option<String>,
     error_description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubUserResponse {
+    id: u64,
+    login: String,
+    name: Option<String>,
+    email: Option<String>,
+    avatar_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubEmailResponse {
+    email: String,
+    primary: bool,
+    verified: bool,
+}
+
+async fn fetch_github_user_profile(
+    client: &Client,
+    access_token: &str,
+) -> Result<OAuthUserProfile, String> {
+    let user_resp = client
+        .get("https://api.github.com/user")
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "nebula-desktop")
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|e| format!("github user request failed: {e}"))?;
+
+    let user_status = user_resp.status();
+    if !user_status.is_success() {
+        return Err(format!("github user request status {}", user_status.as_u16()));
+    }
+
+    let user = user_resp
+        .json::<GithubUserResponse>()
+        .await
+        .map_err(|e| format!("github user parse failed: {e}"))?;
+
+    let mut email = user.email.clone();
+    if email.is_none() {
+        let emails_resp = client
+            .get("https://api.github.com/user/emails")
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "nebula-desktop")
+            .bearer_auth(access_token)
+            .send()
+            .await;
+
+        if let Ok(resp) = emails_resp {
+            if resp.status().is_success() {
+                if let Ok(emails) = resp.json::<Vec<GithubEmailResponse>>().await {
+                    if let Some(primary_verified) =
+                        emails.iter().find(|e| e.primary && e.verified)
+                    {
+                        email = Some(primary_verified.email.clone());
+                    } else if let Some(any_verified) = emails.iter().find(|e| e.verified) {
+                        email = Some(any_verified.email.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(OAuthUserProfile {
+        id: user.id.to_string(),
+        login: user.login,
+        name: user.name,
+        email,
+        avatar_url: user.avatar_url,
+    })
 }
 
 async fn oauth_callback(
@@ -458,7 +542,8 @@ async fn oauth_callback(
                 Json(serde_json::json!(OAuthCallbackResponse {
                     access_token: token,
                     token_type: "Bearer".to_string(),
-                    expires_in: 3600
+                    expires_in: 3600,
+                    user: None
                 })),
             )
                 .into_response();
@@ -553,12 +638,17 @@ async fn oauth_callback(
                 .into_response();
         };
 
+        let user_profile = fetch_github_user_profile(&state.http_client, &access_token)
+            .await
+            .ok();
+
         return (
             StatusCode::OK,
             Json(serde_json::json!(OAuthCallbackResponse {
                 access_token,
                 token_type: payload.token_type.unwrap_or_else(|| "Bearer".to_string()),
-                expires_in: 3600
+                expires_in: 3600,
+                user: user_profile
             })),
         )
             .into_response();
@@ -571,7 +661,8 @@ async fn oauth_callback(
             Json(serde_json::json!(OAuthCallbackResponse {
                 access_token: token,
                 token_type: "Bearer".to_string(),
-                expires_in: 3600
+                expires_in: 3600,
+                user: None
             })),
         )
             .into_response();

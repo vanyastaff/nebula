@@ -1,4 +1,5 @@
-import { AuthProvider, AuthSnapshot } from "../../domain/auth";
+import { AuthProvider, AuthSnapshot, AuthUserProfile } from "../../domain/auth";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 const STORAGE_KEY = "nebula.desktop.auth.v1";
 
@@ -6,6 +7,7 @@ interface PersistedAuthState {
   status: AuthSnapshot["status"];
   provider?: AuthProvider;
   accessToken: string;
+  user?: AuthUserProfile;
   error?: string;
 }
 
@@ -60,14 +62,32 @@ export class AuthManager {
       const payload = (await response.json()) as {
         authUrl?: string;
         accessToken?: string;
+        user?: AuthUserProfile;
       };
 
       if (payload.authUrl) {
-        window.open(payload.authUrl, "_blank", "noopener,noreferrer");
+        let opened = false;
+        try {
+          await openUrl(payload.authUrl);
+          opened = true;
+        } catch {
+          // Fallback for environments where opener invoke is unavailable.
+        }
+
+        if (!opened) {
+          const popup = window.open(payload.authUrl, "_blank", "noopener,noreferrer");
+          if (popup) {
+            opened = true;
+          }
+        }
+
+        if (!opened) {
+          window.location.assign(payload.authUrl);
+        }
       }
 
       if (payload.accessToken) {
-        this.completeSignIn(payload.accessToken, provider);
+        this.completeSignIn(payload.accessToken, provider, payload.user);
         return;
       }
 
@@ -117,19 +137,31 @@ export class AuthManager {
       });
 
       if (!response.ok) {
-        throw new Error(`oauth callback failed: ${response.status}`);
+        let details = "";
+        try {
+          const body = (await response.json()) as { error?: string; message?: string };
+          details = body.message ?? body.error ?? "";
+        } catch {
+          // ignore non-json response body
+        }
+        throw new Error(
+          details
+            ? `oauth callback failed: ${response.status} (${details})`
+            : `oauth callback failed: ${response.status}`
+        );
       }
 
       const payload = (await response.json()) as {
         accessToken?: string;
         access_token?: string;
+        user?: AuthUserProfile;
       };
       const token = payload.accessToken ?? payload.access_token ?? "";
       if (!token) {
         throw new Error("oauth callback returned no access token");
       }
 
-      this.completeSignIn(token, provider);
+      this.completeSignIn(token, provider, payload.user);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "unknown oauth callback error";
@@ -137,13 +169,14 @@ export class AuthManager {
     }
   }
 
-  completeSignIn(token: string, provider?: AuthProvider): void {
+  completeSignIn(token: string, provider?: AuthProvider, user?: AuthUserProfile): void {
     const normalized = token.trim();
     this.state = {
       ...this.state,
       status: normalized ? "signed_in" : "signed_out",
       provider: provider ?? this.state.provider,
       accessToken: normalized,
+      user,
       error: undefined,
     };
     this.persistAndNotify();
@@ -154,6 +187,7 @@ export class AuthManager {
       status: "signed_out",
       provider: undefined,
       accessToken: "",
+      user: undefined,
       error: undefined,
     };
     this.persistAndNotify();
@@ -164,6 +198,7 @@ export class AuthManager {
       ...this.state,
       status: "signed_out",
       accessToken: "",
+      user: undefined,
       error: message,
     };
     this.persistAndNotify();
@@ -191,6 +226,7 @@ export class AuthManager {
       status: "signed_out",
       accessToken: "",
       provider: undefined,
+      user: undefined,
       error: undefined,
     };
 
@@ -207,10 +243,13 @@ export class AuthManager {
           parsed.status === "signed_in") &&
         typeof parsed.accessToken === "string"
       ) {
+        // Do not restore transient "authorizing" across app restarts.
+        const status = parsed.status === "authorizing" ? "signed_out" : parsed.status;
         return {
-          status: parsed.status,
+          status,
           provider: parsed.provider,
           accessToken: parsed.accessToken,
+          user: parsed.user,
           error: parsed.error,
         };
       }

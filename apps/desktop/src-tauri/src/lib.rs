@@ -1,4 +1,5 @@
 use tauri::Manager;
+use tauri_plugin_deep_link::DeepLinkExt;
 
 #[tauri::command]
 fn get_api_profile() -> String {
@@ -16,6 +17,14 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .setup(|app| {
+            #[cfg(any(windows, target_os = "linux"))]
+            if let Err(err) = app.deep_link().register_all() {
+                eprintln!("failed to register deep-link schemes: {err}");
+            }
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![get_api_profile])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

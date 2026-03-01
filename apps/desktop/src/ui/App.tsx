@@ -48,6 +48,10 @@ export function App() {
     await authManager.signInWithOAuth(provider, connection.activeBaseUrl);
   }
 
+  function signOut() {
+    authManager.signOut();
+  }
+
   return (
     <main
       style={{
@@ -84,22 +88,61 @@ export function App() {
           Sign in to continue.
         </p>
 
-        <button
-          onClick={() => signIn("github")}
-          disabled={auth.status === "authorizing"}
-          style={{
-            width: "100%",
-            padding: "11px 14px",
-            borderRadius: 10,
-            border: "1px solid rgba(184, 197, 230, 0.35)",
-            background: "transparent",
-            color: "#edf2ff",
-            fontWeight: 600,
-            cursor: "pointer",
-          }}
-        >
-          Continue with GitHub
-        </button>
+        {auth.status === "signed_in" ? (
+          <>
+            <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12 }}>
+              {auth.user?.avatarUrl ? (
+                <img
+                  src={auth.user.avatarUrl}
+                  alt="avatar"
+                  width={42}
+                  height={42}
+                  style={{ borderRadius: "50%", border: "1px solid rgba(184, 197, 230, 0.3)" }}
+                />
+              ) : null}
+              <div>
+                <p style={{ margin: 0, color: "#edf2ff", fontSize: 14, fontWeight: 600 }}>
+                  {auth.user?.name ?? auth.user?.login ?? "Signed in"}
+                </p>
+                <p style={{ margin: 0, color: "#b8c5e6", fontSize: 12 }}>
+                  {auth.user?.email ?? `via ${auth.provider ?? "OAuth"}`}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={signOut}
+              style={{
+                width: "100%",
+                padding: "11px 14px",
+                borderRadius: 10,
+                border: "1px solid rgba(184, 197, 230, 0.35)",
+                background: "transparent",
+                color: "#edf2ff",
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              Sign out
+            </button>
+          </>
+        ) : (
+          <button
+            onClick={() => signIn("github")}
+            disabled={auth.status === "authorizing"}
+            style={{
+              width: "100%",
+              padding: "11px 14px",
+              borderRadius: 10,
+              border: "1px solid rgba(184, 197, 230, 0.35)",
+              background: "transparent",
+              color: "#edf2ff",
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Continue with GitHub
+          </button>
+        )}
 
         {auth.status === "authorizing" ? (
           <p style={{ marginTop: 14, marginBottom: 0, color: "#b8c5e6", fontSize: 13 }}>
