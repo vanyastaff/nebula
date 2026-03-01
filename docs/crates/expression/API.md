@@ -3,8 +3,9 @@
 ## Public Surface
 
 - stable APIs:
-  - `ExpressionEngine` (`new`, `with_cache_size`, `with_cache_sizes`, `restrict_to_functions`, `evaluate`, `parse_template`, `render_template`)
+  - `ExpressionEngine` (`new`, `with_cache_size`, `with_cache_sizes`, `restrict_to_functions`, `evaluate`, `parse_template`, `render_template`, `cache_overview`)
   - `EvaluationContext` + builder
+  - `CacheOverview`
   - `Template` / `MaybeTemplate`
   - `MaybeExpression` / `CachedExpression`
   - `ExpressionError`, `ExpressionResult`
@@ -62,6 +63,21 @@ let ctx = EvaluationContext::new();
 let out = engine.evaluate("uppercase('alice')", &ctx)?;
 assert_eq!(out.as_str(), Some("ALICE"));
 assert!(engine.evaluate("lowercase('ALICE')", &ctx).is_err());
+# Ok::<(), nebula_expression::ExpressionError>(())
+```
+
+## Cache Observability Example
+
+```rust
+use nebula_expression::{EvaluationContext, ExpressionEngine};
+
+let engine = ExpressionEngine::with_cache_size(128);
+let ctx = EvaluationContext::new();
+let _ = engine.evaluate("2 + 3", &ctx)?;
+
+let cache = engine.cache_overview();
+assert!(cache.expr_cache_enabled);
+assert!(cache.expr_entries >= 1);
 # Ok::<(), nebula_expression::ExpressionError>(())
 ```
 

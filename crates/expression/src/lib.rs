@@ -157,7 +157,7 @@ pub mod parser;
 
 // Re-exports
 pub use context::{EvaluationContext, EvaluationContextBuilder};
-pub use engine::ExpressionEngine;
+pub use engine::{CacheOverview, ExpressionEngine};
 pub use maybe::{CachedExpression, MaybeExpression};
 pub use policy::EvaluationPolicy;
 pub use template::{MaybeTemplate, Template};
@@ -183,8 +183,8 @@ pub use serde_json::Value;
 pub mod prelude {
     pub use crate::{
         EvaluationContext, EvaluationContextBuilder, ExpressionEngine, ExpressionError,
-        ExpressionErrorExt, ExpressionResult, EvaluationPolicy, MaybeExpression, MaybeTemplate,
-        Template, Value,
+        ExpressionErrorExt, ExpressionResult, EvaluationPolicy, MaybeExpression, MaybeTemplate, 
+        Template, Value, CacheOverview,
     };
 }
 

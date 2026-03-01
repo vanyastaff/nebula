@@ -16,6 +16,19 @@ use nebula_memory::cache::{CacheConfig, ConcurrentComputeCache};
 use serde_json::Value;
 use std::sync::Arc;
 
+/// Lightweight cache observability snapshot for `ExpressionEngine`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheOverview {
+    /// Whether expression parsing cache is enabled.
+    pub expr_cache_enabled: bool,
+    /// Whether template parsing cache is enabled.
+    pub template_cache_enabled: bool,
+    /// Current number of entries in expression cache.
+    pub expr_entries: usize,
+    /// Current number of entries in template cache.
+    pub template_entries: usize,
+}
+
 /// Expression engine with parsing and evaluation capabilities
 pub struct ExpressionEngine {
     /// Cache for parsed expressions (lock-free concurrent cache)
@@ -241,6 +254,16 @@ impl ExpressionEngine {
     /// Get template cache size
     pub fn template_cache_size(&self) -> Option<usize> {
         self.template_cache.as_ref().map(|cache| cache.len())
+    }
+
+    /// Return a lightweight cache snapshot for observability.
+    pub fn cache_overview(&self) -> CacheOverview {
+        CacheOverview {
+            expr_cache_enabled: self.expr_cache.is_some(),
+            template_cache_enabled: self.template_cache.is_some(),
+            expr_entries: self.expr_cache.as_ref().map_or(0, |cache| cache.len()),
+            template_entries: self.template_cache.as_ref().map_or(0, |cache| cache.len()),
+        }
     }
 
     /// Get expression cache statistics (stub for compatibility)
@@ -574,6 +597,31 @@ mod tests {
         let engine = ExpressionEngine::new()
             .with_policy(EvaluationPolicy::new().with_strict_mode(true));
         assert!(engine.policy().unwrap().strict_mode());
+    }
+
+    #[test]
+    fn test_cache_overview_no_cache() {
+        let engine = ExpressionEngine::new();
+        let overview = engine.cache_overview();
+        assert!(!overview.expr_cache_enabled);
+        assert!(!overview.template_cache_enabled);
+        assert_eq!(overview.expr_entries, 0);
+        assert_eq!(overview.template_entries, 0);
+    }
+
+    #[test]
+    fn test_cache_overview_with_cache_entries() {
+        let engine = ExpressionEngine::with_cache_size(100);
+        let context = EvaluationContext::new();
+
+        let _ = engine.evaluate("2 + 3", &context).unwrap();
+        let _ = engine.parse_template("Hello {{ $input }}!").unwrap();
+
+        let overview = engine.cache_overview();
+        assert!(overview.expr_cache_enabled);
+        assert!(overview.template_cache_enabled);
+        assert!(overview.expr_entries >= 1);
+        assert!(overview.template_entries >= 1);
     }
 }
 

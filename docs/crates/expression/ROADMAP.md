@@ -33,6 +33,9 @@
 - exit criteria:
   - measurable throughput/latency gains with semantic parity.
 
+Current progress:
+- lightweight cache observability now available via `ExpressionEngine::cache_overview()`.
+
 ## Phase 4: Ecosystem and DX
 
 - deliverables:
