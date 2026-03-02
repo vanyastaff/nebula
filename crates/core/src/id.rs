@@ -14,9 +14,6 @@
 
 use domain_key::define_uuid;
 
-// Re-export for downstream parse error handling
-pub use domain_key::UuidParseError;
-
 // Entity identifiers — UUID-based, Copy, 16 bytes each
 define_uuid!(UserIdDomain => UserId);
 define_uuid!(TenantIdDomain => TenantId);

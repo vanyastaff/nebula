@@ -22,9 +22,7 @@
 //! assert_eq!(cred.as_str(), "my_api_key");
 //! ```
 
-pub use domain_key::KeyParseError;
 use domain_key::{define_domain, key_type};
-use serde::{Deserialize, Serialize};
 
 define_domain!(PrameterDomain, "parameter");
 key_type!(ParameterKey, PrameterDomain);

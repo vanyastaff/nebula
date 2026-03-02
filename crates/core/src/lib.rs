@@ -36,17 +36,16 @@ pub mod types;
 /// Dependency graph primitives shared across crates.
 pub mod deps;
 
-// Re-export main types for convenience
+// Re-export main types for convenience at the crate root. Downstream crates
+// should prefer `nebula_core::prelude::*` for a stable import surface.
 pub use constants::*;
+pub use deps::*;
+pub use error::*;
 pub use id::*;
 pub use keys::*;
 pub use scope::*;
 pub use traits::*;
 pub use types::*;
-pub use deps::*;
-
-// Re-export common error types
-pub use error::*;
 
 mod error;
 mod keys;
@@ -56,12 +55,25 @@ pub type Result<T> = std::result::Result<T, error::CoreError>;
 
 /// Common prelude for Nebula crates
 pub mod prelude {
-    pub use super::{
-        ActionKey, CoreError, CredentialId, ExecutionId, HasContext, InterfaceVersion, NodeId,
-        OrganizationId, PluginKey, ProjectId, ProjectType, ResourceId, Result, RoleId, RoleScope,
-        ScopeLevel, ScopeResolver, Scoped, TenantId, UserId, UuidParseError, WorkflowId,
+    // Identifiers (UUID-backed ids)
+    pub use crate::id::{
+        CredentialId, ExecutionId, NodeId, OrganizationId, ProjectId, ResourceId, RoleId,
+        TenantId, UserId, WorkflowId,
     };
 
-    pub use crate::keys::*;
+    // Domain keys (normalized string keys)
+    pub use crate::keys::{ActionKey, CredentialKey, ParameterKey, PluginKey, ResourceKey};
+
+    // Core errors and parse errors
+    pub use crate::error::CoreError;
+    pub use domain_key::{KeyParseError, UuidParseError};
+    pub use crate::scope::{ScopeLevel, ScopeResolver};
+    pub use crate::traits::{HasContext, Scoped};
+    pub use crate::types::{InterfaceVersion, ProjectType, RoleScope};
+
+    // Dependency graph primitives
     pub use crate::deps::{Dependency, DependencyError, DependencyKind, FromRegistry, Requires};
+
+    // Core result alias
+    pub use crate::Result;
 }

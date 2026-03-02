@@ -3,8 +3,6 @@
 //! These traits provide common functionality that can be implemented
 //! by various types throughout the system.
 
-use std::fmt;
-
 use super::id::{ExecutionId, NodeId, TenantId, UserId, WorkflowId};
 use super::scope::ScopeLevel;
 

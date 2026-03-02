@@ -4,10 +4,11 @@
 //! codes. Changing the output format is a breaking change — update expected
 //! values intentionally and document in MIGRATION.md.
 
-use nebula_core::{
-    ExecutionId, InterfaceVersion, NodeId, OrganizationId, Priority, ProjectId, ProjectType,
-    RoleScope, ScopeLevel, Status, WorkflowId,
+use nebula_core::prelude::{
+    ExecutionId, InterfaceVersion, NodeId, OrganizationId, ProjectId, ProjectType, RoleScope,
+    ScopeLevel, WorkflowId,
 };
+use nebula_core::types::{Priority, Status};
 
 #[test]
 fn status_serialization_contract() {
