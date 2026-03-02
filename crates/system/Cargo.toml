@@ -54,7 +54,7 @@ serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["time", "sync"] }
 
 # System info
-sysinfo = { version = "0.37", optional = true, default-features = false, features = ["system", "multithread"] }
+sysinfo = { version = "0.38", optional = true, default-features = false, features = ["system", "multithread"] }
 
 [dev-dependencies]
 criterion = { workspace = true }
