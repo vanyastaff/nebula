@@ -12,6 +12,9 @@
 //! - [`Action`] — base trait providing identity and metadata
 //! - [`SimpleAction`] — zero-boilerplate action returning `Result<Output, Error>`
 //! - [`StatelessAction`] — stateless single-execution action with flow-control
+//! - [`StatefulAction`] — iterative action with persistent state (Continue/Break)
+//! - [`TriggerAction`] — workflow starter (start/stop), outside execution graph
+//! - [`ResourceAction`] — graph-level DI (configure/cleanup), scoped to downstream branch
 //! - [`StatefulAction`] — iterative action with persistent state
 //! - [`TriggerAction`] — event source that starts workflows
 //! - [`StreamingAction`] — continuous stream producer
@@ -76,7 +79,7 @@ pub mod execution;
 pub use action::Action;
 pub use components::ActionComponents;
 pub use context::{ActionContext, Context, NodeContext, TriggerContext};
-pub use execution::StatelessAction;
+pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 pub use error::ActionError;
 pub use metadata::{ActionMetadata, InterfaceVersion};
 pub use output::{

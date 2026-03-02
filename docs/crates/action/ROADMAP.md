@@ -19,7 +19,7 @@ Exit criteria:
 
 - Replace temporary `NodeContext` bridge: `ActionContext` and `TriggerContext` added; `NodeContext` deprecated. ✓
 - `Context` trait now has `execution_id()`, `node_id()`, `workflow_id()`, `cancellation()`.
-- `StatelessAction` trait added (execute with `&impl Context`).
+- Core execution traits: `StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction` (configure/cleanup). ✓
 - Capability modules (resources, credentials, logger) to be added by runtime/sandbox as fields on context structs.
 
 Exit criteria:
