@@ -32,8 +32,8 @@ nebula-core/
 
 ### Identifiers (id.rs)
 - `ExecutionId` - UUID-based execution identifier
-- `WorkflowId` - Domain key-based workflow identifier
-- `NodeId` - Domain key-based node identifier
+- `WorkflowId` - UUID-based workflow identifier
+- `NodeId` - UUID-based node identifier
 - `UserId` - UUID-based user identifier
 - `TenantId` - UUID-based tenant identifier
 - `CredentialId` - UUID-based credential identifier
@@ -106,12 +106,10 @@ pub type Result<T> = std::result::Result<T, CoreError>;
 ### Creating Identifiers
 
 ```rust
-// UUID-based IDs
+// UUID-based IDs (all use new() for generation)
 let execution_id = ExecutionId::new();
-
-// Domain key-based IDs
-let workflow_id = WorkflowId::new("my-workflow");
-let node_id = NodeId::new("process-step");
+let workflow_id = WorkflowId::new();
+let node_id = NodeId::new();
 ```
 
 ### Working with Scopes

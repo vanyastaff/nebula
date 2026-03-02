@@ -89,7 +89,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("Pool created (min=1, max=4)");
 
     // 3. Acquire a cache instance.
-    let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
+    let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
     let (mut cache, _wait) = pool.acquire(&ctx).await?;
     println!("Cache acquired");
 

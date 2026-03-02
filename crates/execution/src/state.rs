@@ -217,9 +217,9 @@ mod tests {
     use super::*;
 
     fn make_state() -> (ExecutionState, NodeId, NodeId) {
-        let n1 = NodeId::v4();
-        let n2 = NodeId::v4();
-        let state = ExecutionState::new(ExecutionId::v4(), WorkflowId::v4(), &[n1, n2]);
+        let n1 = NodeId::new();
+        let n2 = NodeId::new();
+        let state = ExecutionState::new(ExecutionId::new(), WorkflowId::new(), &[n1, n2]);
         (state, n1, n2)
     }
 
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn set_node_state() {
         let (mut state, _n1, _n2) = make_state();
-        let new_node = NodeId::v4();
+        let new_node = NodeId::new();
         state.set_node_state(new_node, NodeExecutionState::new());
         assert!(state.node_state(new_node).is_some());
     }

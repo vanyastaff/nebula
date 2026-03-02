@@ -25,9 +25,9 @@ use nebula_core::{
     ExecutionId, WorkflowId, NodeId, ScopeLevel, OperationContext, Priority,
 };
 
-let execution_id = ExecutionId::v4();
-let workflow_id = WorkflowId::v4();
-let node_id = NodeId::v4();
+let execution_id = ExecutionId::new();
+let workflow_id = WorkflowId::new();
+let node_id = NodeId::new();
 
 let scope = ScopeLevel::Action(execution_id, node_id);
 
@@ -54,6 +54,7 @@ assert!(scope.is_action());
 - [RELIABILITY.md](./RELIABILITY.md)
 - [TEST_STRATEGY.md](./TEST_STRATEGY.md)
 - [MIGRATION.md](./MIGRATION.md)
+- [COMPATIBILITY.md](./COMPATIBILITY.md)
 
 ## Archive
 

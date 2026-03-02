@@ -66,7 +66,7 @@ impl TriggerCtx {
     /// # use nebula_resource::Scope;
     /// # use std::sync::Arc;
     /// # let ctx = TriggerCtx::new(
-    /// #     Context::new(Scope::Global, nebula_resource::WorkflowId::v4(), nebula_resource::ExecutionId::v4()),
+    /// #     Context::new(Scope::Global, nebula_resource::WorkflowId::new(), nebula_resource::ExecutionId::new()),
     /// #     "trigger",
     /// #     Environment::Production,
     /// #     Arc::new(TriggerState::new("trigger")),
@@ -91,7 +91,7 @@ impl TriggerCtx {
     /// # use nebula_resource::Scope;
     /// # use std::sync::Arc;
     /// # let ctx = TriggerCtx::new(
-    /// #     Context::new(Scope::Global, nebula_resource::WorkflowId::v4(), nebula_resource::ExecutionId::v4()),
+    /// #     Context::new(Scope::Global, nebula_resource::WorkflowId::new(), nebula_resource::ExecutionId::new()),
     /// #     "trigger",
     /// #     Environment::Production,
     /// #     Arc::new(TriggerState::new("trigger")),
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn test_environment_specific_uuids() {
-        let base = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
+        let base = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
         let state = Arc::new(TriggerState::new("test-trigger"));
 
         let test_ctx = TriggerCtx::new(
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn test_cancellation() {
-        let base = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
+        let base = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
         base.cancellation.cancel();
 
         let state = Arc::new(TriggerState::new("test-trigger"));
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_metadata() {
-        let base = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
+        let base = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
             .with_metadata("region", "us-east-1")
             .with_metadata("env", "staging");
 

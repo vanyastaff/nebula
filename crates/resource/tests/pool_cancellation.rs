@@ -49,7 +49,7 @@ impl Resource for SimpleResource {
 }
 
 fn ctx() -> Context {
-    Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
+    Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +72,7 @@ async fn acquire_cancelled_mid_wait_no_slot_leak() {
     // Start a second acquire that will block waiting for the semaphore.
     // Use a CancellationToken to cancel it after 10ms.
     let token = CancellationToken::new();
-    let cancel_ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
+    let cancel_ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
         .with_cancellation(token.clone());
 
     let pool_clone = pool.clone();

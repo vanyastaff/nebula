@@ -221,7 +221,7 @@ mod tests {
     use crate::definition::{WorkflowConfig, WorkflowDefinition};
     use crate::node::NodeDefinition;
     use chrono::Utc;
-    use nebula_core::{ActionId, NodeId, Version, WorkflowId};
+    use nebula_core::{NodeId, Version, WorkflowId};
     use std::collections::HashMap;
 
     /// Helper: build a minimal `WorkflowDefinition` from nodes and connections.
@@ -231,7 +231,7 @@ mod tests {
     ) -> WorkflowDefinition {
         let now = Utc::now();
         WorkflowDefinition {
-            id: WorkflowId::v4(),
+            id: WorkflowId::new(),
             name: "test".into(),
             description: None,
             version: Version::new(0, 1, 0),
@@ -246,13 +246,13 @@ mod tests {
     }
 
     fn node(id: NodeId) -> NodeDefinition {
-        NodeDefinition::new(id, "n", ActionId::v4())
+        NodeDefinition::new(id, "n", "n")
     }
 
     // --- linear graph: A -> B -> C ---
 
     fn linear_ids() -> (NodeId, NodeId, NodeId) {
-        (NodeId::v4(), NodeId::v4(), NodeId::v4())
+        (NodeId::new(), NodeId::new(), NodeId::new())
     }
 
     fn linear_definition(a: NodeId, b: NodeId, c: NodeId) -> WorkflowDefinition {
@@ -265,7 +265,7 @@ mod tests {
     // --- diamond graph: A -> B, A -> C, B -> D, C -> D ---
 
     fn diamond_ids() -> (NodeId, NodeId, NodeId, NodeId) {
-        (NodeId::v4(), NodeId::v4(), NodeId::v4(), NodeId::v4())
+        (NodeId::new(), NodeId::new(), NodeId::new(), NodeId::new())
     }
 
     fn diamond_definition(a: NodeId, b: NodeId, c: NodeId, d: NodeId) -> WorkflowDefinition {
@@ -300,8 +300,8 @@ mod tests {
 
     #[test]
     fn from_definition_rejects_unknown_node() {
-        let a = NodeId::v4();
-        let unknown = NodeId::v4();
+        let a = NodeId::new();
+        let unknown = NodeId::new();
         let def = make_definition(vec![node(a)], vec![Connection::new(a, unknown)]);
         let err = DependencyGraph::from_definition(&def).unwrap_err();
         assert!(matches!(err, WorkflowError::UnknownNode(_)));
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn from_definition_rejects_self_loop() {
-        let a = NodeId::v4();
+        let a = NodeId::new();
         let def = make_definition(vec![node(a)], vec![Connection::new(a, a)]);
         let err = DependencyGraph::from_definition(&def).unwrap_err();
         assert!(matches!(err, WorkflowError::SelfLoop(_)));
@@ -317,8 +317,8 @@ mod tests {
 
     #[test]
     fn has_cycle_detects_cycle() {
-        let a = NodeId::v4();
-        let b = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
         let def = make_definition(
             vec![node(a), node(b)],
             vec![Connection::new(a, b), Connection::new(b, a)],
@@ -426,10 +426,10 @@ mod tests {
 
     #[test]
     fn predecessors_unknown_node_returns_empty() {
-        let a = NodeId::v4();
+        let a = NodeId::new();
         let def = make_definition(vec![node(a)], vec![]);
         let graph = DependencyGraph::from_definition(&def).unwrap();
-        assert!(graph.predecessors(NodeId::v4()).is_empty());
+        assert!(graph.predecessors(NodeId::new()).is_empty());
     }
 
     #[test]
@@ -442,8 +442,8 @@ mod tests {
 
     #[test]
     fn validate_cyclic_graph() {
-        let a = NodeId::v4();
-        let b = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
         let def = make_definition(
             vec![node(a), node(b)],
             vec![Connection::new(a, b), Connection::new(b, a)],

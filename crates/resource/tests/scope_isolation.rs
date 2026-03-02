@@ -381,7 +381,7 @@ mod manager_scope_tests {
         )
         .unwrap();
 
-        let ctx_b = Context::new(Scope::tenant("B"), WorkflowId::v4(), ExecutionId::v4());
+        let ctx_b = Context::new(Scope::tenant("B"), WorkflowId::new(), ExecutionId::new());
         let result = mgr.acquire("db", &ctx_b).await;
         let err = result.expect_err("cross-tenant acquire should be denied");
         assert!(
@@ -402,7 +402,7 @@ mod manager_scope_tests {
         )
         .unwrap();
 
-        let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::v4(), ExecutionId::v4());
+        let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
         let _guard = mgr
             .acquire("db", &ctx_a)
             .await
@@ -421,7 +421,7 @@ mod manager_scope_tests {
         )
         .unwrap();
 
-        let ctx_wf2 = Context::new(Scope::workflow("wf2"), WorkflowId::v4(), ExecutionId::v4());
+        let ctx_wf2 = Context::new(Scope::workflow("wf2"), WorkflowId::new(), ExecutionId::new());
         let err = mgr
             .acquire("cache", &ctx_wf2)
             .await
@@ -444,7 +444,7 @@ mod manager_scope_tests {
         .unwrap();
 
         // From tenant scope
-        let ctx_tenant = Context::new(Scope::tenant("A"), WorkflowId::v4(), ExecutionId::v4());
+        let ctx_tenant = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
         let _g1 = mgr
             .acquire("global-db", &ctx_tenant)
             .await
@@ -455,7 +455,7 @@ mod manager_scope_tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
 
         // From workflow scope
-        let ctx_wf = Context::new(Scope::workflow("wf1"), WorkflowId::v4(), ExecutionId::v4());
+        let ctx_wf = Context::new(Scope::workflow("wf1"), WorkflowId::new(), ExecutionId::new());
         let _g2 = mgr
             .acquire("global-db", &ctx_wf)
             .await
@@ -475,7 +475,7 @@ mod manager_scope_tests {
         .unwrap();
 
         // Global context is broader than execution scope
-        let ctx_global = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
+        let ctx_global = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
         let err = mgr
             .acquire("exec-db", &ctx_global)
             .await

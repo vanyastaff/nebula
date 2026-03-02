@@ -1851,9 +1851,9 @@ dependencies = [
 
 [[package]]
 name = "domain-key"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fd03d2b8b1710003b920f5514eb47729816708913d07cc35d93cc5655de6014"
+checksum = "11b58eb9922409df2c56a89ec2d479c5804e6a837b5d9ee2ccce032be94f37b4"
 dependencies = [
  "serde",
  "smartstring",
@@ -3720,6 +3720,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "criterion",
  "dashmap",
  "domain-key",
  "nebula-log",

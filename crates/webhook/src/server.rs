@@ -403,8 +403,8 @@ mod tests {
 
         let base = Context::new(
             Scope::Global,
-            nebula_core::WorkflowId::v4(),
-            nebula_core::ExecutionId::v4(),
+            nebula_core::WorkflowId::new(),
+            nebula_core::ExecutionId::new(),
         );
         let state = StdArc::new(crate::TriggerState::new("test-trigger"));
         let ctx = TriggerCtx::new(
@@ -445,8 +445,8 @@ mod tests {
 
         let base = Context::new(
             Scope::Global,
-            nebula_core::WorkflowId::v4(),
-            nebula_core::ExecutionId::v4(),
+            nebula_core::WorkflowId::new(),
+            nebula_core::ExecutionId::new(),
         );
         let state = StdArc::new(crate::TriggerState::new("test-trigger"));
         let ctx = TriggerCtx::new(

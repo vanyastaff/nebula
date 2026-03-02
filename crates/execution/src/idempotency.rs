@@ -81,8 +81,8 @@ mod tests {
 
     #[test]
     fn generate_deterministic_key() {
-        let exec_id = ExecutionId::v4();
-        let node_id = NodeId::v4();
+        let exec_id = ExecutionId::new();
+        let node_id = NodeId::new();
         let key1 = IdempotencyKey::generate(exec_id, node_id, 0);
         let key2 = IdempotencyKey::generate(exec_id, node_id, 0);
         assert_eq!(key1, key2);
@@ -90,8 +90,8 @@ mod tests {
 
     #[test]
     fn different_attempts_different_keys() {
-        let exec_id = ExecutionId::v4();
-        let node_id = NodeId::v4();
+        let exec_id = ExecutionId::new();
+        let node_id = NodeId::new();
         let key0 = IdempotencyKey::generate(exec_id, node_id, 0);
         let key1 = IdempotencyKey::generate(exec_id, node_id, 1);
         assert_ne!(key0, key1);
@@ -99,8 +99,8 @@ mod tests {
 
     #[test]
     fn key_display() {
-        let exec_id = ExecutionId::v4();
-        let node_id = NodeId::v4();
+        let exec_id = ExecutionId::new();
+        let node_id = NodeId::new();
         let key = IdempotencyKey::generate(exec_id, node_id, 2);
         let display = key.to_string();
         assert!(display.contains(&exec_id.to_string()));
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn check_and_mark_new_key() {
         let mut mgr = IdempotencyManager::new();
-        let key = IdempotencyKey::generate(ExecutionId::v4(), NodeId::v4(), 0);
+        let key = IdempotencyKey::generate(ExecutionId::new(), NodeId::new(), 0);
         assert!(mgr.check_and_mark(&key)); // first time — true
         assert!(!mgr.check_and_mark(&key)); // second time — false (duplicate)
     }
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn is_seen() {
         let mut mgr = IdempotencyManager::new();
-        let key = IdempotencyKey::generate(ExecutionId::v4(), NodeId::v4(), 0);
+        let key = IdempotencyKey::generate(ExecutionId::new(), NodeId::new(), 0);
         assert!(!mgr.is_seen(&key));
         mgr.check_and_mark(&key);
         assert!(mgr.is_seen(&key));
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn clear_resets() {
         let mut mgr = IdempotencyManager::new();
-        let key = IdempotencyKey::generate(ExecutionId::v4(), NodeId::v4(), 0);
+        let key = IdempotencyKey::generate(ExecutionId::new(), NodeId::new(), 0);
         mgr.check_and_mark(&key);
         assert_eq!(mgr.len(), 1);
         mgr.clear();
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip() {
-        let key = IdempotencyKey::generate(ExecutionId::v4(), NodeId::v4(), 3);
+        let key = IdempotencyKey::generate(ExecutionId::new(), NodeId::new(), 3);
         let json = serde_json::to_string(&key).unwrap();
         let back: IdempotencyKey = serde_json::from_str(&json).unwrap();
         assert_eq!(key, back);

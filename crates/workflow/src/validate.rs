@@ -85,7 +85,7 @@ mod tests {
     use crate::definition::{WorkflowConfig, WorkflowDefinition};
     use crate::node::{NodeDefinition, ParamValue};
     use chrono::Utc;
-    use nebula_core::{ActionId, NodeId, Version, WorkflowId};
+    use nebula_core::{NodeId, Version, WorkflowId};
     use std::collections::HashMap;
 
     fn make_definition(
@@ -95,7 +95,7 @@ mod tests {
     ) -> WorkflowDefinition {
         let now = Utc::now();
         WorkflowDefinition {
-            id: WorkflowId::v4(),
+            id: WorkflowId::new(),
             name: name.into(),
             description: None,
             version: Version::new(0, 1, 0),
@@ -110,13 +110,13 @@ mod tests {
     }
 
     fn node(id: NodeId) -> NodeDefinition {
-        NodeDefinition::new(id, "n", ActionId::v4())
+        NodeDefinition::new(id, "n", "n")
     }
 
     #[test]
     fn valid_workflow_returns_empty() {
-        let a = NodeId::v4();
-        let b = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
         let def = make_definition("ok", vec![node(a), node(b)], vec![Connection::new(a, b)]);
         let errors = validate_workflow(&def);
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn detects_empty_name() {
-        let a = NodeId::v4();
+        let a = NodeId::new();
         let def = make_definition("", vec![node(a)], vec![]);
         let errors = validate_workflow(&def);
         assert!(errors.iter().any(|e| matches!(e, WorkflowError::EmptyName)));
@@ -139,8 +139,8 @@ mod tests {
 
     #[test]
     fn detects_unknown_node_in_connection() {
-        let a = NodeId::v4();
-        let unknown = NodeId::v4();
+        let a = NodeId::new();
+        let unknown = NodeId::new();
         let def = make_definition("bad", vec![node(a)], vec![Connection::new(a, unknown)]);
         let errors = validate_workflow(&def);
         assert!(
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn detects_self_loop() {
-        let a = NodeId::v4();
+        let a = NodeId::new();
         let def = make_definition("loop", vec![node(a)], vec![Connection::new(a, a)]);
         let errors = validate_workflow(&def);
         assert!(
@@ -164,8 +164,8 @@ mod tests {
 
     #[test]
     fn detects_invalid_parameter_reference() {
-        let a = NodeId::v4();
-        let ghost = NodeId::v4();
+        let a = NodeId::new();
+        let ghost = NodeId::new();
         let mut n = node(a);
         n.parameters
             .insert("input".into(), ParamValue::reference(ghost, "$.data"));
@@ -181,8 +181,8 @@ mod tests {
     #[test]
     fn collects_multiple_errors() {
         // empty name + self-loop + unknown node
-        let a = NodeId::v4();
-        let unknown = NodeId::v4();
+        let a = NodeId::new();
+        let unknown = NodeId::new();
         let def = make_definition(
             "",
             vec![node(a)],
@@ -195,8 +195,8 @@ mod tests {
 
     #[test]
     fn detects_cycle() {
-        let a = NodeId::v4();
-        let b = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
         let def = make_definition(
             "cycle",
             vec![node(a), node(b)],

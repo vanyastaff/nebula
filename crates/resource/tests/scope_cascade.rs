@@ -141,8 +141,8 @@ async fn tenant_shutdown_cascades_to_child_scopes() {
     // Verify all three are acquirable before shutdown
     let ctx = Context::new(
         Scope::execution_in_workflow("ex1", "wf1", Some("A".to_string())),
-        WorkflowId::v4(),
-        ExecutionId::v4(),
+        WorkflowId::new(),
+        ExecutionId::new(),
     );
     let g1 = mgr.acquire("tenant-db", &ctx).await.unwrap();
     let g2 = mgr.acquire("wf-cache", &ctx).await.unwrap();
@@ -220,7 +220,7 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
     mgr.shutdown_scope(&Scope::tenant("A")).await.unwrap();
 
     // Tenant B resources should still be accessible
-    let ctx_b = Context::new(Scope::tenant("B"), WorkflowId::v4(), ExecutionId::v4());
+    let ctx_b = Context::new(Scope::tenant("B"), WorkflowId::new(), ExecutionId::new());
     let g1 = mgr.acquire("db-B", &ctx_b).await;
     assert!(
         g1.is_ok(),
@@ -231,8 +231,8 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
 
     let ctx_b_wf = Context::new(
         Scope::workflow_in_tenant("wf1", "B"),
-        WorkflowId::v4(),
-        ExecutionId::v4(),
+        WorkflowId::new(),
+        ExecutionId::new(),
     );
     let g2 = mgr.acquire("cache-B", &ctx_b_wf).await;
     assert!(
@@ -243,7 +243,7 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Tenant A resources should be gone
-    let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::v4(), ExecutionId::v4());
+    let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
     assert!(mgr.acquire("db-A", &ctx_a).await.is_err());
     assert!(mgr.acquire("cache-A", &ctx_a).await.is_err());
 }
@@ -279,8 +279,8 @@ async fn global_scope_shutdown_cascades_to_all() {
 
     let ctx = Context::new(
         Scope::execution_in_workflow("ex1", "wf1", Some("X".to_string())),
-        WorkflowId::v4(),
-        ExecutionId::v4(),
+        WorkflowId::new(),
+        ExecutionId::new(),
     );
     assert!(mgr.acquire("global-r", &ctx).await.is_err());
     assert!(mgr.acquire("tenant-r", &ctx).await.is_err());
@@ -319,16 +319,16 @@ async fn workflow_scope_shutdown_does_not_affect_siblings() {
     // wf2 resource should still work
     let ctx_wf2 = Context::new(
         Scope::workflow_in_tenant("wf2", "A"),
-        WorkflowId::v4(),
-        ExecutionId::v4(),
+        WorkflowId::new(),
+        ExecutionId::new(),
     );
     assert!(mgr.acquire("cache-wf2", &ctx_wf2).await.is_ok());
 
     // wf1 resource should be gone
     let ctx_wf1 = Context::new(
         Scope::workflow_in_tenant("wf1", "A"),
-        WorkflowId::v4(),
-        ExecutionId::v4(),
+        WorkflowId::new(),
+        ExecutionId::new(),
     );
     assert!(mgr.acquire("cache-wf1", &ctx_wf1).await.is_err());
 }
@@ -383,7 +383,7 @@ async fn shutdown_scope_follows_dependency_ordering() {
 
     // Acquire and release each to populate idle instances for cleanup.
     // Use a generous sleep to ensure the spawned return tasks complete.
-    let ctx = Context::new(Scope::tenant("A"), WorkflowId::v4(), ExecutionId::v4());
+    let ctx = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
     for name in &["db", "cache", "app"] {
         let g = mgr.acquire(name, &ctx).await.unwrap();
         drop(g);
@@ -441,7 +441,7 @@ async fn scope_shutdown_invokes_cleanup() {
     .unwrap();
 
     // Acquire and release to create an idle instance
-    let ctx = Context::new(Scope::tenant("A"), WorkflowId::v4(), ExecutionId::v4());
+    let ctx = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
     {
         let _g = mgr.acquire("tracked-db", &ctx).await.unwrap();
     }

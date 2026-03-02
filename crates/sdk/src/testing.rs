@@ -116,10 +116,10 @@ where
         use nebula_action::NodeContext;
         use nebula_core::{ExecutionId, NodeId, WorkflowId};
 
-        let workflow_id = WorkflowId::new(uuid::Uuid::new_v4());
+        let workflow_id = WorkflowId::new();
         let ctx = NodeContext::new(
-            ExecutionId::new(uuid::Uuid::new_v4()),
-            NodeId::new(uuid::Uuid::new_v4()),
+            ExecutionId::new(),
+            NodeId::new(),
             workflow_id,
             tokio_util::sync::CancellationToken::new(),
         );

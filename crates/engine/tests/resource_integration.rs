@@ -15,7 +15,7 @@ use nebula_action::metadata::ActionMetadata;
 use nebula_action::result::ActionResult;
 use nebula_action::{ActionError, NodeContext};
 use nebula_core::Version;
-use nebula_core::id::{ActionId, NodeId, WorkflowId};
+use nebula_core::id::{NodeId, WorkflowId};
 use nebula_engine::WorkflowEngine;
 use nebula_execution::context::ExecutionBudget;
 use nebula_plugin::InternalHandler;
@@ -91,7 +91,7 @@ impl InternalHandler for ResourceConsumerHandler {
 fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
     let now = chrono::Utc::now();
     WorkflowDefinition {
-        id: WorkflowId::v4(),
+        id: WorkflowId::new(),
         name: "resource-integration-test".into(),
         description: None,
         version: Version::new(0, 1, 0),
@@ -143,14 +143,12 @@ async fn action_acquires_resource_through_engine() {
         metrics.clone(),
     ));
 
-    let action_id = ActionId::v4();
-    let mut engine =
+    let engine =
         WorkflowEngine::new(runtime, event_bus, metrics).with_resource_manager(manager);
-    engine.map_action(action_id, "resource-consumer");
 
     // 4. Build and execute a single-node workflow
-    let node = NodeId::v4();
-    let wf = make_workflow(vec![NodeDefinition::new(node, "A", action_id)]);
+    let node = NodeId::new();
+    let wf = make_workflow(vec![NodeDefinition::new(node, "A", "resource-consumer")]);
 
     let result = engine
         .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
@@ -204,14 +202,12 @@ async fn full_resource_lifecycle_with_stats_and_shutdown() {
         metrics.clone(),
     ));
 
-    let action_id = ActionId::v4();
-    let mut engine =
+    let engine =
         WorkflowEngine::new(runtime, event_bus, metrics).with_resource_manager(manager.clone());
-    engine.map_action(action_id, "resource-consumer");
 
     // 4. Execute a single-node workflow
-    let node = NodeId::v4();
-    let wf = make_workflow(vec![NodeDefinition::new(node, "A", action_id)]);
+    let node = NodeId::new();
+    let wf = make_workflow(vec![NodeDefinition::new(node, "A", "resource-consumer")]);
 
     let result = engine
         .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
@@ -261,13 +257,11 @@ async fn action_resource_fails_without_manager() {
         metrics.clone(),
     ));
 
-    let action_id = ActionId::v4();
-    let mut engine = WorkflowEngine::new(runtime, event_bus, metrics);
+    let engine = WorkflowEngine::new(runtime, event_bus, metrics);
     // No .with_resource_manager() — intentionally omitted
-    engine.map_action(action_id, "resource-consumer");
 
-    let node = NodeId::v4();
-    let wf = make_workflow(vec![NodeDefinition::new(node, "A", action_id)]);
+    let node = NodeId::new();
+    let wf = make_workflow(vec![NodeDefinition::new(node, "A", "resource-consumer")]);
 
     let result = engine
         .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())

@@ -241,7 +241,7 @@ async fn main() -> Result<()> {
     println!("🚀 Webhook server started at http://localhost:8080\n");
 
     // Create trigger context
-    let base = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
+    let base = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
     let state = Arc::new(TriggerState::new("telegram-trigger"));
     let ctx = TriggerCtx::new(
         base,

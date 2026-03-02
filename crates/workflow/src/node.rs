@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use nebula_core::{ActionId, InterfaceVersion, NodeId};
+use nebula_core::{ActionKey, InterfaceVersion, NodeId};
 use serde::{Deserialize, Serialize};
 
 use crate::definition::RetryConfig;
@@ -15,8 +15,8 @@ pub struct NodeDefinition {
     pub id: NodeId,
     /// Human-readable label.
     pub name: String,
-    /// Which action this node executes.
-    pub action_id: ActionId,
+    /// Which action/plugin this node runs (e.g. `"http_request"`, `"echo"`).
+    pub action_key: ActionKey,
     /// Optional pinned interface version for the action.
     #[serde(default)]
     pub interface_version: Option<InterfaceVersion>,
@@ -37,11 +37,11 @@ pub struct NodeDefinition {
 impl NodeDefinition {
     /// Create a minimal node definition.
     #[must_use]
-    pub fn new(id: NodeId, name: impl Into<String>, action_id: ActionId) -> Self {
+    pub fn new(id: NodeId, name: impl Into<String>, action_key: impl AsRef<str>) -> Self {
         Self {
             id,
             name: name.into(),
-            action_id,
+            action_key: action_key.as_ref().parse().expect("valid ActionKey"),
             interface_version: None,
             parameters: HashMap::new(),
             retry_policy: None,
@@ -148,17 +148,15 @@ impl ParamValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_core::ActionId;
 
     #[test]
     fn node_definition_new() {
-        let id = NodeId::v4();
-        let action_id = ActionId::v4();
-        let node = NodeDefinition::new(id, "fetch", action_id);
+        let id = NodeId::new();
+        let node = NodeDefinition::new(id, "fetch", "http_request");
 
         assert_eq!(node.id, id);
         assert_eq!(node.name, "fetch");
-        assert_eq!(node.action_id, action_id);
+        assert_eq!(node.action_key.as_str(), "http_request");
         assert!(node.interface_version.is_none());
         assert!(node.parameters.is_empty());
         assert!(node.retry_policy.is_none());
@@ -168,9 +166,8 @@ mod tests {
 
     #[test]
     fn node_definition_builder_methods() {
-        let id = NodeId::v4();
-        let action_id = ActionId::v4();
-        let node = NodeDefinition::new(id, "fetch", action_id)
+        let id = NodeId::new();
+        let node = NodeDefinition::new(id, "fetch", "http_request")
             .with_interface_version(InterfaceVersion::new(1, 0))
             .with_parameter(
                 "url",
@@ -221,7 +218,7 @@ mod tests {
 
     #[test]
     fn param_value_reference() {
-        let source = NodeId::v4();
+        let source = NodeId::new();
         let pv = ParamValue::reference(source, "$.data.items");
         match pv {
             ParamValue::Reference {
@@ -237,7 +234,7 @@ mod tests {
 
     #[test]
     fn param_value_serde_roundtrip_all_variants() {
-        let source = NodeId::v4();
+        let source = NodeId::new();
         let values = [
             ParamValue::literal(serde_json::json!({"key": "value"})),
             ParamValue::expression("1 + 2"),
@@ -264,9 +261,8 @@ mod tests {
 
     #[test]
     fn node_definition_serde_roundtrip() {
-        let id = NodeId::v4();
-        let action_id = ActionId::v4();
-        let node = NodeDefinition::new(id, "transform", action_id)
+        let id = NodeId::new();
+        let node = NodeDefinition::new(id, "transform", "echo")
             .with_parameter("input", ParamValue::literal(serde_json::json!("data")))
             .with_timeout(Duration::from_secs(30));
 
@@ -275,7 +271,7 @@ mod tests {
 
         assert_eq!(back.id, id);
         assert_eq!(back.name, "transform");
-        assert_eq!(back.action_id, action_id);
+        assert_eq!(back.action_key.as_str(), "echo");
         assert_eq!(back.timeout, Some(Duration::from_secs(30)));
         assert_eq!(back.parameters.len(), 1);
     }

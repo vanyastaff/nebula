@@ -31,7 +31,7 @@
 
 All consumers expect:
 
-- **IDs:** Typed UUID wrappers; `v4()`, `parse()`, `nil()`; serde round-trip; `Copy`
+- **IDs:** Typed UUID wrappers; `new()`, `parse()`, `nil()`; serde round-trip; `Copy`
 - **Scope:** `ScopeLevel` hierarchy; `is_contained_in`; `ScopedId` constructors
 - **Traits:** `Scoped`, `HasContext`, `Identifiable` for common entity behavior
 - **Error:** `CoreError` with `is_retryable()`, `is_client_error()`, `error_code()`, `user_message()`
@@ -68,7 +68,7 @@ No other nebula-* crates: core is the foundation; only nebula-log is allowed.
 
 Core is passive; no runtime sequence originates from core. Consumers:
 
-1. Create IDs via `Id::v4()` or parse from storage/API
+1. Create IDs via `Id::new()` or parse from storage/API
 2. Build `OperationContext` for execution
 3. Use `ScopeLevel` for resource lifecycle and access checks
 4. Propagate `CoreError` on failure; check `is_retryable()` for retry logic

@@ -272,9 +272,9 @@ mod tests {
 
     fn test_context() -> NodeContext {
         NodeContext::new(
-            ExecutionId::v4(),
-            NodeId::v4(),
-            WorkflowId::v4(),
+            ExecutionId::new(),
+            NodeId::new(),
+            WorkflowId::new(),
             tokio_util::sync::CancellationToken::new(),
         )
     }

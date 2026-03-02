@@ -42,7 +42,7 @@ manager.register(
 ).unwrap();
 
 // 4. Acquire resource
-let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
+let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
 let guard = manager.acquire("my-resource", &ctx).await.unwrap();
 
 // Use the resource...

@@ -42,9 +42,9 @@ use nebula_core::{ExecutionId, NodeId, WorkflowId};
 use nebula_workflow::NodeState;
 
 // Create execution state and plan (engine would load workflow)
-let execution_id = ExecutionId::v4();
-let workflow_id = WorkflowId::v4();
-let node_ids = [NodeId::v4(), NodeId::v4()];
+let execution_id = ExecutionId::new();
+let workflow_id = WorkflowId::new();
+let node_ids = [NodeId::new(), NodeId::new()];
 let state = ExecutionState::new(execution_id, workflow_id, &node_ids);
 assert_eq!(state.status, ExecutionStatus::Created);
 

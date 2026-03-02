@@ -2,6 +2,19 @@
 //!
 //! This module provides centralized error types and error handling
 //! utilities used throughout the Nebula system.
+//!
+//! # Examples
+//!
+//! ```
+//! use nebula_core::CoreError;
+//!
+//! let err = CoreError::validation("invalid format");
+//! assert_eq!(err.error_code(), "VALIDATION_ERROR");
+//! assert!(!err.is_retryable());
+//!
+//! let not_found = CoreError::not_found("workflow", "abc-123");
+//! assert_eq!(not_found.error_code(), "NOT_FOUND_ERROR");
+//! ```
 
 use std::fmt;
 use thiserror::Error;

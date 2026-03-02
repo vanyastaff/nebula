@@ -72,7 +72,7 @@ impl ExecutionPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_core::{ActionId, Version, WorkflowId};
+    use nebula_core::{Version, WorkflowId};
     use nebula_workflow::{Connection, NodeDefinition, WorkflowConfig, WorkflowDefinition};
     use std::collections::HashMap;
 
@@ -82,7 +82,7 @@ mod tests {
     ) -> WorkflowDefinition {
         let now = Utc::now();
         WorkflowDefinition {
-            id: WorkflowId::v4(),
+            id: WorkflowId::new(),
             name: "test".into(),
             description: None,
             version: Version::new(0, 1, 0),
@@ -97,19 +97,19 @@ mod tests {
     }
 
     fn node(id: NodeId) -> NodeDefinition {
-        NodeDefinition::new(id, "n", ActionId::v4())
+        NodeDefinition::new(id, "n", "n")
     }
 
     #[test]
     fn plan_from_linear_workflow() {
-        let a = NodeId::v4();
-        let b = NodeId::v4();
-        let c = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let c = NodeId::new();
         let wf = make_workflow(
             vec![node(a), node(b), node(c)],
             vec![Connection::new(a, b), Connection::new(b, c)],
         );
-        let plan = ExecutionPlan::from_workflow(ExecutionId::v4(), &wf, ExecutionBudget::default())
+        let plan = ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
             .unwrap();
 
         assert_eq!(plan.total_nodes, 3);
@@ -120,10 +120,10 @@ mod tests {
 
     #[test]
     fn plan_from_diamond_workflow() {
-        let a = NodeId::v4();
-        let b = NodeId::v4();
-        let c = NodeId::v4();
-        let d = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let c = NodeId::new();
+        let d = NodeId::new();
         let wf = make_workflow(
             vec![node(a), node(b), node(c), node(d)],
             vec![
@@ -133,7 +133,7 @@ mod tests {
                 Connection::new(c, d),
             ],
         );
-        let plan = ExecutionPlan::from_workflow(ExecutionId::v4(), &wf, ExecutionBudget::default())
+        let plan = ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
             .unwrap();
 
         assert_eq!(plan.total_nodes, 4);
@@ -145,15 +145,15 @@ mod tests {
     #[test]
     fn plan_rejects_empty_workflow() {
         let wf = make_workflow(vec![], vec![]);
-        let err = ExecutionPlan::from_workflow(ExecutionId::v4(), &wf, ExecutionBudget::default())
+        let err = ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
             .unwrap_err();
         assert!(err.to_string().contains("no nodes"));
     }
 
     #[test]
     fn plan_preserves_ids() {
-        let exec_id = ExecutionId::v4();
-        let a = NodeId::v4();
+        let exec_id = ExecutionId::new();
+        let a = NodeId::new();
         let wf = make_workflow(vec![node(a)], vec![]);
         let plan = ExecutionPlan::from_workflow(exec_id, &wf, ExecutionBudget::default()).unwrap();
 
@@ -163,9 +163,9 @@ mod tests {
 
     #[test]
     fn plan_single_node() {
-        let a = NodeId::v4();
+        let a = NodeId::new();
         let wf = make_workflow(vec![node(a)], vec![]);
-        let plan = ExecutionPlan::from_workflow(ExecutionId::v4(), &wf, ExecutionBudget::default())
+        let plan = ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
             .unwrap();
 
         assert_eq!(plan.total_nodes, 1);
@@ -176,10 +176,10 @@ mod tests {
 
     #[test]
     fn plan_serde_roundtrip() {
-        let a = NodeId::v4();
-        let b = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
         let wf = make_workflow(vec![node(a), node(b)], vec![Connection::new(a, b)]);
-        let plan = ExecutionPlan::from_workflow(ExecutionId::v4(), &wf, ExecutionBudget::default())
+        let plan = ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
             .unwrap();
 
         let json = serde_json::to_string(&plan).unwrap();

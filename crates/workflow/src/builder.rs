@@ -32,7 +32,7 @@ impl WorkflowBuilder {
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            id: WorkflowId::v4(),
+            id: WorkflowId::new(),
             name: name.into(),
             description: None,
             version: Version::new(0, 1, 0),
@@ -194,17 +194,17 @@ impl WorkflowBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_core::{ActionId, NodeId};
+    use nebula_core::NodeId;
 
     fn node(id: NodeId) -> NodeDefinition {
-        NodeDefinition::new(id, "n", ActionId::v4())
+        NodeDefinition::new(id, "n", "n")
     }
 
     #[test]
     fn build_linear_workflow() {
-        let a = NodeId::v4();
-        let b = NodeId::v4();
-        let c = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let c = NodeId::new();
 
         let def = WorkflowBuilder::new("linear")
             .add_node(node(a))
@@ -222,10 +222,10 @@ mod tests {
 
     #[test]
     fn build_diamond_workflow() {
-        let a = NodeId::v4();
-        let b = NodeId::v4();
-        let c = NodeId::v4();
-        let d = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let c = NodeId::new();
+        let d = NodeId::new();
 
         let def = WorkflowBuilder::new("diamond")
             .add_node(node(a))
@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn build_empty_name_fails() {
-        let a = NodeId::v4();
+        let a = NodeId::new();
         let err = WorkflowBuilder::new("")
             .add_node(node(a))
             .build()
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn build_duplicate_node_ids_fails() {
-        let a = NodeId::v4();
+        let a = NodeId::new();
         let err = WorkflowBuilder::new("dup")
             .add_node(node(a))
             .add_node(node(a))
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn build_self_loop_fails() {
-        let a = NodeId::v4();
+        let a = NodeId::new();
         let err = WorkflowBuilder::new("loop")
             .add_node(node(a))
             .connect(a, a)
@@ -283,8 +283,8 @@ mod tests {
 
     #[test]
     fn build_cycle_detected() {
-        let a = NodeId::v4();
-        let b = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
         let err = WorkflowBuilder::new("cycle")
             .add_node(node(a))
             .add_node(node(b))
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn build_with_variables_tags_config() {
-        let a = NodeId::v4();
+        let a = NodeId::new();
         let def = WorkflowBuilder::new("configured")
             .description("A test workflow")
             .version(Version::new(1, 0, 0))

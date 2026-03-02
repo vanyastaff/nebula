@@ -46,7 +46,7 @@ mod tests {
     #[test]
     fn success_result() {
         let result = ExecutionResult {
-            execution_id: ExecutionId::v4(),
+            execution_id: ExecutionId::new(),
             status: ExecutionStatus::Completed,
             node_outputs: HashMap::new(),
             duration: Duration::from_millis(100),
@@ -58,7 +58,7 @@ mod tests {
     #[test]
     fn failed_result() {
         let result = ExecutionResult {
-            execution_id: ExecutionId::v4(),
+            execution_id: ExecutionId::new(),
             status: ExecutionStatus::Failed,
             node_outputs: HashMap::new(),
             duration: Duration::from_millis(50),
@@ -69,18 +69,18 @@ mod tests {
 
     #[test]
     fn node_output_lookup() {
-        let node_id = NodeId::v4();
+        let node_id = NodeId::new();
         let mut outputs = HashMap::new();
         outputs.insert(node_id, serde_json::json!(42));
 
         let result = ExecutionResult {
-            execution_id: ExecutionId::v4(),
+            execution_id: ExecutionId::new(),
             status: ExecutionStatus::Completed,
             node_outputs: outputs,
             duration: Duration::from_millis(10),
         };
 
         assert_eq!(result.node_output(node_id), Some(&serde_json::json!(42)));
-        assert!(result.node_output(NodeId::v4()).is_none());
+        assert!(result.node_output(NodeId::new()).is_none());
     }
 }

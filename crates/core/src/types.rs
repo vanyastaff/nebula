@@ -660,7 +660,7 @@ mod tests {
     #[test]
     fn test_operation_context() {
         let context = OperationContext::new("test-op")
-            .with_execution_id(ExecutionId::v4())
+            .with_execution_id(ExecutionId::new())
             .with_priority(Priority::High)
             .with_metadata("key", "value");
 

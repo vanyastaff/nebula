@@ -90,7 +90,7 @@ mod tests {
     use nebula_core::{ExecutionId, NodeId};
 
     fn test_key() -> IdempotencyKey {
-        IdempotencyKey::generate(ExecutionId::v4(), NodeId::v4(), 0)
+        IdempotencyKey::generate(ExecutionId::new(), NodeId::new(), 0)
     }
 
     #[test]

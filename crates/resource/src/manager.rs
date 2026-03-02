@@ -1002,8 +1002,8 @@ mod tests {
     fn ctx() -> Context {
         Context::new(
             Scope::Global,
-            nebula_core::WorkflowId::v4(),
-            nebula_core::ExecutionId::v4(),
+            nebula_core::WorkflowId::new(),
+            nebula_core::ExecutionId::new(),
         )
     }
 

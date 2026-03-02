@@ -1,17 +1,10 @@
 //! Engine error types.
 
-use nebula_core::id::{ActionId, NodeId};
+use nebula_core::id::NodeId;
 
 /// Errors from the engine layer.
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
-    /// No action key mapping for the given action ID.
-    #[error("no action key mapping for action_id {action_id}")]
-    ActionKeyNotFound {
-        /// The action ID that could not be resolved.
-        action_id: ActionId,
-    },
-
     /// A referenced node was not found in the workflow.
     #[error("node not found: {node_id}")]
     NodeNotFound {
@@ -108,7 +101,7 @@ mod tests {
 
     #[test]
     fn node_failed_display() {
-        let node_id = NodeId::v4();
+        let node_id = NodeId::new();
         let err = EngineError::NodeFailed {
             node_id,
             error: "timeout".into(),

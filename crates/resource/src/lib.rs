@@ -30,7 +30,7 @@
 //! let manager = Manager::new();
 //! manager.register(DbResource, config, PoolConfig::default())?;
 //!
-//! let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
+//! let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
 //! let conn = manager.acquire("postgres", &ctx).await?;
 //! ```
 //!

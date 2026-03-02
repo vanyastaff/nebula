@@ -12,7 +12,7 @@ use std::time::Instant;
 use dashmap::DashMap;
 // TODO: ExecutionBudget moved to nebula-execution
 use nebula_action::{ActionResult, NodeContext};
-use nebula_core::id::{ActionId, ExecutionId, NodeId, WorkflowId};
+use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 // ScopeLevel removed from ActionContext
 // use nebula_core::scope::ScopeLevel;
 use nebula_execution::ExecutionStatus;
@@ -56,8 +56,6 @@ pub struct WorkflowEngine {
     runtime: Arc<ActionRuntime>,
     event_bus: Arc<EventBus>,
     metrics: Arc<MetricsRegistry>,
-    /// Maps action IDs (from node definitions) to registry keys.
-    action_keys: HashMap<ActionId, String>,
     /// Node registry for node-level metadata and versioning.
     plugin_registry: PluginRegistry,
     /// Resolves node parameters (expressions, templates, references) to JSON.
@@ -81,7 +79,6 @@ impl WorkflowEngine {
             runtime,
             event_bus,
             metrics,
-            action_keys: HashMap::new(),
             plugin_registry: PluginRegistry::new(),
             resolver: ParamResolver::new(expression_engine.clone()),
             expression_engine,
@@ -101,14 +98,6 @@ impl WorkflowEngine {
         Self::new(runtime, telemetry.event_bus_arc(), telemetry.metrics_arc())
     }
 
-    /// Register a mapping from an action ID to a registry key.
-    ///
-    /// The engine uses this to look up the correct handler in the
-    /// runtime's action registry when executing a node.
-    pub fn map_action(&mut self, action_id: ActionId, key: impl Into<String>) {
-        self.action_keys.insert(action_id, key.into());
-    }
-
     /// Access the node registry.
     pub fn plugin_registry(&self) -> &PluginRegistry {
         &self.plugin_registry
@@ -123,14 +112,6 @@ impl WorkflowEngine {
     pub fn with_resource_manager(mut self, manager: Arc<nebula_resource::Manager>) -> Self {
         self.resource_manager = Some(manager);
         self
-    }
-
-    /// Resolve the action registry key for a given action ID.
-    fn resolve_action_key(&self, action_id: ActionId) -> Result<&str, EngineError> {
-        self.action_keys
-            .get(&action_id)
-            .map(String::as_str)
-            .ok_or(EngineError::ActionKeyNotFound { action_id })
     }
 
     /// Execute a workflow from start to finish.
@@ -148,7 +129,7 @@ impl WorkflowEngine {
         input: serde_json::Value,
         budget: ExecutionBudget,
     ) -> Result<ExecutionResult, EngineError> {
-        let execution_id = ExecutionId::v4();
+        let execution_id = ExecutionId::new();
         let started = Instant::now();
 
         // 1. Validate workflow (reuse ExecutionPlan for validation)
@@ -160,10 +141,6 @@ impl WorkflowEngine {
             .map_err(|e| EngineError::PlanningFailed(e.to_string()))?;
 
         // 3. Validate action key mappings exist for all nodes
-        for node in &workflow.nodes {
-            self.resolve_action_key(node.action_id)?;
-        }
-
         // 4. Initialize execution state
         let node_ids: Vec<NodeId> = workflow.nodes.iter().map(|n| n.id).collect();
         let mut exec_state = ExecutionState::new(execution_id, workflow.id, &node_ids);
@@ -379,7 +356,7 @@ impl WorkflowEngine {
                 Err(join_err) => {
                     tracing::error!(?join_err, "node task panicked");
                     cancel_token.cancel();
-                    return Some((NodeId::v4(), join_err.to_string()));
+                    return Some((NodeId::new(), join_err.to_string()));
                 }
             }
         }
@@ -410,10 +387,7 @@ impl WorkflowEngine {
         let Some(node_def) = node_map.get(&node_id) else {
             return false;
         };
-        let Ok(action_key) = self.resolve_action_key(node_def.action_id) else {
-            return false;
-        };
-        let action_key = action_key.to_owned();
+        let action_key = node_def.action_key.as_str().to_owned();
 
         // Partition incoming connections into flow (to_port=None) and support (to_port=Some)
         let (node_input, support_inputs) =
@@ -935,7 +909,6 @@ mod tests {
     use nebula_action::metadata::ActionMetadata;
     use nebula_action::result::ActionResult;
     use nebula_core::Version;
-    use nebula_core::id::ActionId;
     use nebula_plugin::InternalHandler;
     use nebula_runtime::DataPassingPolicy;
     use nebula_runtime::registry::ActionRegistry;
@@ -988,7 +961,7 @@ mod tests {
     ) -> WorkflowDefinition {
         let now = chrono::Utc::now();
         WorkflowDefinition {
-            id: WorkflowId::v4(),
+            id: WorkflowId::new(),
             name: "test".into(),
             description: None,
             version: Version::new(0, 1, 0),
@@ -1028,17 +1001,15 @@ mod tests {
 
     #[tokio::test]
     async fn single_node_workflow() {
-        let action_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
             meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
 
-        let (mut engine, _, _) = make_engine(registry);
-        engine.map_action(action_id, "echo");
+        let (engine, _, _) = make_engine(registry);
 
-        let n = NodeId::v4();
-        let wf = make_workflow(vec![NodeDefinition::new(n, "echo", action_id)], vec![]);
+        let n = NodeId::new();
+        let wf = make_workflow(vec![NodeDefinition::new(n, "echo", "echo")], vec![]);
 
         let result = engine
             .execute_workflow(&wf, serde_json::json!("hello"), ExecutionBudget::default())
@@ -1051,21 +1022,19 @@ mod tests {
 
     #[tokio::test]
     async fn linear_two_node_workflow() {
-        let echo_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
             meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
 
-        let (mut engine, _, _) = make_engine(registry);
-        engine.map_action(echo_id, "echo");
+        let (engine, _, _) = make_engine(registry);
 
-        let n1 = NodeId::v4();
-        let n2 = NodeId::v4();
+        let n1 = NodeId::new();
+        let n2 = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1, "A", echo_id),
-                NodeDefinition::new(n2, "B", echo_id),
+                NodeDefinition::new(n1, "A", "echo"),
+                NodeDefinition::new(n2, "B", "echo"),
             ],
             vec![Connection::new(n1, n2)],
         );
@@ -1083,25 +1052,23 @@ mod tests {
 
     #[tokio::test]
     async fn diamond_workflow() {
-        let echo_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
             meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
 
-        let (mut engine, _, _) = make_engine(registry);
-        engine.map_action(echo_id, "echo");
+        let (engine, _, _) = make_engine(registry);
 
-        let a = NodeId::v4();
-        let b = NodeId::v4();
-        let c = NodeId::v4();
-        let d = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let c = NodeId::new();
+        let d = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", echo_id),
-                NodeDefinition::new(b, "B", echo_id),
-                NodeDefinition::new(c, "C", echo_id),
-                NodeDefinition::new(d, "D", echo_id),
+                NodeDefinition::new(a, "A", "echo"),
+                NodeDefinition::new(b, "B", "echo"),
+                NodeDefinition::new(c, "C", "echo"),
+                NodeDefinition::new(d, "D", "echo"),
             ],
             vec![
                 Connection::new(a, b),
@@ -1128,8 +1095,6 @@ mod tests {
 
     #[tokio::test]
     async fn failing_node_stops_execution() {
-        let echo_id = ActionId::v4();
-        let fail_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
             meta: ActionMetadata::new("echo", "Echo", "echoes input"),
@@ -1138,18 +1103,16 @@ mod tests {
             meta: ActionMetadata::new("fail", "Fail", "always fails"),
         }));
 
-        let (mut engine, _, _) = make_engine(registry);
-        engine.map_action(echo_id, "echo");
-        engine.map_action(fail_id, "fail");
+        let (engine, _, _) = make_engine(registry);
 
-        let n1 = NodeId::v4();
-        let n2 = NodeId::v4();
-        let n3 = NodeId::v4();
+        let n1 = NodeId::new();
+        let n2 = NodeId::new();
+        let n3 = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1, "A", echo_id),
-                NodeDefinition::new(n2, "B", fail_id),
-                NodeDefinition::new(n3, "C", echo_id),
+                NodeDefinition::new(n1, "A", "echo"),
+                NodeDefinition::new(n2, "B", "fail"),
+                NodeDefinition::new(n3, "C", "echo"),
             ],
             vec![Connection::new(n1, n2), Connection::new(n2, n3)],
         );
@@ -1167,18 +1130,19 @@ mod tests {
 
     #[tokio::test]
     async fn missing_action_key_returns_error() {
-        let unknown_action = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         let (engine, _, _) = make_engine(registry);
 
-        let n = NodeId::v4();
-        let wf = make_workflow(vec![NodeDefinition::new(n, "A", unknown_action)], vec![]);
+        let n = NodeId::new();
+        let wf = make_workflow(vec![NodeDefinition::new(n, "A", "unknown")], vec![]);
 
         let result = engine
             .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
-            .await;
+            .await
+            .expect("engine returns Ok even when a node fails");
 
-        assert!(matches!(result, Err(EngineError::ActionKeyNotFound { .. })));
+        // When action key is not in registry, the node fails and execution result is failure
+        assert!(!result.is_success());
     }
 
     #[tokio::test]
@@ -1196,19 +1160,17 @@ mod tests {
 
     #[tokio::test]
     async fn telemetry_events_emitted() {
-        let echo_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
             meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
 
-        let (mut engine, event_bus, metrics) = make_engine(registry);
-        engine.map_action(echo_id, "echo");
+        let (engine, event_bus, metrics) = make_engine(registry);
 
         let mut sub = event_bus.subscribe();
 
-        let n = NodeId::v4();
-        let wf = make_workflow(vec![NodeDefinition::new(n, "echo", echo_id)], vec![]);
+        let n = NodeId::new();
+        let wf = make_workflow(vec![NodeDefinition::new(n, "echo", "echo")], vec![]);
 
         engine
             .execute_workflow(&wf, serde_json::json!("test"), ExecutionBudget::default())
@@ -1238,17 +1200,15 @@ mod tests {
 
     #[tokio::test]
     async fn metrics_recorded_on_failure() {
-        let fail_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(FailHandler {
             meta: ActionMetadata::new("fail", "Fail", "always fails"),
         }));
 
-        let (mut engine, _, metrics) = make_engine(registry);
-        engine.map_action(fail_id, "fail");
+        let (engine, _, metrics) = make_engine(registry);
 
-        let n = NodeId::v4();
-        let wf = make_workflow(vec![NodeDefinition::new(n, "fail", fail_id)], vec![]);
+        let n = NodeId::new();
+        let wf = make_workflow(vec![NodeDefinition::new(n, "fail", "fail")], vec![]);
 
         let result = engine
             .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
@@ -1319,8 +1279,6 @@ mod tests {
     /// Only B should execute; C should be skipped; D should still run (via B).
     #[tokio::test]
     async fn branch_workflow_only_selected_path_executes() {
-        let echo_id = ActionId::v4();
-        let branch_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
             meta: ActionMetadata::new("echo", "Echo", "echoes input"),
@@ -1330,20 +1288,18 @@ mod tests {
             selected: "true".into(),
         }));
 
-        let (mut engine, _, _) = make_engine(registry);
-        engine.map_action(echo_id, "echo");
-        engine.map_action(branch_id, "branch");
+        let (engine, _, _) = make_engine(registry);
 
-        let a = NodeId::v4();
-        let b = NodeId::v4();
-        let c = NodeId::v4();
-        let d = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let c = NodeId::new();
+        let d = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", branch_id),
-                NodeDefinition::new(b, "B", echo_id),
-                NodeDefinition::new(c, "C", echo_id),
-                NodeDefinition::new(d, "D", echo_id),
+                NodeDefinition::new(a, "A", "branch"),
+                NodeDefinition::new(b, "B", "echo"),
+                NodeDefinition::new(c, "C", "echo"),
+                NodeDefinition::new(d, "D", "echo"),
             ],
             vec![
                 Connection::new(a, b).with_branch_key("true"),
@@ -1372,8 +1328,6 @@ mod tests {
     /// A → B(skip) → C. Verify C is skipped and doesn't execute.
     #[tokio::test]
     async fn skip_propagation() {
-        let echo_id = ActionId::v4();
-        let skip_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
             meta: ActionMetadata::new("echo", "Echo", "echoes input"),
@@ -1382,18 +1336,16 @@ mod tests {
             meta: ActionMetadata::new("skip", "Skip", "always skips"),
         }));
 
-        let (mut engine, _, _) = make_engine(registry);
-        engine.map_action(echo_id, "echo");
-        engine.map_action(skip_id, "skip");
+        let (engine, _, _) = make_engine(registry);
 
-        let a = NodeId::v4();
-        let b = NodeId::v4();
-        let c = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let c = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", echo_id),
-                NodeDefinition::new(b, "B", skip_id),
-                NodeDefinition::new(c, "C", echo_id),
+                NodeDefinition::new(a, "A", "echo"),
+                NodeDefinition::new(b, "B", "skip"),
+                NodeDefinition::new(c, "C", "echo"),
             ],
             vec![Connection::new(a, b), Connection::new(b, c)],
         );
@@ -1416,8 +1368,6 @@ mod tests {
     /// A → B(fails) --OnError--> C. Verify C receives error data and execution succeeds.
     #[tokio::test]
     async fn error_routing_with_handler() {
-        let echo_id = ActionId::v4();
-        let fail_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
             meta: ActionMetadata::new("echo", "Echo", "echoes input"),
@@ -1426,18 +1376,16 @@ mod tests {
             meta: ActionMetadata::new("fail", "Fail", "always fails"),
         }));
 
-        let (mut engine, _, _) = make_engine(registry);
-        engine.map_action(echo_id, "echo");
-        engine.map_action(fail_id, "fail");
+        let (engine, _, _) = make_engine(registry);
 
-        let a = NodeId::v4();
-        let b = NodeId::v4();
-        let c = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let c = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", echo_id),
-                NodeDefinition::new(b, "B", fail_id),
-                NodeDefinition::new(c, "C", echo_id),
+                NodeDefinition::new(a, "A", "echo"),
+                NodeDefinition::new(b, "B", "fail"),
+                NodeDefinition::new(c, "C", "echo"),
             ],
             vec![
                 Connection::new(a, b),
@@ -1466,8 +1414,6 @@ mod tests {
     /// A → B(fails) → C (Always). No OnError handler → fail-fast (same as today).
     #[tokio::test]
     async fn error_without_handler_fails_fast() {
-        let echo_id = ActionId::v4();
-        let fail_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
             meta: ActionMetadata::new("echo", "Echo", "echoes input"),
@@ -1476,18 +1422,16 @@ mod tests {
             meta: ActionMetadata::new("fail", "Fail", "always fails"),
         }));
 
-        let (mut engine, _, _) = make_engine(registry);
-        engine.map_action(echo_id, "echo");
-        engine.map_action(fail_id, "fail");
+        let (engine, _, _) = make_engine(registry);
 
-        let a = NodeId::v4();
-        let b = NodeId::v4();
-        let c = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let c = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", echo_id),
-                NodeDefinition::new(b, "B", fail_id),
-                NodeDefinition::new(c, "C", echo_id),
+                NodeDefinition::new(a, "A", "echo"),
+                NodeDefinition::new(b, "B", "fail"),
+                NodeDefinition::new(c, "C", "echo"),
             ],
             vec![Connection::new(a, b), Connection::new(b, c)],
         );
@@ -1506,21 +1450,19 @@ mod tests {
     /// A → B with OnResult(Success) condition. B should run when A succeeds.
     #[tokio::test]
     async fn conditional_edge_on_result() {
-        let echo_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
             meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
 
-        let (mut engine, _, _) = make_engine(registry);
-        engine.map_action(echo_id, "echo");
+        let (engine, _, _) = make_engine(registry);
 
-        let a = NodeId::v4();
-        let b = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", echo_id),
-                NodeDefinition::new(b, "B", echo_id),
+                NodeDefinition::new(a, "A", "echo"),
+                NodeDefinition::new(b, "B", "echo"),
             ],
             vec![
                 Connection::new(a, b).with_condition(EdgeCondition::OnResult {
@@ -1544,25 +1486,23 @@ mod tests {
     /// All should execute when A succeeds.
     #[tokio::test]
     async fn diamond_with_mixed_conditions() {
-        let echo_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
             meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
 
-        let (mut engine, _, _) = make_engine(registry);
-        engine.map_action(echo_id, "echo");
+        let (engine, _, _) = make_engine(registry);
 
-        let a = NodeId::v4();
-        let b = NodeId::v4();
-        let c = NodeId::v4();
-        let d = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let c = NodeId::new();
+        let d = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", echo_id),
-                NodeDefinition::new(b, "B", echo_id),
-                NodeDefinition::new(c, "C", echo_id),
-                NodeDefinition::new(d, "D", echo_id),
+                NodeDefinition::new(a, "A", "echo"),
+                NodeDefinition::new(b, "B", "echo"),
+                NodeDefinition::new(c, "C", "echo"),
+                NodeDefinition::new(d, "D", "echo"),
             ],
             vec![
                 Connection::new(a, b), // Always

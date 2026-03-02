@@ -12,7 +12,7 @@ use nebula_action::metadata::ActionMetadata;
 use nebula_action::result::ActionResult;
 use nebula_action::{ActionError, NodeContext};
 use nebula_core::Version;
-use nebula_core::id::{ActionId, NodeId, WorkflowId};
+use nebula_core::id::{NodeId, WorkflowId};
 use nebula_engine::WorkflowEngine;
 use nebula_execution::ExecutionStatus;
 use nebula_execution::context::ExecutionBudget;
@@ -168,7 +168,7 @@ impl InternalHandler for CounterHandler {
 fn make_workflow(nodes: Vec<NodeDefinition>, connections: Vec<Connection>) -> WorkflowDefinition {
     let now = chrono::Utc::now();
     WorkflowDefinition {
-        id: WorkflowId::v4(),
+        id: WorkflowId::new(),
         name: "integration-test".into(),
         description: None,
         version: Version::new(0, 1, 0),
@@ -210,7 +210,6 @@ async fn engine_with_telemetry_service_wires_bus_and_metrics() {
     let _event_bus = telemetry.event_bus_arc();
     let metrics = telemetry.metrics_arc();
 
-    let echo_id = ActionId::v4();
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
 
@@ -224,11 +223,10 @@ async fn engine_with_telemetry_service_wires_bus_and_metrics() {
         DataPassingPolicy::default(),
         telemetry.clone(),
     ));
-    let mut engine = WorkflowEngine::with_telemetry(runtime, telemetry);
-    engine.map_action(echo_id, "echo");
+    let engine = WorkflowEngine::with_telemetry(runtime, telemetry);
 
-    let n = NodeId::v4();
-    let wf = make_workflow(vec![NodeDefinition::new(n, "echo", echo_id)], vec![]);
+    let n = NodeId::new();
+    let wf = make_workflow(vec![NodeDefinition::new(n, "echo", "echo")], vec![]);
 
     let _result = engine
         .execute_workflow(&wf, serde_json::json!("hi"), ExecutionBudget::default())
@@ -251,25 +249,20 @@ fn meta(key: &str) -> ActionMetadata {
 /// A echoes the input, B doubles it.
 #[tokio::test]
 async fn linear_pipeline_data_flows_through() {
-    let echo_id = ActionId::v4();
-    let double_id = ActionId::v4();
-
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
     registry.register(Arc::new(DoubleHandler {
         meta: meta("double"),
     }));
 
-    let (mut engine, _, _) = make_engine(registry);
-    engine.map_action(echo_id, "echo");
-    engine.map_action(double_id, "double");
+    let (engine, _, _) = make_engine(registry);
 
-    let a = NodeId::v4();
-    let b = NodeId::v4();
+    let a = NodeId::new();
+    let b = NodeId::new();
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", echo_id),
-            NodeDefinition::new(b, "B", double_id),
+            NodeDefinition::new(a, "A", "echo"),
+            NodeDefinition::new(b, "B", "double"),
         ],
         vec![Connection::new(a, b)],
     );
@@ -288,10 +281,6 @@ async fn linear_pipeline_data_flows_through() {
 /// B doubles, C adds 10. Both get A's output (the workflow input).
 #[tokio::test]
 async fn fan_out_parallel_execution() {
-    let echo_id = ActionId::v4();
-    let double_id = ActionId::v4();
-    let add10_id = ActionId::v4();
-
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
     registry.register(Arc::new(DoubleHandler {
@@ -301,19 +290,16 @@ async fn fan_out_parallel_execution() {
         meta: meta("add10"),
     }));
 
-    let (mut engine, _, _) = make_engine(registry);
-    engine.map_action(echo_id, "echo");
-    engine.map_action(double_id, "double");
-    engine.map_action(add10_id, "add10");
+    let (engine, _, _) = make_engine(registry);
 
-    let a = NodeId::v4();
-    let b = NodeId::v4();
-    let c = NodeId::v4();
+    let a = NodeId::new();
+    let b = NodeId::new();
+    let c = NodeId::new();
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", echo_id),
-            NodeDefinition::new(b, "B", double_id),
-            NodeDefinition::new(c, "C", add10_id),
+            NodeDefinition::new(a, "A", "echo"),
+            NodeDefinition::new(b, "B", "double"),
+            NodeDefinition::new(c, "C", "add10"),
         ],
         vec![Connection::new(a, b), Connection::new(a, c)],
     );
@@ -333,10 +319,6 @@ async fn fan_out_parallel_execution() {
 /// D is the join node receiving merged output from B and C.
 #[tokio::test]
 async fn diamond_merge_receives_combined_outputs() {
-    let echo_id = ActionId::v4();
-    let double_id = ActionId::v4();
-    let add10_id = ActionId::v4();
-
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
     registry.register(Arc::new(DoubleHandler {
@@ -346,21 +328,18 @@ async fn diamond_merge_receives_combined_outputs() {
         meta: meta("add10"),
     }));
 
-    let (mut engine, _, _) = make_engine(registry);
-    engine.map_action(echo_id, "echo");
-    engine.map_action(double_id, "double");
-    engine.map_action(add10_id, "add10");
+    let (engine, _, _) = make_engine(registry);
 
-    let a = NodeId::v4();
-    let b = NodeId::v4();
-    let c = NodeId::v4();
-    let d = NodeId::v4();
+    let a = NodeId::new();
+    let b = NodeId::new();
+    let c = NodeId::new();
+    let d = NodeId::new();
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", echo_id),
-            NodeDefinition::new(b, "B", double_id),
-            NodeDefinition::new(c, "C", add10_id),
-            NodeDefinition::new(d, "D", echo_id), // echoes merged input
+            NodeDefinition::new(a, "A", "echo"),
+            NodeDefinition::new(b, "B", "double"),
+            NodeDefinition::new(c, "C", "add10"),
+            NodeDefinition::new(d, "D", "echo"), // echoes merged input
         ],
         vec![
             Connection::new(a, b),
@@ -393,25 +372,20 @@ async fn diamond_merge_receives_combined_outputs() {
 /// Error propagation: A → B(fail) → C. B fails, C should not run.
 #[tokio::test]
 async fn error_propagation_stops_downstream() {
-    let echo_id = ActionId::v4();
-    let fail_id = ActionId::v4();
-
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
     registry.register(Arc::new(FailHandler { meta: meta("fail") }));
 
-    let (mut engine, _, _) = make_engine(registry);
-    engine.map_action(echo_id, "echo");
-    engine.map_action(fail_id, "fail");
+    let (engine, _, _) = make_engine(registry);
 
-    let a = NodeId::v4();
-    let b = NodeId::v4();
-    let c = NodeId::v4();
+    let a = NodeId::new();
+    let b = NodeId::new();
+    let c = NodeId::new();
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", echo_id),
-            NodeDefinition::new(b, "B", fail_id),
-            NodeDefinition::new(c, "C", echo_id),
+            NodeDefinition::new(a, "A", "echo"),
+            NodeDefinition::new(b, "B", "fail"),
+            NodeDefinition::new(c, "C", "echo"),
         ],
         vec![Connection::new(a, b), Connection::new(b, c)],
     );
@@ -436,10 +410,6 @@ async fn error_propagation_stops_downstream() {
 /// Downstream node C should not execute.
 #[tokio::test]
 async fn cancellation_via_sibling_failure() {
-    let slow_id = ActionId::v4();
-    let fail_id = ActionId::v4();
-    let echo_id = ActionId::v4();
-
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(SlowHandler {
         meta: meta("slow"),
@@ -448,24 +418,21 @@ async fn cancellation_via_sibling_failure() {
     registry.register(Arc::new(FailHandler { meta: meta("fail") }));
     registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
 
-    let (mut engine, _, _) = make_engine(registry);
-    engine.map_action(slow_id, "slow");
-    engine.map_action(fail_id, "fail");
-    engine.map_action(echo_id, "echo");
+    let (engine, _, _) = make_engine(registry);
 
     // Entry → [Slow, Fail] → Downstream
     // Entry runs first, then Slow and Fail run in parallel,
     // Fail dies immediately, cancelling Slow. Downstream never runs.
-    let entry = NodeId::v4();
-    let slow = NodeId::v4();
-    let fail = NodeId::v4();
-    let downstream = NodeId::v4();
+    let entry = NodeId::new();
+    let slow = NodeId::new();
+    let fail = NodeId::new();
+    let downstream = NodeId::new();
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(entry, "Entry", echo_id),
-            NodeDefinition::new(slow, "Slow", slow_id),
-            NodeDefinition::new(fail, "Fail", fail_id),
-            NodeDefinition::new(downstream, "Down", echo_id),
+            NodeDefinition::new(entry, "Entry", "echo"),
+            NodeDefinition::new(slow, "Slow", "slow"),
+            NodeDefinition::new(fail, "Fail", "fail"),
+            NodeDefinition::new(downstream, "Down", "echo"),
         ],
         vec![
             Connection::new(entry, slow),
@@ -495,22 +462,19 @@ async fn cancellation_via_sibling_failure() {
 /// Verify telemetry events cover the full lifecycle.
 #[tokio::test]
 async fn telemetry_covers_full_lifecycle() {
-    let echo_id = ActionId::v4();
-
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
 
-    let (mut engine, event_bus, metrics) = make_engine(registry);
-    engine.map_action(echo_id, "echo");
+    let (engine, event_bus, metrics) = make_engine(registry);
 
     let mut sub = event_bus.subscribe();
 
-    let a = NodeId::v4();
-    let b = NodeId::v4();
+    let a = NodeId::new();
+    let b = NodeId::new();
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", echo_id),
-            NodeDefinition::new(b, "B", echo_id),
+            NodeDefinition::new(a, "A", "echo"),
+            NodeDefinition::new(b, "B", "echo"),
         ],
         vec![Connection::new(a, b)],
     );
@@ -557,7 +521,6 @@ async fn telemetry_covers_full_lifecycle() {
 #[tokio::test]
 async fn bounded_concurrency_with_multiple_parallel_nodes() {
     let counter = Arc::new(AtomicUsize::new(0));
-    let echo_id = ActionId::v4();
 
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(CounterHandler {
@@ -565,12 +528,11 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
         count: counter.clone(),
     }));
 
-    let (mut engine, _, _) = make_engine(registry);
-    engine.map_action(echo_id, "counter");
+    let (engine, _, _) = make_engine(registry);
 
     // Create 8 independent nodes (all entry nodes, no connections)
     let nodes: Vec<NodeDefinition> = (0..8)
-        .map(|i| NodeDefinition::new(NodeId::v4(), format!("N{i}"), echo_id))
+        .map(|i| NodeDefinition::new(NodeId::new(), format!("N{i}"), "counter"))
         .collect();
 
     let wf = make_workflow(nodes, vec![]);
@@ -594,29 +556,24 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
 /// Three-level chain: A → B → C → D. Verify output propagation at each stage.
 #[tokio::test]
 async fn deep_chain_propagates_outputs() {
-    let echo_id = ActionId::v4();
-    let double_id = ActionId::v4();
-
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
     registry.register(Arc::new(DoubleHandler {
         meta: meta("double"),
     }));
 
-    let (mut engine, _, _) = make_engine(registry);
-    engine.map_action(echo_id, "echo");
-    engine.map_action(double_id, "double");
+    let (engine, _, _) = make_engine(registry);
 
-    let a = NodeId::v4();
-    let b = NodeId::v4();
-    let c = NodeId::v4();
-    let d = NodeId::v4();
+    let a = NodeId::new();
+    let b = NodeId::new();
+    let c = NodeId::new();
+    let d = NodeId::new();
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", echo_id),   // echo(2) = 2
-            NodeDefinition::new(b, "B", double_id), // double(2) = 4
-            NodeDefinition::new(c, "C", double_id), // double(4) = 8
-            NodeDefinition::new(d, "D", double_id), // double(8) = 16
+            NodeDefinition::new(a, "A", "echo"),   // echo(2) = 2
+            NodeDefinition::new(b, "B", "double"), // double(2) = 4
+            NodeDefinition::new(c, "C", "double"), // double(4) = 8
+            NodeDefinition::new(d, "D", "double"), // double(8) = 16
         ],
         vec![
             Connection::new(a, b),
@@ -640,16 +597,13 @@ async fn deep_chain_propagates_outputs() {
 /// Metrics are accurate after a failed workflow.
 #[tokio::test]
 async fn metrics_accurate_on_failure() {
-    let fail_id = ActionId::v4();
-
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(FailHandler { meta: meta("fail") }));
 
-    let (mut engine, _, metrics) = make_engine(registry);
-    engine.map_action(fail_id, "fail");
+    let (engine, _, metrics) = make_engine(registry);
 
-    let a = NodeId::v4();
-    let wf = make_workflow(vec![NodeDefinition::new(a, "fail-node", fail_id)], vec![]);
+    let a = NodeId::new();
+    let wf = make_workflow(vec![NodeDefinition::new(a, "fail-node", "fail")], vec![]);
 
     let result = engine
         .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())

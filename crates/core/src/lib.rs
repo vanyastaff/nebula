@@ -5,7 +5,9 @@
 //!
 //! ## Key Components
 //!
-//! - **Identifiers**: ExecutionId, WorkflowId, NodeId, UserId, TenantId, ProjectId, RoleId, OrganizationId
+//! - **Identifiers**: UserId, TenantId, ExecutionId, WorkflowId, NodeId, ResourceId, CredentialId, ProjectId, RoleId, OrganizationId.  
+//!   (Node = workflow step / graph vertex; which action/plugin runs there is given by [`ActionKey`] = [`PluginKey`]; [`NodeDefinition`](https://docs.rs/nebula-workflow) has `action_key: ActionKey`.)
+//! - **Keys**: PluginKey (plugin type, e.g. `telegram_bot`), ActionKey (action within a plugin, e.g. `send_message`), ParameterKey, CredentialKey.
 //! - **Scope System**: Resource lifecycle management with different scope levels (Global, Organization, Project, Workflow, Execution, Action)
 //! - **Base Traits**: Scoped, HasContext, Identifiable for common functionality
 //! - **Common Types**: Utilities and constants used throughout the system
@@ -19,9 +21,9 @@
 //!     ScopeLevel, Scoped, HasContext
 //! };
 //!
-//! let execution_id = ExecutionId::v4();
-//! let workflow_id = WorkflowId::v4();
-//! let node_id = NodeId::v4();
+//! let execution_id = ExecutionId::new();
+//! let workflow_id = WorkflowId::new();
+//! let node_id = NodeId::new();
 //!
 //! let scope = ScopeLevel::Execution(execution_id);
 //! ```
@@ -52,9 +54,10 @@ pub type Result<T> = std::result::Result<T, error::CoreError>;
 /// Common prelude for Nebula crates
 pub mod prelude {
     pub use super::{
-        CoreError, CredentialId, ExecutionId, HasContext, Identifiable, InterfaceVersion, NodeId,
-        OrganizationId, PluginKey, PluginKeyError, ProjectId, ProjectType, Result, RoleId,
-        RoleScope, ScopeLevel, Scoped, TenantId, UserId, UuidParseError, WorkflowId,
+        ActionKey, CoreError, CredentialId, ExecutionId, HasContext, Identifiable, InterfaceVersion,
+        NodeId, OrganizationId, PluginKey, PluginKeyError, ProjectId, ProjectType, ResourceId,
+        Result, RoleId, RoleScope, ScopeLevel, ScopeResolver, Scoped, TenantId, UserId,
+        UuidParseError, WorkflowId,
     };
 
     pub use crate::keys::*;

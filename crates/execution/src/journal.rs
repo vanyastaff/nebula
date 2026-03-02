@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn node_scheduled_entry() {
         let ts = now();
-        let nid = NodeId::v4();
+        let nid = NodeId::new();
         let entry = JournalEntry::NodeScheduled {
             timestamp: ts,
             node_id: nid,
@@ -192,7 +192,7 @@ mod tests {
     fn node_started_entry() {
         let entry = JournalEntry::NodeStarted {
             timestamp: now(),
-            node_id: NodeId::v4(),
+            node_id: NodeId::new(),
             attempt: 0,
         };
         assert!(entry.is_node_event());
@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn node_completed_entry() {
-        let nid = NodeId::v4();
+        let nid = NodeId::new();
         let entry = JournalEntry::NodeCompleted {
             timestamp: now(),
             node_id: nid,
@@ -213,7 +213,7 @@ mod tests {
     fn node_failed_entry() {
         let entry = JournalEntry::NodeFailed {
             timestamp: now(),
-            node_id: NodeId::v4(),
+            node_id: NodeId::new(),
             error: "timeout".into(),
         };
         assert!(entry.is_node_event());
@@ -223,7 +223,7 @@ mod tests {
     fn node_skipped_entry() {
         let entry = JournalEntry::NodeSkipped {
             timestamp: now(),
-            node_id: NodeId::v4(),
+            node_id: NodeId::new(),
             reason: "condition not met".into(),
         };
         assert!(entry.is_node_event());
@@ -233,7 +233,7 @@ mod tests {
     fn node_retrying_entry() {
         let entry = JournalEntry::NodeRetrying {
             timestamp: now(),
-            node_id: NodeId::v4(),
+            node_id: NodeId::new(),
             attempt: 2,
         };
         assert!(entry.is_node_event());
@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_all_variants() {
-        let nid = NodeId::v4();
+        let nid = NodeId::new();
         let ts = now();
 
         let entries = vec![

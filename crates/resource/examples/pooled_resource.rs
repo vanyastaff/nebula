@@ -163,7 +163,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("Health: {:?}, latency={:?}\n", status.state, status.latency);
 
     // 6. Use the pool.
-    let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
+    let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
 
     println!("Acquiring connections...");
     let (mut conn1, _wait) = pool.acquire(&ctx).await?;

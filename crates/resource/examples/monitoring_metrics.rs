@@ -145,7 +145,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         pool_config,
     )?;
 
-    let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
+    let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
 
     // 5. Check health state (should be None initially).
     println!(

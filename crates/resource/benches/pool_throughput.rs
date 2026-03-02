@@ -49,7 +49,7 @@ impl Resource for NoOpResource {
 }
 
 fn bench_ctx() -> Context {
-    Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
+    Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
 }
 
 fn pool_config(max_size: usize) -> PoolConfig {

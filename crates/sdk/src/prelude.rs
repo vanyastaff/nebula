@@ -10,7 +10,7 @@
 
 // Core traits and types
 pub use nebula_core::{
-    ActionId, ExecutionId, InterfaceVersion, NodeId, PluginKey, ScopeLevel, Version, WorkflowId,
+    ActionKey, ExecutionId, InterfaceVersion, NodeId, PluginKey, ScopeLevel, Version, WorkflowId,
 };
 
 // Action traits and types

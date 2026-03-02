@@ -10,13 +10,13 @@
 //!
 //! let workflow = WorkflowBuilder::new("my_workflow")
 //!     .with_description("Processes data")
-//!     .add_node("start", "550e8400-e29b-41d4-a716-446655440000")
-//!     .add_node("process", "550e8400-e29b-41d4-a716-446655440001")
+//!     .add_node("start", "echo")
+//!     .add_node("process", "http_request")
 //!     .connect("start", "process")
 //!     .build();
 //! ```
 
-use nebula_core::{ActionId, NodeId, Version, WorkflowId};
+use nebula_core::{ActionKey, NodeId, Version, WorkflowId};
 use nebula_workflow::{
     ParamValue, WorkflowConfig, WorkflowDefinition,
     connection::{Connection, EdgeCondition},
@@ -55,7 +55,7 @@ pub struct WorkflowBuilder {
 struct NodeConfig {
     id: String,
     name: String,
-    action_id: String,
+    action_key: String,
     parameters: HashMap<String, ParamValue>,
 }
 
@@ -69,7 +69,7 @@ impl WorkflowBuilder {
         let id_str = id.into();
         Self {
             name: id_str.clone(),
-            id: WorkflowId::v4(),
+            id: WorkflowId::new(),
             description: None,
             nodes: Vec::new(),
             connections: Vec::new(),
@@ -101,13 +101,13 @@ impl WorkflowBuilder {
     /// # Arguments
     ///
     /// * `id` - Node identifier within the workflow
-    /// * `action_id` - UUID of the action to execute
-    pub fn add_node(mut self, id: impl Into<String>, action_id: impl Into<String>) -> Self {
+    /// * `action_key` - Plugin/action key (e.g. `"echo"`, `"http_request"`)
+    pub fn add_node(mut self, id: impl Into<String>, action_key: impl Into<String>) -> Self {
         let id_str = id.into();
         self.nodes.push(NodeConfig {
             id: id_str.clone(),
             name: id_str,
-            action_id: action_id.into(),
+            action_key: action_key.into(),
             parameters: HashMap::new(),
         });
         self
@@ -117,14 +117,14 @@ impl WorkflowBuilder {
     pub fn add_node_with_params(
         mut self,
         id: impl Into<String>,
-        action_id: impl Into<String>,
+        action_key: impl Into<String>,
         parameters: HashMap<String, ParamValue>,
     ) -> Self {
         let id_str = id.into();
         self.nodes.push(NodeConfig {
             id: id_str.clone(),
             name: id_str,
-            action_id: action_id.into(),
+            action_key: action_key.into(),
             parameters,
         });
         self
@@ -173,7 +173,7 @@ impl WorkflowBuilder {
         let node_id_by_name: HashMap<String, NodeId> = self
             .nodes
             .iter()
-            .map(|node| (node.id.clone(), NodeId::v4()))
+            .map(|node| (node.id.clone(), NodeId::new()))
             .collect();
 
         // Validate all edge references.
@@ -201,17 +201,17 @@ impl WorkflowBuilder {
                     crate::Error::workflow(format!("Node id not found in mapping: {}", config.id))
                 })?;
 
-                let action_id = ActionId::parse(&config.action_id).map_err(|_| {
+                let action_key: ActionKey = config.action_key.parse().map_err(|e| {
                     crate::Error::action(format!(
-                        "Invalid action_id for node `{}`: `{}` (expected UUID)",
-                        config.id, config.action_id
+                        "Invalid action_key for node `{}`: `{}` ({})",
+                        config.id, config.action_key, e
                     ))
                 })?;
 
                 Ok(NodeDefinition {
                     id: node_id,
                     name: config.name,
-                    action_id,
+                    action_key,
                     interface_version: None,
                     parameters: config.parameters,
                     retry_policy: None,

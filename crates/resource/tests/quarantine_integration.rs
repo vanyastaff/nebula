@@ -55,7 +55,7 @@ fn pool_cfg() -> PoolConfig {
 }
 
 fn ctx() -> Context {
-    Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
+    Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
 }
 
 // ---------------------------------------------------------------------------
@@ -372,7 +372,7 @@ async fn scoped_resource_quarantine_blocks_acquire() {
     )
     .unwrap();
 
-    let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::v4(), ExecutionId::v4());
+    let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
 
     // Verify it works before quarantine
     let g = mgr.acquire("tenant-db", &ctx_a).await.unwrap();

@@ -30,7 +30,7 @@ struct TestConfig;
 impl Config for TestConfig {}
 
 fn ctx() -> Context {
-    Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
+    Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
 }
 
 fn pool_config() -> PoolConfig {

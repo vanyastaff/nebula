@@ -80,7 +80,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("  - Max size: 10\n");
 
     // Acquire a resource
-    let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
+    let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
 
     println!("Acquiring resource...");
     let (resource, _wait) = pool.acquire(&ctx).await?;

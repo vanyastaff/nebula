@@ -213,7 +213,7 @@ mod tests {
         let resolver = make_resolver();
         let outputs = DashMap::new();
         let result = resolver
-            .resolve(NodeId::v4(), &HashMap::new(), &json!(null), &outputs)
+            .resolve(NodeId::new(), &HashMap::new(), &json!(null), &outputs)
             .unwrap();
         assert!(result.is_none());
     }
@@ -229,7 +229,7 @@ mod tests {
         );
 
         let result = resolver
-            .resolve(NodeId::v4(), &params, &json!(null), &outputs)
+            .resolve(NodeId::new(), &params, &json!(null), &outputs)
             .unwrap()
             .unwrap();
         assert_eq!(result["url"], json!("https://example.com"));
@@ -247,7 +247,7 @@ mod tests {
 
         let input = json!({"count": 5});
         let result = resolver
-            .resolve(NodeId::v4(), &params, &input, &outputs)
+            .resolve(NodeId::new(), &params, &input, &outputs)
             .unwrap()
             .unwrap();
         assert_eq!(result["count"], json!(6));
@@ -265,7 +265,7 @@ mod tests {
 
         let input = json!({"name": "World"});
         let result = resolver
-            .resolve(NodeId::v4(), &params, &input, &outputs)
+            .resolve(NodeId::new(), &params, &input, &outputs)
             .unwrap()
             .unwrap();
         assert_eq!(result["greeting"], json!("Hello World!"));
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn reference_resolution_looks_up_output() {
         let resolver = make_resolver();
-        let source_id = NodeId::v4();
+        let source_id = NodeId::new();
         let outputs = DashMap::new();
         outputs.insert(source_id, json!({"data": "fetched"}));
 
@@ -282,7 +282,7 @@ mod tests {
         params.insert("input".to_owned(), ParamValue::reference(source_id, ""));
 
         let result = resolver
-            .resolve(NodeId::v4(), &params, &json!(null), &outputs)
+            .resolve(NodeId::new(), &params, &json!(null), &outputs)
             .unwrap()
             .unwrap();
         assert_eq!(result["input"], json!({"data": "fetched"}));
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn reference_with_path_navigates_output() {
         let resolver = make_resolver();
-        let source_id = NodeId::v4();
+        let source_id = NodeId::new();
         let outputs = DashMap::new();
         outputs.insert(source_id, json!({"nested": {"value": 42}}));
 
@@ -302,7 +302,7 @@ mod tests {
         );
 
         let result = resolver
-            .resolve(NodeId::v4(), &params, &json!(null), &outputs)
+            .resolve(NodeId::new(), &params, &json!(null), &outputs)
             .unwrap()
             .unwrap();
         assert_eq!(result["val"], json!(42));
@@ -311,14 +311,14 @@ mod tests {
     #[test]
     fn reference_to_missing_node_returns_error() {
         let resolver = make_resolver();
-        let missing_id = NodeId::v4();
+        let missing_id = NodeId::new();
         let outputs = DashMap::new();
 
         let mut params = HashMap::new();
         params.insert("data".to_owned(), ParamValue::reference(missing_id, ""));
 
         let err = resolver
-            .resolve(NodeId::v4(), &params, &json!(null), &outputs)
+            .resolve(NodeId::new(), &params, &json!(null), &outputs)
             .unwrap_err();
         assert!(matches!(err, EngineError::ParameterResolution { .. }));
         assert!(err.to_string().contains("has no output"));
@@ -336,7 +336,7 @@ mod tests {
         );
 
         let err = resolver
-            .resolve(NodeId::v4(), &params, &json!(null), &outputs)
+            .resolve(NodeId::new(), &params, &json!(null), &outputs)
             .unwrap_err();
         assert!(matches!(err, EngineError::ParameterResolution { .. }));
     }
@@ -350,7 +350,7 @@ mod tests {
         params.insert("bad".to_owned(), ParamValue::template("Hello {{ unclosed"));
 
         let err = resolver
-            .resolve(NodeId::v4(), &params, &json!(null), &outputs)
+            .resolve(NodeId::new(), &params, &json!(null), &outputs)
             .unwrap_err();
         assert!(matches!(err, EngineError::ParameterResolution { .. }));
     }

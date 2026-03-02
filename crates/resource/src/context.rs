@@ -95,8 +95,8 @@ mod tests {
 
     #[test]
     fn test_context_creation() {
-        let wf = WorkflowId::v4();
-        let ex = ExecutionId::v4();
+        let wf = WorkflowId::new();
+        let ex = ExecutionId::new();
         let ctx = Context::new(Scope::Global, wf, ex);
         assert_eq!(ctx.workflow_id, wf);
         assert_eq!(ctx.execution_id, ex);
@@ -106,14 +106,14 @@ mod tests {
 
     #[test]
     fn test_context_with_tenant() {
-        let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
+        let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
             .with_tenant("tenant-a");
         assert_eq!(ctx.tenant_id.as_deref(), Some("tenant-a"));
     }
 
     #[test]
     fn test_context_with_metadata() {
-        let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
+        let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
             .with_metadata("env", "prod")
             .with_metadata("region", "us-east-1");
         assert_eq!(ctx.metadata.get("env").unwrap(), "prod");
@@ -124,7 +124,7 @@ mod tests {
     fn test_context_with_cancellation() {
         let token = CancellationToken::new();
         let child = token.child_token();
-        let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
+        let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
             .with_cancellation(child);
         assert!(!ctx.cancellation.is_cancelled());
         token.cancel();

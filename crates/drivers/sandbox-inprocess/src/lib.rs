@@ -121,9 +121,9 @@ mod tests {
 
     fn test_context() -> SandboxedContext {
         let ctx = NodeContext::new(
-            ExecutionId::v4(),
-            NodeId::v4(),
-            WorkflowId::v4(),
+            ExecutionId::new(),
+            NodeId::new(),
+            WorkflowId::new(),
             tokio_util::sync::CancellationToken::new(),
         );
         SandboxedContext::new(ctx)
@@ -179,7 +179,7 @@ mod tests {
 
         let token = tokio_util::sync::CancellationToken::new();
         token.cancel();
-        let ctx = NodeContext::new(ExecutionId::v4(), NodeId::v4(), WorkflowId::v4(), token);
+        let ctx = NodeContext::new(ExecutionId::new(), NodeId::new(), WorkflowId::new(), token);
         let sandboxed = SandboxedContext::new(ctx);
 
         let result = sandbox

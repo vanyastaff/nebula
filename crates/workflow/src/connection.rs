@@ -149,8 +149,8 @@ mod tests {
 
     #[test]
     fn connection_new() {
-        let a = NodeId::v4();
-        let b = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
         let conn = Connection::new(a, b);
         assert_eq!(conn.from_node, a);
         assert_eq!(conn.to_node, b);
@@ -162,16 +162,16 @@ mod tests {
 
     #[test]
     fn connection_is_self_loop() {
-        let a = NodeId::v4();
-        let b = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
         assert!(Connection::new(a, a).is_self_loop());
         assert!(!Connection::new(a, b).is_self_loop());
     }
 
     #[test]
     fn connection_builder_methods() {
-        let a = NodeId::v4();
-        let b = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
         let conn = Connection::new(a, b)
             .with_condition(EdgeCondition::Expression {
                 expr: "x > 0".into(),
@@ -208,8 +208,8 @@ mod tests {
 
     #[test]
     fn connection_serde_roundtrip() {
-        let a = NodeId::v4();
-        let b = NodeId::v4();
+        let a = NodeId::new();
+        let b = NodeId::new();
         let conn = Connection::new(a, b)
             .with_condition(EdgeCondition::OnResult {
                 matcher: ResultMatcher::FieldEquals {

@@ -53,7 +53,7 @@ impl Resource for StressResource {
 }
 
 fn ctx() -> Context {
-    Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
+    Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
 }
 
 // ---------------------------------------------------------------------------

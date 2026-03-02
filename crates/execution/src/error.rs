@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn node_not_found_display() {
-        let id = NodeId::v4();
+        let id = NodeId::new();
         let err = ExecutionError::NodeNotFound(id);
         assert!(err.to_string().contains("node not found"));
     }

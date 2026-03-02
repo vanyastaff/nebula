@@ -6,7 +6,7 @@
 //! providing compile-time type safety that prevents mixing different ID types.
 //!
 //! All ID types are `Copy` (16 bytes, stack-allocated) and support:
-//! - `v4()` for random UUID generation
+//! - `new()` for random UUID generation
 //! - `nil()` for zero-valued default
 //! - `parse(&str)` for string parsing
 //! - Full serde support (serializes as UUID string)
@@ -23,7 +23,6 @@ define_uuid!(TenantIdDomain => TenantId);
 define_uuid!(ExecutionIdDomain => ExecutionId);
 define_uuid!(WorkflowIdDomain => WorkflowId);
 define_uuid!(NodeIdDomain => NodeId);
-define_uuid!(ActionIdDomain => ActionId);
 define_uuid!(ResourceIdDomain => ResourceId);
 define_uuid!(CredentialIdDomain => CredentialId);
 define_uuid!(ProjectIdDomain => ProjectId);
@@ -36,67 +35,61 @@ mod tests {
 
     #[test]
     fn user_id_v4_creates_non_nil_uuid() {
-        let id = UserId::v4();
+        let id = UserId::new();
         assert!(!id.is_nil());
     }
 
     #[test]
     fn tenant_id_v4_creates_non_nil_uuid() {
-        let id = TenantId::v4();
+        let id = TenantId::new();
         assert!(!id.is_nil());
     }
 
     #[test]
     fn execution_id_v4_creates_non_nil_uuid() {
-        let id = ExecutionId::v4();
+        let id = ExecutionId::new();
         assert!(!id.is_nil());
     }
 
     #[test]
     fn workflow_id_v4_creates_non_nil_uuid() {
-        let id = WorkflowId::v4();
+        let id = WorkflowId::new();
         assert!(!id.is_nil());
     }
 
     #[test]
     fn node_id_v4_creates_non_nil_uuid() {
-        let id = NodeId::v4();
-        assert!(!id.is_nil());
-    }
-
-    #[test]
-    fn action_id_v4_creates_non_nil_uuid() {
-        let id = ActionId::v4();
+        let id = NodeId::new();
         assert!(!id.is_nil());
     }
 
     #[test]
     fn resource_id_v4_creates_non_nil_uuid() {
-        let id = ResourceId::v4();
+        let id = ResourceId::new();
         assert!(!id.is_nil());
     }
 
     #[test]
     fn credential_id_v4_creates_non_nil_uuid() {
-        let id = CredentialId::v4();
+        let id = CredentialId::new();
         assert!(!id.is_nil());
     }
 
     #[test]
     fn project_id_v4_creates_non_nil_uuid() {
-        let id = ProjectId::v4();
+        let id = ProjectId::new();
         assert!(!id.is_nil());
     }
 
     #[test]
     fn role_id_v4_creates_non_nil_uuid() {
-        let id = RoleId::v4();
+        let id = RoleId::new();
         assert!(!id.is_nil());
     }
 
     #[test]
     fn organization_id_v4_creates_non_nil_uuid() {
-        let id = OrganizationId::v4();
+        let id = OrganizationId::new();
         assert!(!id.is_nil());
     }
 
@@ -122,7 +115,7 @@ mod tests {
 
     #[test]
     fn id_copy_semantics_both_copies_usable() {
-        let id1 = ProjectId::v4();
+        let id1 = ProjectId::new();
         let id2 = id1; // Copy, not move
         assert_eq!(id1, id2); // Both still usable
     }
@@ -136,7 +129,7 @@ mod tests {
     #[test]
     fn id_from_uuid_roundtrips() {
         let raw = uuid::Uuid::new_v4();
-        let typed = ProjectId::new(raw);
+        let typed = ProjectId::from(raw);
         let back: uuid::Uuid = typed.get();
         assert_eq!(raw, back);
     }
@@ -150,7 +143,7 @@ mod tests {
 
     #[test]
     fn id_serde_json_roundtrip() {
-        let id = ProjectId::v4();
+        let id = ProjectId::new();
         let json = serde_json::to_string(&id).unwrap();
         let deserialized: ProjectId = serde_json::from_str(&json).unwrap();
         assert_eq!(id, deserialized);
@@ -170,8 +163,8 @@ mod tests {
         fn accepts_project(_id: ProjectId) {}
         fn accepts_user(_id: UserId) {}
 
-        let project = ProjectId::v4();
-        let user = UserId::v4();
+        let project = ProjectId::new();
+        let user = UserId::new();
         accepts_project(project);
         accepts_user(user);
         // accepts_project(user); // Would not compile
@@ -201,7 +194,7 @@ mod tests {
     #[test]
     fn id_hash_is_consistent() {
         use std::collections::HashSet;
-        let id = ProjectId::v4();
+        let id = ProjectId::new();
         let mut set = HashSet::new();
         set.insert(id);
         assert!(set.contains(&id));

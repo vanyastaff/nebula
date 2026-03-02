@@ -979,7 +979,7 @@ mod tests {
     }
 
     fn test_ctx() -> Context {
-        Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
+        Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
     }
 
     fn test_config() -> TestConfig {
@@ -1494,7 +1494,7 @@ mod tests {
 
         // Create a context with a cancellation token
         let token = tokio_util::sync::CancellationToken::new();
-        let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
+        let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
             .with_cancellation(token.clone());
 
         // Cancel after 50ms

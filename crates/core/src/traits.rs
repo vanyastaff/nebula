@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn test_scoped_trait() {
-        let execution_id = ExecutionId::v4();
+        let execution_id = ExecutionId::new();
         let entity = TestScopedEntity {
             scope: ScopeLevel::Execution(execution_id),
         };
@@ -414,9 +414,9 @@ mod tests {
 
     #[test]
     fn test_has_context_trait() {
-        let execution_id = ExecutionId::v4();
-        let workflow_id = WorkflowId::v4();
-        let node_id = NodeId::v4();
+        let execution_id = ExecutionId::new();
+        let workflow_id = WorkflowId::new();
+        let node_id = NodeId::new();
 
         let entity = TestContextEntity {
             execution_id: Some(execution_id),

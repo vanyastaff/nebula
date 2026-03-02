@@ -2,9 +2,26 @@
 //!
 //! Resources in Nebula have different lifecycle scopes:
 //! - Global: Application lifetime
-//! - Workflow: Per workflow execution
+//! - Organization: Per organization
+//! - Project: Per project
+//! - Workflow: Per workflow definition
 //! - Execution: Per single execution
 //! - Action: Per action invocation
+//!
+//! # Examples
+//!
+//! ```
+//! use nebula_core::{ExecutionId, NodeId, ScopeLevel, ScopedId, WorkflowId};
+//!
+//! let exec_id = ExecutionId::new();
+//! let node_id = NodeId::new();
+//! let scope = ScopeLevel::Action(exec_id, node_id);
+//! assert!(scope.is_action());
+//! assert!(scope.execution_id() == Some(&exec_id));
+//!
+//! let scoped = ScopedId::action(exec_id, node_id, "my-resource");
+//! assert!(scoped.is_in_scope(&ScopeLevel::Execution(exec_id)));
+//! ```
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -199,6 +216,104 @@ impl ScopeLevel {
             _ => None,
         }
     }
+
+    /// Strict containment check that verifies ID ownership via a resolver.
+    ///
+    /// Use this when security or lifecycle correctness requires that execution/workflow/project
+    /// relationships are verified, not just scope levels. The resolver is provided by engine/runtime.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// struct MyResolver;
+    /// impl ScopeResolver for MyResolver {
+    ///     fn workflow_for_execution(&self, exec_id: &ExecutionId) -> Option<WorkflowId> { ... }
+    ///     fn project_for_workflow(&self, wf_id: &WorkflowId) -> Option<ProjectId> { ... }
+    ///     fn organization_for_project(&self, proj_id: &ProjectId) -> Option<OrganizationId> { ... }
+    /// }
+    /// let scope = ScopeLevel::Execution(exec_id);
+    /// let workflow = ScopeLevel::Workflow(wf_id);
+    /// assert!(scope.is_contained_in_strict(&workflow, &resolver));
+    /// ```
+    pub fn is_contained_in_strict<R: ScopeResolver>(&self, other: &ScopeLevel, resolver: &R) -> bool {
+        match (self, other) {
+            (a, b) if a == b => true,
+            (_, ScopeLevel::Global) => true,
+
+            (ScopeLevel::Project(this), ScopeLevel::Organization(other_org)) => {
+                resolver.organization_for_project(this).as_ref() == Some(other_org)
+            }
+            (ScopeLevel::Workflow(this), ScopeLevel::Organization(other_org)) => {
+                resolver
+                    .project_for_workflow(this)
+                    .and_then(|p| resolver.organization_for_project(&p))
+                    .as_ref()
+                    == Some(other_org)
+            }
+            (ScopeLevel::Execution(this), ScopeLevel::Organization(other_org)) => {
+                resolver
+                    .workflow_for_execution(this)
+                    .and_then(|w| resolver.project_for_workflow(&w))
+                    .and_then(|p| resolver.organization_for_project(&p))
+                    .as_ref()
+                    == Some(other_org)
+            }
+            (ScopeLevel::Action(this_exec, _), ScopeLevel::Organization(other_org)) => {
+                resolver
+                    .workflow_for_execution(this_exec)
+                    .and_then(|w| resolver.project_for_workflow(&w))
+                    .and_then(|p| resolver.organization_for_project(&p))
+                    .as_ref()
+                    == Some(other_org)
+            }
+
+            (ScopeLevel::Workflow(this), ScopeLevel::Project(other_proj)) => {
+                resolver.project_for_workflow(this).as_ref() == Some(other_proj)
+            }
+            (ScopeLevel::Execution(this), ScopeLevel::Project(other_proj)) => {
+                resolver
+                    .workflow_for_execution(this)
+                    .and_then(|w| resolver.project_for_workflow(&w))
+                    .as_ref()
+                    == Some(other_proj)
+            }
+            (ScopeLevel::Action(this_exec, _), ScopeLevel::Project(other_proj)) => {
+                resolver
+                    .workflow_for_execution(this_exec)
+                    .and_then(|w| resolver.project_for_workflow(&w))
+                    .as_ref()
+                    == Some(other_proj)
+            }
+
+            (ScopeLevel::Execution(this), ScopeLevel::Workflow(other_wf)) => {
+                resolver.workflow_for_execution(this).as_ref() == Some(other_wf)
+            }
+            (ScopeLevel::Action(this_exec, _), ScopeLevel::Workflow(other_wf)) => {
+                resolver.workflow_for_execution(this_exec).as_ref() == Some(other_wf)
+            }
+
+            (ScopeLevel::Action(exec_id, _), ScopeLevel::Execution(other_exec_id)) => {
+                exec_id == other_exec_id
+            }
+
+            _ => false,
+        }
+    }
+}
+
+/// Resolver for scope ownership (execution→workflow, workflow→project, project→organization).
+///
+/// Implemented by engine/runtime when strict `ScopeLevel::is_contained_in_strict` is required.
+/// Returns `None` when the relationship is unknown or the entity does not exist.
+pub trait ScopeResolver {
+    /// Resolve the workflow that owns this execution.
+    fn workflow_for_execution(&self, exec_id: &ExecutionId) -> Option<WorkflowId>;
+
+    /// Resolve the project that owns this workflow.
+    fn project_for_workflow(&self, workflow_id: &WorkflowId) -> Option<ProjectId>;
+
+    /// Resolve the organization that owns this project.
+    fn organization_for_project(&self, project_id: &ProjectId) -> Option<OrganizationId>;
 }
 
 impl fmt::Display for ScopeLevel {
@@ -283,9 +398,9 @@ mod tests {
 
     #[test]
     fn test_scope_level_creation() {
-        let workflow_id = WorkflowId::v4();
-        let execution_id = ExecutionId::v4();
-        let node_id = NodeId::v4();
+        let workflow_id = WorkflowId::new();
+        let execution_id = ExecutionId::new();
+        let node_id = NodeId::new();
 
         let global = ScopeLevel::Global;
         let workflow = ScopeLevel::Workflow(workflow_id);
@@ -300,9 +415,9 @@ mod tests {
 
     #[test]
     fn test_scope_containment() {
-        let workflow_id = WorkflowId::v4();
-        let execution_id = ExecutionId::v4();
-        let node_id = NodeId::v4();
+        let workflow_id = WorkflowId::new();
+        let execution_id = ExecutionId::new();
+        let node_id = NodeId::new();
 
         let global = ScopeLevel::Global;
         let workflow = ScopeLevel::Workflow(workflow_id);
@@ -321,9 +436,9 @@ mod tests {
 
     #[test]
     fn test_scoped_id_creation() {
-        let workflow_id = WorkflowId::v4();
-        let execution_id = ExecutionId::v4();
-        let node_id = NodeId::v4();
+        let workflow_id = WorkflowId::new();
+        let execution_id = ExecutionId::new();
+        let node_id = NodeId::new();
 
         let global_id = ScopedId::global("global-resource");
         let workflow_id_scoped = ScopedId::workflow(workflow_id, "workflow-resource");
@@ -344,9 +459,9 @@ mod tests {
 
     #[test]
     fn test_scope_display() {
-        let workflow_id = WorkflowId::v4();
-        let execution_id = ExecutionId::v4();
-        let node_id = NodeId::v4();
+        let workflow_id = WorkflowId::new();
+        let execution_id = ExecutionId::new();
+        let node_id = NodeId::new();
 
         let global = ScopeLevel::Global;
         let workflow = ScopeLevel::Workflow(workflow_id);
@@ -361,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_organization_scope() {
-        let org_id = OrganizationId::v4();
+        let org_id = OrganizationId::new();
         let org_scope = ScopeLevel::Organization(org_id);
 
         assert!(org_scope.is_organization());
@@ -373,7 +488,7 @@ mod tests {
 
     #[test]
     fn test_project_scope() {
-        let project_id = ProjectId::v4();
+        let project_id = ProjectId::new();
         let project_scope = ScopeLevel::Project(project_id);
 
         assert!(project_scope.is_project());
@@ -385,11 +500,11 @@ mod tests {
 
     #[test]
     fn test_new_scope_containment() {
-        let org_id = OrganizationId::v4();
-        let project_id = ProjectId::v4();
-        let workflow_id = WorkflowId::v4();
-        let execution_id = ExecutionId::v4();
-        let node_id = NodeId::v4();
+        let org_id = OrganizationId::new();
+        let project_id = ProjectId::new();
+        let workflow_id = WorkflowId::new();
+        let execution_id = ExecutionId::new();
+        let node_id = NodeId::new();
 
         let global = ScopeLevel::Global;
         let org = ScopeLevel::Organization(org_id);
@@ -430,7 +545,7 @@ mod tests {
 
     #[test]
     fn test_scope_parent() {
-        let org_id = OrganizationId::v4();
+        let org_id = OrganizationId::new();
         let org_scope = ScopeLevel::Organization(org_id);
 
         // Organization's parent is Global
@@ -442,9 +557,9 @@ mod tests {
 
     #[test]
     fn test_scope_child() {
-        let org_id = OrganizationId::v4();
-        let project_id = ProjectId::v4();
-        let workflow_id = WorkflowId::v4();
+        let org_id = OrganizationId::new();
+        let project_id = ProjectId::new();
+        let workflow_id = WorkflowId::new();
 
         // Global can create Organization child
         let global = ScopeLevel::Global;
@@ -464,8 +579,8 @@ mod tests {
 
     #[test]
     fn test_scope_id_getters() {
-        let org_id = OrganizationId::v4();
-        let project_id = ProjectId::v4();
+        let org_id = OrganizationId::new();
+        let project_id = ProjectId::new();
 
         let org_scope = ScopeLevel::Organization(org_id);
         let project_scope = ScopeLevel::Project(project_id);
@@ -477,5 +592,72 @@ mod tests {
         // Test project_id getter
         assert_eq!(project_scope.project_id(), Some(&project_id));
         assert_eq!(org_scope.project_id(), None);
+    }
+
+    #[test]
+    fn test_is_contained_in_strict_with_resolver() {
+        let org_id = OrganizationId::new();
+        let project_id = ProjectId::new();
+        let workflow_id = WorkflowId::new();
+        let execution_id = ExecutionId::new();
+        let node_id = NodeId::new();
+
+        struct MockResolver {
+            org_id: OrganizationId,
+            project_id: ProjectId,
+            workflow_id: WorkflowId,
+            execution_id: ExecutionId,
+        }
+        impl ScopeResolver for MockResolver {
+            fn workflow_for_execution(&self, exec_id: &ExecutionId) -> Option<WorkflowId> {
+                if exec_id == &self.execution_id {
+                    Some(self.workflow_id)
+                } else {
+                    None
+                }
+            }
+            fn project_for_workflow(&self, wf_id: &WorkflowId) -> Option<ProjectId> {
+                if wf_id == &self.workflow_id {
+                    Some(self.project_id)
+                } else {
+                    None
+                }
+            }
+            fn organization_for_project(&self, proj_id: &ProjectId) -> Option<OrganizationId> {
+                if proj_id == &self.project_id {
+                    Some(self.org_id)
+                } else {
+                    None
+                }
+            }
+        }
+        let resolver = MockResolver {
+            org_id,
+            project_id,
+            workflow_id,
+            execution_id,
+        };
+
+        let org = ScopeLevel::Organization(org_id);
+        let project = ScopeLevel::Project(project_id);
+        let workflow = ScopeLevel::Workflow(workflow_id);
+        let execution = ScopeLevel::Execution(execution_id);
+        let action = ScopeLevel::Action(execution_id, node_id);
+
+        // Strict: execution contained in workflow (resolver confirms)
+        assert!(execution.is_contained_in_strict(&workflow, &resolver));
+        // Strict: action contained in execution (same exec_id)
+        assert!(action.is_contained_in_strict(&execution, &resolver));
+        // Strict: action contained in workflow (resolver confirms exec→wf)
+        assert!(action.is_contained_in_strict(&workflow, &resolver));
+        // Strict: execution contained in project (resolver confirms wf→proj)
+        assert!(execution.is_contained_in_strict(&project, &resolver));
+        // Strict: execution contained in org (resolver confirms full chain)
+        assert!(execution.is_contained_in_strict(&org, &resolver));
+
+        // Wrong workflow: different execution_id would not resolve
+        let other_exec_id = ExecutionId::new();
+        let other_execution = ScopeLevel::Execution(other_exec_id);
+        assert!(!other_execution.is_contained_in_strict(&workflow, &resolver));
     }
 }
