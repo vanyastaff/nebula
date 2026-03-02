@@ -1,6 +1,6 @@
 # Project Status
 
-**Last updated:** 2026-02-28
+**Last updated:** 2026-03-01
 **Overall:** 🟡 Alpha — core crates implemented, execution engine in active development
 
 ## Component Status
@@ -27,6 +27,9 @@
 | `nebula-resilience` | ✅ Done | Circuit breaker, retry, rate-limiting |
 | `nebula-storage` | ✅ Done | KV storage abstraction |
 | `nebula-macros` | ✅ Done | `#[node]`, `#[action]` proc-macros |
+| `nebula-eventbus` | 🔄 In progress | Pub/sub event bus (planned abstraction) |
+| `nebula-metrics` | 🔄 In progress | Metrics collection and export |
+| `nebula-telemetry` | 🔄 In progress | Distributed tracing, observability |
 
 ### Execution Engine
 
@@ -36,38 +39,28 @@
 | `nebula-resource` | 🔄 In progress | Lifecycle, pooling, health monitoring |
 | `nebula-engine` | 🔄 In progress | DAG scheduler, workflow orchestration |
 | `nebula-runtime` | 🔄 In progress | Trigger management |
-| `drivers/queue-memory` | 🔄 In progress | In-process work queue |
-| `drivers/sandbox-inprocess` | 🔄 In progress | Action sandbox |
 
 ### Business Logic
 
 | Crate | Status | Notes |
 |-------|--------|-------|
-| `nebula-credential` | ⬜ Planned | AES-256-GCM encrypted storage |
-| `nebula-plugin` | ⬜ Planned | Plugin discovery and loading |
-| `nebula-webhook` | ⬜ Planned | Inbound webhook ingestion |
+| `nebula-credential` | 🔄 In progress | Encrypted credential storage (AES-256-GCM) |
+| `nebula-plugin` | 🔄 In progress | Plugin discovery and loading |
+| `nebula-webhook` | 🔄 In progress | Inbound webhook ingestion |
 
 ### Developer Tools
 
 | Crate | Status | Notes |
 |-------|--------|-------|
-| `nebula-sdk` | ⬜ Planned | All-in-one SDK, testing utilities |
+| `nebula-sdk` | 🔄 In progress | All-in-one SDK, testing utilities |
 
 ### API / Application
 
 | Crate | Status | Notes |
 |-------|--------|-------|
-| `nebula-api` | ⬜ Planned | REST + WebSocket (axum) |
+| `nebula-api` | 🔄 In progress | REST + WebSocket (axum) |
+| `nebula-ports` | 🔄 In progress | Port/adapter layer |
 | `nebula-app` | ⬜ Planned | egui desktop editor |
-| `nebula-ports` | ⬜ Planned | Port/adapter layer |
-| `nebula-telemetry` | ⬜ Planned | Metrics, distributed tracing |
-
-### Plugins
-
-| Crate | Status | Notes |
-|-------|--------|-------|
-| `plugins/github` | ⬜ Planned | GitHub integration |
-| `plugins/telegram` | ⬜ Planned | Telegram integration |
 
 ## CI
 
