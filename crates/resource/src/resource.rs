@@ -1,13 +1,15 @@
-//! Core resource traits (bb8-style)
+//! Core resource traits (bb8-style).
 //!
 //! The `Resource` trait defines how to create, validate, recycle, and clean up
-//! resource instances.
+//! resource instances. Each resource type exposes a **canonical [`ResourceKey`]**
+//! used across manager, events, errors, and metrics.
 
 use std::future::Future;
 
 use crate::context::Context;
 use crate::error::Result;
 use crate::metadata::ResourceMetadata;
+use nebula_core::ResourceKey;
 use nebula_core::deps::FromRegistry;
 
 /// Configuration trait for resource types.
@@ -21,7 +23,8 @@ pub trait Config: Send + Sync + 'static {
 /// Core resource trait (bb8-style).
 ///
 /// Defines the full lifecycle: create, validate, recycle, cleanup.
-/// Each resource type has an associated `Config` and `Instance`.
+/// Each resource type has an associated `Config`, `Instance`, and static
+/// metadata describing the resource for UI and discovery.
 pub trait Resource: Send + Sync + 'static {
     /// The configuration type for this resource.
     type Config: Config;
@@ -37,14 +40,22 @@ pub trait Resource: Send + Sync + 'static {
     /// leaf resources without dependencies.
     type Deps: FromRegistry;
 
-    /// Unique string identifier for this resource type (e.g. "postgres", "redis").
-    fn id(&self) -> &str;
-
-    /// Static metadata (display name, description, kind) for UI and discovery.
+    /// Static metadata (display name, description, tags, icon) for UI and discovery.
     ///
-    /// Default implementation builds from `id()` only; override to provide name/description/kind.
-    fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::from_key(self.id())
+    /// Implementations **must** return a fully-populated [`ResourceMetadata`]
+    /// value with a canonical [`ResourceKey`] in `metadata.key`. This key is
+    /// used everywhere in `nebula-resource` as the logical identifier for the
+    /// resource type.
+    fn metadata(&self) -> ResourceMetadata;
+
+    /// Canonical resource key for this resource type.
+    ///
+    /// Default implementation delegates to [`Self::metadata`] and clones
+    /// the key. Override only if you need a cheaper representation; the
+    /// recommended pattern is to keep `metadata()` as the single source
+    /// of truth.
+    fn key(&self) -> ResourceKey {
+        self.metadata().key.clone()
     }
 
     /// Create a new instance from config and context.
@@ -72,10 +83,10 @@ pub trait Resource: Send + Sync + 'static {
         }
     }
 
-    // Existing string-based dependencies are kept for now for compatibility.
-    // They will be gradually replaced by `type Deps`.
-    /// List resource IDs that this resource depends on.
-    fn dependencies(&self) -> Vec<&str> {
+    // Existing ad-hoc dependency listing is kept for now for compatibility
+    // with older code paths. Prefer using `type Deps` and the `deps!` macro.
+    /// List resource keys that this resource depends on.
+    fn dependencies(&self) -> Vec<ResourceKey> {
         Vec::new()
     }
 }

@@ -4,16 +4,21 @@
 //! and monitoring. Implement [`Resource::metadata`](crate::resource::Resource) to
 //! provide rich metadata; a default builds from `id()` only.
 
+use nebula_core::ResourceKey;
 use serde::{Deserialize, Serialize};
 
 /// Static metadata describing a resource type.
 ///
 /// Used for UI (resources page name/type), discovery, and categorization.
-/// Provide via [`Resource::metadata`](crate::resource::Resource); default uses `id()`.
+/// Provide via [`Resource::metadata`](crate::resource::Resource); default uses the key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceMetadata {
-    /// Unique key (same as `Resource::id()`, e.g. `"postgres"`, `"redis"`).
-    pub key: String,
+    /// Unique key for this resource type (same as `Resource::id()`).
+    ///
+    /// This is a domain key (e.g. `"postgres"`, `"redis"`) with the
+    /// `"resource"` domain baked in via [`ResourceKey`]. It is the
+    /// canonical identifier used across manager, events, and errors.
+    pub key: ResourceKey,
     /// Human-readable display name (e.g. `"PostgreSQL"`, `"Redis Cache"`).
     pub name: String,
     /// Short description of what this resource provides.
@@ -44,13 +49,9 @@ impl ResourceMetadata {
     /// Create metadata with the minimum required fields.
     ///
     /// `name` defaults to `key` if you want id and display name to match.
-    pub fn new(
-        key: impl Into<String>,
-        name: impl Into<String>,
-        description: impl Into<String>,
-    ) -> Self {
+    pub fn new(key: ResourceKey, name: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
-            key: key.into(),
+            key,
             name: name.into(),
             description: description.into(),
             icon: None,
@@ -60,9 +61,9 @@ impl ResourceMetadata {
     }
 
     /// Build metadata from only the key (name and description set from key).
-    pub fn from_key(key: impl Into<String>) -> Self {
-        let key = key.into();
-        Self::new(key.clone(), key, String::new())
+    pub fn from_key(key: ResourceKey) -> Self {
+        let name = key.to_string();
+        Self::new(key, name, String::new())
     }
 
     /// Set the optional icon identifier for UI.
@@ -101,11 +102,13 @@ impl ResourceMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::convert::TryFrom;
 
     #[test]
     fn metadata_new() {
-        let m = ResourceMetadata::new("postgres", "PostgreSQL", "Primary database");
-        assert_eq!(m.key, "postgres");
+        let key = ResourceKey::try_from("postgres").expect("valid resource key");
+        let m = ResourceMetadata::new(key.clone(), "PostgreSQL", "Primary database");
+        assert_eq!(m.key, key);
         assert_eq!(m.name, "PostgreSQL");
         assert_eq!(m.description, "Primary database");
         assert!(m.icon.is_none());
@@ -115,8 +118,9 @@ mod tests {
 
     #[test]
     fn metadata_from_key() {
-        let m = ResourceMetadata::from_key("redis");
-        assert_eq!(m.key, "redis");
+        let key = ResourceKey::try_from("redis").expect("valid resource key");
+        let m = ResourceMetadata::from_key(key.clone());
+        assert_eq!(m.key, key);
         assert_eq!(m.name, "redis");
         assert!(m.description.is_empty());
     }

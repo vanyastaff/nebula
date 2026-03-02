@@ -155,12 +155,7 @@ impl NodeContext {
 
 impl From<NodeContext> for ActionContext {
     fn from(n: NodeContext) -> Self {
-        Self::new(
-            n.execution_id,
-            n.node_id,
-            n.workflow_id,
-            n.cancellation,
-        )
+        Self::new(n.execution_id, n.node_id, n.workflow_id, n.cancellation)
     }
 }
 

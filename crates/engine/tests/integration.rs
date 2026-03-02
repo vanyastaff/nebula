@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use nebula_action::InternalHandler;
 use nebula_action::metadata::ActionMetadata;
 use nebula_action::result::ActionResult;
 use nebula_action::{ActionContext, ActionError};
@@ -20,7 +21,6 @@ use nebula_metrics::naming::{
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
     NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
 };
-use nebula_action::InternalHandler;
 use nebula_runtime::registry::ActionRegistry;
 use nebula_runtime::{ActionRuntime, DataPassingPolicy};
 use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};

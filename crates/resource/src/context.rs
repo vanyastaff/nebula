@@ -158,9 +158,7 @@ mod tests {
                 &self,
                 _key: &str,
             ) -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<SecureString, Error>> + Send + '_,
-                >,
+                Box<dyn std::future::Future<Output = Result<SecureString, Error>> + Send + '_>,
             > {
                 Box::pin(async { Ok(SecureString::new("secret")) })
             }

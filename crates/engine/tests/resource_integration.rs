@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use nebula_action::InternalHandler;
 use nebula_action::metadata::ActionMetadata;
 use nebula_action::result::ActionResult;
 use nebula_action::{ActionContext, ActionError};
@@ -18,7 +19,6 @@ use nebula_core::Version;
 use nebula_core::id::{NodeId, WorkflowId};
 use nebula_engine::WorkflowEngine;
 use nebula_execution::context::ExecutionBudget;
-use nebula_action::InternalHandler;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::{Context as ResourceContext, Manager, PoolConfig, ResourceHandle};
 use nebula_runtime::registry::ActionRegistry;
@@ -41,9 +41,12 @@ struct MockResource;
 impl Resource for MockResource {
     type Config = MockConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "mock"
+    fn metadata(&self) -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::from_key(
+            nebula_core::ResourceKey::try_from("mock").expect("valid resource key"),
+        )
     }
 
     async fn create(
@@ -143,8 +146,7 @@ async fn action_acquires_resource_through_engine() {
         metrics.clone(),
     ));
 
-    let engine =
-        WorkflowEngine::new(runtime, event_bus, metrics).with_resource_manager(manager);
+    let engine = WorkflowEngine::new(runtime, event_bus, metrics).with_resource_manager(manager);
 
     // 4. Build and execute a single-node workflow
     let node = NodeId::new();

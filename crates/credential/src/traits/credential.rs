@@ -1,8 +1,8 @@
 //! Core traits for credential flows and interactive authentication
 
 use async_trait::async_trait;
-use serde::{Serialize, de::DeserializeOwned};
 use nebula_core::deps::FromRegistry;
+use serde::{Serialize, de::DeserializeOwned};
 
 use nebula_parameter::collection::ParameterCollection;
 use nebula_parameter::values::ParameterValues;

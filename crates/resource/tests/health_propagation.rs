@@ -5,10 +5,12 @@
 //! it clears degraded states whose reason contains "db" — including those
 //! caused by "db-replica".
 
+use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::health::HealthState;
 use nebula_resource::manager::Manager;
+use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
 
@@ -29,17 +31,22 @@ struct NamedResource {
 impl Resource for NamedResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        &self.name
+    fn metadata(&self) -> ResourceMetadata {
+        let key = ResourceKey::try_from(self.name.as_str()).expect("valid resource key");
+        ResourceMetadata::from_key(key)
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
         Ok(format!("{}-instance", self.name))
     }
 
-    fn dependencies(&self) -> Vec<&str> {
-        self.deps.iter().map(String::as_str).collect()
+    fn dependencies(&self) -> Vec<ResourceKey> {
+        self.deps
+            .iter()
+            .map(|s| ResourceKey::try_from(s.as_str()).expect("valid resource key"))
+            .collect()
     }
 }
 
@@ -93,9 +100,13 @@ fn health_propagation_prefix_collision() {
     )
     .unwrap();
 
+    let db_replica_key = ResourceKey::try_from("db-replica").expect("valid resource key");
+    let db_key = ResourceKey::try_from("db").expect("valid resource key");
+    let app_key = ResourceKey::try_from("app").expect("valid resource key");
+
     // Mark db-replica as unhealthy -> app becomes Degraded
     mgr.set_health_state(
-        "db-replica",
+        &db_replica_key,
         HealthState::Unhealthy {
             reason: "replication lag".into(),
             recoverable: true,
@@ -104,12 +115,12 @@ fn health_propagation_prefix_collision() {
 
     // Verify db-replica is unhealthy and app is degraded
     assert!(matches!(
-        mgr.get_health_state("db-replica"),
+        mgr.get_health_state(&db_replica_key),
         Some(HealthState::Unhealthy { .. })
     ));
     assert!(
         matches!(
-            mgr.get_health_state("app"),
+            mgr.get_health_state(&app_key),
             Some(HealthState::Degraded { .. })
         ),
         "app should be Degraded because db-replica is unhealthy"
@@ -118,7 +129,7 @@ fn health_propagation_prefix_collision() {
     // Now mark "db" (NOT "db-replica") as healthy.
     // This should NOT clear app's degraded state, because app is degraded
     // due to "db-replica", not "db".
-    mgr.set_health_state("db", HealthState::Healthy);
+    mgr.set_health_state(&db_key, HealthState::Healthy);
 
     // BUG: reason.contains("db") matches "Dependency db-replica is unhealthy"
     // because "db-replica" contains the substring "db".
@@ -127,14 +138,14 @@ fn health_propagation_prefix_collision() {
     // cleared to Healthy even though "db-replica" is still unhealthy.
     //
     // When the bug is fixed, change this assertion to:
-    //   assert!(matches!(mgr.get_health_state("app"), Some(HealthState::Degraded { .. })));
+    //   assert!(matches!(mgr.get_health_state(&app_key), Some(HealthState::Degraded { .. })));
     assert!(
-        matches!(mgr.get_health_state("app"), Some(HealthState::Healthy)),
+        matches!(mgr.get_health_state(&app_key), Some(HealthState::Healthy)),
         "KNOWN BUG: app is incorrectly cleared to Healthy due to prefix collision"
     );
 
     // Set "db-replica" back to healthy to clean up
-    mgr.set_health_state("db-replica", HealthState::Healthy);
+    mgr.set_health_state(&db_replica_key, HealthState::Healthy);
 }
 
 /// Verify basic health propagation works correctly for non-colliding names.
@@ -175,9 +186,13 @@ fn health_propagation_no_collision() {
     )
     .unwrap();
 
+    let cache_key = ResourceKey::try_from("cache").expect("valid resource key");
+    let queue_key = ResourceKey::try_from("queue").expect("valid resource key");
+    let service_key = ResourceKey::try_from("service").expect("valid resource key");
+
     // Mark cache unhealthy -> service degraded
     mgr.set_health_state(
-        "cache",
+        &cache_key,
         HealthState::Unhealthy {
             reason: "connection refused".into(),
             recoverable: true,
@@ -186,14 +201,14 @@ fn health_propagation_no_collision() {
 
     assert!(
         matches!(
-            mgr.get_health_state("cache"),
+            mgr.get_health_state(&cache_key),
             Some(HealthState::Unhealthy { .. })
         ),
         "cache should be Unhealthy"
     );
     assert!(
         matches!(
-            mgr.get_health_state("service"),
+            mgr.get_health_state(&service_key),
             Some(HealthState::Degraded { .. })
         ),
         "service should be Degraded due to cache"
@@ -201,22 +216,22 @@ fn health_propagation_no_collision() {
 
     // Mark queue healthy -> should NOT clear service's degraded state
     // (service is degraded due to cache, not queue)
-    mgr.set_health_state("queue", HealthState::Healthy);
+    mgr.set_health_state(&queue_key, HealthState::Healthy);
 
     assert!(
         matches!(
-            mgr.get_health_state("service"),
+            mgr.get_health_state(&service_key),
             Some(HealthState::Degraded { .. })
         ),
         "service should still be Degraded (cache is still unhealthy)"
     );
 
     // Mark cache healthy -> NOW service should be cleared
-    mgr.set_health_state("cache", HealthState::Healthy);
+    mgr.set_health_state(&cache_key, HealthState::Healthy);
 
     assert!(
         matches!(
-            mgr.get_health_state("service"),
+            mgr.get_health_state(&service_key),
             Some(HealthState::Healthy) | None
         ),
         "service should be Healthy now that cache is restored"

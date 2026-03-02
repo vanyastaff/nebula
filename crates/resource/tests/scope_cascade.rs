@@ -10,9 +10,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use nebula_core::ResourceKey;
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
+use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -33,9 +35,10 @@ struct NamedResource {
 impl Resource for NamedResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        self.name
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(ResourceKey::try_from(self.name).expect("valid"))
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -52,9 +55,10 @@ struct TrackingResource {
 impl Resource for TrackingResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        self.name
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(ResourceKey::try_from(self.name).expect("valid"))
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -77,9 +81,10 @@ struct OrderedResource {
 impl Resource for OrderedResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        self.name
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(ResourceKey::try_from(self.name).expect("valid"))
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -91,8 +96,11 @@ impl Resource for OrderedResource {
         Ok(())
     }
 
-    fn dependencies(&self) -> Vec<&str> {
-        self.deps.clone()
+    fn dependencies(&self) -> Vec<ResourceKey> {
+        self.deps
+            .iter()
+            .map(|&name| ResourceKey::try_from(name).expect("valid"))
+            .collect()
     }
 }
 
@@ -144,9 +152,14 @@ async fn tenant_shutdown_cascades_to_child_scopes() {
         WorkflowId::new(),
         ExecutionId::new(),
     );
-    let g1 = mgr.acquire("tenant-db", &ctx).await.unwrap();
-    let g2 = mgr.acquire("wf-cache", &ctx).await.unwrap();
-    let g3 = mgr.acquire("exec-temp", &ctx).await.unwrap();
+
+    let tenant_db_key = ResourceKey::try_from("tenant-db").expect("valid resource key");
+    let wf_cache_key = ResourceKey::try_from("wf-cache").expect("valid resource key");
+    let exec_temp_key = ResourceKey::try_from("exec-temp").expect("valid resource key");
+
+    let g1 = mgr.acquire(&tenant_db_key, &ctx).await.unwrap();
+    let g2 = mgr.acquire(&wf_cache_key, &ctx).await.unwrap();
+    let g3 = mgr.acquire(&exec_temp_key, &ctx).await.unwrap();
     drop(g1);
     drop(g2);
     drop(g3);
@@ -156,9 +169,9 @@ async fn tenant_shutdown_cascades_to_child_scopes() {
     mgr.shutdown_scope(&Scope::tenant("A")).await.unwrap();
 
     // All three resources should now be gone
-    let err1 = mgr.acquire("tenant-db", &ctx).await;
-    let err2 = mgr.acquire("wf-cache", &ctx).await;
-    let err3 = mgr.acquire("exec-temp", &ctx).await;
+    let err1 = mgr.acquire(&tenant_db_key, &ctx).await;
+    let err2 = mgr.acquire(&wf_cache_key, &ctx).await;
+    let err3 = mgr.acquire(&exec_temp_key, &ctx).await;
 
     assert!(
         err1.is_err(),
@@ -219,9 +232,14 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
     // Shut down tenant A
     mgr.shutdown_scope(&Scope::tenant("A")).await.unwrap();
 
+    let db_b_key = ResourceKey::try_from("db-B").expect("valid resource key");
+    let cache_b_key = ResourceKey::try_from("cache-B").expect("valid resource key");
+    let db_a_key = ResourceKey::try_from("db-A").expect("valid resource key");
+    let cache_a_key = ResourceKey::try_from("cache-A").expect("valid resource key");
+
     // Tenant B resources should still be accessible
     let ctx_b = Context::new(Scope::tenant("B"), WorkflowId::new(), ExecutionId::new());
-    let g1 = mgr.acquire("db-B", &ctx_b).await;
+    let g1 = mgr.acquire(&db_b_key, &ctx_b).await;
     assert!(
         g1.is_ok(),
         "db-B should still be accessible after tenant A shutdown"
@@ -234,7 +252,7 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
         WorkflowId::new(),
         ExecutionId::new(),
     );
-    let g2 = mgr.acquire("cache-B", &ctx_b_wf).await;
+    let g2 = mgr.acquire(&cache_b_key, &ctx_b_wf).await;
     assert!(
         g2.is_ok(),
         "cache-B should still be accessible after tenant A shutdown"
@@ -244,8 +262,8 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
 
     // Tenant A resources should be gone
     let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
-    assert!(mgr.acquire("db-A", &ctx_a).await.is_err());
-    assert!(mgr.acquire("cache-A", &ctx_a).await.is_err());
+    assert!(mgr.acquire(&db_a_key, &ctx_a).await.is_err());
+    assert!(mgr.acquire(&cache_a_key, &ctx_a).await.is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -277,14 +295,18 @@ async fn global_scope_shutdown_cascades_to_all() {
 
     mgr.shutdown_scope(&Scope::Global).await.unwrap();
 
+    let global_r_key = ResourceKey::try_from("global-r").expect("valid resource key");
+    let tenant_r_key = ResourceKey::try_from("tenant-r").expect("valid resource key");
+    let wf_r_key = ResourceKey::try_from("wf-r").expect("valid resource key");
+
     let ctx = Context::new(
         Scope::execution_in_workflow("ex1", "wf1", Some("X".to_string())),
         WorkflowId::new(),
         ExecutionId::new(),
     );
-    assert!(mgr.acquire("global-r", &ctx).await.is_err());
-    assert!(mgr.acquire("tenant-r", &ctx).await.is_err());
-    assert!(mgr.acquire("wf-r", &ctx).await.is_err());
+    assert!(mgr.acquire(&global_r_key, &ctx).await.is_err());
+    assert!(mgr.acquire(&tenant_r_key, &ctx).await.is_err());
+    assert!(mgr.acquire(&wf_r_key, &ctx).await.is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -316,13 +338,16 @@ async fn workflow_scope_shutdown_does_not_affect_siblings() {
         .await
         .unwrap();
 
+    let cache_wf2_key = ResourceKey::try_from("cache-wf2").expect("valid resource key");
+    let cache_wf1_key = ResourceKey::try_from("cache-wf1").expect("valid resource key");
+
     // wf2 resource should still work
     let ctx_wf2 = Context::new(
         Scope::workflow_in_tenant("wf2", "A"),
         WorkflowId::new(),
         ExecutionId::new(),
     );
-    assert!(mgr.acquire("cache-wf2", &ctx_wf2).await.is_ok());
+    assert!(mgr.acquire(&cache_wf2_key, &ctx_wf2).await.is_ok());
 
     // wf1 resource should be gone
     let ctx_wf1 = Context::new(
@@ -330,7 +355,7 @@ async fn workflow_scope_shutdown_does_not_affect_siblings() {
         WorkflowId::new(),
         ExecutionId::new(),
     );
-    assert!(mgr.acquire("cache-wf1", &ctx_wf1).await.is_err());
+    assert!(mgr.acquire(&cache_wf1_key, &ctx_wf1).await.is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -385,7 +410,8 @@ async fn shutdown_scope_follows_dependency_ordering() {
     // Use a generous sleep to ensure the spawned return tasks complete.
     let ctx = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
     for name in &["db", "cache", "app"] {
-        let g = mgr.acquire(name, &ctx).await.unwrap();
+        let key = ResourceKey::try_from(*name).expect("valid");
+        let g = mgr.acquire(&key, &ctx).await.unwrap();
         drop(g);
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -415,9 +441,13 @@ async fn shutdown_scope_follows_dependency_ordering() {
         "cache should shut down before db, got order: {cleanup_order:?}"
     );
 
-    assert!(mgr.acquire("app", &ctx).await.is_err());
-    assert!(mgr.acquire("cache", &ctx).await.is_err());
-    assert!(mgr.acquire("db", &ctx).await.is_err());
+    let app_key = ResourceKey::try_from("app").expect("valid resource key");
+    let cache_key = ResourceKey::try_from("cache").expect("valid resource key");
+    let db_key = ResourceKey::try_from("db").expect("valid resource key");
+
+    assert!(mgr.acquire(&app_key, &ctx).await.is_err());
+    assert!(mgr.acquire(&cache_key, &ctx).await.is_err());
+    assert!(mgr.acquire(&db_key, &ctx).await.is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -442,8 +472,11 @@ async fn scope_shutdown_invokes_cleanup() {
 
     // Acquire and release to create an idle instance
     let ctx = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
+
+    let tracked_db_key = ResourceKey::try_from("tracked-db").expect("valid resource key");
+
     {
-        let _g = mgr.acquire("tracked-db", &ctx).await.unwrap();
+        let _g = mgr.acquire(&tracked_db_key, &ctx).await.unwrap();
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
 

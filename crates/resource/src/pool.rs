@@ -320,8 +320,9 @@ impl<R: Resource> Clone for Pool<R> {
 impl<R: Resource> std::fmt::Debug for Pool<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let stats = self.inner.state.lock().stats.clone();
+        let key = self.inner.resource.key();
         f.debug_struct("Pool")
-            .field("resource_id", &self.inner.resource.id())
+            .field("resource_id", &key.as_ref())
             .field("stats", &stats)
             .finish()
     }
@@ -375,8 +376,9 @@ impl<R: Resource> Pool<R> {
         let maintenance_interval = pool_config.maintenance_interval;
         let cancel = CancellationToken::new();
 
+        let key = resource.key();
         tracing::debug!(
-            resource_id = %resource.id(),
+            resource_id = %key,
             min_size = pool_config.min_size,
             max_size = pool_config.max_size,
             "Created new resource pool"
@@ -434,7 +436,7 @@ impl<R: Resource> Pool<R> {
             result = self.acquire_inner(ctx, start) => result,
             () = ctx.cancellation.cancelled() => {
                 Err(Error::Unavailable {
-                    resource_id: self.inner.resource.id().to_string(),
+                    resource_key: self.inner.resource.key(),
                     reason: "Operation cancelled".to_string(),
                     retryable: false,
                 })
@@ -445,13 +447,13 @@ impl<R: Resource> Pool<R> {
             let wait_duration = start.elapsed();
             match &result {
                 Ok(_) => tracing::debug!(
-                    resource_id = %self.inner.resource.id(),
+                    resource_id = %self.inner.resource.key(),
                     scope = %ctx.scope,
                     wait_ms = wait_duration.as_millis() as u64,
                     "Acquired resource instance"
                 ),
                 Err(e) => tracing::warn!(
-                    resource_id = %self.inner.resource.id(),
+                    resource_id = %self.inner.resource.key(),
                     scope = %ctx.scope,
                     wait_ms = wait_duration.as_millis() as u64,
                     error = %e,
@@ -480,17 +482,21 @@ impl<R: Resource> Pool<R> {
                 .map_err(|_| {
                     inner.waiting_count.fetch_sub(1, Ordering::SeqCst);
                     let mut state = inner.state.lock();
-                    let resource_id = inner.resource.id().to_string();
+                    let resource_id = inner.resource.key().as_ref().to_string();
                     let waiters = inner.waiting_count.load(Ordering::SeqCst);
                     state.stats.exhausted_count += 1;
                     if let Some(bus) = &inner.event_bus {
+                        let key = nebula_core::ResourceKey::try_from(resource_id.as_str())
+                            .expect("resource id must be a valid ResourceKey");
                         bus.emit(ResourceEvent::PoolExhausted {
-                            resource_id: resource_id.clone(),
+                            resource_key: key.clone(),
                             waiters,
                         });
                     }
+                    let key = nebula_core::ResourceKey::try_from(resource_id.as_str())
+                        .expect("resource id must be a valid ResourceKey");
                     Error::PoolExhausted {
-                        resource_id,
+                        resource_key: key,
                         current_size: state.stats.active,
                         max_size: inner.pool_config.max_size,
                         waiters,
@@ -499,7 +505,7 @@ impl<R: Resource> Pool<R> {
                 .map_err(|_| {
                     inner.waiting_count.fetch_sub(1, Ordering::SeqCst);
                     Error::Internal {
-                        resource_id: inner.resource.id().to_string(),
+                        resource_key: inner.resource.key(),
                         message: "Pool semaphore closed".to_string(),
                         source: None,
                     }
@@ -616,7 +622,7 @@ impl<R: Resource> Pool<R> {
 
         if cleanup_reason.is_none() {
             tracing::debug!(
-                resource_id = %inner.resource.id(),
+                resource_id = %inner.resource.key(),
                 "Released resource instance back to pool"
             );
         }
@@ -624,7 +630,7 @@ impl<R: Resource> Pool<R> {
         if let Some((to_cleanup, reason)) = cleanup_reason {
             Self::cleanup_with_hooks(inner, to_cleanup, &reason, None).await;
             tracing::debug!(
-                resource_id = %inner.resource.id(),
+                resource_id = %inner.resource.key(),
                 "Cleaned up resource instance on release (pool shutdown or recycle failed)"
             );
         }
@@ -632,7 +638,7 @@ impl<R: Resource> Pool<R> {
         Self::emit_event(
             inner,
             ResourceEvent::Released {
-                resource_id: inner.resource.id().to_string(),
+                resource_key: inner.resource.key(),
                 usage_duration,
             },
         );
@@ -660,7 +666,8 @@ impl<R: Resource> Pool<R> {
     /// Before-hooks can cancel the creation by returning
     /// [`HookResult::Cancel`](crate::hooks::HookResult::Cancel).
     async fn create_with_hooks(inner: &PoolInner<R>, ctx: &Context) -> Result<R::Instance> {
-        let resource_id = inner.resource.id();
+        let key = inner.resource.key();
+        let resource_id = key.as_ref();
 
         // Run Create before-hooks.
         if let Some(hooks) = &inner.hooks {
@@ -692,7 +699,8 @@ impl<R: Resource> Pool<R> {
         reason: &CleanupReason,
         ctx: Option<&Context>,
     ) {
-        let resource_id = inner.resource.id();
+        let key = inner.resource.key();
+        let resource_id = key.as_ref();
         let synthetic_ctx;
         let ctx = match ctx {
             Some(c) => c,
@@ -722,7 +730,8 @@ impl<R: Resource> Pool<R> {
         Self::emit_event(
             inner,
             ResourceEvent::CleanedUp {
-                resource_id: resource_id.to_string(),
+                resource_key: nebula_core::ResourceKey::try_from(resource_id)
+                    .expect("resource id must be a valid ResourceKey"),
                 reason: reason.clone(),
             },
         );
@@ -852,7 +861,7 @@ impl<R: Resource> Pool<R> {
 
     /// Run maintenance: evict expired idle instances, ensure min_size.
     pub async fn maintain(&self, ctx: &Context) -> Result<()> {
-        tracing::debug!(resource_id = %self.inner.resource.id(), "Running pool maintenance");
+        tracing::debug!(resource_id = %self.inner.resource.key(), "Running pool maintenance");
 
         let inner = &self.inner;
 
@@ -944,8 +953,10 @@ impl<R: Resource> Pool<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metadata::ResourceMetadata;
     use crate::resource::{Config, Resource};
     use crate::scope::Scope;
+    use nebula_core::ResourceKey;
 
     // -- Test resource --
 
@@ -968,9 +979,10 @@ mod tests {
     impl Resource for TestResource {
         type Config = TestConfig;
         type Instance = String;
+        type Deps = ();
 
-        fn id(&self) -> &str {
-            "test-resource"
+        fn metadata(&self) -> ResourceMetadata {
+            ResourceMetadata::from_key(ResourceKey::try_from("test-resource").expect("valid"))
         }
 
         async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -1098,9 +1110,10 @@ mod tests {
     impl Resource for InvalidatingResource {
         type Config = TestConfig;
         type Instance = String;
+        type Deps = ();
 
-        fn id(&self) -> &str {
-            "invalidating"
+        fn metadata(&self) -> ResourceMetadata {
+            ResourceMetadata::from_key(ResourceKey::try_from("invalidating").expect("valid"))
         }
 
         async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -1174,9 +1187,10 @@ mod tests {
     impl Resource for RecycleFailResource {
         type Config = TestConfig;
         type Instance = String;
+        type Deps = ();
 
-        fn id(&self) -> &str {
-            "recycle-fail"
+        fn metadata(&self) -> ResourceMetadata {
+            ResourceMetadata::from_key(ResourceKey::try_from("recycle-fail").expect("valid"))
         }
 
         async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -1184,8 +1198,9 @@ mod tests {
         }
 
         async fn recycle(&self, _instance: &mut Self::Instance) -> Result<()> {
+            let key = nebula_core::ResourceKey::try_from("recycle-fail").expect("valid key");
             Err(Error::Internal {
-                resource_id: "recycle-fail".to_string(),
+                resource_key: key,
                 message: "recycle failed".to_string(),
                 source: None,
             })
@@ -1405,9 +1420,10 @@ mod tests {
     impl Resource for FailingCreateResource {
         type Config = TestConfig;
         type Instance = String;
+        type Deps = ();
 
-        fn id(&self) -> &str {
-            "failing-create"
+        fn metadata(&self) -> ResourceMetadata {
+            ResourceMetadata::from_key(ResourceKey::try_from("failing-create").expect("valid"))
         }
 
         async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -1416,7 +1432,7 @@ mod tests {
                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             if remaining > 0 {
                 return Err(Error::Initialization {
-                    resource_id: "failing-create".to_string(),
+                    resource_key: ResourceKey::try_from("failing-create").expect("valid"),
                     reason: "intentional failure".to_string(),
                     source: None,
                 });
@@ -1615,9 +1631,12 @@ mod tests {
         impl Resource for CountingResource {
             type Config = TestConfig;
             type Instance = String;
-            fn id(&self) -> &str {
-                "counting"
+            type Deps = ();
+
+            fn metadata(&self) -> ResourceMetadata {
+                ResourceMetadata::from_key(ResourceKey::try_from("counting").expect("valid"))
             }
+
             async fn create(&self, _cfg: &TestConfig, _ctx: &Context) -> Result<String> {
                 let n = self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(format!("inst-{n}"))
@@ -1664,9 +1683,12 @@ mod tests {
         impl Resource for CountingResource {
             type Config = TestConfig;
             type Instance = String;
-            fn id(&self) -> &str {
-                "counting"
+            type Deps = ();
+
+            fn metadata(&self) -> ResourceMetadata {
+                ResourceMetadata::from_key(ResourceKey::try_from("counting").expect("valid"))
             }
+
             async fn create(&self, _cfg: &TestConfig, _ctx: &Context) -> Result<String> {
                 let n = self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(format!("inst-{n}"))

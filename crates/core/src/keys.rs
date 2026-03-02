@@ -40,5 +40,4 @@ define_domain!(PluginDomain, "plugin");
 key_type!(PluginKey, PluginDomain);
 
 #[cfg(test)]
-mod tests {
-}
+mod tests {}

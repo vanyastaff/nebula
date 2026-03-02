@@ -235,7 +235,11 @@ impl ScopeLevel {
     /// let workflow = ScopeLevel::Workflow(wf_id);
     /// assert!(scope.is_contained_in_strict(&workflow, &resolver));
     /// ```
-    pub fn is_contained_in_strict<R: ScopeResolver>(&self, other: &ScopeLevel, resolver: &R) -> bool {
+    pub fn is_contained_in_strict<R: ScopeResolver>(
+        &self,
+        other: &ScopeLevel,
+        resolver: &R,
+    ) -> bool {
         match (self, other) {
             (a, b) if a == b => true,
             (_, ScopeLevel::Global) => true,

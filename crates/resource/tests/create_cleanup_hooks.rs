@@ -12,9 +12,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::hooks::{HookEvent, HookFilter, HookRegistry, HookResult, ResourceHook};
+use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -53,9 +55,10 @@ struct SimpleResource;
 impl Resource for SimpleResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "simple"
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(ResourceKey::try_from("simple").expect("valid resource key"))
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -215,7 +218,7 @@ impl ResourceHook for CancelCreateHook {
     ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
         Box::pin(async {
             HookResult::Cancel(nebula_resource::error::Error::Unavailable {
-                resource_id: "simple".to_string(),
+                resource_key: ResourceKey::try_from("simple").expect("valid resource key"),
                 reason: "Create cancelled by hook".to_string(),
                 retryable: false,
             })
@@ -509,9 +512,12 @@ struct RecycleFailResource;
 impl Resource for RecycleFailResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "recycle-fail"
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(
+            ResourceKey::try_from("recycle-fail").expect("valid resource key"),
+        )
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -520,7 +526,7 @@ impl Resource for RecycleFailResource {
 
     async fn recycle(&self, _instance: &mut String) -> Result<()> {
         Err(nebula_resource::error::Error::Internal {
-            resource_id: "recycle-fail".to_string(),
+            resource_key: ResourceKey::try_from("recycle-fail").expect("valid resource key"),
             message: "recycle always fails".to_string(),
             source: None,
         })
@@ -583,8 +589,9 @@ async fn manager_pools_have_hooks_wired() {
     let ctx = ctx();
 
     // Acquire — should trigger Create hooks (cold pool) and Acquire hooks.
+    let resource_key = ResourceKey::try_from("simple").expect("valid resource key");
     let guard = manager
-        .acquire("simple", &ctx)
+        .acquire(&resource_key, &ctx)
         .await
         .expect("acquire should succeed");
 

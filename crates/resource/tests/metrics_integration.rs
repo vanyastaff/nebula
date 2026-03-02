@@ -20,32 +20,33 @@ async fn metrics_collector_processes_all_event_types() {
     let handle = tokio::spawn(collector.run(cancel));
 
     // Emit one of each event type
+    let key = nebula_core::ResourceKey::try_from("db").expect("valid resource key");
     bus.emit(ResourceEvent::Created {
-        resource_id: "db".to_string(),
+        resource_key: key.clone(),
         scope: Scope::Global,
     });
     bus.emit(ResourceEvent::Acquired {
-        resource_id: "db".to_string(),
+        resource_key: key.clone(),
         wait_duration: Duration::from_millis(1),
     });
     bus.emit(ResourceEvent::Released {
-        resource_id: "db".to_string(),
+        resource_key: key.clone(),
         usage_duration: Duration::from_millis(42),
     });
     bus.emit(ResourceEvent::CleanedUp {
-        resource_id: "db".to_string(),
+        resource_key: key.clone(),
         reason: CleanupReason::IdleTimeout,
     });
     bus.emit(ResourceEvent::Error {
-        resource_id: "db".to_string(),
+        resource_key: key.clone(),
         error: "test error".to_string(),
     });
     bus.emit(ResourceEvent::PoolExhausted {
-        resource_id: "db".to_string(),
+        resource_key: key.clone(),
         waiters: 3,
     });
     bus.emit(ResourceEvent::HealthChanged {
-        resource_id: "db".to_string(),
+        resource_key: key,
         from: nebula_resource::health::HealthState::Unknown,
         to: nebula_resource::health::HealthState::Healthy,
     });
@@ -89,8 +90,9 @@ async fn spawn_metrics_collector_helper_works() {
     let cancel = tokio_util::sync::CancellationToken::new();
     let handle = nebula_resource::metrics::spawn_metrics_collector(&bus, cancel);
 
+    let key = nebula_core::ResourceKey::try_from("x").expect("valid resource key");
     bus.emit(ResourceEvent::Created {
-        resource_id: "x".to_string(),
+        resource_key: key,
         scope: Scope::Global,
     });
 

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use nebula_core::ResourceKey;
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
@@ -33,9 +34,12 @@ struct TrackingResource {
 impl Resource for TrackingResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "tracked"
+    fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
+        nebula_resource::metadata::ResourceMetadata::from_key(
+            ResourceKey::try_from("tracked").expect("valid"),
+        )
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -132,9 +136,11 @@ async fn manager_shutdown_clears_all_pools() {
     )
     .unwrap();
 
+    let key = ResourceKey::try_from("tracked").expect("valid resource key");
+
     // Acquire and release to create an idle instance
     {
-        let _g = mgr.acquire("tracked", &ctx()).await.unwrap();
+        let _g = mgr.acquire(&key, &ctx()).await.unwrap();
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -147,7 +153,7 @@ async fn manager_shutdown_clears_all_pools() {
     );
 
     // After shutdown, acquire should fail (pool entry removed)
-    let result = mgr.acquire("tracked", &ctx()).await;
+    let result = mgr.acquire(&key, &ctx()).await;
     assert!(
         result.is_err(),
         "acquire after manager shutdown should fail"

@@ -66,45 +66,48 @@ impl MetricsCollector {
     /// Record a single event into the metrics system.
     fn record_event(event: &ResourceEvent) {
         match event {
-            ResourceEvent::Created { resource_id, .. } => {
-                metrics::counter!(NEBULA_RESOURCE_CREATE_TOTAL, "resource_id" => resource_id.clone())
-                    .increment(1);
+            ResourceEvent::Created { resource_key, .. } => {
+                let id = resource_key.to_string();
+                metrics::counter!(NEBULA_RESOURCE_CREATE_TOTAL, "resource_id" => id).increment(1);
             }
             ResourceEvent::Acquired {
-                resource_id,
+                resource_key,
                 wait_duration,
             } => {
-                metrics::counter!(NEBULA_RESOURCE_ACQUIRE_TOTAL, "resource_id" => resource_id.clone())
+                let id = resource_key.to_string();
+                metrics::counter!(NEBULA_RESOURCE_ACQUIRE_TOTAL, "resource_id" => id.clone())
                     .increment(1);
                 metrics::histogram!(
                     NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
-                    "resource_id" => resource_id.clone()
+                    "resource_id" => id
                 )
                 .record(wait_duration.as_secs_f64());
             }
             ResourceEvent::Released {
-                resource_id,
+                resource_key,
                 usage_duration,
             } => {
-                metrics::counter!(NEBULA_RESOURCE_RELEASE_TOTAL, "resource_id" => resource_id.clone())
+                let id = resource_key.to_string();
+                metrics::counter!(NEBULA_RESOURCE_RELEASE_TOTAL, "resource_id" => id.clone())
                     .increment(1);
                 metrics::histogram!(
                     NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
-                    "resource_id" => resource_id.clone()
+                    "resource_id" => id
                 )
                 .record(usage_duration.as_secs_f64());
             }
-            ResourceEvent::CleanedUp { resource_id, .. } => {
-                metrics::counter!(NEBULA_RESOURCE_CLEANUP_TOTAL, "resource_id" => resource_id.clone())
-                    .increment(1);
+            ResourceEvent::CleanedUp { resource_key, .. } => {
+                let id = resource_key.to_string();
+                metrics::counter!(NEBULA_RESOURCE_CLEANUP_TOTAL, "resource_id" => id).increment(1);
             }
-            ResourceEvent::Error { resource_id, .. } => {
-                metrics::counter!(NEBULA_RESOURCE_ERROR_TOTAL, "resource_id" => resource_id.clone())
-                    .increment(1);
+            ResourceEvent::Error { resource_key, .. } => {
+                let id = resource_key.to_string();
+                metrics::counter!(NEBULA_RESOURCE_ERROR_TOTAL, "resource_id" => id).increment(1);
             }
             ResourceEvent::HealthChanged {
-                resource_id, to, ..
+                resource_key, to, ..
             } => {
+                let id = resource_key.to_string();
                 let score = match to {
                     crate::health::HealthState::Healthy => 1.0,
                     crate::health::HealthState::Degraded { .. } => 0.5,
@@ -113,43 +116,47 @@ impl MetricsCollector {
                 };
                 metrics::gauge!(
                     NEBULA_RESOURCE_HEALTH_STATE,
-                    "resource_id" => resource_id.clone()
+                    "resource_id" => id
                 )
                 .set(score);
             }
             ResourceEvent::PoolExhausted {
-                resource_id,
+                resource_key,
                 waiters,
             } => {
+                let id = resource_key.to_string();
                 metrics::counter!(
                     NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL,
-                    "resource_id" => resource_id.clone()
+                    "resource_id" => id.clone()
                 )
                 .increment(1);
                 metrics::gauge!(
                     NEBULA_RESOURCE_POOL_WAITERS,
-                    "resource_id" => resource_id.clone()
+                    "resource_id" => id
                 )
                 .set(*waiters as f64);
             }
-            ResourceEvent::Quarantined { resource_id, .. } => {
+            ResourceEvent::Quarantined { resource_key, .. } => {
+                let id = resource_key.to_string();
                 metrics::counter!(
                     NEBULA_RESOURCE_QUARANTINE_TOTAL,
-                    "resource_id" => resource_id.clone()
+                    "resource_id" => id
                 )
                 .increment(1);
             }
-            ResourceEvent::QuarantineReleased { resource_id, .. } => {
+            ResourceEvent::QuarantineReleased { resource_key, .. } => {
+                let id = resource_key.to_string();
                 metrics::counter!(
                     NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL,
-                    "resource_id" => resource_id.clone()
+                    "resource_id" => id
                 )
                 .increment(1);
             }
-            ResourceEvent::ConfigReloaded { resource_id, .. } => {
+            ResourceEvent::ConfigReloaded { resource_key, .. } => {
+                let id = resource_key.to_string();
                 metrics::counter!(
                     NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
-                    "resource_id" => resource_id.clone()
+                    "resource_id" => id
                 )
                 .increment(1);
             }
@@ -192,24 +199,25 @@ mod tests {
         let handle = tokio::spawn(collector.run(cancel));
 
         // Emit a variety of events
+        let key = nebula_core::ResourceKey::try_from("db").expect("valid resource key");
         bus.emit(ResourceEvent::Created {
-            resource_id: "db".to_string(),
+            resource_key: key.clone(),
             scope: crate::scope::Scope::Global,
         });
         bus.emit(ResourceEvent::Acquired {
-            resource_id: "db".to_string(),
+            resource_key: key.clone(),
             wait_duration: Duration::from_millis(5),
         });
         bus.emit(ResourceEvent::Released {
-            resource_id: "db".to_string(),
+            resource_key: key.clone(),
             usage_duration: Duration::from_millis(42),
         });
         bus.emit(ResourceEvent::Error {
-            resource_id: "db".to_string(),
+            resource_key: key.clone(),
             error: "test error".to_string(),
         });
         bus.emit(ResourceEvent::CleanedUp {
-            resource_id: "db".to_string(),
+            resource_key: key,
             reason: crate::events::CleanupReason::Shutdown,
         });
 

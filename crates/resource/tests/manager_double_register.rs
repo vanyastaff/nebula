@@ -8,9 +8,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::manager::Manager;
+use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -47,9 +49,10 @@ impl TaggedResource {
 impl Resource for TaggedResource {
     type Config = TaggedConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "db"
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(ResourceKey::try_from("db").expect("valid"))
     }
 
     async fn create(&self, config: &TaggedConfig, _ctx: &Context) -> Result<String> {
@@ -89,8 +92,10 @@ async fn double_register_replaces_pool() {
     )
     .unwrap();
 
+    let key = ResourceKey::try_from("db").expect("valid resource key");
+
     // Acquire from first pool
-    let guard = mgr.acquire("db", &ctx()).await.unwrap();
+    let guard = mgr.acquire(&key, &ctx()).await.unwrap();
     let instance = guard
         .as_any()
         .downcast_ref::<String>()
@@ -113,7 +118,7 @@ async fn double_register_replaces_pool() {
     .unwrap();
 
     // Acquire from new pool
-    let guard = mgr.acquire("db", &ctx()).await.unwrap();
+    let guard = mgr.acquire(&key, &ctx()).await.unwrap();
     let instance = guard
         .as_any()
         .downcast_ref::<String>()
@@ -140,8 +145,10 @@ async fn double_register_with_active_guards() {
     )
     .unwrap();
 
+    let key = ResourceKey::try_from("db").expect("valid resource key");
+
     // Acquire a guard from the first pool and HOLD it
-    let old_guard = mgr.acquire("db", &ctx()).await.unwrap();
+    let old_guard = mgr.acquire(&key, &ctx()).await.unwrap();
     let old_instance = old_guard
         .as_any()
         .downcast_ref::<String>()
@@ -163,7 +170,7 @@ async fn double_register_with_active_guards() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Acquire from the new pool
-    let new_guard = mgr.acquire("db", &ctx()).await.unwrap();
+    let new_guard = mgr.acquire(&key, &ctx()).await.unwrap();
     let new_instance = new_guard
         .as_any()
         .downcast_ref::<String>()

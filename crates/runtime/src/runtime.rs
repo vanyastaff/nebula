@@ -6,8 +6,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use nebula_action::result::ActionResult;
 use nebula_action::ActionContext;
+use nebula_action::result::ActionResult;
 use nebula_metrics::naming::{
     NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,
 };
@@ -228,11 +228,11 @@ fn primary_output(result: &ActionResult<serde_json::Value>) -> Option<&serde_jso
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nebula_action::ActionContext;
+    use nebula_action::InternalHandler;
     use nebula_action::error::ActionError;
     use nebula_action::metadata::ActionMetadata;
-    use nebula_action::ActionContext;
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
-    use nebula_action::InternalHandler;
     use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};
 
     struct EchoHandler {

@@ -67,9 +67,12 @@ impl ReferenceResource {
 impl Resource for ReferenceResource {
     type Config = ReferenceConfig;
     type Instance = ReferenceInstance;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "reference-resource"
+    fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
+        nebula_resource::metadata::ResourceMetadata::from_key(
+            nebula_core::ResourceKey::try_from("reference-resource").expect("valid key"),
+        )
     }
 
     async fn create(&self, config: &ReferenceConfig, _ctx: &Context) -> Result<ReferenceInstance> {
@@ -97,8 +100,8 @@ impl Resource for ReferenceResource {
         Ok(())
     }
 
-    fn dependencies(&self) -> Vec<&str> {
-        vec!["config-store"]
+    fn dependencies(&self) -> Vec<nebula_core::ResourceKey> {
+        vec![nebula_core::ResourceKey::try_from("config-store").expect("valid key")]
     }
 }
 
@@ -183,9 +186,10 @@ async fn cleanup_is_called_on_shutdown() {
     impl Resource for CleanupTracker {
         type Config = ReferenceConfig;
         type Instance = ReferenceInstance;
+        type Deps = ();
 
-        fn id(&self) -> &str {
-            self.inner.id()
+        fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
+            self.inner.metadata()
         }
 
         async fn create(
@@ -235,8 +239,9 @@ async fn cleanup_is_called_on_shutdown() {
 async fn dependencies_are_reported() {
     let resource = ReferenceResource::new();
     let deps = resource.dependencies();
+    let expected = vec![nebula_core::ResourceKey::try_from("config-store").expect("valid key")];
 
-    assert_eq!(deps, vec!["config-store"]);
+    assert_eq!(deps, expected);
 }
 
 #[tokio::test]

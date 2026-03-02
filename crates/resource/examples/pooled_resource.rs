@@ -51,9 +51,12 @@ struct DbResource {
 impl Resource for DbResource {
     type Config = DbConfig;
     type Instance = DbConnection;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "postgres"
+    fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
+        nebula_resource::metadata::ResourceMetadata::from_key(
+            nebula_core::ResourceKey::try_from("postgres").expect("valid resource key"),
+        )
     }
 
     async fn create(&self, _config: &DbConfig, _ctx: &Context) -> Result<DbConnection> {
@@ -81,8 +84,8 @@ impl Resource for DbResource {
     }
 
     /// This resource depends on a config store (for connection string lookup).
-    fn dependencies(&self) -> Vec<&str> {
-        vec!["config-store"]
+    fn dependencies(&self) -> Vec<nebula_core::ResourceKey> {
+        vec![nebula_core::ResourceKey::try_from("config-store").expect("valid resource key")]
     }
 }
 
@@ -155,7 +158,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let res = DbResource {
         next_id: std::sync::atomic::AtomicU64::new(1),
     };
-    println!("Dependencies for '{}': {:?}", res.id(), res.dependencies());
+    println!(
+        "Dependencies for '{}': {:?}",
+        res.metadata().key.as_ref(),
+        res.dependencies()
+    );
 
     // 5. Health checking.
     let checker = DbHealthChecker;

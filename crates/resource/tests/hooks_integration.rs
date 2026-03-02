@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use nebula_core::ResourceKey;
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
@@ -35,9 +36,12 @@ struct NamedResource {
 impl Resource for NamedResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        self.name
+    fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
+        nebula_resource::metadata::ResourceMetadata::from_key(
+            ResourceKey::try_from(self.name).expect("valid key"),
+        )
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -133,7 +137,7 @@ impl ResourceHook for CancelHook {
     ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
         Box::pin(async move {
             HookResult::Cancel(Error::Unavailable {
-                resource_id: resource_id.to_string(),
+                resource_key: ResourceKey::try_from(resource_id).expect("valid key"),
                 reason: self.reason.clone(),
                 retryable: false,
             })
@@ -321,7 +325,9 @@ async fn hooks_execute_in_priority_order_via_manager() {
         prio: 10,
     }));
 
-    let _guard = mgr.acquire("db", &ctx()).await.unwrap();
+    let key = ResourceKey::try_from("db").expect("valid resource key");
+
+    let _guard = mgr.acquire(&key, &ctx()).await.unwrap();
 
     let recorded = order.lock().clone();
     // Before-hooks run in priority order, then after-hooks in priority order
@@ -381,7 +387,9 @@ async fn before_hook_cancel_stops_manager_acquire() {
         reason: "rate limited".into(),
     }));
 
-    let result = mgr.acquire("db", &ctx()).await;
+    let key = ResourceKey::try_from("db").expect("valid resource key");
+
+    let result = mgr.acquire(&key, &ctx()).await;
     assert!(result.is_err());
     assert!(
         result.unwrap_err().to_string().contains("rate limited"),
@@ -485,8 +493,11 @@ async fn hook_filter_via_manager_only_fires_for_matching_resource() {
     mgr.hooks()
         .register(Arc::clone(&db_hook) as Arc<dyn ResourceHook>);
 
+    let db_key = ResourceKey::try_from("db").expect("valid resource key");
+    let cache_key = ResourceKey::try_from("cache").expect("valid resource key");
+
     // Acquire "db" -- hook fires
-    let g1 = mgr.acquire("db", &ctx()).await.unwrap();
+    let g1 = mgr.acquire(&db_key, &ctx()).await.unwrap();
     drop(g1);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
@@ -497,7 +508,7 @@ async fn hook_filter_via_manager_only_fires_for_matching_resource() {
     );
 
     // Acquire "cache" -- hook does NOT fire
-    let g2 = mgr.acquire("cache", &ctx()).await.unwrap();
+    let g2 = mgr.acquire(&cache_key, &ctx()).await.unwrap();
     drop(g2);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
@@ -557,8 +568,10 @@ async fn after_hook_does_not_affect_manager_acquire() {
     mgr.hooks()
         .register(Arc::clone(&hook) as Arc<dyn ResourceHook>);
 
+    let key = ResourceKey::try_from("db").expect("valid resource key");
+
     // Acquire should succeed despite the after-hook
-    let guard = mgr.acquire("db", &ctx()).await;
+    let guard = mgr.acquire(&key, &ctx()).await;
     assert!(
         guard.is_ok(),
         "acquire should succeed despite after-hook, got: {:?}",

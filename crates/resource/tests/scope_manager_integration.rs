@@ -7,9 +7,11 @@
 
 use std::time::Duration;
 
+use nebula_core::ResourceKey;
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
+use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -30,9 +32,10 @@ struct NamedResource {
 impl Resource for NamedResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        self.name
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(ResourceKey::try_from(self.name).expect("valid"))
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -77,27 +80,30 @@ async fn two_tenants_each_access_only_own_resources() {
     let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
     let ctx_b = Context::new(Scope::tenant("B"), WorkflowId::new(), ExecutionId::new());
 
+    let key_a = ResourceKey::try_from("db-A").expect("valid resource key");
+    let key_b = ResourceKey::try_from("db-B").expect("valid resource key");
+
     // Tenant A can access db-A, not db-B
-    let g = mgr.acquire("db-A", &ctx_a).await.unwrap();
+    let g = mgr.acquire(&key_a, &ctx_a).await.unwrap();
     assert_eq!(
         g.as_any().downcast_ref::<String>().unwrap(),
         "db-A-instance"
     );
 
-    let err = mgr.acquire("db-B", &ctx_a).await.unwrap_err();
+    let err = mgr.acquire(&key_b, &ctx_a).await.unwrap_err();
     assert!(err.to_string().contains("Scope mismatch"));
 
     drop(g);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     // Tenant B can access db-B, not db-A
-    let g = mgr.acquire("db-B", &ctx_b).await.unwrap();
+    let g = mgr.acquire(&key_b, &ctx_b).await.unwrap();
     assert_eq!(
         g.as_any().downcast_ref::<String>().unwrap(),
         "db-B-instance"
     );
 
-    let err = mgr.acquire("db-A", &ctx_b).await.unwrap_err();
+    let err = mgr.acquire(&key_a, &ctx_b).await.unwrap_err();
     assert!(err.to_string().contains("Scope mismatch"));
 }
 
@@ -132,19 +138,23 @@ async fn global_resource_shared_across_tenants() {
     let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
     let ctx_b = Context::new(Scope::tenant("B"), WorkflowId::new(), ExecutionId::new());
 
+    let metrics_key = ResourceKey::try_from("metrics").expect("valid resource key");
+    let cache_a_key = ResourceKey::try_from("cache-A").expect("valid resource key");
+    let cache_b_key = ResourceKey::try_from("cache-B").expect("valid resource key");
+
     // Both tenants can access global "metrics"
-    let g1 = mgr.acquire("metrics", &ctx_a).await.unwrap();
+    let g1 = mgr.acquire(&metrics_key, &ctx_a).await.unwrap();
     drop(g1);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
-    let g2 = mgr.acquire("metrics", &ctx_b).await.unwrap();
+    let g2 = mgr.acquire(&metrics_key, &ctx_b).await.unwrap();
     drop(g2);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     // Each tenant only sees their own cache
-    mgr.acquire("cache-A", &ctx_a).await.unwrap();
-    assert!(mgr.acquire("cache-A", &ctx_b).await.is_err());
-    assert!(mgr.acquire("cache-B", &ctx_a).await.is_err());
+    mgr.acquire(&cache_a_key, &ctx_a).await.unwrap();
+    assert!(mgr.acquire(&cache_a_key, &ctx_b).await.is_err());
+    assert!(mgr.acquire(&cache_b_key, &ctx_a).await.is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -163,13 +173,15 @@ async fn workflow_resource_accessible_from_child_execution() {
     )
     .unwrap();
 
+    let wf_cache_key = ResourceKey::try_from("wf-cache").expect("valid resource key");
+
     // Execution inside wf1 can access it
     let exec_ctx = Context::new(
         Scope::execution_in_workflow("ex1", "wf1", None),
         WorkflowId::new(),
         ExecutionId::new(),
     );
-    let g = mgr.acquire("wf-cache", &exec_ctx).await.unwrap();
+    let g = mgr.acquire(&wf_cache_key, &exec_ctx).await.unwrap();
     assert!(g.as_any().downcast_ref::<String>().is_some());
     drop(g);
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -180,7 +192,7 @@ async fn workflow_resource_accessible_from_child_execution() {
         WorkflowId::new(),
         ExecutionId::new(),
     );
-    assert!(mgr.acquire("wf-cache", &other_exec_ctx).await.is_err());
+    assert!(mgr.acquire(&wf_cache_key, &other_exec_ctx).await.is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -221,13 +233,16 @@ async fn workflow_resource_denied_from_different_workflow() {
         ExecutionId::new(),
     );
 
+    let wf1_db_key = ResourceKey::try_from("wf1-db").expect("valid resource key");
+    let wf2_db_key = ResourceKey::try_from("wf2-db").expect("valid resource key");
+
     // wf1 context can access wf1-db, not wf2-db
-    mgr.acquire("wf1-db", &wf1_ctx).await.unwrap();
-    assert!(mgr.acquire("wf2-db", &wf1_ctx).await.is_err());
+    mgr.acquire(&wf1_db_key, &wf1_ctx).await.unwrap();
+    assert!(mgr.acquire(&wf2_db_key, &wf1_ctx).await.is_err());
 
     // wf2 context can access wf2-db, not wf1-db
-    mgr.acquire("wf2-db", &wf2_ctx).await.unwrap();
-    assert!(mgr.acquire("wf1-db", &wf2_ctx).await.is_err());
+    mgr.acquire(&wf2_db_key, &wf2_ctx).await.unwrap();
+    assert!(mgr.acquire(&wf1_db_key, &wf2_ctx).await.is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +272,10 @@ async fn tenant_resource_accessible_from_nested_action() {
         WorkflowId::new(),
         ExecutionId::new(),
     );
-    let g = mgr.acquire("tenant-db", &action_ctx).await.unwrap();
+
+    let tenant_db_key = ResourceKey::try_from("tenant-db").expect("valid resource key");
+
+    let g = mgr.acquire(&tenant_db_key, &action_ctx).await.unwrap();
     assert!(g.as_any().downcast_ref::<String>().is_some());
     drop(g);
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -273,7 +291,7 @@ async fn tenant_resource_accessible_from_nested_action() {
         WorkflowId::new(),
         ExecutionId::new(),
     );
-    assert!(mgr.acquire("tenant-db", &action_ctx_b).await.is_err());
+    assert!(mgr.acquire(&tenant_db_key, &action_ctx_b).await.is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -321,20 +339,25 @@ async fn full_isolation_matrix_across_scope_levels() {
         ExecutionId::new(),
     );
 
+    let global_key = ResourceKey::try_from("global-r").expect("valid resource key");
+    let tenant_key = ResourceKey::try_from("tenant-r").expect("valid resource key");
+    let wf_key = ResourceKey::try_from("wf-r").expect("valid resource key");
+    let execution_key = ResourceKey::try_from("execution-r").expect("valid resource key");
+
     // This context should be able to access: global, tenant-A, wf1, ex1
-    mgr.acquire("global-r", &exec_ctx).await.unwrap();
-    mgr.acquire("tenant-r", &exec_ctx).await.unwrap();
-    mgr.acquire("wf-r", &exec_ctx).await.unwrap();
-    mgr.acquire("execution-r", &exec_ctx).await.unwrap();
+    mgr.acquire(&global_key, &exec_ctx).await.unwrap();
+    mgr.acquire(&tenant_key, &exec_ctx).await.unwrap();
+    mgr.acquire(&wf_key, &exec_ctx).await.unwrap();
+    mgr.acquire(&execution_key, &exec_ctx).await.unwrap();
 
     // Context at tenant level (broader than wf/execution scope)
     let tenant_ctx = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
 
     // Tenant context can access global and tenant, but NOT workflow or execution
-    mgr.acquire("global-r", &tenant_ctx).await.unwrap();
-    mgr.acquire("tenant-r", &tenant_ctx).await.unwrap();
-    assert!(mgr.acquire("wf-r", &tenant_ctx).await.is_err());
-    assert!(mgr.acquire("execution-r", &tenant_ctx).await.is_err());
+    mgr.acquire(&global_key, &tenant_ctx).await.unwrap();
+    mgr.acquire(&tenant_key, &tenant_ctx).await.unwrap();
+    assert!(mgr.acquire(&wf_key, &tenant_ctx).await.is_err());
+    assert!(mgr.acquire(&execution_key, &tenant_ctx).await.is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -376,20 +399,24 @@ async fn concurrent_multi_tenant_acquire() {
 
     let handle_a = tokio::spawn(async move {
         let ctx = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
-        let g1 = mgr_a.acquire("pool-A", &ctx).await.unwrap();
-        let g2 = mgr_a.acquire("pool-A", &ctx).await.unwrap();
+        let key_a = ResourceKey::try_from("pool-A").expect("valid");
+        let key_b = ResourceKey::try_from("pool-B").expect("valid");
+        let g1 = mgr_a.acquire(&key_a, &ctx).await.unwrap();
+        let g2 = mgr_a.acquire(&key_a, &ctx).await.unwrap();
         // Cannot access pool-B
-        assert!(mgr_a.acquire("pool-B", &ctx).await.is_err());
+        assert!(mgr_a.acquire(&key_b, &ctx).await.is_err());
         drop(g1);
         drop(g2);
     });
 
     let handle_b = tokio::spawn(async move {
         let ctx = Context::new(Scope::tenant("B"), WorkflowId::new(), ExecutionId::new());
-        let g1 = mgr_b.acquire("pool-B", &ctx).await.unwrap();
-        let g2 = mgr_b.acquire("pool-B", &ctx).await.unwrap();
+        let key_a = ResourceKey::try_from("pool-A").expect("valid");
+        let key_b = ResourceKey::try_from("pool-B").expect("valid");
+        let g1 = mgr_b.acquire(&key_b, &ctx).await.unwrap();
+        let g2 = mgr_b.acquire(&key_b, &ctx).await.unwrap();
         // Cannot access pool-A
-        assert!(mgr_b.acquire("pool-A", &ctx).await.is_err());
+        assert!(mgr_b.acquire(&key_a, &ctx).await.is_err());
         drop(g1);
         drop(g2);
     });

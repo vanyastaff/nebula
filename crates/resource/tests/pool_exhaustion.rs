@@ -2,8 +2,10 @@
 
 use std::time::Duration;
 
+use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
+use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -19,9 +21,10 @@ struct TestResource;
 impl Resource for TestResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "test-pool"
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(ResourceKey::try_from("test-pool").expect("valid"))
     }
 
     async fn create(&self, _config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {

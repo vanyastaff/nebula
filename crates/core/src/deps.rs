@@ -54,7 +54,10 @@ pub enum DependencyError {
 impl fmt::Display for DependencyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DependencyError::Missing { required_by, missing } => {
+            DependencyError::Missing {
+                required_by,
+                missing,
+            } => {
                 write!(
                     f,
                     "missing dependency: {:?} depends on {:?}, but it is not registered",
@@ -118,6 +121,12 @@ pub trait FromRegistry: Sized + Send + Sync + 'static {
 /// registry and in the associated `T` metadata.
 pub struct Requires<T> {
     _marker: PhantomData<T>,
+}
+
+impl<T> Default for Requires<T> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T> Requires<T> {
@@ -196,4 +205,3 @@ macro_rules! deps {
         ( $( $crate::deps::Requires<$T> ),+ )
     };
 }
-

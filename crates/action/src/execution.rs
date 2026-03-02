@@ -103,8 +103,7 @@ pub trait StatefulAction: Action {
 /// Uses [`TriggerContext`] (workflow_id, trigger_id, cancellation), not [`Context`].
 pub trait TriggerAction: Action {
     /// Start the trigger (register listener, schedule poll, etc.).
-    fn start(&self, ctx: &TriggerContext)
-        -> impl Future<Output = Result<(), ActionError>> + Send;
+    fn start(&self, ctx: &TriggerContext) -> impl Future<Output = Result<(), ActionError>> + Send;
 
     /// Stop the trigger (unregister, cancel schedule).
     fn stop(&self, ctx: &TriggerContext) -> impl Future<Output = Result<(), ActionError>> + Send;
@@ -124,8 +123,10 @@ pub trait ResourceAction: Action {
     type Instance: Send + Sync;
 
     /// Build the resource for this scope; engine runs this before downstream nodes.
-    fn configure(&self, ctx: &impl Context)
-        -> impl Future<Output = Result<Self::Config, ActionError>> + Send;
+    fn configure(
+        &self,
+        ctx: &impl Context,
+    ) -> impl Future<Output = Result<Self::Config, ActionError>> + Send;
 
     /// Clean up the instance when the scope ends (e.g. drop pool, close connections).
     fn cleanup(

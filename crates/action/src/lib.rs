@@ -61,6 +61,10 @@ pub mod components;
 pub mod context;
 /// Error types distinguishing retryable from fatal failures.
 pub mod error;
+/// Execution sub-traits (StatelessAction, etc.).
+pub mod execution;
+/// Dynamic handler contract for runtime (registry key → execute).
+pub mod handler;
 /// Static metadata, versioning, and execution mode descriptors.
 pub mod metadata;
 /// Output data representations (inline JSON and blob references).
@@ -69,24 +73,19 @@ pub mod output;
 pub mod port;
 /// Convenience re-exports for action authors.
 pub mod prelude;
-/// Execution result types carrying data and flow-control intent.
-pub mod result;
-/// Execution sub-traits (StatelessAction, etc.).
-pub mod execution;
 /// Type-safe reference to an action type (for plugin declarations).
 pub mod reference;
-/// Dynamic handler contract for runtime (registry key → execute).
-pub mod handler;
+/// Execution result types carrying data and flow-control intent.
+pub mod result;
 
 // ── Public re-exports ───────────────────────────────────────────────────────
 
 pub use action::Action;
 pub use components::ActionComponents;
-pub use handler::InternalHandler;
-pub use reference::ActionRef;
 pub use context::{ActionContext, Context, NodeContext, TriggerContext};
-pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 pub use error::ActionError;
+pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
+pub use handler::InternalHandler;
 pub use metadata::{ActionMetadata, InterfaceVersion};
 pub use output::{
     ActionOutput, BinaryData, BinaryStorage, BufferConfig, CacheInfo, Cost, DataReference,
@@ -95,6 +94,7 @@ pub use output::{
     StreamOutput, StreamState, Timing, TokenUsage,
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
+pub use reference::ActionRef;
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
 
 pub use nebula_parameter::collection::ParameterCollection;

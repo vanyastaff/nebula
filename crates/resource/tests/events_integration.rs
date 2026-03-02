@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use nebula_core::ResourceKey;
 use nebula_resource::events::{EventBus, ResourceEvent};
 use nebula_resource::health::{
     HealthCheckConfig, HealthCheckable, HealthChecker, HealthState, HealthStatus,
@@ -33,9 +34,12 @@ struct TestResource;
 impl Resource for TestResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "test"
+    fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
+        nebula_resource::metadata::ResourceMetadata::from_key(
+            nebula_core::ResourceKey::try_from("test").expect("valid resource key"),
+        )
     }
 
     async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -62,15 +66,19 @@ async fn event_bus_created_event_received_by_subscriber() {
     let bus = EventBus::new(64);
     let mut rx = bus.subscribe();
 
+    let key = nebula_core::ResourceKey::try_from("db").expect("valid resource key");
     bus.emit(ResourceEvent::Created {
-        resource_id: "db".to_string(),
+        resource_key: key.clone(),
         scope: Scope::Global,
     });
 
     let event = rx.recv().await.expect("should receive Created event");
     match event {
-        ResourceEvent::Created { resource_id, scope } => {
-            assert_eq!(resource_id, "db");
+        ResourceEvent::Created {
+            resource_key,
+            scope,
+        } => {
+            assert_eq!(resource_key, key);
             assert_eq!(scope, Scope::Global);
         }
         other => panic!("expected Created, got {other:?}"),
@@ -82,20 +90,21 @@ async fn event_bus_multiple_event_types_received_in_order() {
     let bus = EventBus::new(64);
     let mut rx = bus.subscribe();
 
+    let key = nebula_core::ResourceKey::try_from("r1").expect("valid resource key");
     bus.emit(ResourceEvent::Created {
-        resource_id: "r1".to_string(),
+        resource_key: key.clone(),
         scope: Scope::Global,
     });
     bus.emit(ResourceEvent::Acquired {
-        resource_id: "r1".to_string(),
+        resource_key: key.clone(),
         wait_duration: Duration::from_millis(1),
     });
     bus.emit(ResourceEvent::Released {
-        resource_id: "r1".to_string(),
+        resource_key: key.clone(),
         usage_duration: Duration::from_millis(100),
     });
     bus.emit(ResourceEvent::Error {
-        resource_id: "r1".to_string(),
+        resource_key: key,
         error: "boom".to_string(),
     });
 
@@ -124,8 +133,9 @@ async fn event_bus_multiple_subscribers_all_receive() {
     let mut rx2 = bus.subscribe();
     let mut rx3 = bus.subscribe();
 
+    let key = nebula_core::ResourceKey::try_from("db").expect("valid resource key");
     bus.emit(ResourceEvent::Created {
-        resource_id: "db".to_string(),
+        resource_key: key,
         scope: Scope::Global,
     });
 
@@ -154,8 +164,11 @@ async fn manager_register_emits_created_event() {
 
     let event = rx.recv().await.expect("should receive Created event");
     match event {
-        ResourceEvent::Created { resource_id, scope } => {
-            assert_eq!(resource_id, "test");
+        ResourceEvent::Created {
+            resource_key,
+            scope,
+        } => {
+            assert_eq!(resource_key.as_ref(), "test");
             assert_eq!(scope, Scope::Global);
         }
         other => panic!("expected Created, got {other:?}"),
@@ -174,10 +187,14 @@ async fn manager_acquire_emits_acquired_event() {
     // Drain the Created event
     let _ = rx.recv().await.unwrap();
 
-    let _guard = mgr.acquire("test", &ctx()).await.unwrap();
+    let key = ResourceKey::try_from("test").expect("valid resource key");
+
+    let _guard = mgr.acquire(&key, &ctx()).await.unwrap();
 
     let event = rx.recv().await.expect("should receive Acquired event");
-    assert!(matches!(event, ResourceEvent::Acquired { resource_id, .. } if resource_id == "test"));
+    assert!(
+        matches!(event, ResourceEvent::Acquired { resource_key, .. } if resource_key.as_ref() == "test")
+    );
 }
 
 #[tokio::test]
@@ -186,13 +203,15 @@ async fn manager_acquire_failure_emits_error_event() {
     let mgr = Manager::with_event_bus(Arc::clone(&bus));
     let mut rx = bus.subscribe();
 
+    let key = ResourceKey::try_from("nonexistent").expect("valid resource key");
+
     // Try to acquire a nonexistent resource
-    let result = mgr.acquire("nonexistent", &ctx()).await;
+    let result = mgr.acquire(&key, &ctx()).await;
     assert!(result.is_err());
 
     let event = rx.recv().await.expect("should receive Error event");
     assert!(
-        matches!(event, ResourceEvent::Error { resource_id, .. } if resource_id == "nonexistent")
+        matches!(event, ResourceEvent::Error { resource_key, .. } if resource_key.as_ref() == "nonexistent")
     );
 }
 
@@ -242,11 +261,11 @@ async fn health_state_transition_emits_health_changed_event() {
 
     match event {
         ResourceEvent::HealthChanged {
-            resource_id,
+            resource_key,
             from,
             to,
         } => {
-            assert_eq!(resource_id, "test-res");
+            assert_eq!(resource_key.as_ref(), "test-res");
             assert_eq!(from, HealthState::Unknown);
             assert_eq!(to, HealthState::Healthy);
         }
@@ -264,11 +283,11 @@ async fn health_state_transition_emits_health_changed_event() {
 
     match event {
         ResourceEvent::HealthChanged {
-            resource_id,
+            resource_key,
             from,
             to,
         } => {
-            assert_eq!(resource_id, "test-res");
+            assert_eq!(resource_key.as_ref(), "test-res");
             assert_eq!(from, HealthState::Healthy);
             assert!(matches!(to, HealthState::Unhealthy { .. }));
         }
@@ -353,8 +372,8 @@ async fn pool_exhaustion_emits_pool_exhausted_event() {
         .expect("should receive PoolExhausted event");
 
     match event {
-        ResourceEvent::PoolExhausted { resource_id, .. } => {
-            assert_eq!(resource_id, "test");
+        ResourceEvent::PoolExhausted { resource_key, .. } => {
+            assert_eq!(resource_key.as_ref(), "test");
         }
         other => panic!("expected PoolExhausted, got {other:?}"),
     }
@@ -444,10 +463,10 @@ async fn pool_guard_drop_emits_released_event() {
     loop {
         match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
             Ok(Some(ResourceEvent::Released {
-                resource_id,
+                resource_key,
                 usage_duration,
             })) => {
-                assert_eq!(resource_id, "test");
+                assert_eq!(resource_key.as_ref(), "test");
                 assert!(usage_duration >= Duration::from_millis(10));
                 found_released = true;
                 break;

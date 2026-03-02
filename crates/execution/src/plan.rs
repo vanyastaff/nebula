@@ -109,8 +109,9 @@ mod tests {
             vec![node(a), node(b), node(c)],
             vec![Connection::new(a, b), Connection::new(b, c)],
         );
-        let plan = ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
-            .unwrap();
+        let plan =
+            ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
+                .unwrap();
 
         assert_eq!(plan.total_nodes, 3);
         assert_eq!(plan.parallel_groups.len(), 3);
@@ -133,8 +134,9 @@ mod tests {
                 Connection::new(c, d),
             ],
         );
-        let plan = ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
-            .unwrap();
+        let plan =
+            ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
+                .unwrap();
 
         assert_eq!(plan.total_nodes, 4);
         assert_eq!(plan.parallel_groups.len(), 3);
@@ -165,8 +167,9 @@ mod tests {
     fn plan_single_node() {
         let a = NodeId::new();
         let wf = make_workflow(vec![node(a)], vec![]);
-        let plan = ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
-            .unwrap();
+        let plan =
+            ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
+                .unwrap();
 
         assert_eq!(plan.total_nodes, 1);
         assert_eq!(plan.parallel_groups.len(), 1);
@@ -179,8 +182,9 @@ mod tests {
         let a = NodeId::new();
         let b = NodeId::new();
         let wf = make_workflow(vec![node(a), node(b)], vec![Connection::new(a, b)]);
-        let plan = ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
-            .unwrap();
+        let plan =
+            ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
+                .unwrap();
 
         let json = serde_json::to_string(&plan).unwrap();
         let back: ExecutionPlan = serde_json::from_str(&json).unwrap();

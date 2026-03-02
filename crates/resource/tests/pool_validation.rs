@@ -7,8 +7,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
+use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
+use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -39,9 +41,10 @@ struct SharedValidatableResource {
 impl Resource for SharedValidatableResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "validatable"
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(ResourceKey::try_from("validatable").expect("valid"))
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -69,9 +72,10 @@ struct MultiInvalidResource {
 impl Resource for MultiInvalidResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "multi-invalid"
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(ResourceKey::try_from("multi-invalid").expect("valid"))
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -99,9 +103,10 @@ struct ErrValidResource {
 impl Resource for ErrValidResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "err-valid"
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(ResourceKey::try_from("err-valid").expect("valid"))
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -112,7 +117,7 @@ impl Resource for ErrValidResource {
     async fn is_valid(&self, _instance: &String) -> Result<bool> {
         if self.error_flag.swap(false, Ordering::SeqCst) {
             return Err(Error::HealthCheck {
-                resource_id: "err-valid".to_string(),
+                resource_key: ResourceKey::try_from("err-valid").expect("valid"),
                 reason: "validation error".to_string(),
                 attempt: 1,
             });

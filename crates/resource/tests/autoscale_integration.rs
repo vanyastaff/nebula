@@ -12,9 +12,11 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
+use nebula_core::ResourceKey;
 use nebula_resource::autoscale::{AutoScalePolicy, AutoScaler};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
+use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -52,9 +54,11 @@ impl CountingResource {
 impl Resource for CountingResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "counting"
+    fn metadata(&self) -> ResourceMetadata {
+        let key = ResourceKey::try_from("counting").expect("valid resource key");
+        ResourceMetadata::from_key(key)
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {

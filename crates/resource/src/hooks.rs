@@ -505,7 +505,8 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
             Box::pin(async {
                 HookResult::Cancel(Error::Unavailable {
-                    resource_id: "test".to_string(),
+                    resource_key: nebula_core::ResourceKey::try_from("test")
+                        .expect("valid resource key"),
                     reason: "cancelled by hook".to_string(),
                     retryable: false,
                 })

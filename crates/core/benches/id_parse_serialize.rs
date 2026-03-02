@@ -4,7 +4,7 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_core::{ExecutionId, NodeId, WorkflowId};
 
 fn id_new(c: &mut Criterion) {
@@ -43,8 +43,7 @@ fn id_serde_json_roundtrip(c: &mut Criterion) {
     });
     group.bench_function("from_str", |b| {
         b.iter(|| {
-            let parsed: ExecutionId =
-                serde_json::from_str(black_box(&json)).unwrap();
+            let parsed: ExecutionId = serde_json::from_str(black_box(&json)).unwrap();
             black_box(parsed)
         });
     });

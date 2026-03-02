@@ -907,10 +907,10 @@ mod tests {
     use super::*;
     use nebula_action::ActionContext;
     use nebula_action::ActionError;
+    use nebula_action::InternalHandler;
     use nebula_action::metadata::ActionMetadata;
     use nebula_action::result::ActionResult;
     use nebula_core::Version;
-    use nebula_action::InternalHandler;
     use nebula_runtime::DataPassingPolicy;
     use nebula_runtime::registry::ActionRegistry;
     use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};

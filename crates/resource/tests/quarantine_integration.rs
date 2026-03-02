@@ -9,9 +9,11 @@
 
 use std::time::Duration;
 
+use nebula_core::ResourceKey;
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
+use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::quarantine::{
     QuarantineConfig, QuarantineManager, QuarantineReason, RecoveryStrategy,
@@ -35,9 +37,10 @@ struct NamedResource {
 impl Resource for NamedResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        self.name
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(ResourceKey::try_from(self.name).expect("valid resource key"))
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -78,7 +81,8 @@ async fn quarantined_resource_acquire_fails_retryable() {
     assert!(quarantined, "resource should be newly quarantined");
 
     // Acquire should fail
-    let result = mgr.acquire("db", &ctx()).await;
+    let resource_key = ResourceKey::try_from("db").expect("valid resource key");
+    let result = mgr.acquire(&resource_key, &ctx()).await;
     let err = result.expect_err("acquire should fail for quarantined resource");
 
     // Error should mention quarantine
@@ -111,14 +115,15 @@ async fn quarantine_release_allows_acquire() {
             reason: "maintenance".into(),
         },
     );
-    assert!(mgr.acquire("db", &ctx()).await.is_err());
+    let resource_key = ResourceKey::try_from("db").expect("valid resource key");
+    assert!(mgr.acquire(&resource_key, &ctx()).await.is_err());
 
     // Release quarantine
     let entry = mgr.quarantine().release("db");
     assert!(entry.is_some(), "should have been quarantined");
 
     // Acquire should now succeed
-    let guard = mgr.acquire("db", &ctx()).await;
+    let guard = mgr.acquire(&resource_key, &ctx()).await;
     assert!(
         guard.is_ok(),
         "acquire should succeed after quarantine release, got: {:?}",
@@ -136,9 +141,11 @@ async fn recovery_after_quarantine_release_returns_to_pool() {
     mgr.register(NamedResource { name: "cache" }, TestConfig, pool_cfg())
         .unwrap();
 
+    let resource_key = ResourceKey::try_from("cache").expect("valid resource key");
+
     // Pre-quarantine: acquire and release to populate pool
     {
-        let _g = mgr.acquire("cache", &ctx()).await.unwrap();
+        let _g = mgr.acquire(&resource_key, &ctx()).await.unwrap();
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -151,19 +158,19 @@ async fn recovery_after_quarantine_release_returns_to_pool() {
     );
 
     // Verify blocked
-    assert!(mgr.acquire("cache", &ctx()).await.is_err());
+    assert!(mgr.acquire(&resource_key, &ctx()).await.is_err());
 
     // Release and verify pool works normally
     mgr.quarantine().release("cache");
 
     // Acquire twice to verify pool recycling still works
-    let g1 = mgr.acquire("cache", &ctx()).await.unwrap();
+    let g1 = mgr.acquire(&resource_key, &ctx()).await.unwrap();
     let val = g1.as_any().downcast_ref::<String>().unwrap();
     assert_eq!(val, "cache-instance");
     drop(g1);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let g2 = mgr.acquire("cache", &ctx()).await.unwrap();
+    let g2 = mgr.acquire(&resource_key, &ctx()).await.unwrap();
     let val2 = g2.as_any().downcast_ref::<String>().unwrap();
     assert_eq!(val2, "cache-instance");
 }
@@ -374,8 +381,10 @@ async fn scoped_resource_quarantine_blocks_acquire() {
 
     let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
 
+    let resource_key = ResourceKey::try_from("tenant-db").expect("valid resource key");
+
     // Verify it works before quarantine
-    let g = mgr.acquire("tenant-db", &ctx_a).await.unwrap();
+    let g = mgr.acquire(&resource_key, &ctx_a).await.unwrap();
     drop(g);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
@@ -388,12 +397,12 @@ async fn scoped_resource_quarantine_blocks_acquire() {
     );
 
     // Acquire should fail
-    let err = mgr.acquire("tenant-db", &ctx_a).await.unwrap_err();
+    let err = mgr.acquire(&resource_key, &ctx_a).await.unwrap_err();
     assert!(err.to_string().contains("quarantined"));
     assert!(err.is_retryable());
 
     // Release and verify it works again
     mgr.quarantine().release("tenant-db");
-    let g2 = mgr.acquire("tenant-db", &ctx_a).await.unwrap();
+    let g2 = mgr.acquire(&resource_key, &ctx_a).await.unwrap();
     assert!(g2.as_any().downcast_ref::<String>().is_some());
 }

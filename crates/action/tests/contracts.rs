@@ -32,7 +32,11 @@ fn flow_kind_serialization_contract() {
     ];
     for (value, expected) in cases {
         let json = serde_json::to_string(&value).unwrap();
-        assert_eq!(json, expected, "FlowKind serialization changed for {:?}", value);
+        assert_eq!(
+            json, expected,
+            "FlowKind serialization changed for {:?}",
+            value
+        );
     }
 }
 

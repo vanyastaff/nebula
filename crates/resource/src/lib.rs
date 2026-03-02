@@ -106,7 +106,7 @@ pub use quarantine::{
 };
 
 /// Re-export id and key types from [`nebula_core`] for convenience.
-pub use nebula_core::{ExecutionId, PluginKey, PluginKeyError, ResourceId, WorkflowId};
+pub use nebula_core::{ExecutionId, PluginKey, ResourceId, ResourceKey, WorkflowId};
 
 /// Convenience re-exports of the most commonly used types.
 ///
@@ -132,5 +132,5 @@ pub mod prelude {
     pub use crate::manager::{Manager, ManagerBuilder, ResourceHandle, TypedResourceGuard};
     pub use crate::pool::{Pool, PoolConfig, PoolStats, PoolStrategy};
 
-    pub use nebula_core::{ExecutionId, ResourceId, WorkflowId};
+    pub use nebula_core::{ExecutionId, ResourceId, ResourceKey, WorkflowId};
 }

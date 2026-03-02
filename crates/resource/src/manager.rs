@@ -20,6 +20,7 @@ use crate::pool::{Pool, PoolConfig};
 use crate::quarantine::{QuarantineConfig, QuarantineManager, QuarantineReason};
 use crate::resource::Resource;
 use crate::scope::{Scope, Strategy};
+use nebula_core::ResourceKey;
 
 // ---------------------------------------------------------------------------
 // Re-exports — keep the public API surface on `crate::manager::*`
@@ -187,8 +188,10 @@ impl ManagerBuilder {
                     },
                 );
                 if newly_quarantined {
+                    let key = nebula_core::ResourceKey::try_from(resource_id)
+                        .expect("resource id must be a valid ResourceKey");
                     bus.emit(ResourceEvent::Quarantined {
-                        resource_id: resource_id.to_string(),
+                        resource_key: key,
                         reason: format!("health check failed ({consecutive_failures} consecutive)"),
                     });
                 }
@@ -301,12 +304,13 @@ impl Manager {
     where
         R::Instance: Any,
     {
-        let id = resource.id().to_string();
         let meta = resource.metadata();
+        let resource_key = meta.key.clone();
+        let id = resource_key.as_ref().to_string();
         let new_deps: Vec<String> = resource
             .dependencies()
             .into_iter()
-            .map(Into::into)
+            .map(|k| k.as_ref().to_string())
             .collect();
 
         // Create pool first -- if this fails, nothing is modified.
@@ -340,17 +344,20 @@ impl Manager {
                 scope: scope.clone(),
             },
         );
+
+        // `ResourceMetadata` already carries the canonical `ResourceKey`,
+        // so we use it as the single source of truth for events and autoscaling.
         self.metadata.insert(id.clone(), meta);
 
         self.event_bus.emit(ResourceEvent::Created {
-            resource_id: id.clone(),
+            resource_key: resource_key.clone(),
             scope,
         });
 
         // Apply default auto-scale policy if configured.
         if let Some(policy) = &self.default_autoscale_policy {
             // Errors are non-fatal — the pool is registered regardless.
-            let _ = self.enable_autoscaling(&id, policy.clone());
+            let _ = self.enable_autoscaling(&resource_key, policy.clone());
         }
 
         tracing::debug!(resource_id = %id, "Registered resource");
@@ -358,7 +365,7 @@ impl Manager {
         Ok(())
     }
 
-    /// Acquire a resource instance by resource ID.
+    /// Acquire a resource instance by resource key.
     ///
     /// Returns an [`AnyGuard`] that provides `&dyn Any` access to the
     /// instance. When the guard is dropped, the instance is returned to
@@ -366,34 +373,35 @@ impl Manager {
     ///
     /// Checks quarantine status, health state, and scope compatibility
     /// before delegating to the pool.
-    pub async fn acquire(&self, resource_id: &str, ctx: &Context) -> Result<AnyGuard> {
+    pub async fn acquire(&self, resource_key: &ResourceKey, ctx: &Context) -> Result<AnyGuard> {
         let _acquire_start = Instant::now();
+        let id = resource_key.as_ref();
         // Check quarantine -- quarantined resources cannot be acquired.
-        if self.quarantine.is_quarantined(resource_id) {
+        if self.quarantine.is_quarantined(id) {
             return Err(Error::Unavailable {
-                resource_id: resource_id.to_string(),
+                resource_key: resource_key.clone(),
                 reason: "Resource is quarantined".to_string(),
                 retryable: true,
             });
         }
 
         // Check health state -- block on Unhealthy, warn on Degraded.
-        if let Some(state) = self.health_states.get(resource_id) {
+        if let Some(state) = self.health_states.get(id) {
             match state.value() {
                 HealthState::Unhealthy { recoverable, .. } => {
                     self.event_bus.emit(ResourceEvent::Error {
-                        resource_id: resource_id.to_string(),
+                        resource_key: resource_key.clone(),
                         error: "Resource is unhealthy".to_string(),
                     });
                     return Err(Error::Unavailable {
-                        resource_id: resource_id.to_string(),
+                        resource_key: resource_key.clone(),
                         reason: "Resource is unhealthy".to_string(),
                         retryable: *recoverable,
                     });
                 }
                 HealthState::Degraded { reason, .. } => {
                     tracing::warn!(
-                        resource_id,
+                        resource_id = %id,
                         reason = reason.as_str(),
                         "Acquiring degraded resource"
                     );
@@ -405,16 +413,16 @@ impl Manager {
 
         // Clone the Arc and scope to release the DashMap shard lock before
         // awaiting the potentially long-running acquire_any().
-        let (pool, resource_scope) = match self.pools.get(resource_id) {
+        let (pool, resource_scope) = match self.pools.get(id) {
             Some(entry) => (Arc::clone(&entry.pool), entry.scope.clone()),
             None => {
                 let err = Error::Unavailable {
-                    resource_id: resource_id.to_string(),
+                    resource_key: resource_key.clone(),
                     reason: "Resource not registered".to_string(),
                     retryable: false,
                 };
                 self.event_bus.emit(ResourceEvent::Error {
-                    resource_id: resource_id.to_string(),
+                    resource_key: resource_key.clone(),
                     error: err.to_string(),
                 });
                 return Err(err);
@@ -425,7 +433,7 @@ impl Manager {
         // under the Hierarchical strategy.
         if !Strategy::Hierarchical.is_compatible(&resource_scope, &ctx.scope) {
             return Err(Error::Unavailable {
-                resource_id: resource_id.to_string(),
+                resource_key: resource_key.clone(),
                 reason: format!(
                     "Scope mismatch: resource scope {} does not contain requested scope {}",
                     resource_scope, ctx.scope
@@ -435,31 +443,29 @@ impl Manager {
         }
 
         // Run before-hooks; if any hook cancels, abort the acquire.
-        self.hooks
-            .run_before(&HookEvent::Acquire, resource_id, ctx)
-            .await?;
+        self.hooks.run_before(&HookEvent::Acquire, id, ctx).await?;
 
         match pool.acquire_any(ctx).await {
             Ok((guard, wait_duration)) => {
                 tracing::debug!(
-                    resource_id,
+                    resource_id = %id,
                     wait_ms = wait_duration.as_millis() as u64,
                     "Acquired resource instance"
                 );
 
                 self.event_bus.emit(ResourceEvent::Acquired {
-                    resource_id: resource_id.to_string(),
+                    resource_key: resource_key.clone(),
                     wait_duration,
                 });
 
                 // Run after-hooks for Acquire; errors are logged but never propagated.
                 self.hooks
-                    .run_after(&HookEvent::Acquire, resource_id, ctx, true)
+                    .run_after(&HookEvent::Acquire, id, ctx, true)
                     .await;
 
                 // Run Release hooks when the guard is dropped.
                 // We capture what we need and fire hooks in the drop path.
-                let release_resource_id = resource_id.to_string();
+                let release_resource_id = id.to_string();
                 let release_hooks = self.hooks_ref();
                 let release_bus = Arc::clone(&self.event_bus);
                 let release_ctx = ctx.clone();
@@ -476,11 +482,11 @@ impl Manager {
             Err(err) => {
                 // Run after-hooks for the failure path too.
                 self.hooks
-                    .run_after(&HookEvent::Acquire, resource_id, ctx, false)
+                    .run_after(&HookEvent::Acquire, id, ctx, false)
                     .await;
 
                 self.event_bus.emit(ResourceEvent::Error {
-                    resource_id: resource_id.to_string(),
+                    resource_key: resource_key.clone(),
                     error: err.to_string(),
                 });
                 Err(err)
@@ -507,7 +513,8 @@ impl Manager {
     where
         R::Instance: Any,
     {
-        let guard = self.acquire(resource.id(), ctx).await?;
+        let key = resource.key();
+        let guard = self.acquire(&key, ctx).await?;
         Ok(TypedResourceGuard {
             guard,
             _marker: std::marker::PhantomData,
@@ -547,8 +554,8 @@ impl Manager {
     ///
     /// This is a lightweight check that does not acquire from the pool.
     #[must_use]
-    pub fn is_registered(&self, resource_id: &str) -> bool {
-        self.pools.contains_key(resource_id)
+    pub fn is_registered(&self, resource_key: &ResourceKey) -> bool {
+        self.pools.contains_key(resource_key.as_ref())
     }
 
     /// Deregister a resource, shutting down its pool, cancelling its
@@ -556,25 +563,26 @@ impl Manager {
     /// quarantine, and removing all dependency edges.
     ///
     /// Returns `true` if the resource was registered, `false` otherwise.
-    pub async fn deregister(&self, resource_id: &str) -> bool {
+    pub async fn deregister(&self, resource_key: &ResourceKey) -> bool {
+        let id = resource_key.as_ref();
         // Cancel auto-scaler (if any) — must happen before pool shutdown
         // so the scaler doesn't keep the Arc<dyn AnyPool> alive.
-        if let Some((_, handle)) = self.auto_scalers.remove(resource_id) {
+        if let Some((_, handle)) = self.auto_scalers.remove(id) {
             handle.abort();
         }
 
         // Stop all health monitoring tasks for this resource.
-        self.health_checker.stop_monitoring_resource(resource_id);
+        self.health_checker.stop_monitoring_resource(id);
 
-        let removed = self.pools.remove(resource_id);
-        self.deps.write().remove_all_for(resource_id);
-        self.metadata.remove(resource_id);
-        self.health_states.remove(resource_id);
+        let removed = self.pools.remove(id);
+        self.deps.write().remove_all_for(id);
+        self.metadata.remove(id);
+        self.health_states.remove(id);
 
         // Release from quarantine (if quarantined) and emit event.
-        if let Some(entry) = self.quarantine.release(resource_id) {
+        if let Some(entry) = self.quarantine.release(id) {
             self.event_bus.emit(ResourceEvent::QuarantineReleased {
-                resource_id: resource_id.to_string(),
+                resource_key: resource_key.clone(),
                 recovery_attempts: entry.recovery_attempts,
             });
         }
@@ -582,7 +590,7 @@ impl Manager {
         if let Some((_, entry)) = removed {
             let _ = entry.pool.shutdown().await;
             self.event_bus.emit(ResourceEvent::CleanedUp {
-                resource_id: resource_id.to_string(),
+                resource_key: resource_key.clone(),
                 reason: crate::events::CleanupReason::Evicted,
             });
             true
@@ -623,8 +631,10 @@ impl Manager {
         for id in &ordered {
             if let Some((_, entry)) = self.pools.remove(id) {
                 let _ = entry.pool.shutdown().await;
+                let key = nebula_core::ResourceKey::try_from(id.as_str())
+                    .expect("resource id must be a valid ResourceKey");
                 self.event_bus.emit(ResourceEvent::CleanedUp {
-                    resource_id: id.clone(),
+                    resource_key: key,
                     reason: crate::events::CleanupReason::Shutdown,
                 });
             }
@@ -692,8 +702,10 @@ impl Manager {
 
     /// Get the current health state of a resource, if set.
     #[must_use]
-    pub fn get_health_state(&self, resource_id: &str) -> Option<HealthState> {
-        self.health_states.get(resource_id).map(|r| r.clone())
+    pub fn get_health_state(&self, resource_key: &ResourceKey) -> Option<HealthState> {
+        self.health_states
+            .get(resource_key.as_ref())
+            .map(|r| r.clone())
     }
 
     /// Set a resource's health state and propagate the effect to dependents.
@@ -702,20 +714,20 @@ impl Manager {
     /// marked `Degraded` (with reason referencing the unhealthy dependency).
     /// When a resource becomes `Healthy`, any dependent whose degraded
     /// reason mentions this resource has its degraded state cleared.
-    pub fn set_health_state(&self, resource_id: &str, state: HealthState) {
-        self.propagate_health(resource_id, state);
+    pub fn set_health_state(&self, resource_key: &ResourceKey, state: HealthState) {
+        self.propagate_health(resource_key, state);
     }
 
     /// Internal implementation of health state propagation.
-    fn propagate_health(&self, resource_id: &str, state: HealthState) {
-        self.health_states
-            .insert(resource_id.to_string(), state.clone());
+    fn propagate_health(&self, resource_key: &ResourceKey, state: HealthState) {
+        let id = resource_key.as_ref();
+        self.health_states.insert(id.to_string(), state.clone());
 
-        let dependents = self.deps.read().get_dependents(resource_id);
+        let dependents = self.deps.read().get_dependents(id);
 
         match &state {
             HealthState::Unhealthy { .. } => {
-                let reason = format!("Dependency {resource_id} is unhealthy");
+                let reason = format!("Dependency {id} is unhealthy");
                 for dep in &dependents {
                     // Only degrade if the dependent is not already unhealthy
                     // (unhealthy is worse than degraded, don't overwrite it).
@@ -740,7 +752,7 @@ impl Manager {
                 for dep in &dependents {
                     let should_clear = self.health_states.get(dep).is_some_and(|s| {
                         matches!(s.value(), HealthState::Degraded { reason, .. }
-                            if reason.contains(resource_id))
+                            if reason.contains(id))
                     });
 
                     if should_clear {
@@ -765,22 +777,24 @@ impl Manager {
     ///
     /// Returns `Ok(())` if the scaler was started, or an error if the
     /// resource is not registered or the policy is invalid.
-    pub fn enable_autoscaling(&self, resource_id: &str, policy: AutoScalePolicy) -> Result<()> {
+    pub fn enable_autoscaling(
+        &self,
+        resource_key: &ResourceKey,
+        policy: AutoScalePolicy,
+    ) -> Result<()> {
         policy.validate()?;
+        let id = resource_key.as_ref();
 
-        let pool_entry = self
-            .pools
-            .get(resource_id)
-            .ok_or_else(|| Error::Unavailable {
-                resource_id: resource_id.to_string(),
-                reason: "Resource not registered".to_string(),
-                retryable: false,
-            })?;
+        let pool_entry = self.pools.get(id).ok_or_else(|| Error::Unavailable {
+            resource_key: resource_key.clone(),
+            reason: "Resource not registered".to_string(),
+            retryable: false,
+        })?;
         let pool = Arc::clone(&pool_entry.pool);
         drop(pool_entry);
 
         // Cancel any existing scaler for this resource.
-        if let Some((_, old_handle)) = self.auto_scalers.remove(resource_id) {
+        if let Some((_, old_handle)) = self.auto_scalers.remove(id) {
             old_handle.abort();
         }
 
@@ -803,16 +817,17 @@ impl Manager {
             },
         );
 
-        self.auto_scalers.insert(resource_id.to_string(), handle);
+        self.auto_scalers.insert(id.to_string(), handle);
 
-        tracing::info!(resource_id, "Auto-scaling enabled");
+        tracing::info!(resource_id = %id, "Auto-scaling enabled");
 
         Ok(())
     }
 
     /// Disable auto-scaling for a resource.
-    pub fn disable_autoscaling(&self, resource_id: &str) {
-        if let Some((_, handle)) = self.auto_scalers.remove(resource_id) {
+    pub fn disable_autoscaling(&self, resource_key: &ResourceKey) {
+        let id = resource_key.as_ref();
+        if let Some((_, handle)) = self.auto_scalers.remove(id) {
             handle.abort();
         }
     }
@@ -833,8 +848,10 @@ impl Manager {
 
         for (id, pool) in pools {
             pool.shutdown().await?;
+            let key = nebula_core::ResourceKey::try_from(id.as_str())
+                .expect("resource id must be a valid ResourceKey");
             self.event_bus.emit(ResourceEvent::CleanedUp {
-                resource_id: id,
+                resource_key: key,
                 reason: crate::events::CleanupReason::Shutdown,
             });
         }
@@ -876,8 +893,10 @@ impl Manager {
             if let Some((_, entry)) = self.pools.remove(id) {
                 let _ = tokio::time::timeout(config.cleanup_timeout, entry.pool.shutdown()).await;
                 self.metadata.remove(id);
+                let key = nebula_core::ResourceKey::try_from(id.as_str())
+                    .expect("resource id must be a valid ResourceKey");
                 self.event_bus.emit(ResourceEvent::CleanedUp {
-                    resource_id: id.clone(),
+                    resource_key: key,
                     reason: crate::events::CleanupReason::Shutdown,
                 });
             }
@@ -913,7 +932,8 @@ impl Manager {
     where
         R::Instance: Any,
     {
-        let id = resource.id().to_string();
+        let key = resource.key();
+        let id = key.as_ref().to_string();
 
         // Build the new pool before touching the registry.
         let new_pool = Pool::with_hooks(
@@ -942,8 +962,10 @@ impl Manager {
             },
         );
 
+        let key = nebula_core::ResourceKey::try_from(id.as_str())
+            .expect("resource id must be a valid ResourceKey");
         self.event_bus.emit(ResourceEvent::ConfigReloaded {
-            resource_id: id,
+            resource_key: key,
             scope: existing_scope,
         });
 
@@ -989,9 +1011,11 @@ mod tests {
     impl Resource for TestResource {
         type Config = TestConfig;
         type Instance = String;
+        type Deps = ();
 
-        fn id(&self) -> &str {
-            "test"
+        fn metadata(&self) -> ResourceMetadata {
+            let key = ResourceKey::try_from("test").expect("valid resource key");
+            ResourceMetadata::from_key(key)
         }
 
         async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -1016,7 +1040,8 @@ mod tests {
         mgr.register(TestResource, config, PoolConfig::default())
             .unwrap();
 
-        let guard = mgr.acquire("test", &ctx()).await.unwrap();
+        let key = ResourceKey::try_from("test").expect("valid resource key");
+        let guard = mgr.acquire(&key, &ctx()).await.unwrap();
         let instance = guard
             .as_any()
             .downcast_ref::<String>()
@@ -1027,7 +1052,8 @@ mod tests {
     #[tokio::test]
     async fn acquire_unregistered_fails() {
         let mgr = Manager::new();
-        let result = mgr.acquire("test", &ctx()).await;
+        let key = ResourceKey::try_from("test").expect("valid resource key");
+        let result = mgr.acquire(&key, &ctx()).await;
         assert!(result.is_err());
     }
 
@@ -1054,15 +1080,17 @@ mod tests {
         };
         mgr.register(TestResource, config, pool_config).unwrap();
 
+        let key = ResourceKey::try_from("test").expect("valid resource key");
+
         // Acquire and drop — should return to pool
         {
-            let _guard = mgr.acquire("test", &ctx()).await.unwrap();
+            let _guard = mgr.acquire(&key, &ctx()).await.unwrap();
         }
         // Give the spawn a moment to return the instance
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Should be able to acquire again (pool recycled)
-        let guard = mgr.acquire("test", &ctx()).await.unwrap();
+        let guard = mgr.acquire(&key, &ctx()).await.unwrap();
         let instance = guard
             .as_any()
             .downcast_ref::<String>()
@@ -1099,9 +1127,11 @@ mod tests {
         impl Resource for DepResource {
             type Config = TestConfig;
             type Instance = String;
+            type Deps = ();
 
-            fn id(&self) -> &str {
-                "with-deps"
+            fn metadata(&self) -> ResourceMetadata {
+                let key = ResourceKey::try_from("with-deps").expect("valid resource key");
+                ResourceMetadata::from_key(key)
             }
 
             async fn create(
@@ -1112,8 +1142,11 @@ mod tests {
                 Ok(config.value.clone())
             }
 
-            fn dependencies(&self) -> Vec<&str> {
-                self.deps.clone()
+            fn dependencies(&self) -> Vec<ResourceKey> {
+                self.deps
+                    .iter()
+                    .map(|d| ResourceKey::try_from(*d).expect("valid resource key"))
+                    .collect()
             }
         }
 
@@ -1207,8 +1240,9 @@ mod tests {
             Box<dyn std::future::Future<Output = crate::hooks::HookResult> + Send + 'a>,
         > {
             Box::pin(async {
+                let key = ResourceKey::try_from("test").expect("valid resource key");
                 crate::hooks::HookResult::Cancel(Error::Unavailable {
-                    resource_id: "test".to_string(),
+                    resource_key: key,
                     reason: "blocked by hook".to_string(),
                     retryable: false,
                 })
@@ -1250,7 +1284,8 @@ mod tests {
         )
         .unwrap();
 
-        let _guard = mgr.acquire("test", &ctx()).await.unwrap();
+        let key = ResourceKey::try_from("test").expect("valid resource key");
+        let _guard = mgr.acquire(&key, &ctx()).await.unwrap();
 
         assert_eq!(hook.before_count.load(Ordering::SeqCst), 1);
         assert_eq!(hook.after_count.load(Ordering::SeqCst), 1);
@@ -1271,7 +1306,8 @@ mod tests {
         )
         .unwrap();
 
-        let result = mgr.acquire("test", &ctx()).await;
+        let key = ResourceKey::try_from("test").expect("valid resource key");
+        let result = mgr.acquire(&key, &ctx()).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -1287,8 +1323,9 @@ mod tests {
     #[test]
     fn set_health_state_stores_state() {
         let mgr = Manager::new();
+        let key = ResourceKey::try_from("db").expect("valid resource key");
         mgr.set_health_state(
-            "db",
+            &key,
             HealthState::Unhealthy {
                 reason: "down".into(),
                 recoverable: true,
@@ -1308,8 +1345,9 @@ mod tests {
         // Set up dependency: "app" depends on "db"
         mgr.deps.write().add_dependency("app", "db").unwrap();
 
+        let key = ResourceKey::try_from("db").expect("valid resource key");
         mgr.set_health_state(
-            "db",
+            &key,
             HealthState::Unhealthy {
                 reason: "connection refused".into(),
                 recoverable: true,
@@ -1333,9 +1371,10 @@ mod tests {
         let mgr = Manager::new();
         mgr.deps.write().add_dependency("app", "db").unwrap();
 
+        let key = ResourceKey::try_from("db").expect("valid resource key");
         // First mark db unhealthy (cascades to app)
         mgr.set_health_state(
-            "db",
+            &key,
             HealthState::Unhealthy {
                 reason: "down".into(),
                 recoverable: true,
@@ -1347,7 +1386,7 @@ mod tests {
         ));
 
         // Now mark db healthy (should clear app)
-        mgr.set_health_state("db", HealthState::Healthy);
+        mgr.set_health_state(&key, HealthState::Healthy);
 
         let app_state = mgr.health_states.get("app").unwrap();
         assert_eq!(
@@ -1367,9 +1406,12 @@ mod tests {
             deps.add_dependency("app", "cache").unwrap();
         }
 
+        let cache_key = ResourceKey::try_from("cache").expect("valid resource key");
+        let db_key = ResourceKey::try_from("db").expect("valid resource key");
+
         // Mark cache unhealthy (degrades app)
         mgr.set_health_state(
-            "cache",
+            &cache_key,
             HealthState::Unhealthy {
                 reason: "evicted".into(),
                 recoverable: true,
@@ -1378,7 +1420,7 @@ mod tests {
 
         // Now mark db healthy -- should NOT clear the degraded state
         // caused by cache
-        mgr.set_health_state("db", HealthState::Healthy);
+        mgr.set_health_state(&db_key, HealthState::Healthy);
 
         let app_state = mgr.health_states.get("app").unwrap();
         assert!(
@@ -1393,9 +1435,12 @@ mod tests {
         let mgr = Manager::new();
         mgr.deps.write().add_dependency("app", "db").unwrap();
 
+        let app_key = ResourceKey::try_from("app").expect("valid resource key");
+        let db_key = ResourceKey::try_from("db").expect("valid resource key");
+
         // Mark app itself as unhealthy (independent of db)
         mgr.set_health_state(
-            "app",
+            &app_key,
             HealthState::Unhealthy {
                 reason: "crashed".into(),
                 recoverable: false,
@@ -1404,7 +1449,7 @@ mod tests {
 
         // Mark db unhealthy -- should NOT overwrite app's Unhealthy with Degraded
         mgr.set_health_state(
-            "db",
+            &db_key,
             HealthState::Unhealthy {
                 reason: "timeout".into(),
                 recoverable: true,
@@ -1433,15 +1478,16 @@ mod tests {
         )
         .unwrap();
 
+        let key = ResourceKey::try_from("test").expect("valid resource key");
         mgr.set_health_state(
-            "test",
+            &key,
             HealthState::Unhealthy {
                 reason: "down".into(),
                 recoverable: true,
             },
         );
 
-        let result = mgr.acquire("test", &ctx()).await;
+        let result = mgr.acquire(&key, &ctx()).await;
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("unhealthy"),
@@ -1462,8 +1508,10 @@ mod tests {
         mgr.register(TestResource, config_a, PoolConfig::default())
             .unwrap();
 
+        let key = ResourceKey::try_from("test").expect("valid resource key");
+
         // Acquire from pool A
-        let guard = mgr.acquire("test", &ctx()).await.unwrap();
+        let guard = mgr.acquire(&key, &ctx()).await.unwrap();
         let inst = guard.as_any().downcast_ref::<String>().expect("downcast");
         assert_eq!(inst, "instance-A");
         drop(guard);
@@ -1475,7 +1523,7 @@ mod tests {
             .unwrap();
 
         // Acquire from pool B
-        let guard = mgr.acquire("test", &ctx()).await.unwrap();
+        let guard = mgr.acquire(&key, &ctx()).await.unwrap();
         let inst = guard.as_any().downcast_ref::<String>().expect("downcast");
         assert_eq!(inst, "instance-B");
     }
@@ -1492,8 +1540,10 @@ mod tests {
         )
         .unwrap();
 
+        let key = ResourceKey::try_from("test").expect("valid resource key");
+
         // Hold a guard from the old pool
-        let old_guard = mgr.acquire("test", &ctx()).await.unwrap();
+        let old_guard = mgr.acquire(&key, &ctx()).await.unwrap();
         let old_inst = old_guard
             .as_any()
             .downcast_ref::<String>()
@@ -1517,7 +1567,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Acquire from new pool
-        let new_guard = mgr.acquire("test", &ctx()).await.unwrap();
+        let new_guard = mgr.acquire(&key, &ctx()).await.unwrap();
         let new_inst = new_guard
             .as_any()
             .downcast_ref::<String>()

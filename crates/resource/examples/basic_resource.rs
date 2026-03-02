@@ -6,8 +6,10 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
+use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -39,9 +41,11 @@ struct InMemoryCache;
 impl Resource for InMemoryCache {
     type Config = CacheConfig;
     type Instance = HashMap<String, String>;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "in-memory-cache"
+    fn metadata(&self) -> ResourceMetadata {
+        let key = ResourceKey::try_from("in-memory-cache").expect("valid resource key");
+        ResourceMetadata::from_key(key)
     }
 
     /// Create a new empty cache.

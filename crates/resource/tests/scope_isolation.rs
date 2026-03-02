@@ -330,9 +330,11 @@ fn cross_type_scopes_are_incompatible() {
 mod manager_scope_tests {
     use std::time::Duration;
 
+    use nebula_core::ResourceKey;
     use nebula_resource::Manager;
     use nebula_resource::context::Context;
     use nebula_resource::error::Result;
+    use nebula_resource::metadata::ResourceMetadata;
     use nebula_resource::pool::PoolConfig;
     use nebula_resource::resource::{Config, Resource};
     use nebula_resource::scope::Scope;
@@ -349,9 +351,10 @@ mod manager_scope_tests {
     impl Resource for TestResource {
         type Config = TestConfig;
         type Instance = String;
+        type Deps = ();
 
-        fn id(&self) -> &str {
-            self.name
+        fn metadata(&self) -> ResourceMetadata {
+            ResourceMetadata::from_key(ResourceKey::try_from(self.name).expect("valid"))
         }
 
         async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -382,7 +385,9 @@ mod manager_scope_tests {
         .unwrap();
 
         let ctx_b = Context::new(Scope::tenant("B"), WorkflowId::new(), ExecutionId::new());
-        let result = mgr.acquire("db", &ctx_b).await;
+
+        let key = nebula_core::ResourceKey::try_from("db").expect("valid resource key");
+        let result = mgr.acquire(&key, &ctx_b).await;
         let err = result.expect_err("cross-tenant acquire should be denied");
         assert!(
             err.to_string().contains("Scope mismatch"),
@@ -403,8 +408,9 @@ mod manager_scope_tests {
         .unwrap();
 
         let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
+        let key = ResourceKey::try_from("db").expect("valid");
         let _guard = mgr
-            .acquire("db", &ctx_a)
+            .acquire(&key, &ctx_a)
             .await
             .expect("same-tenant acquire should succeed");
     }
@@ -421,9 +427,14 @@ mod manager_scope_tests {
         )
         .unwrap();
 
-        let ctx_wf2 = Context::new(Scope::workflow("wf2"), WorkflowId::new(), ExecutionId::new());
+        let ctx_wf2 = Context::new(
+            Scope::workflow("wf2"),
+            WorkflowId::new(),
+            ExecutionId::new(),
+        );
+        let key = ResourceKey::try_from("cache").expect("valid");
         let err = mgr
-            .acquire("cache", &ctx_wf2)
+            .acquire(&key, &ctx_wf2)
             .await
             .expect_err("cross-workflow acquire should be denied");
         assert!(
@@ -445,8 +456,9 @@ mod manager_scope_tests {
 
         // From tenant scope
         let ctx_tenant = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
+        let key = ResourceKey::try_from("global-db").expect("valid");
         let _g1 = mgr
-            .acquire("global-db", &ctx_tenant)
+            .acquire(&key, &ctx_tenant)
             .await
             .expect("global resource should be accessible from tenant scope");
 
@@ -455,9 +467,13 @@ mod manager_scope_tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
 
         // From workflow scope
-        let ctx_wf = Context::new(Scope::workflow("wf1"), WorkflowId::new(), ExecutionId::new());
+        let ctx_wf = Context::new(
+            Scope::workflow("wf1"),
+            WorkflowId::new(),
+            ExecutionId::new(),
+        );
         let _g2 = mgr
-            .acquire("global-db", &ctx_wf)
+            .acquire(&key, &ctx_wf)
             .await
             .expect("global resource should be accessible from workflow scope");
     }
@@ -476,8 +492,9 @@ mod manager_scope_tests {
 
         // Global context is broader than execution scope
         let ctx_global = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
+        let key = ResourceKey::try_from("exec-db").expect("valid");
         let err = mgr
-            .acquire("exec-db", &ctx_global)
+            .acquire(&key, &ctx_global)
             .await
             .expect_err("execution-scoped resource should deny global context");
         assert!(

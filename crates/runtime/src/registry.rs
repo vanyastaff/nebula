@@ -140,10 +140,10 @@ impl Default for ActionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nebula_action::ActionContext;
     use nebula_action::error::ActionError;
     use nebula_action::metadata::ActionMetadata;
     use nebula_action::result::ActionResult;
-    use nebula_action::ActionContext;
 
     /// Minimal test handler that echoes input.
     struct EchoHandler {

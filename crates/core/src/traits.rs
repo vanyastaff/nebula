@@ -158,5 +158,4 @@ mod tests {
         assert_eq!(entity.workflow_id(), Some(&workflow_id));
         assert_eq!(entity.node_id(), Some(&node_id));
     }
-
 }

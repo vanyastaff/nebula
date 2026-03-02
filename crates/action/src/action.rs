@@ -26,6 +26,4 @@ pub trait Action: Send + Sync + 'static {
 
     /// Components required by this action.
     fn components(&self) -> ActionComponents;
-
-    fn build(&self, registry: &impl Registry) -> ActionComponents;
 }

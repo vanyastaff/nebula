@@ -5,8 +5,8 @@
 //! responsibility via tokio::select!).
 
 use nebula_action::{
-    Action, ActionComponents, ActionContext, ActionMetadata, ActionResult, ActionOutput,
-    BreakReason, StatelessAction, StatefulAction, TriggerAction, TriggerContext,
+    Action, ActionComponents, ActionContext, ActionMetadata, ActionOutput, ActionResult,
+    BreakReason, StatefulAction, StatelessAction, TriggerAction, TriggerContext,
 };
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 use tokio_util::sync::CancellationToken;
@@ -18,6 +18,8 @@ struct EchoAction {
 }
 
 impl Action for EchoAction {
+    type Deps = ();
+
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
     }
@@ -34,8 +36,9 @@ impl StatelessAction for EchoAction {
         &self,
         input: Self::Input,
         _ctx: &impl nebula_action::Context,
-    ) -> impl std::future::Future<Output = Result<ActionResult<Self::Output>, nebula_action::ActionError>>
-           + Send {
+    ) -> impl std::future::Future<
+        Output = Result<ActionResult<Self::Output>, nebula_action::ActionError>,
+    > + Send {
         async move { Ok(ActionResult::success(input)) }
     }
 }
@@ -69,6 +72,8 @@ struct CounterAction {
 }
 
 impl Action for CounterAction {
+    type Deps = ();
+
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
     }
@@ -87,8 +92,9 @@ impl StatefulAction for CounterAction {
         _input: Self::Input,
         state: &mut Self::State,
         _ctx: &impl nebula_action::Context,
-    ) -> impl std::future::Future<Output = Result<ActionResult<Self::Output>, nebula_action::ActionError>>
-           + Send {
+    ) -> impl std::future::Future<
+        Output = Result<ActionResult<Self::Output>, nebula_action::ActionError>,
+    > + Send {
         let count = *state;
         *state += 1;
         async move {
@@ -157,6 +163,8 @@ struct NoOpTrigger {
 }
 
 impl Action for NoOpTrigger {
+    type Deps = ();
+
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
     }
@@ -186,11 +194,7 @@ async fn trigger_action_start_stop_succeed() {
     let action = NoOpTrigger {
         meta: ActionMetadata::new("test.noop_trigger", "NoOp Trigger", "Start/stop no-op"),
     };
-    let ctx = TriggerContext::new(
-        WorkflowId::new(),
-        NodeId::new(),
-        CancellationToken::new(),
-    );
+    let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new());
     action.start(&ctx).await.unwrap();
     action.stop(&ctx).await.unwrap();
 }

@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use nebula_core::ResourceKey;
 use nebula_resource::autoscale::AutoScalePolicy;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
@@ -59,9 +60,12 @@ struct SimpleResource;
 impl Resource for SimpleResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "simple"
+    fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
+        nebula_resource::metadata::ResourceMetadata::from_key(
+            ResourceKey::try_from("simple").expect("valid key"),
+        )
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -80,9 +84,12 @@ struct SlowResource {
 impl Resource for SlowResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "slow"
+    fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
+        nebula_resource::metadata::ResourceMetadata::from_key(
+            ResourceKey::try_from("slow").expect("valid key"),
+        )
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -105,9 +112,12 @@ struct ClonableResource;
 impl Resource for ClonableResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "clonable"
+    fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
+        nebula_resource::metadata::ResourceMetadata::from_key(
+            ResourceKey::try_from("clonable").expect("valid key"),
+        )
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -145,16 +155,17 @@ async fn deregister_cancels_auto_scaler() {
         cooldown: Duration::from_millis(100),
         ..Default::default()
     };
+    let key = ResourceKey::try_from("simple").expect("valid resource key");
     manager
-        .enable_autoscaling("simple", policy)
+        .enable_autoscaling(&key, policy)
         .expect("enable autoscaling should succeed");
 
-    assert!(manager.is_registered("simple"));
+    assert!(manager.is_registered(&key));
 
     // Deregister should succeed and cancel the auto-scaler
-    let was_registered = manager.deregister("simple").await;
+    let was_registered = manager.deregister(&key).await;
     assert!(was_registered, "should have been registered");
-    assert!(!manager.is_registered("simple"), "should be gone now");
+    assert!(!manager.is_registered(&key), "should be gone now");
 
     // Give the auto-scaler task time to be cancelled
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -165,7 +176,7 @@ async fn deregister_cancels_auto_scaler() {
         .expect("re-register should succeed");
 
     let guard = manager
-        .acquire("simple", &ctx())
+        .acquire(&key, &ctx())
         .await
         .expect("acquire after re-register");
     drop(guard);
@@ -188,23 +199,25 @@ async fn deregister_releases_quarantine() {
         .register(SimpleResource, TestConfig, pool_config())
         .expect("register");
 
+    let key = ResourceKey::try_from("simple").expect("valid resource key");
+
     // Manually quarantine the resource
     manager.quarantine().quarantine(
-        "simple",
+        key.as_str(),
         QuarantineReason::ManualQuarantine {
             reason: "test".into(),
         },
     );
-    assert!(manager.quarantine().is_quarantined("simple"));
+    assert!(manager.quarantine().is_quarantined(key.as_str()));
 
     // Drain the Created event from registration
     let _ = rx.recv().await;
 
     // Deregister should release quarantine and emit QuarantineReleased
-    let was_registered = manager.deregister("simple").await;
+    let was_registered = manager.deregister(&key).await;
     assert!(was_registered);
     assert!(
-        !manager.quarantine().is_quarantined("simple"),
+        !manager.quarantine().is_quarantined(key.as_str()),
         "quarantine should be released after deregister"
     );
 
@@ -215,9 +228,9 @@ async fn deregister_releases_quarantine() {
     for _ in 0..5 {
         match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
             Ok(Some(nebula_resource::ResourceEvent::QuarantineReleased {
-                resource_id, ..
+                resource_key, ..
             })) => {
-                assert_eq!(resource_id, "simple");
+                assert_eq!(resource_key.as_str(), "simple");
                 found_quarantine_released = true;
                 break;
             }
@@ -251,8 +264,10 @@ async fn deregister_stops_health_monitoring() {
         .register(ClonableResource, TestConfig, pool_config())
         .expect("register");
 
+    let key = ResourceKey::try_from("clonable").expect("valid resource key");
+
     // Start health monitoring
-    manager.start_health_monitoring("clonable", AlwaysHealthy);
+    manager.start_health_monitoring(key.as_str(), AlwaysHealthy);
 
     // Let monitoring run for a couple of ticks (interval = 50ms)
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -265,7 +280,7 @@ async fn deregister_stops_health_monitoring() {
     );
 
     // Deregister — should stop monitoring
-    manager.deregister("clonable").await;
+    manager.deregister(&key).await;
 
     // Give time for cleanup
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -307,12 +322,14 @@ async fn default_autoscale_policy_applied_on_register() {
         .register(SimpleResource, TestConfig, pool_config())
         .expect("register");
 
+    let key = ResourceKey::try_from("simple").expect("valid resource key");
+
     // The auto-scaler should be running in the background.
     // Verify by acquiring a bunch of instances to raise utilization,
     // then checking that idle instances were pre-created.
     let mut guards = Vec::new();
     for _ in 0..4 {
-        let g = manager.acquire("simple", &ctx()).await.expect("acquire");
+        let g = manager.acquire(&key, &ctx()).await.expect("acquire");
         guards.push(g);
     }
 
@@ -325,7 +342,7 @@ async fn default_autoscale_policy_applied_on_register() {
 
     // The test passes if no panics — the auto-scaler was successfully started.
     // Disable autoscaling to confirm it was registered.
-    manager.disable_autoscaling("simple");
+    manager.disable_autoscaling(&key);
 
     manager.shutdown().await.unwrap();
 }
@@ -348,8 +365,10 @@ async fn start_health_monitoring_convenience() {
         .register(ClonableResource, TestConfig, pool_config())
         .expect("register");
 
+    let key = ResourceKey::try_from("clonable").expect("valid resource key");
+
     // Use convenience method
-    manager.start_health_monitoring("clonable", AlwaysHealthy);
+    manager.start_health_monitoring(key.as_str(), AlwaysHealthy);
 
     // Wait for at least one health check cycle (interval = 50ms)
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -553,7 +572,8 @@ async fn stop_monitoring_resource_cancels_all() {
 async fn deregister_nonexistent_returns_false() {
     let manager = Manager::new();
 
-    let was_registered = manager.deregister("nonexistent").await;
+    let key = ResourceKey::try_from("nonexistent").expect("valid resource key");
+    let was_registered = manager.deregister(&key).await;
     assert!(!was_registered);
 
     manager.shutdown().await.unwrap();
@@ -571,27 +591,29 @@ async fn deregister_with_active_autoscaler_no_panic() {
         .register(SimpleResource, TestConfig, pool_config())
         .expect("register");
 
+    let key = ResourceKey::try_from("simple").expect("valid resource key");
+
     let policy = AutoScalePolicy {
         evaluation_window: Duration::from_millis(20),
         cooldown: Duration::from_millis(50),
         ..Default::default()
     };
     manager
-        .enable_autoscaling("simple", policy)
+        .enable_autoscaling(&key, policy)
         .expect("enable autoscaling");
 
     // Let the scaler run a few cycles
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Deregister while scaler is active
-    let was_registered = manager.deregister("simple").await;
+    let was_registered = manager.deregister(&key).await;
     assert!(was_registered);
 
     // Give time for abort to propagate
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Manager should still be usable
-    assert!(!manager.is_registered("simple"));
+    assert!(!manager.is_registered(&key));
 
     manager.shutdown().await.unwrap();
 }
@@ -609,19 +631,21 @@ async fn re_register_after_deregister_with_full_cleanup() {
         .register(SimpleResource, TestConfig, pool_config())
         .expect("register");
 
+    let key = ResourceKey::try_from("simple").expect("valid resource key");
+
     let policy = AutoScalePolicy {
         evaluation_window: Duration::from_millis(50),
         cooldown: Duration::from_millis(100),
         ..Default::default()
     };
     manager
-        .enable_autoscaling("simple", policy)
+        .enable_autoscaling(&key, policy)
         .expect("enable autoscaling");
 
-    manager.start_health_monitoring("simple", AlwaysHealthy);
+    manager.start_health_monitoring(key.as_str(), AlwaysHealthy);
 
     manager.quarantine().quarantine(
-        "simple",
+        key.as_str(),
         QuarantineReason::ManualQuarantine {
             reason: "test".into(),
         },
@@ -630,12 +654,12 @@ async fn re_register_after_deregister_with_full_cleanup() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Deregister should clean everything up
-    manager.deregister("simple").await;
+    manager.deregister(&key).await;
 
     // Verify all state is clean
-    assert!(!manager.is_registered("simple"));
-    assert!(!manager.quarantine().is_quarantined("simple"));
-    assert!(manager.get_health_state("simple").is_none());
+    assert!(!manager.is_registered(&key));
+    assert!(!manager.quarantine().is_quarantined(key.as_str()));
+    assert!(manager.get_health_state(&key).is_none());
 
     // Re-register and use
     manager
@@ -643,7 +667,7 @@ async fn re_register_after_deregister_with_full_cleanup() {
         .expect("re-register should succeed");
 
     let guard = manager
-        .acquire("simple", &ctx())
+        .acquire(&key, &ctx())
         .await
         .expect("acquire after re-register should work");
     drop(guard);
@@ -744,8 +768,10 @@ async fn default_autoscale_plus_hooks_work_together() {
         .register(SimpleResource, TestConfig, pool_config())
         .expect("register");
 
+    let key = ResourceKey::try_from("simple").expect("valid resource key");
+
     // Acquire
-    let guard = manager.acquire("simple", &ctx()).await.expect("acquire");
+    let guard = manager.acquire(&key, &ctx()).await.expect("acquire");
     assert!(
         hook.count() >= 1,
         "Create hook should fire on first acquire"

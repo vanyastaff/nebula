@@ -11,8 +11,10 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
+use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -53,16 +55,17 @@ impl FailThenSucceedResource {
 impl Resource for FailThenSucceedResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "fail-then-succeed"
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(ResourceKey::try_from("fail-then-succeed").expect("valid"))
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
         let n = self.call_counter.fetch_add(1, Ordering::SeqCst);
         if n < self.fail_count {
             return Err(Error::Initialization {
-                resource_id: "fail-then-succeed".to_string(),
+                resource_key: ResourceKey::try_from("fail-then-succeed").expect("valid"),
                 reason: format!("intentional failure on call {n}"),
                 source: None,
             });
@@ -98,9 +101,10 @@ impl ControllableResource {
 impl Resource for ControllableResource {
     type Config = TestConfig;
     type Instance = String;
+    type Deps = ();
 
-    fn id(&self) -> &str {
-        "controllable"
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(ResourceKey::try_from("controllable").expect("valid"))
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -108,7 +112,7 @@ impl Resource for ControllableResource {
         if remaining > 0 {
             self.remaining_failures.fetch_sub(1, Ordering::SeqCst);
             return Err(Error::Initialization {
-                resource_id: "controllable".to_string(),
+                resource_key: ResourceKey::try_from("controllable").expect("valid"),
                 reason: "induced failure".to_string(),
                 source: None,
             });
@@ -348,9 +352,10 @@ async fn controllable_resource_create_failure_no_permit_leak() {
     impl Resource for ArcResource {
         type Config = TestConfig;
         type Instance = String;
+        type Deps = ();
 
-        fn id(&self) -> &str {
-            self.inner.id()
+        fn metadata(&self) -> ResourceMetadata {
+            self.inner.metadata()
         }
 
         async fn create(&self, config: &TestConfig, ctx: &Context) -> Result<String> {

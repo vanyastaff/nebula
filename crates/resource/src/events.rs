@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::health::HealthState;
 use crate::scope::Scope;
+use nebula_core::ResourceKey;
 
 pub use nebula_eventbus::{BackPressurePolicy, EventBusStats, EventSubscriber};
 
@@ -75,35 +76,35 @@ impl EventBus {
 
 /// Events emitted during resource lifecycle operations.
 ///
-/// All variants carry a `resource_id` identifying the resource that
+/// All variants carry a [`ResourceKey`] identifying the resource type that
 /// triggered the event. Subscribers receive cloned copies via [`EventBus::subscribe`].
 #[derive(Debug, Clone)]
 pub enum ResourceEvent {
     /// A new resource was registered with the manager.
     Created {
-        /// Resource identifier.
-        resource_id: String,
+        /// Resource key.
+        resource_key: ResourceKey,
         /// Scope (e.g. global, workflow).
         scope: Scope,
     },
     /// A resource instance was successfully acquired from the pool.
     Acquired {
-        /// Resource identifier.
-        resource_id: String,
+        /// Resource key.
+        resource_key: ResourceKey,
         /// Time spent waiting for the instance.
         wait_duration: Duration,
     },
     /// A resource instance was released back to the pool.
     Released {
-        /// Resource identifier.
-        resource_id: String,
+        /// Resource key.
+        resource_key: ResourceKey,
         /// Time the instance was in use.
         usage_duration: Duration,
     },
     /// The health state of a resource changed.
     HealthChanged {
-        /// Resource identifier.
-        resource_id: String,
+        /// Resource key.
+        resource_key: ResourceKey,
         /// Previous health state.
         from: HealthState,
         /// New health state.
@@ -111,43 +112,43 @@ pub enum ResourceEvent {
     },
     /// The pool is exhausted and a caller is waiting or was rejected.
     PoolExhausted {
-        /// Resource identifier.
-        resource_id: String,
+        /// Resource key.
+        resource_key: ResourceKey,
         /// Number of waiters (or 0 if rejected).
         waiters: usize,
     },
     /// A resource instance was cleaned up (permanently removed).
     CleanedUp {
-        /// Resource identifier.
-        resource_id: String,
+        /// Resource key.
+        resource_key: ResourceKey,
         /// Reason for cleanup.
         reason: CleanupReason,
     },
     /// A resource was placed in quarantine.
     Quarantined {
-        /// Resource identifier.
-        resource_id: String,
+        /// Resource key.
+        resource_key: ResourceKey,
         /// Reason for quarantine.
         reason: String,
     },
     /// A resource was released from quarantine.
     QuarantineReleased {
-        /// Resource identifier.
-        resource_id: String,
+        /// Resource key.
+        resource_key: ResourceKey,
         /// Number of recovery attempts before release.
         recovery_attempts: u32,
     },
     /// A resource's configuration was reloaded (hot-reload).
     ConfigReloaded {
-        /// Resource identifier.
-        resource_id: String,
+        /// Resource key.
+        resource_key: ResourceKey,
         /// Scope after reload.
         scope: Scope,
     },
     /// An error occurred during a resource operation.
     Error {
-        /// Resource identifier.
-        resource_id: String,
+        /// Resource key.
+        resource_key: ResourceKey,
         /// Error message.
         error: String,
     },
@@ -181,6 +182,7 @@ pub enum CleanupReason {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::convert::TryFrom;
 
     #[test]
     fn default_creates_bus_with_1024_buffer() {
@@ -192,8 +194,9 @@ mod tests {
     #[test]
     fn emit_without_subscribers_does_not_panic() {
         let bus = EventBus::new(16);
+        let key = ResourceKey::try_from("test").expect("valid resource key");
         bus.emit(ResourceEvent::Created {
-            resource_id: "test".to_string(),
+            resource_key: key,
             scope: Scope::Global,
         });
         let stats = bus.stats();
@@ -205,14 +208,17 @@ mod tests {
         let bus = EventBus::new(16);
         let mut sub = bus.subscribe();
 
+        let key = ResourceKey::try_from("db").expect("valid resource key");
         bus.emit(ResourceEvent::Created {
-            resource_id: "db".to_string(),
+            resource_key: key.clone(),
             scope: Scope::Global,
         });
 
         let event = sub.recv().await.expect("should receive event");
         match event {
-            ResourceEvent::Created { resource_id, .. } => assert_eq!(resource_id, "db"),
+            ResourceEvent::Created { resource_key, .. } => {
+                assert_eq!(resource_key, key);
+            }
             other => panic!("unexpected event: {other:?}"),
         }
 
@@ -226,8 +232,9 @@ mod tests {
         let bus = EventBus::new(16);
         let mut sub = bus.subscribe();
 
+        let key = ResourceKey::try_from("db").expect("valid resource key");
         bus.emit(ResourceEvent::ConfigReloaded {
-            resource_id: "db".to_string(),
+            resource_key: key,
             scope: Scope::Global,
         });
 
@@ -241,8 +248,9 @@ mod tests {
         let mut sub1 = bus.subscribe();
         let mut sub2 = bus.subscribe();
 
+        let key = ResourceKey::try_from("redis").expect("valid resource key");
         bus.emit(ResourceEvent::Error {
-            resource_id: "redis".to_string(),
+            resource_key: key,
             error: "connection refused".to_string(),
         });
 
@@ -256,8 +264,9 @@ mod tests {
     #[test]
     fn drop_newest_policy_drops_without_subscribers() {
         let bus = EventBus::with_policy(4, BackPressurePolicy::DropNewest);
+        let key = ResourceKey::try_from("x").expect("valid resource key");
         bus.emit(ResourceEvent::Created {
-            resource_id: "x".into(),
+            resource_key: key,
             scope: Scope::Global,
         });
         let stats = bus.stats();
@@ -270,8 +279,9 @@ mod tests {
         let bus = EventBus::with_policy(4, BackPressurePolicy::DropNewest);
         let mut sub = bus.subscribe();
 
+        let key = ResourceKey::try_from("x").expect("valid resource key");
         bus.emit(ResourceEvent::Created {
-            resource_id: "x".into(),
+            resource_key: key,
             scope: Scope::Global,
         });
 
@@ -293,8 +303,9 @@ mod tests {
         );
         let mut sub = bus.subscribe();
 
+        let key = ResourceKey::try_from("y").expect("valid resource key");
         bus.emit_async(ResourceEvent::Created {
-            resource_id: "y".into(),
+            resource_key: key,
             scope: Scope::Global,
         })
         .await;
@@ -312,8 +323,9 @@ mod tests {
             },
         );
 
+        let key = ResourceKey::try_from("z").expect("valid resource key");
         bus.emit_async(ResourceEvent::Created {
-            resource_id: "z".into(),
+            resource_key: key,
             scope: Scope::Global,
         })
         .await;

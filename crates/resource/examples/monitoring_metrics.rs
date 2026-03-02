@@ -8,6 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use nebula_core::ResourceKey;
 use nebula_resource::events::{EventBus, ResourceEvent};
 use nebula_resource::manager::ManagerBuilder;
 use nebula_resource::pool::PoolConfig;
@@ -34,14 +35,12 @@ struct DemoResource;
 impl Resource for DemoResource {
     type Config = DemoConfig;
     type Instance = String;
-
-    fn id(&self) -> &str {
-        "demo-metric"
-    }
+    type Deps = ();
 
     fn metadata(&self) -> nebula_resource::ResourceMetadata {
+        let key = ResourceKey::try_from("demo-metric").expect("valid resource key");
         nebula_resource::ResourceMetadata::new(
-            "demo-metric",
+            key,
             "Demo Metric Resource",
             "Example resource for monitoring metrics output",
         )
@@ -78,46 +77,56 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut rx = event_bus_clone.subscribe();
         while let Some(ev) = rx.recv().await {
             match &ev {
-                ResourceEvent::Created { resource_id, scope } => {
-                    println!("  [event] Created resource_id={resource_id} scope={scope:?}");
+                ResourceEvent::Created {
+                    resource_key,
+                    scope,
+                } => {
+                    println!("  [event] Created resource_id={resource_key} scope={scope:?}");
                 }
                 ResourceEvent::Acquired {
-                    resource_id,
+                    resource_key,
                     wait_duration,
                 } => {
-                    println!("  [event] Acquired resource_id={resource_id} wait={wait_duration:?}");
+                    println!(
+                        "  [event] Acquired resource_id={resource_key} wait={wait_duration:?}"
+                    );
                 }
                 ResourceEvent::Released {
-                    resource_id,
+                    resource_key,
                     usage_duration,
                 } => {
                     println!(
-                        "  [event] Released resource_id={resource_id} usage_duration={usage_duration:?}"
+                        "  [event] Released resource_id={resource_key} usage_duration={usage_duration:?}"
                     );
                 }
                 ResourceEvent::HealthChanged {
-                    resource_id,
+                    resource_key,
                     from,
                     to,
                 } => {
                     println!(
-                        "  [event] HealthChanged resource_id={resource_id} {from:?} -> {to:?}"
+                        "  [event] HealthChanged resource_id={resource_key} {from:?} -> {to:?}"
                     );
                 }
                 ResourceEvent::PoolExhausted {
-                    resource_id,
+                    resource_key,
                     waiters,
                 } => {
-                    println!("  [event] PoolExhausted resource_id={resource_id} waiters={waiters}");
+                    println!(
+                        "  [event] PoolExhausted resource_id={resource_key} waiters={waiters}"
+                    );
                 }
                 ResourceEvent::Quarantined {
-                    resource_id,
+                    resource_key,
                     reason,
                 } => {
-                    println!("  [event] Quarantined resource_id={resource_id} reason={reason}");
+                    println!("  [event] Quarantined resource_id={resource_key} reason={reason}");
                 }
-                ResourceEvent::ConfigReloaded { resource_id, scope } => {
-                    println!("  [event] ConfigReloaded resource_id={resource_id} scope={scope:?}");
+                ResourceEvent::ConfigReloaded {
+                    resource_key,
+                    scope,
+                } => {
+                    println!("  [event] ConfigReloaded resource_id={resource_key} scope={scope:?}");
                 }
                 other => {
                     println!("  [event] {other:?}");
@@ -147,21 +156,20 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
 
+    let demo_key = ResourceKey::try_from("demo-metric").expect("valid resource key");
+
     // 5. Check health state (should be None initially).
-    println!(
-        "Health state: {:?}",
-        manager.get_health_state("demo-metric")
-    );
+    println!("Health state: {:?}", manager.get_health_state(&demo_key));
     println!(
         "Quarantined: {}",
-        manager.quarantine().is_quarantined("demo-metric")
+        manager.quarantine().is_quarantined(demo_key.as_ref())
     );
-    println!("Registered: {}", manager.is_registered("demo-metric"));
+    println!("Registered: {}", manager.is_registered(&demo_key));
 
     // 6. Acquire two guards.
     println!("\nAcquiring two resources...");
-    let _guard1 = manager.acquire("demo-metric", &ctx).await?;
-    let _guard2 = manager.acquire("demo-metric", &ctx).await?;
+    let _guard1 = manager.acquire(&demo_key, &ctx).await?;
+    let _guard2 = manager.acquire(&demo_key, &ctx).await?;
     // Allow events to propagate
     tokio::time::sleep(Duration::from_millis(20)).await;
 
@@ -178,11 +186,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // 9. Check health and quarantine status again.
     println!(
         "\nHealth state after usage: {:?}",
-        manager.get_health_state("demo-metric")
+        manager.get_health_state(&demo_key)
     );
     println!(
         "Quarantined after usage: {}",
-        manager.quarantine().is_quarantined("demo-metric")
+        manager.quarantine().is_quarantined(demo_key.as_ref())
     );
 
     // 10. Shutdown.

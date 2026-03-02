@@ -1,4 +1,9 @@
-//! Error types for resource management
+//! Error types for resource management.
+//!
+//! All resource-level errors carry a [`nebula_core::ResourceKey`] where
+//! applicable, ensuring a clear distinction between logical keys and
+//! instance identifiers.
+use nebula_core::ResourceKey;
 use thiserror::Error;
 
 /// Result type for resource operations
@@ -54,10 +59,10 @@ pub enum Error {
     },
 
     /// Resource initialization failed
-    #[error("Initialization failed for resource '{resource_id}': {reason}")]
+    #[error("Initialization failed for resource '{resource_key}': {reason}")]
     Initialization {
-        /// The resource identifier
-        resource_id: String,
+        /// The resource key
+        resource_key: ResourceKey,
         /// The failure reason
         reason: String,
         /// The underlying error
@@ -66,10 +71,10 @@ pub enum Error {
     },
 
     /// Resource is not available
-    #[error("Resource '{resource_id}' is unavailable: {reason}")]
+    #[error("Resource '{resource_key}' is unavailable: {reason}")]
     Unavailable {
-        /// The resource identifier
-        resource_id: String,
+        /// The resource key
+        resource_key: ResourceKey,
         /// The unavailability reason
         reason: String,
         /// Whether the resource might become available later
@@ -77,10 +82,10 @@ pub enum Error {
     },
 
     /// Health check failed
-    #[error("Health check failed for resource '{resource_id}': {reason}")]
+    #[error("Health check failed for resource '{resource_key}': {reason}")]
     HealthCheck {
-        /// The resource identifier
-        resource_id: String,
+        /// The resource key
+        resource_key: ResourceKey,
         /// The health check failure reason
         reason: String,
         /// The health check attempt number
@@ -88,19 +93,19 @@ pub enum Error {
     },
 
     /// Required credential is missing
-    #[error("Missing credential '{credential_id}' for resource '{resource_id}'")]
+    #[error("Missing credential '{credential_id}' for resource '{resource_key}'")]
     MissingCredential {
         /// The credential identifier
         credential_id: String,
-        /// The resource identifier
-        resource_id: String,
+        /// The resource key
+        resource_key: ResourceKey,
     },
 
     /// Resource cleanup failed
-    #[error("Cleanup failed for resource '{resource_id}': {reason}")]
+    #[error("Cleanup failed for resource '{resource_key}': {reason}")]
     Cleanup {
-        /// The resource identifier
-        resource_id: String,
+        /// The resource key
+        resource_key: ResourceKey,
         /// The cleanup failure reason
         reason: String,
         /// The underlying error
@@ -109,10 +114,10 @@ pub enum Error {
     },
 
     /// Operation timeout
-    #[error("Operation timed out after {timeout_ms}ms for resource '{resource_id}'")]
+    #[error("Operation timed out after {timeout_ms}ms for resource '{resource_key}'")]
     Timeout {
-        /// The resource identifier
-        resource_id: String,
+        /// The resource key
+        resource_key: ResourceKey,
         /// The timeout duration in milliseconds
         timeout_ms: u64,
         /// The operation that timed out
@@ -131,19 +136,19 @@ pub enum Error {
     ///
     /// The error is intentionally kept so that consumers can already
     /// pattern-match on it and handle `is_retryable() == true` correctly.
-    #[error("Circuit breaker is open for resource '{resource_id}'")]
+    #[error("Circuit breaker is open for resource '{resource_key}'")]
     CircuitBreakerOpen {
-        /// The resource identifier
-        resource_id: String,
+        /// The resource key
+        resource_key: ResourceKey,
         /// When the circuit breaker will attempt to close
         retry_after_ms: Option<u64>,
     },
 
     /// Resource pool is exhausted
-    #[error("Resource pool exhausted for '{resource_id}': {current_size}/{max_size} in use")]
+    #[error("Resource pool exhausted for '{resource_key}': {current_size}/{max_size} in use")]
     PoolExhausted {
-        /// The resource identifier
-        resource_id: String,
+        /// The resource key
+        resource_key: ResourceKey,
         /// Current pool size
         current_size: usize,
         /// Maximum pool size
@@ -153,10 +158,10 @@ pub enum Error {
     },
 
     /// Resource dependency failure
-    #[error("Dependency '{dependency_id}' failed for resource '{resource_id}': {reason}")]
+    #[error("Dependency '{dependency_id}' failed for resource '{resource_key}': {reason}")]
     DependencyFailure {
-        /// The resource identifier
-        resource_id: String,
+        /// The resource key
+        resource_key: ResourceKey,
         /// The dependency identifier
         dependency_id: String,
         /// The failure reason
@@ -171,10 +176,10 @@ pub enum Error {
     },
 
     /// Resource state error
-    #[error("Invalid state transition for resource '{resource_id}': {from} -> {to}")]
+    #[error("Invalid state transition for resource '{resource_key}': {from} -> {to}")]
     InvalidStateTransition {
-        /// The resource identifier
-        resource_id: String,
+        /// The resource key
+        resource_key: ResourceKey,
         /// The current state
         from: String,
         /// The attempted target state
@@ -189,10 +194,10 @@ pub enum Error {
     },
 
     /// Generic internal error
-    #[error("Internal error in resource '{resource_id}': {message}")]
+    #[error("Internal error in resource '{resource_key}': {message}")]
     Internal {
-        /// The resource identifier
-        resource_id: String,
+        /// The resource key
+        resource_key: ResourceKey,
         /// The error message
         message: String,
         /// The underlying error
@@ -215,7 +220,7 @@ impl Error {
         Self::Validation { violations }
     }
 
-    /// Check if this error is retryable
+    /// Check if this error is retryable.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
@@ -227,24 +232,24 @@ impl Error {
         }
     }
 
-    /// Get the resource ID associated with this error (if any)
+    /// Get the resource key associated with this error (if any).
     #[must_use]
-    pub fn resource_id(&self) -> Option<&str> {
+    pub fn resource_key(&self) -> Option<&ResourceKey> {
         match self {
             Self::Configuration { .. } => None,
             Self::CircularDependency { .. } => None,
             Self::Validation { .. } => None,
-            Self::Initialization { resource_id, .. }
-            | Self::Unavailable { resource_id, .. }
-            | Self::HealthCheck { resource_id, .. }
-            | Self::MissingCredential { resource_id, .. }
-            | Self::Cleanup { resource_id, .. }
-            | Self::Timeout { resource_id, .. }
-            | Self::CircuitBreakerOpen { resource_id, .. }
-            | Self::PoolExhausted { resource_id, .. }
-            | Self::DependencyFailure { resource_id, .. }
-            | Self::InvalidStateTransition { resource_id, .. }
-            | Self::Internal { resource_id, .. } => Some(resource_id),
+            Self::Initialization { resource_key, .. }
+            | Self::Unavailable { resource_key, .. }
+            | Self::HealthCheck { resource_key, .. }
+            | Self::MissingCredential { resource_key, .. }
+            | Self::Cleanup { resource_key, .. }
+            | Self::Timeout { resource_key, .. }
+            | Self::CircuitBreakerOpen { resource_key, .. }
+            | Self::PoolExhausted { resource_key, .. }
+            | Self::DependencyFailure { resource_key, .. }
+            | Self::InvalidStateTransition { resource_key, .. }
+            | Self::Internal { resource_key, .. } => Some(resource_key),
         }
     }
 }
@@ -252,11 +257,12 @@ impl Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::convert::TryFrom;
 
     #[test]
     fn configuration_has_no_resource_id() {
         let err = Error::configuration("bad config");
-        assert!(err.resource_id().is_none());
+        assert!(err.resource_key().is_none());
         assert!(!err.is_retryable());
     }
 
@@ -265,54 +271,58 @@ mod tests {
         let err = Error::CircularDependency {
             cycle: "a -> b -> a".to_string(),
         };
-        assert!(err.resource_id().is_none());
+        assert!(err.resource_key().is_none());
         assert!(!err.is_retryable());
     }
 
     #[test]
     fn pool_exhausted_is_retryable_with_resource_id() {
+        let key = ResourceKey::try_from("postgres").expect("valid resource key");
         let err = Error::PoolExhausted {
-            resource_id: "postgres".to_string(),
+            resource_key: key.clone(),
             current_size: 10,
             max_size: 10,
             waiters: 5,
         };
-        assert_eq!(err.resource_id(), Some("postgres"));
+        assert_eq!(err.resource_key(), Some(&key));
         assert!(err.is_retryable());
     }
 
     #[test]
     fn timeout_is_retryable_with_resource_id() {
+        let key = ResourceKey::try_from("redis").expect("valid resource key");
         let err = Error::Timeout {
-            resource_id: "redis".to_string(),
+            resource_key: key.clone(),
             timeout_ms: 5000,
             operation: "connect".to_string(),
         };
-        assert_eq!(err.resource_id(), Some("redis"));
+        assert_eq!(err.resource_key(), Some(&key));
         assert!(err.is_retryable());
     }
 
     #[test]
     fn circuit_breaker_open_is_retryable() {
+        let key = ResourceKey::try_from("api").expect("valid resource key");
         let err = Error::CircuitBreakerOpen {
-            resource_id: "api".to_string(),
+            resource_key: key.clone(),
             retry_after_ms: Some(30000),
         };
-        assert_eq!(err.resource_id(), Some("api"));
+        assert_eq!(err.resource_key(), Some(&key));
         assert!(err.is_retryable());
     }
 
     #[test]
     fn unavailable_retryable_depends_on_flag() {
+        let key = ResourceKey::try_from("db").expect("valid resource key");
         let retryable = Error::Unavailable {
-            resource_id: "db".to_string(),
+            resource_key: key.clone(),
             reason: "overloaded".to_string(),
             retryable: true,
         };
         assert!(retryable.is_retryable());
 
         let not_retryable = Error::Unavailable {
-            resource_id: "db".to_string(),
+            resource_key: key,
             reason: "not found".to_string(),
             retryable: false,
         };
@@ -322,58 +332,59 @@ mod tests {
     #[test]
     fn all_resource_id_variants_covered() {
         // Variants with resource_id
+        let key = ResourceKey::try_from("r").expect("valid resource key");
         let variants_with_id: Vec<Error> = vec![
             Error::Initialization {
-                resource_id: "r".into(),
+                resource_key: key.clone(),
                 reason: "fail".into(),
                 source: None,
             },
             Error::Unavailable {
-                resource_id: "r".into(),
+                resource_key: key.clone(),
                 reason: "down".into(),
                 retryable: false,
             },
             Error::HealthCheck {
-                resource_id: "r".into(),
+                resource_key: key.clone(),
                 reason: "timeout".into(),
                 attempt: 1,
             },
             Error::MissingCredential {
                 credential_id: "key".into(),
-                resource_id: "r".into(),
+                resource_key: key.clone(),
             },
             Error::Cleanup {
-                resource_id: "r".into(),
+                resource_key: key.clone(),
                 reason: "fail".into(),
                 source: None,
             },
             Error::Timeout {
-                resource_id: "r".into(),
+                resource_key: key.clone(),
                 timeout_ms: 1000,
                 operation: "op".into(),
             },
             Error::CircuitBreakerOpen {
-                resource_id: "r".into(),
+                resource_key: key.clone(),
                 retry_after_ms: None,
             },
             Error::PoolExhausted {
-                resource_id: "r".into(),
+                resource_key: key.clone(),
                 current_size: 1,
                 max_size: 1,
                 waiters: 0,
             },
             Error::DependencyFailure {
-                resource_id: "r".into(),
+                resource_key: key.clone(),
                 dependency_id: "dep".into(),
                 reason: "fail".into(),
             },
             Error::InvalidStateTransition {
-                resource_id: "r".into(),
+                resource_key: key.clone(),
                 from: "Ready".into(),
                 to: "Created".into(),
             },
             Error::Internal {
-                resource_id: "r".into(),
+                resource_key: key,
                 message: "bug".into(),
                 source: None,
             },
@@ -381,9 +392,9 @@ mod tests {
 
         for err in &variants_with_id {
             assert_eq!(
-                err.resource_id(),
+                err.resource_key().map(ResourceKey::as_ref),
                 Some("r"),
-                "expected resource_id for {:?}",
+                "expected resource_key for {:?}",
                 err
             );
         }
@@ -399,8 +410,8 @@ mod tests {
 
         for err in &variants_without_id {
             assert!(
-                err.resource_id().is_none(),
-                "expected no resource_id for {:?}",
+                err.resource_key().is_none(),
+                "expected no resource_key for {:?}",
                 err
             );
         }
@@ -412,7 +423,7 @@ mod tests {
             FieldViolation::new("max_size", "must be > 0", "0"),
             FieldViolation::new("min_size", "must be <= max_size", "5"),
         ]);
-        assert!(err.resource_id().is_none());
+        assert!(err.resource_key().is_none());
         assert!(!err.is_retryable());
     }
 
@@ -452,8 +463,9 @@ mod tests {
         let err = Error::configuration("invalid max_size");
         assert!(err.to_string().contains("invalid max_size"));
 
+        let key = ResourceKey::try_from("pg").expect("valid resource key");
         let err = Error::PoolExhausted {
-            resource_id: "pg".to_string(),
+            resource_key: key,
             current_size: 5,
             max_size: 5,
             waiters: 3,

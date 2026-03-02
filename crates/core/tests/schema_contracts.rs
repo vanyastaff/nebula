@@ -25,7 +25,11 @@ fn status_serialization_contract() {
     ];
     for (value, expected) in cases {
         let json = serde_json::to_string(&value).unwrap();
-        assert_eq!(json, expected, "Status serialization changed for {:?}", value);
+        assert_eq!(
+            json, expected,
+            "Status serialization changed for {:?}",
+            value
+        );
     }
 }
 
@@ -40,7 +44,11 @@ fn priority_serialization_contract() {
     ];
     for (value, expected) in cases {
         let json = serde_json::to_string(&value).unwrap();
-        assert_eq!(json, expected, "Priority serialization changed for {:?}", value);
+        assert_eq!(
+            json, expected,
+            "Priority serialization changed for {:?}",
+            value
+        );
     }
 }
 
@@ -52,7 +60,11 @@ fn project_type_serialization_contract() {
     ];
     for (value, expected) in cases {
         let json = serde_json::to_string(&value).unwrap();
-        assert_eq!(json, expected, "ProjectType serialization changed for {:?}", value);
+        assert_eq!(
+            json, expected,
+            "ProjectType serialization changed for {:?}",
+            value
+        );
     }
 }
 
@@ -66,7 +78,11 @@ fn role_scope_serialization_contract() {
     ];
     for (value, expected) in cases {
         let json = serde_json::to_string(&value).unwrap();
-        assert_eq!(json, expected, "RoleScope serialization changed for {:?}", value);
+        assert_eq!(
+            json, expected,
+            "RoleScope serialization changed for {:?}",
+            value
+        );
     }
 }
 
@@ -111,7 +127,11 @@ fn scope_level_serialization_contract() {
     ];
     for (value, expected) in cases {
         let json = serde_json::to_string(&value).unwrap();
-        assert_eq!(json, *expected, "ScopeLevel serialization changed for {:?}", value);
+        assert_eq!(
+            json, *expected,
+            "ScopeLevel serialization changed for {:?}",
+            value
+        );
     }
 }
 
@@ -132,7 +152,9 @@ fn core_error_code_stability() {
         (CoreError::invalid_input("bad"), "INVALID_INPUT_ERROR"),
         (CoreError::internal("oops"), "INTERNAL_ERROR"),
         (
-            serde_json::from_str::<serde_json::Value>("{").unwrap_err().into(),
+            serde_json::from_str::<serde_json::Value>("{")
+                .unwrap_err()
+                .into(),
             "SERIALIZATION_ERROR",
         ),
     ];
