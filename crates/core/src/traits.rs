@@ -145,13 +145,15 @@ pub trait Serializable: serde::Serialize + serde::de::DeserializeOwned {
     }
 
     /// Serialize to binary format
-    fn to_binary(&self) -> Result<Vec<u8>, bincode::Error> {
-        bincode::serialize(self)
+    fn to_binary(&self) -> Result<Vec<u8>, crate::CoreError> {
+        bincode::serde::encode_to_vec(self, bincode::config::standard()).map_err(Into::into)
     }
 
     /// Deserialize from binary format
-    fn from_binary(data: &[u8]) -> Result<Self, bincode::Error> {
-        bincode::deserialize(data)
+    fn from_binary(data: &[u8]) -> Result<Self, crate::CoreError> {
+        bincode::serde::decode_from_slice(data, bincode::config::standard())
+            .map(|(t, _)| t)
+            .map_err(Into::into)
     }
 }
 

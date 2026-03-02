@@ -550,10 +550,19 @@ impl From<serde_json::Error> for CoreError {
     }
 }
 
-impl From<bincode::Error> for CoreError {
-    fn from(err: bincode::Error) -> Self {
+impl From<bincode::error::EncodeError> for CoreError {
+    fn from(err: bincode::error::EncodeError) -> Self {
         CoreError::Serialization {
-            message: format!("Bincode error: {}", err),
+            message: format!("Bincode encode error: {}", err),
+            format: Some("bincode".to_string()),
+        }
+    }
+}
+
+impl From<bincode::error::DecodeError> for CoreError {
+    fn from(err: bincode::error::DecodeError) -> Self {
+        CoreError::Serialization {
+            message: format!("Bincode decode error: {}", err),
             format: Some("bincode".to_string()),
         }
     }

@@ -136,7 +136,7 @@ impl NonceGenerator {
     }
 
     fn next(&self) -> aes_gcm::Nonce<aes_gcm::aes::cipher::typenum::U12> {
-        use rand::Rng;
+        use rand::RngExt;
 
         let counter = self.counter.fetch_add(1, Ordering::SeqCst);
         let random: u32 = rand::rng().random();
@@ -235,7 +235,7 @@ pub fn decrypt(key: &EncryptionKey, encrypted: &EncryptedData) -> Result<Vec<u8>
 /// Generate random state parameter for OAuth2 (URL-safe base64)
 #[must_use]
 pub fn generate_random_state() -> String {
-    use rand::Rng;
+    use rand::RngExt;
     let mut rng = rand::rng();
     let random_bytes: [u8; 32] = rng.random();
     base64_url_encode(&random_bytes)
@@ -244,7 +244,7 @@ pub fn generate_random_state() -> String {
 /// Generate PKCE code verifier (43-128 characters, URL-safe)
 #[must_use]
 pub fn generate_pkce_verifier() -> String {
-    use rand::Rng;
+    use rand::RngExt;
     let mut rng = rand::rng();
     let random_bytes: [u8; 32] = rng.random();
     base64_url_encode(&random_bytes)

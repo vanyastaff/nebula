@@ -30,7 +30,7 @@ tokio-util = { workspace = true }
 thiserror = { workspace = true }
 
 # Format parsers
-toml = { version = "0.9.7", optional = true }
+toml = { version = "0.9.12", optional = true }
 yaml-rust2 = { version = "0.9", optional = true }
 
 # Notifications

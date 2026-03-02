@@ -489,7 +489,7 @@ impl ScheduledRotation {
 /// let jittered = apply_jitter(base); // 81-99 days
 /// ```
 fn apply_jitter(base: Duration) -> Duration {
-    use rand::Rng;
+    use rand::RngExt;
 
     let base_secs = base.as_secs_f64();
 

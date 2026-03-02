@@ -28,7 +28,7 @@ dashmap = { workspace = true }
 humantime-serde = "1.1.1"
 governor = "0.10"
 tokio-util = { workspace = true, features = ["rt"] }
-fastrand = "2.1"
+fastrand = "2.3"
 tracing = { workspace = true }
 
 # Internal crates

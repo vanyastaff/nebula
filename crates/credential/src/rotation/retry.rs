@@ -55,7 +55,7 @@ impl RotationRetryPolicy {
     ///
     /// Applies exponential backoff with ±10% jitter to prevent thundering herd.
     pub fn backoff_duration(&self, attempt: u32) -> Duration {
-        use rand::Rng;
+        use rand::RngExt;
 
         let base_ms = self.initial_backoff.as_millis() as f32;
         let multiplier = self.backoff_multiplier.powi(attempt as i32);

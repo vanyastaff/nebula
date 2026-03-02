@@ -4,6 +4,7 @@
 //! that receives messages and commands from Telegram.
 
 use async_trait::async_trait;
+use nebula_core::{ExecutionId, WorkflowId};
 use nebula_resource::{Context, Scope};
 use nebula_webhook::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -240,7 +241,7 @@ async fn main() -> Result<()> {
     println!("🚀 Webhook server started at http://localhost:8080\n");
 
     // Create trigger context
-    let base = Context::new(Scope::Global, "telegram-workflow", "execution-1");
+    let base = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
     let state = Arc::new(TriggerState::new("telegram-trigger"));
     let ctx = TriggerCtx::new(
         base,

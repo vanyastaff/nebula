@@ -7,7 +7,7 @@
 
 use std::{collections::HashSet, marker::PhantomData};
 
-use rand::Rng;
+use rand::RngExt;
 
 use crate::cache::compute::{CacheEntry, CacheKey};
 

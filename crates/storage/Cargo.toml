@@ -23,8 +23,8 @@ tokio = { workspace = true, features = ["sync"] }
 # Optional backends (см. docs/nebula-architecture-final.md)
 sqlx = { version = "0.8", optional = true, features = ["runtime-tokio", "postgres"] }
 redis = { version = "0.27", optional = true, features = ["tokio-comp"] }
-aws-config = { version = "1.4", optional = true }
-aws-sdk-s3 = { version = "1.30", optional = true }
+aws-config = { version = "1.8", optional = true }
+aws-sdk-s3 = { version = "1.124", optional = true }
 
 [features]
 default = []

@@ -161,7 +161,7 @@ impl RetryPolicy {
             return delay;
         }
 
-        use rand::Rng;
+        use rand::RngExt;
         let mut rng = rand::rng();
 
         // Apply ±25% jitter

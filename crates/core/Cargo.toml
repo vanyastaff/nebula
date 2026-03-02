@@ -22,7 +22,7 @@ dashmap = { workspace = true }
 thiserror = { workspace = true }
 
 # Serialization
-bincode = "1.3"
+bincode = { version = "2", features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
