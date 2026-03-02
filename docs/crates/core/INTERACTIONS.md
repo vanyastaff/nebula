@@ -33,7 +33,7 @@ All consumers expect:
 
 - **IDs:** Typed UUID wrappers; `new()`, `parse()`, `nil()`; serde round-trip; `Copy`
 - **Scope:** `ScopeLevel` hierarchy; `is_contained_in`; `ScopedId` constructors
-- **Traits:** `Scoped`, `HasContext`, `Identifiable` for common entity behavior
+- **Traits:** `Scoped`, `HasContext` for common entity behavior
 - **Error:** `CoreError` with `is_retryable()`, `is_client_error()`, `error_code()`, `user_message()`
 - **Constants:** Stable defaults for timeouts, limits, env vars
 
@@ -45,8 +45,8 @@ Core depends on:
 - **domain-key:** Typed UUID wrappers; hard contract on `define_uuid` macro; KeyParseError, key_type for ParameterKey, CredentialKey.
 - **serde, serde_json:** Serialization; required.
 - **thiserror:** Error derivation; required.
-- **chrono:** Timestamps in EntityMetadata, OperationContext, OperationResult.
-- **postcard:** Binary serialization in Serializable trait (replaces unmaintained bincode).
+- **chrono:** Timestamps in OperationContext, OperationResult.
+- **postcard:** Binary serialization support and error conversions.
 - **uuid, async-trait, dashmap:** As in Cargo.toml.
 
 No other nebula-* crates: core is the foundation; only nebula-log is allowed.

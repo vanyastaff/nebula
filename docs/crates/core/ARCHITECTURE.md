@@ -24,7 +24,7 @@ This keeps the graph acyclic and allows independent evolution of engine/runtime/
 |--------|------|----------------|
 | `id` | `id.rs` | Strongly typed UUID wrappers via `domain-key`; compile-time separation between ID domains |
 | `scope` | `scope.rs` | Lifecycle hierarchy (`Global` → `Organization` → `Project` → `Workflow` → `Execution` → `Action`); `ScopedId` |
-| `traits` | `traits.rs` | `Scoped`, `HasContext`, `Identifiable`, `Validatable`, `Serializable`, metadata traits |
+| `traits` | `traits.rs` | `Scoped`, `HasContext` |
 | `types` | `types.rs` | `Version`, `InterfaceVersion`, `Status`, `Priority`, `OperationResult`, `OperationContext` |
 | `error` | `error.rs` | `CoreError` taxonomy; conversions from std/serde_json/postcard/chrono |
 | `keys` | `keys.rs` | `PluginKey`, `ParameterKey`, `CredentialKey` with normalization/validation |

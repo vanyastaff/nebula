@@ -40,7 +40,7 @@ assert!(!err.is_retryable());
 | `id::*` | All 11 ID types + `UuidParseError` |
 | `keys::*` | `PluginKey`, `PluginKeyError`, `ParameterKey`, `CredentialKey`, `KeyParseError` |
 | `scope::*` | `ScopeLevel`, `ScopedId`, `ChildScopeType` |
-| `traits::*` | All traits + `EntityMetadata` |
+| `traits::*` | All traits (`Scoped`, `HasContext`) |
 | `types::*` | `Version`, `InterfaceVersion`, `Status`, `Priority`, `ProjectType`, `RoleScope`, `OperationResult`, `OperationContext`, `utils` |
 | `error::*` | `CoreError`, `CoreResult` |
 
@@ -50,10 +50,10 @@ assert!(!err.is_retryable());
 
 ```rust
 use nebula_core::prelude::*;
-// Includes: CoreError, CredentialId, ExecutionId, HasContext, Identifiable,
-//           InterfaceVersion, NodeId, OrganizationId, PluginKey, PluginKeyError,
-//           ProjectId, ProjectType, Result, RoleId, RoleScope, ScopeLevel, Scoped,
-//           TenantId, UserId, UuidParseError, WorkflowId + all keys
+// Includes: CoreError, CredentialId, ExecutionId, HasContext, InterfaceVersion,
+//           NodeId, OrganizationId, PluginKey, PluginKeyError, ProjectId,
+//           ProjectType, Result, RoleId, RoleScope, ScopeLevel, Scoped, TenantId,
+//           UserId, UuidParseError, WorkflowId + all keys
 ```
 
 ---
@@ -360,80 +360,6 @@ pub trait HasContext {
 ```
 
 All five getters are required.
-
-### `Identifiable`
-
-```rust
-pub trait Identifiable {
-    fn id(&self) -> &str;                          // required
-    fn name(&self) -> Option<&str>       { None }  // default
-    fn description(&self) -> Option<&str>{ None }  // default
-    fn version(&self) -> Option<&str>    { None }  // default
-    fn has_name(&self) -> bool;                    // default
-    fn has_description(&self) -> bool;             // default
-    fn has_version(&self) -> bool;                 // default
-}
-```
-
-### `Validatable`
-
-```rust
-pub trait Validatable {
-    type Error: std::error::Error + Send + Sync;
-    fn validate(&self) -> Result<(), Self::Error>;
-    fn is_valid(&self) -> bool; // default: validate().is_ok()
-}
-```
-
-### `Serializable`
-
-Blanket-implementable; requires `Serialize + DeserializeOwned`:
-
-```rust
-pub trait Serializable: serde::Serialize + serde::de::DeserializeOwned {
-    fn to_json(&self) -> Result<String, serde_json::Error>;
-    fn to_json_pretty(&self) -> Result<String, serde_json::Error>;
-    fn from_json(json: &str) -> Result<Self, serde_json::Error>;
-    fn to_binary(&self) -> Result<Vec<u8>, CoreError>;
-    fn from_binary(data: &[u8]) -> Result<Self, CoreError>;
-}
-```
-
-### `HasMetadata`
-
-```rust
-pub trait HasMetadata {
-    fn metadata(&self) -> &EntityMetadata;
-    fn created_at(&self) -> Option<chrono::DateTime<chrono::Utc>>; // default
-    fn modified_at(&self) -> Option<chrono::DateTime<chrono::Utc>>; // default
-    fn tags(&self) -> &[String];                                      // default
-    fn has_tag(&self, tag: &str) -> bool;                             // default
-}
-```
-
-### `EntityMetadata`
-
-```rust
-pub struct EntityMetadata {
-    pub created_at: Option<DateTime<Utc>>,
-    pub modified_at: Option<DateTime<Utc>>,
-    pub tags: Vec<String>,
-    pub custom: HashMap<String, String>,
-}
-```
-
-Constructors: `new()` (sets both timestamps to `Utc::now()`), `with_tag()`, `with_tags()`, `with_custom()`, `mark_modified()`.
-
-### Utility Traits
-
-| Trait | Requires | Purpose |
-|-------|---------|---------|
-| `Cloneable` | `Clone` | `clone_deep()` (delegates to `clone`) |
-| `Comparable` | `PartialEq + Eq` | `equals()`, `differs_from()` |
-| `Hashable` | `Hash` | `hash_value() -> u64` (DefaultHasher) |
-| `Displayable` | `Display` | `display()`, `display_short()`, `display_detailed()` |
-| `Debuggable` | `Debug` | `debug()`, `debug_pretty()` |
-| `StringConvertible` | — | `to_string()`, `from_string()`, `is_valid_string()` |
 
 ---
 

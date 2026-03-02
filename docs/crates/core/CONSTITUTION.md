@@ -164,7 +164,7 @@ In a production Nebula deployment, every service (engine, worker, API, credentia
          ↑ all layers depend on nebula-core (IDs, scope, traits, types)
 ```
 
-**Module map:** `id` — UserId, TenantId, ExecutionId, WorkflowId, NodeId, ActionId, ResourceId, CredentialId, ProjectId, RoleId, OrganizationId; `scope` — ScopeLevel (Global, Organization, Project, Workflow, Execution, Action); `keys` — ParameterKey, CredentialKey, PluginKey; `traits` — Scoped, HasContext, Identifiable, OperationContext, OperationResult, Priority; `types` — Version, InterfaceVersion, EntityMetadata, ProjectType, RoleScope; `constants` — SYSTEM_*, DEFAULT_*; `error` — CoreError, Result&lt;T&gt;. Core depends only on nebula-log and vendor. No network, storage, or async runtime of its own.
+**Module map:** `id` — UserId, TenantId, ExecutionId, WorkflowId, NodeId, ActionId, ResourceId, CredentialId, ProjectId, RoleId, OrganizationId; `scope` — ScopeLevel (Global, Organization, Project, Workflow, Execution, Action); `keys` — ParameterKey, CredentialKey, PluginKey; `traits` — Scoped, HasContext; `types` — Version, InterfaceVersion, ProjectType, RoleScope, OperationContext, OperationResult, Priority; `constants` — SYSTEM_*, DEFAULT_*; `error` — CoreError, Result&lt;T&gt;. Core depends only on nebula-log and vendor. No network, storage, or async runtime of its own.
 
 ### From the archives: layer interaction and shared types
 
