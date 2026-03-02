@@ -27,7 +27,7 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 
 # Optional: dynamic library loading
-libloading = { version = "0.8", optional = true }
+libloading = { version = "0.9", optional = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

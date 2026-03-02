@@ -72,7 +72,7 @@ arc-swap = "1.8"
 spin = "0.10.0"
 
 # Graph
-petgraph = "0.7"
+petgraph = "0.8"
 
 # Data structures
 bitflags = "2.11"
@@ -100,7 +100,7 @@ hmac = "0.12"
 
 # Formats
 csv = "1.4"
-quick-xml = { version = "0.37", features = ["serialize"] }
+quick-xml = { version = "0.39", features = ["serialize"] }
 
 # HTTP
 reqwest = { version = "0.13", features = ["json"], default-features = false }
