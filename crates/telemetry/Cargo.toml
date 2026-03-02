@@ -13,6 +13,7 @@ documentation.workspace = true
 
 [dependencies]
 nebula-core = { path = "../core" }
+nebula-eventbus = { path = "../eventbus" }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

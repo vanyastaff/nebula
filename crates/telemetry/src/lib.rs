@@ -6,13 +6,19 @@
 //! Event bus, metrics, and observability for the Nebula workflow engine.
 //!
 //! This crate provides:
-//! - [`EventBus`] -- broadcast-based event distribution
-//! - [`ExecutionEvent`] -- execution lifecycle events
-//! - [`TelemetryService`] trait -- pluggable telemetry backend
-//! - [`NoopTelemetry`] -- no-op implementation for testing/MVP
+//! - [`EventBus`] — broadcast-based event distribution (backed by [`nebula_eventbus`])
+//! - [`ExecutionEvent`] — execution lifecycle events
+//! - [`TelemetryService`] trait — pluggable telemetry backend
+//! - [`NoopTelemetry`] — no-op implementation for testing/MVP
 //!
-//! Events are **projections**, not the source of truth.
-//! The [`ports::ExecutionRepo`] is the single source of truth.
+//! Events are **projections**, not the source of truth; the execution store
+//! remains the single source of truth.
+//!
+//! ## Metric naming
+//!
+//! Use the `nebula_` prefix for metric names (e.g. `nebula_executions_total`,
+//! `nebula_action_duration_seconds`) to avoid collisions and support
+//! future export (Prometheus/OTLP). See the crate ROADMAP for the full convention.
 
 pub mod event;
 pub mod metrics;

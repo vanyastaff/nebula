@@ -1,13 +1,13 @@
 //! Event bus for execution lifecycle events.
 //!
-//! Uses [`tokio::sync::broadcast`] for fan-out delivery to multiple subscribers.
-//! Events are fire-and-forget projections -- dropping them is acceptable.
+//! Backed by [`nebula_eventbus::EventBus`] for broadcast delivery with
+//! configurable back-pressure. Events are fire-and-forget projections.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
+use nebula_eventbus::EventBus as EventBusInner;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
 
 /// Execution lifecycle event.
 ///
@@ -68,10 +68,12 @@ pub enum ExecutionEvent {
     },
 }
 
-/// Broadcast-based event bus.
+/// Broadcast-based event bus for execution events.
 ///
-/// Delivers events to all active subscribers. If no subscribers are
-/// listening, events are silently dropped (fire-and-forget).
+/// Wraps [`nebula_eventbus::EventBus<ExecutionEvent>`] so the telemetry API
+/// stays stable (e.g. `total_emitted`, `subscriber_count`). Delivers events
+/// to all active subscribers; when the buffer is full, behaviour is determined
+/// by the eventbus back-pressure policy (default: drop oldest).
 ///
 /// # Examples
 ///
@@ -89,85 +91,53 @@ pub enum ExecutionEvent {
 /// // In async context: let event = sub.recv().await;
 /// assert_eq!(bus.total_emitted(), 1);
 /// ```
-pub struct EventBus {
-    sender: broadcast::Sender<ExecutionEvent>,
-    emitted: AtomicU64,
-}
+#[derive(Clone)]
+pub struct EventBus(Arc<EventBusInner<ExecutionEvent>>);
+
+/// Subscription handle for receiving events from the [`EventBus`].
+pub type EventSubscriber = nebula_eventbus::Subscriber<ExecutionEvent>;
 
 impl EventBus {
     /// Create a new event bus with the given channel capacity.
     ///
-    /// When the channel is full, the oldest events are dropped (lagging
-    /// subscribers will see a `RecvError::Lagged`).
+    /// Uses the eventbus default back-pressure policy (drop oldest when full).
+    /// When the channel is full, lagging subscribers may see `Lagged` and skip events.
     #[must_use]
     pub fn new(capacity: usize) -> Self {
-        let (sender, _) = broadcast::channel(capacity);
-        Self {
-            sender,
-            emitted: AtomicU64::new(0),
-        }
+        Self(Arc::new(EventBusInner::new(capacity)))
     }
 
     /// Emit an event to all subscribers.
     ///
-    /// Returns silently if there are no active subscribers.
+    /// Non-blocking; if there are no active subscribers, the event is dropped
+    /// and counted in [`stats()`](Self::stats).
+    #[inline]
     pub fn emit(&self, event: ExecutionEvent) {
-        self.emitted.fetch_add(1, Ordering::Relaxed);
-        // Ignore send error (no active receivers).
-        let _ = self.sender.send(event);
+        self.0.emit(event);
     }
 
     /// Subscribe to events.
+    #[must_use]
     pub fn subscribe(&self) -> EventSubscriber {
-        EventSubscriber {
-            receiver: self.sender.subscribe(),
-        }
+        self.0.subscribe()
     }
 
-    /// Total number of events emitted since creation.
+    /// Total number of events successfully sent since creation.
     #[must_use]
     pub fn total_emitted(&self) -> u64 {
-        self.emitted.load(Ordering::Relaxed)
+        self.0.stats().sent_count
     }
 
     /// Number of active subscribers.
     #[must_use]
     pub fn subscriber_count(&self) -> usize {
-        self.sender.receiver_count()
-    }
-}
-
-/// Subscription handle for receiving events from the [`EventBus`].
-pub struct EventSubscriber {
-    receiver: broadcast::Receiver<ExecutionEvent>,
-}
-
-impl EventSubscriber {
-    /// Receive the next event, waiting asynchronously.
-    ///
-    /// Returns `None` if the sender has been dropped or the subscriber
-    /// has lagged (missed events due to buffer overflow).
-    pub async fn recv(&mut self) -> Option<ExecutionEvent> {
-        loop {
-            match self.receiver.recv().await {
-                Ok(event) => return Some(event),
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => return None,
-            }
-        }
+        self.0.stats().subscriber_count
     }
 
-    /// Try to receive an event without blocking.
-    ///
-    /// Returns `None` if no event is immediately available.
-    pub fn try_recv(&mut self) -> Option<ExecutionEvent> {
-        loop {
-            match self.receiver.try_recv() {
-                Ok(event) => return Some(event),
-                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
-                Err(_) => return None,
-            }
-        }
+    /// Snapshot of bus statistics (sent, dropped, subscriber count).
+    #[must_use]
+    pub fn stats(&self) -> nebula_eventbus::EventBusStats {
+        self.0.stats()
     }
 }
 
@@ -182,8 +152,10 @@ mod tests {
             execution_id: "e1".into(),
             workflow_id: "w1".into(),
         });
-        assert_eq!(bus.total_emitted(), 1);
+        // With no subscribers, eventbus counts as dropped, not sent
         assert_eq!(bus.subscriber_count(), 0);
+        let stats = bus.stats();
+        assert!(stats.sent_count == 0 && stats.dropped_count == 1);
     }
 
     #[test]
@@ -202,6 +174,7 @@ mod tests {
                 execution_id: "e1".into()
             }
         );
+        assert_eq!(bus.total_emitted(), 1);
     }
 
     #[tokio::test]

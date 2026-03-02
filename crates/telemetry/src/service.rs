@@ -18,6 +18,12 @@ pub trait TelemetryService: Send + Sync {
 
     /// Access the metrics registry for recording metrics.
     fn metrics(&self) -> &MetricsRegistry;
+
+    /// Return a shared handle to the event bus for wiring into engine/runtime.
+    fn event_bus_arc(&self) -> Arc<EventBus>;
+
+    /// Return a shared handle to the metrics registry for wiring into engine/runtime.
+    fn metrics_arc(&self) -> Arc<MetricsRegistry>;
 }
 
 /// No-op telemetry implementation.
@@ -37,8 +43,8 @@ pub trait TelemetryService: Send + Sync {
 /// assert_eq!(counter.get(), 1);
 /// ```
 pub struct NoopTelemetry {
-    event_bus: EventBus,
-    metrics: MetricsRegistry,
+    event_bus: Arc<EventBus>,
+    metrics: Arc<MetricsRegistry>,
 }
 
 impl NoopTelemetry {
@@ -46,8 +52,8 @@ impl NoopTelemetry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            event_bus: EventBus::new(128),
-            metrics: MetricsRegistry::new(),
+            event_bus: Arc::new(EventBus::new(128)),
+            metrics: Arc::new(MetricsRegistry::new()),
         }
     }
 
@@ -66,11 +72,19 @@ impl Default for NoopTelemetry {
 
 impl TelemetryService for NoopTelemetry {
     fn event_bus(&self) -> &EventBus {
-        &self.event_bus
+        self.event_bus.as_ref()
     }
 
     fn metrics(&self) -> &MetricsRegistry {
-        &self.metrics
+        self.metrics.as_ref()
+    }
+
+    fn event_bus_arc(&self) -> Arc<EventBus> {
+        Arc::clone(&self.event_bus)
+    }
+
+    fn metrics_arc(&self) -> Arc<MetricsRegistry> {
+        Arc::clone(&self.metrics)
     }
 }
 

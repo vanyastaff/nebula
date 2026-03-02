@@ -143,18 +143,21 @@ impl Default for Histogram {
 
 /// Registry for creating and retrieving named metrics.
 ///
+/// Prefer names with the `nebula_` prefix (e.g. `nebula_executions_total`)
+/// for consistency and future Prometheus/OTLP export.
+///
 /// # Examples
 ///
 /// ```
 /// use nebula_telemetry::metrics::MetricsRegistry;
 ///
 /// let registry = MetricsRegistry::new();
-/// let counter = registry.counter("executions_total");
+/// let counter = registry.counter("nebula_executions_total");
 /// counter.inc();
 /// assert_eq!(counter.get(), 1);
 ///
 /// // Retrieving the same name returns the same metric.
-/// let same = registry.counter("executions_total");
+/// let same = registry.counter("nebula_executions_total");
 /// assert_eq!(same.get(), 1);
 /// ```
 #[derive(Debug, Clone)]
