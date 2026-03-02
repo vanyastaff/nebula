@@ -42,8 +42,15 @@ impl fmt::Display for SecureString {
 
 /// Provider trait for injecting credential resolution into resource operations.
 ///
-/// Resource implementations call `ctx.credentials().get("db_password")` during
-/// [`Resource::create`](crate::Resource::create) to fetch fresh secrets.
+/// Resource implementations typically call this via the
+/// [`Context`](crate::Context) helper:
+///
+/// ```ignore
+/// if let Some(creds) = ctx.credentials() {
+///     let password = creds.get("db_password").await?;
+///     // use `password.expose()` to access the underlying value
+/// }
+/// ```
 ///
 /// Returns a boxed future so the trait is dyn-compatible and can be stored
 /// as `Arc<dyn CredentialProvider>` inside [`Context`](crate::Context).

@@ -11,7 +11,7 @@ use crate::scope::Scope;
 
 /// Context for resource operations.
 ///
-/// Carries scope, identifiers, cancellation, and arbitrary metadata.
+/// Carries scope, identifiers, cancellation, credentials, and arbitrary metadata.
 /// Passed to [`Resource::create`](crate::Resource::create) and other lifecycle operations so
 /// implementations can make scope-aware, cancellation-aware decisions.
 #[derive(Clone)]
@@ -85,6 +85,21 @@ impl Context {
         self.credentials = Some(provider);
         self
     }
+
+    /// Get a reference to the credential provider, if attached.
+    ///
+    /// Resource implementations can use this to fetch secrets during
+    /// [`Resource::create`](crate::Resource::create):
+    ///
+    /// ```ignore
+    /// if let Some(creds) = ctx.credentials() {
+    ///     let password = creds.get("db_password").await?;
+    ///     // use `password.expose()` to access the underlying value
+    /// }
+    /// ```
+    pub fn credentials(&self) -> Option<&dyn CredentialProvider> {
+        self.credentials.as_deref()
+    }
 }
 
 #[cfg(test)]
@@ -129,5 +144,32 @@ mod tests {
         assert!(!ctx.cancellation.is_cancelled());
         token.cancel();
         assert!(ctx.cancellation.is_cancelled());
+    }
+
+    #[test]
+    fn test_context_with_credentials() {
+        use crate::credentials::{CredentialProvider, SecureString};
+        use crate::error::Error;
+
+        struct DummyProvider;
+
+        impl CredentialProvider for DummyProvider {
+            fn get(
+                &self,
+                _key: &str,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<SecureString, Error>> + Send + '_,
+                >,
+            > {
+                Box::pin(async { Ok(SecureString::new("secret")) })
+            }
+        }
+
+        let provider = Arc::new(DummyProvider);
+        let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
+            .with_credentials(provider);
+
+        assert!(ctx.credentials().is_some());
     }
 }
