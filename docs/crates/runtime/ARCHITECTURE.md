@@ -1,5 +1,9 @@
 # Architecture
 
+## Crate boundaries
+
+Runtime sits between **nebula-engine** (orchestration) and **nebula-action** / **nebula-plugin** (handler contract). Execution state and plan live in **nebula-execution**; runtime does not depend on execution. See [INTERACTIONS.md](./INTERACTIONS.md#crate-boundaries).
+
 ## Problem Statement
 
 - **Business problem:** Workflow nodes execute actions (HTTP, DB, transforms). The engine schedules nodes; something must resolve action handlers, run them (with optional isolation), enforce data limits, and emit observability events.
@@ -18,7 +22,7 @@
 
 ### Data/Control Flow
 
-1. **Engine** creates NodeTask with `Arc<ActionRuntime>`, calls `runtime.execute_action(action_key, input, context)`.
+1. **Engine** creates NodeTask with `Arc<ActionRuntime>`, calls `runtime.execute_action(action_key, input, context)` (context type: NodeContext today; target ActionContext).
 2. **ActionRuntime** looks up handler via `registry.get(action_key)`.
 3. **ActionRuntime** emits NodeStarted, records start time.
 4. **ActionRuntime** calls `handler.execute(input, context)` (TODO: route via sandbox for IsolationLevel::CapabilityGated/Isolated).

@@ -2,7 +2,7 @@
 
 ## SLO Targets
 
-- **Availability:** Execution crate is a library; no direct availability SLO. Engine and API SLOs depend on persistence and runtime; execution state must be persisted and loaded correctly.
+- **Availability:** Execution crate is a library; no direct availability SLO. Engine and API SLOs depend on persistence and on nebula-runtime (or the execution environment); execution state must be persisted and loaded correctly.
 - **Latency:** Transition validation and plan build are in-process and fast; no I/O in execution crate. IdempotencyManager::check_and_mark is O(1) in-memory.
 - **Error budget:** N/A for library. Engine should treat InvalidTransition, PlanValidation, DuplicateIdempotencyKey as deterministic failures (no retry of same transition/key).
 

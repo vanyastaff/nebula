@@ -4,6 +4,15 @@
 
 ---
 
+## Crate boundaries
+
+| Crate | Responsibility |
+|-------|-----------------|
+| **nebula-execution** | State and model only; no orchestration, no action execution. |
+| **nebula-action** | Action contract (StatelessAction, ActionContext, ActionResult, etc.). |
+| **nebula-runtime** (this crate) | Action execution: registry, sandbox, data limits, telemetry. |
+| **nebula-engine** | DAG orchestration; calls runtime to run nodes. |
+
 ## Platform Role
 
 The engine decides *which* node runs next; something must *run* it: resolve the action, build context (credentials, resources), invoke the action through the sandbox, enforce data limits, and report result and telemetry. That layer is the runtime.
@@ -13,7 +22,7 @@ The engine decides *which* node runs next; something must *run* it: resolve the 
 It answers: *Given a node and execution context, how does the platform resolve the action, supply credentials and resources, execute it (with isolation and data limits), and return ActionResult?*
 
 ```
-Engine (or caller) invokes runtime.execute_action(node, context, input)
+Engine (or caller) invokes runtime.execute_action(action_key, input, context)
     ↓
 ActionRegistry looks up action by key; runtime builds Context (credentials, resources, scope)
     ↓
@@ -109,13 +118,14 @@ In production, runtime runs inside the same process as the engine (or worker). A
 
 ```
 runtime.rs    — ActionRuntime: registry (ActionRegistry), sandbox (Arc<dyn SandboxRunner>), data_policy (DataPassingPolicy), event_bus (EventBus), metrics (MetricsRegistry)
-                 execute_action(action_key, input, NodeContext) → Result<ActionResult<Value>, RuntimeError>
+                 execute_action(action_key, input, context) → Result<ActionResult<Value>, RuntimeError>
+                 (context type: NodeContext today; target ActionContext — see P-001)
 registry.rs   — ActionRegistry: DashMap<String, Arc<dyn InternalHandler>>; register(handler), get(key)
 data_policy.rs — DataPassingPolicy (max_node_output_bytes, max_total_execution_bytes, large_data_strategy: LargeDataStrategy); LargeDataStrategy::Reject | SpillToBlob
 error.rs      — RuntimeError: ActionNotFound { key }, ActionError(ActionError), DataLimitExceeded { limit_bytes, actual_bytes }, Internal(String)
 ```
 
-SandboxRunner (nebula-ports) is the sandbox abstraction; InternalHandler (nebula-plugin) is the action contract. Isolation level routing (trusted vs sandboxed) is TODO; SpillToBlob is Phase 2. Telemetry: EventBus.emit(NodeStarted / NodeCompleted / NodeFailed), MetricsRegistry counter/histogram.
+SandboxRunner (nebula-ports) is the sandbox abstraction; InternalHandler (nebula-plugin) is the current handler contract; action crate defines StatelessAction/ActionContext as target. Isolation level routing (trusted vs sandboxed) is TODO; SpillToBlob is Phase 2. Telemetry: EventBus.emit(NodeStarted / NodeCompleted / NodeFailed), MetricsRegistry counter/histogram.
 
 ### From the archives: node execution and runtime role
 

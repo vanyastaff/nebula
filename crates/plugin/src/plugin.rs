@@ -10,15 +10,15 @@ use crate::PluginMetadata;
 /// Base trait for all plugin types in Nebula.
 ///
 /// A plugin is a user-visible, versionable packaging unit (e.g. "Slack",
-/// "HTTP Request"). It provides metadata and registers its runtime components
-/// (actions, credentials) via [`PluginComponents`].
+/// "HTTP Request"). It provides metadata and declares components (refs) via
+/// [`PluginComponents`].
 ///
 /// This trait is **object-safe** so plugins can be stored as `Arc<dyn Plugin>`.
 pub trait Plugin: Send + Sync + Debug + 'static {
     /// Returns the static metadata for this plugin.
     fn metadata(&self) -> &PluginMetadata;
 
-    /// Register actions and credential requirements into `components`.
+    /// Declare component refs (credentials, resources, actions) into `components`.
     fn register(&self, components: &mut PluginComponents);
 
     /// The normalized, unique key identifying this plugin type.

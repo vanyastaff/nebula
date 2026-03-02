@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use dashmap::DashMap;
 // TODO: ExecutionBudget moved to nebula-execution
-use nebula_action::{ActionResult, NodeContext};
+use nebula_action::{ActionContext, ActionResult};
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 // ScopeLevel removed from ActionContext
 // use nebula_core::scope::ScopeLevel;
@@ -526,7 +526,7 @@ impl NodeTask {
             return (self.node_id, Err(EngineError::Cancelled));
         }
 
-        let action_ctx = NodeContext::new(
+        let action_ctx = ActionContext::new(
             self.execution_id,
             self.node_id,
             self.workflow_id,
@@ -905,11 +905,12 @@ fn extract_primary_output(result: &ActionResult<serde_json::Value>) -> Option<se
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nebula_action::ActionContext;
     use nebula_action::ActionError;
     use nebula_action::metadata::ActionMetadata;
     use nebula_action::result::ActionResult;
     use nebula_core::Version;
-    use nebula_plugin::InternalHandler;
+    use nebula_action::InternalHandler;
     use nebula_runtime::DataPassingPolicy;
     use nebula_runtime::registry::ActionRegistry;
     use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};
@@ -926,7 +927,7 @@ mod tests {
         async fn execute(
             &self,
             input: serde_json::Value,
-            _ctx: NodeContext,
+            _ctx: &ActionContext,
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             Ok(ActionResult::success(input))
         }
@@ -944,7 +945,7 @@ mod tests {
         async fn execute(
             &self,
             _input: serde_json::Value,
-            _ctx: NodeContext,
+            _ctx: &ActionContext,
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             Err(ActionError::fatal("intentional failure"))
         }
@@ -1241,7 +1242,7 @@ mod tests {
         async fn execute(
             &self,
             _input: serde_json::Value,
-            _ctx: NodeContext,
+            _ctx: &ActionContext,
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             Ok(ActionResult::skip("skipped by test"))
         }
@@ -1260,7 +1261,7 @@ mod tests {
         async fn execute(
             &self,
             input: serde_json::Value,
-            _ctx: NodeContext,
+            _ctx: &ActionContext,
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             Ok(ActionResult::Branch {
                 selected: self.selected.clone(),

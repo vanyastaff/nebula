@@ -1,5 +1,14 @@
 # Interactions
 
+## Crate boundaries
+
+| Crate | Responsibility |
+|-------|-----------------|
+| **nebula-execution** | State and model only: execution state machine, plan, journal, idempotency; no orchestration, no action execution. |
+| **nebula-action** | Action contract: traits (StatelessAction, etc.), ActionContext/TriggerContext, ActionResult, ActionError; no scheduling. |
+| **nebula-runtime** (this crate) | Action execution: registry lookup, context build, run via sandbox, data limits, telemetry; one node at a time. |
+| **nebula-engine** | DAG orchestration: builds state/plan, applies transitions, persists; calls runtime to run nodes. |
+
 ## Ecosystem Map (Current + Planned)
 
 ### Existing Crates
@@ -7,8 +16,8 @@
 | Crate | Relationship | Description |
 |-------|-------------|-------------|
 | `nebula-engine` | Downstream | Uses ActionRuntime for node execution; creates NodeTask with runtime |
-| `nebula-action` | Upstream | NodeContext, ActionResult, ActionError, InternalHandler; trigger types (webhook, schedule) |
-| `nebula-plugin` | Upstream | InternalHandler trait; handlers implement it |
+| `nebula-action` | Upstream | ActionResult, ActionError, Context/ActionContext; execution traits (StatelessAction, etc.); trigger types (webhook, schedule) |
+| `nebula-plugin` | Upstream | InternalHandler trait (execute with context); handlers registered by key; runtime uses for lookup |
 | `nebula-ports` | Upstream | SandboxRunner trait; runtime receives Arc<dyn SandboxRunner> |
 | `nebula-telemetry` | Upstream | EventBus, ExecutionEvent, MetricsRegistry |
 | `nebula-core` | Upstream | Id types (indirect via action) |
@@ -20,11 +29,16 @@
 |-------|-------------|-------------|
 | `nebula-sandbox-inprocess` | Dev/test | InProcessSandbox implements SandboxRunner |
 
+## Context contract (current vs target)
+
+- **Current:** `execute_action(action_key, input, NodeContext)`. Runtime and plugin use `NodeContext` (deprecated in nebula-action). InternalHandler takes NodeContext.
+- **Target:** Align with nebula-action: build `ActionContext` (or TriggerContext for triggers), pass as `&impl Context`; handlers may adopt StatelessAction/StatefulAction. Migration: see PROPOSALS (ActionContext/TriggerContext in runtime).
+
 ## Downstream Consumers
 
 ### nebula-engine
 
-- **Expectations:** `Arc<ActionRuntime>`; `execute_action(action_key, input, NodeContext)` returns `Result<ActionResult, RuntimeError>`
+- **Expectations:** `Arc<ActionRuntime>`; `execute_action(action_key, input, context)` returns `Result<ActionResult, RuntimeError>`. Context type is currently NodeContext; may migrate to ActionContext.
 - **Contract:** Async; engine maps RuntimeError to EngineError::Runtime
 - **Usage:** NodeTask.run() calls runtime.execute_action; engine resolves action_key from node definition
 
@@ -32,7 +46,7 @@
 
 | Crate | Why needed | Hard contract | Fallback |
 |-------|------------|---------------|----------|
-| `nebula-action` | NodeContext, ActionResult, ActionError | execute signature | — |
+| `nebula-action` | Context type (currently NodeContext), ActionResult, ActionError | execute signature | — |
 | `nebula-plugin` | InternalHandler | metadata(), execute() | — |
 | `nebula-ports` | SandboxRunner | execute through sandbox | — |
 | `nebula-telemetry` | EventBus, MetricsRegistry | emit, counter, histogram | — |

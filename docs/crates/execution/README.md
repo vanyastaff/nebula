@@ -1,6 +1,6 @@
 # nebula-execution
 
-Execution state machine, journals, idempotency, and planning for the Nebula workflow engine. This crate models execution-time concepts only — it does not contain the engine orchestrator.
+Execution state machine, journals, idempotency, and planning for the Nebula workflow engine. This crate is **state and model only**: it defines execution-time types and validated transitions; it does **not** perform orchestration, action execution, or persistence.
 
 ## Scope
 
@@ -8,7 +8,7 @@ Execution state machine, journals, idempotency, and planning for the Nebula work
   - `ExecutionStatus` — execution-level state machine (8 states: Created, Running, Paused, Cancelling, Completed, Failed, Cancelled, TimedOut)
   - `ExecutionState` and `NodeExecutionState` — persistent state tracking with validated transitions
   - `ExecutionPlan` — pre-computed parallel execution schedule from workflow definition
-  - `ExecutionContext` — lightweight runtime context (execution_id, budget)
+  - `ExecutionContext` — execution-scoped context (execution_id, budget) passed to engine/runtime
   - `JournalEntry` — audit log of execution events
   - `NodeOutput` / `ExecutionOutput` — node output data (inline JSON or blob ref) with metadata
   - `NodeAttempt` — individual attempt tracking with idempotency key
@@ -19,6 +19,15 @@ Execution state machine, journals, idempotency, and planning for the Nebula work
   - Workflow scheduling and DAG orchestration (engine)
   - Persistence of execution state (engine/storage)
   - Action execution (runtime)
+
+## Crate boundaries
+
+| Crate | Responsibility |
+|-------|-----------------|
+| **nebula-execution** | State and model only: execution state machine, journals, idempotency, plan/output types; no orchestration, no action execution, no persistence. |
+| **nebula-action** | Action contract: traits, metadata, ports, result/output/error, context; no scheduling, no sandbox internals. |
+| **nebula-engine** (planned) | DAG orchestration: builds state/plan, applies transitions, persists state and journal; delegates node execution to runtime. |
+| **nebula-runtime** (planned) | Action execution: runs actions (StatelessAction/StatefulAction/etc.), idempotency check, sandbox/capabilities. |
 
 ## Current State
 
@@ -44,6 +53,10 @@ Execution state machine, journals, idempotency, and planning for the Nebula work
 - [RELIABILITY.md](./RELIABILITY.md)
 - [TEST_STRATEGY.md](./TEST_STRATEGY.md)
 - [MIGRATION.md](./MIGRATION.md)
+
+## Design & research (in crate)
+
+- [Execution View & Tracing](../../../crates/execution/docs/Execution-View-Tracing.md) — industry research for execution visibility and tracing (Inngest, Temporal, n8n, etc.).
 
 ## Archive
 

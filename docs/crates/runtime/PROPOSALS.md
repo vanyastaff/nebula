@@ -47,13 +47,13 @@ DataPassingPolicy or runtime receives optional `Arc<dyn BlobStorage>`. When Spil
 
 **Motivation:** Actions may need database connections, HTTP clients. Resource manager provides pooled instances.
 
-**Proposal:** NodeContext or execute_action receives optional `ResourceProvider`. Runtime passes to context; actions call `ctx.get_resource::<DbPool>()`. Engine already has resource_manager; could pass to runtime.
+**Proposal:** Context (currently NodeContext; target ActionContext per CONSTITUTION P-001) or execute_action receives optional `ResourceProvider`. Runtime passes to context; actions call `ctx.get_resource::<DbPool>()`. Engine already has resource_manager; could pass to runtime. Prefer aligning with ActionContext/TriggerContext migration so resource injection uses the same context type.
 
 **Expected benefits:** Actions get typed resources; pooling handled by resource crate.
 
 **Costs:** Context API change; engine-runtime contract.
 
-**Risks:** May already be partially supported; check NodeContext.
+**Risks:** May already be partially supported; check current context type.
 
 **Compatibility impact:** Additive if optional.
 

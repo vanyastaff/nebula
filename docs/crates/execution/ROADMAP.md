@@ -24,6 +24,10 @@
 - **Risks:** None if limited to existing types.
 - **Exit criteria:** Engine and telemetry can derive metrics from state and journal; no breaking change to execution crate.
 
+## Boundary
+
+This crate remains **state and model only**. Orchestration (when to run which node) and action execution (running Action implementations) stay in nebula-engine and nebula-runtime; execution crate only defines types, validators, and idempotency key format.
+
 ## Metrics of Readiness
 
 - **Correctness:** All transition matrix tests pass; no invalid transition accepted; idempotency check_and_mark semantics verified.

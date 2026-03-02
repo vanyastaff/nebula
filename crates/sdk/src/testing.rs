@@ -113,11 +113,11 @@ where
         &self,
         input: I,
     ) -> Result<nebula_action::ActionResult<O>, nebula_action::ActionError> {
-        use nebula_action::NodeContext;
+        use nebula_action::ActionContext;
         use nebula_core::{ExecutionId, NodeId, WorkflowId};
 
         let workflow_id = WorkflowId::new();
-        let ctx = NodeContext::new(
+        let ctx = ActionContext::new(
             ExecutionId::new(),
             NodeId::new(),
             workflow_id,

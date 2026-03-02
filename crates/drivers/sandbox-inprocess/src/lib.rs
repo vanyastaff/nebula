@@ -112,7 +112,7 @@ impl SandboxRunner for InProcessSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_action::NodeContext;
+    use nebula_action::ActionContext;
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 
     fn test_metadata() -> ActionMetadata {
@@ -120,7 +120,7 @@ mod tests {
     }
 
     fn test_context() -> SandboxedContext {
-        let ctx = NodeContext::new(
+        let ctx = ActionContext::new(
             ExecutionId::new(),
             NodeId::new(),
             WorkflowId::new(),
@@ -179,7 +179,7 @@ mod tests {
 
         let token = tokio_util::sync::CancellationToken::new();
         token.cancel();
-        let ctx = NodeContext::new(ExecutionId::new(), NodeId::new(), WorkflowId::new(), token);
+        let ctx = ActionContext::new(ExecutionId::new(), NodeId::new(), WorkflowId::new(), token);
         let sandboxed = SandboxedContext::new(ctx);
 
         let result = sandbox

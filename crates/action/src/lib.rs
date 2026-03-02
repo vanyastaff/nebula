@@ -73,11 +73,17 @@ pub mod prelude;
 pub mod result;
 /// Execution sub-traits (StatelessAction, etc.).
 pub mod execution;
+/// Type-safe reference to an action type (for plugin declarations).
+pub mod reference;
+/// Dynamic handler contract for runtime (registry key → execute).
+pub mod handler;
 
 // ── Public re-exports ───────────────────────────────────────────────────────
 
 pub use action::Action;
 pub use components::ActionComponents;
+pub use handler::InternalHandler;
+pub use reference::ActionRef;
 pub use context::{ActionContext, Context, NodeContext, TriggerContext};
 pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 pub use error::ActionError;

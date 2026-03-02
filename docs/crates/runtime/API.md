@@ -1,12 +1,16 @@
 # API
 
+## Context type
+
+The execution context passed to `execute_action` is currently **NodeContext** (from nebula-action, deprecated there). The target is **ActionContext** (or TriggerContext for triggers) and `&impl Context`; see [INTERACTIONS.md](./INTERACTIONS.md#context-contract-current-vs-target) and CONSTITUTION P-001.
+
 ## Public Surface
 
 ### Stable APIs
 
 - `ActionRuntime` — main orchestrator
 - `ActionRuntime::new(registry, sandbox, data_policy, event_bus, metrics)`
-- `ActionRuntime::execute_action(action_key, input, context) -> Result<ActionResult, RuntimeError>`
+- `ActionRuntime::execute_action(action_key, input, context) -> Result<ActionResult, RuntimeError>` (context: NodeContext today; ActionContext planned)
 - `ActionRuntime::registry()`, `ActionRuntime::data_policy()`
 - `ActionRegistry` — `new()`, `register()`, `get()`, `contains()`, `remove()`, `len()`, `is_empty()`, `keys()`
 - `DataPassingPolicy` — `max_node_output_bytes`, `max_total_execution_bytes`, `large_data_strategy`
@@ -46,8 +50,9 @@ let runtime = Arc::new(ActionRuntime::new(
 ### Execution (from engine)
 
 ```rust
+// context is NodeContext today; may become ActionContext
 let result = runtime
-    .execute_action("http.request", input, node_context)
+    .execute_action("http.request", input, context)
     .await?;
 ```
 

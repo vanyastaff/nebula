@@ -2,11 +2,22 @@
 
 Action execution orchestration for the Nebula workflow engine.
 
+## Crate boundaries
+
+| Crate | Responsibility |
+|-------|-----------------|
+| **nebula-execution** | State and model only: execution state machine, plan, journal; no orchestration, no action execution. |
+| **nebula-action** | Action contract: traits (StatelessAction, etc.), ActionContext/TriggerContext, ActionResult, ActionError. |
+| **nebula-runtime** (this crate) | Action execution: registry lookup, run via sandbox, data limits, telemetry; one node at a time. |
+| **nebula-engine** | DAG orchestration: builds state/plan, applies transitions, persists; calls runtime to run nodes. |
+
+Context: `execute_action` currently takes **NodeContext** (deprecated in action); target is **ActionContext** / `&impl Context`. See [INTERACTIONS.md](./INTERACTIONS.md#context-contract-current-vs-target).
+
 ## Scope
 
 - **In scope:**
-  - **runtime** — `ActionRuntime` (registry, sandbox: Arc&lt;dyn SandboxRunner&gt;, data_policy, event_bus, metrics); `execute_action(action_key, input, NodeContext)` → `Result<ActionResult<Value>, RuntimeError>`
-  - **registry** — `ActionRegistry` (DashMap key → Arc&lt;dyn InternalHandler&gt;); `register()`, `get()`
+  - **runtime** — `ActionRuntime` (registry, sandbox: Arc&lt;dyn SandboxRunner&gt;, data_policy, event_bus, metrics); `execute_action(action_key, input, context)` → `Result<ActionResult<Value>, RuntimeError>` (context type currently NodeContext)
+  - **registry** — `ActionRegistry` (DashMap key → Arc&lt;dyn InternalHandler&gt; from nebula-plugin); `register()`, `get()`
   - **data_policy** — `DataPassingPolicy` (max_node_output_bytes, max_total_execution_bytes, large_data_strategy), `LargeDataStrategy` (Reject, SpillToBlob)
   - **error** — `RuntimeError` (ActionNotFound, ActionError, DataLimitExceeded, Internal)
   - Telemetry: EventBus (NodeStarted, NodeCompleted, NodeFailed), MetricsRegistry

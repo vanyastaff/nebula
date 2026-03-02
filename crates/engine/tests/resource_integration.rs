@@ -13,12 +13,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nebula_action::metadata::ActionMetadata;
 use nebula_action::result::ActionResult;
-use nebula_action::{ActionError, NodeContext};
+use nebula_action::{ActionContext, ActionError};
 use nebula_core::Version;
 use nebula_core::id::{NodeId, WorkflowId};
 use nebula_engine::WorkflowEngine;
 use nebula_execution::context::ExecutionBudget;
-use nebula_plugin::InternalHandler;
+use nebula_action::InternalHandler;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::{Context as ResourceContext, Manager, PoolConfig, ResourceHandle};
 use nebula_runtime::registry::ActionRegistry;
@@ -70,7 +70,7 @@ impl InternalHandler for ResourceConsumerHandler {
     async fn execute(
         &self,
         _input: serde_json::Value,
-        _ctx: NodeContext,
+        _ctx: &ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         // TODO: Resource acquisition via context is not yet wired up.
         // For now, return a placeholder to keep the test compiling.

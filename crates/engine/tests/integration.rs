@@ -10,7 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use nebula_action::metadata::ActionMetadata;
 use nebula_action::result::ActionResult;
-use nebula_action::{ActionError, NodeContext};
+use nebula_action::{ActionContext, ActionError};
 use nebula_core::Version;
 use nebula_core::id::{NodeId, WorkflowId};
 use nebula_engine::WorkflowEngine;
@@ -20,7 +20,7 @@ use nebula_metrics::naming::{
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
     NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
 };
-use nebula_plugin::InternalHandler;
+use nebula_action::InternalHandler;
 use nebula_runtime::registry::ActionRegistry;
 use nebula_runtime::{ActionRuntime, DataPassingPolicy};
 use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};
@@ -43,7 +43,7 @@ impl InternalHandler for EchoHandler {
     async fn execute(
         &self,
         input: serde_json::Value,
-        _ctx: NodeContext,
+        _ctx: &ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         Ok(ActionResult::success(input))
     }
@@ -62,7 +62,7 @@ impl InternalHandler for DoubleHandler {
     async fn execute(
         &self,
         input: serde_json::Value,
-        _ctx: NodeContext,
+        _ctx: &ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         let n = input
             .as_i64()
@@ -84,7 +84,7 @@ impl InternalHandler for Add10Handler {
     async fn execute(
         &self,
         input: serde_json::Value,
-        _ctx: NodeContext,
+        _ctx: &ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         let n = input
             .as_i64()
@@ -107,7 +107,7 @@ impl InternalHandler for SlowHandler {
     async fn execute(
         &self,
         input: serde_json::Value,
-        ctx: NodeContext,
+        ctx: &ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         tokio::select! {
             () = tokio::time::sleep(self.delay) => Ok(ActionResult::success(input)),
@@ -129,7 +129,7 @@ impl InternalHandler for FailHandler {
     async fn execute(
         &self,
         _input: serde_json::Value,
-        _ctx: NodeContext,
+        _ctx: &ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         Err(ActionError::fatal("intentional failure"))
     }
@@ -149,7 +149,7 @@ impl InternalHandler for CounterHandler {
     async fn execute(
         &self,
         input: serde_json::Value,
-        _ctx: NodeContext,
+        _ctx: &ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         self.count.fetch_add(1, Ordering::SeqCst);
         // Small yield to allow concurrency observation

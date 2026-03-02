@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
-// TODO: InternalHandler is currently unavailable
-// use nebula_action::handler::InternalHandler;
-use nebula_plugin::InternalHandler;
+use nebula_action::InternalHandler;
 
 use crate::error::RuntimeError;
 
@@ -142,10 +140,10 @@ impl Default for ActionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_action::NodeContext;
     use nebula_action::error::ActionError;
     use nebula_action::metadata::ActionMetadata;
     use nebula_action::result::ActionResult;
+    use nebula_action::ActionContext;
 
     /// Minimal test handler that echoes input.
     struct EchoHandler {
@@ -165,7 +163,7 @@ mod tests {
         async fn execute(
             &self,
             input: serde_json::Value,
-            _ctx: NodeContext,
+            _ctx: &ActionContext,
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             Ok(ActionResult::success(input))
         }

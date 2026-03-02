@@ -7,6 +7,7 @@
 pub use crate::action::Action;
 pub use crate::components::ActionComponents;
 pub use crate::context::{ActionContext, Context, TriggerContext};
+pub use crate::reference::ActionRef;
 pub use crate::execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 pub use crate::error::ActionError;
 pub use crate::metadata::ActionMetadata;

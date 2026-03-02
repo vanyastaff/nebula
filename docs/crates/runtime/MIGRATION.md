@@ -16,6 +16,7 @@ Current API is stable. Phase 2 (isolation, SpillToBlob) is additive.
 | Change | Old behavior | New behavior | Migration steps |
 |--------|--------------|--------------|-----------------|
 | execute_action with ResourceProvider | No resources | Optional resource injection | Add param; default None |
+| Context type NodeContext → ActionContext | NodeContext (deprecated in action) | ActionContext / &impl Context | Major; engine and plugin pass ActionContext; see INTERACTIONS, CONSTITUTION P-001 |
 | Isolation level required | All direct | Route by metadata | Add ActionMetadata.isolation_level |
 | BlobRef in ActionResult | N/A | Output may be BlobRef | Consumers check output type |
 

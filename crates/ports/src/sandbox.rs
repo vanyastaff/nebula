@@ -6,21 +6,19 @@
 
 use async_trait::async_trait;
 use nebula_action::result::ActionResult;
-use nebula_action::{ActionError, ActionMetadata};
-// TODO: SandboxedContext is currently unavailable
-// use nebula_action::SandboxedContext;
+use nebula_action::{ActionContext, ActionError, ActionMetadata};
 
-/// Sandboxed execution context wrapping a [`NodeContext`](nebula_action::NodeContext).
+/// Sandboxed execution context wrapping an [`ActionContext`](nebula_action::ActionContext).
 ///
-/// Holds the node context so capability checks and cancellation can be
+/// Holds the action context so capability checks and cancellation can be
 /// enforced at the sandbox boundary.
 pub struct SandboxedContext {
-    context: nebula_action::NodeContext,
+    context: ActionContext,
 }
 
 impl SandboxedContext {
-    /// Wrap a [`NodeContext`](nebula_action::NodeContext) in a sandboxed context.
-    pub fn new(context: nebula_action::NodeContext) -> Self {
+    /// Wrap an [`ActionContext`](nebula_action::ActionContext) in a sandboxed context.
+    pub fn new(context: ActionContext) -> Self {
         Self { context }
     }
 
@@ -28,16 +26,16 @@ impl SandboxedContext {
     ///
     /// Returns `Err(ActionError::Cancelled)` if the cancellation token
     /// has been triggered.
-    pub fn check_cancelled(&self) -> Result<(), nebula_action::ActionError> {
+    pub fn check_cancelled(&self) -> Result<(), ActionError> {
         if self.context.cancellation.is_cancelled() {
-            Err(nebula_action::ActionError::Cancelled)
+            Err(ActionError::Cancelled)
         } else {
             Ok(())
         }
     }
 
-    /// Access the inner [`NodeContext`](nebula_action::NodeContext).
-    pub fn inner(&self) -> &nebula_action::NodeContext {
+    /// Access the inner [`ActionContext`](nebula_action::ActionContext).
+    pub fn inner(&self) -> &ActionContext {
         &self.context
     }
 }

@@ -39,7 +39,9 @@
 | engine ↔ execution | out | Uses State, Plan, Context, Journal, IdempotencyKey/Manager, transition validators | sync | InvalidTransition, PlanValidation, DuplicateIdempotencyKey | Engine must handle errors |
 | api ↔ execution | out | Serializes ExecutionStatus, state, result for API | sync | N/A | Schema stability required |
 
-## Runtime Sequence
+## Engine / Runtime Sequence
+
+(Execution crate defines the types; engine and runtime perform the steps.)
 
 1. Engine creates execution: `ExecutionState::new`, `ExecutionPlan::from_workflow`.
 2. Engine transitions execution to Running; for each node in plan order, transitions node to Ready then Running.

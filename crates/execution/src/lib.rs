@@ -12,7 +12,7 @@
 //! - [`ExecutionStatus`] — execution-level state machine (8 states)
 //! - [`ExecutionState`] and [`NodeExecutionState`] — persistent state tracking
 //! - [`ExecutionPlan`] — pre-computed parallel execution schedule
-//! - [`ExecutionContext`] — runtime context with shared state and cancellation
+//! - [`ExecutionContext`] — lightweight runtime context (execution_id, budget)
 //! - [`JournalEntry`] — audit log of execution events
 //! - [`NodeOutput`] — node output data with metadata
 //! - [`NodeAttempt`] — individual execution attempt tracking

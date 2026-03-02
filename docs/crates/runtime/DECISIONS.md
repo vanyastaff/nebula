@@ -94,15 +94,15 @@
 
 **Context:** Handlers come from plugins. Need a common trait for registry.
 
-**Decision:** ActionRegistry stores `Arc<dyn InternalHandler>`. Plugin crate defines InternalHandler; actions implement it.
+**Decision:** ActionRegistry stores `Arc<dyn InternalHandler>`. Plugin crate defines InternalHandler; actions implement it. Context passed to `execute` is currently **NodeContext** (deprecated in nebula-action); target is **ActionContext** / `&impl Context` (see INTERACTIONS, CONSTITUTION P-001).
 
 **Alternatives considered:**
-- ProcessAction/StatefulAction adapters — commented out; may return
+- ProcessAction/StatefulAction adapters — commented out; may return when runtime aligns with StatelessAction
 - Typed registry per action — complex; dynamic key lookup needed
 
 **Trade-offs:** InternalHandler is the single handler type; metadata().key for registration.
 
-**Consequences:** All handlers must implement InternalHandler.
+**Consequences:** All handlers must implement InternalHandler. Context type migration (NodeContext → ActionContext) is a future breaking change.
 
 **Migration impact:** None.
 

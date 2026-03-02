@@ -8,9 +8,9 @@
 
 A workflow run has lifecycle and state: created, running, paused, cancelling, completed, failed, cancelled, timed_out. The engine and API need a shared model for execution state, result, and flow control so that state machine and persistence are consistent.
 
-**nebula-execution is the execution state machine and runtime flow control model for workflow runs.**
+**nebula-execution is the execution state machine and flow-control type model for workflow runs.**
 
-It answers: *What are the states and transitions of a workflow execution, and what result and flow-control types do the engine and runtime use?*
+It answers: *What are the states and transitions of a workflow execution, and what result and flow-control types do the engine and runtime use?* (Here “runtime” means the nebula-runtime crate that runs actions; execution crate only defines the types.)
 
 ```
 Engine creates execution (Created)

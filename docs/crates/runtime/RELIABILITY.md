@@ -18,7 +18,7 @@
 
 ### Timeout/Backpressure
 
-- **Action hang:** NodeContext has CancellationToken; action should respect it. No runtime-level timeout yet.
+- **Action hang:** Execution context (NodeContext today; ActionContext target) has CancellationToken; action should respect it. No runtime-level timeout yet.
 - **Data overflow:** DataLimitExceeded; execution fails.
 
 ### Partial Degradation
