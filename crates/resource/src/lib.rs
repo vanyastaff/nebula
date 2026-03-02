@@ -30,7 +30,7 @@
 //! let manager = Manager::new();
 //! manager.register(DbResource, config, PoolConfig::default())?;
 //!
-//! let ctx = Context::new(Scope::Global, "wf-1", "ex-1");
+//! let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
 //! let conn = manager.acquire("postgres", &ctx).await?;
 //! ```
 //!
@@ -53,7 +53,6 @@
 #![warn(missing_docs)]
 
 pub mod context;
-#[cfg(feature = "credentials")]
 pub mod credentials;
 pub mod error;
 pub mod guard;
@@ -63,31 +62,17 @@ pub mod reference;
 pub mod resource;
 pub mod scope;
 
-// Submodules split out from `manager` for readability
-#[cfg(feature = "tokio")]
-pub mod dependency_graph;
-#[cfg(feature = "tokio")]
+pub(crate) mod dependency_graph;
 pub(crate) mod manager_guard;
-#[cfg(feature = "tokio")]
 pub(crate) mod manager_pool;
 
-// Modules requiring the tokio runtime
-#[cfg(feature = "tokio")]
 pub mod autoscale;
-#[cfg(feature = "tokio")]
 pub mod events;
-#[cfg(feature = "tokio")]
 pub mod health;
-#[cfg(feature = "tokio")]
 pub mod hooks;
-#[cfg(feature = "tokio")]
 pub mod manager;
-#[cfg(feature = "tokio")]
-#[cfg(feature = "metrics")]
 pub mod metrics;
-#[cfg(feature = "tokio")]
 pub mod pool;
-#[cfg(feature = "tokio")]
 pub mod quarantine;
 
 pub use context::Context;
@@ -99,34 +84,30 @@ pub use reference::{ResourceProvider, ResourceRef};
 pub use resource::{Config, Resource};
 pub use scope::{Scope, Strategy};
 
-#[cfg(feature = "tokio")]
 pub use autoscale::{AutoScalePolicy, AutoScaler};
-#[cfg(feature = "tokio")]
 pub use events::{
     BackPressurePolicy, CleanupReason, EventBus, EventBusStats, EventSubscriber, ResourceEvent,
 };
-#[cfg(feature = "tokio")]
 pub use health::{
     HealthCheckConfig, HealthCheckable, HealthChecker, HealthRecord, HealthStage, HealthState,
     HealthStatus, ResourceHealthAdapter, ThresholdCallback,
 };
-#[cfg(feature = "tokio")]
 pub use hooks::{
     AuditHook, HookEvent, HookFilter, HookRegistry, HookResult, ResourceHook, SlowAcquireHook,
 };
-#[cfg(feature = "tokio")]
 pub use manager::{
     AnyGuard, AnyGuardTrait, DependencyGraph, Manager, ManagerBuilder, ResourceHandle,
     ShutdownConfig, TypedResourceGuard,
 };
-#[cfg(feature = "tokio")]
-#[cfg(feature = "metrics")]
 pub use metrics::MetricsCollector;
-#[cfg(feature = "tokio")]
 pub use pool::{Pool, PoolConfig, PoolStats, PoolStrategy};
-#[cfg(feature = "tokio")]
 pub use quarantine::{
     QuarantineConfig, QuarantineEntry, QuarantineManager, QuarantineReason, RecoveryStrategy,
+};
+
+/// Re-export id and key types from [`nebula_core`] for convenience.
+pub use nebula_core::{
+    ExecutionId, PluginKey, PluginKeyError, ResourceId, WorkflowId,
 };
 
 /// Convenience re-exports of the most commonly used types.
@@ -144,18 +125,14 @@ pub mod prelude {
     pub use crate::resource::{Config, Resource};
     pub use crate::scope::{Scope, Strategy};
 
-    #[cfg(feature = "tokio")]
     pub use crate::autoscale::AutoScalePolicy;
-    #[cfg(feature = "tokio")]
     pub use crate::events::{
         BackPressurePolicy, EventBus, EventBusStats, EventSubscriber, ResourceEvent,
     };
-    #[cfg(feature = "tokio")]
     pub use crate::health::{HealthCheckable, HealthState, HealthStatus, ResourceHealthAdapter};
-    #[cfg(feature = "tokio")]
     pub use crate::hooks::{HookEvent, HookFilter, HookRegistry, HookResult, ResourceHook};
-    #[cfg(feature = "tokio")]
     pub use crate::manager::{Manager, ManagerBuilder, ResourceHandle, TypedResourceGuard};
-    #[cfg(feature = "tokio")]
     pub use crate::pool::{Pool, PoolConfig, PoolStats, PoolStrategy};
+
+    pub use nebula_core::{ExecutionId, ResourceId, WorkflowId};
 }

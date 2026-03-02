@@ -211,7 +211,6 @@ impl HookRegistry {
             match hook.before(event, resource_id, ctx).await {
                 HookResult::Continue => {}
                 HookResult::Cancel(err) => {
-                    #[cfg(feature = "tracing")]
                     tracing::warn!(
                         hook = hook.name(),
                         resource_id,
@@ -301,7 +300,6 @@ impl ResourceHook for AuditHook {
         _ctx: &'a Context,
     ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
         Box::pin(async move {
-            #[cfg(feature = "tracing")]
             tracing::info!(
                 hook = "audit",
                 resource_id,
@@ -322,7 +320,6 @@ impl ResourceHook for AuditHook {
         success: bool,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            #[cfg(feature = "tracing")]
             tracing::info!(
                 hook = "audit",
                 resource_id,
@@ -362,7 +359,7 @@ impl SlowAcquireHook {
 
     /// Build a map key from resource ID and execution ID.
     fn timer_key(resource_id: &str, ctx: &Context) -> String {
-        format!("{}:{}", resource_id, ctx.execution_id)
+        format!("{}:{}", resource_id, ctx.execution_id.to_string())
     }
 }
 
@@ -404,7 +401,6 @@ impl ResourceHook for SlowAcquireHook {
             if let Some(start) = self.timers.lock().remove(&key) {
                 let elapsed = start.elapsed();
                 if elapsed > self.threshold {
-                    #[cfg(feature = "tracing")]
                     tracing::warn!(
                         hook = "slow-acquire",
                         resource_id,
@@ -595,7 +591,11 @@ mod tests {
         });
         registry.register(Arc::clone(&tracker) as Arc<dyn ResourceHook>);
 
-        let ctx = Context::new(crate::scope::Scope::Global, "wf", "ex");
+        let ctx = Context::new(
+            crate::scope::Scope::Global,
+            nebula_core::WorkflowId::nil(),
+            nebula_core::ExecutionId::nil(),
+        );
         let result = registry.run_before(&HookEvent::Acquire, "test", &ctx).await;
 
         assert!(result.is_err());

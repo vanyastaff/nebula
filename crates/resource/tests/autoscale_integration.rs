@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 use nebula_resource::autoscale::{AutoScalePolicy, AutoScaler};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
+use nebula_resource::{ExecutionId, WorkflowId};
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -68,7 +69,7 @@ impl Resource for CountingResource {
 }
 
 fn ctx() -> Context {
-    Context::new(Scope::Global, "wf", "ex")
+    Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
 }
 
 // ===========================================================================

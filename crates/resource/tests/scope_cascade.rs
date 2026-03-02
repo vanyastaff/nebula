@@ -13,6 +13,7 @@ use std::time::Duration;
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
+use nebula_resource::{ExecutionId, WorkflowId};
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -140,8 +141,8 @@ async fn tenant_shutdown_cascades_to_child_scopes() {
     // Verify all three are acquirable before shutdown
     let ctx = Context::new(
         Scope::execution_in_workflow("ex1", "wf1", Some("A".to_string())),
-        "wf1",
-        "ex1",
+        WorkflowId::v4(),
+        ExecutionId::v4(),
     );
     let g1 = mgr.acquire("tenant-db", &ctx).await.unwrap();
     let g2 = mgr.acquire("wf-cache", &ctx).await.unwrap();
@@ -219,7 +220,7 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
     mgr.shutdown_scope(&Scope::tenant("A")).await.unwrap();
 
     // Tenant B resources should still be accessible
-    let ctx_b = Context::new(Scope::tenant("B"), "wf1", "ex1");
+    let ctx_b = Context::new(Scope::tenant("B"), WorkflowId::v4(), ExecutionId::v4());
     let g1 = mgr.acquire("db-B", &ctx_b).await;
     assert!(
         g1.is_ok(),
@@ -228,7 +229,7 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
     drop(g1);
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let ctx_b_wf = Context::new(Scope::workflow_in_tenant("wf1", "B"), "wf1", "ex1");
+    let ctx_b_wf = Context::new(Scope::workflow_in_tenant("wf1", "B"), WorkflowId::v4(), ExecutionId::v4());
     let g2 = mgr.acquire("cache-B", &ctx_b_wf).await;
     assert!(
         g2.is_ok(),
@@ -238,7 +239,7 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Tenant A resources should be gone
-    let ctx_a = Context::new(Scope::tenant("A"), "wf1", "ex1");
+    let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::v4(), ExecutionId::v4());
     assert!(mgr.acquire("db-A", &ctx_a).await.is_err());
     assert!(mgr.acquire("cache-A", &ctx_a).await.is_err());
 }
@@ -274,8 +275,8 @@ async fn global_scope_shutdown_cascades_to_all() {
 
     let ctx = Context::new(
         Scope::execution_in_workflow("ex1", "wf1", Some("X".to_string())),
-        "wf1",
-        "ex1",
+        WorkflowId::v4(),
+        ExecutionId::v4(),
     );
     assert!(mgr.acquire("global-r", &ctx).await.is_err());
     assert!(mgr.acquire("tenant-r", &ctx).await.is_err());
@@ -312,11 +313,11 @@ async fn workflow_scope_shutdown_does_not_affect_siblings() {
         .unwrap();
 
     // wf2 resource should still work
-    let ctx_wf2 = Context::new(Scope::workflow_in_tenant("wf2", "A"), "wf2", "ex1");
+    let ctx_wf2 = Context::new(Scope::workflow_in_tenant("wf2", "A"), WorkflowId::v4(), ExecutionId::v4());
     assert!(mgr.acquire("cache-wf2", &ctx_wf2).await.is_ok());
 
     // wf1 resource should be gone
-    let ctx_wf1 = Context::new(Scope::workflow_in_tenant("wf1", "A"), "wf1", "ex1");
+    let ctx_wf1 = Context::new(Scope::workflow_in_tenant("wf1", "A"), WorkflowId::v4(), ExecutionId::v4());
     assert!(mgr.acquire("cache-wf1", &ctx_wf1).await.is_err());
 }
 
@@ -370,7 +371,7 @@ async fn shutdown_scope_follows_dependency_ordering() {
 
     // Acquire and release each to populate idle instances for cleanup.
     // Use a generous sleep to ensure the spawned return tasks complete.
-    let ctx = Context::new(Scope::tenant("A"), "wf", "ex");
+    let ctx = Context::new(Scope::tenant("A"), WorkflowId::v4(), ExecutionId::v4());
     for name in &["db", "cache", "app"] {
         let g = mgr.acquire(name, &ctx).await.unwrap();
         drop(g);
@@ -428,7 +429,7 @@ async fn scope_shutdown_invokes_cleanup() {
     .unwrap();
 
     // Acquire and release to create an idle instance
-    let ctx = Context::new(Scope::tenant("A"), "wf", "ex");
+    let ctx = Context::new(Scope::tenant("A"), WorkflowId::v4(), ExecutionId::v4());
     {
         let _g = mgr.acquire("tracked-db", &ctx).await.unwrap();
     }

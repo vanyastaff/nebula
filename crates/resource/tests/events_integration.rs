@@ -1,5 +1,7 @@
 //! Integration tests for EventBus, health state transition events,
 //! and pool exhaustion events.
+//!
+//! EventBus, health state transition events, and pool exhaustion events.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,7 +44,7 @@ impl Resource for TestResource {
 }
 
 fn ctx() -> Context {
-    Context::new(Scope::Global, "wf", "ex")
+    Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
 }
 
 fn test_config() -> TestConfig {

@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
+use nebula_resource::{ExecutionId, WorkflowId};
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -48,7 +49,7 @@ impl Resource for SimpleResource {
 }
 
 fn ctx() -> Context {
-    Context::new(Scope::Global, "wf", "ex")
+    Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +72,7 @@ async fn acquire_cancelled_mid_wait_no_slot_leak() {
     // Start a second acquire that will block waiting for the semaphore.
     // Use a CancellationToken to cancel it after 10ms.
     let token = CancellationToken::new();
-    let cancel_ctx = Context::new(Scope::Global, "wf", "ex").with_cancellation(token.clone());
+    let cancel_ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4()).with_cancellation(token.clone());
 
     let pool_clone = pool.clone();
     let handle = tokio::spawn(async move { pool_clone.acquire(&cancel_ctx).await });

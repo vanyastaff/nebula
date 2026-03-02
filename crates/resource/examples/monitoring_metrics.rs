@@ -12,7 +12,7 @@ use nebula_resource::events::{EventBus, ResourceEvent};
 use nebula_resource::manager::ManagerBuilder;
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
-use nebula_resource::{Context, Result, Scope};
+use nebula_resource::{Context, ExecutionId, Result, Scope, WorkflowId};
 
 // -----------------------------------------------------------------------------
 // Demo resource
@@ -145,7 +145,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         pool_config,
     )?;
 
-    let ctx = Context::new(Scope::Global, "wf-1", "ex-1");
+    let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
 
     // 5. Check health state (should be None initially).
     println!(

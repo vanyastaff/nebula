@@ -26,7 +26,7 @@ Resource lifecycle management for the Nebula workflow engine.
 ### Basic Resource Management
 
 ```rust
-use nebula_resource::{Manager, Resource, PoolConfig, Context, Scope};
+use nebula_resource::{Manager, Resource, PoolConfig, Context, ExecutionId, Scope, WorkflowId};
 
 // 1. Define your resource
 struct MyResource; // implements Resource trait...
@@ -42,7 +42,7 @@ manager.register(
 ).unwrap();
 
 // 4. Acquire resource
-let ctx = Context::new(Scope::Global, "workflow-id", "execution-id");
+let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
 let guard = manager.acquire("my-resource", &ctx).await.unwrap();
 
 // Use the resource...

@@ -11,11 +11,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 use crate::events::{EventBus, ResourceEvent};
 use crate::{context::Context, error::Result};
+use nebula_core::{ExecutionId, WorkflowId};
 
 // ---------------------------------------------------------------------------
 // Health types (from core/traits)
@@ -23,7 +23,7 @@ use crate::{context::Context, error::Result};
 
 /// Health status for resource health checks
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Serialize, Deserialize)]
 pub struct HealthStatus {
     /// The health state
     pub state: HealthState,
@@ -35,7 +35,7 @@ pub struct HealthStatus {
 
 /// Health state variants
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Serialize, Deserialize)]
 pub enum HealthState {
     /// Resource is fully operational
     Healthy,
@@ -358,7 +358,6 @@ impl HealthChecker {
                         cb(&resource_id, consecutive_failures);
                     }
 
-                    #[cfg(feature = "tracing")]
                     tracing::warn!(
                         "Instance {} of resource {} has failed {} consecutive health checks (threshold: {})",
                         instance_id,
@@ -642,7 +641,8 @@ where
     }
 
     async fn check(&self, ctx: &Context) -> Result<HealthStatus> {
-        let reachable = (self.check_fn)(&ctx.execution_id).await;
+        let ex_id = ctx.execution_id.to_string();
+        let reachable = (self.check_fn)(&ex_id).await;
         if reachable {
             Ok(HealthStatus::healthy())
         } else {
@@ -764,7 +764,8 @@ impl HealthStage for PerformanceStage {
 
     async fn check(&self, ctx: &Context) -> Result<HealthStatus> {
         if let Some(probe) = &self.probe {
-            let latency = probe(&ctx.execution_id).await;
+            let ex_id = ctx.execution_id.to_string();
+            let latency = probe(&ex_id).await;
             return Ok(self.evaluate(latency));
         }
 
@@ -830,7 +831,7 @@ impl<R: crate::Resource> ResourceHealthAdapter<R> {
 
 impl<R: crate::Resource> HealthCheckable for ResourceHealthAdapter<R> {
     async fn health_check(&self) -> Result<HealthStatus> {
-        let ctx = Context::new(self.scope.clone(), "health-probe", "health-probe");
+        let ctx = Context::new(self.scope.clone(), WorkflowId::nil(), ExecutionId::nil());
         let start = std::time::Instant::now();
 
         // Step 1: try to create a new instance.
@@ -1280,7 +1281,7 @@ mod tests {
 
     /// Helper: build a minimal [`Context`] for pipeline tests.
     fn test_ctx() -> Context {
-        Context::new(crate::scope::Scope::Global, "wf-test", "exec-test")
+        Context::new(crate::scope::Scope::Global, WorkflowId::nil(), ExecutionId::nil())
     }
 
     /// A test stage that records whether `check` was called.

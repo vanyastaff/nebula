@@ -353,7 +353,6 @@ impl Manager {
             let _ = self.enable_autoscaling(&id, policy.clone());
         }
 
-        #[cfg(feature = "tracing")]
         tracing::debug!(resource_id = %id, "Registered resource");
 
         Ok(())
@@ -393,7 +392,6 @@ impl Manager {
                     });
                 }
                 HealthState::Degraded { reason, .. } => {
-                    #[cfg(feature = "tracing")]
                     tracing::warn!(
                         resource_id,
                         reason = reason.as_str(),
@@ -443,7 +441,6 @@ impl Manager {
 
         match pool.acquire_any(ctx).await {
             Ok((guard, wait_duration)) => {
-                #[cfg(feature = "tracing")]
                 tracing::debug!(
                     resource_id,
                     wait_ms = wait_duration.as_millis() as u64,
@@ -808,7 +805,6 @@ impl Manager {
 
         self.auto_scalers.insert(resource_id.to_string(), handle);
 
-        #[cfg(feature = "tracing")]
         tracing::info!(resource_id, "Auto-scaling enabled");
 
         Ok(())
@@ -1004,7 +1000,11 @@ mod tests {
     }
 
     fn ctx() -> Context {
-        Context::new(Scope::Global, "wf", "ex")
+        Context::new(
+            Scope::Global,
+            nebula_core::WorkflowId::v4(),
+            nebula_core::ExecutionId::v4(),
+        )
     }
 
     #[tokio::test]

@@ -12,6 +12,7 @@ use std::time::Duration;
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
+use nebula_resource::{ExecutionId, WorkflowId};
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::quarantine::{
     QuarantineConfig, QuarantineManager, QuarantineReason, RecoveryStrategy,
@@ -54,7 +55,7 @@ fn pool_cfg() -> PoolConfig {
 }
 
 fn ctx() -> Context {
-    Context::new(Scope::Global, "wf", "ex")
+    Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
 }
 
 // ---------------------------------------------------------------------------
@@ -371,7 +372,7 @@ async fn scoped_resource_quarantine_blocks_acquire() {
     )
     .unwrap();
 
-    let ctx_a = Context::new(Scope::tenant("A"), "wf1", "ex1");
+    let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::v4(), ExecutionId::v4());
 
     // Verify it works before quarantine
     let g = mgr.acquire("tenant-db", &ctx_a).await.unwrap();

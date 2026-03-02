@@ -28,19 +28,19 @@ The `Resources` struct adapts `Manager` to `ResourceProvider`:
 pub(crate) struct Resources {
     manager: Arc<Manager>,
     scope: Scope,
-    workflow_id: String,
-    execution_id: String,
+    workflow_id: WorkflowId,
+    execution_id: ExecutionId,
     cancellation: CancellationToken,
 }
 
-let resources = Resources::new(manager, "workflow-abc", "exec-123", cancellation);
+let resources = Resources::new(manager, workflow_id, execution_id, cancellation);
 ```
 
 Its `ResourceProvider::acquire` builds a `Context` and delegates to the manager:
 
 ```rust
 async fn acquire(&self, key: &str) -> Result<Box<dyn Any + Send>, ActionError> {
-    let ctx = Context::new(self.scope.clone(), &self.workflow_id, &self.execution_id)
+    let ctx = Context::new(self.scope.clone(), self.workflow_id, self.execution_id)
         .with_cancellation(self.cancellation.clone());
     let guard = self.manager.acquire(key, &ctx).await
         .map_err(|e| ActionError::fatal(format!("resource acquire failed: {e}")))?;
@@ -75,7 +75,11 @@ Without a resource provider configured, `.resource()` returns
 The engine bridge builds a `Scope` from execution context:
 
 ```rust
-let scope = Scope::execution_in_workflow(&execution_id, &workflow_id, None);
+let scope = Scope::execution_in_workflow(
+    execution_id.to_string().as_str(),
+    workflow_id.to_string().as_str(),
+    None,
+);
 // Produces: Scope::Execution { execution_id, workflow_id: Some(...), tenant_id: None }
 ```
 

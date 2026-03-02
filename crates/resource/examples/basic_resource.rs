@@ -11,6 +11,7 @@ use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
+use nebula_resource::{ExecutionId, WorkflowId};
 
 // -- Configuration ----------------------------------------------------------
 
@@ -88,7 +89,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("Pool created (min=1, max=4)");
 
     // 3. Acquire a cache instance.
-    let ctx = Context::new(Scope::Global, "demo-wf", "demo-ex");
+    let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
     let (mut cache, _wait) = pool.acquire(&ctx).await?;
     println!("Cache acquired");
 

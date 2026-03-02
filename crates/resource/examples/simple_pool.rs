@@ -10,6 +10,7 @@ use nebula_resource::{
     pool::{Pool, PoolConfig},
     resource::{Config, Resource},
     scope::Scope,
+    ExecutionId, WorkflowId,
 };
 
 /// Example resource configuration
@@ -79,7 +80,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("  - Max size: 10\n");
 
     // Acquire a resource
-    let ctx = Context::new(Scope::Global, "example-wf", "example-ex");
+    let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
 
     println!("Acquiring resource...");
     let (resource, _wait) = pool.acquire(&ctx).await?;

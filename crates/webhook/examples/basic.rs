@@ -4,7 +4,7 @@
 //! that accepts POST requests and emits events.
 
 use async_trait::async_trait;
-use nebula_resource::{Context, Scope};
+use nebula_resource::{Context, ExecutionId, Scope, WorkflowId};
 use nebula_webhook::prelude::*;
 use std::sync::Arc;
 
@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
     println!("🚀 Webhook server started at http://localhost:8080");
 
     // Create trigger context
-    let base = Context::new(Scope::Global, "example-workflow", "execution-1");
+    let base = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
     let state = Arc::new(TriggerState::new("simple-trigger"));
     let ctx = TriggerCtx::new(
         base,

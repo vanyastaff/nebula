@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use nebula_core::{ExecutionId, WorkflowId};
 use parking_lot::Mutex;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -36,7 +37,6 @@ use crate::scope::Scope;
 // PoolConfig
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 /// Strategy for selecting idle instances from the pool.
@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// Controls whether the most-recently-used or least-recently-used
 /// idle instance is returned on acquire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Serialize, Deserialize)]
 pub enum PoolStrategy {
     /// First-in, first-out: return the **oldest** idle instance.
     ///
@@ -60,7 +60,7 @@ pub enum PoolStrategy {
 
 /// Configuration for resource pooling
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Serialize, Deserialize)]
 pub struct PoolConfig {
     /// Minimum number of resources in the pool
     pub min_size: usize,
@@ -76,11 +76,11 @@ pub struct PoolConfig {
     pub validation_interval: Duration,
     /// If set, a background task calls `maintain()` at this interval.
     /// `None` disables automatic maintenance (the default).
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub maintenance_interval: Option<Duration>,
     /// Strategy for selecting idle instances on acquire.
     /// Default: [`PoolStrategy::Fifo`].
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub strategy: PoolStrategy,
 }
 
@@ -377,12 +377,11 @@ impl<R: Resource> Pool<R> {
         let maintenance_interval = pool_config.maintenance_interval;
         let cancel = CancellationToken::new();
 
-        #[cfg(feature = "tracing")]
         tracing::debug!(
-             resource_id = %resource.id(),
-             min_size = pool_config.min_size,
-             max_size = pool_config.max_size,
-             "Created new resource pool"
+            resource_id = %resource.id(),
+            min_size = pool_config.min_size,
+            max_size = pool_config.max_size,
+            "Created new resource pool"
         );
 
         let pool = Self {
@@ -415,7 +414,7 @@ impl<R: Resource> Pool<R> {
                         () = cancel.cancelled() => break,
                     }
                     // Use a Global-scope context for background maintenance.
-                    let ctx = Context::new(Scope::Global, "maintenance", "maintenance");
+                    let ctx = Context::new(Scope::Global, WorkflowId::nil(), ExecutionId::nil());
                     let _ = maintenance_pool.maintain(&ctx).await;
                 }
             });
@@ -444,7 +443,6 @@ impl<R: Resource> Pool<R> {
             }
         };
 
-        #[cfg(feature = "tracing")]
         {
             let wait_duration = start.elapsed();
             match &result {
@@ -524,7 +522,6 @@ impl<R: Resource> Pool<R> {
             match entry {
                 Some(entry) if entry.is_expired(&inner.pool_config) => {
                     // Expired — clean up and try next
-                    #[cfg(feature = "tracing")]
                     tracing::debug!("Destroying expired resource instance");
                     Self::cleanup_with_hooks(inner, entry.instance, &CleanupReason::Expired, None)
                         .await;
@@ -537,7 +534,6 @@ impl<R: Resource> Pool<R> {
                     match inner.resource.is_valid(&entry.instance).await {
                         Ok(true) => break (entry.instance, Some(created_at)),
                         _ => {
-                            #[cfg(feature = "tracing")]
                             tracing::debug!("Destroying invalid resource instance");
                             Self::cleanup_with_hooks(
                                 inner,
@@ -552,7 +548,6 @@ impl<R: Resource> Pool<R> {
                 }
                 None => {
                     // No idle instances — create new, firing Create hooks.
-                    #[cfg(feature = "tracing")]
                     tracing::debug!("Creating new resource instance");
                     let instance = Self::create_with_hooks(inner, ctx).await?;
                     inner.state.lock().stats.created += 1;
@@ -622,7 +617,6 @@ impl<R: Resource> Pool<R> {
         };
 
         if cleanup_reason.is_none() {
-            #[cfg(feature = "tracing")]
             tracing::debug!(
                 resource_id = %inner.resource.id(),
                 "Released resource instance back to pool"
@@ -631,7 +625,6 @@ impl<R: Resource> Pool<R> {
 
         if let Some((to_cleanup, reason)) = cleanup_reason {
             Self::cleanup_with_hooks(inner, to_cleanup, &reason, None).await;
-            #[cfg(feature = "tracing")]
             tracing::debug!(
                 resource_id = %inner.resource.id(),
                 "Cleaned up resource instance on release (pool shutdown or recycle failed)"
@@ -706,7 +699,7 @@ impl<R: Resource> Pool<R> {
         let ctx = match ctx {
             Some(c) => c,
             None => {
-                synthetic_ctx = Context::new(Scope::Global, "pool-cleanup", "pool-cleanup");
+                synthetic_ctx = Context::new(Scope::Global, WorkflowId::nil(), ExecutionId::nil());
                 &synthetic_ctx
             }
         };
@@ -762,7 +755,7 @@ impl<R: Resource> Pool<R> {
     /// ignored and the method returns what it managed to create so far.
     pub async fn scale_up(&self, count: usize) -> usize {
         let inner = &self.inner;
-        let ctx = Context::new(Scope::Global, "autoscale", "autoscale");
+        let ctx = Context::new(Scope::Global, WorkflowId::nil(), ExecutionId::nil());
         let mut created = 0;
 
         for _ in 0..count {
@@ -861,7 +854,6 @@ impl<R: Resource> Pool<R> {
 
     /// Run maintenance: evict expired idle instances, ensure min_size.
     pub async fn maintain(&self, ctx: &Context) -> Result<()> {
-        #[cfg(feature = "tracing")]
         tracing::debug!(resource_id = %self.inner.resource.id(), "Running pool maintenance");
 
         let inner = &self.inner;
@@ -989,7 +981,7 @@ mod tests {
     }
 
     fn test_ctx() -> Context {
-        Context::new(Scope::Global, "wf-1", "ex-1")
+        Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
     }
 
     fn test_config() -> TestConfig {
@@ -1504,7 +1496,7 @@ mod tests {
 
         // Create a context with a cancellation token
         let token = tokio_util::sync::CancellationToken::new();
-        let ctx = Context::new(Scope::Global, "wf-1", "ex-1").with_cancellation(token.clone());
+        let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4()).with_cancellation(token.clone());
 
         // Cancel after 50ms
         let cancel_token = token.clone();

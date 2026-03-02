@@ -15,6 +15,7 @@ use std::time::Duration;
 use nebula_resource::autoscale::AutoScalePolicy;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
+use nebula_resource::{ExecutionId, WorkflowId};
 use nebula_resource::events::EventBus;
 use nebula_resource::health::HealthCheckConfig;
 use nebula_resource::health::{HealthCheckable, HealthStatus, ResourceHealthAdapter};
@@ -35,7 +36,7 @@ struct TestConfig;
 impl Config for TestConfig {}
 
 fn ctx() -> Context {
-    Context::new(Scope::Global, "wf", "ex")
+    Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
 }
 
 fn pool_config() -> PoolConfig {

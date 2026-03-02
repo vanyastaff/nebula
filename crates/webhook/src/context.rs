@@ -1,7 +1,7 @@
 //! Trigger context for webhook operations
 
 use crate::{Environment, TriggerState};
-use nebula_resource::Context;
+use nebula_resource::{Context, ExecutionId, WorkflowId};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -66,7 +66,7 @@ impl TriggerCtx {
     /// # use nebula_resource::Scope;
     /// # use std::sync::Arc;
     /// # let ctx = TriggerCtx::new(
-    /// #     Context::new(Scope::Global, "wf", "ex"),
+    /// #     Context::new(Scope::Global, nebula_resource::WorkflowId::v4(), nebula_resource::ExecutionId::v4()),
     /// #     "trigger",
     /// #     Environment::Production,
     /// #     Arc::new(TriggerState::new("trigger")),
@@ -91,7 +91,7 @@ impl TriggerCtx {
     /// # use nebula_resource::Scope;
     /// # use std::sync::Arc;
     /// # let ctx = TriggerCtx::new(
-    /// #     Context::new(Scope::Global, "wf", "ex"),
+    /// #     Context::new(Scope::Global, nebula_resource::WorkflowId::v4(), nebula_resource::ExecutionId::v4()),
     /// #     "trigger",
     /// #     Environment::Production,
     /// #     Arc::new(TriggerState::new("trigger")),
@@ -121,12 +121,12 @@ impl TriggerCtx {
     }
 
     /// Get the workflow ID
-    pub fn workflow_id(&self) -> &str {
+    pub fn workflow_id(&self) -> &WorkflowId {
         &self.base.workflow_id
     }
 
     /// Get the execution ID
-    pub fn execution_id(&self) -> &str {
+    pub fn execution_id(&self) -> &ExecutionId {
         &self.base.execution_id
     }
 
@@ -175,7 +175,9 @@ mod tests {
     use nebula_resource::Scope;
 
     fn create_test_ctx(env: Environment) -> TriggerCtx {
-        let base = Context::new(Scope::Global, "workflow-1", "execution-1");
+        let wf = WorkflowId::parse("550e8400-e29b-41d4-a716-446655440001").unwrap();
+        let ex = ExecutionId::parse("550e8400-e29b-41d4-a716-446655440002").unwrap();
+        let base = Context::new(Scope::Global, wf, ex);
         let state = Arc::new(TriggerState::new("test-trigger"));
 
         TriggerCtx::new(
@@ -207,7 +209,7 @@ mod tests {
 
     #[test]
     fn test_environment_specific_uuids() {
-        let base = Context::new(Scope::Global, "workflow-1", "execution-1");
+        let base = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
         let state = Arc::new(TriggerState::new("test-trigger"));
 
         let test_ctx = TriggerCtx::new(
@@ -251,16 +253,18 @@ mod tests {
     #[test]
     fn test_context_accessors() {
         let ctx = create_test_ctx(Environment::Production);
+        let wf = WorkflowId::parse("550e8400-e29b-41d4-a716-446655440001").unwrap();
+        let ex = ExecutionId::parse("550e8400-e29b-41d4-a716-446655440002").unwrap();
 
-        assert_eq!(ctx.workflow_id(), "workflow-1");
-        assert_eq!(ctx.execution_id(), "execution-1");
+        assert_eq!(ctx.workflow_id(), &wf);
+        assert_eq!(ctx.execution_id(), &ex);
         assert_eq!(ctx.trigger_id, "test-trigger");
         assert!(!ctx.is_cancelled());
     }
 
     #[test]
     fn test_cancellation() {
-        let base = Context::new(Scope::Global, "workflow-1", "execution-1");
+        let base = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4());
         base.cancellation.cancel();
 
         let state = Arc::new(TriggerState::new("test-trigger"));
@@ -278,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_metadata() {
-        let base = Context::new(Scope::Global, "workflow-1", "execution-1")
+        let base = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
             .with_metadata("region", "us-east-1")
             .with_metadata("env", "staging");
 

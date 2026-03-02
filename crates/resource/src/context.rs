@@ -1,12 +1,11 @@
 //! Flat resource context with cancellation support
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(feature = "credentials")]
-use std::sync::Arc;
+use nebula_core::{ExecutionId, WorkflowId};
 
-#[cfg(feature = "credentials")]
 use crate::credentials::CredentialProvider;
 use crate::scope::Scope;
 
@@ -20,9 +19,9 @@ pub struct Context {
     /// The visibility scope for this operation (e.g. Global, Tenant, Workflow).
     pub scope: Scope,
     /// Unique identifier of the current workflow execution.
-    pub execution_id: String,
+    pub execution_id: ExecutionId,
     /// Identifier of the workflow definition being executed.
-    pub workflow_id: String,
+    pub workflow_id: WorkflowId,
     /// Optional tenant identifier for multi-tenancy isolation.
     pub tenant_id: Option<String>,
     /// Cooperative cancellation token — operations should check this
@@ -31,9 +30,7 @@ pub struct Context {
     /// Arbitrary key-value pairs for passing extra context to resource
     /// implementations (e.g. region hints, priority labels).
     pub metadata: HashMap<String, String>,
-    /// Optional credential provider for fetching secrets at resource-creation
-    /// time. Gated behind the `credentials` feature.
-    #[cfg(feature = "credentials")]
+    /// Optional credential provider for fetching secrets at resource-creation time.
     pub credentials: Option<Arc<dyn CredentialProvider>>,
 }
 
@@ -45,28 +42,22 @@ impl std::fmt::Debug for Context {
             .field("workflow_id", &self.workflow_id)
             .field("tenant_id", &self.tenant_id)
             .field("cancellation", &self.cancellation)
-            .field("metadata", &self.metadata);
-        #[cfg(feature = "credentials")]
-        s.field("credentials", &self.credentials.is_some());
+            .field("metadata", &self.metadata)
+            .field("credentials", &self.credentials.is_some());
         s.finish()
     }
 }
 
 impl Context {
     /// Create a new context with the given scope, workflow ID, and execution ID.
-    pub fn new(
-        scope: Scope,
-        workflow_id: impl Into<String>,
-        execution_id: impl Into<String>,
-    ) -> Self {
+    pub fn new(scope: Scope, workflow_id: WorkflowId, execution_id: ExecutionId) -> Self {
         Self {
             scope,
-            execution_id: execution_id.into(),
-            workflow_id: workflow_id.into(),
+            execution_id,
+            workflow_id,
             tenant_id: None,
             cancellation: CancellationToken::new(),
             metadata: HashMap::new(),
-            #[cfg(feature = "credentials")]
             credentials: None,
         }
     }
@@ -90,7 +81,6 @@ impl Context {
     }
 
     /// Attach a credential provider to this context.
-    #[cfg(feature = "credentials")]
     pub fn with_credentials(mut self, provider: Arc<dyn CredentialProvider>) -> Self {
         self.credentials = Some(provider);
         self
@@ -99,26 +89,30 @@ impl Context {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::{ExecutionId, WorkflowId};
+
     use super::*;
 
     #[test]
     fn test_context_creation() {
-        let ctx = Context::new(Scope::Global, "wf-1", "ex-1");
-        assert_eq!(ctx.workflow_id, "wf-1");
-        assert_eq!(ctx.execution_id, "ex-1");
+        let wf = WorkflowId::v4();
+        let ex = ExecutionId::v4();
+        let ctx = Context::new(Scope::Global, wf, ex);
+        assert_eq!(ctx.workflow_id, wf);
+        assert_eq!(ctx.execution_id, ex);
         assert!(ctx.tenant_id.is_none());
         assert!(ctx.metadata.is_empty());
     }
 
     #[test]
     fn test_context_with_tenant() {
-        let ctx = Context::new(Scope::Global, "wf-1", "ex-1").with_tenant("tenant-a");
+        let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4()).with_tenant("tenant-a");
         assert_eq!(ctx.tenant_id.as_deref(), Some("tenant-a"));
     }
 
     #[test]
     fn test_context_with_metadata() {
-        let ctx = Context::new(Scope::Global, "wf-1", "ex-1")
+        let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
             .with_metadata("env", "prod")
             .with_metadata("region", "us-east-1");
         assert_eq!(ctx.metadata.get("env").unwrap(), "prod");
@@ -129,7 +123,7 @@ mod tests {
     fn test_context_with_cancellation() {
         let token = CancellationToken::new();
         let child = token.child_token();
-        let ctx = Context::new(Scope::Global, "wf-1", "ex-1").with_cancellation(child);
+        let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4()).with_cancellation(child);
         assert!(!ctx.cancellation.is_cancelled());
         token.cancel();
         assert!(ctx.cancellation.is_cancelled());

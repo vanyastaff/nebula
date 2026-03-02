@@ -14,6 +14,7 @@ use std::time::Duration;
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
+use nebula_resource::{ExecutionId, WorkflowId};
 use nebula_resource::hooks::{HookEvent, HookFilter, HookRegistry, HookResult, ResourceHook};
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
@@ -54,7 +55,7 @@ fn pool_cfg() -> PoolConfig {
 }
 
 fn ctx() -> Context {
-    Context::new(Scope::Global, "wf", "ex")
+    Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
 }
 
 // ---------------------------------------------------------------------------

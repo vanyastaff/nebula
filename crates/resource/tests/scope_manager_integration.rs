@@ -10,6 +10,7 @@ use std::time::Duration;
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
+use nebula_resource::{ExecutionId, WorkflowId};
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -73,8 +74,8 @@ async fn two_tenants_each_access_only_own_resources() {
     )
     .unwrap();
 
-    let ctx_a = Context::new(Scope::tenant("A"), "wf1", "ex1");
-    let ctx_b = Context::new(Scope::tenant("B"), "wf1", "ex1");
+    let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::v4(), ExecutionId::v4());
+    let ctx_b = Context::new(Scope::tenant("B"), WorkflowId::v4(), ExecutionId::v4());
 
     // Tenant A can access db-A, not db-B
     let g = mgr.acquire("db-A", &ctx_a).await.unwrap();
@@ -128,8 +129,8 @@ async fn global_resource_shared_across_tenants() {
     )
     .unwrap();
 
-    let ctx_a = Context::new(Scope::tenant("A"), "wf1", "ex1");
-    let ctx_b = Context::new(Scope::tenant("B"), "wf1", "ex1");
+    let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::v4(), ExecutionId::v4());
+    let ctx_b = Context::new(Scope::tenant("B"), WorkflowId::v4(), ExecutionId::v4());
 
     // Both tenants can access global "metrics"
     let g1 = mgr.acquire("metrics", &ctx_a).await.unwrap();
@@ -165,8 +166,8 @@ async fn workflow_resource_accessible_from_child_execution() {
     // Execution inside wf1 can access it
     let exec_ctx = Context::new(
         Scope::execution_in_workflow("ex1", "wf1", None),
-        "wf1",
-        "ex1",
+        WorkflowId::v4(),
+        ExecutionId::v4(),
     );
     let g = mgr.acquire("wf-cache", &exec_ctx).await.unwrap();
     assert!(g.as_any().downcast_ref::<String>().is_some());
@@ -176,8 +177,8 @@ async fn workflow_resource_accessible_from_child_execution() {
     // Execution inside wf2 cannot
     let other_exec_ctx = Context::new(
         Scope::execution_in_workflow("ex2", "wf2", None),
-        "wf2",
-        "ex2",
+        WorkflowId::v4(),
+        ExecutionId::v4(),
     );
     assert!(mgr.acquire("wf-cache", &other_exec_ctx).await.is_err());
 }
@@ -209,15 +210,15 @@ async fn workflow_resource_denied_from_different_workflow() {
     // Context for wf1 execution
     let wf1_ctx = Context::new(
         Scope::execution_in_workflow("ex1", "wf1", Some("A".to_string())),
-        "wf1",
-        "ex1",
+        WorkflowId::v4(),
+        ExecutionId::v4(),
     );
 
     // Context for wf2 execution
     let wf2_ctx = Context::new(
         Scope::execution_in_workflow("ex2", "wf2", Some("A".to_string())),
-        "wf2",
-        "ex2",
+        WorkflowId::v4(),
+        ExecutionId::v4(),
     );
 
     // wf1 context can access wf1-db, not wf2-db
@@ -253,8 +254,8 @@ async fn tenant_resource_accessible_from_nested_action() {
             Some("wf1".to_string()),
             Some("A".to_string()),
         ),
-        "wf1",
-        "ex1",
+        WorkflowId::v4(),
+        ExecutionId::v4(),
     );
     let g = mgr.acquire("tenant-db", &action_ctx).await.unwrap();
     assert!(g.as_any().downcast_ref::<String>().is_some());
@@ -269,8 +270,8 @@ async fn tenant_resource_accessible_from_nested_action() {
             Some("wf2".to_string()),
             Some("B".to_string()),
         ),
-        "wf2",
-        "ex2",
+        WorkflowId::v4(),
+        ExecutionId::v4(),
     );
     assert!(mgr.acquire("tenant-db", &action_ctx_b).await.is_err());
 }
@@ -316,8 +317,8 @@ async fn full_isolation_matrix_across_scope_levels() {
     // Context at execution level inside tenant A / wf1 / ex1
     let exec_ctx = Context::new(
         Scope::execution_in_workflow("ex1", "wf1", Some("A".to_string())),
-        "wf1",
-        "ex1",
+        WorkflowId::v4(),
+        ExecutionId::v4(),
     );
 
     // This context should be able to access: global, tenant-A, wf1, ex1
@@ -327,7 +328,7 @@ async fn full_isolation_matrix_across_scope_levels() {
     mgr.acquire("execution-r", &exec_ctx).await.unwrap();
 
     // Context at tenant level (broader than wf/execution scope)
-    let tenant_ctx = Context::new(Scope::tenant("A"), "wf1", "ex1");
+    let tenant_ctx = Context::new(Scope::tenant("A"), WorkflowId::v4(), ExecutionId::v4());
 
     // Tenant context can access global and tenant, but NOT workflow or execution
     mgr.acquire("global-r", &tenant_ctx).await.unwrap();
@@ -374,7 +375,7 @@ async fn concurrent_multi_tenant_acquire() {
     let mgr_b = mgr.clone();
 
     let handle_a = tokio::spawn(async move {
-        let ctx = Context::new(Scope::tenant("A"), "wf", "ex");
+        let ctx = Context::new(Scope::tenant("A"), WorkflowId::v4(), ExecutionId::v4());
         let g1 = mgr_a.acquire("pool-A", &ctx).await.unwrap();
         let g2 = mgr_a.acquire("pool-A", &ctx).await.unwrap();
         // Cannot access pool-B
@@ -384,7 +385,7 @@ async fn concurrent_multi_tenant_acquire() {
     });
 
     let handle_b = tokio::spawn(async move {
-        let ctx = Context::new(Scope::tenant("B"), "wf", "ex");
+        let ctx = Context::new(Scope::tenant("B"), WorkflowId::v4(), ExecutionId::v4());
         let g1 = mgr_b.acquire("pool-B", &ctx).await.unwrap();
         let g2 = mgr_b.acquire("pool-B", &ctx).await.unwrap();
         // Cannot access pool-A

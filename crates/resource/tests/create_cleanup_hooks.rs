@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use nebula_resource::context::Context;
+use nebula_resource::{ExecutionId, WorkflowId};
 use nebula_resource::error::Result;
 use nebula_resource::hooks::{HookEvent, HookFilter, HookRegistry, HookResult, ResourceHook};
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -29,7 +30,7 @@ struct TestConfig;
 impl Config for TestConfig {}
 
 fn ctx() -> Context {
-    Context::new(Scope::Global, "wf", "ex")
+    Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
 }
 
 fn pool_config() -> PoolConfig {

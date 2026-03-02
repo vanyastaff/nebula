@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
+use nebula_resource::{ExecutionId, WorkflowId};
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -24,7 +25,7 @@ struct TestConfig;
 impl Config for TestConfig {}
 
 fn ctx() -> Context {
-    Context::new(Scope::Global, "wf", "ex")
+    Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
 }
 
 // ---------------------------------------------------------------------------
