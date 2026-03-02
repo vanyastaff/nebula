@@ -12,6 +12,7 @@ use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
+use nebula_resource::{ExecutionId, WorkflowId};
 
 // -- Minimal no-op resource for benchmarking pool overhead only --
 
@@ -48,7 +49,7 @@ impl Resource for NoOpResource {
 }
 
 fn bench_ctx() -> Context {
-    Context::new(Scope::Global, "bench-wf", "bench-ex")
+    Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
 }
 
 fn pool_config(max_size: usize) -> PoolConfig {
