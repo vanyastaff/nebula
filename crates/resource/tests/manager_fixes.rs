@@ -213,12 +213,12 @@ async fn deregister_releases_quarantine() {
     // Drain available events
     for _ in 0..5 {
         match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
-            Ok(Ok(nebula_resource::ResourceEvent::QuarantineReleased { resource_id, .. })) => {
+            Ok(Some(nebula_resource::ResourceEvent::QuarantineReleased { resource_id, .. })) => {
                 assert_eq!(resource_id, "simple");
                 found_quarantine_released = true;
                 break;
             }
-            Ok(Ok(_)) => continue,
+            Ok(Some(_)) => continue,
             _ => break,
         }
     }

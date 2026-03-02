@@ -395,12 +395,12 @@ async fn pool_shutdown_emits_cleaned_up_shutdown_events() {
     // Drain all events with a short timeout
     loop {
         match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
-            Ok(Ok(ResourceEvent::CleanedUp { reason, .. })) => {
+            Ok(Some(ResourceEvent::CleanedUp { reason, .. })) => {
                 if matches!(reason, nebula_resource::events::CleanupReason::Shutdown) {
                     found_shutdown_cleanup = true;
                 }
             }
-            Ok(Ok(_)) => continue, // skip non-CleanedUp events (e.g. Released)
+            Ok(Some(_)) => continue, // skip non-CleanedUp events (e.g. Released)
             _ => break,
         }
     }
@@ -441,7 +441,7 @@ async fn pool_guard_drop_emits_released_event() {
     let mut found_released = false;
     loop {
         match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
-            Ok(Ok(ResourceEvent::Released {
+            Ok(Some(ResourceEvent::Released {
                 resource_id,
                 usage_duration,
             })) => {
@@ -450,7 +450,7 @@ async fn pool_guard_drop_emits_released_event() {
                 found_released = true;
                 break;
             }
-            Ok(Ok(_)) => continue, // skip other events
+            Ok(Some(_)) => continue, // skip other events
             _ => break,
         }
     }

@@ -135,7 +135,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // Spawn a task that prints events as they arrive.
     tokio::spawn(async move {
-        while let Ok(event) = event_rx.recv().await {
+        while let Some(event) = event_rx.recv().await {
             println!("  [event] {event:?}");
         }
     });

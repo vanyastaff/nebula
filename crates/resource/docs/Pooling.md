@@ -146,7 +146,7 @@ let pool = Pool::with_event_bus(resource, config, pool_config, Some(event_bus))?
 
 // In another task:
 tokio::spawn(async move {
-    while let Ok(event) = rx.recv().await {
+    while let Some(event) = rx.recv().await {
         match event {
             ResourceEvent::Acquired { resource_id, .. } => { /* log */ }
             ResourceEvent::Released { resource_id, usage_duration, .. } => { /* metrics */ }

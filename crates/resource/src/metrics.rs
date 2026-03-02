@@ -7,10 +7,9 @@
 
 use std::sync::Arc;
 
-use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
-use crate::events::{EventBus, ResourceEvent};
+use crate::events::{EventBus, EventSubscriber, ResourceEvent};
 
 /// Background metrics collector that subscribes to an [`EventBus`]
 /// and records counters/histograms via the `metrics` crate.
@@ -24,7 +23,7 @@ use crate::events::{EventBus, ResourceEvent};
 /// tokio::spawn(collector.run(cancel));
 /// ```
 pub struct MetricsCollector {
-    receiver: broadcast::Receiver<ResourceEvent>,
+    subscriber: EventSubscriber<ResourceEvent>,
 }
 
 impl MetricsCollector {
@@ -32,27 +31,22 @@ impl MetricsCollector {
     #[must_use]
     pub fn new(event_bus: &EventBus) -> Self {
         Self {
-            receiver: event_bus.subscribe(),
+            subscriber: event_bus.subscribe(),
         }
     }
 
     /// Run the collector loop, consuming events and updating metrics.
     ///
-    /// This method runs until the broadcast channel is closed (i.e. the
+    /// This method runs until the event bus is closed (i.e. the
     /// `EventBus` is dropped) or the `cancel` token is cancelled.
-    /// Lagged events are skipped with a warning.
+    /// Lagged events are skipped internally by the eventbus subscriber.
     pub async fn run(mut self, cancel: CancellationToken) {
         loop {
             tokio::select! {
-                result = self.receiver.recv() => {
-                    match result {
-                        Ok(event) => Self::record_event(&event),
-                        Err(broadcast::error::RecvError::Lagged(n)) => {
-                            #[cfg(feature = "tracing")]
-                            tracing::warn!(skipped = n, "MetricsCollector lagged behind event bus");
-                            let _ = n;
-                        }
-                        Err(broadcast::error::RecvError::Closed) => break,
+                event = self.subscriber.recv() => {
+                    match event {
+                        Some(e) => Self::record_event(&e),
+                        None => break,
                     }
                 }
                 () = cancel.cancelled() => break,

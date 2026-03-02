@@ -76,7 +76,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let event_bus_clone = Arc::clone(&event_bus);
     tokio::spawn(async move {
         let mut rx = event_bus_clone.subscribe();
-        while let Ok(ev) = rx.recv().await {
+        while let Some(ev) = rx.recv().await {
             match &ev {
                 ResourceEvent::Created { resource_id, scope } => {
                     println!("  [event] Created resource_id={resource_id} scope={scope:?}");

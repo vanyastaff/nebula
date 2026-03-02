@@ -195,6 +195,13 @@ impl<E: Clone + Send> EventBus<E> {
     }
 }
 
+impl<E: Clone + Send> Default for EventBus<E> {
+    /// Default buffer size is 1024 (matches common resource/telemetry usage).
+    fn default() -> Self {
+        Self::new(1024)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

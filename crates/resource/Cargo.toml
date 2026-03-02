@@ -18,7 +18,7 @@ default = ["std", "tokio", "serde"]
 std = []
 
 # Runtime features
-tokio = ["dep:tokio", "tokio-util/rt"]
+tokio = ["dep:tokio", "tokio-util/rt", "nebula-eventbus"]
 
 # Serialization
 serde = ["dep:serde", "dep:serde_json"]
@@ -36,6 +36,7 @@ full = ["std", "tokio", "serde", "metrics", "tracing", "credentials"]
 [dependencies]
 # Nebula ecosystem
 nebula-credential = { path = "../credential", optional = true }
+nebula-eventbus = { path = "../eventbus", optional = true }
 
 # Async runtime
 tokio = { version = "1.0", features = ["rt-multi-thread", "time", "sync", "macros"], optional = true }
