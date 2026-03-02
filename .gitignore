@@ -6,10 +6,6 @@
 debug/
 target/
 **/target/
-.claude/
-.agents/
-.cursor/
-.codex/
 
 # Cargo lock file (for libraries, should be committed for binaries)
 # Cargo.lock
@@ -290,30 +286,29 @@ docker-compose.override.yml
 .dockerignore.local
 
 # ============================================================================
-# CLAUDE CODE / AI TOOLS
+# AI TOOLS & AGENTS — не отслеживать
 # ============================================================================
 
-# AI Agent directories (ignore completely)
-#.claude/
+# Agent/IDE config and data
+.claude/
+.agents/
+.cursor/
+.codex/
 .junie/
+.specify/
+.claudeignore
+.cursorrules
+.aider*
 
-# AI-generated files that should not be committed
+# Project docs for AI
+AGENTS.md
+CLAUDE.md
+
+# AI-generated and temp
 **/ai-generated/
 **/.ai-temp/
 
-# ============================================================================
-# PROJECT SPECIFIC
-# ============================================================================
 
-# Nebula-specific ignores (add your custom patterns here)
-# Example:
-# **/sandbox/
-# **/experimental/
-# **/playground/
-
-# Upgrade/migration planning files
-crates/nebula-validator/upgrade/.temp/
-/.temp/
 
 # Debug output artifacts
 check_output.txt
