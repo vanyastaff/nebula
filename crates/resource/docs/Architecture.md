@@ -355,7 +355,7 @@ the event bus is dropped.
 | `std` (default)| --                                                        | tokio/rt, tracing/std                     |
 | `tokio` (default)| pool, manager, events, health, hooks, quarantine, autoscale | tokio                                   |
 | `serde` (default)| serde derives on config types                            | serde, serde_json                         |
-| `metrics`      | metrics.rs                                                | metrics, metrics-exporter-prometheus      |
+| `metrics`      | metrics.rs                                                | nebula-metrics, metrics (export in app)   |
 | `tracing`      | structured logging throughout                             | tracing, tracing-opentelemetry, opentelemetry |
 | `credentials`  | credentials.rs, Context.credentials field                 | nebula-credential                         |
 | `full`         | all of the above                                          | all of the above                          |

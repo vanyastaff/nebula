@@ -1,12 +1,28 @@
 //! Metrics collection for resource lifecycle events.
 //!
-//! Subscribes to the [`EventBus`] and translates
-//! events into counters, gauges, and histograms via the `metrics` crate.
+//! Subscribes to the [`EventBus`] and translates events into counters, gauges,
+//! and histograms via the `metrics` crate. Metric names follow the
+//! `nebula_resource_*` convention from `nebula-metrics`.
 //!
 //! Gated behind the `metrics` feature.
 
 use std::sync::Arc;
 
+use nebula_metrics::naming::{
+    NEBULA_RESOURCE_ACQUIRE_TOTAL,
+    NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
+    NEBULA_RESOURCE_CLEANUP_TOTAL,
+    NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
+    NEBULA_RESOURCE_CREATE_TOTAL,
+    NEBULA_RESOURCE_ERROR_TOTAL,
+    NEBULA_RESOURCE_HEALTH_STATE,
+    NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL,
+    NEBULA_RESOURCE_POOL_WAITERS,
+    NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL,
+    NEBULA_RESOURCE_QUARANTINE_TOTAL,
+    NEBULA_RESOURCE_RELEASE_TOTAL,
+    NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::events::{EventBus, EventSubscriber, ResourceEvent};
@@ -58,17 +74,17 @@ impl MetricsCollector {
     fn record_event(event: &ResourceEvent) {
         match event {
             ResourceEvent::Created { resource_id, .. } => {
-                metrics::counter!("resource.create.total", "resource_id" => resource_id.clone())
+                metrics::counter!(NEBULA_RESOURCE_CREATE_TOTAL, "resource_id" => resource_id.clone())
                     .increment(1);
             }
             ResourceEvent::Acquired {
                 resource_id,
                 wait_duration,
             } => {
-                metrics::counter!("resource.acquire.total", "resource_id" => resource_id.clone())
+                metrics::counter!(NEBULA_RESOURCE_ACQUIRE_TOTAL, "resource_id" => resource_id.clone())
                     .increment(1);
                 metrics::histogram!(
-                    "resource.acquire.wait_duration_seconds",
+                    NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
                     "resource_id" => resource_id.clone()
                 )
                 .record(wait_duration.as_secs_f64());
@@ -77,20 +93,20 @@ impl MetricsCollector {
                 resource_id,
                 usage_duration,
             } => {
-                metrics::counter!("resource.release.total", "resource_id" => resource_id.clone())
+                metrics::counter!(NEBULA_RESOURCE_RELEASE_TOTAL, "resource_id" => resource_id.clone())
                     .increment(1);
                 metrics::histogram!(
-                    "resource.usage.duration_seconds",
+                    NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
                     "resource_id" => resource_id.clone()
                 )
                 .record(usage_duration.as_secs_f64());
             }
             ResourceEvent::CleanedUp { resource_id, .. } => {
-                metrics::counter!("resource.cleanup.total", "resource_id" => resource_id.clone())
+                metrics::counter!(NEBULA_RESOURCE_CLEANUP_TOTAL, "resource_id" => resource_id.clone())
                     .increment(1);
             }
             ResourceEvent::Error { resource_id, .. } => {
-                metrics::counter!("resource.error.total", "resource_id" => resource_id.clone())
+                metrics::counter!(NEBULA_RESOURCE_ERROR_TOTAL, "resource_id" => resource_id.clone())
                     .increment(1);
             }
             ResourceEvent::HealthChanged {
@@ -103,7 +119,7 @@ impl MetricsCollector {
                     crate::health::HealthState::Unknown => 0.5,
                 };
                 metrics::gauge!(
-                    "resource.health.state",
+                    NEBULA_RESOURCE_HEALTH_STATE,
                     "resource_id" => resource_id.clone()
                 )
                 .set(score);
@@ -113,33 +129,33 @@ impl MetricsCollector {
                 waiters,
             } => {
                 metrics::counter!(
-                    "resource.pool.exhausted.total",
+                    NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL,
                     "resource_id" => resource_id.clone()
                 )
                 .increment(1);
                 metrics::gauge!(
-                    "resource.pool.waiters",
+                    NEBULA_RESOURCE_POOL_WAITERS,
                     "resource_id" => resource_id.clone()
                 )
                 .set(*waiters as f64);
             }
             ResourceEvent::Quarantined { resource_id, .. } => {
                 metrics::counter!(
-                    "resource.quarantine.total",
+                    NEBULA_RESOURCE_QUARANTINE_TOTAL,
                     "resource_id" => resource_id.clone()
                 )
                 .increment(1);
             }
             ResourceEvent::QuarantineReleased { resource_id, .. } => {
                 metrics::counter!(
-                    "resource.quarantine.released.total",
+                    NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL,
                     "resource_id" => resource_id.clone()
                 )
                 .increment(1);
             }
             ResourceEvent::ConfigReloaded { resource_id, .. } => {
                 metrics::counter!(
-                    "resource.config.reloaded.total",
+                    NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
                     "resource_id" => resource_id.clone()
                 )
                 .increment(1);

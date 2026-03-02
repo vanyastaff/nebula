@@ -2,12 +2,17 @@
 
 ## Public Surface (Planned)
 
-### Stable APIs (Target)
+### Stable APIs (Current)
 
-- `MetricsRegistry` — unified registry or adapter
-- `PrometheusExporter` — `/metrics` HTTP endpoint
-- `OtlpExporter` — OTLP push (optional)
-- `MetricNaming` — standard metric names
+- `naming` — constants: `NEBULA_WORKFLOW_*`, `NEBULA_ACTION_*`
+- `TelemetryAdapter` — adapter over `MetricsRegistry` with typed accessors
+- `PrometheusExporter` — holds `Arc<MetricsRegistry>`, `.snapshot()` returns Prometheus text
+- `snapshot(registry)` — render registry to Prometheus exposition format
+- `content_type()` — `text/plain; version=0.0.4; charset=utf-8`
+
+### Planned
+
+- `OtlpExporter` — OTLP push (optional feature)
 
 ### Current APIs (No Crate)
 
@@ -21,13 +26,18 @@ Metrics APIs are implemented in other crates:
 
 ## Usage Patterns (Current)
 
-### Engine/Runtime (Telemetry)
+### Engine/Runtime (Standard Names)
+
+Engine and runtime use `nebula_metrics::naming` constants and record under `nebula_*` names:
 
 ```rust
+use nebula_metrics::naming::{NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_DURATION_SECONDS};
 let metrics = Arc::new(MetricsRegistry::new());
-metrics.counter("actions_executed_total").inc();
-metrics.histogram("action_duration_seconds").observe(duration.as_secs_f64());
+metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).inc();
+metrics.histogram(NEBULA_ACTION_DURATION_SECONDS).observe(duration.as_secs_f64());
 ```
+
+Or use `TelemetryAdapter` for typed accessors: `adapter.action_executions_total().inc()`.
 
 ### Log Observability
 

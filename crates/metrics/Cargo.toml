@@ -1,0 +1,33 @@
+[package]
+name = "nebula-metrics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description = "Unified metric naming and export adapters for the Nebula workflow engine"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+nebula-telemetry = { path = "../telemetry" }
+thiserror = { workspace = true }
+
+[features]
+default = []
+# Prometheus text format export and /metrics endpoint (Phase 3)
+prometheus = ["dep:metrics", "dep:metrics-exporter-prometheus"]
+
+[dependencies.metrics]
+workspace = true
+optional = true
+
+[dependencies.metrics-exporter-prometheus]
+workspace = true
+optional = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+pretty_assertions = { workspace = true }

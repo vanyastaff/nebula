@@ -11,6 +11,7 @@ members = [
     "crates/expression",
     "crates/log",
     "crates/memory",
+    "crates/metrics",
     "crates/plugin",
     "crates/parameter",
     "crates/ports",

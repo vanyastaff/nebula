@@ -20,8 +20,15 @@ use nebula_plugin::InternalHandler;
 use nebula_runtime::registry::ActionRegistry;
 use nebula_runtime::{ActionRuntime, DataPassingPolicy};
 use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};
+use nebula_metrics::naming::{
+    NEBULA_ACTION_EXECUTIONS_TOTAL,
+    NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
+    NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL,
+    NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
+};
 use nebula_telemetry::event::EventBus;
 use nebula_telemetry::metrics::MetricsRegistry;
+use nebula_telemetry::{NoopTelemetry, TelemetryService};
 use nebula_workflow::{Connection, NodeDefinition, WorkflowConfig, WorkflowDefinition};
 
 // ---------------------------------------------------------------------------
@@ -196,6 +203,45 @@ fn make_engine(
 
     let engine = WorkflowEngine::new(runtime, event_bus.clone(), metrics.clone());
     (engine, event_bus, metrics)
+}
+
+/// Engine and runtime built from a single TelemetryService share the same bus and metrics.
+#[tokio::test]
+async fn engine_with_telemetry_service_wires_bus_and_metrics() {
+    let telemetry: Arc<dyn TelemetryService> = NoopTelemetry::arc();
+    let _event_bus = telemetry.event_bus_arc();
+    let metrics = telemetry.metrics_arc();
+
+    let echo_id = ActionId::v4();
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
+
+    let executor: ActionExecutor =
+        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
+    let sandbox = Arc::new(InProcessSandbox::new(executor));
+
+    let runtime = Arc::new(ActionRuntime::with_telemetry(
+        registry,
+        sandbox,
+        DataPassingPolicy::default(),
+        telemetry.clone(),
+    ));
+    let mut engine = WorkflowEngine::with_telemetry(runtime, telemetry);
+    engine.map_action(echo_id, "echo");
+
+    let n = NodeId::v4();
+    let wf = make_workflow(
+        vec![NodeDefinition::new(n, "echo", echo_id)],
+        vec![],
+    );
+
+    let _result = engine
+        .execute_workflow(&wf, serde_json::json!("hi"), ExecutionBudget::default())
+        .await
+        .unwrap();
+
+    // Metrics are updated regardless of subscribers; bus only counts delivered events.
+    assert!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get() >= 1);
 }
 
 fn meta(key: &str) -> ActionMetadata {
@@ -497,9 +543,9 @@ async fn telemetry_covers_full_lifecycle() {
     );
 
     // Metrics should reflect the execution
-    assert!(metrics.counter("executions_started_total").get() > 0);
-    assert!(metrics.counter("executions_completed_total").get() > 0);
-    assert!(metrics.counter("actions_executed_total").get() >= 2);
+    assert!(metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL).get() > 0);
+    assert!(metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL).get() > 0);
+    assert!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get() >= 2);
 }
 
 /// Verify that execution with many parallel nodes works with concurrency control.
@@ -606,7 +652,7 @@ async fn metrics_accurate_on_failure() {
         .unwrap();
 
     assert!(result.is_failure());
-    assert_eq!(metrics.counter("executions_started_total").get(), 1);
-    assert_eq!(metrics.counter("executions_failed_total").get(), 1);
-    assert_eq!(metrics.counter("executions_completed_total").get(), 0);
+    assert_eq!(metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL).get(), 1);
+    assert_eq!(metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL).get(), 1);
+    assert_eq!(metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL).get(), 0);
 }

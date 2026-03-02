@@ -16,6 +16,7 @@ nebula-core = { path = "../core" }
 nebula-action = { path = "../action" }
 nebula-plugin = { path = "../plugin" }
 nebula-ports = { path = "../ports" }
+nebula-metrics = { path = "../metrics" }
 nebula-telemetry = { path = "../telemetry" }
 async-trait = { workspace = true }
 tokio = { workspace = true }

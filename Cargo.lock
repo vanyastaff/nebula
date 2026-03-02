@@ -6254,6 +6254,7 @@ dependencies = [
  "nebula-core",
  "nebula-execution",
  "nebula-expression",
+ "nebula-metrics",
  "nebula-parameter",
  "nebula-plugin",
  "nebula-resource",
@@ -6394,6 +6395,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-metrics"
+version = "0.1.0"
+dependencies = [
+ "metrics",
+ "metrics-exporter-prometheus",
+ "nebula-telemetry",
+ "pretty_assertions",
+ "thiserror 2.0.17",
+ "tokio",
+]
+
+[[package]]
 name = "nebula-parameter"
 version = "0.1.0"
 dependencies = [
@@ -6478,11 +6491,10 @@ dependencies = [
  "criterion",
  "dashmap",
  "metrics",
- "metrics-exporter-prometheus",
  "mockall",
  "nebula-credential",
  "nebula-eventbus",
- "opentelemetry",
+ "nebula-metrics",
  "parking_lot",
  "proptest",
  "serde",
@@ -6494,7 +6506,6 @@ dependencies = [
  "tokio-test",
  "tokio-util",
  "tracing",
- "tracing-opentelemetry",
  "uuid",
 ]
 
@@ -6506,6 +6517,7 @@ dependencies = [
  "dashmap",
  "nebula-action",
  "nebula-core",
+ "nebula-metrics",
  "nebula-plugin",
  "nebula-ports",
  "nebula-sandbox-inprocess",
@@ -6614,6 +6626,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "nebula-core",
+ "nebula-eventbus",
  "pretty_assertions",
  "serde",
  "serde_json",
