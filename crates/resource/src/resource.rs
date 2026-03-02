@@ -8,6 +8,7 @@ use std::future::Future;
 use crate::context::Context;
 use crate::error::Result;
 use crate::metadata::ResourceMetadata;
+use nebula_core::deps::FromRegistry;
 
 /// Configuration trait for resource types.
 pub trait Config: Send + Sync + 'static {
@@ -27,6 +28,14 @@ pub trait Resource: Send + Sync + 'static {
 
     /// The instance type produced by this resource.
     type Instance: Send + Sync + 'static;
+
+    /// Statically declared dependencies for this resource type.
+    ///
+    /// Implementations must declare this explicitly using the
+    /// [`Requires`](nebula_core::deps::Requires) marker and the
+    /// [`deps!`](nebula_core::deps) macro. Use `deps![]` (or `()`) for
+    /// leaf resources without dependencies.
+    type Deps: FromRegistry;
 
     /// Unique string identifier for this resource type (e.g. "postgres", "redis").
     fn id(&self) -> &str;
@@ -63,6 +72,8 @@ pub trait Resource: Send + Sync + 'static {
         }
     }
 
+    // Existing string-based dependencies are kept for now for compatibility.
+    // They will be gradually replaced by `type Deps`.
     /// List resource IDs that this resource depends on.
     fn dependencies(&self) -> Vec<&str> {
         Vec::new()

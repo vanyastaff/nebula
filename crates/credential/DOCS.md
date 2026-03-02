@@ -24,19 +24,37 @@ Zero-copy string that zeroizes memory on drop. Used for passwords, tokens, keys.
 
 ```rust
 #[async_trait]
-pub trait Credential {
-    type Output;
-    async fn authenticate(&self, ctx: &CredentialContext)
-        -> Result<Self::Output, CredentialError>;
+pub trait CredentialType {
+    /// Statically declared dependencies for this credential type.
+    ///
+    /// Use `nebula_core::deps::Requires<T>` markers and the `deps![..]` macro
+    /// to describe which resources a credential depends on. Example:
+    ///
+    /// `type Deps = deps![GoogleAuthResource];`
+    type Deps: FromRegistry;
+
+    type Input: Serialize + DeserializeOwned + Send + Sync + 'static;
+    type State: CredentialState;
+
+    fn description() -> CredentialDescription
+    where
+        Self: Sized;
+
+    async fn initialize(
+        &self,
+        input: &Self::Input,
+        ctx: &mut CredentialContext,
+    ) -> Result<InitializeResult<Self::State>, CredentialError>;
 }
 
 #[async_trait]
-pub trait InteractiveCredential {
-    async fn initialize(&self, ctx: &CredentialContext)
-        -> Result<InitializeResult, CredentialError>;
-
-    async fn resume(&self, input: UserInput, ctx: &CredentialContext)
-        -> Result<FlowCredential, CredentialError>;
+pub trait InteractiveCredential: CredentialType {
+    async fn continue_initialization(
+        &self,
+        partial_state: PartialState,
+        user_input: UserInput,
+        ctx: &mut CredentialContext,
+    ) -> Result<InitializeResult<Self::State>, CredentialError>;
 }
 
 pub trait StateStore {

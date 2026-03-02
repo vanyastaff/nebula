@@ -33,6 +33,8 @@ pub mod id;
 pub mod scope;
 pub mod traits;
 pub mod types;
+/// Dependency graph primitives shared across crates.
+pub mod deps;
 
 // Re-export main types for convenience
 pub use constants::*;
@@ -41,6 +43,7 @@ pub use keys::*;
 pub use scope::*;
 pub use traits::*;
 pub use types::*;
+pub use deps::*;
 
 // Re-export common error types
 pub use error::*;
@@ -61,4 +64,5 @@ pub mod prelude {
     };
 
     pub use crate::keys::*;
+    pub use crate::deps::{Dependency, DependencyError, DependencyKind, FromRegistry, Requires};
 }

@@ -16,6 +16,8 @@ Resource lifecycle management for the Nebula workflow engine.
 
 - **Generic Resource Pool**: `Pool<R>` supports any type implementing the `Resource` trait.
 - **Dependency Graph**: Detects cycles and ensures correct initialization order.
+- **Typed Deps System**: Resources declare `type Deps` using `Requires<T>` / `deps![T1, T2]`
+  so the engine can build a global DAG of resources and credentials at startup.
 - **Async Health Checks**: Configurable background monitoring.
 - **Graceful Shutdown**: Ensures all resources are cleaned up properly.
 - **Type-Safe References**: `ResourceRef` wraps `TypeId` for compile-time type safety.
@@ -26,10 +28,21 @@ Resource lifecycle management for the Nebula workflow engine.
 ### Basic Resource Management
 
 ```rust
+use nebula_core::deps::{Requires, deps};
 use nebula_resource::{Manager, Resource, PoolConfig, Context, ExecutionId, Scope, WorkflowId};
 
-// 1. Define your resource
-struct MyResource; // implements Resource trait...
+// 1. Define your resource with explicit dependencies
+struct MyResource;
+
+impl Resource for MyResource {
+    type Config = MyConfig;
+    type Instance = MyClient;
+    // This resource depends on `PostgresResource` and `VaultResource`
+    type Deps = deps![PostgresResource, VaultResource];
+
+    fn id(&self) -> &str { "my-resource" }
+    // create / is_valid / recycle / cleanup...
+}
 
 // 2. Initialize manager
 let manager = Manager::new();
