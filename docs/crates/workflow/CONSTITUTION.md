@@ -78,6 +78,17 @@ Before saving or running, workflow is validated: DAG has no cycles, node refs ex
 - No dependency on engine or runtime for core types
 - Engine depends on workflow (or shared workflow shape) for loading
 
+### IV. Definition Is Design-Time Only (No Ephemeral Nodes)
+
+**Workflow definitions describe only user-visible nodes and edges drawn on the canvas. Execution-only or engine-generated steps (ephemeral/recovery nodes, timers, gates) live in `nebula-execution` / `nebula-engine`, not in `WorkflowDefinition`.**
+
+**Rationale**: Keeps the design-time DAG simple and stable for API/UI while allowing the execution layer to extend it with retry/wait/gate behavior without mutating stored workflows.
+
+**Rules**:
+- `WorkflowDefinition` contains only author-created nodes and connections.
+- Engine and execution may extend the plan at run time with ephemeral nodes and patches for retries, waits, gates, and recovery, but those are not written back into workflow definitions.
+- Execution views (timeline, waterfall) are free to visualize both user nodes and ephemeral system steps; workflow crate remains unaware of them.
+
 ### III. Schema Is Stable and Serializable
 
 **Workflow type is Serialize/Deserialize; schema is versioned for API and storage compatibility.**
@@ -89,7 +100,7 @@ Before saving or running, workflow is validated: DAG has no cycles, node refs ex
 - Major: MIGRATION.md for schema change
 - Optional: schema snapshot tests for JSON shape
 
-### IV. Validation Is Declarative
+### V. Validation Is Declarative
 
 **Validation rules (required fields, no cycles, valid refs) are declarative or composable (validator crate). No ad-hoc checks scattered in engine.**
 

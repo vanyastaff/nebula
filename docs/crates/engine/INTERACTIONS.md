@@ -45,14 +45,15 @@
 1. Caller invokes `engine.execute_workflow(workflow_id, definition, input, options)`.
 2. Engine builds DependencyGraph, ExecutionPlan; creates execution state (ExecutionState/ExecutionBudget).
 3. Frontier-based loop: for each node whose predecessors are done, resolve params (ParamResolver + ExpressionEngine), optionally validate (parameter schema), call runtime.execute_node(…); handle ActionResult (Success, Branch, Wait, Retry, …) and ActionError (Retryable, Fatal).
-4. Emit ExecutionEvent (Started, NodeCompleted, NodeFailed, Completed); update metrics.
+4. For failures or explicit "wait/retry" outcomes, engine consults resilience policies (where configured) to classify the error and derive a recovery decision (e.g. retry now, retry after delay, wait on resource). It then applies this decision to the execution layer as state transitions and/or execution-time extensions of the plan (ephemeral retry/wait/gate steps), without mutating the original workflow definition.
+5. Emit ExecutionEvent (Started, NodeCompleted, NodeFailed, Completed); update metrics.
 5. Return ExecutionResult (execution_id, status, node_outputs, duration).
 
 ## Cross-Crate Ownership
 
 - **engine** owns: execution lifecycle orchestration, scheduling, param resolution, event emission, mapping action_id → registry key.
 - **runtime** owns: invoking action implementation, sandbox boundary.
-- **execution** owns: execution state types, plan, status enum.
+- **execution** owns: execution state types, plan, status enum, journal, and the data model for any execution-time extensions of the DAG (ephemeral nodes, recovery steps, execution patches) that engine applies when interpreting resilience decisions.
 - **workflow** owns: definition and DAG structure; engine only consumes.
 
 ## Versioning and Compatibility

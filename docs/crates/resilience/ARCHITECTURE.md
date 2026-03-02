@@ -76,6 +76,18 @@ Closed ──(failure_threshold reached)──▶ Open
 3. Operation runs; on failure, retry/circuit/fallback logic applies.
 4. Observability hooks fire; result returned to caller.
 
+### Recovery Decisions for Workflow Execution
+
+For workflow runs, callers such as `nebula-engine` and `nebula-runtime` use `nebula-resilience` to classify errors and derive **recovery decisions** rather than hard-coding retry logic in actions or engine:
+
+- Error classifiers and retry policies map operation failures into categories like *transient*, *permanent*, or *throttled*.
+- From these, callers can derive decisions such as:
+  - "retry now" vs "retry after delay" vs "wait on external resource becoming healthy";
+  - "fail this step/workflow" vs "defer to outbox/queue" vs "escalate".
+- The resilience crate itself remains workflow-agnostic: it exposes policies, classifiers, and pattern results; engine/execution translate those into execution-time constructs (e.g. ephemeral wait/retry nodes and execution patches) owned by `nebula-execution`.
+
+This keeps fault-handling policy centralized and serializable, while leaving the shape of the execution graph and any phantom/recovery steps to the execution layer.
+
 ### Known Bottlenecks
 
 - DashMap contention under high service cardinality.

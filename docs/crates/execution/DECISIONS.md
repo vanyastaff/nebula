@@ -1,3 +1,21 @@
+## D-006: Ephemeral Execution Nodes via Patches, Not Workflow Mutation
+
+**Status:** Planned
+
+**Context:** Engine needs to express retry delays, waits on external resources, and other recovery steps that do not exist in the design-time workflow DAG. We want rich Execution Views (timeline with "phantom" nodes like WaitResourceHealthy or RetryDelay) and durable replay, without mutating or resaving the original `WorkflowDefinition`.
+
+**Decision:** Execution-time extensions to the plan (ephemeral/phantom nodes) will be modeled as data in `nebula-execution` (e.g. future `ExecutionPatch` and/or dedicated journal variants), derived deterministically from history and resilience policy. The workflow crate remains design-time only; engine never writes ephemeral nodes back into workflow definitions.
+
+**Alternatives considered:** (1) Mutating the workflow graph at run time by inserting system nodes — rejected to keep stored workflows and design-time DAGs simple and stable; (2) Hiding all retry/wait behavior inside engine-only logic and logs — rejected because it makes Execution View opaque and replay semantics unclear.
+
+**Trade-offs:** Adding an explicit patch/ephemeral-node model increases surface area in execution crate, but makes Execution View, debugging, and replay consistent across engine implementations. UI can show "phantom" nodes based on execution data, even though they are not part of the author-edited workflow.
+
+**Consequences:** For a given workflow, input, journal, and resilience policy, the extended execution graph (including ephemeral steps) must be reproducible. Engine and UI will treat the execution graph as `WorkflowDefinition + ExecutionPlan + patches/journal`, never as a mutated workflow. Any future `ExecutionPatch` or ephemeral-node schema changes live in this crate and are versioned like other execution types.
+
+**Migration impact:** Initial introduction is additive (new types/variants). Future breaking changes to patch/ephemeral-node representation require MIGRATION.md and careful handling in any persistence or Execution View consumers.
+
+**Validation plan:** (1) Unit tests that reconstruct an extended execution graph from workflow + plan + journal/patches; (2) Golden tests for Execution View serialization; (3) Integration tests with engine that assert ephemeral wait/retry behavior is replayable from stored execution data.
+
 # Decisions
 
 ## D-001: State Machine and Transitions in This Crate

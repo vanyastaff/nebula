@@ -34,6 +34,20 @@
 - **Idempotency key:** `{execution_id}:{node_id}:{attempt}`; deterministic for same inputs. `IdempotencyManager::check_and_mark` returns true only on first see.
 - **Serialization:** All public state and output types are `Serialize`/`Deserialize`; `ExecutionStatus` uses `#[serde(rename_all = "snake_case")]`.
 
+### Execution Plan, Ephemeral Nodes, and Patches
+
+Execution is often richer than the design-time DAG: the engine may need to insert retry delays, waits on external resources, or other recovery steps that were not drawn on the canvas. `nebula-execution` is the home for this execution-time vocabulary.
+
+- **ExecutionPlan** represents the schedulable view of a workflow, derived from `WorkflowDefinition` and `DependencyGraph`.
+- **Ephemeral nodes** (e.g. retry attempts, backoff timers, resource gates) are modeled at execution time via plan/journal types, not by mutating the workflow definition.
+- **JournalEntry** is the append-only log that captures both user-node lifecycle and system steps (e.g. NodeScheduled, NodeCompleted, NodeFailed, NodeRetried, NodeWaitingOnResource).
+- A future `ExecutionPatch` / recovery-step model will live here as *data* (e.g. "insert wait-on-resource before retry"), so that:
+  - engine can extend the execution plan deterministically for a given history and policy;
+  - Execution View UIs can render "phantom" or system nodes in timelines without changing stored workflows;
+  - durable execution and replay can reconstruct the same extended plan from state + journal.
+
+`nebula-execution` does not decide *when* to add ephemeral steps (that belongs to engine + resilience policy), but it defines the types that describe those steps and their effect on the execution graph.
+
 ### Known Bottlenecks
 
 - `IdempotencyManager` is in-memory; no TTL or persistence — duplicate detection is process-local.

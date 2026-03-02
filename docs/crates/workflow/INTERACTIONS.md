@@ -52,7 +52,8 @@
 ## Cross-Crate Ownership
 
 - **workflow** owns: definition shape, DAG structure, validation rules, WorkflowError variants.
-- **engine** owns: loading, scheduling, execution.
+- **engine** owns: loading, scheduling, execution, and any execution-time extension of the DAG (ephemeral/recovery steps, timers, gates) built on top of the immutable workflow definition.
+- **execution** owns: execution state, plan, journal, and any representation of ephemeral nodes / execution patches used to visualize or replay runs.
 - **storage** (when present) owns: persistence; workflow defines serialized shape.
 
 ## Versioning and Compatibility
