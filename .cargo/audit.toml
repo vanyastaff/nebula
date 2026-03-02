@@ -3,6 +3,9 @@ ignore = [
     # rsa 0.9.9: Marvin Attack timing sidechannel (transitive via sqlx-mysql).
     # No fixed version available upstream. Track: https://rustsec.org/advisories/RUSTSEC-2023-0071
     "RUSTSEC-2023-0071",
+    # atomic-polyfill: unmaintained (transitive: postcard → heapless). Not a vulnerability.
+    # Track: https://rustsec.org/advisories/RUSTSEC-2023-0089
+    "RUSTSEC-2023-0089",
 ]
 
 [output]
