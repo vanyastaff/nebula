@@ -7,9 +7,9 @@ Detailed breaking/non-breaking initiatives are tracked in `PROPOSALS.md`, `CONST
 
 ## Phase 1: API & Docs Cleanup (Short Term)
 
-**Status:** Done (module-level examples added)
+**Status:** Done
 
-- Align public docs (`API.md`, `DOCS.md`, `CONSTITUTION.md`) with exact source behavior and examples.
+- Align public docs (`API.md`, `CONSTITUTION.md`, crate `README.md`) with exact source behavior and examples.
 - Remove outdated API narratives from archived docs.
 - Audit naming consistency (`id.rs` vs `ids`, trait method names, scope terminology).
 - Add missing module-level examples for `keys`, `scope`, and `CoreError` usage. ✓
@@ -22,29 +22,28 @@ Definition of done:
 
 ## Phase 2: Compatibility Contracts
 
-**Status:** In progress (schema tests + policy doc added)
+**Status:** Done
 
-- Introduce explicit compatibility policy for:
-  - `InterfaceVersion`
-  - serialized enums (`Status`, `RoleScope`, `ProjectType`)
-  - `CoreError` code and `user_message` stability
-- Add snapshot-style tests for serialized forms and error codes.
+- Explicit compatibility policy in `COMPATIBILITY.md` for:
+  - `InterfaceVersion`, serialized enums (`Status`, `RoleScope`, `ProjectType`), `ScopeLevel`, ID types
+  - `CoreError::error_code()` stability
+- Schema contract tests in `crates/core/tests/schema_contracts.rs` assert JSON and error codes; CI enforces.
 
 Definition of done:
-- Breaking-change rules documented and test-enforced for IDs, enums, and core types used across crate/API/storage boundaries.
+- Breaking-change rules documented and test-enforced for IDs, enums, and core types used across crate/API/storage boundaries. ✓
 
 ---
 
 ## Phase 3: Scope Semantics Hardening
 
-**Status:** In progress (`ScopeResolver` + `is_contained_in_strict` added)
+**Status:** Done
 
-- Improve `ScopeLevel::is_contained_in` semantics where containment is currently simplified (no ID verification for some variants).
-- Add deterministic mapping hooks / resolver for workflow–execution–action ownership validation.
-- Document canonical scope transitions for runtime/engine integration.
+- `ScopeLevel::is_contained_in` retained as simplified level-only check (backward compatible).
+- `ScopeResolver` trait and `is_contained_in_strict(scope, other, resolver)` added for ID-verified containment; engine/runtime implement the resolver.
+- Canonical scope hierarchy and transitions documented in `ARCHITECTURE.md` (see "Canonical scope transitions").
 
 Definition of done:
-- Containment rules are explicit, test-covered, and unambiguous (including strict/ID-aware APIs).
+- Containment rules are explicit, test-covered, and unambiguous (including strict/ID-aware APIs). ✓
 
 ---
 

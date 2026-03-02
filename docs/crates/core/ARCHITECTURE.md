@@ -26,7 +26,7 @@ This keeps the graph acyclic and allows independent evolution of engine/runtime/
 | `scope` | `scope.rs` | Lifecycle hierarchy (`Global` → `Organization` → `Project` → `Workflow` → `Execution` → `Action`); `ScopedId` |
 | `traits` | `traits.rs` | `Scoped`, `HasContext`, `Identifiable`, `Validatable`, `Serializable`, metadata traits |
 | `types` | `types.rs` | `Version`, `InterfaceVersion`, `Status`, `Priority`, `OperationResult`, `OperationContext` |
-| `error` | `error.rs` | `CoreError` taxonomy; conversions from std/serde/uuid/chrono |
+| `error` | `error.rs` | `CoreError` taxonomy; conversions from std/serde_json/postcard/chrono |
 | `keys` | `keys.rs` | `PluginKey`, `ParameterKey`, `CredentialKey` with normalization/validation |
 | `constants` | `constants.rs` | Defaults, limits, env vars, patterns |
 
@@ -41,9 +41,23 @@ This keeps the graph acyclic and allows independent evolution of engine/runtime/
 - **`PluginKey` normalization pipeline:** trim → lowercase → whitespace/hyphen→`_` → collapse `__` → strip leading/trailing `_`. Max 64 chars. Serde normalizes on deserialize.
 - **`ScopeLevel::workflow_id()` accessor is limited:** Returns `Some` only for `Workflow` variant, not `Execution` or `Action` (those variants don't carry a `WorkflowId`). Use `HasContext` on concrete types to carry full context.
 - **`ScopeLevel::parent()` is incomplete:** Returns `Some` only for `Organization(id)→Global` and `Action(exec,node)→Execution(exec)`. All other variants return `None` because parent IDs are not carried in the variant.
-- **`ScopeLevel::is_contained_in()` uses simplified semantics:** For `Execution`→`Workflow` and `Action`→`Workflow`/`Execution` containment, it checks scope level only — does not verify that IDs match. Full ID-verified containment is deferred to P-002.
+- **`ScopeLevel::is_contained_in()` uses simplified semantics:** For `Execution`→`Workflow` and `Action`→`Workflow`/`Execution` containment, it checks scope level only — does not verify that IDs match. Use `is_contained_in_strict` with a `ScopeResolver` when ID verification is required.
 - **`ParameterKey`/`CredentialKey` use `domain_key::key_type!`:** Domain-validated string keys with their own normalization, separate from `PluginKey`.
 - **`constants.rs` contains domain-specific defaults:** Some workflow/node/expression limits arguably belong in owning crates (tracked in P-003).
+
+### Canonical scope transitions (runtime/engine integration)
+
+Scope hierarchy is fixed: **Global → Organization → Project → Workflow → Execution → Action**. Runtime and engine must respect this when creating or validating scope.
+
+| Transition | Who provides | Core API |
+|------------|---------------|----------|
+| Global → Organization | Engine/runtime (e.g. create org) | `ScopeLevel::child(ScopeLevel::Global, ChildScopeType::Organization(org_id))` |
+| Organization → Project | Engine/runtime | `ScopeLevel::child(ScopeLevel::Organization(_), ChildScopeType::Project(project_id))` |
+| Project → Workflow | Engine/runtime | `ScopeLevel::child(ScopeLevel::Project(_), ChildScopeType::Workflow(workflow_id))` |
+| Workflow → Execution | Engine (start run) | `ScopeLevel::child(ScopeLevel::Workflow(_), ChildScopeType::Execution(exec_id))` |
+| Execution → Action | Engine (per-node step) | `ScopeLevel::child(ScopeLevel::Execution(exec_id), ChildScopeType::Action(node_id))` |
+
+For **containment checks** that must verify IDs (e.g. "does this execution belong to this workflow?"), engine/runtime implement `ScopeResolver` and call `scope.is_contained_in_strict(other, &resolver)`. The resolver answers `workflow_for_execution`, `project_for_workflow`, `organization_for_project`. Core does not store a full parent chain; the resolver supplies ownership at use site.
 
 ### Known Bottlenecks
 
