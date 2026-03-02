@@ -16,7 +16,7 @@ It must stay stable, explicit, and backward-compatible enough for long-lived wor
 
 ## What lives in this crate
 
-- **action** — `Action` trait (metadata, components); execution is in ProcessAction/StatefulAction/TriggerAction etc. (see lib.rs re-exports).
+- **action** — `Action` trait (metadata, components); execution is in ProcessAction (→ StatelessAction), StatefulAction, TriggerAction, etc. (see lib.rs re-exports; trait names per DECISIONS D009).
 - **metadata** — `ActionMetadata` (key, name, description, version, inputs, outputs, parameters: ParameterCollection); re-exports `InterfaceVersion` from core.
 - **components** — `ActionComponents` (credentials: Vec&lt;CredentialRef&gt;, resources: Vec&lt;ResourceRef&gt;).
 - **port** — `InputPort`, `OutputPort`, `SupportPort`, `DynamicPort`; `FlowKind`, `ConnectionFilter`, `PortKey`.
@@ -46,6 +46,7 @@ Those belong to runtime/engine/sandbox/resource/credential crates.
 - [SECURITY.md](./SECURITY.md): threat model and controls
 - [RELIABILITY.md](./RELIABILITY.md): SLO and failure handling model
 - [TEST_STRATEGY.md](./TEST_STRATEGY.md): contract and integration test plan
+- [COMPATIBILITY.md](./COMPATIBILITY.md): schema-stable types and contract tests
 - [MIGRATION.md](./MIGRATION.md): compatibility and rollout/rollback guide
 
 ## Archive

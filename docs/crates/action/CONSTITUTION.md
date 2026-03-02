@@ -134,7 +134,7 @@ When the action trait gains new optional methods or output forms, existing actio
 In a production Nebula deployment, hundreds of action types (built-in and plugin) are loaded by the engine. Each action is identified by key, has metadata and components, and is executed inside a sandbox that enforces declared capabilities. The engine never imports concrete action crates for flow control — only for registration and execution.
 
 ```
-action.rs    — Action trait (metadata, components); no execute (that’s in ProcessAction etc. in same crate or docs)
+action.rs    — Action trait (metadata, components); no execute (that’s in ProcessAction/StatelessAction, StatefulAction, TriggerAction (same crate; D009))
 metadata.rs  — ActionMetadata (key, name, description, version, inputs, outputs, parameters: ParameterCollection)
 components.rs — ActionComponents (credentials: Vec<CredentialRef>, resources: Vec<ResourceRef>)
 port.rs      — InputPort, OutputPort, SupportPort, DynamicPort; FlowKind; ConnectionFilter; PortKey

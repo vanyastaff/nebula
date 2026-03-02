@@ -5,7 +5,7 @@ use crate::metadata::ActionMetadata;
 ///
 /// Provides identity and metadata — the engine uses this to inspect
 /// capabilities, isolation level, schema, etc. Execution logic is
-/// defined by sub-traits ([`ProcessAction`](crate::ProcessAction), etc.).
+/// defined by sub-traits ([`StatelessAction`](crate::StatelessAction), etc.).
 ///
 /// # Object Safety
 ///

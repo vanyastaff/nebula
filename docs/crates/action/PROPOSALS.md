@@ -28,7 +28,7 @@ Benefit:
 - fast authoring without bloating base contracts.
 
 Potential break:
-- minimal if delivered in separate optional crate/module.
+- minimal if grouped in optional in-crate module (e.g. dx).
 
 ## P003: Advanced flow-control variants (staged)
 

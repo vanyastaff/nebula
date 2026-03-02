@@ -37,9 +37,9 @@ The crate is a protocol, not a runtime. It must be small, stable, and explicit.
 - frozen core traits, result/output/error/port models
 - versioned compatibility policy
 
-2. Authoring DX layer (`nebula-action-dx`, proposed sibling crate)
+2. Authoring DX layer (same crate, e.g. `dx` or `authoring` module)
 - optional trait families and helper macros for common action patterns
-- no contamination of core contracts
+- core contracts stay in root/action modules; DX in optional submodule
 
 3. Runtime adapter layer (`nebula-runtime`)
 - context implementation and orchestration
@@ -51,7 +51,7 @@ The crate is a protocol, not a runtime. It must be small, stable, and explicit.
 
 ### Planned type hierarchy
 
-Two-level design: **Core types** (engine treats differently; stable contracts) and **DX types** (convenience wrappers; live in `nebula-action-dx`).
+Two-level design: **Core types** (engine treats differently; stable contracts) and **DX types** (convenience wrappers; same crate, e.g. `dx` module).
 
 ```
 Action (base trait — metadata + components)
@@ -60,7 +60,7 @@ Action (base trait — metadata + components)
 │   └── TriggerAction     — TriggerContext — workflow starter: start(&ctx) / stop(&ctx)
 └── ResourceAction        — ActionContext — graph-level DI: configure(&ctx); cleanup(instance, &ctx)
 
-DX types (in nebula-action-dx, over core sub-traits):
+DX types (same crate, e.g. dx module, over core sub-traits):
 StatefulAction
 ├── InteractiveAction     — ActionContext  — Wait { Approval } with declarative UI
 └── TransactionalAction   — ActionContext  — Saga: execute_tx() + compensate() + SagaStepKind
@@ -144,4 +144,4 @@ References: n8n, Node-RED, Activepieces/Activeflow, Temporal/Airflow style orche
   - weakly-typed action contracts centered on untyped maps only.
 - Defer:
   - full advanced orchestration variants (`Fork/Join/Delegate`) until engine persistence protocol is stabilized.
-  - a full DX macro layer inside core crate (prefer optional sibling crate to keep protocol boundary lean).
+  - a full DX macro layer in same crate (optional dx/authoring module; no separate crate).

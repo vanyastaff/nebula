@@ -7,11 +7,11 @@
 - **Upstream:** nebula-core (ids, InterfaceVersion), nebula-parameter (ParameterCollection in ActionMetadata), nebula-credential (CredentialRef in ActionComponents), nebula-resource (ResourceRef in ActionComponents); serde, thiserror, tokio, async-trait, chrono, parking_lot, uuid, hmac, sha2, hex, tokio-util.
 - **Downstream (depend on nebula-action):** engine, runtime, execution, plugin, ports, sdk, drivers/sandbox-inprocess — engine/runtime execute actions; plugin implements and registers; ports/sdk expose action contract; sandbox enforces capability boundary.
 
-## Planned crates
+## In-crate structure
 
-- `action-dx` (proposed):
+- DX/authoring (optional `dx` or `authoring` module in nebula-action):
   - optional authoring helpers (specialized traits/macros/builders)
-  - keeps `nebula-action` as protocol core.
+  - core protocol and DX live in one crate.
 
 ## Downstream Consumers
 
@@ -45,7 +45,7 @@
 3. Runtime builds context and passes it to the action execute method.
    - **Current**: `NodeContext` (doc-hidden temporary placeholder) carrying `execution_id`, `node_id`, `workflow_id`, `cancellation`.
    - **Target**: `ActionContext` (for StatelessAction / StatefulAction / ResourceAction) and `TriggerContext` (for TriggerAction) — concrete structs composed of capability modules (`ResourceAccessor`, `CredentialAccessor`, etc.). Designed for composition: new capabilities add fields without breaking existing signatures.
-4. Action executes and returns `ActionResult<ActionOutput<T>>` or `ActionError`.
+4. Action executes and returns `ActionResult<ActionOutput<T>>` or `ActionError`. **Cancellation:** The runtime must race `action.execute(...)` against `ctx.cancellation().cancelled()` (e.g. `tokio::select!`). When cancellation wins, the runtime returns `ActionError::Cancelled`; action implementations do not need to check cancellation in every node.
 5. Engine applies flow-control semantics: `ActionResult::Success` → pass output; `Branch` activates path; `Wait` persists state and suspends; `Continue` re-enqueues (stateful); `Break` finalizes; `Retry` reschedules; `ActionError::Retryable` / `Fatal` drive resilience policy.
 6. Runtime resolves deferred/streaming outputs before passing to downstream nodes.
 7. Resilience layer applies retry/backoff on `ActionError::Retryable` or `ActionResult::Retry`.
@@ -78,7 +78,7 @@
 - `action` owns: `Action` trait, metadata/port/component contracts, result/output/error semantics, `Context` base trait
 - `runtime`/`engine` own: context implementations, execution ordering, scheduling, state persistence, deferred/streaming resolution
 - `sandbox` owns: capability enforcement, `SandboxedContext` proxy (Phase 2)
-- `nebula-action-dx` (future): DX sub-traits (StatefulAction, TriggerAction, etc.) and helper macros — keeps `nebula-action` as lean protocol core
+- `nebula-action` owns DX sub-traits and helper macros in same crate (e.g. `dx` module)
 - `resource`/`credential` own: operational lifecycle of dependencies; action only *declares* them via `ActionComponents`
 
 ## Contract Tests Needed

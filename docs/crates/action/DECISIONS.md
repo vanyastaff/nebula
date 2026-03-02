@@ -30,11 +30,11 @@ Status: Accepted
 
 Dependencies are declared with `CredentialRef`/`ResourceRef` to improve static safety over plain string ids.
 
-## D006: Core-vs-DX separation
+## D006: Core and DX in one crate
 
 Status: Accepted
 
-Core contracts remain in `nebula-action`; convenience trait families/macros should move to optional DX layer to keep core stable.
+Core contracts and DX conveniences (trait families, macros, authoring helpers) all live in `nebula-action`. Optional `dx` or `authoring` submodule may group DX traits to keep the protocol surface clear; no separate crate.
 
 ## D007: Versioned metadata compatibility
 
@@ -47,3 +47,20 @@ Status: Accepted
 Status: Accepted
 
 Capability denials are represented directly (`SandboxViolation`) to keep policy failures observable and machine-actionable.
+
+## D009: Execution trait names (core)
+
+Status: Accepted
+
+Core execution traits use the following names (see ARCHITECTURE, API, P001):
+
+| Doc name | Current code name | Semantics |
+|----------|-------------------|-----------|
+| **StatelessAction** | `ProcessAction` | Pure function: `execute(input, &ctx) → ActionResult<Output>`; no state between calls. |
+| **StatefulAction** | `StatefulAction` | Persistent state: `execute(input, &mut state, &ctx)`; `Continue`/`Break`. |
+| **TriggerAction** | `TriggerAction` | Workflow starter: `start(&ctx)` / `stop(&ctx)`; lives outside execution graph. |
+| **ResourceAction** | *(not yet in code)* | Graph-level DI: `configure(&ctx)`, `cleanup(instance, &ctx)`; engine runs before downstream. |
+
+DX traits (same crate): **InteractiveAction**, **TransactionalAction**, **WebhookAction**, **PollAction** — stay as-is; they extend StatefulAction or TriggerAction.
+
+**Migration:** Rename `ProcessAction` → `StatelessAction` when aligning code with Phase 2; add `ResourceAction` when engine supports graph-level DI. Deprecate old name for one cycle if needed.

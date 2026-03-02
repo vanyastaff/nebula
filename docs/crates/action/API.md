@@ -221,7 +221,7 @@ Currently `Action` has no `execute()` method — that goes in typed sub-traits. 
 | `WebhookAction` | DX | `TriggerContext` | Incoming HTTP: `register()`, `handle_request()`, `verify_signature()` |
 | `PollAction` | DX | `TriggerContext` | Periodic poll: `poll(cursor, &ctx) → PollResult<Event, Cursor>` |
 
-DX types will live in `nebula-action-dx` (separate crate) to keep the core protocol lean.
+DX types live in the same crate (e.g. `dx` or `authoring` module) to keep one package for authors.
 
 ## Production authoring rules
 

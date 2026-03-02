@@ -11,7 +11,7 @@
 //!
 //! - [`Action`] — base trait providing identity and metadata
 //! - [`SimpleAction`] — zero-boilerplate action returning `Result<Output, Error>`
-//! - [`ProcessAction`] — stateless single-execution action with flow-control
+//! - [`StatelessAction`] — stateless single-execution action with flow-control
 //! - [`StatefulAction`] — iterative action with persistent state
 //! - [`TriggerAction`] — event source that starts workflows
 //! - [`StreamingAction`] — continuous stream producer
@@ -27,26 +27,21 @@
 //!
 //! ```rust,ignore
 //! use nebula_action::*;
-//! use async_trait::async_trait;
 //!
 //! struct MyAction { meta: ActionMetadata }
 //!
 //! impl Action for MyAction {
 //!     fn metadata(&self) -> &ActionMetadata { &self.meta }
-//!     fn action_type(&self) -> ActionType { ActionType::Process }
+//!     fn components(&self) -> ActionComponents { ActionComponents::new() }
 //! }
 //!
-//! #[async_trait]
-//! impl ProcessAction for MyAction {
+//! impl StatelessAction for MyAction {
 //!     type Input = serde_json::Value;
 //!     type Output = serde_json::Value;
 //!
-//!     async fn execute(
-//!         &self,
-//!         input: Self::Input,
-//!         ctx: &impl Context,
-//!     ) -> Result<ActionResult<Self::Output>, ActionError> {
-//!         ctx.check_cancelled()?;
+//!     async fn execute(&self, input: Self::Input, _ctx: &impl Context)
+//!         -> Result<ActionResult<Self::Output>, ActionError>
+//!     {
 //!         Ok(ActionResult::success(input))
 //!     }
 //! }
@@ -73,12 +68,15 @@ pub mod port;
 pub mod prelude;
 /// Execution result types carrying data and flow-control intent.
 pub mod result;
+/// Execution sub-traits (StatelessAction, etc.).
+pub mod execution;
 
 // ── Public re-exports ───────────────────────────────────────────────────────
 
 pub use action::Action;
 pub use components::ActionComponents;
-pub use context::{Context, NodeContext};
+pub use context::{ActionContext, Context, NodeContext, TriggerContext};
+pub use execution::StatelessAction;
 pub use error::ActionError;
 pub use metadata::{ActionMetadata, InterfaceVersion};
 pub use output::{
