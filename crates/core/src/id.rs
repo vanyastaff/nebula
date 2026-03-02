@@ -128,10 +128,10 @@ mod tests {
 
     #[test]
     fn id_from_uuid_roundtrips() {
-        let raw = uuid::Uuid::new_v4();
-        let typed = ProjectId::from(raw);
-        let back: uuid::Uuid = typed.get();
-        assert_eq!(raw, back);
+        let id = ProjectId::new();
+        let raw = id.get();
+        let back = ProjectId::from(raw);
+        assert_eq!(id, back);
     }
 
     #[test]

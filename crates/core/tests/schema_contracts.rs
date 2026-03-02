@@ -9,11 +9,6 @@ use nebula_core::{
     RoleScope, ScopeLevel, Status, WorkflowId,
 };
 
-/// Nil UUID for deterministic snapshot output
-fn nil_uuid() -> uuid::Uuid {
-    uuid::Uuid::nil()
-}
-
 #[test]
 fn status_serialization_contract() {
     let cases = [
@@ -83,11 +78,11 @@ fn interface_version_serialization_contract() {
 
 #[test]
 fn scope_level_serialization_contract() {
-    let org_id = OrganizationId::from(nil_uuid());
-    let proj_id = ProjectId::from(nil_uuid());
-    let wf_id = WorkflowId::from(nil_uuid());
-    let exec_id = ExecutionId::from(nil_uuid());
-    let node_id = NodeId::from(nil_uuid());
+    let org_id = OrganizationId::nil();
+    let proj_id = ProjectId::nil();
+    let wf_id = WorkflowId::nil();
+    let exec_id = ExecutionId::nil();
+    let node_id = NodeId::nil();
     let nil_str = "00000000-0000-0000-0000-000000000000";
 
     let cases = [
@@ -121,7 +116,7 @@ fn scope_level_serialization_contract() {
 
 #[test]
 fn id_types_serialize_as_uuid_string() {
-    let id = ExecutionId::from(nil_uuid());
+    let id = ExecutionId::nil();
     let json = serde_json::to_string(&id).unwrap();
     assert_eq!(json, r#""00000000-0000-0000-0000-000000000000""#);
 }

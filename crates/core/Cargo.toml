@@ -4,44 +4,26 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Core types and traits for the Nebula workflow engine"
-keywords.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+keywords.workspace = true
 
 [dependencies]
-# Async traits
-async-trait = { workspace = true }
-
-# Collections
-dashmap = { workspace = true }
-
-# Errors
-thiserror = { workspace = true }
-
-# Serialization
+chrono = { workspace = true, features = ["serde"] }
+domain-key = { workspace = true }
 postcard = { version = "1", features = ["alloc"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-
-# Time handling
-chrono = { workspace = true, features = ["serde"] }
-
-# UUID and keys
-domain-key = { workspace = true }
-uuid = { workspace = true, features = ["v4", "serde"] }
-
-# Internal crates
-nebula-log = { path = "../log" }
+thiserror = { workspace = true }
 
 [dev-dependencies]
-# Testing
+criterion = { workspace = true }
 pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-tokio-test = "0.4"
-criterion = { workspace = true }
+tokio-test = { workspace = true }
 
 [[bench]]
 name = "id_parse_serialize"

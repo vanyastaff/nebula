@@ -4,33 +4,46 @@ Core types and traits for the Nebula workflow engine.
 
 ## Overview
 
-`nebula-core` provides the fundamental building blocks used by all other Nebula crates. It defines common identifiers, scope management, base traits, and shared types that form the foundation of the Nebula ecosystem.
+`nebula-core` provides the fundamental building blocks used by all other Nebula crates. It defines common identifiers (via [domain-key](https://crates.io/crates/domain-key)), scope management, keys, base traits, and shared types that form the foundation of the Nebula ecosystem.
 
 ## Key Components
 
 ### Identifiers
-- **ExecutionId** - Unique identifier for workflow executions
-- **WorkflowId** - Identifier for workflow definitions
-- **NodeId** - Identifier for workflow nodes/steps
-- **UserId** - User identification
-- **TenantId** - Multi-tenancy support
-- **CredentialId** - Credential reference
+
+Type-safe UUID identifiers (powered by **domain-key**; no direct `uuid` dependency):
+
+- **ExecutionId**, **WorkflowId**, **NodeId** — workflow execution, definition, and node (step)
+- **UserId**, **TenantId** — identity and multi-tenancy
+- **ProjectId**, **OrganizationId** — projects and organizations
+- **ResourceId**, **CredentialId**, **RoleId** — resources, credentials, and roles
+
+All ID types are `Copy`, support `new()`, `nil()`, `parse(&str)`, serde, and re-export **UuidParseError** for parse error handling.
+
+### Keys
+
+- **PluginKey** — plugin type (e.g. `telegram_bot`); **ActionKey** is an alias for plugin/action identification
+- **ParameterKey**, **CredentialKey** — parameter and credential keys with normalization and validation
 
 ### Scope System
-Resource lifecycle management with different scope levels:
-- `Global` - System-wide resources
-- `Tenant` - Tenant-specific resources
-- `User` - User-specific resources
-- `Workflow` - Workflow-level resources
-- `Execution` - Execution-specific resources
+
+Resource lifecycle and scope levels:
+
+- **Global** — system-wide
+- **Organization** — organization-scoped
+- **Project** — project-scoped
+- **Workflow** — workflow-level
+- **Execution** — execution-specific
+- **Action** — action/node within an execution
 
 ### Base Traits
-- **Scoped** - For resources with lifecycle management
-- **HasContext** - For types that carry execution context
-- **Identifiable** - For types with unique identifiers
+
+- **Scoped** — resources with scope and lifecycle
+- **HasContext** — types that carry execution context
+- **Identifiable** — types with unique identifiers
 
 ### Common Types
-Constants, utilities, and shared types used throughout the system.
+
+Constants, **CoreError**, **InterfaceVersion**, **Status**, **Priority**, **ProjectType**, **RoleScope**, and utilities used across the system.
 
 ## Usage
 
@@ -40,36 +53,35 @@ use nebula_core::{
     ScopeLevel, Scoped, HasContext
 };
 
-// Create identifiers
+// Create identifiers (domain-key UUIDs)
 let execution_id = ExecutionId::new();
-let workflow_id = WorkflowId::new("my-workflow");
-let node_id = NodeId::new("process-data");
+let workflow_id = WorkflowId::new();
+let node_id = NodeId::new();
 
 // Define resource scope
-let scope = ScopeLevel::Execution(execution_id.clone());
+let scope = ScopeLevel::Execution(execution_id);
 ```
 
-## Using the Prelude
+## Prelude
 
 ```rust
 use nebula_core::prelude::*;
 
-// All core types are now available
 let execution_id = ExecutionId::new();
 let result: Result<()> = Ok(());
 ```
 
 ## Features
 
-- Type-safe identifiers with compile-time guarantees
-- Flexible scope system for resource management
-- Comprehensive error handling with `CoreError`
-- Serde support for all types
-- Async-ready traits with `async-trait`
+- Type-safe identifiers with compile-time guarantees (domain-key)
+- Flexible scope system (Global → Organization → Project → Workflow → Execution → Action)
+- Comprehensive error handling with **CoreError**
+- Serde support for core types
+- Normalized keys (PluginKey, ParameterKey, CredentialKey)
 
 ## Dependencies
 
-See [Cargo.toml](./Cargo.toml) for the full list of dependencies.
+See [Cargo.toml](./Cargo.toml). Main: **domain-key**, chrono, serde, thiserror, postcard.
 
 ## License
 

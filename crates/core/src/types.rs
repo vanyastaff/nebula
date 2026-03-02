@@ -514,8 +514,7 @@ pub mod utils {
 
     /// Generate a unique operation ID
     pub fn generate_operation_id() -> String {
-        use uuid::Uuid;
-        format!("op_{}", Uuid::new_v4().simple())
+        format!("op_{}", ExecutionId::new().to_string().replace('-', ""))
     }
 
     /// Format duration in human-readable format

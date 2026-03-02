@@ -572,16 +572,6 @@ impl From<postcard::Error> for CoreError {
     }
 }
 
-impl From<uuid::Error> for CoreError {
-    fn from(err: uuid::Error) -> Self {
-        CoreError::InvalidInput {
-            message: format!("UUID error: {}", err),
-            field: None,
-            value: None,
-        }
-    }
-}
-
 impl From<chrono::ParseError> for CoreError {
     fn from(err: chrono::ParseError) -> Self {
         CoreError::InvalidInput {

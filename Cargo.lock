@@ -3718,12 +3718,9 @@ dependencies = [
 name = "nebula-core"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "chrono",
  "criterion",
- "dashmap",
  "domain-key",
- "nebula-log",
  "postcard",
  "pretty_assertions",
  "serde",
@@ -3731,7 +3728,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-test",
- "uuid",
 ]
 
 [[package]]
