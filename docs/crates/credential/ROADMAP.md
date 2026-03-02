@@ -55,7 +55,7 @@
 ## Phase 5: Toolchain and Compatibility
 
 **Goals:**
-- workspace baseline today: Rust `1.92`
+- workspace baseline today: Rust `1.93`
 - re-enable `core::adapter` module (TODO in source)
 - define compatibility guarantees for serialized metadata and rotation policy schemas
 

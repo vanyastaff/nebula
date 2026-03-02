@@ -259,7 +259,7 @@ CI and MUST NOT be disabled.
 ### Rust Edition and MSRV
 
 - **Edition**: Rust 2024
-- **MSRV**: 1.92
+- **MSRV**: 1.93
 - MUST update MSRV only with documented justification
 
 ### Dependencies

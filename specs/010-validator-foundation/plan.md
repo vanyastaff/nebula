@@ -9,7 +9,7 @@ Restructure `nebula-validator` (Domain layer) for production readiness: rename `
 
 ## Technical Context
 
-**Language/Version**: Rust 2024 Edition (MSRV: 1.92, targeting 1.93 compatibility)
+**Language/Version**: Rust 2024 Edition (MSRV: 1.93)
 **Primary Dependencies**: serde, serde_json, regex, url, uuid, base64, moka (optional)
 **Storage**: N/A (pure validation library, no I/O)
 **Testing**: `cargo test -p nebula-validator`, `cargo test -p nebula-validator --all-features`

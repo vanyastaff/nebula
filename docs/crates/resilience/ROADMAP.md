@@ -28,6 +28,6 @@
 
 ## Phase 5: Toolchain and Compatibility
 
-- workspace baseline today: Rust `1.92`
+- workspace baseline today: Rust `1.93`
 - prepare controlled migration to Rust `1.93+`
 - define compatibility guarantees for policy serialization and metrics schema

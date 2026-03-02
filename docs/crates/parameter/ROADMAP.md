@@ -32,4 +32,4 @@
 - **Latency:** Validation &lt;1ms for typical node configs
 - **Throughput:** N/A (sync, per-request)
 - **Stability:** No breaking changes without MIGRATION.md
-- **Operability:** Workspace baseline Rust 1.92; migration path to 1.93+
+- **Operability:** Workspace baseline Rust 1.93

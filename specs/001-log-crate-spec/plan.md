@@ -9,7 +9,7 @@ Harden `nebula-log` to production-grade behavior by formalizing initialization p
 
 ## Technical Context
 
-**Language/Version**: Rust 2024 (MSRV 1.92)  
+**Language/Version**: Rust 2024 (MSRV 1.93)  
 **Primary Dependencies**: `tracing`, `tracing-subscriber`, optional `opentelemetry`/`sentry`, workspace `nebula-telemetry` interaction contracts, planned `metrics` export alignment  
 **Storage**: File outputs (rolling), stderr/stdout writers; no business-state persistence  
 **Testing**: `cargo test`, contract and integration tests, snapshot tests for config compatibility, benchmark regression checks  

@@ -9,7 +9,7 @@ Integrate `nebula-validator` into `nebula-config` as an explicit activation gate
 
 ## Technical Context
 
-**Language/Version**: Rust 2024, MSRV 1.92  
+**Language/Version**: Rust 2024, MSRV 1.93  
 **Primary Dependencies**: `tokio`, `serde`, `serde_json`, `thiserror`, `futures`, `nebula-config`, `nebula-validator`, `nebula-log`  
 **Storage**: In-memory merged config snapshot (JSON tree), file/env source inputs, docs in `docs/crates/*`  
 **Testing**: `cargo test -p nebula-config`, contract/integration fixtures under `crates/config/tests`  

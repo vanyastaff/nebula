@@ -6,7 +6,7 @@ Validate that planned hardening behavior for `nebula-log` is testable end-to-end
 
 ## Prerequisites
 
-- Workspace builds on Rust 1.92+.
+- Workspace builds on Rust 1.93+.
 - Feature docs available under `docs/crates/log`, `docs/crates/telemetry`, and `docs/crates/metrics`.
 - Spec artifacts exist in `specs/001-log-crate-spec/`.
 

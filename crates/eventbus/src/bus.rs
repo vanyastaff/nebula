@@ -1,0 +1,324 @@
+//! Generic broadcast event bus.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use tokio::sync::broadcast;
+
+use crate::policy::BackPressurePolicy;
+use crate::stats::EventBusStats;
+use crate::subscriber::Subscriber;
+
+/// Generic broadcast event bus parameterized by event type `E`.
+///
+/// Domain crates (e.g. telemetry, resource) own their event types and construct
+/// `EventBus<ExecutionEvent>`, `EventBus<ResourceEvent>`, etc. This crate does
+/// not define any domain event types.
+///
+/// # Performance
+///
+/// Hot path ([`send`](Self::send)): one `tokio::sync::broadcast::send` plus two
+/// relaxed atomic increments for stats. No allocations; subscribers receive by clone.
+/// Use [`send`](Self::send) (or [`emit`](Self::emit)) from engine/runtime hot paths.
+///
+/// # Back-pressure
+///
+/// When the buffer is full, behaviour is determined by [`BackPressurePolicy`]:
+/// - **DropOldest** (default): send overwrites oldest; lagging subscribers skip events.
+/// - **DropNewest**: the new event is dropped when the buffer is full.
+/// - **Block**: use [`send_async`](Self::send_async) to wait up to a timeout for space.
+///
+/// # Delivery semantics
+///
+/// Best-effort only. No guaranteed delivery or global ordering across subscribers.
+/// Emit path is non-blocking for `send()`; producers never block on subscriber speed.
+#[derive(Debug)]
+pub struct EventBus<E> {
+    sender: broadcast::Sender<E>,
+    policy: BackPressurePolicy,
+    buffer_size: usize,
+    sent_count: AtomicU64,
+    dropped_count: AtomicU64,
+}
+
+impl<E: Clone + Send> EventBus<E> {
+    /// Creates a new event bus with the given buffer size and default
+    /// [`BackPressurePolicy::DropOldest`] policy.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `buffer_size` is zero.
+    #[must_use]
+    pub fn new(buffer_size: usize) -> Self {
+        Self::with_policy(buffer_size, BackPressurePolicy::default())
+    }
+
+    /// Creates a new event bus with the given buffer size and back-pressure policy.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `buffer_size` is zero.
+    #[must_use]
+    pub fn with_policy(buffer_size: usize, policy: BackPressurePolicy) -> Self {
+        assert!(buffer_size > 0, "EventBus buffer_size must be > 0");
+        let (sender, _) = broadcast::channel(buffer_size);
+        Self {
+            sender,
+            policy,
+            buffer_size,
+            sent_count: AtomicU64::new(0),
+            dropped_count: AtomicU64::new(0),
+        }
+    }
+
+    /// Sends an event to all current subscribers (non-blocking).
+    ///
+    /// When the buffer is full:
+    /// - **DropOldest**: event is sent (oldest overwritten).
+    /// - **DropNewest**: event is dropped and counted in stats.
+    /// - **Block**: behaves as DropOldest; use [`send_async`](Self::send_async) to block.
+    #[inline(always)]
+    pub fn send(&self, event: E) {
+        match &self.policy {
+            BackPressurePolicy::DropOldest | BackPressurePolicy::Block { .. } => {
+                match self.sender.send(event) {
+                    Ok(_) => {
+                        self.sent_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(_) => {
+                        self.dropped_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+            BackPressurePolicy::DropNewest => {
+                if self.sender.receiver_count() == 0 {
+                    self.dropped_count.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                if self.sender.len() >= self.buffer_size {
+                    self.dropped_count.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                match self.sender.send(event) {
+                    Ok(_) => {
+                        self.sent_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(_) => {
+                        self.dropped_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Alias for [`send`](Self::send). Use from engine/runtime when the term "emit" is preferred (matches INTERACTIONS).
+    #[inline(always)]
+    pub fn emit(&self, event: E) {
+        self.send(event);
+    }
+
+    /// Sends an event asynchronously, respecting [`BackPressurePolicy::Block`].
+    ///
+    /// For `DropOldest` and `DropNewest`, behaves like [`send`](Self::send).
+    /// For `Block { timeout }`, waits up to `timeout` for buffer space before dropping.
+    pub async fn send_async(&self, event: E)
+    where
+        E: Clone,
+    {
+        match &self.policy {
+            BackPressurePolicy::Block { timeout } => {
+                self.send_blocking(event, *timeout).await;
+            }
+            _ => self.send(event),
+        }
+    }
+
+    async fn send_blocking(&self, event: E, timeout: std::time::Duration)
+    where
+        E: Clone,
+    {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if self.sender.receiver_count() == 0 {
+                self.dropped_count.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            if self.sender.len() < self.buffer_size {
+                match self.sender.send(event.clone()) {
+                    Ok(_) => {
+                        self.sent_count.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                    Err(_) => {
+                        self.dropped_count.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                self.dropped_count.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    }
+
+    /// Subscribes to events.
+    ///
+    /// Returns a [`Subscriber`] that receives all events emitted after this call.
+    /// If the subscriber falls behind by more than `buffer_size` events, it
+    /// skips to the latest (handles `Lagged` internally).
+    #[must_use]
+    pub fn subscribe(&self) -> Subscriber<E> {
+        Subscriber::new(self.sender.subscribe())
+    }
+
+    /// Returns a snapshot of event bus statistics.
+    #[must_use]
+    pub fn stats(&self) -> EventBusStats {
+        EventBusStats {
+            sent_count: self.sent_count.load(Ordering::Relaxed),
+            dropped_count: self.dropped_count.load(Ordering::Relaxed),
+            subscriber_count: self.sender.receiver_count(),
+        }
+    }
+
+    /// Returns the configured buffer size.
+    #[must_use]
+    pub fn buffer_size(&self) -> usize {
+        self.buffer_size
+    }
+
+    /// Returns the configured back-pressure policy.
+    #[must_use]
+    pub fn policy(&self) -> &BackPressurePolicy {
+        &self.policy
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct TestEvent(u64);
+
+    #[test]
+    fn send_without_subscribers_does_not_panic() {
+        let bus = EventBus::<TestEvent>::new(16);
+        bus.send(TestEvent(1));
+        let stats = bus.stats();
+        assert_eq!(stats.sent_count, 0);
+        assert_eq!(stats.dropped_count, 1);
+        assert_eq!(stats.subscriber_count, 0);
+    }
+
+    #[test]
+    fn subscriber_receives_via_try_recv() {
+        let bus = EventBus::<TestEvent>::new(16);
+        let mut sub = bus.subscribe();
+        bus.send(TestEvent(42));
+        let event = sub.try_recv().expect("should receive event");
+        assert_eq!(event, TestEvent(42));
+        assert_eq!(bus.stats().sent_count, 1);
+    }
+
+    #[test]
+    fn emit_is_alias_for_send() {
+        let bus = EventBus::<TestEvent>::new(16);
+        let mut sub = bus.subscribe();
+        bus.emit(TestEvent(99));
+        assert_eq!(sub.try_recv(), Some(TestEvent(99)));
+        assert_eq!(bus.stats().sent_count, 1);
+    }
+
+    #[tokio::test]
+    async fn subscriber_receives_via_recv() {
+        let bus = EventBus::<TestEvent>::new(16);
+        let mut sub = bus.subscribe();
+        bus.send(TestEvent(7));
+        let event = sub.recv().await.expect("should receive event");
+        assert_eq!(event, TestEvent(7));
+    }
+
+    #[test]
+    fn multiple_subscribers_each_get_copy() {
+        let bus = EventBus::<TestEvent>::new(16);
+        let mut sub1 = bus.subscribe();
+        let mut sub2 = bus.subscribe();
+        bus.send(TestEvent(1));
+        assert_eq!(sub1.try_recv(), Some(TestEvent(1)));
+        assert_eq!(sub2.try_recv(), Some(TestEvent(1)));
+        assert_eq!(bus.stats().subscriber_count, 2);
+    }
+
+    #[test]
+    fn stats_initial() {
+        let bus = EventBus::<TestEvent>::new(8);
+        let stats = bus.stats();
+        assert_eq!(stats.sent_count, 0);
+        assert_eq!(stats.dropped_count, 0);
+        assert_eq!(stats.subscriber_count, 0);
+    }
+
+    #[test]
+    fn drop_newest_no_subscribers_drops() {
+        let bus = EventBus::<TestEvent>::with_policy(4, BackPressurePolicy::DropNewest);
+        bus.send(TestEvent(1));
+        let stats = bus.stats();
+        assert_eq!(stats.dropped_count, 1);
+        assert_eq!(stats.sent_count, 0);
+    }
+
+    #[tokio::test]
+    async fn drop_newest_with_subscriber_sends() {
+        let bus = EventBus::<TestEvent>::with_policy(4, BackPressurePolicy::DropNewest);
+        let mut sub = bus.subscribe();
+        bus.send(TestEvent(1));
+        let event = sub.recv().await.expect("should receive");
+        assert_eq!(event, TestEvent(1));
+        assert_eq!(bus.stats().sent_count, 1);
+        assert_eq!(bus.stats().dropped_count, 0);
+    }
+
+    #[tokio::test]
+    async fn block_policy_send_async_succeeds_with_subscriber() {
+        let bus = EventBus::<TestEvent>::with_policy(
+            4,
+            BackPressurePolicy::Block {
+                timeout: Duration::from_millis(100),
+            },
+        );
+        let mut sub = bus.subscribe();
+        bus.send_async(TestEvent(99)).await;
+        let event = sub.recv().await.expect("should receive");
+        assert_eq!(event, TestEvent(99));
+    }
+
+    #[tokio::test]
+    async fn block_policy_send_async_drops_after_timeout_no_receivers() {
+        let bus = EventBus::<TestEvent>::with_policy(
+            4,
+            BackPressurePolicy::Block {
+                timeout: Duration::from_millis(10),
+            },
+        );
+        bus.send_async(TestEvent(1)).await;
+        assert_eq!(bus.stats().dropped_count, 1);
+    }
+
+    #[test]
+    fn policy_default_is_drop_oldest() {
+        let policy = BackPressurePolicy::default();
+        assert!(matches!(policy, BackPressurePolicy::DropOldest));
+    }
+
+    #[test]
+    fn buffer_size_zero_panics() {
+        let result = std::panic::catch_unwind(|| {
+            let _ = EventBus::<TestEvent>::new(0);
+        });
+        assert!(result.is_err());
+    }
+}

@@ -46,7 +46,7 @@ Definition of done:
 
 ## Phase 5: Rust Baseline Upgrade Plan
 
-- Current workspace baseline is Rust `1.92`.
+- Current workspace baseline is Rust `1.93`.
 - Prepare bump path to Rust `1.93+`:
   - CI matrix update
   - clippy/rustdoc policy checks

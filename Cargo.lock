@@ -6269,6 +6269,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-eventbus"
+version = "0.1.0"
+dependencies = [
+ "pretty_assertions",
+ "tokio",
+]
+
+[[package]]
 name = "nebula-execution"
 version = "0.1.0"
 dependencies = [

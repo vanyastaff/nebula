@@ -31,6 +31,6 @@
 
 ## Phase 5: Toolchain and API Stability
 
-- current workspace baseline: Rust `1.92`
+- current workspace baseline: Rust `1.93`
 - prepare controlled migration to Rust `1.93+`
 - stabilize public API for long-lived validator definitions in plugins

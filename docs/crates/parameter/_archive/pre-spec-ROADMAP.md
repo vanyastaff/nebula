@@ -28,6 +28,6 @@
 
 ## Phase 5: Toolchain and Stability
 
-- workspace baseline today: Rust `1.92`
+- workspace baseline today: Rust `1.93`
 - prepare migration path to Rust `1.93+`
 - lock machine-readable error/code compatibility expectations

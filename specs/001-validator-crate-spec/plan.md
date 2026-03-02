@@ -9,7 +9,7 @@ Harden `nebula-validator` as a stable cross-crate contract by formalizing public
 
 ## Technical Context
 
-**Language/Version**: Rust 2024, MSRV 1.92  
+**Language/Version**: Rust 2024, MSRV 1.93  
 **Primary Dependencies**: `thiserror`, `regex`, `serde`, `serde_json`, `smallvec`, `moka`  
 **Storage**: N/A (in-process library, no owned persistence)  
 **Testing**: `cargo test`, integration tests in `crates/validator/tests`, property tests via `proptest`, benches via `criterion`  

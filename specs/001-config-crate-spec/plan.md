@@ -9,7 +9,7 @@ Harden `nebula-config` as a stable cross-crate contract by formalizing determini
 
 ## Technical Context
 
-**Language/Version**: Rust 2024, MSRV 1.92  
+**Language/Version**: Rust 2024, MSRV 1.93  
 **Primary Dependencies**: `tokio`, `async-trait`, `futures`, `serde`, `serde_json`, `toml`, `yaml-rust2`, `notify`, `dashmap`, `thiserror`, `nebula-log`, `nebula-validator`  
 **Storage**: In-memory merged JSON snapshot with layered source ingestion (file/env/composite)  
 **Testing**: `cargo test -p nebula-config`, integration/contract fixtures, property-style merge invariants, doc builds  

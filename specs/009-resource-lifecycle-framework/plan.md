@@ -9,7 +9,7 @@ Build the complete resource lifecycle management framework for Nebula — from c
 
 ## Technical Context
 
-**Language/Version**: Rust 2024 Edition (MSRV: 1.92)
+**Language/Version**: Rust 2024 Edition (MSRV: 1.93)
 **Primary Dependencies**: Tokio async runtime (rt-multi-thread, time, sync), tokio-util (CancellationToken), serde/serde_json, thiserror, dashmap, parking_lot, uuid, chrono, async-trait
 **Storage**: In-memory (all pool state, health state, dependency graphs are in-memory data structures)
 **Testing**: `cargo test --workspace`, `#[tokio::test(flavor = "multi_thread")]` for async, proptest for property-based tests, criterion for benchmarks

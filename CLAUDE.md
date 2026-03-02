@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Nebula is a workflow automation toolkit in Rust, similar to n8n.
 
 **Stack:**
-- Rust 2024 Edition (MSRV: 1.92)
+- Rust 2024 Edition (MSRV: 1.93)
 - Tokio async runtime
 - 11-crate workspace
 - egui for UI
@@ -151,20 +151,20 @@ async fn test_async() {
 
 ## Active Technologies
 - File-based local storage with encrypted credentials (Phase 2 adds cloud providers) (001-credential-core-abstractions)
-- Rust 2024 Edition (MSRV: 1.92) + Tokio async runtime, async-trait, serde, thiserror, aws-sdk-secretsmanager, azure_security_keyvault, vaultrs, kube (002-storage-backends)
+- Rust 2024 Edition (MSRV: 1.93) + Tokio async runtime, async-trait, serde, thiserror, aws-sdk-secretsmanager, azure_security_keyvault, vaultrs, kube (002-storage-backends)
 - Multiple pluggable backends - local encrypted filesystem (AES-256-GCM), AWS Secrets Manager (KMS-encrypted), Azure Key Vault (HSM-backed), HashiCorp Vault (KV v2), Kubernetes Secrets (namespace-isolated) (002-storage-backends)
 - Abstracted via `StorageProvider` trait (implemented in Phase 2): (001-credential-manager)
 - Builds on Phase 2 storage providers (requires durable storage for rotation state, backups, audit logs) (004-credential-rotation)
-- Rust 2024 Edition (MSRV: 1.92) + Tokio async runtime, async-trait, serde, thiserror, chrono (005-refactor-traits-validation)
+- Rust 2024 Edition (MSRV: 1.93) + Tokio async runtime, async-trait, serde, thiserror, chrono (005-refactor-traits-validation)
 - N/A (pure refactoring) (005-refactor-traits-validation)
 - N/A (this feature only adds types, no persistence logic) (006-extend-core-identity)
-- Rust 2024 Edition (MSRV: 1.92) + core, system, log (optional), thiserror, parking_lot, crossbeam-queue, hashbrown, dashmap, tokio (optional), winapi (Windows) (007-memory-prerelease)
+- Rust 2024 Edition (MSRV: 1.93) + core, system, log (optional), thiserror, parking_lot, crossbeam-queue, hashbrown, dashmap, tokio (optional), winapi (Windows) (007-memory-prerelease)
 - N/A (in-memory allocators) (007-memory-prerelease)
-- Rust 2024 Edition (MSRV: 1.92) + serde_json, chrono, rust_decimal, bytes, thiserror (008-serde-value-migration)
+- Rust 2024 Edition (MSRV: 1.93) + serde_json, chrono, rust_decimal, bytes, thiserror (008-serde-value-migration)
 - N/A (value type refactoring) (008-serde-value-migration)
-- Rust 2024 Edition (MSRV 1.92) + tracing, tracing-subscriber, tokio (optional), thiserror, serde, arc-swap (001-log-crate-spec)
+- Rust 2024 Edition (MSRV 1.93) + tracing, tracing-subscriber, tokio (optional), thiserror, serde, arc-swap (001-log-crate-spec)
 - N/A (logging only; file outputs use tracing-appender) (001-log-crate-spec)
 
 ## Recent Changes
 - 008-serde-value-migration: Migrated from custom nebula-value to serde_json::Value (completed 2026-02-11)
-- 001-credential-core-abstractions: Added Rust 2024 Edition (MSRV: 1.92)
+- 001-credential-core-abstractions: Added Rust 2024 Edition (MSRV: 1.93)
