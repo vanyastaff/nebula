@@ -1,6 +1,6 @@
 //! Credential provider trait for resource operations.
 //!
-//! Gated behind the `credentials` feature. Resource implementations can use
+//! Resource implementations can use
 //! the [`CredentialProvider`] passed via [`Context`](crate::Context) to fetch
 //! secrets at instance-creation time, keeping credentials fresh.
 

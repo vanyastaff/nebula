@@ -2,12 +2,11 @@
 
 use std::fmt;
 
-#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 /// Represents the current state of a resource in its lifecycle
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Serialize, Deserialize)]
 #[derive(Default)]
 pub enum Lifecycle {
     /// Resource has been created but not yet initialized

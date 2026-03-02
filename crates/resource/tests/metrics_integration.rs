@@ -3,8 +3,6 @@
 //! Verifies that the collector subscribes, processes events without panics,
 //! and terminates cleanly when the bus is dropped.
 
-#![cfg(feature = "metrics")]
-
 use std::sync::Arc;
 use std::time::Duration;
 

@@ -2,7 +2,6 @@
 
 use std::fmt;
 
-#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 /// Defines the scope and visibility of a resource
@@ -10,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// Each variant carries optional parent identifiers so that `contains()`
 /// can verify the parent chain instead of unconditionally returning true.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Serialize, Deserialize)]
 #[derive(Default)]
 pub enum Scope {
     /// Global scope - shared across all workflows and tenants
@@ -384,7 +383,7 @@ impl fmt::Display for Scope {
 
 /// Scoping strategy for resource allocation
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Serialize, Deserialize)]
 #[derive(Default)]
 pub enum Strategy {
     /// Strict scoping - only exact scope matches

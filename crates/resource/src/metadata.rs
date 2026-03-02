@@ -4,7 +4,6 @@
 //! and monitoring. Implement [`Resource::metadata`](crate::resource::Resource) to
 //! provide rich metadata; a default builds from `id()` only.
 
-#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 /// Static metadata describing a resource type.
@@ -12,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// Used for UI (resources page name/type), discovery, and categorization.
 /// Provide via [`Resource::metadata`](crate::resource::Resource); default uses `id()`.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Serialize, Deserialize)]
 pub struct ResourceMetadata {
     /// Unique key (same as `Resource::id()`, e.g. `"postgres"`, `"redis"`).
     pub key: String,
@@ -24,13 +23,13 @@ pub struct ResourceMetadata {
     ///
     /// The frontend is responsible for resolving this identifier to an actual
     /// icon asset (SVG, PNG, etc.).
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub icon: Option<String>,
     /// Optional direct icon URL when an identifier is not sufficient.
     ///
     /// This is most useful for third-party or dynamically loaded resources
     /// that provide their own icon URLs.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub icon_url: Option<String>,
     /// Free-form tags for discovery and grouping.
     ///
@@ -38,7 +37,7 @@ pub struct ResourceMetadata {
     /// - `category:database`, `category:messaging`, `category:bot`
     /// - `protocol:http`, `protocol:websocket`
     /// - `service:postgres`, `service:telegram`
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[serde(default)]
     pub tags: Vec<String>,
 }
 

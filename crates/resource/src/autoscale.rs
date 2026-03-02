@@ -9,7 +9,6 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -25,7 +24,7 @@ use crate::error::{Error, Result};
 /// `scale_up_step` idle instances. When it drops below `low_watermark`
 /// for the same window, the scaler removes `scale_down_step` idle instances.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Serialize, Deserialize)]
 pub struct AutoScalePolicy {
     /// Utilization above which to scale up (0.0, 1.0]. Default: 0.8
     pub high_watermark: f64,

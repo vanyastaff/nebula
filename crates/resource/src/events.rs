@@ -1,79 +1,59 @@
 //! Event broadcasting for resource lifecycle observability.
 //!
-//! Provides [`ResourceEvent`] variants emitted during resource lifecycle
-//! operations. The [`EventBus`] is supplied by `nebula-eventbus` with
-//! [`BackPressurePolicy`] and [`EventBusStats`] for observability.
-//!
-//! ## Back-pressure
-//!
-//! Use [`nebula_eventbus::BackPressurePolicy`]: `DropOldest` (default),
-//! `DropNewest`, or `Block { timeout }`. For `Block`, use
-//! [`EventBus::send_async`](nebula_eventbus::EventBus::send_async).
+//! Provides [`ResourceEvent`] variants and [`EventBus`] backed by `nebula-eventbus`.
+//! Metrics and logging are controlled by app config (recorder/subscriber).
 
 use std::time::Duration;
 
 use crate::health::HealthState;
 use crate::scope::Scope;
 
-// Re-export transport and policy from nebula-eventbus
 pub use nebula_eventbus::{BackPressurePolicy, EventBusStats, EventSubscriber};
 
 /// Resource lifecycle event bus (wrapper around `nebula_eventbus::EventBus<ResourceEvent>`).
-///
-/// Provides [`emit`](Self::emit) / [`emit_async`](Self::emit_async) for API compatibility
-/// with existing resource and manager code.
 #[derive(Debug)]
-pub struct EventBus(nebula_eventbus::EventBus<ResourceEvent>);
+pub struct EventBus(pub(crate) nebula_eventbus::EventBus<ResourceEvent>);
 
 impl EventBus {
-    /// Creates a new event bus with the given buffer size.
     #[must_use]
     pub fn new(buffer_size: usize) -> Self {
         Self(nebula_eventbus::EventBus::new(buffer_size))
     }
 
-    /// Creates a new event bus with the given buffer size and back-pressure policy.
     #[must_use]
     pub fn with_policy(buffer_size: usize, policy: BackPressurePolicy) -> Self {
         Self(nebula_eventbus::EventBus::with_policy(buffer_size, policy))
     }
 
-    /// Emits an event to all subscribers (non-blocking).
     #[inline]
     pub fn emit(&self, event: ResourceEvent) {
         self.0.send(event);
     }
 
-    /// Emits an event asynchronously (for `BackPressurePolicy::Block`).
     pub async fn emit_async(&self, event: ResourceEvent) {
         self.0.send_async(event).await;
     }
 
-    /// Subscribes to events.
     #[must_use]
     pub fn subscribe(&self) -> EventSubscriber<ResourceEvent> {
         self.0.subscribe()
     }
 
-    /// Returns a snapshot of event bus statistics.
     #[must_use]
     pub fn stats(&self) -> EventBusStats {
         self.0.stats()
     }
 
-    /// Returns the configured buffer size.
     #[must_use]
     pub fn buffer_size(&self) -> usize {
         self.0.buffer_size()
     }
 
-    /// Returns the configured back-pressure policy.
     #[must_use]
     pub fn policy(&self) -> &BackPressurePolicy {
         self.0.policy()
     }
 
-    /// Returns the current number of active subscribers.
     #[must_use]
     pub fn subscriber_count(&self) -> usize {
         self.0.stats().subscriber_count
@@ -87,86 +67,64 @@ impl Default for EventBus {
 }
 
 // ---------------------------------------------------------------------------
-// ResourceEvent
+// ResourceEvent (always present; no eventbus dependency)
 // ---------------------------------------------------------------------------
 
 /// Events emitted during resource lifecycle operations.
 ///
 /// All variants carry a `resource_id` identifying the resource that
-/// triggered the event. Subscribers receive cloned copies via
-/// [`EventBus::subscribe`].
+/// triggered the event. Subscribers receive cloned copies via [`EventBus::subscribe`].
 #[derive(Debug, Clone)]
 pub enum ResourceEvent {
     /// A new resource was registered with the manager.
     Created {
-        /// The resource identifier.
         resource_id: String,
-        /// The scope the resource was registered under.
         scope: Scope,
     },
     /// A resource instance was successfully acquired from the pool.
     Acquired {
-        /// The resource identifier.
         resource_id: String,
-        /// How long the caller waited to acquire the instance.
         wait_duration: Duration,
     },
     /// A resource instance was released back to the pool.
     Released {
-        /// The resource identifier.
         resource_id: String,
-        /// How long the instance was held by the caller.
         usage_duration: Duration,
     },
     /// The health state of a resource changed.
     HealthChanged {
-        /// The resource identifier.
         resource_id: String,
-        /// Previous health state.
         from: HealthState,
-        /// New health state.
         to: HealthState,
     },
     /// The pool is exhausted and a caller is waiting or was rejected.
     PoolExhausted {
-        /// The resource identifier.
         resource_id: String,
-        /// Number of callers currently waiting for an instance.
         waiters: usize,
     },
     /// A resource instance was cleaned up (permanently removed).
     CleanedUp {
-        /// The resource identifier.
         resource_id: String,
-        /// The reason the instance was cleaned up.
         reason: CleanupReason,
     },
     /// A resource was placed in quarantine.
     Quarantined {
-        /// The resource identifier.
         resource_id: String,
-        /// Human-readable reason for quarantine.
         reason: String,
     },
     /// A resource was released from quarantine.
     QuarantineReleased {
-        /// The resource identifier.
         resource_id: String,
-        /// How many recovery attempts it took.
         recovery_attempts: u32,
     },
     /// A resource's configuration was reloaded (hot-reload).
     ConfigReloaded {
-        /// The resource identifier.
         resource_id: String,
-        /// The scope the resource is registered under.
         scope: Scope,
     },
     /// An error occurred during a resource operation.
     Error {
-        /// The resource identifier.
         resource_id: String,
-        /// Human-readable error description.
         error: String,
     },
 }
@@ -191,6 +149,10 @@ pub enum CleanupReason {
     /// Recycling the instance failed.
     RecycleFailed,
 }
+
+// ---------------------------------------------------------------------------
+// Tests (eventbus-dependent tests only with "events" feature)
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -354,15 +316,21 @@ mod tests {
     }
 
     #[test]
+    fn back_pressure_policy_default_is_drop_oldest() {
+        let policy = BackPressurePolicy::default();
+        assert!(matches!(policy, BackPressurePolicy::DropOldest));
+    }
+}
+
+#[cfg(test)]
+mod tests_common {
+    use super::*;
+
+    #[test]
     fn cleanup_reason_is_clone() {
         let reason = CleanupReason::Expired;
         let cloned = reason.clone();
         assert!(matches!(cloned, CleanupReason::Expired));
     }
 
-    #[test]
-    fn back_pressure_policy_default_is_drop_oldest() {
-        let policy = BackPressurePolicy::default();
-        assert!(matches!(policy, BackPressurePolicy::DropOldest));
-    }
 }
