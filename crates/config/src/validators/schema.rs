@@ -406,12 +406,11 @@ impl SchemaValidator {
 
         if let Some(divisor) = schema_obj.get("multipleOf").and_then(Value::as_f64)
             && divisor != 0.0
+            && (value % divisor).abs() > f64::EPSILON
         {
-            if (value % divisor).abs() > f64::EPSILON {
-                return Err(to_err(format!(
-                    "Number at '{path}' must be a multiple of {divisor}"
-                )));
-            }
+            return Err(to_err(format!(
+                "Number at '{path}' must be a multiple of {divisor}"
+            )));
         }
 
         Ok(())

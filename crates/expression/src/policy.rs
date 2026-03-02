@@ -140,4 +140,3 @@ mod tests {
         assert_eq!(policy.max_json_parse_length(), Some(2048));
     }
 }
-

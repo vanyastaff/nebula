@@ -406,4 +406,3 @@ fn format_datetime(dt: &DateTime<Utc>, format: &str) -> ExpressionResult<String>
 
     Ok(result.into_owned())
 }
-

@@ -22,10 +22,17 @@ pub struct MemoryStateStore {
 }
 
 impl MemoryStateStore {
+    /// Creates a new in-memory state store (empty map).
     pub fn new() -> Self {
         Self {
             states: std::sync::Arc::new(dashmap::DashMap::new()),
         }
+    }
+}
+
+impl Default for MemoryStateStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

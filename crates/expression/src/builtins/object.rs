@@ -50,4 +50,3 @@ pub fn has(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Expre
 
     Ok(Value::Bool(obj.contains_key(key)))
 }
-

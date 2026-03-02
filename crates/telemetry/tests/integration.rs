@@ -62,7 +62,10 @@ fn noop_telemetry_arc_provides_same_bus_and_metrics() {
     telemetry.metrics().counter("nebula_test_counter").inc();
 
     assert_eq!(bus1.total_emitted(), bus2.total_emitted());
-    assert_eq!(metrics1.counter("nebula_test_counter").get(), metrics2.counter("nebula_test_counter").get());
+    assert_eq!(
+        metrics1.counter("nebula_test_counter").get(),
+        metrics2.counter("nebula_test_counter").get()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -126,7 +129,9 @@ fn noop_telemetry_full_flow_no_panic() {
 
     metrics.counter("nebula_executions_total").inc();
     metrics.gauge("nebula_active_executions").set(0);
-    metrics.histogram("nebula_execution_duration_seconds").observe(1.0);
+    metrics
+        .histogram("nebula_execution_duration_seconds")
+        .observe(1.0);
 
     assert_eq!(bus.total_emitted(), 4);
     assert_eq!(metrics.counter("nebula_executions_total").get(), 1);

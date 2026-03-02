@@ -556,4 +556,3 @@ mod tests {
         assert!(matches!(expr, Expr::PropertyAccess { .. }));
     }
 }
-

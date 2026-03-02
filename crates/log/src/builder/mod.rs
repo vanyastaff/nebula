@@ -160,7 +160,10 @@ impl LoggerBuilder {
         let otel_layer: Option<Box<dyn tracing_subscriber::Layer<Registry> + Send + Sync>> = {
             match &self.config.telemetry {
                 Some(telemetry_config) => {
-                    match crate::telemetry::otel::build_layer(telemetry_config, &self.config.fields)? {
+                    match crate::telemetry::otel::build_layer(
+                        telemetry_config,
+                        &self.config.fields,
+                    )? {
                         Some(otel) => {
                             inner.otel_provider = Some(otel.provider);
                             Some(otel.layer)

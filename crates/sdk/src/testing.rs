@@ -76,6 +76,7 @@ impl TestContext {
 /// let result = tester.execute(input).await;
 /// ```
 pub struct ActionTester<A> {
+    #[allow(dead_code)] // used in execute() when A: Action
     action: A,
     context: TestContext,
 }

@@ -8,18 +8,13 @@ use std::sync::Arc;
 use nebula_telemetry::metrics::MetricsRegistry;
 
 use crate::naming::{
-    NEBULA_ACTION_DURATION_SECONDS,
-    NEBULA_ACTION_EXECUTIONS_TOTAL,
-    NEBULA_ACTION_FAILURES_TOTAL,
-    NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS,
-    NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
+    NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,
+    NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
+    NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
 };
 
 /// Prometheus exposition format version (text-based).
-const PROMETHEUS_CONTENT_TYPE: &str =
-    "text/plain; version=0.0.4; charset=utf-8";
+const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
 /// Known counter names (workflow + action) for snapshot.
 const COUNTER_NAMES: &[&str] = &[
@@ -50,7 +45,7 @@ pub fn snapshot(registry: &MetricsRegistry) -> String {
         out.push_str(name);
         out.push_str(" counter\n");
         out.push_str(name);
-        out.push_str(" ");
+        out.push(' ');
         out.push_str(&value.to_string());
         out.push('\n');
     }
@@ -117,7 +112,7 @@ mod tests {
 
     use nebula_telemetry::metrics::MetricsRegistry;
 
-    use super::{snapshot, PrometheusExporter};
+    use super::{PrometheusExporter, snapshot};
 
     #[test]
     fn snapshot_includes_counters_and_histograms() {
@@ -143,9 +138,7 @@ mod tests {
     #[test]
     fn exporter_wraps_registry() {
         let registry = Arc::new(MetricsRegistry::new());
-        registry
-            .counter("nebula_action_failures_total")
-            .inc_by(3);
+        registry.counter("nebula_action_failures_total").inc_by(3);
         let exporter = PrometheusExporter::new(registry);
         let out = exporter.snapshot();
         assert!(out.contains("nebula_action_failures_total"));

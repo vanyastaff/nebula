@@ -23,8 +23,7 @@ use crate::error::{Error, Result};
 /// `high_watermark` for `evaluation_window`, the scaler pre-creates
 /// `scale_up_step` idle instances. When it drops below `low_watermark`
 /// for the same window, the scaler removes `scale_down_step` idle instances.
-#[derive(Debug, Clone)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutoScalePolicy {
     /// Utilization above which to scale up (0.0, 1.0]. Default: 0.8
     pub high_watermark: f64,

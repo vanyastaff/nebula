@@ -22,8 +22,7 @@ use nebula_core::{ExecutionId, WorkflowId};
 // ---------------------------------------------------------------------------
 
 /// Health status for resource health checks
-#[derive(Debug, Clone)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthStatus {
     /// The health state
     pub state: HealthState,
@@ -34,8 +33,7 @@ pub struct HealthStatus {
 }
 
 /// Health state variants
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum HealthState {
     /// Resource is fully operational
     Healthy,
@@ -1281,7 +1279,11 @@ mod tests {
 
     /// Helper: build a minimal [`Context`] for pipeline tests.
     fn test_ctx() -> Context {
-        Context::new(crate::scope::Scope::Global, WorkflowId::nil(), ExecutionId::nil())
+        Context::new(
+            crate::scope::Scope::Global,
+            WorkflowId::nil(),
+            ExecutionId::nil(),
+        )
     }
 
     /// A test stage that records whether `check` was called.

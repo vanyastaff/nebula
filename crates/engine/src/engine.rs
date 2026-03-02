@@ -19,16 +19,14 @@ use nebula_execution::ExecutionStatus;
 use nebula_execution::context::ExecutionBudget;
 use nebula_execution::plan::ExecutionPlan;
 use nebula_execution::state::ExecutionState;
-use nebula_runtime::ActionRuntime;
 use nebula_metrics::naming::{
-    NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS,
-    NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
+    NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
+    NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
 };
+use nebula_runtime::ActionRuntime;
+use nebula_telemetry::TelemetryService;
 use nebula_telemetry::event::{EventBus, ExecutionEvent};
 use nebula_telemetry::metrics::MetricsRegistry;
-use nebula_telemetry::TelemetryService;
 use nebula_workflow::{
     Connection, DependencyGraph, EdgeCondition, ErrorMatcher, NodeState, ResultMatcher,
     WorkflowDefinition,
@@ -100,11 +98,7 @@ impl WorkflowEngine {
         runtime: Arc<ActionRuntime>,
         telemetry: Arc<dyn TelemetryService>,
     ) -> Self {
-        Self::new(
-            runtime,
-            telemetry.event_bus_arc(),
-            telemetry.metrics_arc(),
-        )
+        Self::new(runtime, telemetry.event_bus_arc(), telemetry.metrics_arc())
     }
 
     /// Register a mapping from an action ID to a registry key.
@@ -183,7 +177,9 @@ impl WorkflowEngine {
             execution_id: execution_id.to_string(),
             workflow_id: workflow.id.to_string(),
         });
-        self.metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL).inc();
+        self.metrics
+            .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
+            .inc();
 
         // 7. Build node lookup map
         let node_map: HashMap<NodeId, &nebula_workflow::NodeDefinition> =
@@ -498,7 +494,9 @@ impl WorkflowEngine {
                     execution_id: execution_id.to_string(),
                     duration: elapsed,
                 });
-                self.metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL).inc();
+                self.metrics
+                    .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
+                    .inc();
             }
             ExecutionStatus::Failed => {
                 let error_msg = failed_node
@@ -509,7 +507,9 @@ impl WorkflowEngine {
                     execution_id: execution_id.to_string(),
                     error: error_msg,
                 });
-                self.metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL).inc();
+                self.metrics
+                    .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
+                    .inc();
             }
             ExecutionStatus::Cancelled => {
                 self.event_bus.emit(ExecutionEvent::Cancelled {
@@ -537,6 +537,7 @@ struct NodeTask {
     action_key: String,
     input: serde_json::Value,
     /// Data for support input ports, keyed by port name.
+    #[allow(dead_code)] // reserved for multi-input actions
     support_inputs: HashMap<String, Vec<serde_json::Value>>,
     // /// Optional resource provider for this execution.
     // resource_provider: Option<Arc<dyn nebula_action::provider::ResourceProvider>>,
@@ -1221,8 +1222,18 @@ mod tests {
         }
         assert!(event_count >= 3);
 
-        assert!(metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL).get() > 0);
-        assert!(metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL).get() > 0);
+        assert!(
+            metrics
+                .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
+                .get()
+                > 0
+        );
+        assert!(
+            metrics
+                .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
+                .get()
+                > 0
+        );
     }
 
     #[tokio::test]
@@ -1245,8 +1256,18 @@ mod tests {
             .unwrap();
 
         assert!(result.is_failure());
-        assert!(metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL).get() > 0);
-        assert!(metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL).get() > 0);
+        assert!(
+            metrics
+                .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
+                .get()
+                > 0
+        );
+        assert!(
+            metrics
+                .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
+                .get()
+                > 0
+        );
     }
 
     // -- Frontier-specific test handlers --

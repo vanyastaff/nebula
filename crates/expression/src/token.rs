@@ -265,4 +265,3 @@ impl<'a> std::fmt::Display for TokenKind<'a> {
         }
     }
 }
-

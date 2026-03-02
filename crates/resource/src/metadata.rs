@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Used for UI (resources page name/type), discovery, and categorization.
 /// Provide via [`Resource::metadata`](crate::resource::Resource); default uses `id()`.
-#[derive(Debug, Clone)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceMetadata {
     /// Unique key (same as `Resource::id()`, e.g. `"postgres"`, `"redis"`).
     pub key: String,

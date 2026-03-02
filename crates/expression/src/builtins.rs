@@ -11,8 +11,8 @@ pub mod string;
 pub mod util;
 
 use crate::ExpressionError;
-use crate::context::EvaluationContext;
 use crate::ast::Expr;
+use crate::context::EvaluationContext;
 use crate::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
 use serde_json::Value;
@@ -483,4 +483,3 @@ mod tests {
         assert!(msg.contains("Argument 'items' must be an array"));
     }
 }
-

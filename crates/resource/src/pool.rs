@@ -43,8 +43,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Controls whether the most-recently-used or least-recently-used
 /// idle instance is returned on acquire.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum PoolStrategy {
     /// First-in, first-out: return the **oldest** idle instance.
     ///
@@ -59,8 +58,7 @@ pub enum PoolStrategy {
 }
 
 /// Configuration for resource pooling
-#[derive(Debug, Clone)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolConfig {
     /// Minimum number of resources in the pool
     pub min_size: usize,
@@ -1496,7 +1494,8 @@ mod tests {
 
         // Create a context with a cancellation token
         let token = tokio_util::sync::CancellationToken::new();
-        let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4()).with_cancellation(token.clone());
+        let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
+            .with_cancellation(token.clone());
 
         // Cancel after 50ms
         let cancel_token = token.clone();

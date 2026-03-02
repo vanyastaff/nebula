@@ -126,4 +126,3 @@ mod tests {
         assert_eq!(interner.len(), 10);
     }
 }
-

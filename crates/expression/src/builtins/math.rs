@@ -1,6 +1,8 @@
 //! Math functions
 
-use super::{check_arg_count, check_min_arg_count, get_int_arg_with_policy, get_number_arg_with_policy};
+use super::{
+    check_arg_count, check_min_arg_count, get_int_arg_with_policy, get_number_arg_with_policy,
+};
 use crate::ExpressionError;
 use crate::context::EvaluationContext;
 use crate::error::{ExpressionErrorExt, ExpressionResult};
@@ -15,11 +17,7 @@ pub fn abs(args: &[Value], eval: &Evaluator, ctx: &EvaluationContext) -> Express
 }
 
 /// Round to specified decimal places (default: 0)
-pub fn round(
-    args: &[Value],
-    eval: &Evaluator,
-    ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+pub fn round(args: &[Value], eval: &Evaluator, ctx: &EvaluationContext) -> ExpressionResult<Value> {
     check_min_arg_count("round", args, 1)?;
     let num = get_number_arg_with_policy("round", args, 0, "value", eval, ctx)?;
 
@@ -43,22 +41,14 @@ pub fn round(
 }
 
 /// Floor function
-pub fn floor(
-    args: &[Value],
-    eval: &Evaluator,
-    ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+pub fn floor(args: &[Value], eval: &Evaluator, ctx: &EvaluationContext) -> ExpressionResult<Value> {
     check_arg_count("floor", args, 1)?;
     let num = get_number_arg_with_policy("floor", args, 0, "value", eval, ctx)?;
     Ok(serde_json::json!(num.floor()))
 }
 
 /// Ceiling function
-pub fn ceil(
-    args: &[Value],
-    eval: &Evaluator,
-    ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+pub fn ceil(args: &[Value], eval: &Evaluator, ctx: &EvaluationContext) -> ExpressionResult<Value> {
     check_arg_count("ceil", args, 1)?;
     let num = get_number_arg_with_policy("ceil", args, 0, "value", eval, ctx)?;
     Ok(serde_json::json!(num.ceil()))
@@ -70,13 +60,14 @@ pub fn min(args: &[Value], eval: &Evaluator, ctx: &EvaluationContext) -> Express
 
     let mut min_val = get_number_arg_with_policy("min", args, 0, "value", eval, ctx)?;
     for (i, arg) in args[1..].iter().enumerate() {
-        let val = get_number_arg_with_policy("min", std::slice::from_ref(arg), 0, "value", eval, ctx)
-            .map_err(|_| {
-                ExpressionError::expression_invalid_argument(
-                    "min",
-                    format!("Argument at position {} must be a number", i + 1),
-                )
-            })?;
+        let val =
+            get_number_arg_with_policy("min", std::slice::from_ref(arg), 0, "value", eval, ctx)
+                .map_err(|_| {
+                    ExpressionError::expression_invalid_argument(
+                        "min",
+                        format!("Argument at position {} must be a number", i + 1),
+                    )
+                })?;
         if val < min_val {
             min_val = val;
         }
@@ -91,13 +82,14 @@ pub fn max(args: &[Value], eval: &Evaluator, ctx: &EvaluationContext) -> Express
 
     let mut max_val = get_number_arg_with_policy("max", args, 0, "value", eval, ctx)?;
     for (i, arg) in args[1..].iter().enumerate() {
-        let val = get_number_arg_with_policy("max", std::slice::from_ref(arg), 0, "value", eval, ctx)
-            .map_err(|_| {
-                ExpressionError::expression_invalid_argument(
-                    "max",
-                    format!("Argument at position {} must be a number", i + 1),
-                )
-            })?;
+        let val =
+            get_number_arg_with_policy("max", std::slice::from_ref(arg), 0, "value", eval, ctx)
+                .map_err(|_| {
+                    ExpressionError::expression_invalid_argument(
+                        "max",
+                        format!("Argument at position {} must be a number", i + 1),
+                    )
+                })?;
         if val > max_val {
             max_val = val;
         }
@@ -107,11 +99,7 @@ pub fn max(args: &[Value], eval: &Evaluator, ctx: &EvaluationContext) -> Express
 }
 
 /// Square root
-pub fn sqrt(
-    args: &[Value],
-    eval: &Evaluator,
-    ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+pub fn sqrt(args: &[Value], eval: &Evaluator, ctx: &EvaluationContext) -> ExpressionResult<Value> {
     check_arg_count("sqrt", args, 1)?;
     let num = get_number_arg_with_policy("sqrt", args, 0, "value", eval, ctx)?;
     if num < 0.0 {
@@ -130,4 +118,3 @@ pub fn pow(args: &[Value], eval: &Evaluator, ctx: &EvaluationContext) -> Express
     let exp = get_number_arg_with_policy("pow", args, 1, "exponent", eval, ctx)?;
     Ok(serde_json::json!(base.powf(exp)))
 }
-

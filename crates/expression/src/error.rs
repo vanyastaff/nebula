@@ -332,4 +332,3 @@ mod tests {
         assert!(ExpressionError::internal("test").is_retryable());
     }
 }
-

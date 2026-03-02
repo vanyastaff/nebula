@@ -5,8 +5,8 @@
 //! be evaluated at runtime.
 
 use crate::ExpressionError;
-use crate::context::EvaluationContext;
 use crate::ast::Expr;
+use crate::context::EvaluationContext;
 use crate::engine::ExpressionEngine;
 use once_cell::sync::OnceCell;
 use serde::de::DeserializeOwned;
@@ -459,4 +459,3 @@ mod tests {
         assert_eq!(deserialized, maybe);
     }
 }
-

@@ -359,7 +359,7 @@ impl SlowAcquireHook {
 
     /// Build a map key from resource ID and execution ID.
     fn timer_key(resource_id: &str, ctx: &Context) -> String {
-        format!("{}:{}", resource_id, ctx.execution_id.to_string())
+        format!("{}:{}", resource_id, ctx.execution_id)
     }
 }
 

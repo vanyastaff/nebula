@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
-use nebula_resource::{ExecutionId, WorkflowId};
 use nebula_resource::pool::{Pool, PoolConfig, PoolStrategy};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
+use nebula_resource::{ExecutionId, WorkflowId};
 use proptest::prelude::*;
 
 // ---------------------------------------------------------------------------

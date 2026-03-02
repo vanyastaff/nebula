@@ -8,9 +8,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Each variant carries optional parent identifiers so that `contains()`
 /// can verify the parent chain instead of unconditionally returning true.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[derive(Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum Scope {
     /// Global scope - shared across all workflows and tenants
     #[default]
@@ -382,9 +380,7 @@ impl fmt::Display for Scope {
 }
 
 /// Scoping strategy for resource allocation
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum Strategy {
     /// Strict scoping - only exact scope matches
     Strict,

@@ -38,7 +38,10 @@ impl ObservabilityEvent for OperationStarted {
     }
 
     fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
-        visitor.record(field::OPERATION, ObservabilityFieldValue::Str(&self.operation));
+        visitor.record(
+            field::OPERATION,
+            ObservabilityFieldValue::Str(&self.operation),
+        );
         visitor.record(field::CONTEXT, ObservabilityFieldValue::Str(&self.context));
     }
 }
@@ -75,7 +78,10 @@ impl ObservabilityEvent for OperationCompleted {
     }
 
     fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
-        visitor.record(field::OPERATION, ObservabilityFieldValue::Str(&self.operation));
+        visitor.record(
+            field::OPERATION,
+            ObservabilityFieldValue::Str(&self.operation),
+        );
         visitor.record(
             field::DURATION_MS,
             ObservabilityFieldValue::U64(self.duration.as_millis() as u64),
@@ -122,7 +128,10 @@ impl ObservabilityEvent for OperationFailed {
     }
 
     fn visit_fields(&self, visitor: &mut dyn ObservabilityFieldVisitor) {
-        visitor.record(field::OPERATION, ObservabilityFieldValue::Str(&self.operation));
+        visitor.record(
+            field::OPERATION,
+            ObservabilityFieldValue::Str(&self.operation),
+        );
         visitor.record(field::ERROR, ObservabilityFieldValue::Str(&self.error));
         visitor.record(
             field::DURATION_MS,

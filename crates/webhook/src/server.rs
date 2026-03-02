@@ -401,7 +401,11 @@ mod tests {
 
         let server = WebhookServer::new(config).await.unwrap();
 
-        let base = Context::new(Scope::Global, nebula_core::WorkflowId::v4(), nebula_core::ExecutionId::v4());
+        let base = Context::new(
+            Scope::Global,
+            nebula_core::WorkflowId::v4(),
+            nebula_core::ExecutionId::v4(),
+        );
         let state = StdArc::new(crate::TriggerState::new("test-trigger"));
         let ctx = TriggerCtx::new(
             base,
@@ -439,7 +443,11 @@ mod tests {
 
         assert_eq!(server.route_count(), 0);
 
-        let base = Context::new(Scope::Global, nebula_core::WorkflowId::v4(), nebula_core::ExecutionId::v4());
+        let base = Context::new(
+            Scope::Global,
+            nebula_core::WorkflowId::v4(),
+            nebula_core::ExecutionId::v4(),
+        );
         let state = StdArc::new(crate::TriggerState::new("test-trigger"));
         let ctx = TriggerCtx::new(
             base,

@@ -13,10 +13,10 @@ use std::time::Duration;
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
-use nebula_resource::{ExecutionId, WorkflowId};
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
+use nebula_resource::{ExecutionId, WorkflowId};
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -229,7 +229,11 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
     drop(g1);
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let ctx_b_wf = Context::new(Scope::workflow_in_tenant("wf1", "B"), WorkflowId::v4(), ExecutionId::v4());
+    let ctx_b_wf = Context::new(
+        Scope::workflow_in_tenant("wf1", "B"),
+        WorkflowId::v4(),
+        ExecutionId::v4(),
+    );
     let g2 = mgr.acquire("cache-B", &ctx_b_wf).await;
     assert!(
         g2.is_ok(),
@@ -313,11 +317,19 @@ async fn workflow_scope_shutdown_does_not_affect_siblings() {
         .unwrap();
 
     // wf2 resource should still work
-    let ctx_wf2 = Context::new(Scope::workflow_in_tenant("wf2", "A"), WorkflowId::v4(), ExecutionId::v4());
+    let ctx_wf2 = Context::new(
+        Scope::workflow_in_tenant("wf2", "A"),
+        WorkflowId::v4(),
+        ExecutionId::v4(),
+    );
     assert!(mgr.acquire("cache-wf2", &ctx_wf2).await.is_ok());
 
     // wf1 resource should be gone
-    let ctx_wf1 = Context::new(Scope::workflow_in_tenant("wf1", "A"), WorkflowId::v4(), ExecutionId::v4());
+    let ctx_wf1 = Context::new(
+        Scope::workflow_in_tenant("wf1", "A"),
+        WorkflowId::v4(),
+        ExecutionId::v4(),
+    );
     assert!(mgr.acquire("cache-wf1", &ctx_wf1).await.is_err());
 }
 

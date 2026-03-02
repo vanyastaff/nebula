@@ -128,23 +128,23 @@
 //! - `uuid()` - Generate UUID
 
 // Public modules - exposed for external use
+#[doc(hidden)]
+pub mod ast;
 pub mod builtins;
 pub mod context;
 pub mod engine;
 pub mod error;
 pub mod error_formatter;
-pub mod maybe;
-pub mod policy;
-pub mod template;
-pub mod value_utils;
-#[doc(hidden)]
-pub mod ast;
 #[doc(hidden)]
 pub mod interner;
+pub mod maybe;
+pub mod policy;
 #[doc(hidden)]
 pub mod span;
+pub mod template;
 #[doc(hidden)]
 pub mod token;
+pub mod value_utils;
 
 // Internal modules - not part of stable public API
 // These are exposed for advanced use cases but may change between versions
@@ -169,9 +169,9 @@ pub use ast::{BinaryOp, Expr};
 #[doc(hidden)]
 pub use span::Span;
 #[doc(hidden)]
-pub use token::{Token, TokenKind};
-#[doc(hidden)]
 pub use template::{Position, TemplatePart};
+#[doc(hidden)]
+pub use token::{Token, TokenKind};
 
 // Re-export error types
 pub use error::{ExpressionError, ExpressionErrorExt, ExpressionResult};
@@ -182,9 +182,8 @@ pub use serde_json::Value;
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::{
-        EvaluationContext, EvaluationContextBuilder, ExpressionEngine, ExpressionError,
-        ExpressionErrorExt, ExpressionResult, EvaluationPolicy, MaybeExpression, MaybeTemplate, 
-        Template, Value, CacheOverview,
+        CacheOverview, EvaluationContext, EvaluationContextBuilder, EvaluationPolicy,
+        ExpressionEngine, ExpressionError, ExpressionErrorExt, ExpressionResult, MaybeExpression,
+        MaybeTemplate, Template, Value,
     };
 }
-

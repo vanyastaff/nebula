@@ -202,4 +202,3 @@ mod tests {
         let ((_start_line, _start_col), (_end_line, _end_col)) = span.line_col_range(source);
     }
 }
-

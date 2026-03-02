@@ -333,10 +333,10 @@ mod manager_scope_tests {
     use nebula_resource::Manager;
     use nebula_resource::context::Context;
     use nebula_resource::error::Result;
-    use nebula_resource::{ExecutionId, WorkflowId};
     use nebula_resource::pool::PoolConfig;
     use nebula_resource::resource::{Config, Resource};
     use nebula_resource::scope::Scope;
+    use nebula_resource::{ExecutionId, WorkflowId};
 
     #[derive(Debug, Clone, serde::Deserialize)]
     struct TestConfig;

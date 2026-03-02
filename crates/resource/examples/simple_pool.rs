@@ -5,12 +5,12 @@
 use std::time::Duration;
 
 use nebula_resource::{
+    ExecutionId, WorkflowId,
     context::Context,
     error::Result,
     pool::{Pool, PoolConfig},
     resource::{Config, Resource},
     scope::Scope,
-    ExecutionId, WorkflowId,
 };
 
 /// Example resource configuration

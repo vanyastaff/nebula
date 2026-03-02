@@ -11,58 +11,61 @@ use crate::scope::Scope;
 pub use nebula_eventbus::{BackPressurePolicy, EventBusStats, EventSubscriber};
 
 /// Resource lifecycle event bus (wrapper around `nebula_eventbus::EventBus<ResourceEvent>`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct EventBus(pub(crate) nebula_eventbus::EventBus<ResourceEvent>);
 
 impl EventBus {
+    /// Creates a new event bus with the given buffer size (default back-pressure policy).
     #[must_use]
     pub fn new(buffer_size: usize) -> Self {
         Self(nebula_eventbus::EventBus::new(buffer_size))
     }
 
+    /// Creates a new event bus with the given buffer size and back-pressure policy.
     #[must_use]
     pub fn with_policy(buffer_size: usize, policy: BackPressurePolicy) -> Self {
         Self(nebula_eventbus::EventBus::with_policy(buffer_size, policy))
     }
 
+    /// Sends an event synchronously (non-blocking; may drop if buffer full per policy).
     #[inline]
     pub fn emit(&self, event: ResourceEvent) {
         self.0.send(event);
     }
 
+    /// Sends an event asynchronously (may block or timeout depending on policy).
     pub async fn emit_async(&self, event: ResourceEvent) {
         self.0.send_async(event).await;
     }
 
+    /// Returns a new subscriber that receives clones of emitted events.
     #[must_use]
     pub fn subscribe(&self) -> EventSubscriber<ResourceEvent> {
         self.0.subscribe()
     }
 
+    /// Returns current bus statistics (sent, dropped, subscriber count).
     #[must_use]
     pub fn stats(&self) -> EventBusStats {
         self.0.stats()
     }
 
+    /// Returns the configured buffer size.
     #[must_use]
     pub fn buffer_size(&self) -> usize {
         self.0.buffer_size()
     }
 
+    /// Returns the back-pressure policy.
     #[must_use]
     pub fn policy(&self) -> &BackPressurePolicy {
         self.0.policy()
     }
 
+    /// Returns the current number of active subscribers.
     #[must_use]
     pub fn subscriber_count(&self) -> usize {
         self.0.stats().subscriber_count
-    }
-}
-
-impl Default for EventBus {
-    fn default() -> Self {
-        Self(nebula_eventbus::EventBus::default())
     }
 }
 
@@ -78,53 +81,74 @@ impl Default for EventBus {
 pub enum ResourceEvent {
     /// A new resource was registered with the manager.
     Created {
+        /// Resource identifier.
         resource_id: String,
+        /// Scope (e.g. global, workflow).
         scope: Scope,
     },
     /// A resource instance was successfully acquired from the pool.
     Acquired {
+        /// Resource identifier.
         resource_id: String,
+        /// Time spent waiting for the instance.
         wait_duration: Duration,
     },
     /// A resource instance was released back to the pool.
     Released {
+        /// Resource identifier.
         resource_id: String,
+        /// Time the instance was in use.
         usage_duration: Duration,
     },
     /// The health state of a resource changed.
     HealthChanged {
+        /// Resource identifier.
         resource_id: String,
+        /// Previous health state.
         from: HealthState,
+        /// New health state.
         to: HealthState,
     },
     /// The pool is exhausted and a caller is waiting or was rejected.
     PoolExhausted {
+        /// Resource identifier.
         resource_id: String,
+        /// Number of waiters (or 0 if rejected).
         waiters: usize,
     },
     /// A resource instance was cleaned up (permanently removed).
     CleanedUp {
+        /// Resource identifier.
         resource_id: String,
+        /// Reason for cleanup.
         reason: CleanupReason,
     },
     /// A resource was placed in quarantine.
     Quarantined {
+        /// Resource identifier.
         resource_id: String,
+        /// Reason for quarantine.
         reason: String,
     },
     /// A resource was released from quarantine.
     QuarantineReleased {
+        /// Resource identifier.
         resource_id: String,
+        /// Number of recovery attempts before release.
         recovery_attempts: u32,
     },
     /// A resource's configuration was reloaded (hot-reload).
     ConfigReloaded {
+        /// Resource identifier.
         resource_id: String,
+        /// Scope after reload.
         scope: Scope,
     },
     /// An error occurred during a resource operation.
     Error {
+        /// Resource identifier.
         resource_id: String,
+        /// Error message.
         error: String,
     },
 }
@@ -332,5 +356,4 @@ mod tests_common {
         let cloned = reason.clone();
         assert!(matches!(cloned, CleanupReason::Expired));
     }
-
 }

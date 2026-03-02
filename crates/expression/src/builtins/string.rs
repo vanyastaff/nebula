@@ -193,4 +193,3 @@ pub fn ends_with(
 
     Ok(Value::Bool(s.ends_with(suffix)))
 }
-

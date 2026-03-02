@@ -16,8 +16,7 @@ pub const NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL: &str =
     "nebula_workflow_executions_completed_total";
 
 /// Counter: workflow executions failed.
-pub const NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL: &str =
-    "nebula_workflow_executions_failed_total";
+pub const NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL: &str = "nebula_workflow_executions_failed_total";
 
 /// Histogram: workflow execution duration in seconds.
 pub const NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS: &str =
@@ -50,8 +49,7 @@ pub const NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS: &str =
 /// Counter: resource releases.
 pub const NEBULA_RESOURCE_RELEASE_TOTAL: &str = "nebula_resource_release_total";
 /// Histogram: usage duration in seconds.
-pub const NEBULA_RESOURCE_USAGE_DURATION_SECONDS: &str =
-    "nebula_resource_usage_duration_seconds";
+pub const NEBULA_RESOURCE_USAGE_DURATION_SECONDS: &str = "nebula_resource_usage_duration_seconds";
 /// Counter: resource cleanups.
 pub const NEBULA_RESOURCE_CLEANUP_TOTAL: &str = "nebula_resource_cleanup_total";
 /// Counter: resource errors.
@@ -59,8 +57,7 @@ pub const NEBULA_RESOURCE_ERROR_TOTAL: &str = "nebula_resource_error_total";
 /// Gauge: health state (1=healthy, 0.5=degraded/unknown, 0=unhealthy).
 pub const NEBULA_RESOURCE_HEALTH_STATE: &str = "nebula_resource_health_state";
 /// Counter: pool exhausted events.
-pub const NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL: &str =
-    "nebula_resource_pool_exhausted_total";
+pub const NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL: &str = "nebula_resource_pool_exhausted_total";
 /// Gauge: number of waiters when pool exhausted.
 pub const NEBULA_RESOURCE_POOL_WAITERS: &str = "nebula_resource_pool_waiters";
 /// Counter: resources quarantined.
@@ -69,8 +66,7 @@ pub const NEBULA_RESOURCE_QUARANTINE_TOTAL: &str = "nebula_resource_quarantine_t
 pub const NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL: &str =
     "nebula_resource_quarantine_released_total";
 /// Counter: config reloads.
-pub const NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL: &str =
-    "nebula_resource_config_reloaded_total";
+pub const NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL: &str = "nebula_resource_config_reloaded_total";
 
 // ---------------------------------------------------------------------------
 // Legacy names (for backward compatibility during migration)

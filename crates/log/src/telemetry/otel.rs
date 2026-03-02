@@ -4,8 +4,8 @@
 
 use crate::config::{Fields, TelemetryConfig};
 use crate::core::{LogError, LogResult};
-use opentelemetry::{KeyValue, global};
 use opentelemetry::trace::TracerProvider;
+use opentelemetry::{KeyValue, global};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
     Resource,
@@ -35,10 +35,7 @@ pub struct OtelLayer {
 ///
 /// Returns `LogError::Telemetry` if the OTLP exporter or tracer provider cannot
 /// be constructed.
-pub fn build_layer(
-    config: &TelemetryConfig,
-    fields: &Fields,
-) -> LogResult<Option<OtelLayer>> {
+pub fn build_layer(config: &TelemetryConfig, fields: &Fields) -> LogResult<Option<OtelLayer>> {
     let endpoint_str = match &config.otlp_endpoint {
         Some(endpoint) if !endpoint.is_empty() => endpoint.clone(),
         _ => match std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {

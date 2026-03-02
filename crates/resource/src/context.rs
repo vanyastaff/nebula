@@ -106,7 +106,8 @@ mod tests {
 
     #[test]
     fn test_context_with_tenant() {
-        let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4()).with_tenant("tenant-a");
+        let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
+            .with_tenant("tenant-a");
         assert_eq!(ctx.tenant_id.as_deref(), Some("tenant-a"));
     }
 
@@ -123,7 +124,8 @@ mod tests {
     fn test_context_with_cancellation() {
         let token = CancellationToken::new();
         let child = token.child_token();
-        let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4()).with_cancellation(child);
+        let ctx = Context::new(Scope::Global, WorkflowId::v4(), ExecutionId::v4())
+            .with_cancellation(child);
         assert!(!ctx.cancellation.is_cancelled());
         token.cancel();
         assert!(ctx.cancellation.is_cancelled());

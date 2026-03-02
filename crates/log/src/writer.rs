@@ -57,9 +57,7 @@ impl<'a> MakeWriter<'a> for SharedWriterMakeWriter {
 
     fn make_writer(&'a self) -> Self::Writer {
         let guard = self.writer.lock();
-        SharedWriterGuard {
-            guard,
-        }
+        SharedWriterGuard { guard }
     }
 }
 

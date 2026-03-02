@@ -3,15 +3,15 @@
 use nebula_core::ExecutionId;
 
 /// Temporary placeholder for ExecutionBudget until restored
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionBudget {
     /// Maximum number of nodes that can run concurrently
     pub max_concurrent_nodes: usize,
 }
 
-impl ExecutionBudget {
-    /// Create a default budget with reasonable concurrency
-    pub fn default() -> Self {
+impl Default for ExecutionBudget {
+    /// Default budget with reasonable concurrency (10 nodes).
+    fn default() -> Self {
         Self {
             max_concurrent_nodes: 10,
         }

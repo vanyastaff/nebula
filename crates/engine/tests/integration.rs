@@ -16,16 +16,14 @@ use nebula_core::id::{ActionId, NodeId, WorkflowId};
 use nebula_engine::WorkflowEngine;
 use nebula_execution::ExecutionStatus;
 use nebula_execution::context::ExecutionBudget;
+use nebula_metrics::naming::{
+    NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
+    NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
+};
 use nebula_plugin::InternalHandler;
 use nebula_runtime::registry::ActionRegistry;
 use nebula_runtime::{ActionRuntime, DataPassingPolicy};
 use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};
-use nebula_metrics::naming::{
-    NEBULA_ACTION_EXECUTIONS_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
-};
 use nebula_telemetry::event::EventBus;
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_telemetry::{NoopTelemetry, TelemetryService};
@@ -230,10 +228,7 @@ async fn engine_with_telemetry_service_wires_bus_and_metrics() {
     engine.map_action(echo_id, "echo");
 
     let n = NodeId::v4();
-    let wf = make_workflow(
-        vec![NodeDefinition::new(n, "echo", echo_id)],
-        vec![],
-    );
+    let wf = make_workflow(vec![NodeDefinition::new(n, "echo", echo_id)], vec![]);
 
     let _result = engine
         .execute_workflow(&wf, serde_json::json!("hi"), ExecutionBudget::default())
@@ -543,8 +538,18 @@ async fn telemetry_covers_full_lifecycle() {
     );
 
     // Metrics should reflect the execution
-    assert!(metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL).get() > 0);
-    assert!(metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL).get() > 0);
+    assert!(
+        metrics
+            .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
+            .get()
+            > 0
+    );
+    assert!(
+        metrics
+            .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
+            .get()
+            > 0
+    );
     assert!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get() >= 2);
 }
 
@@ -652,7 +657,22 @@ async fn metrics_accurate_on_failure() {
         .unwrap();
 
     assert!(result.is_failure());
-    assert_eq!(metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL).get(), 1);
-    assert_eq!(metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL).get(), 1);
-    assert_eq!(metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL).get(), 0);
+    assert_eq!(
+        metrics
+            .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
+            .get(),
+        1
+    );
+    assert_eq!(
+        metrics
+            .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
+            .get(),
+        1
+    );
+    assert_eq!(
+        metrics
+            .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
+            .get(),
+        0
+    );
 }

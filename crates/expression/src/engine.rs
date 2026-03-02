@@ -3,9 +3,9 @@
 //! This module provides the main ExpressionEngine that parses and evaluates expressions,
 //! with optional caching of parsed ASTs for improved performance.
 
+use crate::ast::Expr;
 use crate::builtins::BuiltinRegistry;
 use crate::context::EvaluationContext;
-use crate::ast::Expr;
 use crate::error::ExpressionResult;
 use crate::eval::Evaluator;
 use crate::lexer::Lexer;
@@ -594,8 +594,8 @@ mod tests {
 
     #[test]
     fn test_engine_policy_strict_mode_flag_exposed() {
-        let engine = ExpressionEngine::new()
-            .with_policy(EvaluationPolicy::new().with_strict_mode(true));
+        let engine =
+            ExpressionEngine::new().with_policy(EvaluationPolicy::new().with_strict_mode(true));
         assert!(engine.policy().unwrap().strict_mode());
     }
 
@@ -605,7 +605,9 @@ mod tests {
             ExpressionEngine::new().with_policy(EvaluationPolicy::new().with_strict_mode(true));
         let context = EvaluationContext::new();
 
-        let err = engine.evaluate("if 1 then 'yes' else 'no'", &context).unwrap_err();
+        let err = engine
+            .evaluate("if 1 then 'yes' else 'no'", &context)
+            .unwrap_err();
         assert!(err.to_string().contains("expected boolean"));
     }
 
@@ -776,4 +778,3 @@ mod tests {
         assert!(overview.template_entries >= 1);
     }
 }
-

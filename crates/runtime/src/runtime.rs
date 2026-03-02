@@ -9,14 +9,12 @@ use std::time::Instant;
 use nebula_action::NodeContext;
 use nebula_action::result::ActionResult;
 use nebula_metrics::naming::{
-    NEBULA_ACTION_DURATION_SECONDS,
-    NEBULA_ACTION_EXECUTIONS_TOTAL,
-    NEBULA_ACTION_FAILURES_TOTAL,
+    NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,
 };
 use nebula_ports::sandbox::SandboxRunner;
+use nebula_telemetry::TelemetryService;
 use nebula_telemetry::event::{EventBus, ExecutionEvent};
 use nebula_telemetry::metrics::MetricsRegistry;
-use nebula_telemetry::TelemetryService;
 
 use crate::data_policy::{DataPassingPolicy, LargeDataStrategy};
 use crate::error::RuntimeError;
@@ -35,6 +33,7 @@ use crate::registry::ActionRegistry;
 /// 5. Emits telemetry events
 pub struct ActionRuntime {
     registry: Arc<ActionRegistry>,
+    #[allow(dead_code)] // reserved for sandboxed execution
     sandbox: Arc<dyn SandboxRunner>,
     data_policy: DataPassingPolicy,
     event_bus: Arc<EventBus>,

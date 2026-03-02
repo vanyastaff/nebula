@@ -3,9 +3,9 @@
 //! This module implements the evaluation of parsed expression ASTs.
 
 use crate::ExpressionError;
+use crate::ast::{BinaryOp, Expr};
 use crate::builtins::BuiltinRegistry;
 use crate::context::EvaluationContext;
-use crate::ast::{BinaryOp, Expr};
 use crate::error::{ExpressionErrorExt, ExpressionResult};
 use crate::policy::EvaluationPolicy;
 use parking_lot::Mutex;
@@ -845,7 +845,11 @@ impl Evaluator {
         }
     }
 
-    fn ensure_function_allowed(&self, name: &str, context: &EvaluationContext) -> ExpressionResult<()> {
+    fn ensure_function_allowed(
+        &self,
+        name: &str,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<()> {
         let canonical = self.canonical_function_name(name);
         let policies = [self.policy.as_deref(), context.policy()];
 
@@ -891,7 +895,10 @@ impl Evaluator {
     }
 
     fn strict_mode_enabled(&self, context: &EvaluationContext) -> bool {
-        let engine_strict = self.policy.as_deref().is_some_and(EvaluationPolicy::strict_mode);
+        let engine_strict = self
+            .policy
+            .as_deref()
+            .is_some_and(EvaluationPolicy::strict_mode);
         let context_strict = context.policy().is_some_and(EvaluationPolicy::strict_mode);
         engine_strict || context_strict
     }
@@ -1797,4 +1804,3 @@ mod tests {
         assert_eq!(result.as_bool(), Some(true));
     }
 }
-

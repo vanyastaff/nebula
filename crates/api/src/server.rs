@@ -450,6 +450,14 @@ struct GithubEmailResponse {
     verified: bool,
 }
 
+fn primary_or_verified_email(emails: &[GithubEmailResponse]) -> Option<String> {
+    emails
+        .iter()
+        .find(|e| e.primary && e.verified)
+        .map(|e| e.email.clone())
+        .or_else(|| emails.iter().find(|e| e.verified).map(|e| e.email.clone()))
+}
+
 async fn fetch_github_user_profile(
     client: &Client,
     access_token: &str,
@@ -465,7 +473,10 @@ async fn fetch_github_user_profile(
 
     let user_status = user_resp.status();
     if !user_status.is_success() {
-        return Err(format!("github user request status {}", user_status.as_u16()));
+        return Err(format!(
+            "github user request status {}",
+            user_status.as_u16()
+        ));
     }
 
     let user = user_resp
@@ -483,18 +494,11 @@ async fn fetch_github_user_profile(
             .send()
             .await;
 
-        if let Ok(resp) = emails_resp {
-            if resp.status().is_success() {
-                if let Ok(emails) = resp.json::<Vec<GithubEmailResponse>>().await {
-                    if let Some(primary_verified) =
-                        emails.iter().find(|e| e.primary && e.verified)
-                    {
-                        email = Some(primary_verified.email.clone());
-                    } else if let Some(any_verified) = emails.iter().find(|e| e.verified) {
-                        email = Some(any_verified.email.clone());
-                    }
-                }
-            }
+        if let Ok(resp) = emails_resp
+            && resp.status().is_success()
+            && let Ok(emails) = resp.json::<Vec<GithubEmailResponse>>().await
+        {
+            email = primary_or_verified_email(&emails);
         }
     }
 
@@ -682,6 +686,7 @@ async fn oauth_callback(
 
 /// Unified API server: holds config and can run the combined app.
 pub struct ApiServer {
+    #[allow(dead_code)] // reserved for future per-request config use
     config: ApiServerConfig,
 }
 

@@ -611,7 +611,7 @@ Canonical category names shared with config compatibility fixtures:
 
 ## Compatibility Rules
 
-- **Major bump** required when:
+- A **major bump required** when:
   - Behaviour changes for existing validator semantics
   - Existing baseline error code meanings change
   - Field-path format contract changes

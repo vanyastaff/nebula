@@ -233,7 +233,13 @@ mod tests {
         let mut ctx = EvaluationContext::new();
         ctx.set_policy(policy.clone());
         assert!(ctx.policy().is_some());
-        assert!(ctx.policy().unwrap().allowed_functions().unwrap().contains("uppercase"));
+        assert!(
+            ctx.policy()
+                .unwrap()
+                .allowed_functions()
+                .unwrap()
+                .contains("uppercase")
+        );
 
         let ctx2 = EvaluationContext::builder().policy(policy).build();
         assert!(ctx2.policy().is_some());
@@ -248,4 +254,3 @@ mod tests {
         assert!(exec.is_object());
     }
 }
-

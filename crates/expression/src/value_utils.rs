@@ -120,4 +120,3 @@ mod tests {
         assert!(is_truthy(&Value::String("test".to_string())));
     }
 }
-

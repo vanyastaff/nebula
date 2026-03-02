@@ -231,4 +231,3 @@ pub fn flatten(
 
     Ok(Value::Array(result))
 }
-

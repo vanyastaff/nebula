@@ -106,9 +106,7 @@ pub use quarantine::{
 };
 
 /// Re-export id and key types from [`nebula_core`] for convenience.
-pub use nebula_core::{
-    ExecutionId, PluginKey, PluginKeyError, ResourceId, WorkflowId,
-};
+pub use nebula_core::{ExecutionId, PluginKey, PluginKeyError, ResourceId, WorkflowId};
 
 /// Convenience re-exports of the most commonly used types.
 ///

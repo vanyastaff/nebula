@@ -5,9 +5,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// Represents the current state of a resource in its lifecycle
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[derive(Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum Lifecycle {
     /// Resource has been created but not yet initialized
     #[default]

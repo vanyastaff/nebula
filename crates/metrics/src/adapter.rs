@@ -37,25 +37,29 @@ impl TelemetryAdapter {
     /// Counter: workflow executions started.
     #[must_use]
     pub fn workflow_executions_started_total(&self) -> Counter {
-        self.registry.counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
+        self.registry
+            .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
     }
 
     /// Counter: workflow executions completed successfully.
     #[must_use]
     pub fn workflow_executions_completed_total(&self) -> Counter {
-        self.registry.counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
+        self.registry
+            .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
     }
 
     /// Counter: workflow executions failed.
     #[must_use]
     pub fn workflow_executions_failed_total(&self) -> Counter {
-        self.registry.counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
+        self.registry
+            .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
     }
 
     /// Histogram: workflow execution duration in seconds.
     #[must_use]
     pub fn workflow_execution_duration_seconds(&self) -> Histogram {
-        self.registry.histogram(NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS)
+        self.registry
+            .histogram(NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS)
     }
 
     // ---------- Action (runtime) ----------

@@ -6,8 +6,8 @@
 
 use crate::ExpressionError;
 use crate::context::EvaluationContext;
-use crate::error::{ExpressionErrorExt, ExpressionResult};
 use crate::engine::ExpressionEngine;
+use crate::error::{ExpressionErrorExt, ExpressionResult};
 use crate::error_formatter::format_template_error;
 use nebula_log::trace;
 use serde::{Deserialize, Serialize};
@@ -639,4 +639,3 @@ Line 3: Done"#,
         }
     }
 }
-

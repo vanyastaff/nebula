@@ -18,7 +18,9 @@ pub fn to_string(
 ) -> ExpressionResult<Value> {
     check_arg_count("to_string", args, 1)?;
 
-    if eval.strict_conversions_enabled(ctx) && matches!(&args[0], Value::Array(_) | Value::Object(_)) {
+    if eval.strict_conversions_enabled(ctx)
+        && matches!(&args[0], Value::Array(_) | Value::Object(_))
+    {
         return Err(ExpressionError::expression_type_error(
             "scalar (string/number/boolean/null)",
             crate::value_utils::value_type_name(&args[0]),
@@ -112,7 +114,9 @@ pub fn parse_json(
     })?;
 
     // DoS protection: limit JSON string size
-    let max_len = eval.max_json_parse_length(ctx).unwrap_or(MAX_JSON_PARSE_LENGTH);
+    let max_len = eval
+        .max_json_parse_length(ctx)
+        .unwrap_or(MAX_JSON_PARSE_LENGTH);
     if json_str.len() > max_len {
         return Err(ExpressionError::expression_eval_error(format!(
             "JSON string too large: {} bytes (max {} bytes)",
@@ -134,4 +138,3 @@ pub fn parse_json(
 
     Ok(json)
 }
-

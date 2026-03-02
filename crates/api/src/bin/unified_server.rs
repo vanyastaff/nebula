@@ -65,4 +65,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     run(api_config, webhook_config, workers).await?;
     Ok(())
 }
-

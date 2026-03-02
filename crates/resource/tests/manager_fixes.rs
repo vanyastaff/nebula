@@ -15,7 +15,6 @@ use std::time::Duration;
 use nebula_resource::autoscale::AutoScalePolicy;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
-use nebula_resource::{ExecutionId, WorkflowId};
 use nebula_resource::events::EventBus;
 use nebula_resource::health::HealthCheckConfig;
 use nebula_resource::health::{HealthCheckable, HealthStatus, ResourceHealthAdapter};
@@ -24,6 +23,7 @@ use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::quarantine::QuarantineReason;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
+use nebula_resource::{ExecutionId, WorkflowId};
 use nebula_resource::{Manager, ManagerBuilder};
 
 // ---------------------------------------------------------------------------
@@ -214,7 +214,9 @@ async fn deregister_releases_quarantine() {
     // Drain available events
     for _ in 0..5 {
         match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
-            Ok(Some(nebula_resource::ResourceEvent::QuarantineReleased { resource_id, .. })) => {
+            Ok(Some(nebula_resource::ResourceEvent::QuarantineReleased {
+                resource_id, ..
+            })) => {
                 assert_eq!(resource_id, "simple");
                 found_quarantine_released = true;
                 break;
