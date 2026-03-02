@@ -15,7 +15,7 @@ documentation.workspace = true
 nebula-core = { path = "../core" }
 nebula-credential = { path = "../credential" }
 nebula-parameter = { path = "../parameter" }
-nebula-resource = { path = "../resource", features = ["tokio"] }
+nebula-resource = { path = "../resource" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

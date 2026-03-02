@@ -10,7 +10,6 @@ repository.workspace = true
 
 [features]
 default = []
-credentials = ["nebula-resource/credentials"]
 
 [dependencies]
 nebula-core = { path = "../core" }

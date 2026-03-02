@@ -19,5 +19,5 @@ gpui-component-assets = "0.5"
 gpui-navigator = "0.1"
 
 anyhow = { workspace = true }
-nebula-resource = { path = "../resource", features = ["serde", "tokio"] }
+nebula-resource = { path = "../resource" }
 once_cell = { workspace = true }

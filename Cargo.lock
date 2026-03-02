@@ -6492,6 +6492,7 @@ dependencies = [
  "dashmap",
  "metrics",
  "mockall",
+ "nebula-core",
  "nebula-credential",
  "nebula-eventbus",
  "nebula-metrics",

@@ -12,7 +12,7 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-nebula-resource = { path = "../../crates/resource", features = ["tokio"] }
+nebula-resource = { path = "../../crates/resource" }
 teloxide = { version = "0.17", default-features = false, features = ["macros", "native-tls"] }
 url = { workspace = true }
 thiserror = { workspace = true }

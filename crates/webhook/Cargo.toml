@@ -14,7 +14,7 @@ documentation.workspace = true
 [dependencies]
 # Nebula crates
 nebula-core = { version = "0.1.0", path = "../core" }
-nebula-resource = { version = "0.1.0", path = "../resource", features = ["tokio"] }
+nebula-resource = { path = "../resource" }
 
 # Async runtime
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
@@ -49,4 +49,5 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 default = []
-metrics = ["nebula-resource/metrics"]
+# Metrics: resource records by default; app config controls export
+metrics = []
