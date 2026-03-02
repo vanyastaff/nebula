@@ -49,9 +49,9 @@ libc = { workspace = true, optional = true }
 region = { version = "3.0", optional = true }
 
 # Optional dependencies
-serde = { version = "1", optional = true, features = ["derive"] }
-serde_json = { version = "1", optional = true }
-tokio = { version = "1", optional = true, features = ["time", "sync"] }
+serde = { workspace = true, optional = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["time", "sync"] }
 
 # System info
 sysinfo = { version = "0.37", optional = true, default-features = false, features = ["system", "multithread"] }

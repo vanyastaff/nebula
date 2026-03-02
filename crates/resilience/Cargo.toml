@@ -27,7 +27,7 @@ parking_lot = { workspace = true, features = ["arc_lock", "serde"] }
 dashmap = { workspace = true }
 humantime-serde = "1.1.1"
 governor = "0.10"
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { workspace = true, features = ["rt"] }
 fastrand = "2.1"
 tracing = { workspace = true }
 

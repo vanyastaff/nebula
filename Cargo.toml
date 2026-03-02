@@ -24,14 +24,8 @@ members = [
     "crates/api",
     "crates/webhook",
     "crates/workflow",
-    # Drivers
-    "crates/drivers/queue-memory",
-    "crates/drivers/sandbox-inprocess",
     "crates/macros",
     "crates/sdk",
-    "crates/app",
-    "plugins/github",
-    "plugins/telegram",
 ]
 exclude = [
     "crates/*/fuzz",
@@ -72,6 +66,7 @@ tracing-subscriber = { version = "0.3.22", default-features = false }
 # Concurrency and synchronization
 dashmap = { version = "6.1.0", default-features = false }
 parking_lot = { version = "0.12.5", default-features = false }
+moka = { version = "0.12", default-features = false }
 once_cell = "1.21"
 arc-swap = "1.7"
 spin = "0.10.0"
@@ -97,6 +92,7 @@ regex = "1.11"
 url = { version = "2.5", features = ["serde"] }
 base64 = "0.22.1"
 bytes = "1.11.1"
+hex = "0.4"
 
 # Crypto
 sha2 = "0.10"
@@ -108,6 +104,8 @@ quick-xml = { version = "0.37", features = ["serialize"] }
 
 # HTTP
 reqwest = { version = "0.12", features = ["json"], default-features = false }
+axum = { version = "0.7", features = ["json"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip"] }
 
 # Random number generation
 rand = "0.9.2"
@@ -129,6 +127,8 @@ mockall = "0.14.0"
 tempfile = "3.24.0"
 proptest = "1.9"
 criterion = "0.8.1"
+tokio-test = "0.4"
+test-case = "3.3.1"
 
 
 

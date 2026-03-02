@@ -13,7 +13,7 @@ documentation.workspace = true
 
 [dependencies]
 # Caching
-moka = { version = "0.12", features = ["sync"] }
+moka = { workspace = true, features = ["sync"] }
 
 # Error handling
 thiserror = { workspace = true }

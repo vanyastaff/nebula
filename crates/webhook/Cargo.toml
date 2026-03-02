@@ -13,7 +13,7 @@ documentation.workspace = true
 
 [dependencies]
 # Nebula crates
-nebula-core = { version = "0.1.0", path = "../core" }
+nebula-core = { path = "../core" }
 nebula-resource = { path = "../resource" }
 
 # Async runtime
@@ -22,8 +22,8 @@ tokio-util = { workspace = true, features = ["rt"] }
 async-trait = { workspace = true }
 
 # HTTP server
-axum = { version = "0.7", features = ["json"] }
-tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip"] }
+axum = { workspace = true }
+tower-http = { workspace = true }
 
 # Data structures
 dashmap = { workspace = true }
