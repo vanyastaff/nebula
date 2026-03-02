@@ -144,16 +144,16 @@ pub trait Serializable: serde::Serialize + serde::de::DeserializeOwned {
         serde_json::from_str(json)
     }
 
-    /// Serialize to binary format
+    /// Serialize to binary format (postcard: compact, no_std-friendly)
     fn to_binary(&self) -> Result<Vec<u8>, crate::CoreError> {
-        bincode::serde::encode_to_vec(self, bincode::config::standard()).map_err(Into::into)
+        postcard::to_allocvec(self).map_err(Into::into)
     }
 
-    /// Deserialize from binary format
+    /// Deserialize from binary format (postcard)
     fn from_binary(data: &[u8]) -> Result<Self, crate::CoreError> {
-        bincode::serde::decode_from_slice(data, bincode::config::standard())
-            .map(|(t, _)| t)
-            .map_err(Into::into)
+        let (value, _): (Self, &[u8]) =
+            postcard::from_bytes(data).map_err(crate::CoreError::from)?;
+        Ok(value)
     }
 }
 

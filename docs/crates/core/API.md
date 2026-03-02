@@ -309,7 +309,7 @@ Returns a stable uppercase string code:
 |--------|----------------|
 | `std::io::Error` | `Internal` |
 | `serde_json::Error` | `Serialization` |
-| `bincode::Error` | `Serialization` |
+| `postcard::Error` | `Serialization` |
 | `uuid::Error` | `InvalidInput` |
 | `chrono::ParseError` | `InvalidInput` |
 
@@ -393,8 +393,8 @@ pub trait Serializable: serde::Serialize + serde::de::DeserializeOwned {
     fn to_json(&self) -> Result<String, serde_json::Error>;
     fn to_json_pretty(&self) -> Result<String, serde_json::Error>;
     fn from_json(json: &str) -> Result<Self, serde_json::Error>;
-    fn to_binary(&self) -> Result<Vec<u8>, bincode::Error>;
-    fn from_binary(data: &[u8]) -> Result<Self, bincode::Error>;
+    fn to_binary(&self) -> Result<Vec<u8>, CoreError>;
+    fn from_binary(data: &[u8]) -> Result<Self, CoreError>;
 }
 ```
 

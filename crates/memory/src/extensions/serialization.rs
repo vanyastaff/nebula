@@ -19,8 +19,8 @@ use crate::extensions::MemoryExtension;
 pub enum SerializationFormat {
     /// JSON format
     Json,
-    /// Bincode binary format
-    Bincode,
+    /// Postcard binary format (compact, serde-compatible; replaces unmaintained bincode)
+    Postcard,
     /// `MessagePack` format
     MessagePack,
     /// CBOR format
@@ -33,7 +33,7 @@ impl fmt::Display for SerializationFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Json => write!(f, "json"),
-            Self::Bincode => write!(f, "bincode"),
+            Self::Postcard => write!(f, "postcard"),
             Self::MessagePack => write!(f, "messagepack"),
             Self::Cbor => write!(f, "cbor"),
             Self::Custom(name) => write!(f, "custom({name})"),
@@ -493,7 +493,7 @@ mod tests {
         );
         assert!(
             extension
-                .get_serializer(SerializationFormat::Bincode)
+                .get_serializer(SerializationFormat::Postcard)
                 .is_none()
         );
 

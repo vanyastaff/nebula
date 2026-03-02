@@ -95,7 +95,7 @@ pub type CoreResult<T> = Result<T, CoreError>;
 |---|---|
 | `std::io::Error` | `CoreError::Internal` |
 | `serde_json::Error` | `CoreError::Serialization` |
-| `bincode::Error` | `CoreError::Serialization` |
+| `postcard::Error` | `CoreError::Serialization` |
 | `uuid::Error` | `CoreError::InvalidInput` |
 | `chrono::ParseError` | `CoreError::InvalidInput` |
 

@@ -98,14 +98,14 @@ pub trait Serializable: Serialize + for<'de> Deserialize<'de> {
     fn to_json_pretty(&self) -> Result<String, CoreError>;
     fn from_json(json: &str) -> Result<Self, CoreError>;
 
-    // Binary (bincode)
+    // Binary (postcard)
     fn to_binary(&self) -> Result<Vec<u8>, CoreError>;
     fn from_binary(bytes: &[u8]) -> Result<Self, CoreError>;
 }
 ```
 
 Blanket-implementable for any `Serialize + DeserializeOwned` type. Provides
-consistent error wrapping over `serde_json` and `bincode`.
+consistent error wrapping over `serde_json` and `postcard`.
 
 ---
 

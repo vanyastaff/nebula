@@ -949,7 +949,7 @@ struct GoodState {
 #### Performance Considerations
 
 - **State Size**: Keep state small; flush large data to external storage
-- **Serialization**: Use efficient formats (bincode > JSON for large state)
+- **Serialization**: Use efficient formats (postcard > JSON for large state)
 - **Checkpointing**: Balance frequency vs overhead
 - **Memory**: Avoid accumulating unbounded data in state
 
@@ -1498,7 +1498,7 @@ impl StreamingAction for EventProcessor {
 
 **StatefulAction:**
 - Minimize state size (< 1MB recommended)
-- Use efficient serialization (bincode > JSON)
+- Use efficient serialization (postcard > JSON)
 - Checkpoint frequently for long-running operations
 - Flush large datasets to external storage
 

@@ -46,7 +46,7 @@ Core depends on:
 - **serde, serde_json:** Serialization; required.
 - **thiserror:** Error derivation; required.
 - **chrono:** Timestamps in EntityMetadata, OperationContext, OperationResult.
-- **bincode:** Optional binary serialization in Serializable trait.
+- **postcard:** Binary serialization in Serializable trait (replaces unmaintained bincode).
 - **uuid, async-trait, dashmap:** As in Cargo.toml.
 
 No other nebula-* crates: core is the foundation; only nebula-log is allowed.
@@ -92,7 +92,7 @@ Core is passive; no runtime sequence originates from core. Consumers:
 
 ## Contract Tests Needed
 
-- **ID round-trip:** Serde JSON/bincode for all ID types
+- **ID round-trip:** Serde JSON/postcard for all ID types
 - **Scope containment:** `is_contained_in` matrix for all scope pairs
 - **PluginKey normalization:** Snapshot tests for normalized output
 - **Error code stability:** Snapshot tests for `error_code()` and `user_message()` output

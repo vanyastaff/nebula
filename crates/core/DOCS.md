@@ -155,7 +155,7 @@ impl Scoped for MyResource {
 **Data**:
 - `chrono` - Date/time handling
 - `dashmap` - Concurrent maps
-- `bincode` - Binary serialization
+- `postcard` - Binary serialization (compact, serde-compatible)
 
 ## Integration Points
 

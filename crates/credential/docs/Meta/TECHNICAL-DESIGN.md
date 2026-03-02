@@ -2454,7 +2454,7 @@ impl RedisCache {
         
         match data {
             Some(bytes) => {
-                let cached: CachedCredential = bincode::deserialize(&bytes)
+                let (cached, _): (CachedCredential, _) = postcard::from_bytes(&bytes)
                     .map_err(|e| CacheError::DeserializationError(e.to_string()))?;
                 Ok(Some(cached))
             }
@@ -2465,7 +2465,7 @@ impl RedisCache {
     pub async fn set(&self, key: &str, credential: &CachedCredential, ttl: Duration) -> Result<(), CacheError> {
         let mut conn = self.conn.clone();
         
-        let bytes = bincode::serialize(credential)
+        let bytes = postcard::to_allocvec(credential)
             .map_err(|e| CacheError::SerializationError(e.to_string()))?;
         
         conn.set_ex(key, bytes, ttl.as_secs() as usize)

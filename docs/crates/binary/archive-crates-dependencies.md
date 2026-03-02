@@ -7,7 +7,7 @@
 [dependencies]
 nebula-core = { workspace = true }
 serde = { version = "1.0" }
-bincode = "1.3"
+postcard = "1"   # was bincode (bincode unmaintained)
 rmp-serde = "1.1"  # MessagePack
 bytes = "1.0"
 tokio = { version = "1.0", features = ["io-util"] }
