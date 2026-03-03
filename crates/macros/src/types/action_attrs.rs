@@ -131,13 +131,13 @@ impl ActionAttrs {
         let cred_refs: Vec<TokenStream2> = self
             .all_credentials()
             .iter()
-            .map(|ty| quote! { ::nebula_credential::CredentialRef::of::<#ty>() })
+            .map(|ty| quote! { ::nebula_credential::CredentialRef::<#ty>::of() })
             .collect();
 
         let res_refs: Vec<TokenStream2> = self
             .all_resources()
             .iter()
-            .map(|ty| quote! { ::nebula_resource::ResourceRef::of::<#ty>() })
+            .map(|ty| quote! { ::nebula_resource::ResourceRef::<#ty>::of() })
             .collect();
 
         let has_creds = !cred_refs.is_empty();

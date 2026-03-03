@@ -6,8 +6,8 @@
 //! - Runtime dependency resolution and injection
 //! - Static analysis of action requirements
 
-use nebula_credential::CredentialRef;
-use nebula_resource::ResourceRef;
+use nebula_credential::core::reference::ErasedCredentialRef;
+use nebula_resource::reference::ErasedResourceRef;
 
 /// Declares the runtime dependencies required by an action.
 ///
@@ -19,7 +19,7 @@ use nebula_resource::ResourceRef;
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_action::ActionComponents;
 /// use nebula_credential::CredentialRef;
 /// use nebula_resource::ResourceRef;
@@ -36,8 +36,8 @@ use nebula_resource::ResourceRef;
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct ActionComponents {
-    credentials: Vec<CredentialRef>,
-    resources: Vec<ResourceRef>,
+    credentials: Vec<ErasedCredentialRef>,
+    resources: Vec<ErasedResourceRef>,
 }
 
 impl ActionComponents {
@@ -53,17 +53,18 @@ impl ActionComponents {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_action::ActionComponents;
     /// use nebula_credential::CredentialRef;
     ///
     /// struct ApiToken;
+    /// // impl CredentialType for ApiToken { ... }
     ///
     /// let components = ActionComponents::new()
     ///     .credential(CredentialRef::of::<ApiToken>());
     /// ```
-    pub fn credential(mut self, cred: CredentialRef) -> Self {
-        self.credentials.push(cred);
+    pub fn credential(mut self, cred: impl Into<ErasedCredentialRef>) -> Self {
+        self.credentials.push(cred.into());
         self
     }
 
@@ -71,17 +72,18 @@ impl ActionComponents {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_action::ActionComponents;
     /// use nebula_resource::ResourceRef;
     ///
     /// struct DbConnection;
+    /// // impl Resource for DbConnection { ... }
     ///
     /// let components = ActionComponents::new()
     ///     .resource(ResourceRef::of::<DbConnection>());
     /// ```
-    pub fn resource(mut self, res: ResourceRef) -> Self {
-        self.resources.push(res);
+    pub fn resource(mut self, res: impl Into<ErasedResourceRef>) -> Self {
+        self.resources.push(res.into());
         self
     }
 
@@ -89,7 +91,7 @@ impl ActionComponents {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_action::ActionComponents;
     /// use nebula_credential::CredentialRef;
     ///
@@ -98,12 +100,12 @@ impl ActionComponents {
     ///
     /// let components = ActionComponents::new()
     ///     .with_credentials(vec![
-    ///         CredentialRef::of::<Token1>(),
-    ///         CredentialRef::of::<Token2>(),
+    ///         CredentialRef::of::<Token1>().into(),
+    ///         CredentialRef::of::<Token2>().into(),
     ///     ]);
     /// ```
-    pub fn with_credentials(mut self, creds: Vec<CredentialRef>) -> Self {
-        self.credentials.extend(creds);
+    pub fn with_credentials(mut self, creds: impl IntoIterator<Item = impl Into<ErasedCredentialRef>>) -> Self {
+        self.credentials.extend(creds.into_iter().map(Into::into));
         self
     }
 
@@ -111,7 +113,7 @@ impl ActionComponents {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_action::ActionComponents;
     /// use nebula_resource::ResourceRef;
     ///
@@ -120,22 +122,22 @@ impl ActionComponents {
     ///
     /// let components = ActionComponents::new()
     ///     .with_resources(vec![
-    ///         ResourceRef::of::<Db>(),
-    ///         ResourceRef::of::<Cache>(),
+    ///         ResourceRef::of::<Db>().into(),
+    ///         ResourceRef::of::<Cache>().into(),
     ///     ]);
     /// ```
-    pub fn with_resources(mut self, resources: Vec<ResourceRef>) -> Self {
-        self.resources.extend(resources);
+    pub fn with_resources(mut self, resources: impl IntoIterator<Item = impl Into<ErasedResourceRef>>) -> Self {
+        self.resources.extend(resources.into_iter().map(Into::into));
         self
     }
 
     /// Get the declared credential dependencies.
-    pub fn credentials(&self) -> &[CredentialRef] {
+    pub fn credentials(&self) -> &[ErasedCredentialRef] {
         &self.credentials
     }
 
     /// Get the declared resource dependencies.
-    pub fn resources(&self) -> &[ResourceRef] {
+    pub fn resources(&self) -> &[ErasedResourceRef] {
         &self.resources
     }
 
@@ -150,7 +152,7 @@ impl ActionComponents {
     }
 
     /// Consume and split into parts.
-    pub fn into_parts(self) -> (Vec<CredentialRef>, Vec<ResourceRef>) {
+    pub fn into_parts(self) -> (Vec<ErasedCredentialRef>, Vec<ErasedResourceRef>) {
         (self.credentials, self.resources)
     }
 }
@@ -158,11 +160,85 @@ impl ActionComponents {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use nebula_credential::traits::CredentialType;
+    use nebula_credential::CredentialRef;
+    use nebula_credential::core::reference::ErasedCredentialRef;
+    use nebula_resource::ResourceRef;
+    use nebula_resource::reference::ErasedResourceRef;
+    use nebula_credential::core::{CredentialDescription, CredentialContext};
+    use nebula_credential::core::result::InitializeResult;
+    use nebula_parameter::collection::ParameterCollection;
+    use nebula_resource::resource::Resource;
+    use nebula_resource::metadata::ResourceMetadata;
+    use nebula_resource::context::Context;
+    use nebula_core::ResourceKey;
 
     struct TestCredential;
     struct TestResource;
     struct AnotherCredential;
     struct AnotherResource;
+
+    #[async_trait]
+    impl CredentialType for TestCredential {
+        type Input = ();
+        type State = nebula_credential::protocols::ApiKeyState;
+        fn description() -> CredentialDescription {
+            CredentialDescription::builder()
+                .key("test_credential")
+                .name("Test")
+                .description("")
+                .properties(ParameterCollection::new())
+                .build()
+                .unwrap()
+        }
+        async fn initialize(&self, _: &(), _: &mut CredentialContext) -> Result<InitializeResult<Self::State>, nebula_credential::core::CredentialError> {
+            unreachable!()
+        }
+    }
+
+    #[async_trait]
+    impl CredentialType for AnotherCredential {
+        type Input = ();
+        type State = nebula_credential::protocols::ApiKeyState;
+        fn description() -> CredentialDescription {
+            CredentialDescription::builder()
+                .key("another_credential")
+                .name("Another")
+                .description("")
+                .properties(ParameterCollection::new())
+                .build()
+                .unwrap()
+        }
+        async fn initialize(&self, _: &(), _: &mut CredentialContext) -> Result<InitializeResult<Self::State>, nebula_credential::core::CredentialError> {
+            unreachable!()
+        }
+    }
+
+    struct TestResourceConfig;
+    impl nebula_resource::resource::Config for TestResourceConfig {}
+
+    impl Resource for TestResource {
+        type Config = TestResourceConfig;
+        type Instance = ();
+        fn metadata(&self) -> ResourceMetadata {
+            ResourceMetadata::from_key(ResourceKey::try_from("test_resource").unwrap())
+        }
+        fn create(&self, _: &TestResourceConfig, _: &Context) -> impl std::future::Future<Output = nebula_resource::Result<()>> + Send {
+            async { Ok(()) }
+        }
+    }
+
+    impl Resource for AnotherResource {
+        type Config = TestResourceConfig;
+        type Instance = ();
+        fn metadata(&self) -> ResourceMetadata {
+            ResourceMetadata::from_key(ResourceKey::try_from("another_resource").unwrap())
+        }
+        fn create(&self, _: &TestResourceConfig, _: &Context) -> impl std::future::Future<Output = nebula_resource::Result<()>> + Send {
+            async { Ok(()) }
+        }
+    }
 
     #[test]
     fn test_empty_components() {
@@ -175,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_single_credential() {
-        let components = ActionComponents::new().credential(CredentialRef::of::<TestCredential>());
+        let components = ActionComponents::new().credential(CredentialRef::<TestCredential>::of());
 
         assert!(!components.is_empty());
         assert_eq!(components.len(), 1);
@@ -185,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_single_resource() {
-        let components = ActionComponents::new().resource(ResourceRef::of::<TestResource>());
+        let components = ActionComponents::new().resource(ResourceRef::<TestResource>::of());
 
         assert!(!components.is_empty());
         assert_eq!(components.len(), 1);
@@ -196,10 +272,10 @@ mod tests {
     #[test]
     fn test_multiple_dependencies() {
         let components = ActionComponents::new()
-            .credential(CredentialRef::of::<TestCredential>())
-            .credential(CredentialRef::of::<AnotherCredential>())
-            .resource(ResourceRef::of::<TestResource>())
-            .resource(ResourceRef::of::<AnotherResource>());
+            .credential(CredentialRef::<TestCredential>::of())
+            .credential(CredentialRef::<AnotherCredential>::of())
+            .resource(ResourceRef::<TestResource>::of())
+            .resource(ResourceRef::<AnotherResource>::of());
 
         assert!(!components.is_empty());
         assert_eq!(components.len(), 4);
@@ -209,29 +285,29 @@ mod tests {
 
     #[test]
     fn test_batch_add_credentials() {
-        let components = ActionComponents::new().with_credentials(vec![
-            CredentialRef::of::<TestCredential>(),
-            CredentialRef::of::<AnotherCredential>(),
-        ]);
-
+        let creds: Vec<ErasedCredentialRef> = vec![
+            CredentialRef::<TestCredential>::of().erase(),
+            CredentialRef::<AnotherCredential>::of().erase(),
+        ];
+        let components = ActionComponents::new().with_credentials(creds);
         assert_eq!(components.credentials().len(), 2);
     }
 
     #[test]
     fn test_batch_add_resources() {
-        let components = ActionComponents::new().with_resources(vec![
-            ResourceRef::of::<TestResource>(),
-            ResourceRef::of::<AnotherResource>(),
-        ]);
-
+        let resources: Vec<ErasedResourceRef> = vec![
+            ResourceRef::<TestResource>::of().erase(),
+            ResourceRef::<AnotherResource>::of().erase(),
+        ];
+        let components = ActionComponents::new().with_resources(resources);
         assert_eq!(components.resources().len(), 2);
     }
 
     #[test]
     fn test_into_parts() {
         let components = ActionComponents::new()
-            .credential(CredentialRef::of::<TestCredential>())
-            .resource(ResourceRef::of::<TestResource>());
+            .credential(CredentialRef::<TestCredential>::of())
+            .resource(ResourceRef::<TestResource>::of());
 
         let (creds, resources) = components.into_parts();
         assert_eq!(creds.len(), 1);
@@ -241,8 +317,8 @@ mod tests {
     #[test]
     fn test_clone() {
         let components = ActionComponents::new()
-            .credential(CredentialRef::of::<TestCredential>())
-            .resource(ResourceRef::of::<TestResource>());
+            .credential(CredentialRef::<TestCredential>::of())
+            .resource(ResourceRef::<TestResource>::of());
 
         let cloned = components.clone();
         assert_eq!(cloned.len(), components.len());
@@ -258,13 +334,14 @@ mod tests {
 
     #[test]
     fn test_builder_chain() {
+        let resources: Vec<ErasedResourceRef> = vec![
+            ResourceRef::<TestResource>::of().erase(),
+            ResourceRef::<AnotherResource>::of().erase(),
+        ];
         let components = ActionComponents::new()
-            .credential(CredentialRef::of::<TestCredential>())
-            .with_resources(vec![
-                ResourceRef::of::<TestResource>(),
-                ResourceRef::of::<AnotherResource>(),
-            ])
-            .credential(CredentialRef::of::<AnotherCredential>());
+            .credential(CredentialRef::<TestCredential>::of())
+            .with_resources(resources)
+            .credential(CredentialRef::<AnotherCredential>::of());
 
         assert_eq!(components.credentials().len(), 2);
         assert_eq!(components.resources().len(), 2);

@@ -3,8 +3,8 @@
 //! Components are declared with [`CredentialRef`], [`ResourceRef`], and [`ActionRef`] only.
 
 use nebula_action::ActionRef;
-use nebula_credential::CredentialRef;
-use nebula_resource::ResourceRef;
+use nebula_credential::core::reference::ErasedCredentialRef;
+use nebula_resource::reference::ErasedResourceRef;
 
 /// Declares the runtime components of a plugin, in ref style only.
 ///
@@ -31,8 +31,8 @@ use nebula_resource::ResourceRef;
 /// ```
 #[derive(Clone, Default)]
 pub struct PluginComponents {
-    credentials: Vec<CredentialRef>,
-    resources: Vec<ResourceRef>,
+    credentials: Vec<ErasedCredentialRef>,
+    resources: Vec<ErasedResourceRef>,
     actions: Vec<ActionRef>,
 }
 
@@ -47,14 +47,14 @@ impl PluginComponents {
     }
 
     /// Declare a required credential (ref style).
-    pub fn credential(&mut self, cred: CredentialRef) -> &mut Self {
-        self.credentials.push(cred);
+    pub fn credential(&mut self, cred: impl Into<ErasedCredentialRef>) -> &mut Self {
+        self.credentials.push(cred.into());
         self
     }
 
     /// Declare a required resource (ref style).
-    pub fn resource(&mut self, res: ResourceRef) -> &mut Self {
-        self.resources.push(res);
+    pub fn resource(&mut self, res: impl Into<ErasedResourceRef>) -> &mut Self {
+        self.resources.push(res.into());
         self
     }
 
@@ -65,12 +65,12 @@ impl PluginComponents {
     }
 
     /// Credential refs declared by this plugin.
-    pub fn credentials(&self) -> &[CredentialRef] {
+    pub fn credentials(&self) -> &[ErasedCredentialRef] {
         &self.credentials
     }
 
     /// Resource refs declared by this plugin.
-    pub fn resources(&self) -> &[ResourceRef] {
+    pub fn resources(&self) -> &[ErasedResourceRef] {
         &self.resources
     }
 
@@ -80,7 +80,7 @@ impl PluginComponents {
     }
 
     /// Consume and split into parts: credentials, resources, actions.
-    pub fn into_parts(self) -> (Vec<CredentialRef>, Vec<ResourceRef>, Vec<ActionRef>) {
+    pub fn into_parts(self) -> (Vec<ErasedCredentialRef>, Vec<ErasedResourceRef>, Vec<ActionRef>) {
         (self.credentials, self.resources, self.actions)
     }
 }

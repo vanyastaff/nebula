@@ -26,19 +26,19 @@ impl ActionComponents {
         Self
     }
 
-    pub fn credential(self, _: CredentialRef) -> Self {
+    pub fn credential(self, _: impl std::any::Any) -> Self {
         self
     }
 
-    pub fn resource(self, _: ResourceRef) -> Self {
+    pub fn resource(self, _: impl std::any::Any) -> Self {
         self
     }
 
-    pub fn credentials(&self) -> &[CredentialRef] {
+    pub fn credentials(&self) -> &[CredentialRef<()>] {
         &[]
     }
 
-    pub fn resources(&self) -> &[ResourceRef] {
+    pub fn resources(&self) -> &[ResourceRef<()>] {
         &[]
     }
 }
@@ -49,19 +49,19 @@ impl Default for ActionComponents {
     }
 }
 
-pub struct CredentialRef(std::any::TypeId);
+pub struct CredentialRef<C>(std::marker::PhantomData<C>);
 
-impl CredentialRef {
-    pub fn of<T: 'static>() -> Self {
-        Self(std::any::TypeId::of::<T>())
+impl<C: 'static> CredentialRef<C> {
+    pub fn of() -> Self {
+        Self(std::marker::PhantomData)
     }
 }
 
-pub struct ResourceRef(std::any::TypeId);
+pub struct ResourceRef<R>(std::marker::PhantomData<R>);
 
-impl ResourceRef {
-    pub fn of<T: 'static>() -> Self {
-        Self(std::any::TypeId::of::<T>())
+impl<R: 'static> ResourceRef<R> {
+    pub fn of() -> Self {
+        Self(std::marker::PhantomData)
     }
 }
 
