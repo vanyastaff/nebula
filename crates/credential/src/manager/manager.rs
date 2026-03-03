@@ -103,12 +103,12 @@ impl CredentialManager {
         info!(
             credential_id = %id,
             owner_id = %context.owner_id,
-            scope = ?context.scope_id,
+            scope = ?context.caller_scope,
             "Storing credential"
         );
 
         // Copy scope from context to metadata for multi-tenant isolation
-        metadata.scope = context.scope_id.clone();
+        metadata.owner_scope = context.caller_scope.clone();
 
         // Store via provider
         match self
@@ -520,7 +520,7 @@ impl CredentialManager {
     /// Create credential from type and input (Phase 2 minimal)
     ///
     /// Looks up protocol by `type_id`, calls `initialize`/`build_state`, returns
-    /// [`CreateResult`]. When `Complete`, serializes state to JSON, encrypts,
+    /// [`CreateResult`](crate::core::result::CreateResult). When `Complete`, serializes state to JSON, encrypts,
     /// and stores via existing `store()`.
     ///
     /// # Supported type_ids
@@ -578,7 +578,7 @@ impl CredentialManager {
             let cred_id = CredentialId::new();
 
             let mut metadata = CredentialMetadata::new();
-            metadata.scope = context.scope_id.clone();
+            metadata.owner_scope = context.caller_scope.clone();
 
             self.store(&cred_id, encrypted, metadata, context).await?;
 
@@ -638,7 +638,7 @@ impl CredentialManager {
         })?;
 
         let mut metadata = CredentialMetadata::new();
-        metadata.scope = context.scope_id.clone();
+        metadata.owner_scope = context.caller_scope.clone();
         metadata.tags.insert("credential_type".to_string(), type_id.clone());
         metadata.tags.insert("credential_status".to_string(), "pending".to_string());
 
@@ -737,7 +737,7 @@ impl CredentialManager {
                 })?;
 
                 let mut meta = CredentialMetadata::new();
-                meta.scope = context.scope_id.clone();
+                meta.owner_scope = context.caller_scope.clone();
                 meta.tags.remove("credential_status");
 
                 self.store(id, encrypted, meta, context).await?;
@@ -769,7 +769,7 @@ impl CredentialManager {
                 })?;
 
                 let mut meta = CredentialMetadata::new();
-                meta.scope = context.scope_id.clone();
+                meta.owner_scope = context.caller_scope.clone();
                 meta.tags.insert("credential_type".to_string(), tid.clone());
                 meta.tags.insert("credential_status".to_string(), "pending".to_string());
 
@@ -844,18 +844,20 @@ impl CredentialManager {
     ///
     /// ```no_run
     /// # use nebula_credential::prelude::*;
+    /// # use nebula_core::{ProjectId, ScopeLevel};
     /// # use std::sync::Arc;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// # let manager = CredentialManager::builder()
     /// #     .storage(Arc::new(MockStorageProvider::new()))
     /// #     .build();
+    /// let project_id = ProjectId::new();
     /// let context = CredentialContext::new("user-123")
-    ///     .with_scope("org:acme/team:eng")?;
+    ///     .with_scope(ScopeLevel::Project(project_id));
     ///
     /// // Retrieves credential only if scope matches
     /// let id = CredentialId::new();
     /// if let Some((data, metadata)) = manager.retrieve_scoped(&id, &context).await? {
-    ///     println!("Access granted: scope = {:?}", metadata.scope);
+    ///     println!("Access granted: scope = {:?}", metadata.owner_scope);
     /// } else {
     ///     println!("Access denied or not found");
     /// }
@@ -870,7 +872,7 @@ impl CredentialManager {
         // Scope is required for scoped operations
         let context_scope =
             context
-                .scope_id
+                .caller_scope
                 .as_ref()
                 .ok_or_else(|| ManagerError::ScopeRequired {
                     operation: "retrieve_scoped".to_string(),
@@ -885,8 +887,8 @@ impl CredentialManager {
             None => return Ok(None),
         };
 
-        // Check scope isolation
-        match &metadata.scope {
+        // Check scope isolation using ScopeLevel from nebula-core
+        match &metadata.owner_scope {
             None => {
                 // Unscoped credentials are not accessible via retrieve_scoped
                 warn!(
@@ -896,10 +898,9 @@ impl CredentialManager {
                 Ok(None)
             }
             Some(cred_scope) => {
-                // Check if context scope matches credential scope (exact or hierarchical)
-                if context_scope.matches_exact(cred_scope)
-                    || context_scope.matches_prefix(cred_scope)
-                {
+                // Caller can access if credential's scope is contained in caller's scope
+                // (e.g. cred=Project is contained in context=Organization; or same scope)
+                if cred_scope.is_contained_in(context_scope) || context_scope == cred_scope {
                     debug!(
                         credential_id = %id,
                         context_scope = %context_scope,
@@ -949,15 +950,17 @@ impl CredentialManager {
     ///
     /// ```no_run
     /// # use nebula_credential::prelude::*;
+    /// # use nebula_core::{ProjectId, ScopeLevel};
     /// # use std::sync::Arc;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// # let manager = CredentialManager::builder()
     /// #     .storage(Arc::new(MockStorageProvider::new()))
     /// #     .build();
+    /// let project_id = ProjectId::new();
     /// let context = CredentialContext::new("user-123")
-    ///     .with_scope("org:acme/team:eng")?;
+    ///     .with_scope(ScopeLevel::Project(project_id));
     ///
-    /// // Lists only credentials in org:acme/team:eng scope (and child scopes)
+    /// // Lists only credentials in Project scope (and child scopes)
     /// let ids = manager.list_scoped(&context).await?;
     /// println!("Found {} credentials in scope", ids.len());
     /// # Ok(())
@@ -970,7 +973,7 @@ impl CredentialManager {
         // Scope is required for scoped operations
         let context_scope =
             context
-                .scope_id
+                .caller_scope
                 .as_ref()
                 .ok_or_else(|| ManagerError::ScopeRequired {
                     operation: "list_scoped".to_string(),
@@ -988,13 +991,13 @@ impl CredentialManager {
                 continue;
             };
 
-            let Some(cred_scope) = &metadata.scope else {
+            let Some(cred_scope) = &metadata.owner_scope else {
                 // Skip unscoped credentials
                 continue;
             };
 
-            // Include if exact match or hierarchical match
-            if context_scope.matches_exact(cred_scope) || context_scope.matches_prefix(cred_scope) {
+            // Include if credential's scope is contained in caller's scope (or equal)
+            if cred_scope.is_contained_in(context_scope) || context_scope == cred_scope {
                 scoped_ids.push(id);
             }
         }

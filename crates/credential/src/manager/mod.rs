@@ -75,17 +75,20 @@
 //!
 //! ```no_run
 //! # use nebula_credential::prelude::*;
+//! # use nebula_core::{OrganizationId, ScopeLevel};
 //! # use std::sync::Arc;
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! # let storage = Arc::new(MockStorageProvider::new());
 //! # let manager = CredentialManager::builder().storage(storage).build();
 //! // Tenant A context with scope
+//! let org_a = OrganizationId::new();
 //! let tenant_a = CredentialContext::new("org-1")
-//!     .with_scope("tenant-a")?;
+//!     .with_scope(ScopeLevel::Organization(org_a));
 //!
 //! // Tenant B context with scope
+//! let org_b = OrganizationId::new();
 //! let tenant_b = CredentialContext::new("org-1")
-//!     .with_scope("tenant-b")?;
+//!     .with_scope(ScopeLevel::Organization(org_b));
 //!
 //! // Credentials are isolated by scope
 //! let id = CredentialId::new();
@@ -93,8 +96,8 @@
 //! # let data = encrypt(&key, b"secret")?;
 //! manager.store(&id, data, CredentialMetadata::new(), &tenant_a).await?;
 //!
-//! // Tenant B cannot access Tenant A's credentials
-//! assert!(manager.retrieve(&id, &tenant_b).await?.is_none());
+//! // Tenant B cannot access Tenant A's credentials (use retrieve_scoped for scope enforcement)
+//! assert!(manager.retrieve_scoped(&id, &tenant_b).await?.is_none());
 //! # Ok(())
 //! # }
 //! ```

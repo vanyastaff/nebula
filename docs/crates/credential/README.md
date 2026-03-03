@@ -49,6 +49,7 @@ Actions/plugins should access credentials through provider abstractions, not dir
 | [PROPOSALS.md](PROPOSALS.md) | 10 proposals for review (P-001 through P-010) |
 | [ROADMAP.md](ROADMAP.md) | 8-phase roadmap to v1.0 (~7-9 months) |
 | [TEST_STRATEGY.md](TEST_STRATEGY.md) | Test pyramid, critical invariants, tooling |
+| [SCOPE_ENFORCEMENT.md](SCOPE_ENFORCEMENT.md) | Scope enforcement behavior, retrieve vs retrieve_scoped, provider matrix |
 | [MIGRATION.md](MIGRATION.md) | Versioning policy, breaking changes, rollout/rollback plans |
 
 ## Archive

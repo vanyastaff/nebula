@@ -227,11 +227,11 @@
 //!
 //! # See Also
 //!
-//! - [`RotationPolicy`] - Rotation strategies
-//! - [`RotationTransaction`] - Transaction lifecycle
-//! - [`BlueGreenRotation`] - Zero-downtime database rotation
-//! - [`FailureHandler`] - Failure handling
-//! - [`RotatableCredential`] - Trait for rotatable credentials
+//! - [`RotationPolicy`](crate::rotation::policy::RotationPolicy) - Rotation strategies
+//! - [`RotationTransaction`](crate::rotation::transaction::RotationTransaction) - Transaction lifecycle
+//! - [`BlueGreenRotation`](crate::rotation::blue_green::BlueGreenRotation) - Zero-downtime database rotation
+//! - [`FailureHandler`](crate::rotation::validation::FailureHandler) - Failure handling
+//! - [`RotatableCredential`](crate::traits::RotatableCredential) - Trait for rotatable credentials
 
 // Module exports
 pub mod backup;

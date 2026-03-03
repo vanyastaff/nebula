@@ -1,56 +1,22 @@
-use nebula_credential::core::{CredentialId, CredentialLabel, ValidationError};
+use nebula_credential::core::{CredentialId, ValidationError};
 use nebula_credential::utils::SecretString;
+use nebula_core::CredentialKey;
 
 #[test]
-fn test_credential_label_valid() {
-    // Valid labels - alphanumeric, hyphens, underscores
-    assert!(CredentialLabel::new("github_token").is_ok());
-    assert!(CredentialLabel::new("aws-access-key-123").is_ok());
-    assert!(CredentialLabel::new("db_password_prod").is_ok());
-    assert!(CredentialLabel::new("API_KEY_2024").is_ok());
-    assert!(CredentialLabel::new("service-account-1").is_ok());
-    assert!(CredentialLabel::new("a").is_ok());
-    assert!(CredentialLabel::new("123").is_ok());
-    assert!(CredentialLabel::new("a-b_c-d_e").is_ok());
+fn test_credential_key_valid() {
+    // CredentialKey from nebula-core - validated domain key format
+    assert!(CredentialKey::new("github_token").is_ok());
+    assert!(CredentialKey::new("aws_access_key").is_ok());
+    assert!(CredentialKey::new("db_password_prod").is_ok());
+    assert!(CredentialKey::new("api_key").is_ok());
+    assert!(CredentialKey::new("oauth2_github").is_ok());
 }
 
 #[test]
-fn test_credential_label_empty() {
-    let result = CredentialLabel::new("");
-    assert!(result.is_err());
-
-    match result {
-        Err(ValidationError::EmptyCredentialId) => {}
-        _ => panic!("Expected ValidationError::EmptyCredentialId"),
-    }
-}
-
-#[test]
-fn test_credential_label_invalid_chars() {
-    let invalid_ids = vec![
-        "../etc/passwd",
-        "token with spaces",
-        "token/with/slashes",
-        "token\\with\\backslashes",
-        "token.with.dots",
-        "token@with@ats",
-    ];
-
-    for id_str in invalid_ids {
-        let result = CredentialLabel::new(id_str);
-        assert!(result.is_err(), "Expected '{}' to be invalid", id_str);
-
-        match result {
-            Err(ValidationError::InvalidCredentialId { id, reason }) => {
-                assert_eq!(id, id_str);
-                assert!(reason.contains("invalid"));
-            }
-            _ => panic!(
-                "Expected ValidationError::InvalidCredentialId for '{}'",
-                id_str
-            ),
-        }
-    }
+fn test_credential_key_invalid() {
+    assert!(CredentialKey::new("").is_err());
+    assert!(CredentialKey::new("Invalid-Key").is_err());
+    assert!(CredentialKey::new("123invalid").is_err());
 }
 
 #[test]

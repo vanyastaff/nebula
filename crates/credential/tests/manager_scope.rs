@@ -1,8 +1,10 @@
 //! Integration tests for scope-based multi-tenant credential isolation
 //!
 //! Tests Phase 4: User Story 2 - Multi-Tenant Credential Isolation
+//! Uses ScopeLevel from nebula-core for platform consistency.
 
 use nebula_credential::prelude::*;
+use nebula_core::{OrganizationId, ProjectId, ScopeLevel};
 use std::sync::Arc;
 
 /// Helper to create test manager with mock storage
@@ -25,9 +27,8 @@ async fn test_store_credential_with_scope() {
     let id = CredentialId::new();
     let data = create_test_data("secret-value");
     let metadata = CredentialMetadata::new();
-    let context = CredentialContext::new("user-1")
-        .with_scope("org:acme/team:eng")
-        .unwrap();
+    let project_id = ProjectId::new();
+    let context = CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_id));
 
     // Store should succeed
     manager
@@ -40,10 +41,10 @@ async fn test_store_credential_with_scope() {
     assert!(result.is_some());
 
     let (_, retrieved_metadata) = result.unwrap();
-    assert_eq!(
-        retrieved_metadata.scope.as_ref().map(|s| s.as_str()),
-        Some("org:acme/team:eng")
-    );
+    assert!(matches!(
+        retrieved_metadata.owner_scope.as_ref(),
+        Some(ScopeLevel::Project(id)) if *id == project_id
+    ));
 }
 
 /// T044: Retrieve credential with matching scope
@@ -53,21 +54,17 @@ async fn test_retrieve_with_matching_scope() {
     let id = CredentialId::new();
     let data = create_test_data("secret");
     let metadata = CredentialMetadata::new();
+    let project_id = ProjectId::new();
 
-    // Store with scope
-    let store_context = CredentialContext::new("user-1")
-        .with_scope("org:acme/team:backend")
-        .unwrap();
+    let store_context = CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_id));
 
     manager
         .store(&id, data.clone(), metadata, &store_context)
         .await
         .unwrap();
 
-    // Retrieve with same scope - should succeed
-    let retrieve_context = CredentialContext::new("user-1")
-        .with_scope("org:acme/team:backend")
-        .unwrap();
+    let retrieve_context =
+        CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_id));
 
     let result = manager
         .retrieve(&id, &retrieve_context)
@@ -77,65 +74,52 @@ async fn test_retrieve_with_matching_scope() {
     assert!(result.is_some());
 }
 
-/// T045: Retrieve credential with mismatched scope (should fail with current impl)
-///
-/// Note: Current implementation doesn't enforce scope isolation in retrieve.
-/// This test documents the current behavior. Full isolation will be added
-/// in retrieve_scoped() method.
+/// T045: retrieve() does not enforce scope — documents current behavior
 #[tokio::test]
 async fn test_retrieve_with_mismatched_scope_current_behavior() {
     let manager = create_test_manager().await;
     let id = CredentialId::new();
     let data = create_test_data("team-a-secret");
     let metadata = CredentialMetadata::new();
+    let project_a = ProjectId::new();
+    let project_b = ProjectId::new();
 
-    // Store with team-a scope
-    let team_a_context = CredentialContext::new("user-1")
-        .with_scope("org:acme/team:a")
-        .unwrap();
+    let team_a_context =
+        CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_a));
 
     manager
         .store(&id, data, metadata, &team_a_context)
         .await
         .unwrap();
 
-    // Try to retrieve with team-b scope
-    let team_b_context = CredentialContext::new("user-1")
-        .with_scope("org:acme/team:b")
-        .unwrap();
+    let team_b_context =
+        CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_b));
 
     let result = manager.retrieve(&id, &team_b_context).await.unwrap();
 
-    // CURRENT BEHAVIOR: retrieve() doesn't enforce scope isolation yet
-    // This will be fixed with retrieve_scoped() in next phase
     assert!(
         result.is_some(),
-        "Current retrieve() doesn't enforce scope isolation"
+        "retrieve() does not enforce scope; use retrieve_scoped() for isolation"
     );
 }
 
-/// T046: List credentials filtered by scope (placeholder)
-///
-/// Note: list() method doesn't support scope filtering yet.
-/// This will be implemented in list_scoped() method.
+/// T046: list_scoped filters by scope
 #[tokio::test]
 async fn test_list_credentials_by_scope() {
     let manager = create_test_manager().await;
-
-    // Store credentials with different scopes
     let cred1 = CredentialId::new();
     let cred2 = CredentialId::new();
     let cred3 = CredentialId::new();
-
     let data = create_test_data("secret");
     let metadata = CredentialMetadata::new();
 
-    let eng_context = CredentialContext::new("user-1")
-        .with_scope("org:acme/team:eng")
-        .unwrap();
-    let sales_context = CredentialContext::new("user-1")
-        .with_scope("org:acme/team:sales")
-        .unwrap();
+    let project_eng = ProjectId::new();
+    let project_sales = ProjectId::new();
+
+    let eng_context =
+        CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_eng));
+    let sales_context =
+        CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_sales));
 
     manager
         .store(&cred1, data.clone(), metadata.clone(), &eng_context)
@@ -150,48 +134,38 @@ async fn test_list_credentials_by_scope() {
         .await
         .unwrap();
 
-    // List all (current behavior - no filtering)
-    let all_creds = manager.list(&eng_context).await.unwrap();
-    assert_eq!(all_creds.len(), 3, "All credentials visible to all scopes");
+    let eng_creds = manager.list_scoped(&eng_context).await.unwrap();
+    assert_eq!(eng_creds.len(), 2, "Eng scope sees only eng credentials");
 
-    // TODO: Implement list_scoped() to filter by scope
-    // let eng_creds = manager.list_scoped(&eng_context).await.unwrap();
-    // assert_eq!(eng_creds.len(), 2);
+    let sales_creds = manager.list_scoped(&sales_context).await.unwrap();
+    assert_eq!(sales_creds.len(), 1, "Sales scope sees only sales credential");
 }
 
-/// T047: Scope hierarchy - parent can access child (future feature)
-///
-/// Note: Hierarchical scope matching will be implemented using
-/// ScopeId::matches_prefix() in retrieve_scoped().
+/// T047: Scope hierarchy — Organization can access Project credentials
 #[tokio::test]
 async fn test_scope_hierarchy_parent_access() {
     let manager = create_test_manager().await;
     let id = CredentialId::new();
     let data = create_test_data("service-secret");
     let metadata = CredentialMetadata::new();
+    let project_id = ProjectId::new();
+    let org_id = OrganizationId::new();
 
-    // Store with specific service scope
-    let service_context = CredentialContext::new("user-1")
-        .with_scope("org:acme/team:eng/service:api")
-        .unwrap();
+    let project_context =
+        CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_id));
 
     manager
-        .store(&id, data, metadata, &service_context)
+        .store(&id, data, metadata, &project_context)
         .await
         .unwrap();
 
-    // Parent scope tries to access
-    let team_context = CredentialContext::new("user-1")
-        .with_scope("org:acme/team:eng")
-        .unwrap();
+    let org_context = CredentialContext::new("user-1").with_scope(ScopeLevel::Organization(org_id));
 
-    let result = manager.retrieve(&id, &team_context).await.unwrap();
+    let result = manager.retrieve_scoped(&id, &org_context).await.unwrap();
 
-    // FUTURE: retrieve_scoped() will support hierarchical matching
-    // For now, document that hierarchy is not enforced
     assert!(
         result.is_some(),
-        "Hierarchical scope matching not yet implemented"
+        "Organization scope can access Project credentials (Project is_contained_in Organization)"
     );
 }
 
@@ -201,12 +175,12 @@ async fn test_scope_isolation_between_tenants() {
     let manager = create_test_manager().await;
     let data = create_test_data("secret");
     let metadata = CredentialMetadata::new();
+    let org_a = OrganizationId::new();
+    let org_b = OrganizationId::new();
 
-    // Tenant A stores credential
     let tenant_a_id = CredentialId::new();
-    let tenant_a_context = CredentialContext::new("user-a")
-        .with_scope("org:tenant-a")
-        .unwrap();
+    let tenant_a_context =
+        CredentialContext::new("user-a").with_scope(ScopeLevel::Organization(org_a));
 
     manager
         .store(
@@ -218,11 +192,9 @@ async fn test_scope_isolation_between_tenants() {
         .await
         .unwrap();
 
-    // Tenant B stores credential
     let tenant_b_id = CredentialId::new();
-    let tenant_b_context = CredentialContext::new("user-b")
-        .with_scope("org:tenant-b")
-        .unwrap();
+    let tenant_b_context =
+        CredentialContext::new("user-b").with_scope(ScopeLevel::Organization(org_b));
 
     manager
         .store(
@@ -234,7 +206,6 @@ async fn test_scope_isolation_between_tenants() {
         .await
         .unwrap();
 
-    // Verify credentials have different scopes
     let a_result = manager
         .retrieve(&tenant_a_id, &tenant_a_context)
         .await
@@ -246,15 +217,12 @@ async fn test_scope_isolation_between_tenants() {
         .unwrap()
         .unwrap();
 
-    assert_eq!(
-        a_result.1.scope.as_ref().map(|s| s.as_str()),
-        Some("org:tenant-a")
-    );
-    assert_eq!(
-        b_result.1.scope.as_ref().map(|s| s.as_str()),
-        Some("org:tenant-b")
-    );
-
-    // FUTURE: retrieve_scoped() will prevent cross-tenant access
-    // For now, verify metadata has correct scope
+    assert!(matches!(
+        a_result.1.owner_scope.as_ref(),
+        Some(ScopeLevel::Organization(id)) if *id == org_a
+    ));
+    assert!(matches!(
+        b_result.1.owner_scope.as_ref(),
+        Some(ScopeLevel::Organization(id)) if *id == org_b
+    ));
 }

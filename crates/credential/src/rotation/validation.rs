@@ -614,7 +614,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             last_accessed: None,
             last_modified: chrono::Utc::now(),
-            scope: None,
+            owner_scope: None,
             rotation_policy: None,
             version: 1,
             expires_at: None,

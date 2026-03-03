@@ -10,7 +10,6 @@ mod context;
 mod description;
 mod error;
 mod filter;
-mod id;
 mod metadata;
 pub mod reference;
 mod status;
@@ -22,7 +21,6 @@ pub use error::{
     ValidationError,
 };
 pub use filter::CredentialFilter;
-pub use id::{CredentialLabel, ScopeId};
 
 /// Re-export for instance identification (UUID-backed, like ResourceId).
 pub use nebula_core::CredentialId;

@@ -5,7 +5,7 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use super::ScopeId;
+use nebula_core::ScopeLevel;
 
 /// Request context for credential operations
 ///
@@ -16,13 +16,15 @@ use super::ScopeId;
 ///
 /// ```
 /// use nebula_credential::CredentialContext;
+/// use nebula_core::{ProjectId, ScopeLevel};
 ///
 /// // Basic context
 /// let ctx = CredentialContext::new("user_123");
 ///
 /// // With scope for multi-tenancy
+/// let project_id = ProjectId::new();
 /// let ctx = CredentialContext::new("user_123")
-///     .with_scope("org:acme/team:eng").unwrap();
+///     .with_scope(ScopeLevel::Project(project_id));
 ///
 /// // With custom trace ID
 /// use uuid::Uuid;
@@ -35,8 +37,9 @@ pub struct CredentialContext {
     /// Owner of the credential
     pub owner_id: String,
 
-    /// Optional scope for isolation (multi-tenancy support)
-    pub scope_id: Option<ScopeId>,
+    /// Optional scope for isolation (multi-tenancy support).
+    /// Uses `ScopeLevel` from nebula-core for platform consistency.
+    pub caller_scope: Option<ScopeLevel>,
 
     /// Trace ID for distributed tracing
     pub trace_id: Uuid,
@@ -50,23 +53,16 @@ impl CredentialContext {
     pub fn new(owner_id: impl Into<String>) -> Self {
         Self {
             owner_id: owner_id.into(),
-            scope_id: None,
+            caller_scope: None,
             trace_id: Uuid::new_v4(),
             timestamp: Utc::now(),
         }
     }
 
     /// Set scope for this context (builder pattern)
-    ///
-    /// # Errors
-    ///
-    /// Returns `ValidationError` if the scope ID is invalid
-    pub fn with_scope(
-        mut self,
-        scope_id: impl Into<String>,
-    ) -> Result<Self, crate::core::ValidationError> {
-        self.scope_id = Some(ScopeId::new(scope_id)?);
-        Ok(self)
+    pub fn with_scope(mut self, scope: ScopeLevel) -> Self {
+        self.caller_scope = Some(scope);
+        self
     }
 
     /// Set trace ID for this context (builder pattern)
@@ -79,25 +75,22 @@ impl CredentialContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nebula_core::{ProjectId, ScopeLevel};
 
     #[test]
     fn test_context_new() {
         let ctx = CredentialContext::new("user_123");
         assert_eq!(ctx.owner_id, "user_123");
-        assert!(ctx.scope_id.is_none());
+        assert!(ctx.caller_scope.is_none());
     }
 
     #[test]
     fn test_context_with_scope() {
-        let ctx = CredentialContext::new("user_123")
-            .with_scope("org:acme/team:eng")
-            .unwrap();
+        let project_id = ProjectId::new();
+        let ctx = CredentialContext::new("user_123").with_scope(ScopeLevel::Project(project_id));
 
         assert_eq!(ctx.owner_id, "user_123");
-        assert_eq!(
-            ctx.scope_id.as_ref().map(|s| s.as_str()),
-            Some("org:acme/team:eng")
-        );
+        assert!(matches!(ctx.caller_scope.as_ref(), Some(ScopeLevel::Project(id)) if *id == project_id));
     }
 
     #[test]
@@ -111,28 +104,24 @@ mod tests {
     #[test]
     fn test_context_builder_pattern() {
         let trace = Uuid::new_v4();
+        let project_id = ProjectId::new();
         let ctx = CredentialContext::new("user_123")
-            .with_scope("org:tenant/app:backend")
-            .unwrap()
+            .with_scope(ScopeLevel::Project(project_id))
             .with_trace_id(trace);
 
         assert_eq!(ctx.owner_id, "user_123");
-        assert_eq!(
-            ctx.scope_id.as_ref().map(|s| s.as_str()),
-            Some("org:tenant/app:backend")
-        );
+        assert!(ctx.caller_scope.is_some());
         assert_eq!(ctx.trace_id, trace);
     }
 
     #[test]
     fn test_context_clone() {
-        let ctx1 = CredentialContext::new("user_123")
-            .with_scope("org:test/app:clone")
-            .unwrap();
+        let project_id = ProjectId::new();
+        let ctx1 = CredentialContext::new("user_123").with_scope(ScopeLevel::Project(project_id));
         let ctx2 = ctx1.clone();
 
         assert_eq!(ctx1.owner_id, ctx2.owner_id);
-        assert_eq!(ctx1.scope_id, ctx2.scope_id);
+        assert_eq!(ctx1.caller_scope, ctx2.caller_scope);
         assert_eq!(ctx1.trace_id, ctx2.trace_id);
     }
 

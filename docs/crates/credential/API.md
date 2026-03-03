@@ -1,5 +1,21 @@
 # API Reference (Human-Oriented)
 
+## Stability Annotations
+
+| Level | Meaning |
+|-------|---------|
+| **Stable** | Public API; patch/minor compatible |
+| **Evolving** | May change in minor releases; feedback welcome |
+| **Internal** | Not part of public contract; use at own risk |
+
+**Stable:** `CredentialId`, `CredentialContext`, `CredentialMetadata`, `CredentialRef<C>`, `ErasedCredentialRef`, `CredentialProvider`, `CredentialError`, `StorageError`, `ManagerError`, `ValidationError`, `CryptoError`, `SecretString`, `StorageProvider`, `CredentialType`, `CredentialResource`, `RotationStrategy`, `CredentialManager` (builder, store, retrieve, delete, list, validate), `CredentialRotationEvent`, `rotation_subscriber()`.
+
+**Evolving:** `create()`, `continue_flow()`, `list_types()`, `CredentialTypeSchema`, protocol types (ApiKey, OAuth2, etc.), rotation APIs.
+
+**Internal:** `core::adapter` (disabled), `ProtocolRegistry` internals, provider-specific config structs.
+
+---
+
 ## High-level Entry Point
 
 - `CredentialManager`
@@ -13,40 +29,25 @@ Created via `CredentialManager::builder()`.
 
 ## Core Types
 
-- `CredentialId`, `ScopeLevel`
+- `CredentialId` (from nebula-core, UUID-backed)
+- `ScopeId` (string-based scope for multi-tenancy)
 - `CredentialContext`
 - `CredentialMetadata`
 - `CredentialDescription`
 - `CredentialFilter`
-- `CredentialRef`, `CredentialProvider`
+- `CredentialRef<C: CredentialType>`, `ErasedCredentialRef`, `CredentialProvider`
 - `CredentialState`
 - `CredentialError`, `StorageError`, `ManagerError`, `ValidationError`, `CryptoError`
 
-### `CredentialEntry`
+### `CredentialEntry` (internal)
 
-A credential instance stored in the database:
-
-```rust
-/// A credential instance stored in the database.
-pub struct CredentialEntry {
-    pub id:              CredentialId,    // UUID — primary key
-    pub credential_key:  CredentialKey,  // "oauth2_github" — protocol type
-    pub owner_id:        UserId,
-    pub owner_scope:     ScopeLevel,     // Project(id) or Organization(id)
-    pub encrypted_state: EncryptedData,
-    pub metadata:        CredentialMetadata,
-    pub status:          CredentialStatus,
-    pub created_at:      DateTime<Utc>,
-    pub rotated_at:      Option<DateTime<Utc>>,
-    pub expires_at:      Option<DateTime<Utc>>,
-}
-```
+Internal representation of a credential instance. Public API uses `CredentialMetadata` + `CredentialStatus` for listing/get. Structure may evolve.
 
 ## Traits
 
 - `StorageProvider`, `StateStore`
 - `DistributedLock`
-- **Domain:** `CredentialType`, `StaticProtocol`, `FlowProtocol`, `InteractiveCredential`, `CredentialResource`, `Refreshable`, `Revocable`, `TestableCredential`, `RotatableCredential`, `ErasedProtocol`, `ProtocolDriver`, `StaticProtocolDriver`, `ProtocolRegistry`, `ProtocolCapabilities`
+- **Domain:** `CredentialType`, `StaticProtocol`, `FlowProtocol`, `InteractiveCredential`, `CredentialResource`, `Refreshable`, `Revocable`, `TestableCredential`, `RotatableCredential`, `RotationStrategy`
 - **Infrastructure:** `StorageProvider`, `StateStore`, `DistributedLock`
 
 ## Built-in Protocols
@@ -147,22 +148,23 @@ pub trait InteractiveCredential: CredentialType {
 
 ```rust
 pub struct CredentialContext {
-    pub caller_scope: ScopeLevel,      // runtime scope запрашивающего (Action, Execution, ...)
-    pub user_id:      Option<UserId>,  // для UI-операций
-    pub trace_id:     Option<String>,  // для audit
+    pub owner_id:  String,              // credential owner
+    pub scope_id:  Option<ScopeId>,     // optional scope for multi-tenancy
+    pub trace_id:  Uuid,                // for audit/tracing
+    pub timestamp: DateTime<Utc>,
 }
 ```
 
-## Manager API Gaps (Phase 4)
+## Manager API Status
 
-`CredentialManager` **implements** `CredentialProvider` (id-based `get(id)` only; `credential<C>()` requires type registry). Remaining gaps:
+`CredentialManager` **implements** `CredentialProvider` (id-based `get(id)` works when `encryption_key` is set).
 
 | Method | Status | Notes |
 |--------|--------|-------|
-| `create(type_id, input)` → `InitializeResult` | **Stub** | Returns error; drives protocol initialize |
-| `continue_flow(id, UserInput)` → `InitializeResult<Complete>` | **Stub** | Returns error; completes interactive flow |
-| `list_types()` → `Vec<CredentialTypeSchema>` | **Stub** | Returns empty vec; type registry planned |
-| `credential<C>()` (type-based) | **Stub** | Returns error; requires ProtocolRegistry with CredentialType::credential_key() → ErasedProtocol mapping |
+| `create(type_id, input)` → `CreateResult` | **Implemented** | Drives protocol initialize; supports api_key, basic_auth, oauth2 |
+| `continue_flow(id, type_id, partial_state, UserInput)` → `CreateResult` | **Implemented** | Completes interactive flow (OAuth2 callback) |
+| `list_types()` → `Vec<CredentialTypeSchema>` | **Implemented** | Returns registered types from ProtocolRegistry |
+| `credential<C>()` (type-based) | **Evolving** | Requires type registry; id-based `get(id)` preferred |
 
 For `CredentialProvider::get`, configure `encryption_key` on the builder to enable decryption.
 

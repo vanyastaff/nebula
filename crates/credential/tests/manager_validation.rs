@@ -169,33 +169,24 @@ async fn test_rotation_recommended() {
 /// T064: Validate with scope isolation
 #[tokio::test]
 async fn test_validate_scoped() {
+    use nebula_core::{ProjectId, ScopeLevel};
+
     let manager = create_test_manager().await;
     let id = CredentialId::new();
     let data = create_test_data("password");
     let metadata = CredentialMetadata::new();
+    let project_a = ProjectId::new();
+    let project_b = ProjectId::new();
 
-    // Store with scope
-    let scope_a = CredentialContext::new("user-1")
-        .with_scope("org:acme/team:a")
-        .unwrap();
+    let scope_a = CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_a));
 
     manager.store(&id, data, metadata, &scope_a).await.unwrap();
 
-    // Validate with correct scope - should succeed
     let result_correct = manager.validate(&id, &scope_a).await.unwrap();
-    assert!(
-        result_correct.is_valid(),
-        "Should validate with correct scope"
-    );
+    assert!(result_correct.is_valid(), "Should validate with correct scope");
 
-    // Validate with different scope context
-    // NOTE: validate() doesn't enforce scope - it's a basic health check
-    // For scope enforcement, use retrieve_scoped()
-    let scope_b = CredentialContext::new("user-1")
-        .with_scope("org:acme/team:b")
-        .unwrap();
+    let scope_b = CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_b));
 
-    // This will succeed because validate() doesn't check scope
     let result_different_scope = manager.validate(&id, &scope_b).await.unwrap();
     assert!(
         result_different_scope.is_valid(),

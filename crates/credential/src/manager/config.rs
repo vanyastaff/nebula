@@ -9,7 +9,7 @@ pub struct ManagerConfig {
     /// Cache configuration (if caching enabled)
     pub cache_config: Option<CacheConfig>,
 
-    /// Default scope for operations without explicit scope (TODO: add ScopeId in Phase 4)
+    /// Default scope for operations without explicit scope
     pub default_scope: Option<String>,
 
     /// Maximum concurrent operations in batch

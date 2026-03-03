@@ -70,9 +70,10 @@ pub mod utils;
 pub use crate::core::{
     CredentialContext, CredentialDescription, CredentialError, CredentialFilter, CredentialId,
     CredentialMetadata, CredentialProvider, CredentialRef, CredentialState, CredentialStatus,
-    CryptoError, ManagerError, ManagerResult, ScopeId, SecretString, StorageError,
+    CryptoError, ManagerError, ManagerResult, SecretString, StorageError,
     ValidationError, status_from_metadata,
 };
+pub use crate::core::reference::ErasedCredentialRef;
 pub use crate::core::result::{CreateResult, InitializeResult};
 
 // Traits

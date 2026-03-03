@@ -85,7 +85,7 @@ graph TB
 
 | Module | Key types exported | Role |
 |--------|-------------------|------|
-| `core` | `CredentialId`, `ScopeLevel`, `CredentialContext`, `CredentialMetadata`, `CredentialDescription`, `CredentialFilter`, `CredentialState`, `CredentialRef`, `CredentialProvider`, `CredentialError`, `StorageError`, `CryptoError`, `ValidationError`, `ManagerError`, `SecretString` | Identity, scope, errors, primitives |
+| `core` | `CredentialId` (from nebula-core), `ScopeId`, `CredentialContext`, `CredentialMetadata`, `CredentialDescription`, `CredentialFilter`, `CredentialState`, `CredentialRef<C>`, `ErasedCredentialRef`, `CredentialProvider`, `CredentialError`, `StorageError`, `CryptoError`, `ValidationError`, `ManagerError`, `SecretString` | Identity, scope, errors, primitives |
 | `traits` (domain) | `CredentialType`, `StaticProtocol`, `FlowProtocol`, `InteractiveCredential`, `CredentialResource`, `Refreshable`, `Revocable`, `TestableCredential`, `RotatableCredential` | Credential / protocol contracts |
 | `traits` (infrastructure) | `StorageProvider`, `StateStore`, `DistributedLock` | Storage/locking/rotation infrastructure |
 | `providers` | `MockStorageProvider`, `LocalStorageProvider`\*, `AwsSecretsManagerProvider`\*, `HashiCorpVaultProvider`\*, `KubernetesSecretsProvider`\*, `ProviderConfig`, `StorageMetrics` | Concrete backends (feature-gated) |
@@ -98,7 +98,7 @@ graph TB
 
 ### Core vs Traits
 
-- **Core (`core`)** contains only identities, context, descriptions, metadata, errors, and the reference layer (`CredentialRef`, `CredentialProvider`) without knowledge of protocols or rotation.
+- **Core (`core`)** contains only identities, context, descriptions, metadata, errors, and the reference layer (`CredentialRef<C>`, `ErasedCredentialRef`, `CredentialProvider`) without knowledge of protocols or rotation. The `core::adapter` module is disabled (TODO Phase 8 — re-enable after error API update).
 - **Domain traits (`traits::credential`)** describe credential types and protocols:
   - `CredentialType` — schema + initialize for a concrete credential
   - `StaticProtocol` — pure form → State without IO (API keys, BasicAuth, DB, header auth)
@@ -267,7 +267,7 @@ caller
   │         │
   │         ├─→ scope check (CredentialContext validates tenant/scope)
   │         │
-  │         ├─→ CacheLayer::get(id)  ──hit──→ scope check via caller_scope.is_contained_in_strict
+  │         ├─→ CacheLayer::get(id)  ──hit──→ scope check via scope_id match
   │         │        │
   │         │       miss
   │         │        │
@@ -287,11 +287,14 @@ The `CredentialContext` carries the caller's runtime scope:
 
 ```rust
 pub struct CredentialContext {
-    pub caller_scope: ScopeLevel,      // requester's runtime scope (Action, Execution, ...)
-    pub user_id:      Option<UserId>,  // for UI-originated operations
-    pub trace_id:     Option<String>,  // for audit
+    pub owner_id:  String,              // credential owner
+    pub scope_id:  Option<ScopeId>,     // optional scope for multi-tenancy
+    pub trace_id:  Uuid,                 // for audit/tracing
+    pub timestamp: DateTime<Utc>,
 }
 ```
+
+> **Note:** Target architecture (D-014) uses `ScopeLevel` from nebula-core for hierarchical scope. Current implementation uses `ScopeId` (string). Migration path in ROADMAP Phase 5.
 
 ### Rotation Flow (RotationTransaction)
 

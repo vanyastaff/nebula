@@ -516,7 +516,7 @@ impl StorageProvider for KubernetesSecretsProvider {
             expires_at: None,
             ttl_seconds: None,
             tags,
-            scope: None,
+            owner_scope: None,
         };
 
         self.metrics
