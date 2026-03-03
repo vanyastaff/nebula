@@ -3751,6 +3751,7 @@ dependencies = [
  "kube",
  "moka",
  "nebula-core",
+ "nebula-eventbus",
  "nebula-log",
  "nebula-parameter",
  "parking_lot",
@@ -4011,6 +4012,7 @@ dependencies = [
 name = "nebula-resource"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "criterion",
  "dashmap",
@@ -4020,6 +4022,7 @@ dependencies = [
  "nebula-credential",
  "nebula-eventbus",
  "nebula-metrics",
+ "nebula-parameter",
  "nebula-telemetry",
  "parking_lot",
  "proptest",
