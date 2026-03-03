@@ -39,6 +39,8 @@ Actions/plugins should access credentials through provider abstractions, not dir
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [API.md](API.md)
 - [INTERACTIONS.md](INTERACTIONS.md)
+- [PROTOCOLS.md](PROTOCOLS.md) — protocol layer (StaticProtocol/FlowProtocol, configs, states)
+- [TARGET_ARCHITECTURE.md](TARGET_ARCHITECTURE.md) — target architecture, diagrams, refactoring plan
 - [DECISIONS.md](DECISIONS.md)
 - [ROADMAP.md](ROADMAP.md)
 - [PROPOSALS.md](PROPOSALS.md)

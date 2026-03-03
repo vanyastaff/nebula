@@ -41,6 +41,37 @@ pub enum InitializeResult<S: CredentialState> {
     RequiresInteraction(InteractionRequest),
 }
 
+/// Type-erased result of credential creation (CredentialManager::create).
+///
+/// Equivalent to `InitializeResult<S>` for dynamic protocol dispatch.
+/// `Complete` indicates credential was stored; `credential_id` is returned to caller.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CreateResult {
+    /// Credential ready without interaction; stored under `credential_id`.
+    Complete {
+        /// Credential ID where state was stored
+        credential_id: crate::core::CredentialId,
+        /// Protocol type identifier (e.g. `api_key`, `basic_auth`, `oauth2`)
+        type_id: String,
+    },
+
+    /// Save partial and request next step (multi-step scenario)
+    Pending {
+        /// Credential ID where partial state was stored (for continue_flow)
+        credential_id: crate::core::CredentialId,
+        partial_state: PartialState,
+        next_step: InteractionRequest,
+    },
+
+    /// Requires user action (single-step scenario)
+    RequiresInteraction {
+        /// Credential ID where partial state was stored (for continue_flow)
+        credential_id: crate::core::CredentialId,
+        interaction: InteractionRequest,
+    },
+}
+
 /// Universal interaction request types (protocol-agnostic)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

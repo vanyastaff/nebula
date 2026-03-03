@@ -217,10 +217,12 @@ pub mod cache;
 pub mod config;
 #[allow(clippy::module_inception)]
 pub mod manager;
+pub mod registry;
 pub mod validation;
 
 // Re-export public types
 pub use cache::{CacheLayer, CacheStats, CachedCredential};
 pub use config::{CacheConfig, EvictionStrategy, ManagerConfig};
-pub use manager::{CredentialManager, CredentialManagerBuilder};
+pub use manager::{CredentialManager, CredentialManagerBuilder, CredentialTypeSchema};
+pub use registry::{ProtocolRegistry, RegisteredProtocol};
 pub use validation::{ValidationDetails, ValidationResult};

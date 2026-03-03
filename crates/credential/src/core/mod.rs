@@ -13,6 +13,7 @@ mod filter;
 mod id;
 mod metadata;
 pub mod reference;
+mod status;
 
 pub use context::CredentialContext;
 pub use description::CredentialDescription;
@@ -24,6 +25,7 @@ pub use filter::CredentialFilter;
 pub use id::{CredentialId, ScopeId};
 pub use metadata::CredentialMetadata;
 pub use reference::{CredentialProvider, CredentialRef};
+pub use status::{status_from_metadata, CredentialStatus};
 pub use state::CredentialState;
 
 // Re-exports from utils

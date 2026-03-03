@@ -24,6 +24,7 @@
   - Credential type catalog: `GET /credential-types` — returns registered type schemas from `CredentialManager`
   - Interactive flow bridge: receives `InitializeResult::RequiresInteraction` → responds 202 with interaction descriptor → accepts callback params → calls `CredentialManager::continue(id, UserInput::Callback { params })`
   - Expected contract: `CredentialManager::list()`, `get(id)`, `create(type_id, input)`, `continue(id, user_input)`, `delete(id)`
+  - **Gap:** `create`, `continue_flow`, `list_types` are stubs; `CredentialProvider` impl exists for `get(id)` (requires `encryption_key` on builder)
   - **Security boundary**: api layer never stores or logs raw secrets; only passes opaque params to manager
 
 ## Downstream Consumers
@@ -106,7 +107,7 @@ When a credential is rotated (token refresh or manual rotation):
 
 1. `RotationTransaction` completes → new encrypted state persisted
 2. `CredentialManager` emits internal `CredentialRotated { credential_id }` event
-3. Resources registered with `CredentialResource<C>` bound to this credential_id receive `authorize(&new_state)`
+3. Resources registered with `CredentialResource` (associated type `Credential`) bound to this credential_id receive `authorize(&new_state)`
 4. Pool instances are drained and recreated with the new auth material
 5. In-flight instances finish naturally; new acquires use updated instances
 

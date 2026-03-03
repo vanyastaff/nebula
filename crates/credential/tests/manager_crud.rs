@@ -200,6 +200,60 @@ async fn test_store_duplicate_id() {
 }
 
 #[tokio::test]
+async fn test_credential_by_type_no_registry_returns_error() {
+    // GIVEN: A manager without type registry (backward compatibility)
+    struct GithubToken;
+    let manager = CredentialManager::builder()
+        .storage(Arc::new(MockStorageProvider::new()))
+        .encryption_key(Arc::new(EncryptionKey::from_bytes([0u8; 32])))
+        .build();
+    let context = CredentialContext::new("test-user");
+
+    // WHEN: We call credential::<GithubToken>() without registering the type
+    let result = manager.credential::<GithubToken>(&context).await;
+
+    // THEN: Returns error (existing behavior)
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("type registry"));
+}
+
+#[tokio::test]
+async fn test_credential_by_type_with_registry() {
+    // GIVEN: A manager with type registry and stored credential
+    struct GithubToken;
+    let storage = MockStorageProvider::new();
+    let key = Arc::new(EncryptionKey::from_bytes([0u8; 32]));
+    let cred_id = CredentialId::new("github-token").unwrap();
+    let data = encrypt(key.as_ref(), b"ghp_secret123").unwrap();
+    let metadata = CredentialMetadata::new();
+    let context = CredentialContext::new("test-user");
+
+    let manager = CredentialManager::builder()
+        .storage(Arc::new(storage))
+        .encryption_key(key)
+        .register_type::<GithubToken>(cred_id.clone())
+        .build();
+
+    // Store the credential
+    manager
+        .store(&cred_id, data, metadata, &context)
+        .await
+        .unwrap();
+
+    // WHEN: We call credential::<GithubToken>()
+    let result = manager.credential::<GithubToken>(&context).await;
+
+    // THEN: Returns the decrypted secret
+    assert!(result.is_ok());
+    result
+        .unwrap()
+        .expose_secret(|s| assert_eq!(s, "ghp_secret123"));
+}
+
+#[tokio::test]
 async fn test_cache_hit_on_second_retrieve() {
     // GIVEN: A credential manager with caching enabled
     let manager = create_cached_manager().await;

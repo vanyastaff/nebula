@@ -14,7 +14,7 @@ use nebula_parameter::def::ParameterDef;
 use nebula_parameter::types::{SecretParameter, TextParameter};
 use nebula_parameter::values::ParameterValues;
 
-use crate::core::result::{DisplayData, InitializeResult, InteractionRequest};
+use crate::core::result::{DisplayData, InitializeResult, InteractionRequest, PartialState, UserInput};
 use crate::core::{CredentialContext, CredentialError, ValidationError};
 use crate::traits::FlowProtocol;
 
@@ -61,34 +61,53 @@ impl FlowProtocol for OAuth2Protocol {
         match config.grant_type {
             GrantType::AuthorizationCode => {
                 let url = build_auth_url(config, client_id)?;
-                Ok(InitializeResult::RequiresInteraction(
-                    InteractionRequest::Redirect {
+                let partial = build_oauth2_partial_state(
+                    config,
+                    client_id,
+                    client_secret,
+                    "authorization_code",
+                    None,
+                )?;
+                Ok(InitializeResult::Pending {
+                    partial_state: partial,
+                    next_step: InteractionRequest::Redirect {
                         url,
                         validation_params: HashMap::new(),
                         metadata: HashMap::new(),
                     },
-                ))
+                })
             }
             GrantType::ClientCredentials => {
                 let state = exchange_client_credentials(config, client_id, client_secret).await?;
                 Ok(InitializeResult::Complete(state))
             }
             GrantType::DeviceCode => {
-                let (code, verification_url, expires_in) =
-                    request_device_code(config, client_id).await?;
-                Ok(InitializeResult::RequiresInteraction(
-                    InteractionRequest::DisplayInfo {
+                let device_resp = request_device_code(config, client_id).await?;
+                let partial = build_oauth2_partial_state(
+                    config,
+                    client_id,
+                    client_secret,
+                    "device_code",
+                    Some(serde_json::json!({
+                        "device_code": device_resp.device_code,
+                        "interval": device_resp.interval,
+                    })),
+                )?;
+                let user_code = device_resp.user_code.clone();
+                Ok(InitializeResult::Pending {
+                    partial_state: partial,
+                    next_step: InteractionRequest::DisplayInfo {
                         display_data: DisplayData::UserCode {
-                            code: code.clone(),
-                            verification_url,
+                            code: user_code.clone(),
+                            verification_url: device_resp.verification_url,
                             complete_url: None,
                         },
                         instructions: Some(format!(
-                            "Enter code {code} at the verification URL to authorize this device."
+                            "Enter code {user_code} at the verification URL to authorize this device."
                         )),
-                        expires_in,
+                        expires_in: device_resp.expires_in,
                     },
-                ))
+                })
             }
         }
     }
@@ -216,13 +235,20 @@ async fn exchange_client_credentials(
     state_from_token_response(&body, &config.scopes)
 }
 
+/// Device code response from authorization server (RFC 8628).
+struct DeviceCodeResponse {
+    device_code: String,
+    user_code: String,
+    verification_url: String,
+    expires_in: Option<u64>,
+    interval: u64,
+}
+
 /// Request a device code from the authorization server (Device Code grant).
-///
-/// Returns `(user_code, verification_url, expires_in)`.
 async fn request_device_code(
     config: &OAuth2Config,
     client_id: &str,
-) -> Result<(String, String, Option<u64>), CredentialError> {
+) -> Result<DeviceCodeResponse, CredentialError> {
     let client = reqwest::Client::builder()
         .timeout(HTTP_TIMEOUT)
         .build()
@@ -257,8 +283,58 @@ async fn request_device_code(
         .to_owned();
 
     let expires_in = body.get("expires_in").and_then(Value::as_u64);
+    let interval = body
+        .get("interval")
+        .and_then(Value::as_u64)
+        .unwrap_or(5); // RFC 8628: default 5 seconds
 
-    Ok((user_code, verification_url, expires_in))
+    let device_code = body
+        .get("device_code")
+        .and_then(Value::as_str)
+        .ok_or_else( || http_error("device code response missing 'device_code'".into()))?
+        .to_owned();
+
+    Ok(DeviceCodeResponse {
+        device_code,
+        user_code,
+        verification_url,
+        expires_in,
+        interval,
+    })
+}
+
+/// Build PartialState for OAuth2 interactive flows (auth code, device code).
+fn build_oauth2_partial_state(
+    config: &OAuth2Config,
+    client_id: &str,
+    client_secret: &str,
+    grant_type: &str,
+    extra: Option<serde_json::Value>,
+) -> Result<PartialState, CredentialError> {
+    let mut data = serde_json::json!({
+        "type_id": "oauth2",
+        "grant_type": grant_type,
+        "config": serde_json::to_value(config).map_err(|e| CredentialError::Validation {
+            source: ValidationError::InvalidFormat(format!("config serialization failed: {e}")),
+        })?,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    });
+    if let Some(ext) = extra
+        && let Some(obj) = data.as_object_mut()
+        && let Some(ext_obj) = ext.as_object()
+    {
+        for (k, v) in ext_obj {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    Ok(PartialState {
+        data,
+        step: format!("oauth2_{grant_type}"),
+        created_at: crate::core::unix_now(),
+        ttl_seconds: Some(600), // 10 min for interactive flows
+        metadata: HashMap::new(),
+    })
 }
 
 /// Parse an HTTP response as a JSON token response.
@@ -343,6 +419,178 @@ fn update_state_from_token_response(state: &mut OAuth2State, body: &Value) {
     }
 }
 
+/// Continue OAuth2 flow after user interaction (auth code callback or device flow poll).
+///
+/// Called by CredentialManager::continue_flow when type_id is "oauth2".
+pub async fn continue_oauth2_flow(
+    partial_state: &PartialState,
+    user_input: &UserInput,
+    _ctx: &mut CredentialContext,
+) -> Result<InitializeResult<OAuth2State>, CredentialError> {
+    let data = &partial_state.data;
+    let grant_type = data
+        .get("grant_type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| http_error("partial_state missing grant_type".into()))?;
+
+    let config: OAuth2Config = serde_json::from_value(
+        data.get("config")
+            .cloned()
+            .ok_or_else(|| http_error("partial_state missing config".into()))?,
+    )
+    .map_err(|e| http_error(format!("invalid config: {e}")))?;
+
+    let client_id = data
+        .get("client_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| http_error("partial_state missing client_id".into()))?
+        .to_owned();
+    let client_secret = data
+        .get("client_secret")
+        .and_then(Value::as_str)
+        .ok_or_else(|| http_error("partial_state missing client_secret".into()))?
+        .to_owned();
+
+    match grant_type {
+        "authorization_code" => {
+            let code = match user_input {
+                UserInput::Callback { params } => params
+                    .get("code")
+                    .cloned()
+                    .ok_or_else(|| http_error("callback missing 'code' param".into()))?,
+                _ => {
+                    return Err(http_error(
+                        "authorization_code flow expects UserInput::Callback with 'code'".into(),
+                    ))
+                }
+            };
+            let state = exchange_authorization_code(&config, &client_id, &client_secret, &code).await?;
+            Ok(InitializeResult::Complete(state))
+        }
+        "device_code" => {
+            if !matches!(user_input, UserInput::Poll) {
+                return Err(http_error(
+                    "device_code flow expects UserInput::Poll".into(),
+                ));
+            }
+            let device_code = data
+                .get("device_code")
+                .and_then(Value::as_str)
+                .ok_or_else(|| http_error("partial_state missing device_code".into()))?
+                .to_owned();
+            let interval = data
+                .get("interval")
+                .and_then(Value::as_u64)
+                .unwrap_or(5);
+
+            match poll_device_code(&config, &client_id, &client_secret, &device_code, interval).await
+            {
+                Ok(state) => Ok(InitializeResult::Complete(state)),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("authorization_pending") || msg.contains("slow_down") {
+                        Ok(InitializeResult::Pending {
+                            partial_state: partial_state.clone(),
+                            next_step: InteractionRequest::DisplayInfo {
+                                display_data: DisplayData::Text {
+                                    text: "Still waiting for user authorization. Call continue_flow with UserInput::Poll again.".to_string(),
+                                },
+                                instructions: Some("Poll again after the interval".to_string()),
+                                expires_in: Some(600),
+                            },
+                        })
+                    } else if msg.contains("expired_token") {
+                        Err(http_error("device code expired".into()))
+                    } else {
+                        Err(e)
+                    }
+                }
+            }
+        }
+        _ => Err(http_error(format!("unknown grant_type: {grant_type}"))),
+    }
+}
+
+/// Exchange authorization code for access token (Authorization Code grant).
+async fn exchange_authorization_code(
+    config: &OAuth2Config,
+    client_id: &str,
+    client_secret: &str,
+    code: &str,
+) -> Result<OAuth2State, CredentialError> {
+    let client = reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| http_error(format!("failed to build HTTP client: {e}")))?;
+
+    let form = vec![
+        ("grant_type", "authorization_code"),
+        ("code", code),
+        ("client_id", client_id),
+        ("client_secret", client_secret),
+    ];
+
+    let mut req = client.post(&config.token_url);
+    match config.auth_style {
+        AuthStyle::Header => {
+            let credentials = BASE64.encode(format!("{client_id}:{client_secret}"));
+            req = req.header("Authorization", format!("Basic {credentials}"));
+        }
+        AuthStyle::PostBody => {}
+    }
+    let resp = req.form(&form).send().await.map_err(|e| {
+        http_error(format!("authorization code exchange failed: {e}"))
+    })?;
+
+    let body: Value = parse_token_response(resp).await?;
+    state_from_token_response(&body, &config.scopes)
+}
+
+/// Poll token endpoint for device code grant (RFC 8628).
+async fn poll_device_code(
+    config: &OAuth2Config,
+    client_id: &str,
+    client_secret: &str,
+    device_code: &str,
+    interval_secs: u64,
+) -> Result<OAuth2State, CredentialError> {
+    tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+
+    let client = reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| http_error(format!("failed to build HTTP client: {e}")))?;
+
+    let form = vec![
+        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+        ("device_code", device_code),
+        ("client_id", client_id),
+        ("client_secret", client_secret),
+    ];
+
+    let resp = client
+        .post(&config.token_url)
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| http_error(format!("device code poll failed: {e}")))?;
+
+    let status = resp.status();
+    let body: Value = resp.json().await.map_err(|e| {
+        http_error(format!("failed to parse device poll response: {e}"))
+    })?;
+
+    if status.is_success() {
+        state_from_token_response(&body, &config.scopes)
+    } else {
+        let error = body
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        Err(http_error(format!("device code poll error: {error}")))
+    }
+}
+
 /// Build a `CredentialError::Validation` from an HTTP/network-related message.
 fn http_error(message: String) -> CredentialError {
     CredentialError::Validation {
@@ -382,12 +630,15 @@ mod tests {
             .unwrap();
 
         match result {
-            InitializeResult::RequiresInteraction(InteractionRequest::Redirect { url, .. }) => {
+            InitializeResult::Pending {
+                next_step: InteractionRequest::Redirect { url, .. },
+                ..
+            } => {
                 assert!(url.contains("example.com/auth"));
                 assert!(url.contains("client_id=my_client"));
                 assert!(url.contains("scope=read"));
             }
-            other => panic!("expected Redirect, got: {other:?}"),
+            other => panic!("expected Pending(Redirect), got: {other:?}"),
         }
     }
 

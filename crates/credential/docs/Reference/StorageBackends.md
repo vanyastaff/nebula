@@ -25,56 +25,50 @@ Storage backends provide persistent storage for credentials with different trade
 
 ## Storage Trait
 
-All storage backends implement the `CredentialStorage` trait:
+All storage backends in `nebula-credential` implement the `StorageProvider` trait:
 
 ```rust
 #[async_trait]
-pub trait CredentialStorage: Send + Sync {
-    /// Save credential
-    async fn save(
+pub trait StorageProvider: Send + Sync {
+    async fn store(
         &self,
         id: &CredentialId,
-        credential_type: &str,
-        input: &Value,
-        state: &Value,
-        metadata: &CredentialMetadata,
+        data: EncryptedData,
+        metadata: CredentialMetadata,
+        context: &CredentialContext,
     ) -> Result<(), StorageError>;
-    
-    /// Load credential
-    async fn load(
+
+    async fn retrieve(
         &self,
         id: &CredentialId,
-    ) -> Result<StoredCredential, StorageError>;
-    
-    /// Update credential state
-    async fn update_state(
-        &self,
-        id: &CredentialId,
-        state: &Value,
-    ) -> Result<(), StorageError>;
-    
-    /// Delete credential
+        context: &CredentialContext,
+    ) -> Result<(EncryptedData, CredentialMetadata), StorageError>;
+
     async fn delete(
         &self,
         id: &CredentialId,
+        context: &CredentialContext,
     ) -> Result<(), StorageError>;
-    
-    /// List credentials
+
     async fn list(
         &self,
-        filter: Option<ListFilter>,
-    ) -> Result<Vec<CredentialSummary>, StorageError>;
-    
-    /// Check if credential exists
+        filter: Option<&CredentialFilter>,
+        context: &CredentialContext,
+    ) -> Result<Vec<CredentialId>, StorageError>;
+
     async fn exists(
         &self,
         id: &CredentialId,
+        context: &CredentialContext,
     ) -> Result<bool, StorageError>;
-    
-    /// Get storage health
-    async fn health_check(&self) -> Result<HealthStatus, StorageError>;
 }
 ```
+
+### Idempotency and Failure Semantics
+
+- `retrieve` and `exists` **must be safe to retry** and are expected to be idempotent.
+- `store` and `delete` **may not be idempotent** and backends SHOULD document their overwrite/soft‑delete semantics.
+- All providers map backend errors to `StorageError` (`ReadFailure`, `WriteFailure`, `PermissionDenied`, `Timeout`, `NotFound`, `NotSupported`).
 
 ## Memory
 

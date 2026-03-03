@@ -3,11 +3,14 @@
 //! Provides high-level API for CRUD operations, caching, validation, and multi-tenant isolation.
 
 use crate::core::{
-    CredentialContext, CredentialId, CredentialMetadata, ManagerError, ManagerResult,
+    CredentialContext, CredentialError, CredentialFilter, CredentialId, CredentialMetadata,
+    CredentialStatus, ManagerError, ManagerResult, status_from_metadata,
 };
 use crate::manager::{CacheConfig, CacheLayer, CacheStats};
 use crate::traits::StorageProvider;
-use crate::utils::EncryptedData;
+use crate::utils::{decrypt, encrypt, EncryptedData, EncryptionKey};
+use std::any::TypeId;
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -20,6 +23,16 @@ pub struct CredentialManager {
 
     /// Optional in-memory cache with LRU + TTL
     cache: Option<Arc<CacheLayer>>,
+
+    /// Optional encryption key for CredentialProvider::get decryption
+    encryption_key: Option<Arc<EncryptionKey>>,
+
+    /// Optional type registry: maps credential type (TypeId) to stored CredentialId.
+    /// Used by `CredentialProvider::credential<C>()` for type-based acquisition.
+    type_registry: Option<Arc<HashMap<TypeId, CredentialId>>>,
+
+    /// Protocol registry for create() — type_id string → handler (api_key, basic_auth, oauth2)
+    protocol_registry: Arc<crate::manager::ProtocolRegistry>,
 }
 
 impl CredentialManager {
@@ -362,41 +375,93 @@ impl CredentialManager {
         Ok(())
     }
 
-    /// List all credential IDs (no caching, always fresh)
+    /// Get metadata and status for a credential without exposing the secret.
     ///
-    /// # Arguments
-    ///
-    /// * `context` - Request context (owner, scope, trace)
-    ///
-    /// # Returns
-    ///
-    /// List of all credential IDs in storage
-    ///
-    /// # Errors
-    ///
-    /// Returns `ManagerError::StorageError` if storage operation fails
+    /// Returns `None` if credential does not exist.
     ///
     /// # Examples
     ///
     /// ```no_run
     /// # use nebula_credential::prelude::*;
-    /// # use std::sync::Arc;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// # let manager = CredentialManager::builder()
-    /// #     .storage(Arc::new(MockStorageProvider::new()))
+    /// #     .storage(std::sync::Arc::new(MockStorageProvider::new()))
     /// #     .build();
-    /// let context = CredentialContext::new("user-123");
-    ///
-    /// let ids = manager.list(&context).await?;
-    /// println!("Found {} credentials", ids.len());
+    /// let id = CredentialId::new("github-token")?;
+    /// let ctx = CredentialContext::new("user-123");
+    /// if let Some((meta, status)) = manager.get_metadata(&id, &ctx).await? {
+    ///     println!("Status: {:?}", status);
+    /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn list(&self, context: &CredentialContext) -> ManagerResult<Vec<CredentialId>> {
+    pub async fn get_metadata(
+        &self,
+        id: &CredentialId,
+        context: &CredentialContext,
+    ) -> ManagerResult<Option<(CredentialMetadata, CredentialStatus)>> {
+        let Some((_data, metadata)) = self.retrieve(id, context).await? else {
+            return Ok(None);
+        };
+        let status = status_from_metadata(&metadata);
+        Ok(Some((metadata, status)))
+    }
+
+    /// List credential IDs matching filter (no caching, always fresh).
+    ///
+    /// # Arguments
+    ///
+    /// * `filter` - Optional filter (tags, date range); `None` matches all
+    /// * `context` - Request context (owner, scope, trace)
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nebula_credential::prelude::*;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let manager = CredentialManager::builder()
+    /// #     .storage(std::sync::Arc::new(MockStorageProvider::new()))
+    /// #     .build();
+    /// let ctx = CredentialContext::new("user-123");
+    /// let ids = manager.list_ids(None, &ctx).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn list_ids(
+        &self,
+        filter: Option<&CredentialFilter>,
+        context: &CredentialContext,
+    ) -> ManagerResult<Vec<CredentialId>> {
         self.storage
-            .list(None, context)
+            .list(filter, context)
             .await
             .map_err(ManagerError::from)
+    }
+
+    /// List all credential IDs (convenience; no filter).
+    ///
+    /// Equivalent to `list_ids(None, context)`.
+    pub async fn list(&self, context: &CredentialContext) -> ManagerResult<Vec<CredentialId>> {
+        self.list_ids(None, context).await
+    }
+
+    /// List credentials with metadata and status.
+    ///
+    /// For each ID from `list_ids`, retrieves metadata and derives status.
+    /// Does not decrypt or expose secret values.
+    pub async fn list_with_metadata(
+        &self,
+        filter: Option<&CredentialFilter>,
+        context: &CredentialContext,
+    ) -> ManagerResult<Vec<(CredentialId, CredentialMetadata, CredentialStatus)>> {
+        let ids = self.list_ids(filter, context).await?;
+        let mut result = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some((meta, status)) = self.get_metadata(&id, context).await? {
+                result.push((id, meta, status));
+            }
+        }
+        Ok(result)
     }
 
     /// Get cache performance statistics
@@ -424,6 +489,306 @@ impl CredentialManager {
     /// ```
     pub fn cache_stats(&self) -> Option<CacheStats> {
         self.cache.as_ref().map(|cache| cache.stats())
+    }
+
+    /// Create credential from type and input (Phase 2 minimal)
+    ///
+    /// Looks up protocol by `type_id`, calls `initialize`/`build_state`, returns
+    /// [`CreateResult`]. When `Complete`, serializes state to JSON, encrypts,
+    /// and stores via existing `store()`.
+    ///
+    /// # Supported type_ids
+    ///
+    /// - `api_key` — StaticProtocol (server + token)
+    /// - `basic_auth` — StaticProtocol (username + password)
+    /// - `oauth2` — FlowProtocol (auth_url, token_url, grant_type from input)
+    ///
+    /// # Errors
+    ///
+    /// - `ManagerError::ValidationError` — Unknown type_id or protocol init failure
+    /// - `ManagerError::ValidationError` — Complete but encryption_key not set (required for storage)
+    pub async fn create(
+        &self,
+        type_id: &str,
+        input: &nebula_parameter::values::ParameterValues,
+        context: &CredentialContext,
+    ) -> ManagerResult<crate::core::result::CreateResult> {
+        use crate::core::result::CreateResult;
+        use crate::manager::registry::InitResult;
+
+        let protocol = self.protocol_registry.get(type_id).ok_or_else(|| {
+            ManagerError::ValidationError {
+                credential_id: "create".to_string(),
+                reason: format!("unknown credential type: {}", type_id),
+            }
+        })?;
+
+        let mut ctx = context.clone();
+        let result = protocol
+            .initialize(input, &mut ctx)
+            .await
+            .map_err(|e| ManagerError::ValidationError {
+                credential_id: "create".to_string(),
+                reason: format!("protocol init failed: {}", e),
+            })?;
+
+        // On Complete: encrypt state, store, return credential_id
+        if let InitResult::Complete { type_id: tid, state_json } = result {
+            let key = self.encryption_key.as_ref().ok_or_else(|| {
+                ManagerError::ValidationError {
+                    credential_id: "create".to_string(),
+                    reason: "encryption_key required for create() storage; set via builder.encryption_key()"
+                        .to_string(),
+                }
+            })?;
+
+            let encrypted = encrypt(key.as_ref(), &state_json).map_err(|e| {
+                ManagerError::ValidationError {
+                    credential_id: "create".to_string(),
+                    reason: format!("encryption failed: {}", e),
+                }
+            })?;
+
+            let cred_id = CredentialId::new(format!("cred-{}", uuid::Uuid::new_v4()))
+                .map_err(|e| ManagerError::ValidationError {
+                    credential_id: "create".to_string(),
+                    reason: format!("credential id generation failed: {}", e),
+                })?;
+
+            let mut metadata = CredentialMetadata::new();
+            metadata.scope = context.scope_id.clone();
+
+            self.store(&cred_id, encrypted, metadata, context).await?;
+
+            info!(
+                credential_id = %cred_id,
+                type_id = %tid,
+                "Credential created and stored"
+            );
+
+            return Ok(CreateResult::Complete {
+                credential_id: cred_id,
+                type_id: tid,
+            });
+        }
+
+        // Pending or RequiresInteraction — store partial state, return credential_id
+        let key = self.encryption_key.as_ref().ok_or_else(|| {
+            ManagerError::ValidationError {
+                credential_id: "create".to_string(),
+                reason: "encryption_key required for interactive flows; set via builder.encryption_key()"
+                    .to_string(),
+            }
+        })?;
+
+        let cred_id = CredentialId::new(format!("cred-{}", uuid::Uuid::new_v4()))
+            .map_err(|e| ManagerError::ValidationError {
+                credential_id: "create".to_string(),
+                reason: format!("credential id generation failed: {}", e),
+            })?;
+
+        let (partial_state, next_step, type_id) = match &result {
+            InitResult::Pending {
+                type_id: tid,
+                partial_state,
+                next_step,
+            } => (partial_state.clone(), next_step.clone(), tid.clone()),
+            InitResult::RequiresInteraction {
+                type_id: tid,
+                partial_state,
+                interaction,
+            } => (
+                partial_state.clone(),
+                interaction.clone(),
+                tid.clone(),
+            ),
+            InitResult::Complete { .. } => unreachable!(),
+        };
+
+        let state_json = serde_json::to_vec(&partial_state).map_err(|e| {
+            ManagerError::ValidationError {
+                credential_id: cred_id.to_string(),
+                reason: format!("partial state serialization failed: {}", e),
+            }
+        })?;
+
+        let encrypted = encrypt(key.as_ref(), &state_json).map_err(|e| {
+            ManagerError::ValidationError {
+                credential_id: cred_id.to_string(),
+                reason: format!("encryption failed: {}", e),
+            }
+        })?;
+
+        let mut metadata = CredentialMetadata::new();
+        metadata.scope = context.scope_id.clone();
+        metadata.tags.insert("credential_type".to_string(), type_id.clone());
+        metadata.tags.insert("credential_status".to_string(), "pending".to_string());
+
+        self.store(&cred_id, encrypted, metadata, context).await?;
+
+        info!(
+            credential_id = %cred_id,
+            type_id = %type_id,
+            "Partial state stored for interactive flow"
+        );
+
+        Ok(match result {
+            InitResult::Pending { .. } => CreateResult::Pending {
+                credential_id: cred_id,
+                partial_state,
+                next_step,
+            },
+            InitResult::RequiresInteraction { interaction, .. } => {
+                CreateResult::RequiresInteraction {
+                    credential_id: cred_id,
+                    interaction,
+                }
+            }
+            InitResult::Complete { .. } => unreachable!(),
+        })
+    }
+
+    /// Continue interactive flow with user input.
+    ///
+    /// Completes OAuth2 callback (UserInput::Callback with `code`), device flow poll
+    /// (UserInput::Poll), etc. Returns CreateResult::Complete when done, or
+    /// CreateResult::Pending when another poll/step is needed.
+    pub async fn continue_flow(
+        &self,
+        id: &CredentialId,
+        user_input: &crate::core::result::UserInput,
+        context: &CredentialContext,
+    ) -> ManagerResult<crate::core::result::CreateResult> {
+        use crate::core::result::{CreateResult, PartialState};
+        use crate::manager::registry::InitResult;
+
+        let key = self.encryption_key.as_ref().ok_or_else(|| {
+            ManagerError::ValidationError {
+                credential_id: id.to_string(),
+                reason: "encryption_key required for continue_flow; set via builder.encryption_key()"
+                    .to_string(),
+            }
+        })?;
+
+        let (encrypted, metadata) = self.retrieve(id, context).await?.ok_or_else(|| {
+            ManagerError::NotFound {
+                credential_id: id.to_string(),
+            }
+        })?;
+
+        let type_id = metadata
+            .tags
+            .get("credential_type")
+            .cloned()
+            .ok_or_else(|| ManagerError::ValidationError {
+                credential_id: id.to_string(),
+                reason: "credential missing credential_type tag (not an interactive flow)".to_string(),
+            })?;
+
+        let plaintext = decrypt(key.as_ref(), &encrypted).map_err(|e| {
+            ManagerError::ValidationError {
+                credential_id: id.to_string(),
+                reason: format!("decryption failed: {}", e),
+            }
+        })?;
+
+        let partial_state: PartialState = serde_json::from_slice(&plaintext).map_err(|e| {
+            ManagerError::ValidationError {
+                credential_id: id.to_string(),
+                reason: format!("partial state deserialization failed: {}", e),
+            }
+        })?;
+
+        let mut ctx = context.clone();
+        let result = self
+            .protocol_registry
+            .continue_flow(&type_id, &partial_state, user_input, &mut ctx)
+            .await
+            .map_err(|e| ManagerError::ValidationError {
+                credential_id: id.to_string(),
+                reason: format!("continue flow failed: {}", e),
+            })?;
+
+        match result {
+            InitResult::Complete { type_id: tid, state_json } => {
+                let encrypted = encrypt(key.as_ref(), &state_json).map_err(|e| {
+                    ManagerError::ValidationError {
+                        credential_id: id.to_string(),
+                        reason: format!("encryption failed: {}", e),
+                    }
+                })?;
+
+                let mut meta = CredentialMetadata::new();
+                meta.scope = context.scope_id.clone();
+                meta.tags.remove("credential_status");
+
+                self.store(id, encrypted, meta, context).await?;
+
+                info!(credential_id = %id, type_id = %tid, "Interactive flow completed");
+
+                Ok(CreateResult::Complete {
+                    credential_id: id.clone(),
+                    type_id: tid,
+                })
+            }
+            InitResult::Pending {
+                type_id: tid,
+                partial_state: ps,
+                next_step,
+            } => {
+                let state_json = serde_json::to_vec(&ps).map_err(|e| {
+                    ManagerError::ValidationError {
+                        credential_id: id.to_string(),
+                        reason: format!("partial state serialization failed: {}", e),
+                    }
+                })?;
+
+                let encrypted = encrypt(key.as_ref(), &state_json).map_err(|e| {
+                    ManagerError::ValidationError {
+                        credential_id: id.to_string(),
+                        reason: format!("encryption failed: {}", e),
+                    }
+                })?;
+
+                let mut meta = CredentialMetadata::new();
+                meta.scope = context.scope_id.clone();
+                meta.tags.insert("credential_type".to_string(), tid.clone());
+                meta.tags.insert("credential_status".to_string(), "pending".to_string());
+
+                self.store(id, encrypted, meta, context).await?;
+
+                Ok(CreateResult::Pending {
+                    credential_id: id.clone(),
+                    partial_state: ps,
+                    next_step,
+                })
+            }
+            InitResult::RequiresInteraction { .. } => Err(ManagerError::ValidationError {
+                credential_id: id.to_string(),
+                reason: "protocol returned RequiresInteraction from continue (unexpected)".to_string(),
+            }),
+        }
+    }
+
+    /// List registered credential type schemas.
+    ///
+    /// Returns type ids, display names, parameter schemas for `GET /credential-types`.
+    /// Populated from the protocol registry (api_key, basic_auth, oauth2).
+    #[must_use]
+    pub fn list_types(&self) -> Vec<CredentialTypeSchema> {
+        self.protocol_registry
+            .type_ids()
+            .into_iter()
+            .filter_map(|tid| self.protocol_registry.schema_for(&tid))
+            .map(|s| CredentialTypeSchema {
+                type_id: s.type_id,
+                display_name: s.display_name,
+                description: s.description,
+                icon: None,
+                params: s.params,
+                capabilities: s.capabilities,
+            })
+            .collect()
     }
 
     /// Retrieve credential with scope enforcement (Phase 4: Multi-Tenant Isolation)
@@ -2189,6 +2554,25 @@ impl CredentialManager {
     }
 }
 
+/// Schema for a credential type (Phase 4)
+///
+/// Returned by `list_types()` for `GET /credential-types`.
+#[derive(Debug, Clone)]
+pub struct CredentialTypeSchema {
+    /// Type identifier (e.g. `oauth2_github`)
+    pub type_id: String,
+    /// Display name
+    pub display_name: String,
+    /// Description
+    pub description: String,
+    /// Optional icon
+    pub icon: Option<String>,
+    /// Parameter schema for POST body
+    pub params: nebula_parameter::collection::ParameterCollection,
+    /// Capabilities (e.g. `["refresh", "revoke", "rotate"]`)
+    pub capabilities: Vec<String>,
+}
+
 // Type-level markers for builder typestate pattern
 #[doc(hidden)]
 pub struct Yes;
@@ -2230,6 +2614,9 @@ pub struct No;
 pub struct CredentialManagerBuilder<HasStorage> {
     storage: Option<Arc<dyn StorageProvider>>,
     cache_config: Option<CacheConfig>,
+    encryption_key: Option<Arc<EncryptionKey>>,
+    type_registry: HashMap<TypeId, CredentialId>,
+    protocol_registry: crate::manager::ProtocolRegistry,
     _marker: PhantomData<HasStorage>,
 }
 
@@ -2239,6 +2626,9 @@ impl CredentialManagerBuilder<No> {
         Self {
             storage: None,
             cache_config: None,
+            encryption_key: None,
+            type_registry: HashMap::new(),
+            protocol_registry: crate::manager::ProtocolRegistry::with_builtins(),
             _marker: PhantomData,
         }
     }
@@ -2262,6 +2652,9 @@ impl CredentialManagerBuilder<No> {
         CredentialManagerBuilder {
             storage: Some(storage),
             cache_config: self.cache_config,
+            encryption_key: self.encryption_key,
+            type_registry: self.type_registry,
+            protocol_registry: self.protocol_registry,
             _marker: PhantomData,
         }
     }
@@ -2344,6 +2737,57 @@ impl<S> CredentialManagerBuilder<S> {
             .max_capacity = size;
         self
     }
+
+    /// Set encryption key for CredentialProvider::get decryption (optional)
+    ///
+    /// Required when using `CredentialManager` as `CredentialProvider` to decrypt
+    /// stored credentials. Without this, `get()` returns an error.
+    pub fn encryption_key(mut self, key: Arc<EncryptionKey>) -> Self {
+        self.encryption_key = Some(key);
+        self
+    }
+
+    /// Register a credential type mapping for type-based acquisition.
+    ///
+    /// Maps credential type `C` to a stored credential ID. When `credential::<C>(ctx)` is
+    /// called, the manager will look up this mapping and retrieve the credential by ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `credential_id` - The stored credential ID to use when acquiring `C`
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use nebula_credential::prelude::*;
+    /// use std::sync::Arc;
+    ///
+    /// struct GithubToken;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let manager = CredentialManager::builder()
+    ///     .storage(Arc::new(MockStorageProvider::new()))
+    ///     .encryption_key(Arc::new(EncryptionKey::from_bytes([0u8; 32])))
+    ///     .register_type::<GithubToken>(CredentialId::new("github-token")?)
+    ///     .build();
+    ///
+    /// // Later: let token = manager.credential::<GithubToken>(&ctx).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn register_type<C: Send + 'static>(mut self, credential_id: CredentialId) -> Self {
+        self.type_registry
+            .insert(TypeId::of::<C>(), credential_id);
+        self
+    }
+
+    /// Register a type-to-credential mapping by raw TypeId (for dynamic registration).
+    ///
+    /// Use `register_type::<C>()` when the type is known at compile time.
+    pub fn register_mapping(mut self, type_id: TypeId, credential_id: CredentialId) -> Self {
+        self.type_registry.insert(type_id, credential_id);
+        self
+    }
 }
 
 impl CredentialManagerBuilder<Yes> {
@@ -2367,9 +2811,18 @@ impl CredentialManagerBuilder<Yes> {
             .cache_config
             .map(|config| Arc::new(CacheLayer::new(&config)));
 
+        let type_registry = if self.type_registry.is_empty() {
+            None
+        } else {
+            Some(Arc::new(self.type_registry))
+        };
+
         CredentialManager {
             storage: self.storage.unwrap(), // Safe: typestate guarantees Some
             cache,
+            encryption_key: self.encryption_key,
+            type_registry,
+            protocol_registry: Arc::new(self.protocol_registry),
         }
     }
 }
@@ -2387,5 +2840,68 @@ impl From<crate::core::StorageError> for ManagerError {
             credential_id: "unknown".to_string(),
             source: error,
         }
+    }
+}
+
+impl crate::core::CredentialProvider for CredentialManager {
+    async fn credential<C: Send + 'static>(
+        &self,
+        ctx: &CredentialContext,
+    ) -> Result<crate::core::SecretString, CredentialError> {
+        let type_id = TypeId::of::<C>();
+        let cred_id = self
+            .type_registry
+            .as_ref()
+            .and_then(|registry| registry.get(&type_id).cloned())
+            .ok_or_else(|| CredentialError::Manager {
+                source: ManagerError::ValidationError {
+                    credential_id: format!("{:?}", type_id),
+                    reason: "credential<C>() requires type registry; use register_type::<C>(credential_id) on builder"
+                        .to_string(),
+                },
+            })?;
+        self.get(cred_id.as_str(), ctx).await
+    }
+
+    async fn get(
+        &self,
+        id: &str,
+        ctx: &CredentialContext,
+    ) -> Result<crate::core::SecretString, CredentialError> {
+        let key = self.encryption_key.as_ref().ok_or_else(|| {
+            CredentialError::Manager {
+                source: ManagerError::ValidationError {
+                    credential_id: id.to_string(),
+                    reason: "CredentialProvider::get requires encryption_key on builder".to_string(),
+                },
+            }
+        })?;
+
+        let cred_id = CredentialId::new(id)
+            .map_err(|e| CredentialError::Validation { source: e })?;
+
+        let (data, _meta) = self.retrieve(&cred_id, ctx).await.map_err(|e| match e {
+            ManagerError::NotFound { credential_id } => CredentialError::Manager {
+                source: ManagerError::NotFound { credential_id },
+            },
+            _ => CredentialError::Manager { source: e },
+        })?.ok_or_else(|| CredentialError::Manager {
+            source: ManagerError::NotFound {
+                credential_id: id.to_string(),
+            },
+        })?;
+
+        let plaintext = decrypt(key.as_ref(), &data).map_err(|e| CredentialError::Crypto {
+            source: e,
+        })?;
+
+        let s = String::from_utf8(plaintext).map_err(|e| CredentialError::Validation {
+            source: crate::core::ValidationError::InvalidFormat(format!(
+                "decrypted data not UTF-8: {}",
+                e
+            )),
+        })?;
+
+        Ok(crate::core::SecretString::new(s))
     }
 }

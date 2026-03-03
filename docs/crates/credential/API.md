@@ -26,10 +26,8 @@ Created via `CredentialManager::builder()`.
 
 - `StorageProvider`, `StateStore`
 - `DistributedLock`
-- `CredentialResource`, `CredentialType`
-- `FlowProtocol`, `StaticProtocol`, `InteractiveCredential`
-- `Refreshable`, `Revocable`
-- `RotatableCredential`, `TestableCredential`
+- **Domain:** `CredentialType`, `StaticProtocol`, `FlowProtocol`, `InteractiveCredential`, `CredentialResource`, `Refreshable`, `Revocable`, `TestableCredential`, `RotatableCredential`
+- **Infrastructure:** `StorageProvider`, `StateStore`, `DistributedLock`
 
 ## Built-in Protocols
 
@@ -114,15 +112,29 @@ pub enum UserInput {
 ### `InteractiveCredential` trait
 
 ```rust
-pub trait InteractiveCredential: FlowProtocol {
+pub trait InteractiveCredential: CredentialType {
     /// Continue an in-progress flow with user-supplied input.
-    async fn continue_flow(
+    async fn continue_initialization(
         &self,
-        partial_state: Self::State,
-        input: UserInput,
-    ) -> Result<InitializeResult<Self::State>>;
+        partial_state: PartialState,
+        user_input: UserInput,
+        ctx: &mut CredentialContext,
+    ) -> Result<InitializeResult<Self::State>, CredentialError>;
 }
 ```
+
+## Manager API Gaps (Phase 4)
+
+`CredentialManager` **implements** `CredentialProvider` (id-based `get(id)` only; `credential<C>()` requires type registry). Remaining gaps:
+
+| Method | Status | Notes |
+|--------|--------|-------|
+| `create(type_id, input)` → `InitializeResult` | **Stub** | Returns error; drives protocol initialize |
+| `continue_flow(id, UserInput)` → `InitializeResult<Complete>` | **Stub** | Returns error; completes interactive flow |
+| `list_types()` → `Vec<CredentialTypeSchema>` | **Stub** | Returns empty vec; type registry planned |
+| `credential<C>()` (type-based) | **Stub** | Returns error; requires type registry |
+
+For `CredentialProvider::get`, configure `encryption_key` on the builder to enable decryption.
 
 ## nebula-api Observable APIs *(Phase 4)*
 
@@ -156,7 +168,9 @@ When `CredentialManager` completes a rotation, linked resource instances are ref
 
 ```rust
 // Resource defines its credential binding at the type level:
-impl CredentialResource<OAuth2GitHub> for GitHubApiResource {
+impl CredentialResource for GitHubApiResource {
+    type Credential = OAuth2GitHub;
+
     fn authorize(&mut self, state: &OAuth2State) {
         self.bearer_token = state.access_token.clone();
     }

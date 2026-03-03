@@ -69,9 +69,11 @@ pub mod utils;
 // Core types & errors
 pub use crate::core::{
     CredentialContext, CredentialDescription, CredentialError, CredentialFilter, CredentialId,
-    CredentialMetadata, CredentialProvider, CredentialRef, CredentialState, CryptoError,
-    ManagerError, ManagerResult, ScopeId, SecretString, StorageError, ValidationError,
+    CredentialMetadata, CredentialProvider, CredentialRef, CredentialState, CredentialStatus,
+    CryptoError, ManagerError, ManagerResult, ScopeId, SecretString, StorageError,
+    ValidationError, status_from_metadata,
 };
+pub use crate::core::result::CreateResult;
 
 // Traits
 pub use crate::traits::{
@@ -98,8 +100,9 @@ pub mod prelude {
     // Core types
     pub use crate::core::{
         CredentialContext, CredentialError, CredentialFilter, CredentialId, CredentialMetadata,
-        CredentialProvider, CredentialRef, SecretString,
+        CredentialProvider, CredentialRef, CredentialStatus, SecretString, status_from_metadata,
     };
+    pub use crate::core::result::CreateResult;
 
     // Rotation types
     pub use crate::rotation::policy::RotationPolicy;
@@ -143,7 +146,7 @@ pub mod prelude {
     // Credential Manager (Phase 3)
     pub use crate::manager::{
         CacheConfig, CacheLayer, CacheStats, CredentialManager, CredentialManagerBuilder,
-        EvictionStrategy, ManagerConfig, ValidationDetails, ValidationResult,
+        CredentialTypeSchema, EvictionStrategy, ManagerConfig, ValidationDetails, ValidationResult,
     };
 
     // Credential Rotation (Phase 4) - Already exported in prelude above
