@@ -13,7 +13,7 @@ Created via `CredentialManager::builder()`.
 
 ## Core Types
 
-- `CredentialId`, `ScopeId`
+- `CredentialId`, `ScopeLevel`
 - `CredentialContext`
 - `CredentialMetadata`
 - `CredentialDescription`
@@ -22,11 +22,31 @@ Created via `CredentialManager::builder()`.
 - `CredentialState`
 - `CredentialError`, `StorageError`, `ManagerError`, `ValidationError`, `CryptoError`
 
+### `CredentialEntry`
+
+A credential instance stored in the database:
+
+```rust
+/// A credential instance stored in the database.
+pub struct CredentialEntry {
+    pub id:              CredentialId,    // UUID — primary key
+    pub credential_key:  CredentialKey,  // "oauth2_github" — protocol type
+    pub owner_id:        UserId,
+    pub owner_scope:     ScopeLevel,     // Project(id) or Organization(id)
+    pub encrypted_state: EncryptedData,
+    pub metadata:        CredentialMetadata,
+    pub status:          CredentialStatus,
+    pub created_at:      DateTime<Utc>,
+    pub rotated_at:      Option<DateTime<Utc>>,
+    pub expires_at:      Option<DateTime<Utc>>,
+}
+```
+
 ## Traits
 
 - `StorageProvider`, `StateStore`
 - `DistributedLock`
-- **Domain:** `CredentialType`, `StaticProtocol`, `FlowProtocol`, `InteractiveCredential`, `CredentialResource`, `Refreshable`, `Revocable`, `TestableCredential`, `RotatableCredential`
+- **Domain:** `CredentialType`, `StaticProtocol`, `FlowProtocol`, `InteractiveCredential`, `CredentialResource`, `Refreshable`, `Revocable`, `TestableCredential`, `RotatableCredential`, `ErasedProtocol`, `ProtocolDriver`, `StaticProtocolDriver`, `ProtocolRegistry`, `ProtocolCapabilities`
 - **Infrastructure:** `StorageProvider`, `StateStore`, `DistributedLock`
 
 ## Built-in Protocols
@@ -123,6 +143,16 @@ pub trait InteractiveCredential: CredentialType {
 }
 ```
 
+### `CredentialContext`
+
+```rust
+pub struct CredentialContext {
+    pub caller_scope: ScopeLevel,      // runtime scope запрашивающего (Action, Execution, ...)
+    pub user_id:      Option<UserId>,  // для UI-операций
+    pub trace_id:     Option<String>,  // для audit
+}
+```
+
 ## Manager API Gaps (Phase 4)
 
 `CredentialManager` **implements** `CredentialProvider` (id-based `get(id)` only; `credential<C>()` requires type registry). Remaining gaps:
@@ -132,7 +162,7 @@ pub trait InteractiveCredential: CredentialType {
 | `create(type_id, input)` → `InitializeResult` | **Stub** | Returns error; drives protocol initialize |
 | `continue_flow(id, UserInput)` → `InitializeResult<Complete>` | **Stub** | Returns error; completes interactive flow |
 | `list_types()` → `Vec<CredentialTypeSchema>` | **Stub** | Returns empty vec; type registry planned |
-| `credential<C>()` (type-based) | **Stub** | Returns error; requires type registry |
+| `credential<C>()` (type-based) | **Stub** | Returns error; requires ProtocolRegistry with CredentialType::credential_key() → ErasedProtocol mapping |
 
 For `CredentialProvider::get`, configure `encryption_key` on the builder to enable decryption.
 

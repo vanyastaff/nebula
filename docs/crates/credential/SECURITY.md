@@ -104,8 +104,10 @@
 **Mitigations:**
 - Immutable credential ownership (`OwnerId` set at creation, no setter)
 - `CredentialContext` scope validated on every `retrieve`, `list`, `validate`
-- Cache keyed by `(CredentialId, ScopeId)` — no cross-scope hits
-- `ScopeViolation` error logged with full context before returning `Err`
+- Cache keyed by `(CredentialId, ScopeLevel)` — no cross-scope hits
+- `caller_scope.is_contained_in_strict(&entry.owner_scope, resolver)` — verified on every retrieve; uses `ScopeResolver` to check full ownership chain (execution→workflow→project→organization)
+- `CredentialContext.caller_scope: ScopeLevel` carries the requester's runtime scope; never trusts caller-provided string claims
+- `ScopeViolation` error logged with full context (caller_scope, credential_id, owner_scope) before returning `Err`
 - `#![forbid(unsafe_code)]` on all scope enforcement paths
 
 **Residual risk:** LOW
@@ -293,7 +295,7 @@ Current algorithms provide 128-bit security level. Migration path:
 ## Defense-in-Depth Layers
 
 1. **Encryption at rest:** AES-256-GCM; unique nonces; key separation from data
-2. **Access control:** `CredentialContext` + scope; least privilege; immutable ownership
+2. **Access control:** `CredentialContext.caller_scope: ScopeLevel` + `is_contained_in_strict` with `ScopeResolver`; least privilege; immutable ownership (`OwnerId` set at creation); `CredentialKey` identifies type (not secret); `CredentialId` identifies instance
 3. **Memory protection:** `zeroize` on drop; `SecretString`; minimal secret lifetime in memory
 4. **Audit logging:** Credential lifecycle events; rotation outcomes; scope violations
 5. **Network:** TLS 1.3 for provider backends (AWS, Vault, LDAP); mTLS where supported
@@ -305,7 +307,7 @@ Current algorithms provide 128-bit security level. Migration path:
 | Abuse Case | Prevention | Detection | Response |
 |------------|-----------|-----------|----------|
 | **Credential theft from storage** | Encryption at rest; key separation | Decryption failure alerts | Key rotation; re-encrypt all |
-| **Cross-tenant access** | Strict scope check on every retrieve | `ScopeViolation` errors; audit log | Fail-fast; alert; incident |
+| **Cross-tenant access** | `caller_scope.is_contained_in_strict(&owner_scope, resolver)` on every retrieve; hierarchical containment verified via `ScopeResolver` | `ScopeViolation` errors; audit log | Fail-fast; alert; incident |
 | **Log exposure of secrets** | `SecretString` redaction; no secrets in errors | Security review; log scanning | Patch; rotate exposed credentials |
 | **Fetch storm / DoS** | Cache; rate limits (P-004) | Latency/throughput metrics spike | Backpressure; circuit breaker |
 | **Encryption key compromise** | HSM/KMS; key rotation | Key access anomalies | Immediate rotation; re-encrypt all; revoke key |
@@ -332,7 +334,7 @@ Current algorithms provide 128-bit security level. Migration path:
 |---------|-------|----------------|
 | A.9.2.1 | User registration | Owner ID required for all credentials |
 | A.9.2.4 | Secret authentication info | `SecretString` with zeroization |
-| A.9.4.1 | Information access restriction | Scope isolation with `ScopeId` |
+| A.9.4.1 | Information access restriction | Scope isolation with `ScopeLevel` |
 | A.10.1.1 | Cryptographic controls | AES-256-GCM, Argon2id, TLS 1.3 |
 | A.10.1.2 | Key management | HSM storage, 90-day rotation |
 | A.12.4.1 | Event logging | Structured audit logs with retention |

@@ -44,12 +44,17 @@ graph TB
         MTLS[MtlsProtocol]
     end
 
+    subgraph "Erased Layer (Dynamic Registry)"
+        ErasedP[ErasedProtocol]
+        Registry[ProtocolRegistry]
+        Driver[ProtocolDriver Bridge]
+    end
+
     subgraph "Core Services"
         Manager[CredentialManager]
         Cache[CacheLayer]
         Rotation[RotationTransaction]
         Crypto[Encryption AES-256-GCM]
-        Registry[ProtocolRegistry]
     end
 
     subgraph "Storage Backends"
@@ -64,21 +69,27 @@ graph TB
     CredResource --> Credential
     StaticP --> ApiKey & BasicAuth & HeaderAuth & Database
     FlowP --> OAuth2 & LDAP & SAML & Kerberos & MTLS
+    StaticP --> Driver
+    FlowP --> Driver
+    Driver --> ErasedP
+    ErasedP --> Registry
+    Registry --> Manager
     Manager --> Cache --> Crypto
     Manager --> Rotation
-    Manager --> Registry
     Cache --> Local & AWS & Vault & K8s
 ```
+
+> **Protocol Registry Layer (between Protocol and Core Services):** Typed protocols (`FlowProtocol`, `StaticProtocol`) are bridged via `ProtocolDriver` adapters to `ErasedProtocol` (object-safe, `serde_json::Value`-based). `ProtocolRegistry` maps `CredentialKey → Arc<dyn ErasedProtocol>` for runtime-composable protocol management.
 
 ## Module Map
 
 | Module | Key types exported | Role |
 |--------|-------------------|------|
-| `core` | `CredentialId`, `ScopeId`, `CredentialContext`, `CredentialMetadata`, `CredentialDescription`, `CredentialFilter`, `CredentialState`, `CredentialRef`, `CredentialProvider`, `CredentialError`, `StorageError`, `CryptoError`, `ValidationError`, `ManagerError`, `SecretString` | Identity, scope, errors, primitives |
+| `core` | `CredentialId`, `ScopeLevel`, `CredentialContext`, `CredentialMetadata`, `CredentialDescription`, `CredentialFilter`, `CredentialState`, `CredentialRef`, `CredentialProvider`, `CredentialError`, `StorageError`, `CryptoError`, `ValidationError`, `ManagerError`, `SecretString` | Identity, scope, errors, primitives |
 | `traits` (domain) | `CredentialType`, `StaticProtocol`, `FlowProtocol`, `InteractiveCredential`, `CredentialResource`, `Refreshable`, `Revocable`, `TestableCredential`, `RotatableCredential` | Credential / protocol contracts |
 | `traits` (infrastructure) | `StorageProvider`, `StateStore`, `DistributedLock` | Storage/locking/rotation infrastructure |
 | `providers` | `MockStorageProvider`, `LocalStorageProvider`\*, `AwsSecretsManagerProvider`\*, `HashiCorpVaultProvider`\*, `KubernetesSecretsProvider`\*, `ProviderConfig`, `StorageMetrics` | Concrete backends (feature-gated) |
-| `manager` | `CredentialManager`, `CredentialManagerBuilder`, `CacheLayer`, `CacheConfig`, `CacheStats`, `ValidationResult`, `ValidationDetails`, `ManagerConfig`, `EvictionStrategy`, `ProtocolRegistry` | High-level CRUD, caching, validation, type registry |
+| `manager` | `CredentialManager`, `CredentialManagerBuilder`, `CacheLayer`, `CacheConfig`, `CacheStats`, `ValidationResult`, `ValidationDetails`, `ManagerConfig`, `EvictionStrategy`, `ProtocolRegistry`, `ErasedProtocol`, `ProtocolDriver`, `StaticProtocolDriver`, `ProtocolCapabilities` | High-level CRUD, caching, validation, type registry |
 | `protocols` | `ApiKeyProtocol`, `BasicAuthProtocol`, `DatabaseProtocol`, `HeaderAuthProtocol`, `OAuth2Protocol`+config+state+flow, `LdapProtocol`, `SamlConfig`, `KerberosConfig`, `MtlsConfig` | Protocol-specific models |
 | `rotation` | `RotationPolicy`, `RotationTransaction`, `RotationState`, `RotationError`, `GracePeriodConfig`, rotation scheduler, blue-green helpers | Policy-driven rotation orchestration |
 | `utils` | `EncryptionKey`, `EncryptedData`, `encrypt`, `decrypt`, `SecretString`, `RetryPolicy` | Crypto, secret handling, retry |
@@ -95,9 +106,17 @@ graph TB
   - `InteractiveCredential` — continuation of interactive flows via `InitializeResult`/`UserInput`
   - `CredentialResource` — links resource client to `CredentialType::State` (authorize)
   - `Refreshable` / `Revocable` / `TestableCredential` / `RotatableCredential` — optional capabilities
+- **Erased traits (`traits::erased`)** bridge typed protocols to the runtime registry:
+  - `ErasedProtocol` — object-safe trait; all state as `serde_json::Value`
+  - `ProtocolDriver<P: FlowProtocol>` — captures config, bridges to `ErasedProtocol`
+  - `StaticProtocolDriver<P: StaticProtocol>` — bridges static protocols
+  - `ProtocolRegistry` — `HashMap<CredentialKey, Arc<dyn ErasedProtocol>>`
+  - `ProtocolCapabilities` — capability negotiation (interactive, refresh, revoke, rotate)
 - **Infrastructure traits (`traits::storage`, `traits::lock`)** describe storage/locking:
   - `StorageProvider`, `StateStore`, `StateVersion` — encrypted credential blob storage and rotation state
   - `DistributedLock`, `LockGuard`, `LockError` — distributed locks for refresh/rotation
+
+> **Design note:** `where Self: Sized` on `FlowProtocol` methods means the trait is not directly object-safe. For the dynamic registry, `ProtocolDriver<P>` bridges to `ErasedProtocol` which IS object-safe. Typed `FlowProtocol` is for implementors; `ErasedProtocol` is for the registry and API layer.
 
 ## Credential Lifecycle State Machine
 
@@ -177,6 +196,37 @@ impl CredentialLifecycle {
 
 Illegal transitions return `Err(StateError::IllegalTransition { from, to })`. Example: `Active → Authenticating` is forbidden; `Active → Expired` is allowed.
 
+### Public API: CredentialStatus
+
+`CredentialLifecycle` is an internal type — never exposed in API responses or public types. External callers see `CredentialStatus`, a lean 6-state enum (D-016):
+
+```rust
+pub enum CredentialStatus {
+    PendingInteraction,   // waiting for user action (OAuth2, Device Flow, SAML)
+    Active,               // ready for use; also covers GracePeriod transparently
+    Rotating,             // rotation in progress (covers RotationScheduled + Rotating)
+    Expired,              // needs refresh; cannot serve requests
+    Revoked,              // terminal — manually revoked
+    Failed,               // terminal — unrecoverable error
+}
+```
+
+Mapping from internal to public:
+
+| Internal `CredentialLifecycle` | Public `CredentialStatus` |
+|-------------------------------|--------------------------|
+| `Uninitialized`, `Authenticating` | *(not yet in storage — not returned)* |
+| `PendingInteraction` | `PendingInteraction` |
+| `Active` | `Active` |
+| `Refreshing` | `Active` (transparent — old token still valid) |
+| `GracePeriod` | `Active` (both credentials valid; caller unaffected) |
+| `RotationScheduled`, `Rotating` | `Rotating` |
+| `Expired` | `Expired` |
+| `Revoked` | `Revoked` |
+| `Failed` | `Failed` |
+
+This boundary prevents internal state machine changes from breaking the public API contract.
+
 ## Type-State Pattern (Design Direction)
 
 For compile-time enforcement of credential flow correctness:
@@ -217,7 +267,7 @@ caller
   │         │
   │         ├─→ scope check (CredentialContext validates tenant/scope)
   │         │
-  │         ├─→ CacheLayer::get(id)  ──hit──→ return EncryptedData
+  │         ├─→ CacheLayer::get(id)  ──hit──→ scope check via caller_scope.is_contained_in_strict
   │         │        │
   │         │       miss
   │         │        │
@@ -231,6 +281,16 @@ caller
   │         └─→ return Some((EncryptedData, CredentialMetadata))
   │
   └── caller decrypts with EncryptionKey → SecretString
+```
+
+The `CredentialContext` carries the caller's runtime scope:
+
+```rust
+pub struct CredentialContext {
+    pub caller_scope: ScopeLevel,      // requester's runtime scope (Action, Execution, ...)
+    pub user_id:      Option<UserId>,  // for UI-originated operations
+    pub trace_id:     Option<String>,  // for audit
+}
 ```
 
 ### Rotation Flow (RotationTransaction)
@@ -283,7 +343,7 @@ RotationScheduler detects policy trigger
 
 - `#![forbid(unsafe_code)]` enforced at lib root
 - `CredentialManager` is `Clone`; clones share the same `Arc<StorageProvider>` and `Arc<CacheLayer>`
-- Cache is keyed by `(CredentialId, ScopeId)` — scope isolation enforced at the cache boundary
+- Cache is keyed by `CredentialId`; scope isolation enforced at retrieve time via `caller_scope.is_contained_in_strict(&entry.owner_scope, resolver)` — never serve credentials outside the caller's scope
 - `CryptoError::DecryptionFailed` is never retried; it is fatal (fail-secure)
 - `SecretString` implements `Debug` with redaction; never exposes raw secret in error messages or logs
 - `StorageProvider::retrieve` is idempotent and safe to retry; `store`/`delete` are not
@@ -326,6 +386,8 @@ RotationScheduler detects policy trigger
 | **Manual** | External trigger | Security incidents, personnel changes |
 
 Policies can be combined: whichever trigger fires first initiates rotation.
+
+`RotationTransaction` coordinates the full rotation sequence transactionally (saga with rollback): backup → generate → store → grace period → revoke old. Any failure at any phase triggers automatic rollback to the backup credential.
 
 ## Production Architecture (Target)
 

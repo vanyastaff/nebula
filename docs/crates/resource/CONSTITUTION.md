@@ -144,7 +144,7 @@ credentials and data. A scope violation is a data breach, not an operational err
 **Rules**:
 - MUST validate scope on every `acquire`, `acquire_typed`, and `list`
 - `ScopeViolation` MUST log the full context (caller scope, resource scope, resource id) before returning `Err`
-- Cache MUST be keyed by `(resource_id, scope_id)` — never serve cross-scope hits
+- Cache MUST be keyed by `(resource_id, Scope)` — never serve cross-scope hits
 - Scope containment check MUST be the first guard in acquire — before pool lookup
 - MUST NOT provide "admin mode" or "bypass scope" API
 

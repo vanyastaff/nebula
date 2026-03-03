@@ -162,3 +162,105 @@ Reason:
 - Refactoring safety: renaming a credential type is a compile error, not a runtime surprise.
 
 Source: Archive `2026-02-18-protocol-system-design.md` — CredentialResource section.
+
+## D-013: Dynamic ProtocolRegistry via ErasedProtocol Type Erasure
+
+Status: accepted
+
+Decision:
+- `ProtocolRegistry` stores `Arc<dyn ErasedProtocol>` — object-safe, type-erased trait.
+- Typed protocols (`FlowProtocol`, `StaticProtocol`) are bridged via `ProtocolDriver<P>` and `StaticProtocolDriver<P>` adapters that capture config at registration time and serialize/deserialize state through `serde_json::Value`.
+- Community plugins implement `ErasedProtocol` directly for full flexibility.
+- `ProtocolRegistry` is keyed by `CredentialKey` from `nebula-core`.
+
+Reason:
+- Dynamic registry requires runtime-composable types. Rust trait objects (`dyn Trait`) require object safety — no associated types or `where Self: Sized` on called methods in the erased layer.
+- Typed traits (`FlowProtocol`) keep compile-time safety for protocol implementors; the erased layer provides runtime flexibility for plugin loading and the API layer.
+- `serde_json::Value` for state is the correct boundary: state must be serialized to storage anyway.
+
+Rejected:
+- Compile-time only (inventory/linkme crate) — cannot support runtime plugin loading.
+- Raw `Box<dyn Any>` for state — not serializable; loses schema information.
+- `Box<dyn FlowProtocol>` directly — not object-safe due to associated types.
+
+## D-014: ScopeLevel (Enum) Not ScopeId (UUID) for Access Control
+
+Status: accepted
+
+Decision:
+- Credential access control uses `ScopeLevel` from `nebula-core` — a hierarchical enum (`Global`, `Organization`, `Project`, `Workflow`, `Execution`, `Action`) — not a flat `ScopeId` UUID.
+- `CredentialContext` carries `caller_scope: ScopeLevel` (the requester's runtime scope).
+- `CredentialEntry` stores `owner_scope: ScopeLevel` (typically `Project` or `Organization`).
+- Access check: `caller_scope.is_contained_in_strict(&owner_scope, resolver)` using `ScopeResolver` to verify ownership chains.
+
+Reason:
+- `ScopeId` as a UUID does not exist in `nebula-core`. The actual scope system is `ScopeLevel` with hierarchical containment semantics and a `ScopeResolver` trait for ownership verification.
+- Hierarchical containment: an `Action` running in `Execution(E)` within `Project(P)` automatically has access to credentials owned by `Project(P)` — no special-casing required.
+- `is_contained_in_strict` uses a `ScopeResolver` to verify the full ownership chain (execution→workflow→project→organization), preventing scope spoofing.
+
+Rejected:
+- Flat `ScopeId` UUID — cannot express hierarchical containment; requires explicit join for every access check.
+- `Option<ScopeId>` with `None` meaning global — ambiguous and error-prone in multi-tenant systems.
+
+## D-015: CredentialKey (from nebula-core) as Protocol Type Identifier
+
+Status: accepted
+
+Decision:
+- Protocol type identity uses `CredentialKey` from `nebula-core` — a normalized domain key (`[a-z][a-z0-9_]*`) — not a raw `&str` or a new `ProtocolId` type.
+- `ErasedProtocol::credential_key() -> &CredentialKey` is the protocol's type identity in the registry.
+- `CredentialType::credential_key() -> CredentialKey` links typed Rust structs to their registry entry.
+- `ProtocolRegistry` is `HashMap<CredentialKey, Arc<dyn ErasedProtocol>>`.
+
+Reason:
+- `CredentialKey` already exists in `nebula-core` alongside `PluginKey`, `ActionKey`, `ParameterKey` — consistent naming and validation across the platform.
+- Domain validation (normalized format) prevents typos and malformed type identifiers.
+- Clear separation: `CredentialId` (UUID) identifies a credential *instance*; `CredentialKey` identifies a credential *type* — consistent with `PluginKey` vs entity UUIDs elsewhere in the system.
+
+Rejected:
+- Raw `&str` — no validation, easy typos, not domain-tagged.
+- New `ProtocolId` type — reinvents `CredentialKey` which already exists in core.
+- `std::any::TypeId` — not stable across compilations, not serializable, not human-readable.
+
+## D-016: CredentialLifecycle (Internal) vs CredentialStatus (Public API)
+
+Status: accepted
+
+Decision:
+- `CredentialLifecycle` is a rich 11-state internal enum used by the state machine, rotation engine, and cache invalidation logic.
+- `CredentialStatus` is a lean 6-state public enum returned in API responses and UI — it hides internal implementation states from callers.
+
+```rust
+// Internal — only inside nebula-credential
+pub(crate) enum CredentialLifecycle {
+    Uninitialized, PendingInteraction, Authenticating,
+    Active, Expired, Refreshing,
+    RotationScheduled, Rotating, GracePeriod,
+    Revoked, Failed,
+}
+
+// Public — API responses, CredentialEntry, list_credentials()
+pub enum CredentialStatus {
+    PendingInteraction,   // waiting for user action (OAuth2, Device Flow)
+    Active,               // ready for use; also covers GracePeriod (both credentials valid)
+    Rotating,             // rotation in progress (covers RotationScheduled + Rotating)
+    Expired,              // refresh needed
+    Revoked,              // terminal — manually revoked
+    Failed,               // terminal — unrecoverable error
+}
+```
+
+Mapping:
+- `Uninitialized | Authenticating` → not yet visible in public API (credential not committed to storage)
+- `Refreshing` → `Active` (transparent to callers; old token still valid)
+- `RotationScheduled | Rotating` → `Rotating`
+- `GracePeriod` → `Active` (both credentials valid; caller unaffected)
+
+Reason:
+- Callers (UI, API clients, action developers) need to know: "can I use this credential?" — not "is it in RotationScheduled or Rotating?". Exposing internal states leaks implementation details and breaks API stability when internal states change.
+- `GracePeriod → Active` hides rotation mechanics from callers transparently.
+- `Refreshing → Active` avoids confusing UI states for a background operation.
+
+Rejected:
+- Single flat enum for both — internal state changes break the public API contract.
+- `Option<CredentialLifecycle>` in public API — overly complex; callers don't need 11 states.

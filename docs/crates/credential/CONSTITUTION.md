@@ -92,7 +92,7 @@ is logged with a structured audit trail.
 
 **Acceptance**:
 - Every `acquire`, `rotate`, `revoke` operation emits a structured audit event
-- `CredentialContext` with `owner_id` and `scope_id` is recorded on every access
+- `CredentialContext` with `owner_id` and `caller_scope: ScopeLevel` is recorded on every access
 - `ScopeViolation` errors are logged and auditable
 - No raw secret material appears in any audit log entry
 
@@ -126,9 +126,9 @@ A scope violation is a security incident, not an operational error.
 The system must fail loudly and completely when scope is violated.
 
 **Rules**:
-- MUST validate `CredentialContext.scope` on every `retrieve`, `list`, and `validate`
-- `ScopeViolation` MUST log the violation with full context before returning `Err`
-- Cache MUST be keyed by `(credential_id, scope_id)` — never serve cross-scope hits
+- MUST validate `CredentialContext.caller_scope` on every `retrieve`, `list`, and `validate` via `caller_scope.is_contained_in_strict(&entry.owner_scope, resolver)`
+- `ScopeViolation` MUST log the violation with full context (caller_scope, credential_id, owner_scope) before returning `Err`
+- Cache is keyed by `CredentialId`; scope enforcement MUST be applied at every retrieve — never serve credentials outside the caller's scope hierarchy
 - MUST forbid `unsafe` code in any scope enforcement path
 
 ### III. Protocol-Agnostic Core
@@ -170,10 +170,10 @@ transactional, observable, and resilient to partial failures.**
 
 **Rationale**: A rotation that fails halfway leaves the system in an unknown
 state. If the old credential was revoked but the new one wasn't stored,
-the workflow breaks. Rotation must be atomic in the "succeed or roll back" sense.
+the workflow breaks. Rotation must be transactional — succeed completely or roll back to the last known good state.
 
 **Rules**:
-- `RotationTransaction` MUST implement backup → new → grace period → revoke atomically
+- `RotationTransaction` MUST implement backup → new → grace period → revoke as a transactional saga — failure at any phase MUST roll back to the backup credential
 - Failure at any phase MUST roll back to the previous credential
 - MUST emit audit events for every rotation phase outcome
 - Grace period MUST allow old credential to serve until explicitly revoked or expired
@@ -268,6 +268,41 @@ not an implicit "replace credential" operation in the manager.
 **Rejected**: Simple "atomic replace" — loses grace period semantics.
 Background task with no explicit phases — loses observability and rollback.
 
+### D-013: Dynamic Protocol Registry via ErasedProtocol
+
+**Decision**: `ProtocolRegistry` stores `Arc<dyn ErasedProtocol>` — object-safe, type-erased
+trait where all state flows as `serde_json::Value`. Typed protocols (`FlowProtocol`, `StaticProtocol`)
+are bridged via `ProtocolDriver<P>` and `StaticProtocolDriver<P>` adapters. Community plugins
+implement `ErasedProtocol` directly. Registry is keyed by `CredentialKey` from `nebula-core`.
+
+**Rationale**: Typed traits (`FlowProtocol`) have `where Self: Sized` methods — not directly
+object-safe. `ErasedProtocol` provides runtime flexibility without sacrificing compile-time
+safety for protocol implementors. `serde_json::Value` for state is correct: state must be
+serialized to storage anyway.
+
+**Rejected**: Compile-time only — cannot support runtime plugin loading. `Box<dyn FlowProtocol>` — not object-safe. `Box<dyn Any>` for state — not serializable.
+
+### D-015: CredentialKey as Protocol Type Identifier
+
+**Decision**: Protocol type identity uses `CredentialKey` from `nebula-core` — a normalized
+domain key (`[a-z][a-z0-9_]*`) — not a raw `&str` or a new `ProtocolId` type.
+`CredentialId` (UUID) identifies a credential *instance*; `CredentialKey` identifies a
+credential *type*. Consistent with `PluginKey`, `ActionKey` in the platform.
+
+**Rejected**: Raw `&str` — no validation, easy typos. New `ProtocolId` type — reinvents
+`CredentialKey`. `TypeId` — not stable across compilations, not serializable.
+
+### D-016: Public API Separation (CredentialStatus vs CredentialLifecycle)
+
+**Decision**: `CredentialLifecycle` (11 states) is an internal type used by the state machine
+and rotation engine. `CredentialStatus` (6 states) is the public enum in API responses and
+`CredentialEntry`. `GracePeriod → Active` and `Refreshing → Active` — transparent to callers.
+
+**Rationale**: Internal state machine changes must not break the public API contract. Callers
+need to know "can I use this credential?" — not internal rotation phase details.
+
+**Rejected**: Single flat enum for both — internal changes break public API. Exposing `CredentialLifecycle` directly — leaks implementation, 11 states is too much for API clients.
+
 ---
 
 ## Open Proposals
@@ -292,14 +327,18 @@ a cached token is within 5 minutes of expiry. Token refreshed transparently.
 
 **Dependency**: Requires `FlowProtocol::refresh` method and Tokio runtime.
 
-### P-003: Composable Credential Type Registry
+### P-003: Composable Credential Type Registry *(Design accepted — implementation pending)*
 
 **Problem**: Each deployment needs different credential types. Today they're
 registered statically. A plugin/registry system would let third-party drivers
 register credential types dynamically.
 
-**Proposal**: `CredentialTypeRegistry` that maps `type_id: String` to a
-`Box<dyn FlowProtocol>`. `CredentialManager::list_types()` returns all registered.
+**Design** *(accepted as D-013 + D-015)*: `ProtocolRegistry` maps `CredentialKey → Arc<dyn ErasedProtocol>`.
+Built-in protocols registered via `ProtocolDriver<P: FlowProtocol>` and `StaticProtocolDriver<P: StaticProtocol>` bridges.
+Community plugins implement `ErasedProtocol` directly.
+`CredentialManager::list_types()` returns all registered `CredentialTypeSchema` entries.
+
+**Status**: Architecture fully designed (see PROTOCOLS.md, DECISIONS.md D-013/D-015). Implementation is Phase 3 work.
 
 ---
 
@@ -308,9 +347,10 @@ register credential types dynamically.
 1. **`SecretString` NEVER exposes raw secret** in `Debug`, `Display`, or any log
 2. **Scope enforcement on every operation** — no bypass for "admin" or "internal" callers
 3. **`CryptoError::DecryptionFailed` is terminal** — never retry, never return partial
-4. **No cross-scope cache hits** — cache key MUST include scope
+4. **No cross-scope credential access** — `caller_scope.is_contained_in_strict(&owner_scope, resolver)` MUST be called on every retrieve; caller's `ScopeLevel` must be hierarchically contained within the credential's owner scope
 5. **`#![forbid(unsafe_code)]`** — enforced at lib root, always
 6. **Rotation MUST support rollback** — never leave the system without a valid credential
+7. **All State fields carrying credential values MUST be `SecretString`** — never `String`. Applies to: `access_token`, `refresh_token`, `password`, `bind_password`, `token`, `header_value`, and any other in-memory secret material. Storing a plain `String` for a secret is a security violation, not a performance trade-off.
 
 ---
 

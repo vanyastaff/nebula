@@ -30,6 +30,12 @@ flowchart TB
         MtlsProtocol
     end
 
+    subgraph erased [Erased Layer]
+        ErasedProtocol
+        ProtocolDriver
+        ProtocolRegistry
+    end
+
     CredentialType --> StaticProtocol
     CredentialType --> FlowProtocol
     CredentialType --> InteractiveCredential
@@ -43,6 +49,11 @@ flowchart TB
     FlowProtocol --> SamlProtocol
     FlowProtocol --> KerberosProtocol
     FlowProtocol --> MtlsProtocol
+    CredentialType --> ErasedProtocol
+    StaticProtocol --> ProtocolDriver
+    FlowProtocol --> ProtocolDriver
+    ProtocolDriver --> ErasedProtocol
+    ErasedProtocol --> ProtocolRegistry
 ```
 
 ## Management Layer
@@ -92,6 +103,7 @@ flowchart TB
     manager --> StorageProvider
     manager --> rotation
     rotation --> StorageProvider
+    ProtocolRegistry --> manager
 ```
 
 ## Manager vs Provider API Gaps (Phase 4)
@@ -100,7 +112,7 @@ flowchart TB
 |----------------------|-----------------|--------|
 | `create(type_id, input)` → `InitializeResult` | Stub (returns error) | **Stub** |
 | `continue_flow(id, UserInput)` → `InitializeResult<Complete>` | Stub (returns error) | **Stub** |
-| `list_types()` → `Vec<CredentialTypeSchema>` | Returns empty vec | **Stub** |
+| `list_types()` → `Vec<CredentialTypeSchema>` | Returns empty vec | **Stub** — requires `ProtocolRegistry` with registered `CredentialKey → ErasedProtocol` mappings |
 | `list(filter)` → `Vec<CredentialMetadata>` | `list(context)` → `Vec<CredentialId>` | Partial |
 | `get(id)` → `(Metadata, CredentialStatus)` | `retrieve(id, ctx)` → `(EncryptedData, Metadata)` | Partial |
 | `CredentialManager` implements `CredentialProvider` | `get(id)` works with `encryption_key` | **Done** |

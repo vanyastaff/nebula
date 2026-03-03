@@ -6,7 +6,7 @@
 
 ## Existing Crates
 
-- **core:** Shared IDs (`CredentialId`, `ScopeId`); credential context; domain types
+- **core:** Shared IDs (`CredentialId`, `CredentialKey`, `ScopeLevel`); credential context; domain types
 - **log:** Credential lifecycle events; rotation audit; error traces
 - **parameter:** `ParameterCollection` for protocol schemas; `ParameterValues` for credential input; `ParameterError` in credential errors
 - **action:** Attaches credential references; uses `CredentialProvider` for credential access
@@ -43,7 +43,7 @@
 
 ## Upstream Dependencies
 
-- **nebula-core:** `CredentialId`, `ScopeId`, domain primitives; hard contract on ID format and scope semantics
+- **nebula-core:** `CredentialId` (UUID for instances), `CredentialKey` (normalized key for protocol types), `ScopeLevel` (hierarchical scope enum for access control), `ScopeResolver` (trait for ownership verification), domain primitives; hard contract on ID format, key format, and scope semantics
 - **nebula-log:** Tracing macros; optional; fallback: no-op when disabled
 - **nebula-parameter:** `ParameterCollection`, `ParameterValues`, `ParameterError`; hard contract for schema validation
 - **tokio, async-trait:** Async runtime; required
@@ -54,7 +54,7 @@
 
 | This crate <-> Other | Direction | Contract | Sync/Async | Failure handling | Notes |
 |---------------------|-----------|----------|------------|------------------|-------|
-| credential -> core | out | CredentialId, ScopeId, context types | sync | N/A | core owns ID semantics |
+| credential -> core | out | CredentialId, CredentialKey, ScopeLevel, ScopeResolver, context types | sync | N/A | core owns ID semantics |
 | credential -> parameter | out | ParameterCollection, ParameterValues | sync | ParameterError in SchemaValidation | credential validates protocol schemas |
 | credential -> log | out | tracing macros | sync | N/A | log never fails credential |
 | action -> credential | in | CredentialProvider, CredentialRef | async | CredentialError, ManagerError | action acquires credentials |
@@ -71,7 +71,7 @@
 2. Action/resource receives `CredentialProvider` in execution context
 3. Action calls `provider.get("cred_id", &ctx)` or `provider.credential::<ApiKey>(&ctx)`
 4. Manager checks cache; on miss, delegates to `StorageProvider::retrieve`
-5. Decrypt, validate scope, return `SecretString` or protocol-specific state
+5. Decrypt, validate scope via `caller_scope.is_contained_in_strict(&entry.owner_scope, resolver)`, return `SecretString` or protocol-specific state as `serde_json::Value` (deserialized to typed `State` for `CredentialType` users)
 6. On rotation: `RotationTransaction` coordinates backup → new credential → grace period → revoke old
 
 ### Interactive credential creation (OAuth2 Authorization Code)
@@ -116,7 +116,7 @@ This ensures resource pools never use stale credentials without manual intervent
 ## Cross-Crate Ownership
 
 - **credential owns:** Credential lifecycle, encryption, scope enforcement, rotation orchestration, provider abstraction
-- **core owns:** ID types, scope semantics, domain primitives
+- **core owns:** ID types (CredentialId UUID, CredentialKey domain key), ScopeLevel semantics, ScopeResolver trait; credential uses all three for instance identity, type identity, and access control
 - **parameter owns:** Schema types, validation rules; credential uses for protocol schemas
 - **action/resource own:** When to fetch credentials, how to use them; credential owns how to store/retrieve
 - **storage (if used):** Credential defines `StorageProvider` trait; concrete backends in credential or storage crate
