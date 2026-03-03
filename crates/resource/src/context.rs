@@ -73,6 +73,9 @@ impl Context {
     /// Inject a resolved sub-resource pool handle (called by manager, not by resource impls).
     ///
     /// The handle must be `Arc<TypedPool<R>>` for the resource type `R` at the given key.
+    /// Used when the manager prepares the context before `Resource::create()` for resources
+    /// that declare sub-resources via `HasResourceComponents`.
+    #[allow(dead_code)] // used in tests; full manager→create() injection wiring in progress
     pub(crate) fn inject_resource(
         &mut self,
         key: ResourceKey,

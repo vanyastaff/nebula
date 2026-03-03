@@ -88,6 +88,11 @@ impl ResourceComponents {
 
 /// Реализуется на `Resource`‑фабрике для декларации credential’ов и саб‑ресурсов.
 pub trait HasResourceComponents: Resource {
+    /// Declares credential and sub-resource dependencies for this resource.
+    ///
+    /// The manager uses this to build the dependency graph, attach a credential
+    /// handler to the pool, and (when wired) inject sub-resource handles into
+    /// the context before `Resource::create()`.
     fn components() -> ResourceComponents
     where
         Self: Sized;
