@@ -67,6 +67,9 @@ pub const NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL: &str =
     "nebula_resource_quarantine_released_total";
 /// Counter: config reloads.
 pub const NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL: &str = "nebula_resource_config_reloaded_total";
+/// Counter: credential rotations applied to a resource pool.
+pub const NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL: &str =
+    "nebula_resource_credential_rotated_total";
 
 // ---------------------------------------------------------------------------
 // Legacy names (for backward compatibility during migration)
