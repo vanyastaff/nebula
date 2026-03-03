@@ -55,8 +55,18 @@ Cross-cutting crates (`config`, `log`, `resilience`) may be imported at any laye
 |-----|---------|----------------|
 | `crates/action` | `nebula-action` | `Action` trait, execution context, node output |
 | `crates/resource` | `nebula-resource` | Resource lifecycle, scopes, health, pooling |
-| `crates/credential` | `nebula-credential` | Encrypted credential storage (AES-256-GCM) |
+| `crates/credential` | `nebula-credential` | Encrypted credential storage (AES-256-GCM), rotation engine |
 | `crates/plugin` | `nebula-plugin` | Plugin discovery and dynamic loading |
+
+#### Credential–Resource Integration
+
+`nebula-credential` and `nebula-resource` are wired together via a typed, event-driven contract:
+
+- **Typed references**: `CredentialRef<C>` (backed by `CredentialId` + `PhantomData<C>`) and `ErasedCredentialRef` in `ResourceComponents` declare which credential instance and protocol type a resource requires.
+- **Resource components**: Resources that need credentials implement `HasResourceComponents` and return a `ResourceComponents` value describing the bound credential and any sub-resources.
+- **Credential-aware pools**: `Pool<R>` in `nebula-resource` can store serialized credential state (`serde_json::Value`) plus a `CredentialHandler<R::Instance>`, and exposes `handle_rotation()` to apply new state using the configured `RotationStrategy` (`HotSwap`, `DrainAndRecreate`, `Reconnect`).
+- **Rotation events**: `CredentialManager` emits `CredentialRotationEvent` on every successful rotation; `Resource::Manager` subscribes via `rotation_subscriber()` and dispatches rotations to affected pools based on `CredentialId`.
+- **Authorization hook**: Concrete resources implement `CredentialResource` and are wired to pools via `TypedCredentialHandler<I>`, which deserializes state and calls `I::authorize()` after `create()` and on rotation.
 
 ### Execution Layer
 
