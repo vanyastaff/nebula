@@ -190,7 +190,7 @@ impl RotationMetrics {
         // Update per-credential metrics
         let cred_metrics = inner
             .per_credential
-            .entry(credential_id.clone())
+            .entry(*credential_id)
             .or_default();
 
         cred_metrics.total += 1;
@@ -231,7 +231,7 @@ impl RotationMetrics {
         // Update per-credential failure count
         let cred_metrics = inner
             .per_credential
-            .entry(credential_id.clone())
+            .entry(*credential_id)
             .or_default();
 
         cred_metrics.failed += 1;

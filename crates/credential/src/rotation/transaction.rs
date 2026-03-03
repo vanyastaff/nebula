@@ -200,7 +200,7 @@ impl OptimisticLock {
     pub fn acquire_lock(&mut self, holder: impl Into<String>) -> RotationResult<()> {
         if self.is_locked {
             return Err(super::error::RotationError::ConcurrentRotation {
-                credential_id: self.credential_id.clone(),
+                credential_id: self.credential_id,
             });
         }
 
@@ -255,7 +255,7 @@ impl OptimisticLock {
     ) -> RotationResult<()> {
         if current_version != self.expected_version {
             return Err(super::error::RotationError::ConcurrentRotation {
-                credential_id: self.credential_id.clone(),
+                credential_id: self.credential_id,
             });
         }
 

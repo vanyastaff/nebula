@@ -429,7 +429,7 @@ pub fn track_credential_usage(
     metrics: &mut HashMap<CredentialId, UsageMetrics>,
 ) {
     metrics
-        .entry(credential_id.clone())
+        .entry(*credential_id)
         .or_default()
         .record_usage();
 }
@@ -449,7 +449,7 @@ pub fn cleanup_expired_credentials(trackers: &[GracePeriodTracker]) -> Vec<Crede
     trackers
         .iter()
         .filter(|tracker| !tracker.grace_period.is_active())
-        .map(|tracker| tracker.old_credential_id.clone())
+        .map(|tracker| tracker.old_credential_id)
         .collect()
 }
 

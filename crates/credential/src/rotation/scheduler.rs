@@ -156,7 +156,7 @@ impl PeriodicScheduler {
             tokio::select! {
                 _ = sleep_until(next_rotation) => {
                     // Execute rotation
-                    match rotation_fn(credential_id.clone()).await {
+                    match rotation_fn(credential_id).await {
                         Ok(()) => {
                             tracing::info!(
                                 credential_id = %credential_id,
@@ -331,7 +331,7 @@ impl ExpiryMonitor {
             let trigger_time = self.calculate_rotation_trigger_time(*created_at, *expires_at);
 
             if now >= trigger_time {
-                to_rotate.push(id.clone());
+                to_rotate.push(*id);
             }
         }
 

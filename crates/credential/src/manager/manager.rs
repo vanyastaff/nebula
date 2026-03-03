@@ -276,7 +276,7 @@ impl CredentialManager {
                 // Populate cache if enabled
                 if let Some(cache) = &self.cache {
                     cache
-                        .insert(id.clone(), data.clone(), metadata.clone())
+                        .insert(*id, data.clone(), metadata.clone())
                         .await;
                     debug!(
                         credential_id = %id,
@@ -745,7 +745,7 @@ impl CredentialManager {
                 info!(credential_id = %id, type_id = %tid, "Interactive flow completed");
 
                 Ok(CreateResult::Complete {
-                    credential_id: id.clone(),
+                    credential_id: *id,
                     type_id: tid,
                 })
             }
@@ -776,7 +776,7 @@ impl CredentialManager {
                 self.store(id, encrypted, meta, context).await?;
 
                 Ok(CreateResult::Pending {
-                    credential_id: id.clone(),
+                    credential_id: *id,
                     partial_state: ps,
                     next_step,
                 })
@@ -1092,7 +1092,7 @@ impl CredentialManager {
                     "Credential validation failed - not found"
                 );
                 Ok(ValidationResult {
-                    credential_id: id.clone(),
+                    credential_id: *id,
                     valid: false,
                     details: ValidationDetails::NotFound,
                 })
@@ -1163,7 +1163,7 @@ impl CredentialManager {
 
         // Spawn validation tasks
         for id in ids {
-            let id_clone = id.clone();
+            let id_clone = *id;
             let context_clone = context.clone();
             let manager_clone = self.clone();
 
@@ -1267,7 +1267,7 @@ impl CredentialManager {
         let mut results = HashMap::new();
 
         for (id, data, metadata) in batch {
-            let id_clone = id.clone();
+            let id_clone = *id;
             let data_clone = data.clone();
             let metadata_clone = metadata.clone();
             let context_clone = context.clone();
@@ -1362,7 +1362,7 @@ impl CredentialManager {
         let mut results = HashMap::new();
 
         for id in ids {
-            let id_clone = id.clone();
+            let id_clone = *id;
             let context_clone = context.clone();
             let manager_clone = self.clone();
 
@@ -1448,7 +1448,7 @@ impl CredentialManager {
         let mut results = HashMap::new();
 
         for id in ids {
-            let id_clone = id.clone();
+            let id_clone = *id;
             let context_clone = context.clone();
             let manager_clone = self.clone();
 
@@ -1574,7 +1574,7 @@ impl CredentialManager {
                 })?;
 
         // 2. Create rotation transaction
-        let mut transaction = RotationTransaction::new(id.clone(), metadata.version);
+        let mut transaction = RotationTransaction::new(*id, metadata.version);
         let transaction_id = transaction.id.to_string();
 
         // 3. Create failure handler for automatic rollback
@@ -1617,7 +1617,7 @@ impl CredentialManager {
 
                 // Create error log
                 let error_log =
-                    RotationErrorLog::new(transaction_id.clone(), id.clone(), error_msg.clone())
+                    RotationErrorLog::new(transaction_id.clone(), *id, error_msg.clone())
                         .with_error_classification(format!("{:?}", failure_type))
                         .with_rollback_triggered();
 
@@ -1843,7 +1843,7 @@ impl CredentialManager {
         };
 
         // 3. Create rotation transaction
-        let transaction = RotationTransaction::new(id.clone(), metadata.version);
+        let transaction = RotationTransaction::new(*id, metadata.version);
 
         let transaction_id = transaction.id.to_string();
 
@@ -1943,7 +1943,7 @@ impl CredentialManager {
         };
 
         // 3. Create rotation transaction
-        let transaction = RotationTransaction::new(id.clone(), metadata.version);
+        let transaction = RotationTransaction::new(*id, metadata.version);
 
         let transaction_id = transaction.id.to_string();
 
@@ -2043,7 +2043,7 @@ impl CredentialManager {
         };
 
         // 3. Create rotation transaction
-        let transaction = RotationTransaction::new(id.clone(), metadata.version);
+        let transaction = RotationTransaction::new(*id, metadata.version);
 
         let transaction_id = transaction.id.to_string();
 
@@ -2147,7 +2147,7 @@ impl CredentialManager {
 
         // 3. Create rotation transaction with manual metadata
         let transaction =
-            RotationTransaction::new_manual(id.clone(), metadata.version, manual.clone());
+            RotationTransaction::new_manual(*id, metadata.version, manual.clone());
 
         let transaction_id = transaction.id.to_string();
 
@@ -2232,10 +2232,10 @@ impl CredentialManager {
         let standby_id = CredentialId::new();
 
         // 3. Create blue-green rotation tracker
-        let _rotation = BlueGreenRotation::new(id.clone(), standby_id.clone());
+        let _rotation = BlueGreenRotation::new(*id, standby_id);
 
         // 4. Create rotation transaction
-        let transaction = RotationTransaction::new(id.clone(), metadata.version);
+        let transaction = RotationTransaction::new(*id, metadata.version);
         let transaction_id = transaction.id.to_string();
 
         info!(
@@ -2327,7 +2327,7 @@ impl CredentialManager {
 
         // 3. Create grace period state
         let grace_period = GracePeriodState::new(
-            id.clone(),
+            *id,
             metadata.version,
             metadata.version + 1,
             grace_period_config,
@@ -2338,10 +2338,10 @@ impl CredentialManager {
             credential_id: id.to_string(),
             reason: format!("Grace period calculation failed: {}", e),
         })?;
-        let tracker = GracePeriodTracker::new(id.clone(), new_id.clone(), grace_period_state);
+        let tracker = GracePeriodTracker::new(*id, new_id, grace_period_state);
 
         // 5. Create rotation transaction
-        let transaction = RotationTransaction::new(id.clone(), metadata.version);
+        let transaction = RotationTransaction::new(*id, metadata.version);
         let transaction_id = transaction.id.to_string();
 
         info!(
@@ -2438,11 +2438,11 @@ impl CredentialManager {
                 })?;
 
         // 2. Create rotation transaction
-        let mut transaction = RotationTransaction::new(id.clone(), metadata.version);
+        let mut transaction = RotationTransaction::new(*id, metadata.version);
         let transaction_id = transaction.id.to_string();
 
         // 3. Create transaction log
-        let mut log = TransactionLog::new(transaction_id.clone(), id.clone());
+        let mut log = TransactionLog::new(transaction_id.clone(), *id);
         log.log_info(format!(
             "Starting atomic rotation for version {}",
             metadata.version

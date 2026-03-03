@@ -160,7 +160,7 @@ impl StorageProvider for MockStorageProvider {
 
         // Store in HashMap
         let mut storage = self.storage.write().await;
-        storage.insert(id.clone(), (data, metadata));
+        storage.insert(*id, (data, metadata));
 
         Ok(())
     }

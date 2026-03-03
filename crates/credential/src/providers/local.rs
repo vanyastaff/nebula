@@ -376,7 +376,7 @@ impl LocalStorageProvider {
     fn get_file_path(&self, id: &CredentialId) -> PathBuf {
         self.config
             .base_path
-            .join(format!("{}.{}", id.to_string(), self.config.file_extension))
+            .join(format!("{}.{}", id, self.config.file_extension))
     }
 }
 

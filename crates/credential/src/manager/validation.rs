@@ -131,7 +131,7 @@ pub fn validate_credential(
                 // For now, use a reasonable default or skip expiration check
                 // This will be properly implemented in user stories
                 return ValidationResult {
-                    credential_id: credential_id.clone(),
+                    credential_id: *credential_id,
                     valid: true,
                     details: ValidationDetails::Valid { expires_at: None },
                 };
@@ -143,7 +143,7 @@ pub fn validate_credential(
             RotationPolicy::Manual(_) => {
                 // Manual rotation has no automatic expiration
                 return ValidationResult {
-                    credential_id: credential_id.clone(),
+                    credential_id: *credential_id,
                     valid: true,
                     details: ValidationDetails::Valid { expires_at: None },
                 };
@@ -153,7 +153,7 @@ pub fn validate_credential(
         if now >= expires_at {
             // Credential expired
             return ValidationResult {
-                credential_id: credential_id.clone(),
+                credential_id: *credential_id,
                 valid: false,
                 details: ValidationDetails::Expired {
                     expired_at: expires_at,
@@ -164,7 +164,7 @@ pub fn validate_credential(
 
         // Valid with expiration
         return ValidationResult {
-            credential_id: credential_id.clone(),
+            credential_id: *credential_id,
             valid: true,
             details: ValidationDetails::Valid {
                 expires_at: Some(expires_at),
@@ -174,7 +174,7 @@ pub fn validate_credential(
 
     // No expiration policy - always valid
     ValidationResult {
-        credential_id: credential_id.clone(),
+        credential_id: *credential_id,
         valid: true,
         details: ValidationDetails::Valid { expires_at: None },
     }

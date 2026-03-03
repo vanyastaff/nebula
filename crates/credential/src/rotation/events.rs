@@ -400,7 +400,7 @@ pub async fn log_rollback_event<S: NotificationSender>(
     // Send notification if sender provided
     if let Some(sender) = sender {
         let event = NotificationEvent::RotationRolledBack(Box::new(RollbackData {
-            credential_id: error_log.credential_id.clone(),
+            credential_id: error_log.credential_id,
             rolled_back_at: error_log.occurred_at,
             transaction_id: error_log.transaction_id.clone(),
             reason: error_log.error_message.clone(),

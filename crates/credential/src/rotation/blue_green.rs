@@ -117,8 +117,8 @@ impl BlueGreenRotation {
     pub fn new(blue_credential: CredentialId, green_credential: CredentialId) -> Self {
         Self {
             state: BlueGreenState::Blue,
-            blue_credential: blue_credential.clone(),
-            green_credential: green_credential.clone(),
+            blue_credential,
+            green_credential,
             active_credential: blue_credential,
             standby_credential: green_credential,
             started_at: Utc::now(),
@@ -136,7 +136,7 @@ impl BlueGreenRotation {
     pub fn start_transition(&mut self) -> RotationResult<()> {
         if !self.standby_validated {
             return Err(RotationError::ValidationFailed {
-                credential_id: self.standby_credential.clone(),
+                credential_id: self.standby_credential,
                 reason: "Standby credential not validated before swap".to_string(),
             });
         }
@@ -182,7 +182,7 @@ impl BlueGreenRotation {
     pub fn rollback(&mut self) -> RotationResult<()> {
         if !self.state.is_transitioning() {
             return Err(RotationError::RollbackFailed {
-                credential_id: self.active_credential.clone(),
+                credential_id: self.active_credential,
                 reason: "Can only rollback from Transitioning state".to_string(),
             });
         }
@@ -225,13 +225,13 @@ impl BlueGreenRotation {
     {
         if self.standby_validated {
             return Err(RotationError::ValidationFailed {
-                credential_id: self.standby_credential.clone(),
+                credential_id: self.standby_credential,
                 reason: "Standby credential already exists and validated".to_string(),
             });
         }
 
         // Invoke the factory to create standby credential
-        credential_factory(self.standby_credential.clone()).await?;
+        credential_factory(self.standby_credential).await?;
 
         Ok(())
     }
@@ -255,7 +255,7 @@ impl BlueGreenRotation {
         }
 
         // Run connectivity test
-        connectivity_test(self.standby_credential.clone()).await?;
+        connectivity_test(self.standby_credential).await?;
 
         // Mark as validated on success
         self.mark_validated();
@@ -277,11 +277,7 @@ impl BlueGreenRotation {
         self.start_transition()?;
 
         // Attempt swap operation
-        match swap_operation(
-            self.active_credential.clone(),
-            self.standby_credential.clone(),
-        )
-        .await
+        match swap_operation(self.active_credential, self.standby_credential).await
         {
             Ok(()) => {
                 // Complete swap on success
@@ -393,7 +389,7 @@ where
     F: FnOnce(CredentialId) -> Fut,
     Fut: std::future::Future<Output = RotationResult<Vec<DatabasePrivilege>>>,
 {
-    privilege_enumerator(credential_id.clone()).await
+    privilege_enumerator(*credential_id).await
 }
 
 /// Validate that a credential has all required privileges
@@ -413,7 +409,7 @@ where
 {
     // Get actual privileges
     let actual_privileges =
-        privilege_validator(credential_id.clone(), required_privileges.to_vec()).await?;
+        privilege_validator(*credential_id, required_privileges.to_vec()).await?;
 
     // Check if all required privileges are present
     let missing: Vec<_> = required_privileges
@@ -423,7 +419,7 @@ where
 
     if !missing.is_empty() {
         return Err(RotationError::ValidationFailed {
-            credential_id: credential_id.clone(),
+            credential_id: *credential_id,
             reason: format!(
                 "Missing required privileges: {}",
                 missing
