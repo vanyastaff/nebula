@@ -41,8 +41,6 @@ struct SharedValidatableResource {
 impl Resource for SharedValidatableResource {
     type Config = TestConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("validatable").expect("valid"))
     }
@@ -72,8 +70,6 @@ struct MultiInvalidResource {
 impl Resource for MultiInvalidResource {
     type Config = TestConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("multi-invalid").expect("valid"))
     }
@@ -103,8 +99,6 @@ struct ErrValidResource {
 impl Resource for ErrValidResource {
     type Config = TestConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("err-valid").expect("valid"))
     }

@@ -9,8 +9,6 @@ use std::future::Future;
 use crate::context::Context;
 use crate::error::Result;
 use crate::metadata::ResourceMetadata;
-use nebula_core::ResourceKey;
-use nebula_core::deps::FromRegistry;
 
 /// Configuration trait for resource types.
 pub trait Config: Send + Sync + 'static {
@@ -32,14 +30,6 @@ pub trait Resource: Send + Sync + 'static {
     /// The instance type produced by this resource.
     type Instance: Send + Sync + 'static;
 
-    /// Statically declared dependencies for this resource type.
-    ///
-    /// Implementations must declare this explicitly using the
-    /// [`Requires`](nebula_core::deps::Requires) marker and the
-    /// [`deps!`](nebula_core::deps) macro. Use `deps![]` (or `()`) for
-    /// leaf resources without dependencies.
-    type Deps: FromRegistry;
-
     /// Static metadata (display name, description, tags, icon) for UI and discovery.
     ///
     /// Implementations **must** return a fully-populated [`ResourceMetadata`]
@@ -47,16 +37,6 @@ pub trait Resource: Send + Sync + 'static {
     /// used everywhere in `nebula-resource` as the logical identifier for the
     /// resource type.
     fn metadata(&self) -> ResourceMetadata;
-
-    /// Canonical resource key for this resource type.
-    ///
-    /// Default implementation delegates to [`Self::metadata`] and clones
-    /// the key. Override only if you need a cheaper representation; the
-    /// recommended pattern is to keep `metadata()` as the single source
-    /// of truth.
-    fn key(&self) -> ResourceKey {
-        self.metadata().key.clone()
-    }
 
     /// Create a new instance from config and context.
     fn create(
@@ -81,12 +61,5 @@ pub trait Resource: Send + Sync + 'static {
             drop(instance);
             Ok(())
         }
-    }
-
-    // Existing ad-hoc dependency listing is kept for now for compatibility
-    // with older code paths. Prefer using `type Deps` and the `deps!` macro.
-    /// List resource keys that this resource depends on.
-    fn dependencies(&self) -> Vec<ResourceKey> {
-        Vec::new()
     }
 }

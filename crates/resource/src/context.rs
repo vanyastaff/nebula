@@ -6,6 +6,8 @@ use tokio_util::sync::CancellationToken;
 
 use nebula_core::{ExecutionId, WorkflowId};
 
+use nebula_telemetry::{NoopRecorder, Recorder};
+
 use crate::credentials::CredentialProvider;
 use crate::scope::Scope;
 
@@ -32,6 +34,8 @@ pub struct Context {
     pub metadata: HashMap<String, String>,
     /// Optional credential provider for fetching secrets at resource-creation time.
     pub credentials: Option<Arc<dyn CredentialProvider>>,
+    /// Recorder for Tier 1/Tier 2 resource usage and call traces. Defaults to [`NoopRecorder`].
+    pub recorder: Arc<dyn Recorder>,
 }
 
 impl std::fmt::Debug for Context {
@@ -43,7 +47,8 @@ impl std::fmt::Debug for Context {
             .field("tenant_id", &self.tenant_id)
             .field("cancellation", &self.cancellation)
             .field("metadata", &self.metadata)
-            .field("credentials", &self.credentials.is_some());
+            .field("credentials", &self.credentials.is_some())
+            .field("recorder", &"Arc<dyn Recorder>");
         s.finish()
     }
 }
@@ -59,6 +64,7 @@ impl Context {
             cancellation: CancellationToken::new(),
             metadata: HashMap::new(),
             credentials: None,
+            recorder: Arc::new(NoopRecorder),
         }
     }
 
@@ -86,6 +92,12 @@ impl Context {
         self
     }
 
+    /// Set the recorder for resource usage and optional call enrichment.
+    pub fn with_recorder(mut self, recorder: Arc<dyn Recorder>) -> Self {
+        self.recorder = recorder;
+        self
+    }
+
     /// Get a reference to the credential provider, if attached.
     ///
     /// Resource implementations can use this to fetch secrets during
@@ -99,6 +111,12 @@ impl Context {
     /// ```
     pub fn credentials(&self) -> Option<&dyn CredentialProvider> {
         self.credentials.as_deref()
+    }
+
+    /// Get the recorder for resource usage and call traces.
+    #[must_use]
+    pub fn recorder(&self) -> Arc<dyn Recorder> {
+        Arc::clone(&self.recorder)
     }
 }
 
@@ -169,5 +187,15 @@ mod tests {
             .with_credentials(provider);
 
         assert!(ctx.credentials().is_some());
+    }
+
+    #[test]
+    fn test_context_with_recorder() {
+        use nebula_telemetry::NoopRecorder;
+
+        let recorder: Arc<dyn nebula_telemetry::Recorder> = Arc::new(NoopRecorder);
+        let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
+            .with_recorder(Arc::clone(&recorder));
+        assert!(!ctx.recorder().is_enrichment_enabled());
     }
 }

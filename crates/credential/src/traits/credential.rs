@@ -1,7 +1,6 @@
 //! Core traits for credential flows and interactive authentication
 
 use async_trait::async_trait;
-use nebula_core::deps::FromRegistry;
 use serde::{Serialize, de::DeserializeOwned};
 
 use nebula_parameter::collection::ParameterCollection;
@@ -23,14 +22,6 @@ use crate::core::{
 /// - `State`: Persisted state produced after `initialize`
 #[async_trait]
 pub trait CredentialType: Send + Sync + 'static {
-    /// Statically declared dependencies for this credential type.
-    ///
-    /// Implementations must declare this explicitly using the
-    /// [`Requires`](nebula_core::deps::Requires) marker and the
-    /// [`deps!`](nebula_core::deps) macro. Use `deps![]` (or `()`) for
-    /// credentials without dependencies.
-    type Deps: FromRegistry;
-
     /// Input type for initialization
     type Input: Serialize + DeserializeOwned + Send + Sync + 'static;
 

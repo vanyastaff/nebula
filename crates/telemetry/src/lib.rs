@@ -23,7 +23,12 @@
 pub mod event;
 pub mod metrics;
 pub mod service;
+pub mod trace;
 
 pub use event::{EventBus, EventSubscriber, ExecutionEvent};
 pub use metrics::{Counter, Gauge, Histogram, MetricsRegistry, NoopMetricsRegistry};
 pub use service::{NoopTelemetry, TelemetryService};
+pub use trace::{
+    CallBody, CallPayload, CallRecord, CallStatus, DropReason, NoopRecorder, Recorder,
+    ResourceUsageRecord,
+};

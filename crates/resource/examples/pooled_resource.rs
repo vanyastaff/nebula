@@ -51,8 +51,6 @@ struct DbResource {
 impl Resource for DbResource {
     type Config = DbConfig;
     type Instance = DbConnection;
-    type Deps = ();
-
     fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
         nebula_resource::metadata::ResourceMetadata::from_key(
             nebula_core::ResourceKey::try_from("postgres").expect("valid resource key"),
@@ -81,11 +79,6 @@ impl Resource for DbResource {
     async fn cleanup(&self, conn: DbConnection) -> Result<()> {
         println!("  [cleanup] closing connection #{}", conn.id);
         Ok(())
-    }
-
-    /// This resource depends on a config store (for connection string lookup).
-    fn dependencies(&self) -> Vec<nebula_core::ResourceKey> {
-        vec![nebula_core::ResourceKey::try_from("config-store").expect("valid resource key")]
     }
 }
 
@@ -154,22 +147,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let pool = Pool::with_event_bus(resource, db_config, pool_config, Some(event_bus))?;
     println!("Pool created\n");
 
-    // 4. Dependencies.
-    let res = DbResource {
-        next_id: std::sync::atomic::AtomicU64::new(1),
-    };
-    println!(
-        "Dependencies for '{}': {:?}",
-        res.metadata().key.as_ref(),
-        res.dependencies()
-    );
-
-    // 5. Health checking.
+    // 4. Health checking.
     let checker = DbHealthChecker;
     let status = checker.health_check().await?;
     println!("Health: {:?}, latency={:?}\n", status.state, status.latency);
 
-    // 6. Use the pool.
+    // 5. Use the pool.
     let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
 
     println!("Acquiring connections...");
@@ -195,7 +178,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     println!("\nPool stats: {:?}", pool.stats());
 
-    // 7. Shutdown.
+    // 6. Shutdown.
     pool.shutdown().await?;
     println!("\nPool shut down cleanly.");
 

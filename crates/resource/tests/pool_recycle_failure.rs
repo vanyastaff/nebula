@@ -51,8 +51,6 @@ impl RecycleResource {
 impl Resource for RecycleResource {
     type Config = TestConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(
             ResourceKey::try_from("recycle-test").expect("valid resource key"),

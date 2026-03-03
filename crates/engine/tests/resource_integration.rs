@@ -41,7 +41,6 @@ struct MockResource;
 impl Resource for MockResource {
     type Config = MockConfig;
     type Instance = String;
-    type Deps = ();
 
     fn metadata(&self) -> nebula_resource::ResourceMetadata {
         nebula_resource::ResourceMetadata::from_key(

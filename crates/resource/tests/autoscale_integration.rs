@@ -54,8 +54,6 @@ impl CountingResource {
 impl Resource for CountingResource {
     type Config = TestConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> ResourceMetadata {
         let key = ResourceKey::try_from("counting").expect("valid resource key");
         ResourceMetadata::from_key(key)

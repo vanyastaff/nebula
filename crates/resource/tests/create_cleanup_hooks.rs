@@ -55,8 +55,6 @@ struct SimpleResource;
 impl Resource for SimpleResource {
     type Config = TestConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("simple").expect("valid resource key"))
     }
@@ -512,8 +510,6 @@ struct RecycleFailResource;
 impl Resource for RecycleFailResource {
     type Config = TestConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(
             ResourceKey::try_from("recycle-fail").expect("valid resource key"),

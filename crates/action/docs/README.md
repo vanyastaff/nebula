@@ -170,26 +170,6 @@ workflow! {
 
 ### Deps System (Action Dependencies)
 
-Every action type declares its static dependencies via a `Deps` associated type:
-
-```rust
-use nebula_core::deps::{Requires, deps};
-
-pub struct ListFilesAction;
-
-impl nebula_action::Action for ListFilesAction {
-    // This action requires `GoogleDriveResource` at runtime.
-    type Deps = deps![GoogleDriveResource];
-
-    fn metadata(&self) -> &ActionMetadata { /* ... */ }
-    fn components(&self) -> ActionComponents { /* ... */ }
-}
-```
-
-The engine uses `Deps` of actions, resources, and credentials to build a global,
-typed dependency graph at startup, validate it (missing nodes, cycles), and
-populate the execution context with only the declared dependencies.
-
 ### Action Lifecycle
 
 Every action goes through a standard lifecycle:

@@ -9,6 +9,8 @@ use std::time::Duration;
 
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
+use nebula_resource::manager::Manager;
+use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -29,6 +31,30 @@ impl Config for ReferenceConfig {
         if self.prefix.is_empty() {
             return Err(Error::configuration("prefix must not be empty"));
         }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ConfigStore (dependency for ReferenceResource)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct ConfigStoreConfig;
+impl Config for ConfigStoreConfig {}
+
+struct ConfigStoreResource;
+
+impl Resource for ConfigStoreResource {
+    type Config = ConfigStoreConfig;
+    type Instance = ();
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(
+            nebula_core::ResourceKey::try_from("config-store").expect("valid key"),
+        )
+    }
+
+    async fn create(&self, _config: &ConfigStoreConfig, _ctx: &Context) -> Result<()> {
         Ok(())
     }
 }
@@ -67,9 +93,7 @@ impl ReferenceResource {
 impl Resource for ReferenceResource {
     type Config = ReferenceConfig;
     type Instance = ReferenceInstance;
-    type Deps = ();
-
-    fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
+    fn metadata(&self) -> ResourceMetadata {
         nebula_resource::metadata::ResourceMetadata::from_key(
             nebula_core::ResourceKey::try_from("reference-resource").expect("valid key"),
         )
@@ -98,10 +122,6 @@ impl Resource for ReferenceResource {
     async fn cleanup(&self, _instance: ReferenceInstance) -> Result<()> {
         self.cleanup_called.store(true, Ordering::SeqCst);
         Ok(())
-    }
-
-    fn dependencies(&self) -> Vec<nebula_core::ResourceKey> {
-        vec![nebula_core::ResourceKey::try_from("config-store").expect("valid key")]
     }
 }
 
@@ -186,8 +206,6 @@ async fn cleanup_is_called_on_shutdown() {
     impl Resource for CleanupTracker {
         type Config = ReferenceConfig;
         type Instance = ReferenceInstance;
-        type Deps = ();
-
         fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
             self.inner.metadata()
         }
@@ -233,15 +251,6 @@ async fn cleanup_is_called_on_shutdown() {
         cleanup_called.load(Ordering::SeqCst),
         "cleanup should be called during pool shutdown"
     );
-}
-
-#[tokio::test]
-async fn dependencies_are_reported() {
-    let resource = ReferenceResource::new();
-    let deps = resource.dependencies();
-    let expected = vec![nebula_core::ResourceKey::try_from("config-store").expect("valid key")];
-
-    assert_eq!(deps, expected);
 }
 
 #[tokio::test]

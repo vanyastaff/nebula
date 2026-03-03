@@ -4020,8 +4020,10 @@ dependencies = [
  "nebula-credential",
  "nebula-eventbus",
  "nebula-metrics",
+ "nebula-telemetry",
  "parking_lot",
  "proptest",
+ "reqwest 0.13.2",
  "serde",
  "serde_json",
  "tempfile",
@@ -4031,6 +4033,7 @@ dependencies = [
  "tokio-test",
  "tokio-util",
  "tracing",
+ "url",
  "uuid",
 ]
 

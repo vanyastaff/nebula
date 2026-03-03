@@ -13,6 +13,7 @@ use crate::error::{Error, Result};
 use crate::events::{EventBus, ResourceEvent};
 use crate::health::{HealthCheckConfig, HealthCheckable, HealthState};
 use crate::hooks::{HookEvent, HookRegistry};
+use crate::instrumented::InstrumentedGuard;
 use crate::manager_guard::ReleaseHookGuard;
 use crate::manager_pool::{AnyPool, PoolEntry, TypedPool};
 use crate::metadata::ResourceMetadata;
@@ -307,11 +308,8 @@ impl Manager {
         let meta = resource.metadata();
         let resource_key = meta.key.clone();
         let id = resource_key.as_ref().to_string();
-        let new_deps: Vec<String> = resource
-            .dependencies()
-            .into_iter()
-            .map(|k| k.as_ref().to_string())
-            .collect();
+
+        let new_deps: Vec<String> = vec![];
 
         // Create pool first -- if this fails, nothing is modified.
         // Pass event bus and hooks so the pool can fire Create/Cleanup hooks.
@@ -447,6 +445,7 @@ impl Manager {
 
         match pool.acquire_any(ctx).await {
             Ok((guard, wait_duration)) => {
+                let acquired_at = Instant::now();
                 tracing::debug!(
                     resource_id = %id,
                     wait_ms = wait_duration.as_millis() as u64,
@@ -464,7 +463,6 @@ impl Manager {
                     .await;
 
                 // Run Release hooks when the guard is dropped.
-                // We capture what we need and fire hooks in the drop path.
                 let release_resource_id = id.to_string();
                 let release_hooks = self.hooks_ref();
                 let release_bus = Arc::clone(&self.event_bus);
@@ -477,7 +475,16 @@ impl Manager {
                     release_ctx,
                 );
 
-                Ok(guard_with_release)
+                // Tier 1: wrap in InstrumentedGuard so drop records usage.
+                let recorder = ctx.recorder();
+                let instrumented = InstrumentedGuard::new(
+                    guard_with_release,
+                    resource_key.clone(),
+                    acquired_at,
+                    wait_duration,
+                    recorder,
+                );
+                Ok(Box::new(instrumented))
             }
             Err(err) => {
                 // Run after-hooks for the failure path too.
@@ -513,7 +520,7 @@ impl Manager {
     where
         R::Instance: Any,
     {
-        let key = resource.key();
+        let key = resource.metadata().key.clone();
         let guard = self.acquire(&key, ctx).await?;
         Ok(TypedResourceGuard {
             guard,
@@ -932,7 +939,7 @@ impl Manager {
     where
         R::Instance: Any,
     {
-        let key = resource.key();
+        let key = resource.metadata().key.clone();
         let id = key.as_ref().to_string();
 
         // Build the new pool before touching the registry.
@@ -1011,7 +1018,6 @@ mod tests {
     impl Resource for TestResource {
         type Config = TestConfig;
         type Instance = String;
-        type Deps = ();
 
         fn metadata(&self) -> ResourceMetadata {
             let key = ResourceKey::try_from("test").expect("valid resource key");
@@ -1099,7 +1105,7 @@ mod tests {
     }
 
     #[test]
-    fn register_with_invalid_pool_config_leaves_no_dirty_deps() {
+    fn register_with_invalid_pool_config_leaves_clean_state() {
         let mgr = Manager::new();
         let bad_pool = PoolConfig {
             max_size: 0, // invalid
@@ -1119,63 +1125,25 @@ mod tests {
     }
 
     #[test]
-    fn re_register_replaces_dependencies() {
-        struct DepResource {
-            deps: Vec<&'static str>,
-        }
-
-        impl Resource for DepResource {
+    fn re_register_same_key_replaces_pool() {
+        struct ResourceA;
+        impl Resource for ResourceA {
             type Config = TestConfig;
             type Instance = String;
-            type Deps = ();
-
             fn metadata(&self) -> ResourceMetadata {
-                let key = ResourceKey::try_from("with-deps").expect("valid resource key");
-                ResourceMetadata::from_key(key)
+                ResourceMetadata::from_key(ResourceKey::try_from("a").expect("valid"))
             }
-
-            async fn create(
-                &self,
-                config: &Self::Config,
-                _ctx: &Context,
-            ) -> Result<Self::Instance> {
+            async fn create(&self, config: &TestConfig, _ctx: &Context) -> Result<String> {
                 Ok(config.value.clone())
-            }
-
-            fn dependencies(&self) -> Vec<ResourceKey> {
-                self.deps
-                    .iter()
-                    .map(|d| ResourceKey::try_from(*d).expect("valid resource key"))
-                    .collect()
             }
         }
 
         let mgr = Manager::new();
-
-        // First registration: depends on "a"
-        mgr.register(
-            DepResource { deps: vec!["a"] },
-            TestConfig { value: "v1".into() },
-            PoolConfig::default(),
-        )
-        .unwrap();
-        assert!(mgr.deps.read().depends_on("with-deps", "a"));
-
-        // Re-register: depends on "b" instead of "a"
-        mgr.register(
-            DepResource { deps: vec!["b"] },
-            TestConfig { value: "v2".into() },
-            PoolConfig::default(),
-        )
-        .unwrap();
-        assert!(
-            mgr.deps.read().depends_on("with-deps", "b"),
-            "should have new dependency"
-        );
-        assert!(
-            !mgr.deps.read().depends_on("with-deps", "a"),
-            "old dependency should be cleaned up"
-        );
+        mgr.register(ResourceA, TestConfig { value: "v1".into() }, PoolConfig::default())
+            .unwrap();
+        mgr.register(ResourceA, TestConfig { value: "v2".into() }, PoolConfig::default())
+            .unwrap();
+        // Second register replaces the pool for the same key; no panic.
     }
 
     // -----------------------------------------------------------------------

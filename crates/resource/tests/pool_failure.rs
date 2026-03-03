@@ -47,8 +47,6 @@ struct AlwaysFailResource;
 impl Resource for AlwaysFailResource {
     type Config = TestConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("always-fail").expect("valid"))
     }
@@ -84,8 +82,6 @@ impl IntermittentResource {
 impl Resource for IntermittentResource {
     type Config = TestConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("intermittent").expect("valid"))
     }
@@ -145,8 +141,6 @@ struct ExpiredThenFailResource {
 impl Resource for ExpiredThenFailResource {
     type Config = TestConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("expired-then-fail").expect("valid"))
     }

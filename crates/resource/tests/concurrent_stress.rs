@@ -41,8 +41,6 @@ impl StressResource {
 impl Resource for StressResource {
     type Config = StressConfig;
     type Instance = u64;
-    type Deps = ();
-
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("stress").expect("valid resource key"))
     }

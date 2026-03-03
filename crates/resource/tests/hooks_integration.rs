@@ -36,8 +36,6 @@ struct NamedResource {
 impl Resource for NamedResource {
     type Config = TestConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
         nebula_resource::metadata::ResourceMetadata::from_key(
             ResourceKey::try_from(self.name).expect("valid key"),

@@ -49,8 +49,6 @@ impl TaggedResource {
 impl Resource for TaggedResource {
     type Config = TaggedConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("db").expect("valid"))
     }

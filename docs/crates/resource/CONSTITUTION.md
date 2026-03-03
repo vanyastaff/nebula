@@ -356,6 +356,12 @@ Stale credentials → recycle instance with fresh credential before serving.
 
 ---
 
+## Related Documents
+
+- **[CONTRACT.md](CONTRACT.md)** — Stable API contract for resource and SDK authors (2026+, decade of AI): Rust 1.93 baseline, native async, key/metadata taxonomy, error model, and nebula_sdk as single facade.
+
+---
+
 ## Governance
 
 Amendments require:

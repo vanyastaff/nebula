@@ -60,8 +60,6 @@ struct SimpleResource;
 impl Resource for SimpleResource {
     type Config = TestConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
         nebula_resource::metadata::ResourceMetadata::from_key(
             ResourceKey::try_from("simple").expect("valid key"),
@@ -84,8 +82,6 @@ struct SlowResource {
 impl Resource for SlowResource {
     type Config = TestConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
         nebula_resource::metadata::ResourceMetadata::from_key(
             ResourceKey::try_from("slow").expect("valid key"),
@@ -112,8 +108,6 @@ struct ClonableResource;
 impl Resource for ClonableResource {
     type Config = TestConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
         nebula_resource::metadata::ResourceMetadata::from_key(
             ResourceKey::try_from("clonable").expect("valid key"),

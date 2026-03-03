@@ -56,6 +56,7 @@ pub mod context;
 pub mod credentials;
 pub mod error;
 pub mod guard;
+pub mod http;
 pub mod lifecycle;
 pub mod metadata;
 pub mod reference;
@@ -63,6 +64,7 @@ pub mod resource;
 pub mod scope;
 
 pub(crate) mod dependency_graph;
+pub mod instrumented;
 pub(crate) mod manager_guard;
 pub(crate) mod manager_pool;
 
@@ -78,11 +80,17 @@ pub mod quarantine;
 pub use context::Context;
 pub use error::{Error, FieldViolation, Result};
 pub use guard::Guard;
+pub use instrumented::InstrumentedGuard;
 pub use lifecycle::Lifecycle;
-pub use metadata::ResourceMetadata;
+pub use metadata::{ResourceCategory, ResourceMetadata, ResourceMetadataBuilder};
 pub use reference::{ResourceProvider, ResourceRef};
 pub use resource::{Config, Resource};
 pub use scope::{Scope, Strategy};
+// Re-export execution trace types from telemetry for compatibility.
+pub use nebula_telemetry::{
+    CallBody, CallPayload, CallRecord, CallStatus, DropReason, NoopRecorder, Recorder,
+    ResourceUsageRecord,
+};
 
 pub use autoscale::{AutoScalePolicy, AutoScaler};
 pub use events::{
@@ -131,6 +139,8 @@ pub mod prelude {
     pub use crate::hooks::{HookEvent, HookFilter, HookRegistry, HookResult, ResourceHook};
     pub use crate::manager::{Manager, ManagerBuilder, ResourceHandle, TypedResourceGuard};
     pub use crate::pool::{Pool, PoolConfig, PoolStats, PoolStrategy};
+
+    pub use crate::http::{HttpResource, HttpResourceConfig, HttpResourceInstance};
 
     pub use nebula_core::{ExecutionId, ResourceId, ResourceKey, WorkflowId};
 }

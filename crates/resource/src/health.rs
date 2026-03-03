@@ -871,7 +871,7 @@ impl<R: crate::Resource> HealthCheckable for ResourceHealthAdapter<R> {
 impl<R: crate::Resource> std::fmt::Debug for ResourceHealthAdapter<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResourceHealthAdapter")
-            .field("resource_key", &self.resource.key())
+            .field("resource_key", &self.resource.metadata().key)
             .field("scope", &self.scope)
             .finish()
     }

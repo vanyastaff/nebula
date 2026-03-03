@@ -1,17 +1,18 @@
 //! Telemetry service trait and implementations.
 //!
 //! [`TelemetryService`] is the main facade for the telemetry subsystem.
-//! It provides access to the event bus and metrics registry.
+//! It provides access to the event bus, metrics registry, and execution recorder.
 
 use std::sync::Arc;
 
 use crate::event::EventBus;
 use crate::metrics::MetricsRegistry;
+use crate::trace::Recorder;
 
 /// Telemetry service facade.
 ///
-/// Provides access to the event bus and metrics registry. Shared via
-/// `Arc<dyn TelemetryService>` across the engine and runtime.
+/// Provides access to the event bus, metrics registry, and execution recorder.
+/// Shared via `Arc<dyn TelemetryService>` across the engine and runtime.
 pub trait TelemetryService: Send + Sync {
     /// Access the event bus for emitting and subscribing to events.
     fn event_bus(&self) -> &EventBus;
@@ -24,6 +25,10 @@ pub trait TelemetryService: Send + Sync {
 
     /// Return a shared handle to the metrics registry for wiring into engine/runtime.
     fn metrics_arc(&self) -> Arc<MetricsRegistry>;
+
+    /// Return the execution recorder for resource usage and call traces.
+    /// Engine injects this into resource context so one backend receives all trace data.
+    fn execution_recorder(&self) -> Arc<dyn Recorder>;
 }
 
 /// No-op telemetry implementation.
@@ -45,6 +50,7 @@ pub trait TelemetryService: Send + Sync {
 pub struct NoopTelemetry {
     event_bus: Arc<EventBus>,
     metrics: Arc<MetricsRegistry>,
+    recorder: Arc<dyn Recorder>,
 }
 
 impl NoopTelemetry {
@@ -54,6 +60,7 @@ impl NoopTelemetry {
         Self {
             event_bus: Arc::new(EventBus::new(128)),
             metrics: Arc::new(MetricsRegistry::new()),
+            recorder: Arc::new(crate::trace::NoopRecorder),
         }
     }
 
@@ -85,6 +92,10 @@ impl TelemetryService for NoopTelemetry {
 
     fn metrics_arc(&self) -> Arc<MetricsRegistry> {
         Arc::clone(&self.metrics)
+    }
+
+    fn execution_recorder(&self) -> Arc<dyn Recorder> {
+        Arc::clone(&self.recorder)
     }
 }
 

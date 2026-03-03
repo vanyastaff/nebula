@@ -28,8 +28,6 @@ struct NoOpResource;
 impl Resource for NoOpResource {
     type Config = NoOpConfig;
     type Instance = u64;
-    type Deps = ();
-
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("bench-noop").expect("valid"))
     }

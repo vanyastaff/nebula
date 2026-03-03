@@ -41,8 +41,6 @@ struct InMemoryCache;
 impl Resource for InMemoryCache {
     type Config = CacheConfig;
     type Instance = HashMap<String, String>;
-    type Deps = ();
-
     fn metadata(&self) -> ResourceMetadata {
         let key = ResourceKey::try_from("in-memory-cache").expect("valid resource key");
         ResourceMetadata::from_key(key)

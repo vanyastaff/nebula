@@ -1,3 +1,4 @@
+use std::any::TypeId;
 use std::fmt;
 use std::marker::PhantomData;
 
@@ -14,18 +15,14 @@ pub enum DependencyKind {
 
 /// A single edge endpoint in the dependency graph.
 ///
-/// This is intentionally minimal: everything is identified by a static
-/// string key and a high‑level kind. Individual crates decide how to map
-/// their types and metadata onto these identifiers.
+/// Identified by [`TypeId`]: the resource manager resolves the type to a string key at
+/// registration time.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct Dependency {
     /// Component kind (resource / credential / action).
     pub kind: DependencyKind,
-    /// Stable identifier for the component type.
-    ///
-    /// Typically this is a static key such as a resource ID
-    /// (`"postgres"`) or action key (`"google.drive.list_files"`).
-    pub id: &'static str,
+    /// Type identifier; the manager resolves it to a key when the type is registered.
+    pub id: TypeId,
 }
 
 /// Errors produced while validating or resolving dependencies.

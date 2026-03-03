@@ -36,8 +36,6 @@ struct ConnectionResource;
 impl Resource for ConnectionResource {
     type Config = ConnectionConfig;
     type Instance = String;
-    type Deps = ();
-
     fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
         nebula_resource::metadata::ResourceMetadata::from_key(
             nebula_core::ResourceKey::try_from("connection").expect("valid resource key"),

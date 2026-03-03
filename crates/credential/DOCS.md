@@ -25,14 +25,6 @@ Zero-copy string that zeroizes memory on drop. Used for passwords, tokens, keys.
 ```rust
 #[async_trait]
 pub trait CredentialType {
-    /// Statically declared dependencies for this credential type.
-    ///
-    /// Use `nebula_core::deps::Requires<T>` markers and the `deps![..]` macro
-    /// to describe which resources a credential depends on. Example:
-    ///
-    /// `type Deps = deps![GoogleAuthResource];`
-    type Deps: FromRegistry;
-
     type Input: Serialize + DeserializeOwned + Send + Sync + 'static;
     type State: CredentialState;
 

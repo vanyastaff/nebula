@@ -20,6 +20,7 @@ nebula-core = { path = "../core" }
 nebula-credential = { path = "../credential" }
 nebula-eventbus = { path = "../eventbus" }
 nebula-metrics = { path = "../metrics" }
+nebula-telemetry = { path = "../telemetry" }
 
 # Async runtime
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync", "macros"] }
@@ -35,6 +36,8 @@ parking_lot = { workspace = true }
 tracing = { workspace = true }
 metrics = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
+reqwest = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

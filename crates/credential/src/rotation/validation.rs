@@ -509,7 +509,6 @@ mod tests {
     impl CredentialType for MockCredential {
         type Input = MockInput;
         type State = MockState;
-        type Deps = ();
 
         fn description() -> CredentialDescription {
             CredentialDescription::builder()
