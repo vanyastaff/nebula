@@ -9,6 +9,7 @@ use crate::core::{
 use crate::manager::{CacheConfig, CacheLayer, CacheStats};
 use crate::traits::StorageProvider;
 use crate::utils::{decrypt, encrypt, EncryptedData, EncryptionKey};
+use nebula_eventbus::EventBus;
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -33,6 +34,10 @@ pub struct CredentialManager {
 
     /// Protocol registry for create() — type_id string → handler (api_key, basic_auth, oauth2)
     protocol_registry: Arc<crate::manager::ProtocolRegistry>,
+
+    /// Event bus for credential rotation events.
+    /// ResourceManager subscribes to this to trigger pool re-authorization.
+    rotation_bus: Arc<EventBus<crate::rotation::events::CredentialRotationEvent>>,
 }
 
 impl CredentialManager {
@@ -78,7 +83,7 @@ impl CredentialManager {
     /// # let manager = CredentialManager::builder()
     /// #     .storage(Arc::new(MockStorageProvider::new()))
     /// #     .build();
-    /// let id = CredentialId::new("github-token")?;
+    /// let id = CredentialId::new();
     /// let key = EncryptionKey::from_bytes([0u8; 32]);
     /// let data = encrypt(&key, b"secret")?;
     /// let metadata = CredentialMetadata::new();
@@ -231,7 +236,7 @@ impl CredentialManager {
     /// # let manager = CredentialManager::builder()
     /// #     .storage(Arc::new(MockStorageProvider::new()))
     /// #     .build();
-    /// let id = CredentialId::new("github-token")?;
+    /// let id = CredentialId::new();
     /// let context = CredentialContext::new("user-123");
     ///
     /// if let Some((data, metadata)) = manager.retrieve(&id, &context).await? {
@@ -325,7 +330,7 @@ impl CredentialManager {
     /// # let manager = CredentialManager::builder()
     /// #     .storage(Arc::new(MockStorageProvider::new()))
     /// #     .build();
-    /// let id = CredentialId::new("github-token")?;
+    /// let id = CredentialId::new();
     /// let context = CredentialContext::new("user-123");
     ///
     /// manager.delete(&id, &context).await?;
@@ -387,7 +392,7 @@ impl CredentialManager {
     /// # let manager = CredentialManager::builder()
     /// #     .storage(std::sync::Arc::new(MockStorageProvider::new()))
     /// #     .build();
-    /// let id = CredentialId::new("github-token")?;
+    /// let id = CredentialId::new();
     /// let ctx = CredentialContext::new("user-123");
     /// if let Some((meta, status)) = manager.get_metadata(&id, &ctx).await? {
     ///     println!("Status: {:?}", status);
@@ -462,6 +467,27 @@ impl CredentialManager {
             }
         }
         Ok(result)
+    }
+
+    /// Subscribe to credential rotation events.
+    ///
+    /// ResourceManager calls this to receive `CredentialRotationEvent`s and
+    /// trigger pool credential updates.
+    pub fn rotation_subscriber(
+        &self,
+    ) -> nebula_eventbus::EventSubscriber<crate::rotation::events::CredentialRotationEvent> {
+        self.rotation_bus.subscribe()
+    }
+
+    /// Emit a credential rotation event.
+    ///
+    /// Called internally after successful rotation. Also useful in tests to
+    /// simulate rotation events for integration with ResourceManager.
+    pub fn emit_rotation(
+        &self,
+        event: crate::rotation::events::CredentialRotationEvent,
+    ) {
+        self.rotation_bus.send(event);
     }
 
     /// Get cache performance statistics
@@ -549,11 +575,7 @@ impl CredentialManager {
                 }
             })?;
 
-            let cred_id = CredentialId::new(format!("cred-{}", uuid::Uuid::new_v4()))
-                .map_err(|e| ManagerError::ValidationError {
-                    credential_id: "create".to_string(),
-                    reason: format!("credential id generation failed: {}", e),
-                })?;
+            let cred_id = CredentialId::new();
 
             let mut metadata = CredentialMetadata::new();
             metadata.scope = context.scope_id.clone();
@@ -581,11 +603,7 @@ impl CredentialManager {
             }
         })?;
 
-        let cred_id = CredentialId::new(format!("cred-{}", uuid::Uuid::new_v4()))
-            .map_err(|e| ManagerError::ValidationError {
-                credential_id: "create".to_string(),
-                reason: format!("credential id generation failed: {}", e),
-            })?;
+        let cred_id = CredentialId::new();
 
         let (partial_state, next_step, type_id) = match &result {
             InitResult::Pending {
@@ -835,7 +853,7 @@ impl CredentialManager {
     ///     .with_scope("org:acme/team:eng")?;
     ///
     /// // Retrieves credential only if scope matches
-    /// let id = CredentialId::new("db-password")?;
+    /// let id = CredentialId::new();
     /// if let Some((data, metadata)) = manager.retrieve_scoped(&id, &context).await? {
     ///     println!("Access granted: scope = {:?}", metadata.scope);
     /// } else {
@@ -1018,7 +1036,7 @@ impl CredentialManager {
     /// #     .storage(Arc::new(MockStorageProvider::new()))
     /// #     .build();
     /// let context = CredentialContext::new("user-123");
-    /// let id = CredentialId::new("db-password")?;
+    /// let id = CredentialId::new();
     ///
     /// let result = manager.validate(&id, &context).await?;
     /// if result.is_valid() {
@@ -1113,8 +1131,8 @@ impl CredentialManager {
     /// #     .build();
     /// let context = CredentialContext::new("user-123");
     /// let ids = vec![
-    ///     CredentialId::new("db-password")?,
-    ///     CredentialId::new("api-key")?,
+    ///     CredentialId::new(),
+    ///     CredentialId::new(),
     /// ];
     ///
     /// let results = manager.validate_batch(&ids, &context).await?;
@@ -1213,12 +1231,12 @@ impl CredentialManager {
     /// #     .build();
     /// let batch = vec![
     ///     (
-    ///         CredentialId::new("cred-1")?,
+    ///         CredentialId::new(),
     ///         encrypt(&EncryptionKey::from_bytes([0u8; 32]), b"secret1")?,
     ///         CredentialMetadata::new(),
     ///     ),
     ///     (
-    ///         CredentialId::new("cred-2")?,
+    ///         CredentialId::new(),
     ///         encrypt(&EncryptionKey::from_bytes([0u8; 32]), b"secret2")?,
     ///         CredentialMetadata::new(),
     ///     ),
@@ -1310,8 +1328,8 @@ impl CredentialManager {
     /// #     .storage(Arc::new(MockStorageProvider::new()))
     /// #     .build();
     /// let ids = vec![
-    ///     CredentialId::new("cred-1")?,
-    ///     CredentialId::new("cred-2")?,
+    ///     CredentialId::new(),
+    ///     CredentialId::new(),
     /// ];
     /// let context = CredentialContext::new("user-1");
     /// let results = manager.retrieve_batch(&ids, &context).await?;
@@ -1401,8 +1419,8 @@ impl CredentialManager {
     /// #     .storage(Arc::new(MockStorageProvider::new()))
     /// #     .build();
     /// let ids = vec![
-    ///     CredentialId::new("cred-1")?,
-    ///     CredentialId::new("cred-2")?,
+    ///     CredentialId::new(),
+    ///     CredentialId::new(),
     /// ];
     /// let context = CredentialContext::new("user-1");
     /// let results = manager.delete_batch(&ids, &context).await?;
@@ -1489,7 +1507,7 @@ impl CredentialManager {
     /// ```no_run
     /// # use nebula_credential::prelude::*;
     /// # async fn example(manager: CredentialManager) -> Result<(), Box<dyn std::error::Error>> {
-    /// let id = CredentialId::new("db-password")?;
+    /// let id = CredentialId::new();
     /// let context = CredentialContext::new("user-123");
     ///
     /// let transaction_id = manager.rotate_credential(&id, &context).await?;
@@ -1521,7 +1539,7 @@ impl CredentialManager {
     /// ```no_run
     /// # use nebula_credential::prelude::*;
     /// # async fn example(manager: CredentialManager) -> Result<(), Box<dyn std::error::Error>> {
-    /// let id = CredentialId::new("db-password")?;
+    /// let id = CredentialId::new();
     /// let context = CredentialContext::new("user-123");
     ///
     /// match manager.rotate_credential(&id, &context).await {
@@ -1693,7 +1711,7 @@ impl CredentialManager {
     /// ```no_run
     /// # use nebula_credential::prelude::*;
     /// # async fn example(manager: CredentialManager) -> Result<(), Box<dyn std::error::Error>> {
-    /// let id = CredentialId::new("db-password")?;
+    /// let id = CredentialId::new();
     /// let context = CredentialContext::new("user-123");
     ///
     /// if let Some(status) = manager.get_rotation_status(&id, &context).await? {
@@ -1723,7 +1741,7 @@ impl CredentialManager {
     /// ```no_run
     /// # use nebula_credential::prelude::*;
     /// # async fn example(manager: CredentialManager) -> Result<(), Box<dyn std::error::Error>> {
-    /// let id = CredentialId::new("db-password")?;
+    /// let id = CredentialId::new();
     /// let context = CredentialContext::new("user-123");
     ///
     /// manager.cancel_rotation(&id, &context).await?;
@@ -1770,7 +1788,7 @@ impl CredentialManager {
     /// # use nebula_credential::rotation::policy::{RotationPolicy, PeriodicConfig};
     /// # use std::time::Duration;
     /// # async fn example(manager: CredentialManager) -> Result<(), Box<dyn std::error::Error>> {
-    /// let id = CredentialId::new("db-password")?;
+    /// let id = CredentialId::new();
     /// let context = CredentialContext::new("user-123");
     ///
     /// // Credential must have periodic rotation policy configured
@@ -1970,7 +1988,7 @@ impl CredentialManager {
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let manager = CredentialManager::new(storage_provider);
-    /// let id = CredentialId::new("prod-db-password")?;
+    /// let id = CredentialId::new();
     /// let context = CredentialContext::new("admin");
     ///
     /// // Rotate at scheduled maintenance window
@@ -2073,7 +2091,7 @@ impl CredentialManager {
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let manager = CredentialManager::new(storage_provider);
-    /// let id = CredentialId::new("api-key")?;
+    /// let id = CredentialId::new();
     /// let context = CredentialContext::new("security-team");
     ///
     /// // Emergency rotation - immediate revocation
@@ -2178,7 +2196,7 @@ impl CredentialManager {
     /// # let manager = CredentialManager::builder()
     /// #     .storage(Arc::new(MockStorageProvider::new()))
     /// #     .build();
-    /// let id = CredentialId::new("postgres-prod")?;
+    /// let id = CredentialId::new();
     /// let context = CredentialContext::new("db-service");
     ///
     /// let transaction_id = manager.rotate_blue_green(&id, &context).await?;
@@ -2208,12 +2226,7 @@ impl CredentialManager {
                 })?;
 
         // 2. Generate standby credential ID
-        let standby_id = CredentialId::new(format!("{}-standby", id.as_str())).map_err(|e| {
-            ManagerError::ValidationError {
-                credential_id: format!("{}-standby", id.as_str()),
-                reason: format!("Invalid standby credential ID: {}", e),
-            }
-        })?;
+        let standby_id = CredentialId::new();
 
         // 3. Create blue-green rotation tracker
         let _rotation = BlueGreenRotation::new(id.clone(), standby_id.clone());
@@ -2274,7 +2287,7 @@ impl CredentialManager {
     /// # let manager = CredentialManager::builder()
     /// #     .storage(Arc::new(MockStorageProvider::new()))
     /// #     .build();
-    /// let id = CredentialId::new("api-key-prod")?;
+    /// let id = CredentialId::new();
     /// let context = CredentialContext::new("api-service");
     /// let grace_config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600)); // 7 days
     ///
@@ -2307,11 +2320,7 @@ impl CredentialManager {
                 })?;
 
         // 2. Generate new credential ID
-        let new_id = CredentialId::new(format!("{}-v{}", id.as_str(), metadata.version + 1))
-            .map_err(|e| ManagerError::ValidationError {
-                credential_id: format!("{}-v{}", id.as_str(), metadata.version + 1),
-                reason: format!("Invalid new credential ID: {}", e),
-            })?;
+        let new_id = CredentialId::new();
 
         // 3. Create grace period state
         let grace_period = GracePeriodState::new(
@@ -2390,7 +2399,7 @@ impl CredentialManager {
     /// # use nebula_credential::prelude::*;
     /// # use nebula_credential::rotation::TransactionLog;
     /// # async fn example(manager: CredentialManager) -> Result<(), Box<dyn std::error::Error>> {
-    /// let id = CredentialId::new("db-password")?;
+    /// let id = CredentialId::new();
     /// let context = CredentialContext::new("user-123");
     ///
     /// let (transaction_id, log) = manager
@@ -2617,6 +2626,7 @@ pub struct CredentialManagerBuilder<HasStorage> {
     encryption_key: Option<Arc<EncryptionKey>>,
     type_registry: HashMap<TypeId, CredentialId>,
     protocol_registry: crate::manager::ProtocolRegistry,
+    rotation_bus: Arc<EventBus<crate::rotation::events::CredentialRotationEvent>>,
     _marker: PhantomData<HasStorage>,
 }
 
@@ -2629,6 +2639,7 @@ impl CredentialManagerBuilder<No> {
             encryption_key: None,
             type_registry: HashMap::new(),
             protocol_registry: crate::manager::ProtocolRegistry::with_builtins(),
+            rotation_bus: Arc::new(EventBus::new(1024)),
             _marker: PhantomData,
         }
     }
@@ -2655,6 +2666,7 @@ impl CredentialManagerBuilder<No> {
             encryption_key: self.encryption_key,
             type_registry: self.type_registry,
             protocol_registry: self.protocol_registry,
+            rotation_bus: self.rotation_bus,
             _marker: PhantomData,
         }
     }
@@ -2768,7 +2780,7 @@ impl<S> CredentialManagerBuilder<S> {
     /// let manager = CredentialManager::builder()
     ///     .storage(Arc::new(MockStorageProvider::new()))
     ///     .encryption_key(Arc::new(EncryptionKey::from_bytes([0u8; 32])))
-    ///     .register_type::<GithubToken>(CredentialId::new("github-token")?)
+    ///     .register_type::<GithubToken>(CredentialId::new())
     ///     .build();
     ///
     /// // Later: let token = manager.credential::<GithubToken>(&ctx).await?;
@@ -2823,6 +2835,7 @@ impl CredentialManagerBuilder<Yes> {
             encryption_key: self.encryption_key,
             type_registry,
             protocol_registry: Arc::new(self.protocol_registry),
+            rotation_bus: self.rotation_bus,
         }
     }
 }
@@ -2860,7 +2873,7 @@ impl crate::core::CredentialProvider for CredentialManager {
                         .to_string(),
                 },
             })?;
-        self.get(cred_id.as_str(), ctx).await
+        self.get(&cred_id.to_string(), ctx).await
     }
 
     async fn get(
@@ -2877,8 +2890,12 @@ impl crate::core::CredentialProvider for CredentialManager {
             }
         })?;
 
-        let cred_id = CredentialId::new(id)
-            .map_err(|e| CredentialError::Validation { source: e })?;
+        let cred_id = CredentialId::parse(id).map_err(|e| CredentialError::Validation {
+            source: crate::core::ValidationError::InvalidCredentialId {
+                id: id.to_string(),
+                reason: e.to_string(),
+            },
+        })?;
 
         let (data, _meta) = self.retrieve(&cred_id, ctx).await.map_err(|e| match e {
             ManagerError::NotFound { credential_id } => CredentialError::Manager {

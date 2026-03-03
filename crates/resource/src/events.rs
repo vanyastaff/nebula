@@ -152,6 +152,15 @@ pub enum ResourceEvent {
         /// Error message.
         error: String,
     },
+    /// A resource pool's credential was rotated and re-authorization was applied.
+    CredentialRotated {
+        /// Resource key of the affected pool.
+        resource_key: ResourceKey,
+        /// The protocol type that was rotated.
+        credential_key: nebula_core::CredentialKey,
+        /// Strategy that was applied.
+        strategy: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +180,8 @@ pub enum CleanupReason {
     Shutdown,
     /// The instance was evicted during maintenance.
     Evicted,
+    /// The instance was evicted due to credential rotation.
+    CredentialRotated,
     /// Recycling the instance failed.
     RecycleFailed,
 }

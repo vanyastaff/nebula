@@ -92,6 +92,13 @@ pub enum Error {
         attempt: u32,
     },
 
+    /// Credential handler not configured for this resource pool.
+    #[error("Credential handler not configured for resource '{resource_key}'")]
+    CredentialNotConfigured {
+        /// The resource key
+        resource_key: ResourceKey,
+    },
+
     /// Required credential is missing
     #[error("Missing credential '{credential_id}' for resource '{resource_key}'")]
     MissingCredential {
@@ -249,7 +256,8 @@ impl Error {
             | Self::PoolExhausted { resource_key, .. }
             | Self::DependencyFailure { resource_key, .. }
             | Self::InvalidStateTransition { resource_key, .. }
-            | Self::Internal { resource_key, .. } => Some(resource_key),
+            | Self::Internal { resource_key, .. }
+            | Self::CredentialNotConfigured { resource_key, .. } => Some(resource_key),
         }
     }
 }

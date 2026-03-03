@@ -3,66 +3,66 @@
 //! Provides type-safe references to resources and a common provider interface
 //! that decouples resource acquisition from the concrete Manager implementation.
 
-use std::any::TypeId;
-use std::fmt;
 use std::future::Future;
+use std::marker::PhantomData;
 
 use crate::{Context, Guard, Resource, Result};
+use nebula_core::ResourceKey;
 
-/// Type-safe reference to a resource.
+/// Typed reference to a specific resource instance in the registry.
 ///
-/// Wraps a `TypeId` to identify a resource type. Used to request resources
-/// from providers with compile-time and runtime type safety.
-///
-/// # Example
-/// ```rust
-/// use nebula_resource::ResourceRef;
-/// use std::any::TypeId;
-///
-/// struct PostgresConnection;
-///
-/// let db_ref = ResourceRef::of::<PostgresConnection>();
-/// assert_eq!(db_ref.type_id(), TypeId::of::<PostgresConnection>());
-/// ```
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ResourceRef(TypeId);
+/// Carries the `ResourceKey` (string id) plus compile-time type information.
+/// Use `erase()` to store in collections or when wiring dependency graphs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceRef<R: Resource> {
+    /// Stable, normalized key for this resource instance.
+    pub key: ResourceKey,
+    _phantom: PhantomData<fn() -> R>,
+}
 
-impl ResourceRef {
-    /// Create a resource reference from a type.
+impl<R: Resource> ResourceRef<R> {
+    /// Create a typed reference. Returns an error if `key` is not a valid `ResourceKey`.
+    pub fn new(key: &str) -> Result<Self> {
+        let key = ResourceKey::new(key).map_err(|e| crate::error::Error::Configuration {
+            message: format!("invalid resource key: {e}"),
+            source: None,
+        })?;
+        Ok(Self {
+            key,
+            _phantom: PhantomData,
+        })
+    }
+
+    /// Type-erased reference used in manager internals and components.
+    pub fn erase(self) -> ErasedResourceRef {
+        ErasedResourceRef { key: self.key }
+    }
+
+    /// Create a type-only reference for dependency declaration (key from `Resource::declare_key`).
     ///
-    /// # Example
-    /// ```rust
-    /// use nebula_resource::ResourceRef;
-    ///
-    /// struct DbConnection;
-    /// let db_ref = ResourceRef::of::<DbConnection>();
-    /// ```
-    pub const fn of<T: 'static>() -> Self {
-        Self(TypeId::of::<T>())
-    }
-
-    /// Get the underlying type ID.
-    pub const fn type_id(self) -> TypeId {
-        self.0
+    /// Use in `ActionComponents` when declaring "I need a resource of type R".
+    pub fn of() -> Self
+    where
+        R: Resource,
+    {
+        Self {
+            key: R::declare_key(),
+            _phantom: PhantomData,
+        }
     }
 }
 
-impl fmt::Debug for ResourceRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("ResourceRef").field(&self.0).finish()
+impl<R: Resource> From<ResourceRef<R>> for ErasedResourceRef {
+    fn from(r: ResourceRef<R>) -> Self {
+        r.erase()
     }
 }
 
-impl fmt::Display for ResourceRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ResourceRef({:?})", self.0)
-    }
-}
-
-impl<T: 'static> From<std::marker::PhantomData<T>> for ResourceRef {
-    fn from(_: std::marker::PhantomData<T>) -> Self {
-        Self::of::<T>()
-    }
+/// Type-erased resource reference — used inside `ResourceComponents` and manager internals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErasedResourceRef {
+    /// Resource key in the registry.
+    pub key: ResourceKey,
 }
 
 /// Provider trait for acquiring resources.
@@ -82,13 +82,12 @@ impl<T: 'static> From<std::marker::PhantomData<T>> for ResourceRef {
 /// impl ResourceProvider for MyProvider {
 ///     // Type-safe acquisition by Resource type
 ///     async fn resource<R: Resource>(&self, ctx: &Context) -> Result<Guard<R::Instance>> {
-///         let type_id = TypeId::of::<R>();
-///         self.manager.acquire_by_type(type_id, ctx).await
+///         self.manager.acquire::<R>(ctx).await
 ///     }
 ///
 ///     // Dynamic acquisition by string ID
 ///     async fn acquire(&self, id: &str, ctx: &Context) -> Result<Box<dyn std::any::Any + Send>> {
-///         self.manager.acquire(id, ctx).await
+///         self.manager.acquire_any(id, ctx).await
 ///     }
 /// }
 /// ```
@@ -97,24 +96,6 @@ pub trait ResourceProvider: Send + Sync {
     ///
     /// Type-safe method that uses the Resource trait to identify and acquire
     /// the resource. The returned instance type matches `R::Instance`.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// // Define a resource
-    /// struct PostgresResource;
-    /// impl Resource for PostgresResource {
-    ///     type Config = PostgresConfig;
-    ///     type Instance = PgConnection;
-    ///     fn id() -> &'static str { "postgres" }
-    /// }
-    ///
-    /// // Acquire it
-    /// let conn = provider.resource::<PostgresResource>(&ctx).await?;
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::Error::Unavailable`] if the resource doesn't exist or acquisition fails.
     fn resource<R: Resource>(
         &self,
         ctx: &Context,
@@ -124,16 +105,6 @@ pub trait ResourceProvider: Send + Sync {
     ///
     /// Returns a type-erased resource that must be downcast to the expected type.
     /// Use this when the resource type is not known at compile time.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let any = provider.acquire("postgres", &ctx).await?;
-    /// let guard = any.downcast::<Guard<PgConnection>>().unwrap();
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::Error::Unavailable`] if the resource doesn't exist or acquisition fails.
     fn acquire(
         &self,
         id: &str,
@@ -142,47 +113,29 @@ pub trait ResourceProvider: Send + Sync {
 
     /// Check if a resource exists by type.
     ///
-    /// # Default implementation
-    ///
-    /// The default performs a full `resource::<R>()` acquire, which takes
-    /// a connection from the pool and immediately drops it. Implementations
-    /// should override this with a lightweight check (e.g.
-    /// [`Manager::is_registered`](crate::Manager::is_registered)) to avoid
-    /// side effects.
+    /// Default implementation uses a full acquire; override for lightweight checks.
     fn has_resource<R: Resource>(&self, ctx: &Context) -> impl Future<Output = bool> + Send {
         async move { self.resource::<R>(ctx).await.is_ok() }
     }
 
     /// Check if a resource exists by ID.
     ///
-    /// # Default implementation
-    ///
-    /// The default performs a full `acquire()`, which takes a connection
-    /// from the pool and immediately drops it. Implementations should
-    /// override this with a lightweight check (e.g.
-    /// [`Manager::is_registered`](crate::Manager::is_registered)) to avoid
-    /// side effects.
+    /// Default implementation uses a full acquire; override for lightweight checks.
     fn has(&self, id: &str, ctx: &Context) -> impl Future<Output = bool> + Send {
         async move { self.acquire(id, ctx).await.is_ok() }
     }
 
     /// Lightweight existence check by ID — no pool acquire.
     ///
-    /// Returns `true` if the resource is registered, regardless of
-    /// health or quarantine status. Providers that wrap a
-    /// [`Manager`](crate::Manager) should delegate to
-    /// [`Manager::is_registered`](crate::Manager::is_registered).
-    ///
-    /// The default falls back to [`has`](Self::has), which does a full
-    /// acquire. Override for a side-effect-free check.
+    /// Default implementation falls back to [`has`](Self::has); override for
+    /// side-effect-free checks.
     fn exists(&self, id: &str, ctx: &Context) -> impl Future<Output = bool> + Send {
         async move { self.has(id, ctx).await }
     }
 
     /// Lightweight typed existence check — no pool acquire.
     ///
-    /// The default falls back to [`has_resource`](Self::has_resource).
-    /// Override for a side-effect-free check.
+    /// Default implementation falls back to [`has_resource`](Self::has_resource).
     fn exists_resource<R: Resource>(&self, ctx: &Context) -> impl Future<Output = bool> + Send {
         async move { self.has_resource::<R>(ctx).await }
     }
@@ -192,50 +145,19 @@ pub trait ResourceProvider: Send + Sync {
 mod tests {
     use super::*;
 
-    struct DbConnection;
-    struct CacheConnection;
-
     #[test]
-    fn test_resource_ref_creation() {
-        let db_ref = ResourceRef::of::<DbConnection>();
-        assert_eq!(db_ref.type_id(), TypeId::of::<DbConnection>());
+    fn resource_ref_captures_key() {
+        // ResourceRef<R> only uses Resource as a marker bound in tests;
+        // we don't need a concrete Resource impl here, just validate key wiring.
+        let r = ResourceRef::<crate::http::HttpResource>::new("http-global").unwrap();
+        assert_eq!(r.key.as_str(), "http-global");
     }
 
     #[test]
-    fn test_resource_ref_equality() {
-        let ref1 = ResourceRef::of::<DbConnection>();
-        let ref2 = ResourceRef::of::<DbConnection>();
-        let ref3 = ResourceRef::of::<CacheConnection>();
-
-        // Same type
-        assert_eq!(ref1, ref2);
-        // Different type
-        assert_ne!(ref1, ref3);
-    }
-
-    #[test]
-    fn test_resource_ref_type_safety() {
-        let db_ref = ResourceRef::of::<DbConnection>();
-        let cache_ref = ResourceRef::of::<CacheConnection>();
-
-        // Different TypeIds for different types
-        assert_ne!(db_ref.type_id(), cache_ref.type_id());
-    }
-
-    #[test]
-    fn test_resource_ref_const() {
-        // Can be used in const contexts
-        const DB_REF: ResourceRef = ResourceRef::of::<DbConnection>();
-        assert_eq!(DB_REF.type_id(), TypeId::of::<DbConnection>());
-    }
-
-    #[test]
-    fn test_resource_ref_clone_copy() {
-        let ref1 = ResourceRef::of::<DbConnection>();
-        let ref2 = ref1; // Copy
-        let ref3 = ref1; // Also Copy
-
-        assert_eq!(ref1, ref2);
-        assert_eq!(ref1, ref3);
+    fn erase_preserves_key() {
+        let r = ResourceRef::<crate::http::HttpResource>::new("http-global").unwrap();
+        let erased = r.erase();
+        assert_eq!(erased.key.as_str(), "http-global");
     }
 }
+

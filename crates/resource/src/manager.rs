@@ -2,10 +2,12 @@
 
 use std::any::Any;
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
+use nebula_core::CredentialId;
+use nebula_credential::traits::RotationStrategy;
 
 use crate::autoscale::{AutoScalePolicy, AutoScaler};
 use crate::context::Context;
@@ -15,7 +17,9 @@ use crate::health::{HealthCheckConfig, HealthCheckable, HealthState};
 use crate::hooks::{HookEvent, HookRegistry};
 use crate::instrumented::InstrumentedGuard;
 use crate::manager_guard::ReleaseHookGuard;
-use crate::manager_pool::{AnyPool, PoolEntry, TypedPool};
+use crate::components::{HasResourceComponents, TypedCredentialHandler};
+use crate::manager_pool::{AnyPool, PoolEntry, RotatablePool};
+use crate::pool::CredentialHandler;
 use crate::metadata::ResourceMetadata;
 use crate::pool::{Pool, PoolConfig};
 use crate::quarantine::{QuarantineConfig, QuarantineManager, QuarantineReason};
@@ -29,6 +33,7 @@ use nebula_core::ResourceKey;
 
 pub use crate::dependency_graph::DependencyGraph;
 pub use crate::manager_guard::{AnyGuard, AnyGuardTrait, ResourceHandle, TypedResourceGuard};
+pub use crate::manager_pool::TypedPool;
 
 // ---------------------------------------------------------------------------
 // ShutdownConfig
@@ -86,6 +91,15 @@ pub struct Manager {
     /// `None` means auto-scaling is off by default (enable per-resource via
     /// [`enable_autoscaling`](Self::enable_autoscaling)).
     default_autoscale_policy: Option<AutoScalePolicy>,
+    /// Maps credential ID to pools that use it (for rotation dispatch).
+    credential_pool_map: Arc<DashMap<CredentialId, Vec<RotationEntry>>>,
+}
+
+/// Entry for credential rotation dispatch.
+struct RotationEntry {
+    credential_key: nebula_core::CredentialKey,
+    strategy: RotationStrategy,
+    pool: Weak<dyn RotatablePool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +233,7 @@ impl ManagerBuilder {
             hooks: Arc::new(HookRegistry::default()),
             auto_scalers: DashMap::new(),
             default_autoscale_policy: self.default_autoscale_policy,
+            credential_pool_map: Arc::new(DashMap::new()),
         }
     }
 }
@@ -334,12 +349,14 @@ impl Manager {
             *deps = candidate;
         }
 
-        let any_pool: Arc<dyn AnyPool> = Arc::new(TypedPool { pool });
+        let typed_pool: Arc<TypedPool<R>> = Arc::new(TypedPool { pool });
+        let any_pool: Arc<dyn AnyPool> = typed_pool.clone();
         self.pools.insert(
             id.clone(),
             PoolEntry {
                 pool: any_pool,
                 scope: scope.clone(),
+                typed_handle: Some(typed_pool),
             },
         );
 
@@ -361,6 +378,134 @@ impl Manager {
         tracing::debug!(resource_id = %id, "Registered resource");
 
         Ok(())
+    }
+
+    /// Register a resource that has declared component dependencies.
+    ///
+    /// Automatically:
+    /// 1. Registers sub-resource dependencies in the dependency graph.
+    /// 2. Creates the pool with an attached credential handler.
+    /// 3. Maps credential ID → pool for rotation dispatch.
+    pub fn register_with_components<R>(
+        &self,
+        resource: R,
+        config: R::Config,
+        pool_config: PoolConfig,
+        handler: TypedCredentialHandler<R::Instance>,
+    ) -> Result<()>
+    where
+        R: Resource + HasResourceComponents,
+        R::Instance: Any + nebula_credential::CredentialResource,
+    {
+        let components = R::components();
+        let meta = resource.metadata();
+        let resource_key = meta.key.clone();
+        let id = resource_key.as_ref().to_string();
+
+        // Build dependency list from resource refs.
+        let new_deps: Vec<String> = components
+            .resource_refs()
+            .iter()
+            .map(|r| r.key.as_ref().to_string())
+            .collect();
+
+        // Create pool with credential handler.
+        let strategy = handler.rotation_strategy();
+        let credential_handler: Arc<dyn crate::pool::CredentialHandler<R::Instance>> =
+            Arc::new(handler);
+        let pool = Pool::with_hooks_and_credential(
+            resource,
+            config,
+            pool_config,
+            Some(Arc::clone(&self.event_bus)),
+            Some(Arc::clone(&self.hooks)),
+            Some(credential_handler),
+        )?;
+
+        let typed_pool: Arc<TypedPool<R>> = Arc::new(TypedPool { pool });
+        let any_pool: Arc<dyn AnyPool> = typed_pool.clone();
+        let rotatable: Arc<dyn RotatablePool> = typed_pool.clone();
+
+        // Track credential → pool mapping for rotation dispatch.
+        if let Some(cred_ref) = components.credential_ref() {
+            let entry = RotationEntry {
+                credential_key: cred_ref.key.clone(),
+                strategy,
+                pool: Arc::downgrade(&rotatable),
+            };
+            self.credential_pool_map
+                .entry(cred_ref.id)
+                .or_default()
+                .push(entry);
+        }
+
+        // Validate deps and update graph.
+        {
+            let mut deps = self.deps.write();
+            let mut candidate = deps.clone();
+            candidate.remove_all_for(&id);
+            for dep in &new_deps {
+                candidate.add_dependency(&id, dep)?;
+            }
+            *deps = candidate;
+        }
+
+        self.pools.insert(
+            id.clone(),
+            PoolEntry {
+                pool: any_pool,
+                scope: Scope::Global,
+                typed_handle: Some(typed_pool),
+            },
+        );
+        self.metadata.insert(id.clone(), meta);
+
+        self.event_bus.emit(ResourceEvent::Created {
+            resource_key: resource_key.clone(),
+            scope: Scope::Global,
+        });
+
+        if let Some(policy) = &self.default_autoscale_policy {
+            let _ = self.enable_autoscaling(&resource_key, policy.clone());
+        }
+
+        tracing::debug!(resource_id = %id, "Registered resource with components");
+
+        Ok(())
+    }
+
+    /// Start the background rotation subscription loop.
+    ///
+    /// Call once at application startup after all resources are registered.
+    /// Pass the subscriber from [`CredentialManager::rotation_subscriber`](nebula_credential::CredentialManager::rotation_subscriber).
+    pub fn spawn_rotation_listener(
+        &self,
+        mut sub: nebula_eventbus::EventSubscriber<nebula_credential::CredentialRotationEvent>,
+    ) {
+        let map = Arc::clone(&self.credential_pool_map);
+        tokio::spawn(async move {
+            while let Some(event) = sub.recv().await {
+                let entries = map
+                    .get(&event.credential_id)
+                    .map(|guard| {
+                        guard
+                            .iter()
+                            .filter_map(|e| {
+                                e.pool.upgrade().map(|p| (e.credential_key.clone(), e.strategy, p))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                for (credential_key, strategy, pool) in entries {
+                    if let Err(e) = pool
+                        .handle_rotation(&event.new_state, strategy, credential_key)
+                        .await
+                    {
+                        tracing::error!(?e, "rotation failed for pool");
+                    }
+                }
+            }
+        });
     }
 
     /// Acquire a resource instance by resource key.
@@ -563,6 +708,33 @@ impl Manager {
     #[must_use]
     pub fn is_registered(&self, resource_key: &ResourceKey) -> bool {
         self.pools.contains_key(resource_key.as_ref())
+    }
+
+    /// Get a typed pool reference for a registered resource.
+    ///
+    /// Returns `None` if the resource is not registered or the pool does not
+    /// support typed access (e.g. from hot-reload before typed_handle is set).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let pool = manager.get_pool::<HttpClientResource>(&resource)
+    ///     .expect("http-client registered");
+    /// pool.handle_rotation(&new_state, strategy, credential_key).await?;
+    /// ```
+    #[must_use]
+    pub fn get_pool<R: Resource>(
+        &self,
+        resource: &R,
+    ) -> Option<Arc<TypedPool<R>>>
+    where
+        R::Instance: Any,
+    {
+        let key = resource.metadata().key.clone();
+        let id = key.as_ref();
+        let entry = self.pools.get(id)?;
+        let handle = entry.typed_handle.as_ref()?;
+        handle.clone().downcast::<TypedPool<R>>().ok()
     }
 
     /// Deregister a resource, shutting down its pool, cancelling its
@@ -960,12 +1132,14 @@ impl Manager {
             Scope::Global
         };
 
-        let any_pool: Arc<dyn AnyPool> = Arc::new(TypedPool { pool: new_pool });
+        let typed_pool: Arc<TypedPool<R>> = Arc::new(TypedPool { pool: new_pool });
+        let any_pool: Arc<dyn AnyPool> = typed_pool.clone();
         self.pools.insert(
             id.clone(),
             PoolEntry {
                 pool: any_pool,
                 scope: existing_scope.clone(),
+                typed_handle: Some(typed_pool),
             },
         );
 

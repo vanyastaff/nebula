@@ -1,14 +1,16 @@
 //! Flat resource context with cancellation support
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use nebula_core::{ExecutionId, WorkflowId};
+use nebula_core::{ExecutionId, ResourceKey, WorkflowId};
 
 use nebula_telemetry::{NoopRecorder, Recorder};
-
-use crate::credentials::CredentialProvider;
+use crate::error::Result;
+use crate::guard::Guard;
+use crate::resource::Resource;
 use crate::scope::Scope;
 
 /// Context for resource operations.
@@ -32,10 +34,11 @@ pub struct Context {
     /// Arbitrary key-value pairs for passing extra context to resource
     /// implementations (e.g. region hints, priority labels).
     pub metadata: HashMap<String, String>,
-    /// Optional credential provider for fetching secrets at resource-creation time.
-    pub credentials: Option<Arc<dyn CredentialProvider>>,
     /// Recorder for Tier 1/Tier 2 resource usage and call traces. Defaults to [`NoopRecorder`].
     pub recorder: Arc<dyn Recorder>,
+    /// Sub-resource pool handles injected by the manager before `Resource::create()`.
+    /// Keyed by ResourceKey. Typed via `Any` downcast in [`resource`](Self::resource).
+    resolved_resources: HashMap<String, Arc<dyn Any + Send + Sync>>,
 }
 
 impl std::fmt::Debug for Context {
@@ -47,7 +50,6 @@ impl std::fmt::Debug for Context {
             .field("tenant_id", &self.tenant_id)
             .field("cancellation", &self.cancellation)
             .field("metadata", &self.metadata)
-            .field("credentials", &self.credentials.is_some())
             .field("recorder", &"Arc<dyn Recorder>");
         s.finish()
     }
@@ -63,9 +65,44 @@ impl Context {
             tenant_id: None,
             cancellation: CancellationToken::new(),
             metadata: HashMap::new(),
-            credentials: None,
             recorder: Arc::new(NoopRecorder),
+            resolved_resources: HashMap::new(),
         }
+    }
+
+    /// Inject a resolved sub-resource pool handle (called by manager, not by resource impls).
+    ///
+    /// The handle must be `Arc<TypedPool<R>>` for the resource type `R` at the given key.
+    pub(crate) fn inject_resource(
+        &mut self,
+        key: ResourceKey,
+        handle: Arc<dyn Any + Send + Sync>,
+    ) {
+        self.resolved_resources
+            .insert(key.as_ref().to_string(), handle);
+    }
+
+    /// Retrieve a resolved sub-resource pool handle for typed acquisition.
+    ///
+    /// Returns `None` if not injected (resource not declared in `HasResourceComponents`, or not yet init).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let handle = ctx.resource::<HttpPool>("http-global")
+    ///     .expect("http-global declared in components");
+    /// let (guard, _) = handle.acquire(ctx).await?;
+    /// ```
+    #[must_use]
+    pub fn resource<R: Resource>(&self, key: &str) -> Option<ResourcePoolHandle<R>>
+    where
+        R::Instance: Any,
+    {
+        use crate::manager_pool::TypedPool;
+
+        let handle = self.resolved_resources.get(key)?;
+        let typed = handle.clone().downcast::<TypedPool<R>>().ok()?;
+        Some(ResourcePoolHandle { inner: typed })
     }
 
     /// Set the tenant ID for multi-tenancy isolation.
@@ -86,31 +123,10 @@ impl Context {
         self
     }
 
-    /// Attach a credential provider to this context.
-    pub fn with_credentials(mut self, provider: Arc<dyn CredentialProvider>) -> Self {
-        self.credentials = Some(provider);
-        self
-    }
-
     /// Set the recorder for resource usage and optional call enrichment.
     pub fn with_recorder(mut self, recorder: Arc<dyn Recorder>) -> Self {
         self.recorder = recorder;
         self
-    }
-
-    /// Get a reference to the credential provider, if attached.
-    ///
-    /// Resource implementations can use this to fetch secrets during
-    /// [`Resource::create`](crate::Resource::create):
-    ///
-    /// ```ignore
-    /// if let Some(creds) = ctx.credentials() {
-    ///     let password = creds.get("db_password").await?;
-    ///     // use `password.expose()` to access the underlying value
-    /// }
-    /// ```
-    pub fn credentials(&self) -> Option<&dyn CredentialProvider> {
-        self.credentials.as_deref()
     }
 
     /// Get the recorder for resource usage and call traces.
@@ -120,9 +136,40 @@ impl Context {
     }
 }
 
+/// Handle to a sub-resource pool, injected into [`Context`] before `Resource::create()`.
+///
+/// Use [`acquire`](Self::acquire) to acquire an instance from the pool.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let handle = ctx.resource::<HttpPool>("http-global")?;
+/// let (guard, _) = handle.acquire(ctx).await?;
+/// let client = guard.get();
+/// ```
+#[derive(Clone)]
+pub struct ResourcePoolHandle<R: Resource> {
+    pub(crate) inner: Arc<crate::manager_pool::TypedPool<R>>,
+}
+
+impl<R: Resource> ResourcePoolHandle<R>
+where
+    R::Instance: Any,
+{
+    /// Acquire an instance from the sub-resource pool.
+    pub async fn acquire(
+        &self,
+        ctx: &Context,
+    ) -> Result<(Guard<R::Instance>, std::time::Duration)> {
+        self.inner.pool.acquire(ctx).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use nebula_core::{ExecutionId, WorkflowId};
+    use std::sync::Arc;
+
+    use nebula_core::{ExecutionId, ResourceKey, WorkflowId};
 
     use super::*;
 
@@ -165,31 +212,6 @@ mod tests {
     }
 
     #[test]
-    fn test_context_with_credentials() {
-        use crate::credentials::{CredentialProvider, SecureString};
-        use crate::error::Error;
-
-        struct DummyProvider;
-
-        impl CredentialProvider for DummyProvider {
-            fn get(
-                &self,
-                _key: &str,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<SecureString, Error>> + Send + '_>,
-            > {
-                Box::pin(async { Ok(SecureString::new("secret")) })
-            }
-        }
-
-        let provider = Arc::new(DummyProvider);
-        let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
-            .with_credentials(provider);
-
-        assert!(ctx.credentials().is_some());
-    }
-
-    #[test]
     fn test_context_with_recorder() {
         use nebula_telemetry::NoopRecorder;
 
@@ -197,5 +219,30 @@ mod tests {
         let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
             .with_recorder(Arc::clone(&recorder));
         assert!(!ctx.recorder().is_enrichment_enabled());
+    }
+
+    #[tokio::test]
+    async fn context_resolves_sub_resource_by_type() {
+        use std::any::Any;
+
+        use crate::http::{HttpResource, HttpResourceConfig};
+        use crate::manager_pool::TypedPool;
+        use crate::pool::{Pool, PoolConfig};
+
+        let key = ResourceKey::try_from("http-global").expect("valid key");
+        let pool = Pool::new(
+            HttpResource,
+            HttpResourceConfig::default(),
+            PoolConfig::default(),
+        )
+        .expect("pool creation");
+        let typed = Arc::new(TypedPool { pool });
+        let handle: Arc<dyn Any + Send + Sync> = typed.clone();
+
+        let mut ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
+        ctx.inject_resource(key, handle);
+
+        let retrieved = ctx.resource::<HttpResource>("http-global");
+        assert!(retrieved.is_some(), "resource handle should be resolved");
     }
 }

@@ -40,6 +40,8 @@ reqwest = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
+nebula-parameter = { path = "../parameter" }
 tokio-test = { workspace = true }
 proptest = { workspace = true }
 test-case = { workspace = true }

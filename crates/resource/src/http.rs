@@ -21,7 +21,7 @@ use serde::Deserialize;
 use url::Url;
 
 /// Configuration for the shared HTTP client resource.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct HttpResourceConfig {
     /// Optional base URL to prefix relative requests.
     pub base_url: Option<String>,
@@ -225,6 +225,11 @@ pub struct HttpResource;
 impl Resource for HttpResource {
     type Config = HttpResourceConfig;
     type Instance = HttpResourceInstance;
+
+    fn declare_key() -> ResourceKey {
+        ResourceKey::try_from("http.client").expect("HttpResource uses a valid resource key")
+    }
+
     fn metadata(&self) -> ResourceMetadata {
         let key =
             ResourceKey::try_from("http.client").expect("HttpResource uses a valid resource key");

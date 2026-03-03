@@ -20,7 +20,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use nebula_core::{ExecutionId, WorkflowId};
-use parking_lot::Mutex;
+use nebula_credential::traits::RotationStrategy;
+use parking_lot::{Mutex, RwLock};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
@@ -263,6 +264,23 @@ impl LatencyRingBuffer {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CredentialHandler (type-erased for pool)
+// ---------------------------------------------------------------------------
+
+/// Type-erased credential handler stored in the pool.
+/// Created at registration time by the manager; captures the concrete State type.
+pub(crate) trait CredentialHandler<I>: Send + Sync {
+    /// Apply serialized credential state to an instance.
+    fn authorize(&self, instance: &mut I, state: &serde_json::Value) -> Result<()>;
+    /// Strategy to apply when the credential rotates.
+    fn rotation_strategy(&self) -> RotationStrategy;
+}
+
+// ---------------------------------------------------------------------------
+// PoolState
+// ---------------------------------------------------------------------------
+
 /// Combined pool state: idle queue + statistics under a single lock.
 struct PoolState<T> {
     idle: VecDeque<Entry<T>>,
@@ -295,6 +313,11 @@ struct PoolInner<R: Resource> {
     /// Handle for the background maintenance task, if spawned.
     /// Stored so we can join on it during shutdown.
     maintenance_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Current credential state (set by `handle_rotation` or initial auth).
+    /// New instances get `authorize()` called with this when created.
+    credential_state: Arc<RwLock<Option<serde_json::Value>>>,
+    /// Optional credential handler for rotation (None for resources without credentials).
+    credential_handler: Option<Arc<dyn CredentialHandler<R::Instance>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -371,6 +394,19 @@ impl<R: Resource> Pool<R> {
         event_bus: Option<Arc<EventBus>>,
         hooks: Option<Arc<HookRegistry>>,
     ) -> Result<Self> {
+        Self::with_hooks_and_credential(resource, config, pool_config, event_bus, hooks, None)
+    }
+
+    /// Internal: same as [`with_hooks`] but with optional credential handler.
+    /// Used by the manager when registering credential-backed resources.
+    pub(crate) fn with_hooks_and_credential(
+        resource: R,
+        config: R::Config,
+        pool_config: PoolConfig,
+        event_bus: Option<Arc<EventBus>>,
+        hooks: Option<Arc<HookRegistry>>,
+        credential_handler: Option<Arc<dyn CredentialHandler<R::Instance>>>,
+    ) -> Result<Self> {
         pool_config.validate()?;
         let max = pool_config.max_size;
         let maintenance_interval = pool_config.maintenance_interval;
@@ -401,6 +437,8 @@ impl<R: Resource> Pool<R> {
                 waiting_count: Arc::new(AtomicUsize::new(0)),
                 hooks,
                 maintenance_handle: Mutex::new(None),
+                credential_state: Arc::new(RwLock::new(None)),
+                credential_handler,
             }),
         };
 
@@ -676,7 +714,21 @@ impl<R: Resource> Pool<R> {
                 .await?;
         }
 
-        let result = inner.resource.create(&inner.config, ctx).await;
+        let mut result = inner.resource.create(&inner.config, ctx).await;
+
+        // Apply credential authorization if handler and state are set.
+        if result.is_ok() {
+            if let (Some(handler), Some(state)) = (
+                &inner.credential_handler,
+                &*inner.credential_state.read(),
+            ) {
+                if let Ok(ref mut instance) = result {
+                    if let Err(e) = handler.authorize(instance, state) {
+                        result = Err(e);
+                    }
+                }
+            }
+        }
 
         // Run Create after-hooks (errors are logged, never propagated).
         if let Some(hooks) = &inner.hooks {
@@ -735,6 +787,72 @@ impl<R: Resource> Pool<R> {
                 reason: reason.clone(),
             },
         );
+    }
+
+    /// Called by `ResourceManager` when the bound credential rotates.
+    ///
+    /// - **HotSwap**: calls `authorize()` on all idle instances with the new state.
+    /// - **DrainAndRecreate**: evicts all idle instances; new instances get `authorize()` on create.
+    /// - **Reconnect**: same as DrainAndRecreate (evicts idle; in-flight complete and are cleaned on release).
+    ///
+    /// # Errors
+    /// Returns `CredentialNotConfigured` if no credential handler was set for this pool.
+    pub async fn handle_rotation(
+        &self,
+        new_state: &serde_json::Value,
+        strategy: RotationStrategy,
+        credential_key: nebula_core::CredentialKey,
+    ) -> Result<()> {
+        let inner = &self.inner;
+        let key = inner.resource.metadata().key.clone();
+
+        // Update stored state (new instances will use this).
+        *inner.credential_state.write() = Some(new_state.clone());
+
+        let handler = inner.credential_handler.as_ref().ok_or(Error::CredentialNotConfigured {
+            resource_key: key.clone(),
+        })?;
+
+        match strategy {
+            RotationStrategy::HotSwap => {
+                let mut state = inner.state.lock();
+                for entry in state.idle.iter_mut() {
+                    handler.authorize(&mut entry.instance, new_state)?;
+                }
+            }
+            RotationStrategy::DrainAndRecreate | RotationStrategy::Reconnect => {
+                Self::drain_idle(inner).await;
+            }
+        }
+
+        if let Some(bus) = &inner.event_bus {
+            bus.emit(ResourceEvent::CredentialRotated {
+                resource_key: key,
+                credential_key,
+                strategy: format!("{strategy:?}"),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Evict all idle instances (used by DrainAndRecreate and Reconnect).
+    async fn drain_idle(inner: &PoolInner<R>) {
+        let to_cleanup: Vec<_> = {
+            let mut state = inner.state.lock();
+            let entries: Vec<_> = state.idle.drain(..).collect();
+            state.stats.idle = state.idle.len();
+            entries
+        };
+        for entry in to_cleanup {
+            Self::cleanup_with_hooks(
+                inner,
+                entry.instance,
+                &CleanupReason::CredentialRotated,
+                None,
+            )
+            .await;
+        }
     }
 
     /// Get current pool statistics, including latency percentiles
@@ -1712,5 +1830,118 @@ mod tests {
         // LIFO: next acquire should return inst-1 (most recently used)
         let (g_next, _) = pool.acquire(&test_ctx()).await.unwrap();
         assert_eq!(*g_next, "inst-1", "LIFO should return newest idle first");
+    }
+
+    // ---------------------------------------------------------------
+    // Credential rotation (handle_rotation)
+    // ---------------------------------------------------------------
+
+    /// CredentialHandler that counts authorize calls for testing.
+    struct CountingCredentialHandler {
+        count: std::sync::atomic::AtomicUsize,
+        strategy: RotationStrategy,
+    }
+
+    impl CredentialHandler<String> for CountingCredentialHandler {
+        fn authorize(&self, instance: &mut String, state: &serde_json::Value) -> Result<()> {
+            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(token) = state.get("token").and_then(|v| v.as_str()) {
+                instance.clear();
+                instance.push_str(token);
+            }
+            Ok(())
+        }
+
+        fn rotation_strategy(&self) -> RotationStrategy {
+            self.strategy
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_rotation_hot_swap_calls_authorize_on_idle() {
+        let handler = Arc::new(CountingCredentialHandler {
+            count: std::sync::atomic::AtomicUsize::new(0),
+            strategy: RotationStrategy::HotSwap,
+        });
+        let pool = Pool::with_hooks_and_credential(
+            TestResource,
+            test_config(),
+            PoolConfig::default(),
+            None,
+            None,
+            Some(Arc::clone(&handler) as Arc<dyn CredentialHandler<String>>),
+        )
+        .unwrap();
+
+        // Acquire and release to put instance in idle (return is async, wait for it)
+        let (guard, _) = pool.acquire(&test_ctx()).await.unwrap();
+        drop(guard);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let initial_count = handler.count.load(std::sync::atomic::Ordering::SeqCst);
+        let cred_key = nebula_core::CredentialKey::new("test").expect("valid key");
+        pool.handle_rotation(
+            &serde_json::json!({"token": "rotated"}),
+            RotationStrategy::HotSwap,
+            cred_key,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            handler.count.load(std::sync::atomic::Ordering::SeqCst) > initial_count,
+            "authorize should be called on idle instance during HotSwap"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_rotation_drain_and_recreate_evicts_idle() {
+        let handler = Arc::new(CountingCredentialHandler {
+            count: std::sync::atomic::AtomicUsize::new(0),
+            strategy: RotationStrategy::DrainAndRecreate,
+        });
+        let pool = Pool::with_hooks_and_credential(
+            TestResource,
+            test_config(),
+            PoolConfig::default(),
+            None,
+            None,
+            Some(Arc::clone(&handler) as Arc<dyn CredentialHandler<String>>),
+        )
+        .unwrap();
+
+        // Acquire and release to put instance in idle (return is async, wait for it)
+        let (guard, _) = pool.acquire(&test_ctx()).await.unwrap();
+        drop(guard);
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(pool.stats().idle, 1, "one idle before rotation");
+
+        let cred_key = nebula_core::CredentialKey::new("test").expect("valid key");
+        pool.handle_rotation(
+            &serde_json::json!({"token": "new"}),
+            RotationStrategy::DrainAndRecreate,
+            cred_key,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(pool.stats().idle, 0, "DrainAndRecreate should evict idle");
+    }
+
+    #[tokio::test]
+    async fn handle_rotation_without_handler_returns_error() {
+        let pool = Pool::new(TestResource, test_config(), PoolConfig::default()).unwrap();
+        let cred_key = nebula_core::CredentialKey::new("test").expect("valid key");
+        let err = pool
+            .handle_rotation(
+                &serde_json::json!({"token": "x"}),
+                RotationStrategy::HotSwap,
+                cred_key,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::CredentialNotConfigured { .. }));
     }
 }

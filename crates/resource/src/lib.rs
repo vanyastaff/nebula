@@ -53,7 +53,6 @@
 #![warn(missing_docs)]
 
 pub mod context;
-pub mod credentials;
 pub mod error;
 pub mod guard;
 pub mod http;
@@ -69,6 +68,7 @@ pub(crate) mod manager_guard;
 pub(crate) mod manager_pool;
 
 pub mod autoscale;
+pub mod components;
 pub mod events;
 pub mod health;
 pub mod hooks;
@@ -77,13 +77,14 @@ pub mod metrics;
 pub mod pool;
 pub mod quarantine;
 
-pub use context::Context;
+pub use context::{Context, ResourcePoolHandle};
 pub use error::{Error, FieldViolation, Result};
 pub use guard::Guard;
 pub use instrumented::InstrumentedGuard;
 pub use lifecycle::Lifecycle;
 pub use metadata::{ResourceCategory, ResourceMetadata, ResourceMetadataBuilder};
-pub use reference::{ResourceProvider, ResourceRef};
+pub use reference::{ErasedResourceRef, ResourceProvider, ResourceRef};
+pub use components::{HasResourceComponents, ResourceComponents, TypedCredentialHandler};
 pub use resource::{Config, Resource};
 pub use scope::{Scope, Strategy};
 // Re-export execution trace types from telemetry for compatibility.
@@ -105,7 +106,7 @@ pub use hooks::{
 };
 pub use manager::{
     AnyGuard, AnyGuardTrait, DependencyGraph, Manager, ManagerBuilder, ResourceHandle,
-    ShutdownConfig, TypedResourceGuard,
+    ShutdownConfig, TypedPool, TypedResourceGuard,
 };
 pub use metrics::MetricsCollector;
 pub use pool::{Pool, PoolConfig, PoolStats, PoolStrategy};
@@ -127,7 +128,8 @@ pub mod prelude {
     pub use crate::guard::Guard;
     pub use crate::lifecycle::Lifecycle;
     pub use crate::metadata::ResourceMetadata;
-    pub use crate::reference::{ResourceProvider, ResourceRef};
+    pub use crate::reference::{ErasedResourceRef, ResourceProvider, ResourceRef};
+    pub use crate::components::{HasResourceComponents, ResourceComponents};
     pub use crate::resource::{Config, Resource};
     pub use crate::scope::{Scope, Strategy};
 

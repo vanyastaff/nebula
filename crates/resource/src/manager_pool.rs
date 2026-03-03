@@ -9,6 +9,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use nebula_core::CredentialKey;
+use nebula_credential::traits::RotationStrategy;
+
 use crate::context::Context;
 use crate::error::Result;
 use crate::guard::Guard;
@@ -66,9 +69,23 @@ pub(crate) trait AnyPool: Send + Sync {
     fn scale_down(&self, count: usize) -> Pin<Box<dyn Future<Output = usize> + Send + '_>>;
 }
 
+/// Pool that can react to credential rotation (has a credential handler).
+pub(crate) trait RotatablePool: Send + Sync {
+    /// Apply credential rotation to the pool.
+    fn handle_rotation(
+        &self,
+        new_state: &serde_json::Value,
+        strategy: RotationStrategy,
+        credential_key: CredentialKey,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
+}
+
 /// Concrete adapter from `Pool<R>` to `AnyPool`.
-pub(crate) struct TypedPool<R: Resource> {
-    pub(crate) pool: Pool<R>,
+///
+/// Returned by [`Manager::get_pool`](crate::manager::Manager::get_pool) for typed pool access.
+pub struct TypedPool<R: Resource> {
+    /// The underlying pool.
+    pub pool: Pool<R>,
 }
 
 impl<R: Resource> AnyPool for TypedPool<R>
@@ -105,6 +122,22 @@ where
     }
 }
 
+impl<R: Resource> RotatablePool for TypedPool<R>
+where
+    R::Instance: Any,
+{
+    fn handle_rotation(
+        &self,
+        new_state: &serde_json::Value,
+        strategy: RotationStrategy,
+        credential_key: CredentialKey,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+        let pool = self.pool.clone();
+        let new_state = new_state.clone();
+        Box::pin(async move { pool.handle_rotation(&new_state, strategy, credential_key).await })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // PoolEntry
 // ---------------------------------------------------------------------------
@@ -113,4 +146,6 @@ where
 pub(crate) struct PoolEntry {
     pub(crate) pool: Arc<dyn AnyPool>,
     pub(crate) scope: Scope,
+    /// Typed handle for `get_pool::<R>()` downcast; same Arc as pool.
+    pub(crate) typed_handle: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }

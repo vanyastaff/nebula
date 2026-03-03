@@ -6,6 +6,8 @@
 
 use std::future::Future;
 
+use nebula_core::ResourceKey;
+
 use crate::context::Context;
 use crate::error::Result;
 use crate::metadata::ResourceMetadata;
@@ -62,4 +64,32 @@ pub trait Resource: Send + Sync + 'static {
             Ok(())
         }
     }
+
+    /// Default key for dependency declaration (e.g. `ResourceRef::of`).
+    ///
+    /// Override to provide a stable key; default derives from type name (snake_case).
+    fn declare_key() -> ResourceKey
+    where
+        Self: Sized,
+    {
+        let name = std::any::type_name::<Self>();
+        let short = name.rsplit("::").next().unwrap_or(name);
+        let snake = camel_to_snake(short);
+        ResourceKey::try_from(snake).expect("Resource type name must form valid ResourceKey")
+    }
+}
+
+fn camel_to_snake(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for (i, c) in s.chars().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.extend(c.to_lowercase());
+        } else if c.is_alphanumeric() || c == '_' || c == '-' {
+            out.push(c);
+        }
+    }
+    out
 }
