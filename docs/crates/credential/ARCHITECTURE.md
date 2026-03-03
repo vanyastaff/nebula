@@ -2,11 +2,73 @@
 
 ## Positioning
 
-`nebula-credential` is a security-critical infrastructure crate.
+`nebula-credential` is a security-critical infrastructure crate — the security boundary for secrets in the Nebula workflow platform.
+
+**System goals:**
+1. **Protocol-Agnostic** — supports OAuth2, SAML, LDAP, mTLS, JWT, API Keys, Kerberos
+2. **Type-Safe** — leverages Rust's type system for compile-time verification
+3. **Async-First** — built on Tokio for high-performance async I/O
+4. **Extensible** — new auth protocols addable without touching core
+5. **Production-Ready** — audit logging, metrics, rotation, distributed coordination
 
 Dependency direction:
 - runtime/action/api layers -> `nebula-credential`
 - `nebula-credential` should not depend on workflow business logic
+
+## High-Level Architecture
+
+```mermaid
+graph TB
+    subgraph "Plugin Developer API"
+        Credential[CredentialType trait]
+        CredResource[CredentialResource trait]
+    end
+
+    subgraph "Protocol Layer"
+        StaticP[StaticProtocol]
+        FlowP[FlowProtocol]
+    end
+
+    subgraph "Static Protocols"
+        ApiKey[ApiKeyProtocol]
+        BasicAuth[BasicAuthProtocol]
+        HeaderAuth[HeaderAuthProtocol]
+        Database[DatabaseProtocol]
+    end
+
+    subgraph "Flow Protocols"
+        OAuth2[OAuth2Protocol]
+        LDAP[LdapProtocol]
+        SAML[SamlProtocol]
+        Kerberos[KerberosProtocol]
+        MTLS[MtlsProtocol]
+    end
+
+    subgraph "Core Services"
+        Manager[CredentialManager]
+        Cache[CacheLayer]
+        Rotation[RotationTransaction]
+        Crypto[Encryption AES-256-GCM]
+        Registry[ProtocolRegistry]
+    end
+
+    subgraph "Storage Backends"
+        Local[LocalStorageProvider]
+        AWS[AWS Secrets Manager]
+        Vault[HashiCorp Vault]
+        K8s[Kubernetes Secrets]
+    end
+
+    Credential --> StaticP
+    Credential --> FlowP
+    CredResource --> Credential
+    StaticP --> ApiKey & BasicAuth & HeaderAuth & Database
+    FlowP --> OAuth2 & LDAP & SAML & Kerberos & MTLS
+    Manager --> Cache --> Crypto
+    Manager --> Rotation
+    Manager --> Registry
+    Cache --> Local & AWS & Vault & K8s
+```
 
 ## Module Map
 
@@ -15,27 +77,134 @@ Dependency direction:
 | `core` | `CredentialId`, `ScopeId`, `CredentialContext`, `CredentialMetadata`, `CredentialDescription`, `CredentialFilter`, `CredentialState`, `CredentialRef`, `CredentialProvider`, `CredentialError`, `StorageError`, `CryptoError`, `ValidationError`, `ManagerError`, `SecretString` | Identity, scope, errors, primitives |
 | `traits` (domain) | `CredentialType`, `StaticProtocol`, `FlowProtocol`, `InteractiveCredential`, `CredentialResource`, `Refreshable`, `Revocable`, `TestableCredential`, `RotatableCredential` | Credential / protocol contracts |
 | `traits` (infrastructure) | `StorageProvider`, `StateStore`, `DistributedLock` | Storage/locking/rotation infrastructure |
-| `providers` | `MockStorageProvider`, `LocalStorageProvider`*, `AwsSecretsManagerProvider`*, `HashiCorpVaultProvider`*, `KubernetesSecretsProvider`*, `ProviderConfig`, `StorageMetrics` | Concrete backends (feature-gated) |
-| `manager` | `CredentialManager`, `CredentialManagerBuilder`, `CacheLayer`, `CacheConfig`, `CacheStats`, `ValidationResult`, `ValidationDetails`, `ManagerConfig`, `EvictionStrategy` | High-level CRUD, caching, validation |
+| `providers` | `MockStorageProvider`, `LocalStorageProvider`\*, `AwsSecretsManagerProvider`\*, `HashiCorpVaultProvider`\*, `KubernetesSecretsProvider`\*, `ProviderConfig`, `StorageMetrics` | Concrete backends (feature-gated) |
+| `manager` | `CredentialManager`, `CredentialManagerBuilder`, `CacheLayer`, `CacheConfig`, `CacheStats`, `ValidationResult`, `ValidationDetails`, `ManagerConfig`, `EvictionStrategy`, `ProtocolRegistry` | High-level CRUD, caching, validation, type registry |
 | `protocols` | `ApiKeyProtocol`, `BasicAuthProtocol`, `DatabaseProtocol`, `HeaderAuthProtocol`, `OAuth2Protocol`+config+state+flow, `LdapProtocol`, `SamlConfig`, `KerberosConfig`, `MtlsConfig` | Protocol-specific models |
 | `rotation` | `RotationPolicy`, `RotationTransaction`, `RotationState`, `RotationError`, `GracePeriodConfig`, rotation scheduler, blue-green helpers | Policy-driven rotation orchestration |
 | `utils` | `EncryptionKey`, `EncryptedData`, `encrypt`, `decrypt`, `SecretString`, `RetryPolicy` | Crypto, secret handling, retry |
 
+\* Feature-gated: `storage-local`, `storage-aws`, `storage-vault`, `storage-k8s`
+
 ### Core vs Traits
 
-- **Core (`core`)** содержит только идентичности, контекст, описания, метаданные, ошибки и ссылочный слой (`CredentialRef`, `CredentialProvider`) без знания протоколов или ротации.
-- **Domain‑traits (`traits::credential`)** описывают сами credential‑типы и протоколы:
-  - `CredentialType` — схема + initialize для конкретного credential.
-  - `StaticProtocol` — чистый form → `State` без IO (API keys, BasicAuth, DB, header auth).
-  - `FlowProtocol` — async‑протоколы с `Config`/`State` (OAuth2, LDAP, SAML, Kerberos, mTLS).
-  - `InteractiveCredential` — продолжение интерактивных flow на базе `InitializeResult`/`UserInput`.
-  - `CredentialResource` — линк resource‑клиента к `CredentialType::State` (authorize).
-  - `Refreshable` / `Revocable` / `TestableCredential` / `RotatableCredential` — опциональные возможности поверх `CredentialType`.
-- **Infra‑traits (`traits::storage`, `traits::lock`)** описывают инфраструктуру:
-  - `StorageProvider`, `StateStore`, `StateVersion` — хранение зашифрованных credential‑blob’ов и rotation‑состояний.
-  - `DistributedLock`, `LockGuard`, `LockError` — распределённые блокировки для refresh/rotation.
+- **Core (`core`)** contains only identities, context, descriptions, metadata, errors, and the reference layer (`CredentialRef`, `CredentialProvider`) without knowledge of protocols or rotation.
+- **Domain traits (`traits::credential`)** describe credential types and protocols:
+  - `CredentialType` — schema + initialize for a concrete credential
+  - `StaticProtocol` — pure form → State without IO (API keys, BasicAuth, DB, header auth)
+  - `FlowProtocol` — async protocols with Config/State (OAuth2, LDAP, SAML, Kerberos, mTLS)
+  - `InteractiveCredential` — continuation of interactive flows via `InitializeResult`/`UserInput`
+  - `CredentialResource` — links resource client to `CredentialType::State` (authorize)
+  - `Refreshable` / `Revocable` / `TestableCredential` / `RotatableCredential` — optional capabilities
+- **Infrastructure traits (`traits::storage`, `traits::lock`)** describe storage/locking:
+  - `StorageProvider`, `StateStore`, `StateVersion` — encrypted credential blob storage and rotation state
+  - `DistributedLock`, `LockGuard`, `LockError` — distributed locks for refresh/rotation
 
-\* Feature-gated: `storage-local`, `storage-aws`, `storage-vault`, `storage-k8s`
+## Credential Lifecycle State Machine
+
+### States
+
+```rust
+pub enum CredentialLifecycle {
+    Uninitialized,         // Created, not yet authenticated
+    PendingInteraction,    // Waiting for user action (OAuth2 redirect, device code)
+    Authenticating,        // Auth in progress (token exchange, LDAP bind)
+    Active,                // Successfully authenticated, ready for use
+    Expired,               // TTL elapsed, needs refresh
+    Refreshing,            // Refresh in progress
+    RotationScheduled,     // Policy triggered, rotation pending
+    Rotating,              // Rotation in progress (backup → new → validate)
+    GracePeriod,           // Both old and new credentials valid
+    Revoked,               // Manually revoked (terminal)
+    Failed,                // Unrecoverable error (terminal)
+}
+```
+
+### Transition Graph
+
+```mermaid
+stateDiagram-v2
+    [*] --> Uninitialized
+
+    Uninitialized --> PendingInteraction: Interactive flow (OAuth2, SAML)
+    Uninitialized --> Authenticating: Direct auth (API key, Basic)
+
+    PendingInteraction --> Authenticating: User provides input
+    PendingInteraction --> Failed: Timeout
+
+    Authenticating --> Active: Success
+    Authenticating --> Failed: Error
+
+    Active --> Expired: TTL elapsed
+    Active --> RotationScheduled: Policy triggered
+    Active --> Revoked: Manual revoke
+
+    Expired --> Refreshing: Auto refresh
+    Expired --> Failed: Cannot refresh
+
+    Refreshing --> Active: Success
+    Refreshing --> Failed: Error
+
+    RotationScheduled --> Rotating: Begin rotation
+
+    Rotating --> GracePeriod: New credential created
+    Rotating --> Failed: Rotation error (rollback)
+
+    GracePeriod --> Active: Grace period ended, old revoked
+
+    Failed --> [*]
+    Revoked --> [*]
+```
+
+### State Properties
+
+```rust
+impl CredentialLifecycle {
+    pub fn is_usable(&self) -> bool {
+        matches!(self, Self::Active | Self::GracePeriod)
+    }
+
+    pub fn requires_interaction(&self) -> bool {
+        matches!(self, Self::PendingInteraction)
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Revoked | Self::Failed)
+    }
+}
+```
+
+### State Transition Validation
+
+Illegal transitions return `Err(StateError::IllegalTransition { from, to })`. Example: `Active → Authenticating` is forbidden; `Active → Expired` is allowed.
+
+## Type-State Pattern (Design Direction)
+
+For compile-time enforcement of credential flow correctness:
+
+```rust
+struct Uninitialized;
+struct Interactive;
+struct Authenticated;
+
+struct OAuth2Flow<State> {
+    config: OAuth2Config,
+    _state: PhantomData<State>,
+}
+
+impl OAuth2Flow<Uninitialized> {
+    pub fn start(self) -> OAuth2Flow<Interactive> { /* ... */ }
+}
+
+impl OAuth2Flow<Interactive> {
+    pub async fn complete(self, code: String) -> OAuth2Flow<Authenticated> { /* ... */ }
+}
+
+impl OAuth2Flow<Authenticated> {
+    pub fn access_token(&self) -> &SecretString { /* ... */ }
+}
+```
+
+This ensures calling `access_token()` on an uninitialized flow is a compile error.
 
 ## Data and Control Flow
 
@@ -87,11 +256,34 @@ RotationScheduler detects policy trigger
                       → pool drained; new acquires use updated auth
 ```
 
+## Concurrency Model
+
+### Read-Heavy Optimization
+
+- `CredentialManager` is `Clone`; clones share the same `Arc<StorageProvider>` and `Arc<CacheLayer>`
+- Cache uses `RwLock` — multiple concurrent readers, exclusive writer
+- `StorageProvider::retrieve` is idempotent and safe to retry
+- Optimistic concurrency control (CAS) for rotation state updates
+
+### Distributed Coordination
+
+- `DistributedLock` trait with `acquire(key, ttl)` and `try_acquire(key, ttl)`
+- Production: Redlock algorithm (Redis-based, quorum across multiple instances)
+- Prevents double-rotation when multiple nodes detect the same policy trigger
+- Lock guard released automatically on drop (Lua script for atomic check-and-delete)
+
+### Channel Usage
+
+- Work queues: bounded mpsc (rotation tasks)
+- Events: broadcast (credential rotated notifications — stateless only)
+- Response: oneshot (rotation result delivery)
+- Shared state: `RwLock` preferred for read-heavy cache
+
 ## Key Internal Invariants
 
 - `#![forbid(unsafe_code)]` enforced at lib root
 - `CredentialManager` is `Clone`; clones share the same `Arc<StorageProvider>` and `Arc<CacheLayer>`
-- Cache is keyed by `(CredentialId, ScopeId)` — scope isolation is enforced at the cache boundary
+- Cache is keyed by `(CredentialId, ScopeId)` — scope isolation enforced at the cache boundary
 - `CryptoError::DecryptionFailed` is never retried; it is fatal (fail-secure)
 - `SecretString` implements `Debug` with redaction; never exposes raw secret in error messages or logs
 - `StorageProvider::retrieve` is idempotent and safe to retry; `store`/`delete` are not
@@ -100,17 +292,18 @@ RotationScheduler detects policy trigger
 
 ## Security Boundaries
 
-- encrypted credential payloads are first-class values
-- context + scope is used for tenant isolation
-- secret value handling is centralized in dedicated utility types
-- unsafe code is forbidden at crate root
+- Encrypted credential payloads are first-class values (never stored plaintext)
+- Context + scope used for tenant isolation on every operation
+- Secret value handling centralized in `SecretString` and `EncryptedData`
+- Unsafe code forbidden at crate root
+- See [SECURITY.md](SECURITY.md) for full threat model and crypto specifications
 
 ## Operational Properties
 
-- async-first API surface
-- provider abstraction allows environment-specific backend choice
-- cache layer is optional and configurable
-- rotation subsystem supports periodic/scheduled/manual/before-expiry patterns
+- Async-first API surface
+- Provider abstraction allows environment-specific backend choice
+- Cache layer is optional and configurable (TTL, max size, eviction strategy)
+- Rotation subsystem supports periodic/scheduled/manual/before-expiry patterns
 
 ## Manager vs CredentialProvider
 
@@ -123,11 +316,55 @@ RotationScheduler detects policy trigger
 - Rotation owns: state machine, rollback, grace period, blue-green, 2PC, events, metrics.
 - Public rotation types: `RotationResult`, `RotationError`, `TransactionLog`, `GracePeriodConfig`, `RotationPolicy`.
 
+### Four Rotation Policies
+
+| Policy | Trigger | Use Case |
+|--------|---------|----------|
+| **Periodic** | Fixed interval (e.g. 90 days) | DB passwords, API keys, compliance |
+| **Before-Expiry** | TTL threshold (e.g. 80%) | OAuth2 tokens, TLS certs, Vault leases |
+| **Scheduled** | Specific date/time | Maintenance windows, change management |
+| **Manual** | External trigger | Security incidents, personnel changes |
+
+Policies can be combined: whichever trigger fires first initiates rotation.
+
+## Production Architecture (Target)
+
+```
+CredentialManager
+    │
+    ├── L1 Cache: in-memory LRU, per-node, ~5 min TTL
+    ├── L2 Cache: Redis, shared across fleet, ~30 min TTL  ← production add
+    ├── StateStore: PostgreSQL / DynamoDB                   ← production add
+    ├── DistributedLock: Redis/etcd for rotation            ← production add
+    └── AuditLog: S3/Kafka for compliance                   ← production add
+```
+
+Current implementation has L1 cache only. See [ROADMAP.md](ROADMAP.md) for path to production.
+
+## Extension Points
+
+### Adding a New Protocol
+
+1. Define protocol struct (e.g. `MyProtocol`)
+2. Implement `StaticProtocol` (sync) or `FlowProtocol` (async)
+3. Define `State` type implementing `CredentialState`
+4. Register in `ProtocolRegistry` (or via `#[derive(Credential)]` macro)
+5. Optionally implement `Refreshable`, `Revocable`, `RotatableCredential`
+
+No changes to `core/` or `manager/` required.
+
+### Adding a New Storage Backend
+
+1. Implement `StorageProvider` trait
+2. Add feature flag in `Cargo.toml`
+3. Add `ProviderConfig` variant
+4. Implement `capabilities() -> ProviderCapabilities` (P-001)
+
 ## Known Complexity Hotspots
 
-- wide feature matrix for providers and protocols
-- large rotation subsystem with many safety components
-- extensive internal docs in `crates/credential/docs/` require synchronization discipline
+- Wide feature matrix for providers and protocols
+- Large rotation subsystem with many safety components
+- `CredentialManager::manager.rs` (~2900 lines) — candidate for further decomposition
 
 ## Auth Scenarios
 
@@ -137,12 +374,12 @@ RotationScheduler detects policy trigger
 | Enterprise IdP | LdapProtocol, SamlProtocol, KerberosProtocol | FlowProtocol + Config + State; TLS/Binding via config |
 | DB + mTLS | DatabaseProtocol, MtlsConfig | Resource pools receive State; client certs stored in State |
 
-See [PROTOCOLS.md](PROTOCOLS.md) for protocol mapping.
+See [PROTOCOLS.md](PROTOCOLS.md) for protocol mapping and DX examples.
 
 ## Comparative Analysis
 
 Sources: n8n, Node-RED, Activepieces/Activeflow, Temporal/Prefect/Airflow (credential-relevant parts).
 
 - **Adopt:** Encrypted credential storage; scope/tenant isolation; provider abstraction; OAuth2 flows; credential type schemas; rotation with grace period
-- **Reject:** Plaintext credential storage; global credential namespace; credentials in workflow JSON
+- **Reject:** Plaintext credential storage; global credential namespace; credentials in workflow JSON; string-based credential type selection
 - **Defer:** Credential sharing between workflows; credential versioning UI; HSM integration

@@ -35,19 +35,21 @@ Actions/plugins should access credentials through provider abstractions, not dir
 
 ## Document Map
 
-- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
-- [ARCHITECTURE.md](ARCHITECTURE.md)
-- [API.md](API.md)
-- [INTERACTIONS.md](INTERACTIONS.md)
-- [PROTOCOLS.md](PROTOCOLS.md) — protocol layer (StaticProtocol/FlowProtocol, configs, states)
-- [TARGET_ARCHITECTURE.md](TARGET_ARCHITECTURE.md) — target architecture, diagrams, refactoring plan
-- [DECISIONS.md](DECISIONS.md)
-- [ROADMAP.md](ROADMAP.md)
-- [PROPOSALS.md](PROPOSALS.md)
-- [SECURITY.md](SECURITY.md)
-- [RELIABILITY.md](RELIABILITY.md)
-- [TEST_STRATEGY.md](TEST_STRATEGY.md)
-- [MIGRATION.md](MIGRATION.md)
+| Document | Contents |
+|----------|----------|
+| [CONSTITUTION.md](./CONSTITUTION.md) | Platform role, principles, non-negotiables, production vision |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Module map, state machine, type-state patterns, concurrency, data flows |
+| [API.md](API.md) | Public API surface, core types, traits, interactive flows |
+| [PROTOCOLS.md](PROTOCOLS.md) | Protocol support matrix, StaticProtocol/FlowProtocol, macro DX, state types |
+| [SECURITY.md](SECURITY.md) | Threat model (STRIDE, T1-T10), crypto specs, compliance (SOC2/ISO/HIPAA/GDPR/PCI), incident response |
+| [RELIABILITY.md](RELIABILITY.md) | SLO targets, failure modes, performance optimization, capacity planning |
+| [INTERACTIONS.md](INTERACTIONS.md) | Ecosystem map, cross-crate contracts, runtime sequences |
+| [TARGET_ARCHITECTURE.md](TARGET_ARCHITECTURE.md) | Target architecture diagrams, refactoring plan |
+| [DECISIONS.md](DECISIONS.md) | 12 architectural decisions (D-001 through D-012) |
+| [PROPOSALS.md](PROPOSALS.md) | 10 proposals for review (P-001 through P-010) |
+| [ROADMAP.md](ROADMAP.md) | 8-phase roadmap to v1.0 (~7-9 months) |
+| [TEST_STRATEGY.md](TEST_STRATEGY.md) | Test pyramid, critical invariants, tooling |
+| [MIGRATION.md](MIGRATION.md) | Versioning policy, breaking changes, rollout/rollback plans |
 
 ## Archive
 

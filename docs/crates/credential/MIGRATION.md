@@ -8,26 +8,78 @@
 ## Breaking Changes
 
 - **currently planned:** None committed
+
 - **potential future breaking candidates:**
-  - Provider capability negotiation (P-001) — startup validation changes
-  - Strict scope enforcement mode (P-002) — operations without scope may fail
-  - Rotation policy versioning (P-003) — schema envelope changes
+
+| Proposal | Change | Impact |
+|----------|--------|--------|
+| P-001 | Provider capability negotiation | Startup validation changes; providers must implement `capabilities()` |
+| P-002 | Strict scope enforcement mode | Operations without scope context may fail in strict mode |
+| P-003 | Rotation policy versioning | Schema envelope change for persisted policies |
+| P-007 | EncryptionProvider trait | `CredentialManagerBuilder` gains `encryption_provider` setter |
+| P-009 | Credential lifecycle state machine | Status field becomes validated enum; invalid transitions rejected |
+| D-008 | PKCE mandatory for OAuth2 | OAuth2 flows without PKCE will fail |
+| D-010 | API key format (sk_ prefix) | Existing API keys without prefix need migration |
+
+## Migration Path: Storage Provider (P-001)
+
+```rust
+// Before: minimal StorageProvider
+impl StorageProvider for MyProvider {
+    async fn store(...) { ... }
+    async fn retrieve(...) { ... }
+    async fn delete(...) { ... }
+    async fn list(...) { ... }
+}
+
+// After: must also implement capabilities()
+impl StorageProvider for MyProvider {
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            cas: true,          // compare-and-swap support
+            list_filter: true,  // filtered listing support
+            metrics: true,      // storage metrics support
+            ..Default::default()
+        }
+    }
+    // ... existing methods unchanged
+}
+```
+
+## Migration Path: EncryptionProvider (P-007)
+
+```rust
+// Before: CredentialManager uses built-in AES-256-GCM
+let manager = CredentialManager::builder()
+    .storage(provider)
+    .encryption_key(key)
+    .build()?;
+
+// After: explicit encryption provider
+let manager = CredentialManager::builder()
+    .storage(provider)
+    .encryption_provider(LocalEncryptionProvider::new(key))
+    // or: .encryption_provider(KmsEncryptionProvider::new(kms_client))
+    .build()?;
+```
 
 ## Rollout Plan
 
-1. **preparation:** Introduce new APIs additively; document migration path
-2. **dual-run / feature-flag stage:** Allow old and new behavior side-by-side where possible (e.g. strict scope mode)
-3. **cutover:** Switch defaults only in major release
-4. **cleanup:** Remove deprecated path after migration window
+1. **Preparation:** Introduce new APIs additively; document migration path
+2. **Dual-run / feature-flag stage:** Allow old and new behavior side-by-side (e.g. strict scope mode opt-in)
+3. **Cutover:** Switch defaults only in major release
+4. **Cleanup:** Remove deprecated path after migration window
 
 ## Rollback Plan
 
-- **trigger conditions:** Consumer breakage in provider/manager contracts; rotation state corruption
-- **rollback steps:** Revert to previous stable version; restore encryption key if rotated
-- **data/state reconciliation:** Ensure persisted credentials remain decryptable; rotation state recoverable
+- **Trigger conditions:** Consumer breakage in provider/manager contracts; rotation state corruption; encryption key rotation failure
+- **Rollback steps:** Revert to previous stable version; restore encryption key if rotated; verify credential decryption
+- **Data/state reconciliation:** Ensure persisted credentials remain decryptable; rotation state recoverable from backup
 
 ## Validation Checklist
 
-- **API compatibility checks:** Compile-time checks for `StorageProvider`, `CredentialProvider`, `CredentialManager` signatures
-- **integration checks:** Action/resource fixtures; provider implementations
-- **performance checks:** Benchmark comparison; cache hit rate preserved
+- **API compatibility:** Compile-time checks for `StorageProvider`, `CredentialProvider`, `CredentialManager` signatures
+- **Integration:** Action/resource fixtures; all provider implementations pass unified test suite
+- **Performance:** Benchmark comparison; cache hit rate preserved; no latency regression
+- **Security:** Encryption round-trip; scope enforcement; no secret leakage in new code paths
+- **Serialization:** Persisted `CredentialMetadata` and `RotationPolicy` schemas backward-compatible (or migrated)

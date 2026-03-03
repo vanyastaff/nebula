@@ -1,16 +1,21 @@
-# archive
+# Archive
 
-Store all legacy notes and historical drafts here.
+Legacy and reference material. Key design ideas have been incorporated into the main docs (ARCHITECTURE.md, SECURITY.md, PROTOCOLS.md, etc.).
 
-Rules:
-- do not delete source material unless explicitly requested
-- keep filenames descriptive
-- reference archived docs from active docs when needed
+## Contents (after cleanup)
 
-## Contents
+| Folder | Purpose |
+|--------|---------|
+| **Examples/** | Step-by-step examples (OAuth2, API Key, Database, LDAP, mTLS, etc.) |
+| **How-To/** | Store, retrieve, rotate credentials; configure caching; enable audit logging |
+| **Integrations/** | AWS Secrets Manager, Azure Key Vault, HashiCorp Vault, Kubernetes Secrets, Local Storage; Provider comparison; Migration guide |
+| **Troubleshooting/** | Common errors, decryption failures, OAuth2 issues, rotation failures, provider connectivity, debugging checklist, scope violations |
+| **Getting-Started/** | Quick start, core concepts, installation |
+| **Research/** | Kubernetes Secrets best practices |
 
-- `archive-crates-dependencies.md` - Legacy dependency notes
-- `archive-layers-interaction.md` - Action/resource/credential chain (Russian)
-- `archive-database-migrations.md` - Database migration notes
-- `archive-nebula-credential-architecture-2.md` - Architecture draft v2
-- `archive-node-execution.md` - Node execution context notes
+## Removed (incorporated into main docs)
+
+- **Meta/** — Architecture, technical design, security spec, data model → ARCHITECTURE.md, SECURITY.md
+- **Advanced/** — Threat model, rotation policies, compliance, performance → SECURITY.md, RELIABILITY.md, PROPOSALS.md
+- **Reference/** — API reference, traits, storage backends → API.md, PROTOCOLS.md
+- **Top-level** — Architecture.md, ROADMAP.md, protocol design drafts → ARCHITECTURE.md, ROADMAP.md, PROTOCOLS.md
