@@ -128,7 +128,7 @@ impl PeriodicScheduler {
     /// use tokio_util::sync::CancellationToken;
     ///
     /// let scheduler = PeriodicScheduler::new(config);
-    /// let credential_id = CredentialId::new("db-password").unwrap();
+    /// let credential_id = CredentialId::new();
     /// let shutdown = CancellationToken::new();
     ///
     /// task::spawn(async move {
@@ -663,19 +663,19 @@ mod tests {
         let now = Utc::now();
 
         // Credential 1: Already past trigger time (needs rotation)
-        let id1 = CredentialId::new("cred-1").unwrap();
+        let id1 = CredentialId::new();
         let created1 = now - ChronoDuration::days(30);
         let expires1 = now + ChronoDuration::days(2); // Expires in 2 days, created 30 days ago
 
         // Credential 2: Not yet at trigger time
-        let id2 = CredentialId::new("cred-2").unwrap();
+        let id2 = CredentialId::new();
         let created2 = now - ChronoDuration::days(5);
         let expires2 = now + ChronoDuration::days(25); // Expires in 25 days, created 5 days ago
 
         // Credential 3: Past trigger time (needs rotation)
         // Created 25 days ago, expires in 5 days = 30 day TTL
         // Trigger at 80% = 24 days from creation = 1 day ago (clearly past)
-        let id3 = CredentialId::new("cred-3").unwrap();
+        let id3 = CredentialId::new();
         let created3 = now - ChronoDuration::days(25);
         let expires3 = now + ChronoDuration::days(5);
 

@@ -609,7 +609,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validation_context() {
-        let cred_id = CredentialId::new("test-cred").unwrap();
+        let cred_id = CredentialId::new();
         let metadata = CredentialMetadata {
             created_at: chrono::Utc::now(),
             last_accessed: None,

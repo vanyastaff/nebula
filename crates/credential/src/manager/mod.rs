@@ -56,7 +56,7 @@
 //!     .build();
 //!
 //! // Store credential
-//! let id = CredentialId::new("api-key")?;
+//! let id = CredentialId::new();
 //! let key = EncryptionKey::from_bytes([0u8; 32]);
 //! let data = encrypt(&key, b"secret-value")?;
 //! let context = CredentialContext::new("user-123");
@@ -88,7 +88,7 @@
 //!     .with_scope("tenant-b")?;
 //!
 //! // Credentials are isolated by scope
-//! let id = CredentialId::new("db-password")?;
+//! let id = CredentialId::new();
 //! # let key = EncryptionKey::from_bytes([0u8; 32]);
 //! # let data = encrypt(&key, b"secret")?;
 //! manager.store(&id, data, CredentialMetadata::new(), &tenant_a).await?;
@@ -107,7 +107,7 @@
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! # let storage = Arc::new(MockStorageProvider::new());
 //! # let manager = CredentialManager::builder().storage(storage).build();
-//! # let id = CredentialId::new("cred")?;
+//! # let id = CredentialId::new();
 //! # let context = CredentialContext::new("user");
 //! // Validate credential health
 //! let result = manager.validate(&id, &context).await?;

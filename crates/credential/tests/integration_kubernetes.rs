@@ -114,7 +114,7 @@ async fn test_k8s_store_and_retrieve() {
         .expect("Failed to read kubeconfig");
 
     let provider = create_k8s_provider(kubeconfig, host.to_string(), port).await;
-    let id = CredentialId::new("test_credential").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("test_user");
     let (data, metadata) = create_test_data();
 
@@ -166,7 +166,7 @@ async fn test_k8s_delete() {
         .expect("Failed to read kubeconfig");
 
     let provider = create_k8s_provider(kubeconfig, host.to_string(), port).await;
-    let id = CredentialId::new("test_delete").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("test_user");
     let (data, metadata) = create_test_data();
 
@@ -223,7 +223,7 @@ async fn test_k8s_exists() {
         .expect("Failed to read kubeconfig");
 
     let provider = create_k8s_provider(kubeconfig, host.to_string(), port).await;
-    let id = CredentialId::new("test_exists").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("test_user");
 
     // Check non-existent credential
@@ -282,8 +282,10 @@ async fn test_k8s_list() {
         ("cred3", "dev", "api"),
     ];
 
-    for (name, env, service) in &test_data {
-        let id = CredentialId::new(*name).unwrap();
+    let mut ids = Vec::new();
+    for (_name, env, service) in &test_data {
+        let id = CredentialId::new();
+        ids.push(id);
         let (data, mut metadata) = create_test_data();
         metadata.tags.insert("env".to_string(), env.to_string());
         metadata
@@ -316,9 +318,8 @@ async fn test_k8s_list() {
     assert_eq!(filtered_ids.len(), 2);
 
     // Cleanup
-    for (name, _, _) in &test_data {
-        let id = CredentialId::new(*name).unwrap();
-        StorageProvider::delete(&provider, &id, &context).await.ok();
+    for id in &ids {
+        StorageProvider::delete(&provider, id, &context).await.ok();
     }
 }
 
@@ -347,7 +348,7 @@ async fn test_k8s_retrieve_nonexistent() {
         .expect("Failed to read kubeconfig");
 
     let provider = create_k8s_provider(kubeconfig, host.to_string(), port).await;
-    let id = CredentialId::new("nonexistent").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("test_user");
 
     // Try to retrieve non-existent credential
@@ -387,7 +388,7 @@ async fn test_k8s_update_credential() {
         .expect("Failed to read kubeconfig");
 
     let provider = create_k8s_provider(kubeconfig, host.to_string(), port).await;
-    let id = CredentialId::new("test_update").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("test_user");
 
     // Store initial credential

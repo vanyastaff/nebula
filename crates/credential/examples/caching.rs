@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Store a credential
     let key = EncryptionKey::from_bytes([0u8; 32]);
     let context = CredentialContext::new("user-1");
-    let id = CredentialId::new("api-key")?;
+    let id = CredentialId::new();
     let data = encrypt(&key, b"secret-api-key-12345")?;
 
     println!("2. Storing credential...");
@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 6. Demonstrate cache with multiple credentials
     println!("6. Storing and retrieving multiple credentials...");
     for i in 1..=5 {
-        let cred_id = CredentialId::new(&format!("cred-{}", i))?;
+        let cred_id = CredentialId::new();
         let cred_data = encrypt(&key, format!("secret-{}", i).as_bytes())?;
         manager
             .store(&cred_id, cred_data, CredentialMetadata::new(), &context)
@@ -103,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Retrieve all to populate cache
     for i in 1..=5 {
-        let cred_id = CredentialId::new(&format!("cred-{}", i))?;
+        let cred_id = CredentialId::new();
         manager.retrieve(&cred_id, &context).await?;
     }
 

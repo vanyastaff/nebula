@@ -22,7 +22,7 @@ fn create_test_provider() -> (LocalStorageProvider, TempDir) {
 async fn test_store_and_retrieve() {
     let (provider, _temp_dir) = create_test_provider();
     let context = CredentialContext::new("test_user");
-    let id = CredentialId::new("test_cred").unwrap();
+    let id = CredentialId::new();
 
     let key = EncryptionKey::from_bytes([42u8; 32]);
     let data = encrypt(&key, b"secret_value").unwrap();
@@ -52,7 +52,7 @@ async fn test_store_and_retrieve() {
 async fn test_retrieve_not_found() {
     let (provider, _temp_dir) = create_test_provider();
     let context = CredentialContext::new("test_user");
-    let id = CredentialId::new("nonexistent").unwrap();
+    let id = CredentialId::new();
 
     let result = provider.retrieve(&id, &context).await;
     assert!(result.is_err());
@@ -68,7 +68,7 @@ async fn test_retrieve_not_found() {
 async fn test_delete_idempotent() {
     let (provider, _temp_dir) = create_test_provider();
     let context = CredentialContext::new("test_user");
-    let id = CredentialId::new("test_cred").unwrap();
+    let id = CredentialId::new();
 
     let key = EncryptionKey::from_bytes([42u8; 32]);
     let data = encrypt(&key, b"secret_value").unwrap();
@@ -95,7 +95,7 @@ async fn test_list_with_filter() {
 
     // Store credentials with different tags
     for i in 0..5 {
-        let id = CredentialId::new(&format!("cred_{}", i)).unwrap();
+        let id = CredentialId::new();
         let data = encrypt(&key, format!("secret_{}", i).as_bytes()).unwrap();
 
         let mut tags = HashMap::new();
@@ -142,7 +142,7 @@ async fn test_list_without_filter() {
 
     // Store 10 credentials
     for i in 0..10 {
-        let id = CredentialId::new(&format!("cred_{}", i)).unwrap();
+        let id = CredentialId::new();
         let data = encrypt(&key, format!("secret_{}", i).as_bytes()).unwrap();
         let metadata = CredentialMetadata::default();
 
@@ -159,7 +159,7 @@ async fn test_list_without_filter() {
 async fn test_exists() {
     let (provider, _temp_dir) = create_test_provider();
     let context = CredentialContext::new("test_user");
-    let id = CredentialId::new("test_cred").unwrap();
+    let id = CredentialId::new();
 
     // Initially doesn't exist
     assert!(!provider.exists(&id, &context).await.unwrap());
@@ -190,7 +190,7 @@ async fn test_directory_autocreate() {
     let context = CredentialContext::new("test_user");
 
     // Directory should be created on first store
-    let id = CredentialId::new("test_cred").unwrap();
+    let id = CredentialId::new();
     let key = EncryptionKey::from_bytes([42u8; 32]);
     let data = encrypt(&key, b"secret_value").unwrap();
     let metadata = CredentialMetadata::default();
@@ -205,7 +205,7 @@ async fn test_directory_autocreate() {
 async fn test_overwrite_existing_credential() {
     let (provider, _temp_dir) = create_test_provider();
     let context = CredentialContext::new("test_user");
-    let id = CredentialId::new("test_cred").unwrap();
+    let id = CredentialId::new();
     let key = EncryptionKey::from_bytes([42u8; 32]);
 
     // Store first value
@@ -240,7 +240,7 @@ async fn test_file_permissions_unix() {
 
     let (provider, temp_dir) = create_test_provider();
     let context = CredentialContext::new("test_user");
-    let id = CredentialId::new("test_cred").unwrap();
+    let id = CredentialId::new();
 
     let key = EncryptionKey::from_bytes([42u8; 32]);
     let data = encrypt(&key, b"secret_value").unwrap();

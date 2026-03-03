@@ -868,7 +868,7 @@ mod tests {
 
     #[test]
     fn test_rotation_transaction_lifecycle() {
-        let cred_id = CredentialId::new("test-credential").unwrap();
+        let cred_id = CredentialId::new();
         let mut tx = RotationTransaction::new(cred_id, 1);
 
         // Initial state
@@ -901,7 +901,7 @@ mod tests {
 
     #[test]
     fn test_rotation_rollback() {
-        let cred_id = CredentialId::new("test-credential").unwrap();
+        let cred_id = CredentialId::new();
         let mut tx = RotationTransaction::new(cred_id, 1);
 
         assert!(tx.mark_creating().is_ok());
@@ -919,7 +919,7 @@ mod tests {
 
     #[test]
     fn test_invalid_state_transition() {
-        let cred_id = CredentialId::new("test-credential").unwrap();
+        let cred_id = CredentialId::new();
         let mut tx = RotationTransaction::new(cred_id, 1);
 
         // Cannot skip states
@@ -950,7 +950,7 @@ mod tests {
 
     #[test]
     fn test_rollback_transaction_method() {
-        let cred_id = CredentialId::new("test-credential").unwrap();
+        let cred_id = CredentialId::new();
         let mut tx = RotationTransaction::new(cred_id, 1);
 
         // Progress to validating state
@@ -972,7 +972,7 @@ mod tests {
 
     #[test]
     fn test_should_auto_rollback() {
-        let cred_id = CredentialId::new("test-credential").unwrap();
+        let cred_id = CredentialId::new();
         let mut tx = RotationTransaction::new(cred_id, 1);
 
         // Default is Automatic

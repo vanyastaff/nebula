@@ -59,7 +59,7 @@ fn test_encrypted_data() -> EncryptedData {
 async fn store_validated_succeeds_with_valid_values() {
     let manager = test_manager();
     let description = github_description();
-    let id = CredentialId::new("gh-valid").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user-1");
 
     let mut values = ParameterValues::new();
@@ -88,7 +88,7 @@ async fn store_validated_succeeds_with_valid_values() {
 async fn store_validated_fails_on_missing_required_field() {
     let manager = test_manager();
     let description = github_description();
-    let id = CredentialId::new("gh-missing").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user-1");
 
     // Only provide client_id, omit required client_secret
@@ -135,7 +135,7 @@ async fn store_validated_fails_on_missing_required_field() {
 #[tokio::test]
 async fn store_validated_fails_on_type_mismatch() {
     let manager = test_manager();
-    let id = CredentialId::new("gh-type-mismatch").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user-1");
 
     // Schema expects a number for "port"
@@ -185,7 +185,7 @@ async fn store_validated_fails_on_type_mismatch() {
 async fn store_validated_fails_on_validation_rule_violation() {
     let manager = test_manager();
     let description = github_description();
-    let id = CredentialId::new("gh-short-id").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user-1");
 
     // client_id has min_length(5) -- provide a 3-char string
@@ -222,7 +222,7 @@ async fn store_validated_fails_on_validation_rule_violation() {
 async fn store_validated_collects_multiple_errors() {
     let manager = test_manager();
     let description = github_description();
-    let id = CredentialId::new("gh-multi-err").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user-1");
 
     // Both required fields missing
@@ -256,7 +256,7 @@ async fn store_validated_collects_multiple_errors() {
 async fn existing_store_still_works_without_validation() {
     // Backward compatibility: the original store() must keep working
     let manager = test_manager();
-    let id = CredentialId::new("no-validation").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user-1");
 
     let result = manager

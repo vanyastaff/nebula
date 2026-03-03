@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Store a credential with rotation policy
     println!("1. Storing credential with 30-day rotation policy...");
-    let id = CredentialId::new("database-password")?;
+    let id = CredentialId::new();
     let data = encrypt(&key, b"my-secret-password")?;
 
     let mut metadata = CredentialMetadata::new();
@@ -74,11 +74,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Store multiple credentials with different ages
     println!("3. Storing multiple credentials for batch validation...");
-    let ids = vec!["cred-1", "cred-2", "cred-3"];
-
-    for cred_name in &ids {
-        let cred_id = CredentialId::new(*cred_name)?;
-        let cred_data = encrypt(&key, format!("secret-{}", cred_name).as_bytes())?;
+    let mut cred_ids = Vec::new();
+    for i in 1..=3 {
+        let cred_id = CredentialId::new();
+        cred_ids.push(cred_id);
+        let cred_data = encrypt(&key, format!("secret-{}", i).as_bytes())?;
 
         let mut meta = CredentialMetadata::new();
         meta.rotation_policy = Some(RotationPolicy::Periodic(PeriodicConfig::new(
@@ -89,14 +89,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         manager.store(&cred_id, cred_data, meta, &context).await?;
     }
-    println!("   ✓ Stored {} credentials\n", ids.len());
+    println!("   ✓ Stored {} credentials\n", cred_ids.len());
 
     // 4. Batch validation
     println!("4. Performing batch validation...");
-    let cred_ids: Vec<CredentialId> = ids
-        .iter()
-        .map(|name| CredentialId::new(*name).unwrap())
-        .collect();
 
     let results = manager.validate_batch(&cred_ids, &context).await?;
 

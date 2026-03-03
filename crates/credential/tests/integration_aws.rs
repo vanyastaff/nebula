@@ -73,7 +73,7 @@ async fn test_store_and_retrieve() {
         .expect("Failed to get port");
 
     let provider = create_localstack_provider(port).await;
-    let id = CredentialId::new("test_store_retrieve").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
 
     let data = test_encrypted_data(42);
@@ -122,7 +122,7 @@ async fn test_update_existing() {
         .expect("Failed to get port");
 
     let provider = create_localstack_provider(port).await;
-    let id = CredentialId::new("test_update").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
 
     // Cleanup any existing secret from previous runs
@@ -191,7 +191,7 @@ async fn test_delete() {
         .expect("Failed to get port");
 
     let provider = create_localstack_provider(port).await;
-    let id = CredentialId::new("test_delete").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
 
     // Store credential
@@ -238,7 +238,7 @@ async fn test_exists() {
         .expect("Failed to get port");
 
     let provider = create_localstack_provider(port).await;
-    let id = CredentialId::new("test_exists").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
 
     // Check non-existent
@@ -284,9 +284,9 @@ async fn test_list() {
 
     // Create multiple credentials
     let ids = vec![
-        CredentialId::new("test_list_1").unwrap(),
-        CredentialId::new("test_list_2").unwrap(),
-        CredentialId::new("test_list_3").unwrap(),
+        CredentialId::new(),
+        CredentialId::new(),
+        CredentialId::new(),
     ];
 
     for id in &ids {
@@ -332,7 +332,7 @@ async fn test_retrieve_nonexistent() {
         .expect("Failed to get port");
 
     let provider = create_localstack_provider(port).await;
-    let id = CredentialId::new("test_nonexistent").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
 
     // Try to retrieve non-existent credential
@@ -364,7 +364,7 @@ async fn test_metadata_tags() {
         .expect("Failed to get port");
 
     let provider = create_localstack_provider(port).await;
-    let id = CredentialId::new("test_tags").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
 
     let data = test_encrypted_data(60);

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 #[tokio::test]
 async fn test_store_and_retrieve() {
     let provider = MockStorageProvider::new();
-    let id = CredentialId::new("test_cred").unwrap();
+    let id = CredentialId::new();
     let key = EncryptionKey::from_bytes([42u8; 32]);
     let data = encrypt(&key, b"secret_value").unwrap();
 
@@ -41,7 +41,7 @@ async fn test_store_and_retrieve() {
 #[tokio::test]
 async fn test_retrieve_not_found() {
     let provider = MockStorageProvider::new();
-    let id = CredentialId::new("nonexistent").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
 
     let result = provider.retrieve(&id, &context).await;
@@ -52,7 +52,7 @@ async fn test_retrieve_not_found() {
 #[tokio::test]
 async fn test_delete_idempotent() {
     let provider = MockStorageProvider::new();
-    let id = CredentialId::new("test_cred").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
 
     // Delete non-existent credential should succeed
@@ -81,7 +81,7 @@ async fn test_list_with_filter() {
     let key = EncryptionKey::from_bytes([42u8; 32]);
 
     // Store credentials with different tags
-    let cred1 = CredentialId::new("cred1").unwrap();
+    let cred1 = CredentialId::new();
     let mut tags1 = HashMap::new();
     tags1.insert("env".to_string(), "prod".to_string());
     tags1.insert("type".to_string(), "api".to_string());
@@ -99,7 +99,7 @@ async fn test_list_with_filter() {
         .await
         .unwrap();
 
-    let cred2 = CredentialId::new("cred2").unwrap();
+    let cred2 = CredentialId::new();
     let mut tags2 = HashMap::new();
     tags2.insert("env".to_string(), "dev".to_string());
     tags2.insert("type".to_string(), "api".to_string());
@@ -127,7 +127,7 @@ async fn test_list_with_filter() {
     let ids = provider.list(Some(&filter), &context).await.unwrap();
 
     assert_eq!(ids.len(), 1);
-    assert_eq!(ids[0].as_str(), "cred1");
+    assert_eq!(ids[0], cred1);
 }
 
 #[tokio::test]
@@ -138,7 +138,7 @@ async fn test_list_without_filter() {
 
     // Store multiple credentials
     for i in 0..5 {
-        let id = CredentialId::new(&format!("cred{}", i)).unwrap();
+        let id = CredentialId::new();
         let data = encrypt(&key, format!("secret{}", i).as_bytes()).unwrap();
         let metadata = CredentialMetadata::default();
         provider.store(&id, data, metadata, &context).await.unwrap();
@@ -153,7 +153,7 @@ async fn test_list_without_filter() {
 #[tokio::test]
 async fn test_exists() {
     let provider = MockStorageProvider::new();
-    let id = CredentialId::new("test_cred").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
 
     // Should not exist initially
@@ -178,7 +178,7 @@ async fn test_exists() {
 #[tokio::test]
 async fn test_simulated_error() {
     let provider = MockStorageProvider::new();
-    let id = CredentialId::new("test_cred").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
 
     // Configure mock to fail next operation
@@ -215,7 +215,7 @@ async fn test_concurrent_operations() {
         let key = EncryptionKey::from_bytes([42u8; 32]);
 
         set.spawn(async move {
-            let id = CredentialId::new(&format!("cred_{}", i)).unwrap();
+            let id = CredentialId::new();
             let data = encrypt(&key, format!("secret_{}", i).as_bytes()).unwrap();
             let metadata = CredentialMetadata::default();
             provider.store(&id, data, metadata, &context).await
@@ -241,7 +241,7 @@ async fn test_clear() {
 
     // Store some credentials
     for i in 0..5 {
-        let id = CredentialId::new(&format!("cred{}", i)).unwrap();
+        let id = CredentialId::new();
         let data = encrypt(&key, format!("secret{}", i).as_bytes()).unwrap();
         let metadata = CredentialMetadata::default();
         provider.store(&id, data, metadata, &context).await.unwrap();
@@ -262,7 +262,7 @@ async fn test_clear() {
 #[tokio::test]
 async fn test_overwrite_existing_credential() {
     let provider = MockStorageProvider::new();
-    let id = CredentialId::new("test_cred").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
     let key = EncryptionKey::from_bytes([42u8; 32]);
 

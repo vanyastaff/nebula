@@ -99,8 +99,8 @@
 //! use nebula_credential::core::CredentialId;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let blue = CredentialId::new("db-prod")?;
-//! let green = CredentialId::new("db-prod-standby")?;
+//! let blue = CredentialId::new();
+//! let green = CredentialId::new();
 //!
 //! let mut rotation = BlueGreenRotation::new(blue, green);
 //!
@@ -255,8 +255,8 @@ pub use blue_green::{
 };
 pub use error::{RotationError, RotationErrorLog, RotationResult};
 pub use events::{
-    LogEntryType, NotificationEvent, NotificationSender, TransactionLog, TransactionLogEntry,
-    TransactionOutcome, log_rollback_event, send_notification,
+    CredentialRotationEvent, LogEntryType, NotificationEvent, NotificationSender, TransactionLog,
+    TransactionLogEntry, TransactionOutcome, log_rollback_event, send_notification,
 };
 pub use grace_period::{
     GracePeriodConfig, GracePeriodState, GracePeriodTracker, UsageMetrics,

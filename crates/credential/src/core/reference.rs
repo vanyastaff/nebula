@@ -3,138 +3,108 @@
 //! Provides type-safe references to credentials and a common provider interface
 //! that decouples credential acquisition from the concrete Manager implementation.
 
-use std::any::TypeId;
-use std::fmt;
 use std::future::Future;
+use std::marker::PhantomData;
+
+use serde::{Deserialize, Serialize};
+
+use nebula_core::CredentialId;
 
 use crate::core::{CredentialContext, CredentialError, SecretString};
+use crate::traits::CredentialType;
 
-/// Type-safe reference to a credential.
+// ─── CredentialRef<C> ────────────────────────────────────────────────────────
+
+/// Typed, compile-time reference to a specific credential instance.
 ///
-/// Wraps a `TypeId` to identify a credential type. Used to request credentials
-/// from providers with compile-time and runtime type safety.
+/// Captures BOTH which instance (`CredentialId` = UUID) and which type (`C: CredentialType`).
+/// Use `erase()` when you need to store it in a collection without generics.
 ///
 /// # Example
-/// ```rust
-/// use nebula_credential::CredentialRef;
-/// use std::any::TypeId;
-///
-/// struct GithubToken;
-///
-/// let cred_ref = CredentialRef::of::<GithubToken>();
-/// assert_eq!(cred_ref.type_id(), TypeId::of::<GithubToken>());
-/// ```
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CredentialRef(TypeId);
-
-impl CredentialRef {
-    /// Create a credential reference from a type.
-    ///
-    /// # Example
-    /// ```rust
-    /// use nebula_credential::CredentialRef;
-    ///
-    /// struct ApiToken;
-    /// let cred_ref = CredentialRef::of::<ApiToken>();
-    /// ```
-    pub const fn of<T: 'static>() -> Self {
-        Self(TypeId::of::<T>())
-    }
-
-    /// Get the underlying type ID.
-    pub const fn type_id(self) -> TypeId {
-        self.0
-    }
-}
-
-impl fmt::Debug for CredentialRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("CredentialRef").field(&self.0).finish()
-    }
-}
-
-impl fmt::Display for CredentialRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "CredentialRef({:?})", self.0)
-    }
-}
-
-impl<T: 'static> From<std::marker::PhantomData<T>> for CredentialRef {
-    fn from(_: std::marker::PhantomData<T>) -> Self {
-        Self::of::<T>()
-    }
-}
-
-/// Provider trait for acquiring credentials.
-///
-/// Decouples credential acquisition from the concrete [`CredentialManager`](crate::manager::CredentialManager)
-/// implementation. Supports both type-based and string-based credential acquisition.
-///
-/// # Example Implementation
-///
 /// ```rust,ignore
-/// use nebula_credential::{CredentialProvider, CredentialRef, CredentialContext, SecretString};
-///
-/// struct MyProvider {
-///     manager: Arc<CredentialManager>,
-/// }
-///
-/// impl CredentialProvider for MyProvider {
-///     // Type-safe acquisition by credential type
-///     async fn credential<C: CredentialType>(
-///         &self,
-///         ctx: &CredentialContext,
-///     ) -> Result<SecretString, CredentialError> {
-///         let type_id = TypeId::of::<C>();
-///         self.manager.get_by_type(type_id, ctx).await
-///     }
-///
-///     // Dynamic acquisition by string ID
-///     async fn get(
-///         &self,
-///         id: &str,
-///         ctx: &CredentialContext,
-///     ) -> Result<SecretString, CredentialError> {
-///         self.manager.get(id, ctx).await
-///     }
-/// }
+/// let id = nebula_core::CredentialId::new();
+/// let r = CredentialRef::<GithubOAuth2>::from_id(id);
 /// ```
-pub trait CredentialProvider: Send + Sync {
-    /// Acquire a credential by type.
-    ///
-    /// Type-safe method that uses the credential type to identify and retrieve
-    /// the credential value.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// // Define a credential type
-    /// struct GithubToken;
-    ///
-    /// // Acquire it
-    /// let token = provider.credential::<GithubToken>(&ctx).await?;
-    /// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialRef<C: CredentialType> {
+    pub id: CredentialId,
+    _phantom: PhantomData<fn() -> C>,
+}
+
+impl<C: CredentialType> CredentialRef<C> {
+    /// Create a reference from a credential instance ID (UUID).
+    pub fn from_id(id: CredentialId) -> Self {
+        Self {
+            id,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Parse a UUID string into a credential reference.
     ///
     /// # Errors
+    /// Returns `ValidationError::InvalidCredentialId` if the string is not a valid UUID.
+    pub fn parse(id: &str) -> Result<Self, crate::core::ValidationError> {
+        let id = CredentialId::parse(id).map_err(|e| crate::core::ValidationError::InvalidCredentialId {
+            id: id.to_string(),
+            reason: e.to_string(),
+        })?;
+        Ok(Self::from_id(id))
+    }
+
+    /// The protocol-level key for this credential type (from nebula-core, D-015).
+    /// Stable across compilations, serializable, human-readable.
+    pub fn credential_key() -> nebula_core::CredentialKey {
+        C::credential_key()
+    }
+
+    /// Erase the type parameter for storage in collections / manager internals.
+    pub fn erase(self) -> ErasedCredentialRef {
+        ErasedCredentialRef {
+            id: self.id,
+            key: C::credential_key(),
+        }
+    }
+
+    /// Create a type-only reference for dependency declaration (instance id TBD at runtime).
     ///
-    /// Returns [`CredentialError`] if the credential doesn't exist or acquisition fails.
+    /// Use in `ActionComponents` when declaring "I need a credential of type C".
+    /// The instance id is [`CredentialId::nil()`](nebula_core::CredentialId::nil) until resolved.
+    pub fn of() -> Self {
+        Self::from_id(CredentialId::nil())
+    }
+}
+
+// ─── ErasedCredentialRef ─────────────────────────────────────────────────────
+
+impl<C: CredentialType> From<CredentialRef<C>> for ErasedCredentialRef {
+    fn from(r: CredentialRef<C>) -> Self {
+        r.erase()
+    }
+}
+
+/// Type-erased credential reference — used inside `ResourceComponents` and manager internals.
+///
+/// Preserves both the instance id (UUID) and the protocol key (stable, serializable).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErasedCredentialRef {
+    /// Which credential instance (UUID-backed, like ResourceId).
+    pub id: CredentialId,
+    /// Which protocol type ("oauth2_github", "api_key", …) — from nebula-core CredentialKey.
+    pub key: nebula_core::CredentialKey,
+}
+
+// ─── CredentialProvider ──────────────────────────────────────────────────────
+
+/// Provider trait for acquiring credentials — decouples acquisition from `CredentialManager`.
+pub trait CredentialProvider: Send + Sync {
+    /// Acquire typed credential state (returns raw `SecretString` for simple cases).
     fn credential<C: Send + 'static>(
         &self,
         ctx: &CredentialContext,
     ) -> impl Future<Output = Result<SecretString, CredentialError>> + Send;
 
-    /// Acquire a credential by string ID (type-erased).
-    ///
-    /// Returns a credential that is identified by its string ID.
-    /// Use this when the credential type is not known at compile time.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let token = provider.get("github_token", &ctx).await?;
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CredentialError`] if the credential doesn't exist or acquisition fails.
+    /// Acquire by string id (type-erased fallback).
     fn get(
         &self,
         id: &str,
@@ -156,53 +126,78 @@ pub trait CredentialProvider: Send + Sync {
 }
 
 #[cfg(test)]
-mod tests {
+mod new_tests {
     use super::*;
 
-    struct GithubToken;
-    struct SlackToken;
+    use async_trait::async_trait;
+    use nebula_parameter::collection::ParameterCollection;
 
-    #[test]
-    fn test_credential_ref_creation() {
-        let github_ref = CredentialRef::of::<GithubToken>();
-        assert_eq!(github_ref.type_id(), TypeId::of::<GithubToken>());
+    use crate::core::result::InitializeResult;
+    use crate::core::CredentialDescription;
+
+    struct GithubOAuth2;
+
+    #[async_trait]
+    impl CredentialType for GithubOAuth2 {
+        type Input = ();
+        type State = crate::protocols::ApiKeyState;
+
+        fn description() -> CredentialDescription
+        where
+            Self: Sized,
+        {
+            CredentialDescription::builder()
+                .key("oauth2_github")
+                .name("GitHub OAuth2 (test)")
+                .description("Test credential type for CredentialRef")
+                .properties(ParameterCollection::new())
+                .build()
+                .unwrap()
+        }
+
+        async fn initialize(
+            &self,
+            _input: &Self::Input,
+            _ctx: &mut crate::core::CredentialContext,
+        ) -> Result<InitializeResult<Self::State>, crate::core::CredentialError> {
+            unreachable!("initialize is not used in CredentialRef tests")
+        }
     }
 
     #[test]
-    fn test_credential_ref_equality() {
-        let ref1 = CredentialRef::of::<GithubToken>();
-        let ref2 = CredentialRef::of::<GithubToken>();
-        let ref3 = CredentialRef::of::<SlackToken>();
-
-        // Same type
-        assert_eq!(ref1, ref2);
-        // Different type
-        assert_ne!(ref1, ref3);
+    fn credential_ref_captures_id_and_key() {
+        let id = nebula_core::CredentialId::new();
+        let r = CredentialRef::<GithubOAuth2>::from_id(id);
+        assert_eq!(r.id, id);
+        assert_eq!(
+            CredentialRef::<GithubOAuth2>::credential_key().as_str(),
+            "oauth2_github"
+        );
     }
 
     #[test]
-    fn test_credential_ref_type_safety() {
-        let github_ref = CredentialRef::of::<GithubToken>();
-        let slack_ref = CredentialRef::of::<SlackToken>();
-
-        // Different TypeIds for different types
-        assert_ne!(github_ref.type_id(), slack_ref.type_id());
+    fn credential_ref_parse_uuid() {
+        let uuid_str = "550e8400-e29b-41d4-a716-446655440000";
+        let r = CredentialRef::<GithubOAuth2>::parse(uuid_str).unwrap();
+        assert_eq!(r.id.to_string(), uuid_str);
     }
 
     #[test]
-    fn test_credential_ref_const() {
-        // Can be used in const contexts
-        const GITHUB_REF: CredentialRef = CredentialRef::of::<GithubToken>();
-        assert_eq!(GITHUB_REF.type_id(), TypeId::of::<GithubToken>());
+    fn two_instances_same_type_are_different() {
+        let id1 = nebula_core::CredentialId::new();
+        let id2 = nebula_core::CredentialId::new();
+        let prod = CredentialRef::<GithubOAuth2>::from_id(id1);
+        let staging = CredentialRef::<GithubOAuth2>::from_id(id2);
+        assert_ne!(prod.id, staging.id);
     }
 
     #[test]
-    fn test_credential_ref_clone_copy() {
-        let ref1 = CredentialRef::of::<GithubToken>();
-        let ref2 = ref1; // Copy
-        let ref3 = ref1.clone(); // Clone
-
-        assert_eq!(ref1, ref2);
-        assert_eq!(ref1, ref3);
+    fn erase_preserves_id_and_key() {
+        let id = nebula_core::CredentialId::new();
+        let r = CredentialRef::<GithubOAuth2>::from_id(id);
+        let erased: ErasedCredentialRef = r.erase();
+        assert_eq!(erased.id, id);
+        assert_eq!(erased.key.as_str(), "oauth2_github");
     }
 }
+

@@ -47,7 +47,7 @@ fn create_test_metadata() -> CredentialMetadata {
 async fn test_store_and_retrieve() {
     // GIVEN: A credential manager and a credential to store
     let manager = create_test_manager().await;
-    let id = CredentialId::new("test-credential").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("secret-value");
     let metadata = create_test_metadata();
     let context = CredentialContext::new("test-user");
@@ -83,7 +83,7 @@ async fn test_store_and_retrieve() {
 async fn test_retrieve_nonexistent() {
     // GIVEN: A credential manager with no stored credentials
     let manager = create_test_manager().await;
-    let id = CredentialId::new("nonexistent").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("test-user");
 
     // WHEN: We try to retrieve a non-existent credential
@@ -101,7 +101,7 @@ async fn test_retrieve_nonexistent() {
 async fn test_delete_credential() {
     // GIVEN: A credential manager with a stored credential
     let manager = create_test_manager().await;
-    let id = CredentialId::new("to-delete").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("secret");
     let metadata = create_test_metadata();
     let context = CredentialContext::new("test-user");
@@ -136,9 +136,9 @@ async fn test_list_credentials() {
     let manager = create_test_manager().await;
     let context = CredentialContext::new("test-user");
 
-    let id1 = CredentialId::new("cred-1").unwrap();
-    let id2 = CredentialId::new("cred-2").unwrap();
-    let id3 = CredentialId::new("cred-3").unwrap();
+    let id1 = CredentialId::new();
+    let id2 = CredentialId::new();
+    let id3 = CredentialId::new();
 
     let data = create_test_data("secret");
     let metadata = create_test_metadata();
@@ -170,7 +170,7 @@ async fn test_list_credentials() {
 async fn test_store_duplicate_id() {
     // GIVEN: A credential manager with a stored credential
     let manager = create_test_manager().await;
-    let id = CredentialId::new("duplicate").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("test-user");
 
     let data1 = create_test_data("first-value");
@@ -226,7 +226,7 @@ async fn test_credential_by_type_with_registry() {
     struct GithubToken;
     let storage = MockStorageProvider::new();
     let key = Arc::new(EncryptionKey::from_bytes([0u8; 32]));
-    let cred_id = CredentialId::new("github-token").unwrap();
+    let cred_id = CredentialId::new();
     let data = encrypt(key.as_ref(), b"ghp_secret123").unwrap();
     let metadata = CredentialMetadata::new();
     let context = CredentialContext::new("test-user");
@@ -257,7 +257,7 @@ async fn test_credential_by_type_with_registry() {
 async fn test_cache_hit_on_second_retrieve() {
     // GIVEN: A credential manager with caching enabled
     let manager = create_cached_manager().await;
-    let id = CredentialId::new("cached-cred").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("cached-secret");
     let metadata = create_test_metadata();
     let context = CredentialContext::new("test-user");

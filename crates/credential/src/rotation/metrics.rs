@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn test_record_rotation_duration_success() {
         let metrics = RotationMetrics::new();
-        let cred_id = CredentialId::new("test-cred").unwrap();
+        let cred_id = CredentialId::new();
 
         metrics.record_rotation_duration(&cred_id, Duration::from_secs(30), true);
 
@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn test_record_rotation_duration_failure() {
         let metrics = RotationMetrics::new();
-        let cred_id = CredentialId::new("test-cred").unwrap();
+        let cred_id = CredentialId::new();
 
         metrics.record_rotation_duration(&cred_id, Duration::from_secs(15), false);
 
@@ -412,7 +412,7 @@ mod tests {
     #[test]
     fn test_record_rotation_failure() {
         let metrics = RotationMetrics::new();
-        let cred_id = CredentialId::new("test-cred").unwrap();
+        let cred_id = CredentialId::new();
 
         metrics.record_rotation_failure(&cred_id, "Timeout");
 
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn test_rotation_success_rate() {
         let metrics = RotationMetrics::new();
-        let cred_id = CredentialId::new("test-cred").unwrap();
+        let cred_id = CredentialId::new();
 
         // 3 successful, 1 failed = 75% success rate
         metrics.record_rotation_duration(&cred_id, Duration::from_secs(30), true);
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn test_avg_duration() {
         let metrics = RotationMetrics::new();
-        let cred_id = CredentialId::new("test-cred").unwrap();
+        let cred_id = CredentialId::new();
 
         metrics.record_rotation_duration(&cred_id, Duration::from_secs(20), true);
         metrics.record_rotation_duration(&cred_id, Duration::from_secs(30), true);
@@ -453,8 +453,8 @@ mod tests {
     #[test]
     fn test_per_credential_metrics() {
         let metrics = RotationMetrics::new();
-        let cred1 = CredentialId::new("cred-1").unwrap();
-        let cred2 = CredentialId::new("cred-2").unwrap();
+        let cred1 = CredentialId::new();
+        let cred2 = CredentialId::new();
 
         metrics.record_rotation_duration(&cred1, Duration::from_secs(30), true);
         metrics.record_rotation_duration(&cred1, Duration::from_secs(25), false);
@@ -474,7 +474,7 @@ mod tests {
     #[test]
     fn test_percentiles() {
         let metrics = RotationMetrics::new();
-        let cred_id = CredentialId::new("test-cred").unwrap();
+        let cred_id = CredentialId::new();
 
         // Add 100 rotations with increasing durations
         for i in 1..=100 {
@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn test_reset() {
         let metrics = RotationMetrics::new();
-        let cred_id = CredentialId::new("test-cred").unwrap();
+        let cred_id = CredentialId::new();
 
         metrics.record_rotation_duration(&cred_id, Duration::from_secs(30), true);
         assert_eq!(metrics.total_rotations(), 1);

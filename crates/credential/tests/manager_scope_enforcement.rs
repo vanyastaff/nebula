@@ -23,7 +23,7 @@ fn create_test_data(value: &str) -> EncryptedData {
 #[tokio::test]
 async fn test_retrieve_scoped_exact_match() {
     let manager = create_test_manager().await;
-    let id = CredentialId::new("db-cred").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("password");
     let metadata = CredentialMetadata::new();
 
@@ -52,7 +52,7 @@ async fn test_retrieve_scoped_exact_match() {
 #[tokio::test]
 async fn test_retrieve_scoped_hierarchical_match() {
     let manager = create_test_manager().await;
-    let id = CredentialId::new("service-cred").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("api-key");
     let metadata = CredentialMetadata::new();
 
@@ -82,7 +82,7 @@ async fn test_retrieve_scoped_hierarchical_match() {
 #[tokio::test]
 async fn test_retrieve_scoped_mismatch() {
     let manager = create_test_manager().await;
-    let id = CredentialId::new("team-a-cred").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("secret");
     let metadata = CredentialMetadata::new();
 
@@ -109,7 +109,7 @@ async fn test_retrieve_scoped_mismatch() {
 #[tokio::test]
 async fn test_retrieve_scoped_no_context_scope() {
     let manager = create_test_manager().await;
-    let id = CredentialId::new("some-cred").unwrap();
+    let id = CredentialId::new();
 
     // Context without scope
     let context = CredentialContext::new("user-1");
@@ -129,7 +129,7 @@ async fn test_retrieve_scoped_no_context_scope() {
 #[tokio::test]
 async fn test_retrieve_scoped_unscoped_credential() {
     let manager = create_test_manager().await;
-    let id = CredentialId::new("legacy-cred").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("legacy-secret");
     let metadata = CredentialMetadata::new();
 
@@ -167,9 +167,9 @@ async fn test_list_scoped_exact_match() {
         .unwrap();
 
     // Store credentials in different scopes
-    let cred_a1 = CredentialId::new("team-a-db").unwrap();
-    let cred_a2 = CredentialId::new("team-a-api").unwrap();
-    let cred_b1 = CredentialId::new("team-b-db").unwrap();
+    let cred_a1 = CredentialId::new();
+    let cred_a2 = CredentialId::new();
+    let cred_b1 = CredentialId::new();
 
     manager
         .store(&cred_a1, data.clone(), metadata.clone(), &scope_a_context)
@@ -215,9 +215,9 @@ async fn test_list_scoped_hierarchical() {
         .unwrap();
 
     // Store credentials at different levels
-    let parent_cred = CredentialId::new("team-key").unwrap();
-    let child1_cred = CredentialId::new("api-key").unwrap();
-    let child2_cred = CredentialId::new("db-password").unwrap();
+    let parent_cred = CredentialId::new();
+    let child1_cred = CredentialId::new();
+    let child2_cred = CredentialId::new();
 
     manager
         .store(
@@ -296,8 +296,8 @@ async fn test_list_scoped_excludes_unscoped() {
     let unscoped_context = CredentialContext::new("user-1");
 
     // Store scoped and unscoped credentials
-    let scoped_cred = CredentialId::new("scoped").unwrap();
-    let unscoped_cred = CredentialId::new("legacy").unwrap();
+    let scoped_cred = CredentialId::new();
+    let unscoped_cred = CredentialId::new();
 
     manager
         .store(

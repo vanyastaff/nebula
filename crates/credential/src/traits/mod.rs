@@ -8,7 +8,7 @@ mod testable;
 
 pub use credential::{
     CredentialResource, CredentialType, FlowProtocol, InteractiveCredential, Refreshable,
-    Revocable, StaticProtocol,
+    Revocable, RotationStrategy, StaticProtocol,
 };
 pub use lock::{DistributedLock, LockError, LockGuard};
 pub use rotation::RotatableCredential;

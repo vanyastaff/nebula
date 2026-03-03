@@ -25,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Store a credential
     println!("2. Storing a credential...");
-    let id = CredentialId::new("github-token")?;
+    let id = CredentialId::new();
     let secret_data = b"ghp_1234567890abcdefghijklmnopqrstuvwxyz";
     let encrypted = encrypt(&key, secret_data)?;
     let metadata = CredentialMetadata::new();

@@ -237,7 +237,7 @@ impl KubernetesSecretsProvider {
 
     /// Get full secret name by prefixing credential ID
     fn get_secret_name(&self, id: &CredentialId) -> String {
-        format!("{}{}", self.config.secret_prefix, id.as_str())
+        format!("{}{}", self.config.secret_prefix, id)
             .to_lowercase()
             .replace('_', "-")
     }
@@ -374,7 +374,7 @@ impl StorageProvider for KubernetesSecretsProvider {
 
         // Serialize encrypted data to JSON
         let data_json = serde_json::to_vec(&data).map_err(|e| StorageError::WriteFailure {
-            id: id.as_str().to_string(),
+            id: id.to_string().to_string(),
             source: std::io::Error::other(format!("Failed to serialize credential: {}", e)),
         })?;
 
@@ -407,7 +407,7 @@ impl StorageProvider for KubernetesSecretsProvider {
             .patch(&secret_name, &patch_params, &patch)
             .await
             .map_err(|e| StorageError::WriteFailure {
-                id: id.as_str().to_string(),
+                id: id.to_string().to_string(),
                 source: std::io::Error::other(format!("Failed to store secret: {}", e)),
             })?;
 
@@ -435,11 +435,11 @@ impl StorageProvider for KubernetesSecretsProvider {
         let secret = self.secrets_api.get(&secret_name).await.map_err(|e| {
             if e.to_string().contains("NotFound") {
                 StorageError::NotFound {
-                    id: id.as_str().to_string(),
+                    id: id.to_string().to_string(),
                 }
             } else {
                 StorageError::ReadFailure {
-                    id: id.as_str().to_string(),
+                    id: id.to_string().to_string(),
                     source: std::io::Error::other(format!("Failed to retrieve secret: {}", e)),
                 }
             }
@@ -447,21 +447,21 @@ impl StorageProvider for KubernetesSecretsProvider {
 
         // Extract credential data
         let data = secret.data.ok_or_else(|| StorageError::ReadFailure {
-            id: id.as_str().to_string(),
+            id: id.to_string().to_string(),
             source: std::io::Error::other("Secret has no data field"),
         })?;
 
         let credential_bytes = data
             .get("credential")
             .ok_or_else(|| StorageError::ReadFailure {
-                id: id.as_str().to_string(),
+                id: id.to_string().to_string(),
                 source: std::io::Error::other("Secret missing 'credential' key"),
             })?;
 
         // Deserialize encrypted data
         let encrypted_data: EncryptedData =
             serde_json::from_slice(&credential_bytes.0).map_err(|e| StorageError::ReadFailure {
-                id: id.as_str().to_string(),
+                id: id.to_string().to_string(),
                 source: std::io::Error::other(format!("Failed to deserialize credential: {}", e)),
             })?;
 
@@ -472,7 +472,7 @@ impl StorageProvider for KubernetesSecretsProvider {
                 .annotations
                 .as_ref()
                 .ok_or_else(|| StorageError::ReadFailure {
-                    id: id.as_str().to_string(),
+                    id: id.to_string().to_string(),
                     source: std::io::Error::other("Secret missing annotations"),
                 })?;
 
@@ -482,7 +482,7 @@ impl StorageProvider for KubernetesSecretsProvider {
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .ok_or_else(|| StorageError::ReadFailure {
-                id: id.as_str().to_string(),
+                id: id.to_string().to_string(),
                 source: std::io::Error::other("Invalid or missing created-at timestamp"),
             })?;
 
@@ -491,7 +491,7 @@ impl StorageProvider for KubernetesSecretsProvider {
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .ok_or_else(|| StorageError::ReadFailure {
-                id: id.as_str().to_string(),
+                id: id.to_string().to_string(),
                 source: std::io::Error::other("Invalid or missing modified-at timestamp"),
             })?;
 
@@ -564,7 +564,7 @@ impl StorageProvider for KubernetesSecretsProvider {
                 Ok(())
             }
             Err(e) => Err(StorageError::WriteFailure {
-                id: id.as_str().to_string(),
+                id: id.to_string().to_string(),
                 source: std::io::Error::other(format!("Failed to delete secret: {}", e)),
             }),
         }
@@ -588,7 +588,7 @@ impl StorageProvider for KubernetesSecretsProvider {
             Ok(_) => Ok(true),
             Err(e) if e.to_string().contains("NotFound") => Ok(false),
             Err(e) => Err(StorageError::ReadFailure {
-                id: id.as_str().to_string(),
+                id: id.to_string().to_string(),
                 source: std::io::Error::other(format!("Failed to check secret existence: {}", e)),
             }),
         }
@@ -646,9 +646,7 @@ impl StorageProvider for KubernetesSecretsProvider {
             if let Some(name) = secret.metadata.name {
                 // Remove prefix and convert back to credential ID format
                 if let Some(id_str) = name.strip_prefix(prefix) {
-                    // Convert kebab-case back to snake_case
-                    let id_str = id_str.replace('-', "_");
-                    if let Ok(id) = CredentialId::new(&id_str) {
+                    if let Ok(id) = CredentialId::parse(id_str) {
                         // Apply additional filters
                         if let Some(filter) = filter
                             && let Some(annotations) = &secret.metadata.annotations

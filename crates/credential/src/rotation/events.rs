@@ -59,6 +59,18 @@ pub struct EmergencyRotationData {
     pub immediate_revoke: bool,
 }
 
+/// Emitted after every successful credential rotation.
+///
+/// `ResourceManager` subscribes to this to trigger pool re-authorization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CredentialRotationEvent {
+    /// Which credential instance was rotated.
+    pub credential_id: CredentialId,
+    /// New credential state, type-erased as JSON.
+    /// Deserialized by the pool's credential handler into the concrete State type.
+    pub new_state: serde_json::Value,
+}
+
 /// Notification event for rotation lifecycle
 ///
 /// Events are emitted at key points during rotation:
@@ -632,12 +644,16 @@ impl TransactionLog {
 mod tests {
     use super::*;
 
+    fn test_cred_id() -> CredentialId {
+        CredentialId::parse("550e8400-e29b-41d4-a716-446655440000").unwrap()
+    }
+
     #[test]
     fn test_notification_event_credential_id() {
-        let cred_id = CredentialId::new("test-cred").unwrap();
+        let cred_id = test_cred_id();
 
         let event = NotificationEvent::RotationScheduled {
-            credential_id: cred_id.clone(),
+            credential_id: cred_id,
             scheduled_at: Utc::now(),
             time_until: std::time::Duration::from_secs(3600),
         };
@@ -647,10 +663,10 @@ mod tests {
 
     #[test]
     fn test_notification_event_description() {
-        let cred_id = CredentialId::new("test-cred").unwrap();
+        let cred_id = test_cred_id();
 
         let event = NotificationEvent::RotationComplete {
-            credential_id: cred_id.clone(),
+            credential_id: cred_id,
             completed_at: Utc::now(),
             transaction_id: "tx-123".to_string(),
             duration: std::time::Duration::from_secs(30),
@@ -659,12 +675,11 @@ mod tests {
         };
 
         let desc = event.description();
-        assert!(desc.contains("test-cred"));
+        assert!(desc.contains("550e8400-e29b-41d4-a716-446655440000"));
         assert!(desc.contains("v1"));
         assert!(desc.contains("v2"));
     }
 
-    // Mock notification sender for testing
     struct MockSender {
         should_fail: bool,
     }
@@ -674,7 +689,7 @@ mod tests {
         async fn send(&self, _event: &NotificationEvent) -> RotationResult<()> {
             if self.should_fail {
                 Err(super::super::error::RotationError::NotificationFailed {
-                    credential_id: "test".to_string(),
+                    credential_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
                     reason: "Mock failure".to_string(),
                 })
             } else {
@@ -689,7 +704,7 @@ mod tests {
 
         let sender = MockSender { should_fail: false };
         let event = NotificationEvent::RotationStarting {
-            credential_id: CredentialId::new("test").unwrap(),
+            credential_id: test_cred_id(),
             starting_at: Utc::now(),
             transaction_id: "tx-123".to_string(),
         };
@@ -705,7 +720,7 @@ mod tests {
 
         let sender = MockSender { should_fail: true };
         let event = NotificationEvent::RotationStarting {
-            credential_id: CredentialId::new("test").unwrap(),
+            credential_id: test_cred_id(),
             starting_at: Utc::now(),
             transaction_id: "tx-123".to_string(),
         };

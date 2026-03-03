@@ -461,8 +461,8 @@ mod tests {
 
     #[test]
     fn test_blue_green_rotation_creation() {
-        let blue = CredentialId::new("blue-cred").unwrap();
-        let green = CredentialId::new("green-cred").unwrap();
+        let blue = CredentialId::new();
+        let green = CredentialId::new();
 
         let rotation = BlueGreenRotation::new(blue.clone(), green.clone());
 
@@ -474,8 +474,8 @@ mod tests {
 
     #[test]
     fn test_blue_green_rotation_swap() {
-        let blue = CredentialId::new("blue-cred").unwrap();
-        let green = CredentialId::new("green-cred").unwrap();
+        let blue = CredentialId::new();
+        let green = CredentialId::new();
 
         let mut rotation = BlueGreenRotation::new(blue.clone(), green.clone());
 
@@ -500,8 +500,8 @@ mod tests {
 
     #[test]
     fn test_blue_green_rollback() {
-        let blue = CredentialId::new("blue-cred").unwrap();
-        let green = CredentialId::new("green-cred").unwrap();
+        let blue = CredentialId::new();
+        let green = CredentialId::new();
 
         let mut rotation = BlueGreenRotation::new(blue.clone(), green.clone());
         rotation.mark_validated();

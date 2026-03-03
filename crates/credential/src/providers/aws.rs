@@ -197,7 +197,7 @@ impl ProviderConfig for AwsSecretsManagerConfig {
 ///     let config = AwsSecretsManagerConfig::default();
 ///     let provider = AwsSecretsManagerProvider::new(config).await?;
 ///
-///     let id = CredentialId::new("api_key")?;
+///     let id = CredentialId::new();
 ///     let context = CredentialContext::new("user_123");
 ///     let exists = provider.exists(&id, &context).await?;
 ///
@@ -293,7 +293,7 @@ impl AwsSecretsManagerProvider {
 
     /// Get full secret name by prefixing credential ID
     fn get_secret_name(&self, id: &CredentialId) -> String {
-        format!("{}{}", self.config.secret_prefix, id.as_str())
+        format!("{}{}", self.config.secret_prefix, id)
     }
 
     /// Convert credential metadata to AWS tags
@@ -381,7 +381,7 @@ impl StorageProvider for AwsSecretsManagerProvider {
 
         let secret_string =
             serde_json::to_string(&payload).map_err(|e| StorageError::WriteFailure {
-                id: id.as_str().to_string(),
+                id: id.to_string().to_string(),
                 source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
             })?;
 
@@ -427,7 +427,7 @@ impl StorageProvider for AwsSecretsManagerProvider {
                             let duration = start.elapsed();
                             self.metrics.record_operation("store", duration, false);
                             Err(StorageError::WriteFailure {
-                                id: id.as_str().to_string(),
+                                id: id.to_string().to_string(),
                                 source: std::io::Error::other(update_err.to_string()),
                             })
                         }
@@ -437,7 +437,7 @@ impl StorageProvider for AwsSecretsManagerProvider {
                     let duration = start.elapsed();
                     self.metrics.record_operation("store", duration, false);
                     Err(StorageError::WriteFailure {
-                        id: id.as_str().to_string(),
+                        id: id.to_string().to_string(),
                         source: std::io::Error::other(error_msg),
                     })
                 }
@@ -471,7 +471,7 @@ impl StorageProvider for AwsSecretsManagerProvider {
                     output
                         .secret_string()
                         .ok_or_else(|| StorageError::ReadFailure {
-                            id: id.as_str().to_string(),
+                            id: id.to_string().to_string(),
                             source: std::io::Error::new(
                                 std::io::ErrorKind::InvalidData,
                                 "Secret does not contain string data",
@@ -487,7 +487,7 @@ impl StorageProvider for AwsSecretsManagerProvider {
 
                 let payload: SecretPayload =
                     serde_json::from_str(secret_string).map_err(|e| StorageError::ReadFailure {
-                        id: id.as_str().to_string(),
+                        id: id.to_string().to_string(),
                         source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
                     })?;
 
@@ -501,11 +501,11 @@ impl StorageProvider for AwsSecretsManagerProvider {
                 let error_msg = e.to_string();
                 if error_msg.contains("ResourceNotFoundException") {
                     Err(StorageError::NotFound {
-                        id: id.as_str().to_string(),
+                        id: id.to_string().to_string(),
                     })
                 } else {
                     Err(StorageError::ReadFailure {
-                        id: id.as_str().to_string(),
+                        id: id.to_string().to_string(),
                         source: std::io::Error::other(error_msg),
                     })
                 }
@@ -547,7 +547,7 @@ impl StorageProvider for AwsSecretsManagerProvider {
                 } else {
                     self.metrics.record_operation("delete", duration, false);
                     Err(StorageError::WriteFailure {
-                        id: id.as_str().to_string(),
+                        id: id.to_string().to_string(),
                         source: std::io::Error::other(error_msg),
                     })
                 }
@@ -584,7 +584,7 @@ impl StorageProvider for AwsSecretsManagerProvider {
                             && name.starts_with(&prefix)
                         {
                             let id_str = &name[prefix.len()..];
-                            if let Ok(id) = CredentialId::new(id_str) {
+                            if let Ok(id) = CredentialId::parse(id_str) {
                                 ids.push(id);
                             }
                         }
@@ -657,7 +657,7 @@ impl StorageProvider for AwsSecretsManagerProvider {
                 } else {
                     self.metrics.record_operation("exists", duration, false);
                     Err(StorageError::ReadFailure {
-                        id: id.as_str().to_string(),
+                        id: id.to_string().to_string(),
                         source: std::io::Error::other(error_msg),
                     })
                 }

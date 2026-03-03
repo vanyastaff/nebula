@@ -376,7 +376,7 @@ impl LocalStorageProvider {
     fn get_file_path(&self, id: &CredentialId) -> PathBuf {
         self.config
             .base_path
-            .join(format!("{}.{}", id.as_str(), self.config.file_extension))
+            .join(format!("{}.{}", id.to_string(), self.config.file_extension))
     }
 }
 
@@ -542,7 +542,7 @@ impl StorageProvider for LocalStorageProvider {
             let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
-            let Ok(id) = CredentialId::try_from(file_stem.to_string()) else {
+            let Ok(id) = CredentialId::parse(file_stem) else {
                 continue;
             };
 

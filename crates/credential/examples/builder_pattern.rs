@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("5. Using the configured manager...");
     let key = EncryptionKey::from_bytes([0u8; 32]);
     let context = CredentialContext::new("user-1");
-    let id = CredentialId::new("example-credential")?;
+    let id = CredentialId::new();
     let data = encrypt(&key, b"my-secret-data")?;
 
     manager_chained

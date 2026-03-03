@@ -22,7 +22,7 @@ fn create_test_data(value: &str) -> EncryptedData {
 #[tokio::test]
 async fn test_store_credential_with_scope() {
     let manager = create_test_manager().await;
-    let id = CredentialId::new("test-cred").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("secret-value");
     let metadata = CredentialMetadata::new();
     let context = CredentialContext::new("user-1")
@@ -50,7 +50,7 @@ async fn test_store_credential_with_scope() {
 #[tokio::test]
 async fn test_retrieve_with_matching_scope() {
     let manager = create_test_manager().await;
-    let id = CredentialId::new("scoped-cred").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("secret");
     let metadata = CredentialMetadata::new();
 
@@ -85,7 +85,7 @@ async fn test_retrieve_with_matching_scope() {
 #[tokio::test]
 async fn test_retrieve_with_mismatched_scope_current_behavior() {
     let manager = create_test_manager().await;
-    let id = CredentialId::new("team-a-cred").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("team-a-secret");
     let metadata = CredentialMetadata::new();
 
@@ -123,9 +123,9 @@ async fn test_list_credentials_by_scope() {
     let manager = create_test_manager().await;
 
     // Store credentials with different scopes
-    let cred1 = CredentialId::new("team-eng-db").unwrap();
-    let cred2 = CredentialId::new("team-eng-api").unwrap();
-    let cred3 = CredentialId::new("team-sales-crm").unwrap();
+    let cred1 = CredentialId::new();
+    let cred2 = CredentialId::new();
+    let cred3 = CredentialId::new();
 
     let data = create_test_data("secret");
     let metadata = CredentialMetadata::new();
@@ -166,7 +166,7 @@ async fn test_list_credentials_by_scope() {
 #[tokio::test]
 async fn test_scope_hierarchy_parent_access() {
     let manager = create_test_manager().await;
-    let id = CredentialId::new("service-cred").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("service-secret");
     let metadata = CredentialMetadata::new();
 
@@ -203,7 +203,7 @@ async fn test_scope_isolation_between_tenants() {
     let metadata = CredentialMetadata::new();
 
     // Tenant A stores credential
-    let tenant_a_id = CredentialId::new("tenant-a-db").unwrap();
+    let tenant_a_id = CredentialId::new();
     let tenant_a_context = CredentialContext::new("user-a")
         .with_scope("org:tenant-a")
         .unwrap();
@@ -219,7 +219,7 @@ async fn test_scope_isolation_between_tenants() {
         .unwrap();
 
     // Tenant B stores credential
-    let tenant_b_id = CredentialId::new("tenant-b-db").unwrap();
+    let tenant_b_id = CredentialId::new();
     let tenant_b_context = CredentialContext::new("user-b")
         .with_scope("org:tenant-b")
         .unwrap();

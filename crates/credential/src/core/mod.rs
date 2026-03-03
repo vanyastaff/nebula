@@ -22,7 +22,10 @@ pub use error::{
     ValidationError,
 };
 pub use filter::CredentialFilter;
-pub use id::{CredentialId, ScopeId};
+pub use id::{CredentialLabel, ScopeId};
+
+/// Re-export for instance identification (UUID-backed, like ResourceId).
+pub use nebula_core::CredentialId;
 pub use metadata::CredentialMetadata;
 pub use reference::{CredentialProvider, CredentialRef};
 pub use status::{status_from_metadata, CredentialStatus};

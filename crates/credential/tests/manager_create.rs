@@ -33,7 +33,7 @@ async fn test_create_api_key_complete() {
             type_id,
         } => {
             assert_eq!(type_id, "api_key");
-            assert!(credential_id.as_str().starts_with("cred-"));
+            assert!(!credential_id.is_nil());
 
             // Verify credential was stored
             let (data, _meta) = manager
@@ -63,7 +63,7 @@ async fn test_create_basic_auth_complete() {
             type_id,
         } => {
             assert_eq!(type_id, "basic_auth");
-            assert!(credential_id.as_str().starts_with("cred-"));
+            assert!(!credential_id.is_nil());
         }
         _ => panic!("expected Complete, got {:?}", result),
     }

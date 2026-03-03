@@ -372,7 +372,7 @@ impl HashiCorpVaultProvider {
 
     /// Get full secret path (mount + prefix + id).
     fn get_secret_path(&self, id: &CredentialId) -> String {
-        format!("{}/{}", self.config.path_prefix, id.as_str())
+        format!("{}/{}", self.config.path_prefix, id.to_string())
     }
 }
 
@@ -403,7 +403,7 @@ impl StorageProvider for HashiCorpVaultProvider {
 
         let secret_data =
             serde_json::to_value(&payload).map_err(|e| StorageError::WriteFailure {
-                id: id.as_str().to_string(),
+                id: id.to_string().to_string(),
                 source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
             })?;
 
@@ -426,11 +426,11 @@ impl StorageProvider for HashiCorpVaultProvider {
                 let error_msg = format!("{:?}", e);
                 if error_msg.contains("permission denied") || error_msg.contains("403") {
                     Err(StorageError::PermissionDenied {
-                        id: id.as_str().to_string(),
+                        id: id.to_string().to_string(),
                     })
                 } else {
                     Err(StorageError::WriteFailure {
-                        id: id.as_str().to_string(),
+                        id: id.to_string().to_string(),
                         source: std::io::Error::other(error_msg),
                     })
                 }
@@ -470,7 +470,7 @@ impl StorageProvider for HashiCorpVaultProvider {
                 let payload: SecretPayload =
                     serde_json::from_value(serde_json::Value::Object(secret.into_iter().collect()))
                         .map_err(|e| StorageError::ReadFailure {
-                            id: id.as_str().to_string(),
+                            id: id.to_string().to_string(),
                             source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
                         })?;
 
@@ -482,17 +482,17 @@ impl StorageProvider for HashiCorpVaultProvider {
                 if error_msg.contains("404") || error_msg.contains("not found") {
                     self.metrics.record_operation("retrieve", duration, true);
                     Err(StorageError::NotFound {
-                        id: id.as_str().to_string(),
+                        id: id.to_string().to_string(),
                     })
                 } else if error_msg.contains("permission denied") || error_msg.contains("403") {
                     self.metrics.record_operation("retrieve", duration, false);
                     Err(StorageError::PermissionDenied {
-                        id: id.as_str().to_string(),
+                        id: id.to_string().to_string(),
                     })
                 } else {
                     self.metrics.record_operation("retrieve", duration, false);
                     Err(StorageError::ReadFailure {
-                        id: id.as_str().to_string(),
+                        id: id.to_string().to_string(),
                         source: std::io::Error::other(error_msg),
                     })
                 }
@@ -529,12 +529,12 @@ impl StorageProvider for HashiCorpVaultProvider {
                 } else if error_msg.contains("permission denied") || error_msg.contains("403") {
                     self.metrics.record_operation("delete", duration, false);
                     Err(StorageError::PermissionDenied {
-                        id: id.as_str().to_string(),
+                        id: id.to_string().to_string(),
                     })
                 } else {
                     self.metrics.record_operation("delete", duration, false);
                     Err(StorageError::WriteFailure {
-                        id: id.as_str().to_string(),
+                        id: id.to_string().to_string(),
                         source: std::io::Error::other(error_msg),
                     })
                 }
@@ -568,7 +568,7 @@ impl StorageProvider for HashiCorpVaultProvider {
                 for key in keys {
                     // Remove any trailing slashes (directories)
                     let key = key.trim_end_matches('/');
-                    if let Ok(id) = CredentialId::new(key) {
+                    if let Ok(id) = CredentialId::parse(key) {
                         ids.push(id);
                     }
                 }
@@ -626,7 +626,7 @@ impl StorageProvider for HashiCorpVaultProvider {
                 } else {
                     self.metrics.record_operation("exists", duration, false);
                     Err(StorageError::ReadFailure {
-                        id: id.as_str().to_string(),
+                        id: id.to_string().to_string(),
                         source: std::io::Error::other(error_msg),
                     })
                 }

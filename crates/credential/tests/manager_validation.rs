@@ -24,7 +24,7 @@ fn create_test_data(value: &str) -> EncryptedData {
 #[tokio::test]
 async fn test_validate_non_expired() {
     let manager = create_test_manager().await;
-    let id = CredentialId::new("valid-cred").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("password");
     let metadata = CredentialMetadata::new();
     let context = CredentialContext::new("user-1");
@@ -46,7 +46,7 @@ async fn test_validate_non_expired() {
 #[tokio::test]
 async fn test_validate_expired() {
     let manager = create_test_manager().await;
-    let id = CredentialId::new("expiring-cred").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("password");
 
     // Create metadata with created_at in the past and 1-day expiration
@@ -87,7 +87,7 @@ async fn test_validate_batch() {
 
     // Store multiple credentials
     let ids: Vec<CredentialId> = (0..5)
-        .map(|i| CredentialId::new(format!("cred-{}", i)).unwrap())
+        .map(|i| CredentialId::new())
         .collect();
 
     for id in &ids {
@@ -114,7 +114,7 @@ async fn test_rotation_recommended() {
     let manager = create_test_manager().await;
 
     // Test 1: Fresh credential - no rotation needed
-    let id_fresh = CredentialId::new("fresh-cred").unwrap();
+    let id_fresh = CredentialId::new();
     let data = create_test_data("password");
     let mut metadata_fresh = CredentialMetadata::new();
     metadata_fresh.rotation_policy = Some(RotationPolicy::Periodic(
@@ -141,7 +141,7 @@ async fn test_rotation_recommended() {
 
     // Test 2: Old credential (created 25 days ago with 30-day policy)
     // Should recommend rotation (>75% of lifetime used)
-    let id_old = CredentialId::new("old-cred").unwrap();
+    let id_old = CredentialId::new();
     let mut metadata_old = CredentialMetadata::new();
     metadata_old.created_at = chrono::Utc::now() - chrono::Duration::days(25);
     metadata_old.last_modified = metadata_old.created_at;
@@ -170,7 +170,7 @@ async fn test_rotation_recommended() {
 #[tokio::test]
 async fn test_validate_scoped() {
     let manager = create_test_manager().await;
-    let id = CredentialId::new("scoped-cred").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("password");
     let metadata = CredentialMetadata::new();
 

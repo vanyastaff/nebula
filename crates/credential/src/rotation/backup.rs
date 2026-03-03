@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn test_backup_creation() {
-        let cred_id = CredentialId::new("test-cred").unwrap();
+        let cred_id = CredentialId::new();
         let tx_id = RotationId::new();
         let encrypted = EncryptedData {
             version: 1,
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_backup_restore() {
-        let cred_id = CredentialId::new("test-cred").unwrap();
+        let cred_id = CredentialId::new();
         let tx_id = RotationId::new();
         let encrypted = EncryptedData {
             version: 1,
@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn test_backup_expiration_extension() {
-        let cred_id = CredentialId::new("test-cred").unwrap();
+        let cred_id = CredentialId::new();
         let tx_id = RotationId::new();
         let encrypted = EncryptedData {
             version: 1,

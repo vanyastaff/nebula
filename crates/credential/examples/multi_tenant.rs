@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Tenant A credentials
     let tenant_a_context = CredentialContext::new("org-1").with_scope("tenant-a")?;
-    let cred_a1 = CredentialId::new("tenant-a-db-password")?;
+    let cred_a1 = CredentialId::new();
     let data_a1 = encrypt(&key, b"secret-a1")?;
     manager
         .store(
@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Tenant B credentials
     let tenant_b_context = CredentialContext::new("org-1").with_scope("tenant-b")?;
-    let cred_b1 = CredentialId::new("tenant-b-api-key")?;
+    let cred_b1 = CredentialId::new();
     let data_b1 = encrypt(&key, b"secret-b1")?;
     manager
         .store(
@@ -83,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Child scope credential
     let child_context = CredentialContext::new("org-1").with_scope("org-1/team-1")?;
-    let cred_child = CredentialId::new("child-credential")?;
+    let cred_child = CredentialId::new();
     let data_child = encrypt(&key, b"secret-child")?;
     manager
         .store(

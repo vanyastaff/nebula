@@ -62,7 +62,7 @@ fn create_test_data(value: &str) -> EncryptedData {
 #[tokio::test]
 async fn test_cache_hit_latency() {
     let manager = create_cached_manager();
-    let id = CredentialId::new("latency-test").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("password123");
     let metadata = CredentialMetadata::new();
     let context = CredentialContext::new("user-1");
@@ -112,7 +112,7 @@ async fn test_cache_hit_latency() {
 #[tokio::test]
 async fn test_cache_ttl_expiration() {
     let manager = create_short_ttl_manager();
-    let id = CredentialId::new("ttl-test").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("password123");
     let metadata = CredentialMetadata::new();
     let context = CredentialContext::new("user-1");
@@ -148,7 +148,7 @@ async fn test_cache_ttl_expiration() {
 #[tokio::test]
 async fn test_cache_invalidation_on_update() {
     let manager = create_cached_manager();
-    let id = CredentialId::new("update-test").unwrap();
+    let id = CredentialId::new();
     let data_v1 = create_test_data("password-v1");
     let data_v2 = create_test_data("password-v2");
     let metadata = CredentialMetadata::new();
@@ -190,21 +190,21 @@ async fn test_lru_eviction() {
     let context = CredentialContext::new("user-1");
 
     // Store 3 credentials to fill cache
+    let mut ids = Vec::new();
     for i in 1..=3 {
-        let id = CredentialId::new(format!("cred-{}", i)).unwrap();
+        let id = CredentialId::new();
+        ids.push(id);
         let data = create_test_data(&format!("pass-{}", i));
         let metadata = CredentialMetadata::new();
         manager.store(&id, data, metadata, &context).await.unwrap();
     }
 
-    // Access cred-2 and cred-3 to make them recently used
-    let id2 = CredentialId::new("cred-2").unwrap();
-    let id3 = CredentialId::new("cred-3").unwrap();
-    manager.retrieve(&id2, &context).await.unwrap();
-    manager.retrieve(&id3, &context).await.unwrap();
+    // Access id2 and id3 to make them recently used
+    manager.retrieve(&ids[1], &context).await.unwrap();
+    manager.retrieve(&ids[2], &context).await.unwrap();
 
     // Store 4th credential (should evict cred-1 as LRU)
-    let id4 = CredentialId::new("cred-4").unwrap();
+    let id4 = CredentialId::new();
     let data4 = create_test_data("pass-4");
     let metadata4 = CredentialMetadata::new();
     manager
@@ -229,7 +229,7 @@ async fn test_lru_eviction() {
 #[tokio::test]
 async fn test_cache_stats() {
     let manager = create_cached_manager();
-    let id = CredentialId::new("stats-test").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("password123");
     let metadata = CredentialMetadata::new();
     let context = CredentialContext::new("user-1");
@@ -280,7 +280,7 @@ async fn test_cache_stats() {
 #[tokio::test]
 async fn test_cache_disabled_by_default() {
     let manager = create_uncached_manager();
-    let id = CredentialId::new("no-cache-test").unwrap();
+    let id = CredentialId::new();
     let data = create_test_data("password123");
     let metadata = CredentialMetadata::new();
     let context = CredentialContext::new("user-1");

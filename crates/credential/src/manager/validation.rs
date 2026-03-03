@@ -74,7 +74,7 @@ impl ValidationResult {
     ///
     /// let expires_in_1_hour = Utc::now() + ChronoDuration::hours(1);
     /// let result = ValidationResult {
-    ///     credential_id: CredentialId::new("test").unwrap(),
+    ///     credential_id: CredentialId::new(),
     ///     valid: true,
     ///     details: ValidationDetails::Valid {
     ///         expires_at: Some(expires_in_1_hour),
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn test_validation_result_valid() {
         let result = ValidationResult {
-            credential_id: CredentialId::new("test-cred").unwrap(),
+            credential_id: CredentialId::new(),
             valid: true,
             details: ValidationDetails::Valid { expires_at: None },
         };
@@ -203,7 +203,7 @@ mod tests {
         let now = Utc::now();
 
         let result = ValidationResult {
-            credential_id: CredentialId::new("expired-cred").unwrap(),
+            credential_id: CredentialId::new(),
             valid: false,
             details: ValidationDetails::Expired { expired_at, now },
         };
@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn test_validation_result_not_found() {
         let result = ValidationResult {
-            credential_id: CredentialId::new("missing-cred").unwrap(),
+            credential_id: CredentialId::new(),
             valid: false,
             details: ValidationDetails::NotFound,
         };
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn test_rotation_recommended_no_expiration() {
         let result = ValidationResult {
-            credential_id: CredentialId::new("test-cred").unwrap(),
+            credential_id: CredentialId::new(),
             valid: true,
             details: ValidationDetails::Valid { expires_at: None },
         };
@@ -241,7 +241,7 @@ mod tests {
         let expires_at = Utc::now() + ChronoDuration::hours(1);
 
         let result = ValidationResult {
-            credential_id: CredentialId::new("test-cred").unwrap(),
+            credential_id: CredentialId::new(),
             valid: true,
             details: ValidationDetails::Valid {
                 expires_at: Some(expires_at),
@@ -259,7 +259,7 @@ mod tests {
         let expires_at = Utc::now() + ChronoDuration::hours(10);
 
         let result = ValidationResult {
-            credential_id: CredentialId::new("test-cred").unwrap(),
+            credential_id: CredentialId::new(),
             valid: true,
             details: ValidationDetails::Valid {
                 expires_at: Some(expires_at),
@@ -277,7 +277,7 @@ mod tests {
         let expires_at = Utc::now() - ChronoDuration::hours(1);
 
         let result = ValidationResult {
-            credential_id: CredentialId::new("test-cred").unwrap(),
+            credential_id: CredentialId::new(),
             valid: false,
             details: ValidationDetails::Valid {
                 expires_at: Some(expires_at),

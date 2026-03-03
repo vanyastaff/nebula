@@ -34,7 +34,7 @@ impl StorageProvider for MockStorageProvider {
         _context: &CredentialContext,
     ) -> Result<(), StorageError> {
         let mut storage = self.data.write().await;
-        storage.insert(id.as_str().to_string(), (data, metadata));
+        storage.insert(id.to_string(), (data, metadata));
         Ok(())
     }
 
@@ -45,10 +45,10 @@ impl StorageProvider for MockStorageProvider {
     ) -> Result<(EncryptedData, CredentialMetadata), StorageError> {
         let storage = self.data.read().await;
         storage
-            .get(id.as_str())
+            .get(&id.to_string())
             .cloned()
             .ok_or_else(|| StorageError::NotFound {
-                id: id.as_str().to_string(),
+                id: id.to_string(),
             })
     }
 
@@ -58,7 +58,7 @@ impl StorageProvider for MockStorageProvider {
         _context: &CredentialContext,
     ) -> Result<(), StorageError> {
         let mut storage = self.data.write().await;
-        storage.remove(id.as_str());
+        storage.remove(&id.to_string());
         Ok(()) // Idempotent - removing non-existent key succeeds
     }
 
@@ -94,11 +94,11 @@ impl StorageProvider for MockStorageProvider {
                 }
                 true
             })
-            .map(|(id, _)| CredentialId::new(id.clone()).expect("stored IDs should be valid"))
+            .map(|(id_str, _)| CredentialId::parse(id_str).expect("stored IDs should be valid UUIDs"))
             .collect();
 
         // Sort for deterministic output
-        ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        ids.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
         Ok(ids)
     }
 
@@ -108,7 +108,7 @@ impl StorageProvider for MockStorageProvider {
         _context: &CredentialContext,
     ) -> Result<bool, StorageError> {
         let storage = self.data.read().await;
-        Ok(storage.contains_key(id.as_str()))
+        Ok(storage.contains_key(&id.to_string()))
     }
 }
 
@@ -125,7 +125,7 @@ fn create_test_data() -> (EncryptionKey, EncryptedData, CredentialMetadata) {
 #[tokio::test]
 async fn test_mock_provider_store_and_retrieve() {
     let provider = MockStorageProvider::new();
-    let id = CredentialId::new("test_cred").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
     let (_, encrypted, metadata) = create_test_data();
 
@@ -155,7 +155,7 @@ async fn test_mock_provider_store_and_retrieve() {
 #[tokio::test]
 async fn test_mock_provider_delete_idempotent() {
     let provider = MockStorageProvider::new();
-    let id = CredentialId::new("delete_test").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
     let (_, encrypted, metadata) = create_test_data();
 
@@ -200,7 +200,7 @@ async fn test_mock_provider_list_empty() {
 #[tokio::test]
 async fn test_mock_provider_exists() {
     let provider = MockStorageProvider::new();
-    let id = CredentialId::new("exists_test").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
     let (_, encrypted, metadata) = create_test_data();
 
@@ -226,7 +226,7 @@ async fn test_mock_provider_exists() {
 #[tokio::test]
 async fn test_mock_provider_retrieve_nonexistent() {
     let provider = MockStorageProvider::new();
-    let id = CredentialId::new("nonexistent").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
 
     let result = provider.retrieve(&id, &context).await;
@@ -244,7 +244,7 @@ async fn test_mock_provider_retrieve_nonexistent() {
 #[tokio::test]
 async fn test_mock_provider_concurrent_writes() {
     let provider = Arc::new(MockStorageProvider::new());
-    let id = CredentialId::new("concurrent_test").unwrap();
+    let id = CredentialId::new();
     let context = CredentialContext::new("user_123");
 
     // Spawn multiple concurrent writes
@@ -295,7 +295,7 @@ async fn test_mock_provider_list_with_filter() {
 
     // Store credentials with different tags
     for i in 1..=5 {
-        let id = CredentialId::new(format!("cred_{}", i)).unwrap();
+        let id = CredentialId::new();
         let (_, encrypted, mut metadata) = create_test_data();
 
         if i % 2 == 0 {

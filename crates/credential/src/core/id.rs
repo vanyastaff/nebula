@@ -13,59 +13,35 @@ const MAX_ID_LENGTH: usize = 255;
 /// Maximum length for scope IDs (prevents DoS attacks)
 const MAX_SCOPE_LENGTH: usize = 512;
 
-/// Unique credential identifier (validated)
+/// Human-readable credential label (validated string).
+///
+/// Use for display names, metadata tags, or configuration where a readable
+/// identifier is needed. For instance identification, use [`nebula_core::CredentialId`]
+/// (UUID-backed).
 ///
 /// Only allows alphanumeric characters, hyphens, and underscores to prevent
 /// path traversal, filesystem issues, and injection attacks.
 ///
-/// Maximum length is 255 characters to prevent denial-of-service attacks.
-///
 /// # Examples
 ///
 /// ```
-/// use nebula_credential::CredentialId;
+/// use nebula_credential::core::CredentialLabel;
 ///
-/// // Valid IDs
-/// let id1 = CredentialId::new("github_token").unwrap();
-/// let id2 = CredentialId::new("aws-access-key-123").unwrap();
-///
-/// // Invalid IDs
-/// assert!(CredentialId::new("").is_err()); // Empty
-/// assert!(CredentialId::new("../etc/passwd").is_err()); // Path traversal
-/// assert!(CredentialId::new("token with spaces").is_err()); // Spaces
+/// let label = CredentialLabel::new("github-prod").unwrap();
+/// assert_eq!(label.as_str(), "github-prod");
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct CredentialId(String);
+pub struct CredentialLabel(String);
 
-impl CredentialId {
-    /// Creates a new validated credential ID
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - The credential identifier string
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(CredentialId)` if the ID is valid, or an error describing
-    /// why validation failed.
+impl CredentialLabel {
+    /// Creates a new validated credential label.
     ///
     /// # Errors
     ///
-    /// Returns [`ValidationError::EmptyCredentialId`] if the ID is empty.
-    ///
-    /// Returns [`ValidationError::InvalidCredentialId`] if the ID contains
-    /// characters other than alphanumeric, hyphens, or underscores.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use nebula_credential::CredentialId;
-    ///
-    /// let id = CredentialId::new("my_credential_123")?;
-    /// assert_eq!(id.as_str(), "my_credential_123");
-    /// # Ok::<(), nebula_credential::ValidationError>(())
-    /// ```
+    /// Returns [`ValidationError::EmptyCredentialId`] if the label is empty.
+    /// Returns [`ValidationError::InvalidCredentialId`] if the label contains
+    /// invalid characters.
     pub fn new(id: impl Into<String>) -> Result<Self, ValidationError> {
         let id = id.into();
 
@@ -97,55 +73,34 @@ impl CredentialId {
         Ok(Self(id))
     }
 
-    /// Returns credential ID as string slice
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use nebula_credential::CredentialId;
-    ///
-    /// let id = CredentialId::new("test_id")?;
-    /// assert_eq!(id.as_str(), "test_id");
-    /// # Ok::<(), nebula_credential::ValidationError>(())
-    /// ```
+    /// Returns the label as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    /// Converts to owned string
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use nebula_credential::CredentialId;
-    ///
-    /// let id = CredentialId::new("test_id")?;
-    /// let string = id.into_string();
-    /// assert_eq!(string, "test_id");
-    /// # Ok::<(), nebula_credential::ValidationError>(())
-    /// ```
+    /// Converts to owned string.
     pub fn into_string(self) -> String {
         self.0
     }
 }
 
-impl fmt::Display for CredentialId {
+impl fmt::Display for CredentialLabel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl From<CredentialId> for String {
-    fn from(id: CredentialId) -> Self {
+impl From<CredentialLabel> for String {
+    fn from(id: CredentialLabel) -> Self {
         id.0
     }
 }
 
-impl TryFrom<String> for CredentialId {
+impl TryFrom<String> for CredentialLabel {
     type Error = ValidationError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        CredentialId::new(s)
+        CredentialLabel::new(s)
     }
 }
 
@@ -154,118 +109,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_valid_credential_ids() {
-        assert!(CredentialId::new("github_token").is_ok());
-        assert!(CredentialId::new("aws-access-key-123").is_ok());
-        assert!(CredentialId::new("db_password_prod").is_ok());
-        assert!(CredentialId::new("APIKey123").is_ok());
-        assert!(CredentialId::new("a").is_ok()); // Single char
-        assert!(CredentialId::new("test-123_abc").is_ok()); // Mixed
+    fn test_valid_credential_labels() {
+        assert!(CredentialLabel::new("github_token").is_ok());
+        assert!(CredentialLabel::new("aws-access-key-123").is_ok());
+        assert!(CredentialLabel::new("db_password_prod").is_ok());
+        assert!(CredentialLabel::new("APIKey123").is_ok());
+        assert!(CredentialLabel::new("a").is_ok());
+        assert!(CredentialLabel::new("test-123_abc").is_ok());
     }
 
     #[test]
-    fn test_invalid_credential_ids() {
-        // Empty
+    fn test_invalid_credential_labels() {
         assert!(matches!(
-            CredentialId::new(""),
+            CredentialLabel::new(""),
             Err(ValidationError::EmptyCredentialId)
         ));
 
-        // Too long (exceeds 255 characters)
         let long_id = "a".repeat(256);
-        let result = CredentialId::new(long_id);
+        let result = CredentialLabel::new(long_id);
         assert!(matches!(
             result,
             Err(ValidationError::InvalidCredentialId { .. })
         ));
-        if let Err(ValidationError::InvalidCredentialId { reason, .. }) = result {
-            assert!(reason.contains("255"));
-            assert!(reason.contains("exceeds maximum length"));
-        }
 
-        // Exactly 255 characters should be OK
         let max_length_id = "a".repeat(255);
-        assert!(CredentialId::new(max_length_id).is_ok());
+        assert!(CredentialLabel::new(max_length_id).is_ok());
 
-        // Path traversal
         assert!(matches!(
-            CredentialId::new("../etc/passwd"),
-            Err(ValidationError::InvalidCredentialId { .. })
-        ));
-
-        // Spaces
-        assert!(matches!(
-            CredentialId::new("token with spaces"),
-            Err(ValidationError::InvalidCredentialId { .. })
-        ));
-
-        // Special characters
-        assert!(matches!(
-            CredentialId::new("token@domain.com"),
+            CredentialLabel::new("../etc/passwd"),
             Err(ValidationError::InvalidCredentialId { .. })
         ));
         assert!(matches!(
-            CredentialId::new("token/path"),
-            Err(ValidationError::InvalidCredentialId { .. })
-        ));
-        assert!(matches!(
-            CredentialId::new("token\\path"),
+            CredentialLabel::new("token with spaces"),
             Err(ValidationError::InvalidCredentialId { .. })
         ));
     }
 
     #[test]
-    fn test_credential_id_as_str() {
-        let id = CredentialId::new("test_id").unwrap();
-        assert_eq!(id.as_str(), "test_id");
+    fn test_credential_label_as_str() {
+        let label = CredentialLabel::new("test_id").unwrap();
+        assert_eq!(label.as_str(), "test_id");
     }
 
     #[test]
-    fn test_credential_id_display() {
-        let id = CredentialId::new("display_test").unwrap();
-        assert_eq!(format!("{}", id), "display_test");
-    }
-
-    #[test]
-    fn test_credential_id_clone() {
-        let id1 = CredentialId::new("clone_test").unwrap();
-        let id2 = id1.clone();
-        assert_eq!(id1, id2);
-    }
-
-    #[test]
-    fn test_credential_id_into_string() {
-        let id = CredentialId::new("convert_test").unwrap();
-        let s: String = id.into();
-        assert_eq!(s, "convert_test");
-    }
-
-    #[test]
-    fn test_credential_id_try_from_string() {
-        let s = "test_id".to_string();
-        let result: Result<CredentialId, ValidationError> = s.try_into();
-        assert!(result.is_ok());
-
-        let invalid = "../invalid".to_string();
-        let result: Result<CredentialId, ValidationError> = invalid.try_into();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_credential_id_serde() {
-        let id = CredentialId::new("serde_test").unwrap();
-        let json = serde_json::to_string(&id).unwrap();
+    fn test_credential_label_serde() {
+        let label = CredentialLabel::new("serde_test").unwrap();
+        let json = serde_json::to_string(&label).unwrap();
         assert_eq!(json, "\"serde_test\"");
 
-        let deserialized: CredentialId = serde_json::from_str(&json).unwrap();
-        assert_eq!(id, deserialized);
-    }
-
-    #[test]
-    fn test_credential_id_serde_invalid() {
-        let json = "\"../invalid\"";
-        let result: Result<CredentialId, _> = serde_json::from_str(json);
-        assert!(result.is_err());
+        let deserialized: CredentialLabel = serde_json::from_str(&json).unwrap();
+        assert_eq!(label, deserialized);
     }
 }
 

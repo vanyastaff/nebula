@@ -26,7 +26,7 @@ async fn test_builder_fluent_api() {
         .build();
 
     // Verify manager was created successfully by using it
-    let id = CredentialId::new("test-cred").unwrap();
+    let id = CredentialId::new();
     let key = EncryptionKey::from_bytes([0u8; 32]);
     let data = encrypt(&key, b"test-data").unwrap();
     let metadata = CredentialMetadata::new();
@@ -93,7 +93,7 @@ async fn test_builder_multiple_configs() {
     );
 
     // Verify manager works
-    let id = CredentialId::new("test").unwrap();
+    let id = CredentialId::new();
     let key = EncryptionKey::from_bytes([0u8; 32]);
     let data = encrypt(&key, b"data").unwrap();
     let metadata = CredentialMetadata::new();
@@ -118,7 +118,7 @@ async fn test_builder_default_values() {
     assert!(stats.is_none(), "Cache should be disabled by default");
 
     // Verify manager still works
-    let id = CredentialId::new("test").unwrap();
+    let id = CredentialId::new();
     let key = EncryptionKey::from_bytes([0u8; 32]);
     let data = encrypt(&key, b"data").unwrap();
     let metadata = CredentialMetadata::new();

@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn test_grace_period_state_creation() {
-        let credential_id = CredentialId::new("test-cred").unwrap();
+        let credential_id = CredentialId::new();
         let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
 
         let state = GracePeriodState::new(credential_id.clone(), 1, 2, &config)
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn test_credential_acceptance_during_grace_period() {
-        let credential_id = CredentialId::new("test-cred").unwrap();
+        let credential_id = CredentialId::new();
         let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
 
         let state = GracePeriodState::new(credential_id, 1, 2, &config)
@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn test_force_end_grace_period() {
-        let credential_id = CredentialId::new("test-cred").unwrap();
+        let credential_id = CredentialId::new();
         let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
 
         let mut state = GracePeriodState::new(credential_id, 1, 2, &config)
@@ -530,7 +530,7 @@ mod tests {
 
     #[test]
     fn test_grace_period_without_overlap() {
-        let credential_id = CredentialId::new("test-cred").unwrap();
+        let credential_id = CredentialId::new();
         let mut config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
         config.allow_overlap = false;
 
@@ -580,8 +580,8 @@ mod tests {
 
     #[test]
     fn test_grace_period_tracker_creation() {
-        let old_id = CredentialId::new("old-cred").unwrap();
-        let new_id = CredentialId::new("new-cred").unwrap();
+        let old_id = CredentialId::new();
+        let new_id = CredentialId::new();
         let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
         let grace_period = GracePeriodState::new(old_id.clone(), 1, 2, &config)
             .expect("Should create grace period state");
@@ -596,8 +596,8 @@ mod tests {
 
     #[test]
     fn test_grace_period_tracker_usage_tracking() {
-        let old_id = CredentialId::new("old-cred").unwrap();
-        let new_id = CredentialId::new("new-cred").unwrap();
+        let old_id = CredentialId::new();
+        let new_id = CredentialId::new();
         let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
         let grace_period = GracePeriodState::new(old_id.clone(), 1, 2, &config)
             .expect("Should create grace period state");
@@ -614,8 +614,8 @@ mod tests {
 
     #[test]
     fn test_can_revoke_old_credential_grace_period_expired() {
-        let old_id = CredentialId::new("old-cred").unwrap();
-        let new_id = CredentialId::new("new-cred").unwrap();
+        let old_id = CredentialId::new();
+        let new_id = CredentialId::new();
         let config = GracePeriodConfig::new(Duration::from_secs(0)); // Immediate expiry
         let grace_period = GracePeriodState::new(old_id.clone(), 1, 2, &config)
             .expect("Should create grace period state");
@@ -628,8 +628,8 @@ mod tests {
 
     #[test]
     fn test_can_revoke_old_credential_migration_complete() {
-        let old_id = CredentialId::new("old-cred").unwrap();
-        let new_id = CredentialId::new("new-cred").unwrap();
+        let old_id = CredentialId::new();
+        let new_id = CredentialId::new();
         let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
         let grace_period = GracePeriodState::new(old_id.clone(), 1, 2, &config)
             .expect("Should create grace period state");
@@ -646,7 +646,7 @@ mod tests {
     #[test]
     fn test_track_credential_usage_function() {
         let mut metrics_map = HashMap::new();
-        let cred_id = CredentialId::new("test-cred").unwrap();
+        let cred_id = CredentialId::new();
 
         track_credential_usage(&cred_id, &mut metrics_map);
         track_credential_usage(&cred_id, &mut metrics_map);
@@ -656,10 +656,10 @@ mod tests {
 
     #[test]
     fn test_cleanup_expired_credentials() {
-        let old_id1 = CredentialId::new("old-1").unwrap();
-        let new_id1 = CredentialId::new("new-1").unwrap();
-        let old_id2 = CredentialId::new("old-2").unwrap();
-        let new_id2 = CredentialId::new("new-2").unwrap();
+        let old_id1 = CredentialId::new();
+        let new_id1 = CredentialId::new();
+        let old_id2 = CredentialId::new();
+        let new_id2 = CredentialId::new();
 
         // Expired grace period
         let config_expired = GracePeriodConfig::new(Duration::from_secs(0));

@@ -73,12 +73,13 @@ pub use crate::core::{
     CryptoError, ManagerError, ManagerResult, ScopeId, SecretString, StorageError,
     ValidationError, status_from_metadata,
 };
-pub use crate::core::result::CreateResult;
+pub use crate::core::result::{CreateResult, InitializeResult};
 
 // Traits
 pub use crate::traits::{
     CredentialResource, CredentialType, DistributedLock, FlowProtocol, InteractiveCredential,
-    LockError, LockGuard, Refreshable, Revocable, StateStore, StaticProtocol, StorageProvider,
+    LockError, LockGuard, Refreshable, Revocable, RotationStrategy, StateStore, StaticProtocol,
+    StorageProvider,
 };
 
 // Protocols
@@ -93,7 +94,9 @@ pub use crate::protocols::{
 pub use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
 
 // Rotation
-pub use crate::rotation::{GracePeriodConfig, RotationError, RotationResult};
+pub use crate::rotation::{
+    CredentialRotationEvent, GracePeriodConfig, RotationError, RotationResult,
+};
 
 /// Commonly used types and traits
 pub mod prelude {
@@ -102,7 +105,7 @@ pub mod prelude {
         CredentialContext, CredentialError, CredentialFilter, CredentialId, CredentialMetadata,
         CredentialProvider, CredentialRef, CredentialStatus, SecretString, status_from_metadata,
     };
-    pub use crate::core::result::CreateResult;
+    pub use crate::core::result::{CreateResult, InitializeResult};
 
     // Rotation types
     pub use crate::rotation::policy::RotationPolicy;

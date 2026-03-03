@@ -58,7 +58,7 @@ pub trait StateStore: Send + Sync {
 /// };
 ///
 /// async fn example(provider: &dyn StorageProvider) -> Result<(), Box<dyn std::error::Error>> {
-///     let id = CredentialId::new("github_token")?;
+///     let id = CredentialId::new();
 ///     let context = CredentialContext::new("user_123");
 ///
 ///     // Check existence

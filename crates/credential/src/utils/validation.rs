@@ -41,7 +41,7 @@ pub fn validate_encrypted_size(
 
     if size > max_size {
         return Err(StorageError::WriteFailure {
-            id: id.as_str().to_string(),
+            id: id.to_string(),
             source: std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
@@ -60,7 +60,7 @@ mod tests {
     use super::*;
 
     fn test_credential_id() -> CredentialId {
-        CredentialId::new("test_cred").unwrap()
+        CredentialId::new()
     }
 
     fn test_encrypted_data(size: usize) -> EncryptedData {
@@ -85,7 +85,7 @@ mod tests {
         assert!(result.is_err());
 
         if let Err(StorageError::WriteFailure { id: err_id, source }) = result {
-            assert_eq!(err_id, "test_cred");
+            assert_eq!(err_id, id.to_string());
             assert!(source.to_string().contains("128 bytes"));
             assert!(source.to_string().contains("100 bytes"));
             assert!(source.to_string().contains("Test Provider"));
@@ -131,7 +131,7 @@ mod tests {
         let err = result.unwrap_err();
         let msg = err.to_string();
 
-        assert!(msg.contains("test_cred"));
+        assert!(msg.contains(&id.to_string()));
         assert!(msg.contains("Custom Provider"));
     }
 }

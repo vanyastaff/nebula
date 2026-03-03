@@ -45,6 +45,42 @@ pub trait CredentialType: Send + Sync + 'static {
         input: &Self::Input,
         ctx: &mut CredentialContext,
     ) -> Result<InitializeResult<Self::State>, CredentialError>;
+
+    /// Stable protocol key (D-015) derived from the static description.
+    ///
+    /// By default, this uses `description().key` and validates it as a `CredentialKey`.
+    /// Macro-generated credential types can rely on this without overriding.
+    fn credential_key() -> nebula_core::CredentialKey
+    where
+        Self: Sized,
+    {
+        nebula_core::CredentialKey::new(Self::description().key.clone())
+            .expect("invalid credential key in CredentialType::description()")
+    }
+}
+
+/// Declares how the resource pool reacts when this resource's credential rotates.
+///
+/// Choose based on where authentication state lives in the client:
+/// - Token in a header/field you can swap → `HotSwap`
+/// - Password baked into a connection at connect-time → `DrainAndRecreate`
+/// - Session-level auth (SSH, LDAP bind) → `Reconnect`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RotationStrategy {
+    /// Call `authorize()` on all live instances. In-flight requests complete
+    /// with old credential; new requests get the new credential immediately.
+    /// Good for: HTTP bearer tokens, API keys in headers, gRPC metadata.
+    #[default]
+    HotSwap,
+
+    /// Gracefully drain the pool (in-flight complete), then recreate all
+    /// instances with the new credential. New instances call `authorize()` after creation.
+    /// Good for: database connections, Redis AUTH, any connection-level auth.
+    DrainAndRecreate,
+
+    /// Immediately close all instances. Next acquire triggers fresh creation.
+    /// Good for: SSH sessions, LDAP binds, any session-level auth.
+    Reconnect,
 }
 
 /// Opt-in: credential supports token/secret refresh (OAuth2, JWT, etc.)
@@ -193,4 +229,114 @@ pub trait CredentialResource {
     /// Called after the resource is created and whenever the credential
     /// is refreshed (e.g. OAuth2 token rotation).
     fn authorize(&mut self, state: &<Self::Credential as CredentialType>::State);
+
+    /// How the resource pool handles credential rotation.
+    /// Override only if `HotSwap` is not correct for this resource.
+    fn rotation_strategy() -> RotationStrategy
+    where
+        Self: Sized,
+    {
+        RotationStrategy::HotSwap
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestApiKey;
+    struct TestDbCred;
+
+    #[async_trait]
+    impl CredentialType for TestApiKey {
+        type Input = ();
+        type State = crate::protocols::ApiKeyState;
+
+        fn description() -> CredentialDescription
+        where
+            Self: Sized,
+        {
+            CredentialDescription::builder()
+                .key("test_api_key")
+                .name("Test API Key")
+                .description("Test API key credential")
+                .properties(nebula_parameter::collection::ParameterCollection::new())
+                .build()
+                .unwrap()
+        }
+
+        async fn initialize(
+            &self,
+            _input: &Self::Input,
+            _ctx: &mut CredentialContext,
+        ) -> Result<InitializeResult<Self::State>, CredentialError> {
+            unreachable!()
+        }
+    }
+
+    #[async_trait]
+    impl CredentialType for TestDbCred {
+        type Input = ();
+        type State = crate::protocols::DatabaseState;
+
+        fn description() -> CredentialDescription
+        where
+            Self: Sized,
+        {
+            CredentialDescription::builder()
+                .key("test_db_cred")
+                .name("Test DB Cred")
+                .description("Test database credential")
+                .properties(nebula_parameter::collection::ParameterCollection::new())
+                .build()
+                .unwrap()
+        }
+
+        async fn initialize(
+            &self,
+            _input: &Self::Input,
+            _ctx: &mut CredentialContext,
+        ) -> Result<InitializeResult<Self::State>, CredentialError> {
+            unreachable!()
+        }
+    }
+
+    struct MyHttpClient;
+
+    impl CredentialResource for MyHttpClient {
+        type Credential = TestApiKey;
+
+        fn authorize(&mut self, _: &<Self::Credential as CredentialType>::State) {}
+    }
+
+    struct MyDbPool;
+
+    impl CredentialResource for MyDbPool {
+        type Credential = TestDbCred;
+
+        fn authorize(&mut self, _: &<Self::Credential as CredentialType>::State) {}
+
+        fn rotation_strategy() -> RotationStrategy
+        where
+            Self: Sized,
+        {
+            RotationStrategy::DrainAndRecreate
+        }
+    }
+
+    #[test]
+    fn default_rotation_strategy_is_hotswap() {
+        assert!(matches!(
+            MyHttpClient::rotation_strategy(),
+            RotationStrategy::HotSwap
+        ));
+    }
+
+    #[test]
+    fn db_resource_declares_drain_and_recreate() {
+        assert!(matches!(
+            MyDbPool::rotation_strategy(),
+            RotationStrategy::DrainAndRecreate
+        ));
+    }
 }
