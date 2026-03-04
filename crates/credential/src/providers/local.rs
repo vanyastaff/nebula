@@ -5,8 +5,9 @@
 use crate::core::{
     CredentialContext, CredentialFilter, CredentialId, CredentialMetadata, StorageError,
 };
-use crate::providers::StorageMetrics;
+use crate::providers::credential_file::CredentialFile;
 use crate::providers::config::{ConfigError, ProviderConfig};
+use crate::providers::StorageMetrics;
 use crate::traits::StorageProvider;
 use crate::utils::EncryptedData;
 use async_trait::async_trait;
@@ -165,46 +166,6 @@ impl ProviderConfig for LocalStorageConfig {
 
     fn provider_name(&self) -> &'static str {
         "LocalStorage"
-    }
-}
-
-/// Serialization format for credential files
-///
-/// Stored as JSON on disk with encryption and metadata.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[allow(dead_code)] // Will be used in T016-T018
-struct CredentialFile {
-    /// Format version for future migration support
-    version: u32,
-
-    /// Encrypted credential data (serialized EncryptedData)
-    encrypted_data: EncryptedData,
-
-    /// Credential metadata
-    metadata: CredentialMetadata,
-
-    /// Salt used for encryption (for future key derivation)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    salt: Option<Vec<u8>>,
-}
-
-const CURRENT_VERSION: u32 = 1;
-
-impl CredentialFile {
-    /// Create new credential file
-    fn new(encrypted_data: EncryptedData, metadata: CredentialMetadata) -> Self {
-        Self {
-            version: CURRENT_VERSION,
-            encrypted_data,
-            metadata,
-            salt: None,
-        }
-    }
-
-    /// Check if file needs migration
-    #[allow(dead_code)]
-    fn needs_migration(&self) -> bool {
-        self.version < CURRENT_VERSION
     }
 }
 

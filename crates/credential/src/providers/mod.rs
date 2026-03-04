@@ -3,12 +3,19 @@
 //! This module contains all storage backend implementations that implement
 //! the `StorageProvider` trait from Phase 1.
 
+// Shared serialization format (used by local and postgres providers)
+pub mod credential_file;
+
 // Mock provider for testing (always available)
 pub mod mock;
 
 // Local filesystem storage (default feature)
 #[cfg(feature = "storage-local")]
 pub mod local;
+
+// Postgres KV storage (via nebula-storage)
+#[cfg(feature = "storage-postgres")]
+pub mod postgres;
 
 // AWS Secrets Manager provider
 #[cfg(feature = "storage-aws")]
@@ -44,6 +51,9 @@ pub use vault::{HashiCorpVaultProvider, VaultAuthMethod, VaultConfig};
 
 #[cfg(feature = "storage-k8s")]
 pub use kubernetes::{KubernetesSecretsConfig, KubernetesSecretsProvider};
+
+#[cfg(feature = "storage-postgres")]
+pub use postgres::PostgresStorageProvider;
 
 pub use config::{ConfigError, ProviderConfig};
 pub use metrics::StorageMetrics;

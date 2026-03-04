@@ -144,6 +144,9 @@ pub mod prelude {
     #[cfg(feature = "storage-k8s")]
     pub use crate::providers::{KubernetesSecretsConfig, KubernetesSecretsProvider};
 
+    #[cfg(feature = "storage-postgres")]
+    pub use crate::providers::PostgresStorageProvider;
+
     // Retry utilities
     pub use crate::utils::RetryPolicy;
 
