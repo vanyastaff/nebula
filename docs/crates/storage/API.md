@@ -7,11 +7,11 @@
 - `Storage` trait — `get`, `set`, `delete`, `exists`; all async; `Send + Sync`
 - `MemoryStorage` — `new()`, `Default`; `Storage<Key = String, Value = Vec<u8>>`
 - `MemoryStorageTyped<T>` — `new()`, `Default`; `Storage<Key = String, Value = T>` where `T: Serialize + DeserializeOwned + Send + Sync`
+- `PostgresStorage` (feature `postgres`) — `new(connection_string)` / `with_config(config)`; `Storage<Key = String, Value = serde_json::Value>` backed by `storage_kv.value JSONB`
 - `StorageError` — `NotFound`, `Serialization(serde_json::Error)`, `Backend(String)`
 
 ### Planned (feature-gated)
 
-- `PostgresStorage` (feature `postgres`)
 - `RedisStorage` (feature `redis`)
 - `S3Storage` (feature `s3`)
 - List/prefix scan extension

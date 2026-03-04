@@ -14,16 +14,16 @@
 
 **Goal**: Implement PostgresStorage as the first durable backend.
 
-- [ ] STG-T001 [P] Define storage_kv table schema (key TEXT PRIMARY KEY, value JSONB, updated_at TIMESTAMPTZ)
-- [ ] STG-T002 [P] Create sqlx migration in `migrations/` for storage_kv table
-- [ ] STG-T003 Implement PostgresStorage struct with PgPool connection pooling (`crates/storage/src/postgres.rs`) (→ T001)
-- [ ] STG-T004 Implement `get` method for PostgresStorage (→ T003)
-- [ ] STG-T005 Implement `set` method for PostgresStorage (→ T003)
-- [ ] STG-T006 Implement `delete` method for PostgresStorage (→ T003)
-- [ ] STG-T007 Implement `exists` method for PostgresStorage (→ T003)
-- [ ] STG-T008 Implement `PostgresStorage::new(connection_string)` constructor (→ T003)
-- [ ] STG-T009 Write integration tests for get/set/delete/exists against Postgres (→ T004, T005, T006, T007)
-- [ ] STG-T010 Verify feature flag `postgres` correctly gates implementation (→ T003)
+- [x] STG-T001 [P] Define storage_kv table schema (key TEXT PRIMARY KEY, value JSONB, updated_at TIMESTAMPTZ)
+- [x] STG-T002 [P] Create sqlx migration in `migrations/` for storage_kv table
+- [x] STG-T003 Implement PostgresStorage struct with PgPool connection pooling (`crates/storage/src/postgres.rs`) (→ T001)
+- [x] STG-T004 Implement `get` method for PostgresStorage (→ T003)
+- [x] STG-T005 Implement `set` method for PostgresStorage (→ T003)
+- [x] STG-T006 Implement `delete` method for PostgresStorage (→ T003)
+- [x] STG-T007 Implement `exists` method for PostgresStorage (→ T003)
+- [x] STG-T008 Implement `PostgresStorage::new(connection_string)` constructor (→ T003)
+- [x] STG-T009 Write integration tests for get/set/delete/exists against Postgres (→ T004, T005, T006, T007)
+- [x] STG-T010 Verify feature flag `postgres` correctly gates implementation (→ T003)
 
 **Checkpoint**: PostgresStorage::new(connection_string) works; get/set/delete/exists pass against Postgres.
 

@@ -21,6 +21,12 @@
 | S3 / MinIO     | `s3`      | опционально |
 | Local FS       | —         | планируется |
 
+### PostgreSQL contract (`feature = "postgres"`)
+
+- Таблица: `storage_kv(key TEXT PRIMARY KEY, value JSONB, updated_at TIMESTAMPTZ)`
+- Тип значения: `serde_json::Value`
+- Конструктор: `PostgresStorage::new(connection_string).await`
+
 ## Пример
 
 ```rust
