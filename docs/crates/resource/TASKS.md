@@ -43,12 +43,12 @@
 
 **Goal**: Criterion benchmarks; backpressure policy profiles; high-cardinality metrics hygiene.
 
-- [ ] RSC-T013 Add criterion benchmarks for acquire latency in `benches/acquire.rs`
-- [ ] RSC-T014 [P] Benchmark pool contention under concurrent load
-- [ ] RSC-T015 Implement backpressure policy: `fail-fast` (immediate error on pool exhaustion)
-- [ ] RSC-T016 [P] Implement backpressure policy: `bounded-wait` (queue with timeout)
-- [ ] RSC-T017 [P] Implement backpressure policy: `adaptive` (dynamic based on system pressure)
-- [ ] RSC-T018 Improve high-cardinality metrics hygiene — cap metric label cardinality for multi-tenant
+- [x] RSC-T013 Add criterion benchmarks for acquire latency in `benches/acquire.rs`
+- [x] RSC-T014 [P] Benchmark pool contention under concurrent load
+- [x] RSC-T015 Implement backpressure policy: `fail-fast` (immediate error on pool exhaustion)
+- [x] RSC-T016 [P] Implement backpressure policy: `bounded-wait` (queue with timeout)
+- [x] RSC-T017 [P] Implement backpressure policy: `adaptive` (dynamic based on system pressure)
+- [x] RSC-T018 Improve high-cardinality metrics hygiene — cap metric label cardinality for multi-tenant
 
 **Checkpoint**: p95 acquire latency within SLO; backpressure policies selectable; no perf regression.
 

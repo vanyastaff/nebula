@@ -52,3 +52,7 @@ criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 [[bench]]
 name = "pool_throughput"
 harness = false
+
+[[bench]]
+name = "acquire"
+harness = false

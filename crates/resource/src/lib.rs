@@ -110,7 +110,9 @@ pub use manager::{
     ShutdownConfig, TypedPool, TypedResourceGuard,
 };
 pub use metrics::MetricsCollector;
-pub use pool::{Pool, PoolConfig, PoolStats, PoolStrategy};
+pub use pool::{
+    AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig, PoolStats, PoolStrategy,
+};
 pub use quarantine::{
     QuarantineConfig, QuarantineEntry, QuarantineManager, QuarantineReason, RecoveryStrategy,
 };
@@ -142,7 +144,10 @@ pub mod prelude {
     pub use crate::health::{HealthCheckable, HealthState, HealthStatus, ResourceHealthAdapter};
     pub use crate::hooks::{HookEvent, HookFilter, HookRegistry, HookResult, ResourceHook};
     pub use crate::manager::{Manager, ManagerBuilder, ResourceHandle, TypedResourceGuard};
-    pub use crate::pool::{Pool, PoolConfig, PoolStats, PoolStrategy};
+    pub use crate::pool::{
+        AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig, PoolStats,
+        PoolStrategy,
+    };
 
     pub use crate::http::{HttpResource, HttpResourceConfig, HttpResourceInstance};
 

@@ -82,6 +82,22 @@ Each SSE connection gets its own `broadcast::Receiver` — no shared mutable sta
 - prefer typed acquire (`acquire_typed`) where call site has static resource type.
 - use scoped registration (`register_scoped`) for tenant/workflow isolation.
 
+## Backpressure Profiles
+
+- `PoolBackpressurePolicy::FailFast`:
+  - immediate `PoolExhausted` on saturation.
+- `PoolBackpressurePolicy::BoundedWait { timeout }`:
+  - wait up to timeout, then `PoolExhausted`.
+- `PoolBackpressurePolicy::Adaptive(...)`:
+  - dynamically switches between low/high pressure timeouts based on utilization + waiter depth.
+- compatibility:
+  - if `PoolConfig.backpressure_policy` is omitted, bounded-wait behavior uses legacy `acquire_timeout`.
+
+## Metrics Cardinality Hygiene
+
+- metrics labels for `resource_id` are capped to bounded cardinality.
+- once cap is reached, new unseen resource IDs are aggregated under `__other`.
+
 ## Minimal Example
 
 ```rust

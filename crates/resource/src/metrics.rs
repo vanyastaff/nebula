@@ -6,7 +6,10 @@
 //!
 //! Gated behind the `metrics` feature.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
+use dashmap::DashSet;
+use nebula_core::ResourceKey;
 
 use nebula_metrics::naming::{
     NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
@@ -35,6 +38,9 @@ use crate::events::{EventBus, EventSubscriber, ResourceEvent};
 pub struct MetricsCollector {
     subscriber: EventSubscriber<ResourceEvent>,
 }
+
+const MAX_RESOURCE_LABEL_CARDINALITY: usize = 128;
+static RESOURCE_LABELS: LazyLock<DashSet<String>> = LazyLock::new(DashSet::new);
 
 impl MetricsCollector {
     /// Create a new collector subscribed to the given event bus.
@@ -68,14 +74,14 @@ impl MetricsCollector {
     fn record_event(event: &ResourceEvent) {
         match event {
             ResourceEvent::Created { resource_key, .. } => {
-                let id = resource_key.to_string();
+                let id = Self::resource_label(resource_key);
                 metrics::counter!(NEBULA_RESOURCE_CREATE_TOTAL, "resource_id" => id).increment(1);
             }
             ResourceEvent::Acquired {
                 resource_key,
                 wait_duration,
             } => {
-                let id = resource_key.to_string();
+                let id = Self::resource_label(resource_key);
                 metrics::counter!(NEBULA_RESOURCE_ACQUIRE_TOTAL, "resource_id" => id.clone())
                     .increment(1);
                 metrics::histogram!(
@@ -88,7 +94,7 @@ impl MetricsCollector {
                 resource_key,
                 usage_duration,
             } => {
-                let id = resource_key.to_string();
+                let id = Self::resource_label(resource_key);
                 metrics::counter!(NEBULA_RESOURCE_RELEASE_TOTAL, "resource_id" => id.clone())
                     .increment(1);
                 metrics::histogram!(
@@ -98,17 +104,17 @@ impl MetricsCollector {
                 .record(usage_duration.as_secs_f64());
             }
             ResourceEvent::CleanedUp { resource_key, .. } => {
-                let id = resource_key.to_string();
+                let id = Self::resource_label(resource_key);
                 metrics::counter!(NEBULA_RESOURCE_CLEANUP_TOTAL, "resource_id" => id).increment(1);
             }
             ResourceEvent::Error { resource_key, .. } => {
-                let id = resource_key.to_string();
+                let id = Self::resource_label(resource_key);
                 metrics::counter!(NEBULA_RESOURCE_ERROR_TOTAL, "resource_id" => id).increment(1);
             }
             ResourceEvent::HealthChanged {
                 resource_key, to, ..
             } => {
-                let id = resource_key.to_string();
+                let id = Self::resource_label(resource_key);
                 let score = match to {
                     crate::health::HealthState::Healthy => 1.0,
                     crate::health::HealthState::Degraded { .. } => 0.5,
@@ -125,7 +131,7 @@ impl MetricsCollector {
                 resource_key,
                 waiters,
             } => {
-                let id = resource_key.to_string();
+                let id = Self::resource_label(resource_key);
                 metrics::counter!(
                     NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL,
                     "resource_id" => id.clone()
@@ -138,7 +144,7 @@ impl MetricsCollector {
                 .set(*waiters as f64);
             }
             ResourceEvent::Quarantined { resource_key, .. } => {
-                let id = resource_key.to_string();
+                let id = Self::resource_label(resource_key);
                 metrics::counter!(
                     NEBULA_RESOURCE_QUARANTINE_TOTAL,
                     "resource_id" => id
@@ -146,7 +152,7 @@ impl MetricsCollector {
                 .increment(1);
             }
             ResourceEvent::QuarantineReleased { resource_key, .. } => {
-                let id = resource_key.to_string();
+                let id = Self::resource_label(resource_key);
                 metrics::counter!(
                     NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL,
                     "resource_id" => id
@@ -154,7 +160,7 @@ impl MetricsCollector {
                 .increment(1);
             }
             ResourceEvent::ConfigReloaded { resource_key, .. } => {
-                let id = resource_key.to_string();
+                let id = Self::resource_label(resource_key);
                 metrics::counter!(
                     NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
                     "resource_id" => id
@@ -162,11 +168,11 @@ impl MetricsCollector {
                 .increment(1);
             }
             ResourceEvent::ConfigReloadRejected { resource_key, .. } => {
-                let id = resource_key.to_string();
+                let id = Self::resource_label(resource_key);
                 metrics::counter!(NEBULA_RESOURCE_ERROR_TOTAL, "resource_id" => id).increment(1);
             }
             ResourceEvent::CredentialRotated { resource_key, .. } => {
-                let id = resource_key.to_string();
+                let id = Self::resource_label(resource_key);
                 metrics::counter!(
                     NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
                     "resource_id" => id
@@ -174,6 +180,26 @@ impl MetricsCollector {
                 .increment(1);
             }
         }
+    }
+
+    fn resource_label(resource_key: &ResourceKey) -> String {
+        let raw = resource_key.as_ref();
+        let normalized = if raw.len() > 64 {
+            format!("{}~", &raw[..63])
+        } else {
+            raw.to_string()
+        };
+
+        if RESOURCE_LABELS.contains(&normalized) {
+            return normalized;
+        }
+
+        if RESOURCE_LABELS.len() >= MAX_RESOURCE_LABEL_CARDINALITY {
+            return "__other".to_string();
+        }
+
+        RESOURCE_LABELS.insert(normalized.clone());
+        normalized
     }
 }
 
@@ -199,6 +225,7 @@ pub fn spawn_metrics_collector(
 mod tests {
     use super::*;
     use crate::events::EventBus;
+    use nebula_core::ResourceKey;
     use std::time::Duration;
 
     #[tokio::test]
@@ -240,5 +267,18 @@ mod tests {
         // Drop the bus to close the channel, which stops the collector
         drop(bus);
         let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+    }
+
+    #[test]
+    fn resource_label_caps_cardinality() {
+        RESOURCE_LABELS.clear();
+        while RESOURCE_LABELS.len() < MAX_RESOURCE_LABEL_CARDINALITY {
+            let seed = format!("seed-{}", RESOURCE_LABELS.len());
+            RESOURCE_LABELS.insert(seed);
+        }
+
+        let extra_key = ResourceKey::try_from("r-overflow").expect("valid key");
+        let overflow_label = MetricsCollector::resource_label(&extra_key);
+        assert_eq!(overflow_label, "__other");
     }
 }

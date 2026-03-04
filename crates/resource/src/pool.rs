@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use nebula_core::{ExecutionId, WorkflowId};
 use nebula_credential::traits::RotationStrategy;
 use parking_lot::{Mutex, RwLock};
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, TryAcquireError};
 use tokio_util::sync::CancellationToken;
 
 use crate::context::Context;
@@ -58,6 +58,44 @@ pub enum PoolStrategy {
     Lifo,
 }
 
+/// Backpressure policy for acquire behavior when the pool is saturated.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PoolBackpressurePolicy {
+    /// Immediately return [`Error::PoolExhausted`] when no permit is available.
+    FailFast,
+    /// Wait up to `timeout` for a permit, then return [`Error::PoolExhausted`].
+    BoundedWait {
+        /// Max wait time for permit acquisition.
+        timeout: Duration,
+    },
+    /// Dynamically choose wait timeout based on current pressure.
+    Adaptive(AdaptiveBackpressurePolicy),
+}
+
+/// Configuration for adaptive acquire backpressure behavior.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdaptiveBackpressurePolicy {
+    /// Utilization threshold (`active / max_size`) considered high pressure.
+    pub high_pressure_utilization: f64,
+    /// Waiter threshold considered high pressure.
+    pub high_pressure_waiters: usize,
+    /// Timeout used under low pressure.
+    pub low_pressure_timeout: Duration,
+    /// Timeout used under high pressure.
+    pub high_pressure_timeout: Duration,
+}
+
+impl Default for AdaptiveBackpressurePolicy {
+    fn default() -> Self {
+        Self {
+            high_pressure_utilization: 0.8,
+            high_pressure_waiters: 8,
+            low_pressure_timeout: Duration::from_secs(30),
+            high_pressure_timeout: Duration::from_millis(100),
+        }
+    }
+}
+
 /// Configuration for resource pooling
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolConfig {
@@ -81,6 +119,12 @@ pub struct PoolConfig {
     /// Default: [`PoolStrategy::Fifo`].
     #[serde(default)]
     pub strategy: PoolStrategy,
+    /// Optional acquire backpressure policy profile.
+    ///
+    /// When omitted, bounded-wait behavior is preserved using `acquire_timeout`
+    /// for backward compatibility.
+    #[serde(default)]
+    pub backpressure_policy: Option<PoolBackpressurePolicy>,
 }
 
 impl Default for PoolConfig {
@@ -94,6 +138,7 @@ impl Default for PoolConfig {
             validation_interval: Duration::from_secs(30),
             maintenance_interval: None,
             strategy: PoolStrategy::default(),
+            backpressure_policy: None,
         }
     }
 }
@@ -115,7 +160,50 @@ impl PoolConfig {
                 "acquire_timeout must be greater than zero",
             ));
         }
+        if let Some(policy) = &self.backpressure_policy {
+            match policy {
+                PoolBackpressurePolicy::FailFast => {}
+                PoolBackpressurePolicy::BoundedWait { timeout } => {
+                    if timeout.is_zero() {
+                        return Err(Error::configuration(
+                            "backpressure bounded wait timeout must be greater than zero",
+                        ));
+                    }
+                }
+                PoolBackpressurePolicy::Adaptive(adaptive) => {
+                    if !(0.0..=1.0).contains(&adaptive.high_pressure_utilization)
+                        || adaptive.high_pressure_utilization == 0.0
+                    {
+                        return Err(Error::configuration(
+                            "adaptive high_pressure_utilization must be in (0, 1]",
+                        ));
+                    }
+                    if adaptive.high_pressure_waiters == 0 {
+                        return Err(Error::configuration(
+                            "adaptive high_pressure_waiters must be greater than zero",
+                        ));
+                    }
+                    if adaptive.low_pressure_timeout.is_zero()
+                        || adaptive.high_pressure_timeout.is_zero()
+                    {
+                        return Err(Error::configuration(
+                            "adaptive timeouts must be greater than zero",
+                        ));
+                    }
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Returns the effective acquire backpressure policy for this config.
+    #[must_use]
+    pub fn effective_backpressure_policy(&self) -> PoolBackpressurePolicy {
+        self.backpressure_policy
+            .clone()
+            .unwrap_or(PoolBackpressurePolicy::BoundedWait {
+                timeout: self.acquire_timeout,
+            })
     }
 }
 
@@ -513,41 +601,14 @@ impl<R: Resource> Pool<R> {
         // Track that we are waiting for a permit.
         inner.waiting_count.fetch_add(1, Ordering::SeqCst);
 
-        // Acquire a permit (limits concurrent active instances)
-        let permit =
-            tokio::time::timeout(inner.pool_config.acquire_timeout, inner.semaphore.acquire())
-                .await
-                .map_err(|_| {
-                    inner.waiting_count.fetch_sub(1, Ordering::SeqCst);
-                    let mut state = inner.state.lock();
-                    let resource_id = inner.resource.metadata().key.clone().as_ref().to_string();
-                    let waiters = inner.waiting_count.load(Ordering::SeqCst);
-                    state.stats.exhausted_count += 1;
-                    if let Some(bus) = &inner.event_bus {
-                        let key = nebula_core::ResourceKey::try_from(resource_id.as_str())
-                            .expect("resource id must be a valid ResourceKey");
-                        bus.emit(ResourceEvent::PoolExhausted {
-                            resource_key: key.clone(),
-                            waiters,
-                        });
-                    }
-                    let key = nebula_core::ResourceKey::try_from(resource_id.as_str())
-                        .expect("resource id must be a valid ResourceKey");
-                    Error::PoolExhausted {
-                        resource_key: key,
-                        current_size: state.stats.active,
-                        max_size: inner.pool_config.max_size,
-                        waiters,
-                    }
-                })?
-                .map_err(|_| {
-                    inner.waiting_count.fetch_sub(1, Ordering::SeqCst);
-                    Error::Internal {
-                        resource_key: inner.resource.metadata().key.clone(),
-                        message: "Pool semaphore closed".to_string(),
-                        source: None,
-                    }
-                })?;
+        // Acquire a permit according to configured backpressure policy.
+        let permit = match self.acquire_permit_with_policy().await {
+            Ok(permit) => permit,
+            Err(err) => {
+                inner.waiting_count.fetch_sub(1, Ordering::SeqCst);
+                return Err(err);
+            }
+        };
 
         // We got a permit, no longer waiting.
         inner.waiting_count.fetch_sub(1, Ordering::SeqCst);
@@ -626,6 +687,78 @@ impl<R: Resource> Pool<R> {
                 usage_duration,
             )));
         }))
+    }
+
+    async fn acquire_permit_with_policy(&self) -> Result<tokio::sync::SemaphorePermit<'_>> {
+        let inner = &self.inner;
+        match inner.pool_config.effective_backpressure_policy() {
+            PoolBackpressurePolicy::FailFast => match inner.semaphore.try_acquire() {
+                Ok(permit) => Ok(permit),
+                Err(TryAcquireError::NoPermits) => Err(self.pool_exhausted_error()),
+                Err(TryAcquireError::Closed) => Err(self.pool_semaphore_closed_error()),
+            },
+            PoolBackpressurePolicy::BoundedWait { timeout } => {
+                self.acquire_permit_with_timeout(timeout).await
+            }
+            PoolBackpressurePolicy::Adaptive(adaptive) => {
+                let timeout = self.adaptive_timeout(&adaptive);
+                self.acquire_permit_with_timeout(timeout).await
+            }
+        }
+    }
+
+    async fn acquire_permit_with_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<tokio::sync::SemaphorePermit<'_>> {
+        let inner = &self.inner;
+        match tokio::time::timeout(timeout, inner.semaphore.acquire()).await {
+            Ok(Ok(permit)) => Ok(permit),
+            Ok(Err(_)) => Err(self.pool_semaphore_closed_error()),
+            Err(_) => Err(self.pool_exhausted_error()),
+        }
+    }
+
+    fn adaptive_timeout(&self, adaptive: &AdaptiveBackpressurePolicy) -> Duration {
+        let inner = &self.inner;
+        let active = inner.state.lock().stats.active;
+        let waiters = inner.waiting_count.load(Ordering::SeqCst);
+        let utilization = active as f64 / inner.pool_config.max_size as f64;
+        if utilization >= adaptive.high_pressure_utilization
+            || waiters >= adaptive.high_pressure_waiters
+        {
+            adaptive.high_pressure_timeout
+        } else {
+            adaptive.low_pressure_timeout
+        }
+    }
+
+    fn pool_exhausted_error(&self) -> Error {
+        let inner = &self.inner;
+        let mut state = inner.state.lock();
+        let waiters = inner.waiting_count.load(Ordering::SeqCst);
+        state.stats.exhausted_count += 1;
+        let key = inner.resource.metadata().key.clone();
+        if let Some(bus) = &inner.event_bus {
+            bus.emit(ResourceEvent::PoolExhausted {
+                resource_key: key.clone(),
+                waiters,
+            });
+        }
+        Error::PoolExhausted {
+            resource_key: key,
+            current_size: state.stats.active,
+            max_size: inner.pool_config.max_size,
+            waiters,
+        }
+    }
+
+    fn pool_semaphore_closed_error(&self) -> Error {
+        Error::Internal {
+            resource_key: self.inner.resource.metadata().key.clone(),
+            message: "Pool semaphore closed".to_string(),
+            source: None,
+        }
     }
 
     /// Return an instance to the pool (or clean it up).
@@ -718,10 +851,9 @@ impl<R: Resource> Pool<R> {
 
         // Apply credential authorization if handler and state are set.
         if result.is_ok() {
-            if let (Some(handler), Some(state)) = (
-                &inner.credential_handler,
-                &*inner.credential_state.read(),
-            ) {
+            if let (Some(handler), Some(state)) =
+                (&inner.credential_handler, &*inner.credential_state.read())
+            {
                 if let Ok(ref mut instance) = result {
                     if let Err(e) = handler.authorize(instance, state) {
                         result = Err(e);
@@ -809,9 +941,12 @@ impl<R: Resource> Pool<R> {
         // Update stored state (new instances will use this).
         *inner.credential_state.write() = Some(new_state.clone());
 
-        let handler = inner.credential_handler.as_ref().ok_or(Error::CredentialNotConfigured {
-            resource_key: key.clone(),
-        })?;
+        let handler = inner
+            .credential_handler
+            .as_ref()
+            .ok_or(Error::CredentialNotConfigured {
+                resource_key: key.clone(),
+            })?;
 
         match strategy {
             RotationStrategy::HotSwap => {
@@ -1122,6 +1257,13 @@ mod tests {
         assert_eq!(config.min_size, 1);
         assert_eq!(config.max_size, 10);
         assert_eq!(config.acquire_timeout, Duration::from_secs(30));
+        assert!(config.backpressure_policy.is_none());
+        assert_eq!(
+            config.effective_backpressure_policy(),
+            PoolBackpressurePolicy::BoundedWait {
+                timeout: Duration::from_secs(30)
+            }
+        );
     }
 
     #[test]
@@ -1151,7 +1293,120 @@ mod tests {
             .validate()
             .is_err()
         );
+        assert!(
+            PoolConfig {
+                backpressure_policy: Some(PoolBackpressurePolicy::BoundedWait {
+                    timeout: Duration::ZERO
+                }),
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            PoolConfig {
+                backpressure_policy: Some(PoolBackpressurePolicy::Adaptive(
+                    AdaptiveBackpressurePolicy {
+                        high_pressure_utilization: 1.2,
+                        ..Default::default()
+                    }
+                )),
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
         assert!(PoolConfig::default().validate().is_ok());
+    }
+
+    #[tokio::test]
+    async fn fail_fast_backpressure_returns_immediately() {
+        let pool = Pool::new(
+            TestResource,
+            test_config(),
+            PoolConfig {
+                min_size: 0,
+                max_size: 1,
+                acquire_timeout: Duration::from_secs(10),
+                backpressure_policy: Some(PoolBackpressurePolicy::FailFast),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (_held, _) = pool.acquire(&test_ctx()).await.unwrap();
+        let start = Instant::now();
+        let err = pool.acquire(&test_ctx()).await.unwrap_err();
+        let elapsed = start.elapsed();
+
+        assert!(matches!(err, Error::PoolExhausted { .. }));
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "fail-fast should not wait for timeout, took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_wait_backpressure_uses_policy_timeout() {
+        let pool = Pool::new(
+            TestResource,
+            test_config(),
+            PoolConfig {
+                min_size: 0,
+                max_size: 1,
+                acquire_timeout: Duration::from_secs(10),
+                backpressure_policy: Some(PoolBackpressurePolicy::BoundedWait {
+                    timeout: Duration::from_millis(40),
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (_held, _) = pool.acquire(&test_ctx()).await.unwrap();
+        let start = Instant::now();
+        let err = pool.acquire(&test_ctx()).await.unwrap_err();
+        let elapsed = start.elapsed();
+
+        assert!(matches!(err, Error::PoolExhausted { .. }));
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "bounded-wait policy timeout should be respected, took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn adaptive_backpressure_uses_high_pressure_timeout_when_saturated() {
+        let pool = Pool::new(
+            TestResource,
+            test_config(),
+            PoolConfig {
+                min_size: 0,
+                max_size: 1,
+                acquire_timeout: Duration::from_secs(10),
+                backpressure_policy: Some(PoolBackpressurePolicy::Adaptive(
+                    AdaptiveBackpressurePolicy {
+                        high_pressure_utilization: 0.5,
+                        high_pressure_waiters: 1,
+                        low_pressure_timeout: Duration::from_secs(1),
+                        high_pressure_timeout: Duration::from_millis(30),
+                    },
+                )),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (_held, _) = pool.acquire(&test_ctx()).await.unwrap();
+        let start = Instant::now();
+        let err = pool.acquire(&test_ctx()).await.unwrap_err();
+        let elapsed = start.elapsed();
+
+        assert!(matches!(err, Error::PoolExhausted { .. }));
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "adaptive policy under pressure should switch to short timeout, took {elapsed:?}"
+        );
     }
 
     #[tokio::test]
