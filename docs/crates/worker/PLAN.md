@@ -1,4 +1,4 @@
-# Implementation Plan: nebula-worker (queue-memory driver)
+# Implementation Plan: nebula-worker (task queue; runtime provides MemoryQueue)
 
 **Crate**: `nebula-worker` | **Path**: `crates/worker` | **ROADMAP**: [ROADMAP.md](ROADMAP.md)
 

@@ -23,8 +23,8 @@
 
 ### ApiState Dependencies (Phase 1)
 
-- `workflow_repo: Option<Arc<dyn WorkflowRepo>>` — workflow persistence port (`nebula-ports`)
-- `execution_repo: Option<Arc<dyn ExecutionRepo>>` — execution persistence/coordination port (`nebula-ports`)
+- `workflow_repo: Option<Arc<dyn WorkflowRepo>>` — workflow persistence (`nebula-storage`)
+- `execution_repo: Option<Arc<dyn ExecutionRepo>>` — execution persistence/coordination (`nebula-storage`)
 
 ### Routes
 

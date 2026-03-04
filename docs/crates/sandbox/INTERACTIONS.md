@@ -5,7 +5,7 @@
 ## Existing crates
 
 - `ports`: owns sandbox port abstraction (`SandboxRunner`).
-- `drivers/sandbox-inprocess`: concrete in-process backend.
+- nebula-runtime: InProcessSandbox (concrete in-process backend).
 - `runtime`/`engine`/`execution`: choose sandbox backend and invoke execution.
 - `action`: action metadata/result/error contracts consumed by sandbox.
 - `resource`/`credential`: capability-sensitive dependencies accessed by actions.
@@ -14,10 +14,10 @@
 
 ## Planned crates
 
-- `drivers/sandbox-wasm`:
+- (future) sandbox-wasm:
   - why it will exist: stronger isolation for untrusted/community actions.
   - expected owner/boundary: implements `SandboxRunner` while preserving runtime contract.
-- `drivers/sandbox-process` (optional):
+- (future) sandbox-process (optional):
   - why it will exist: OS-level isolation fallback for non-WASM scenarios.
   - expected owner/boundary: process boundary and resource-limit enforcement.
 

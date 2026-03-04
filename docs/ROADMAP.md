@@ -54,8 +54,7 @@ Based on `docs/plans/`, `PROJECT_STATUS.md`, and crate ROADMAPs, the most concre
 | `nebula-resource` — resource lifecycle, pooling | In progress | [resource/ROADMAP.md](crates/resource/ROADMAP.md) |
 | `nebula-engine` — DAG scheduler | In progress | [engine/ROADMAP.md](crates/engine/ROADMAP.md) |
 | `nebula-runtime` — trigger management | In progress | [runtime/ROADMAP.md](crates/runtime/ROADMAP.md) |
-| `drivers/queue-memory` — in-process work queue | In progress | [worker/ROADMAP.md](crates/worker/ROADMAP.md) |
-| `drivers/sandbox-inprocess` — execution sandbox | In progress | [sandbox/ROADMAP.md](crates/sandbox/ROADMAP.md) |
+| `nebula-runtime` — task queue + in-process sandbox | In progress | [runtime/ROADMAP.md](crates/runtime/ROADMAP.md) |
 
 **Acceptance criteria:**
 - [ ] Single-node workflow executes end-to-end
@@ -104,7 +103,6 @@ Based on `docs/plans/`, `PROJECT_STATUS.md`, and crate ROADMAPs, the most concre
 |-----------|--------|----------------|
 | `nebula-api` — REST + WebSocket server | In progress | [api/ROADMAP.md](crates/api/ROADMAP.md) |
 | **Desktop app (Tauri)** — `apps/desktop` | In progress | [apps/desktop/ROADMAP.md](apps/desktop/ROADMAP.md) |
-| `nebula-ports` — port/adapter layer | In progress | — |
 | `nebula-telemetry` — metrics and tracing | In progress | [telemetry/ROADMAP.md](crates/telemetry/ROADMAP.md), [metrics/ROADMAP.md](crates/metrics/ROADMAP.md) |
 | Kubernetes / Docker deployment | Planned | — |
 

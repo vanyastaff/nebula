@@ -1,6 +1,6 @@
 # Implementation Plan: nebula-sandbox
 
-**Crate**: `nebula-sandbox` (drivers/sandbox-inprocess) | **Path**: `crates/sandbox` | **ROADMAP**: [ROADMAP.md](ROADMAP.md)
+**Crate**: `nebula-sandbox` (or use nebula-runtime sandbox) | **Path**: `crates/sandbox` | **ROADMAP**: [ROADMAP.md](ROADMAP.md)
 
 ## Summary
 

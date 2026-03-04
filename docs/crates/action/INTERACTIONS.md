@@ -5,7 +5,7 @@
 ## Existing crates (action depends on core, parameter, credential, resource)
 
 - **Upstream:** nebula-core (ids, InterfaceVersion), nebula-parameter (ParameterCollection in ActionMetadata), nebula-credential (CredentialRef in ActionComponents), nebula-resource (ResourceRef in ActionComponents); serde, thiserror, tokio, async-trait, chrono, parking_lot, uuid, hmac, sha2, hex, tokio-util.
-- **Downstream (depend on nebula-action):** engine, runtime, execution, plugin, ports, sdk, drivers/sandbox-inprocess — engine/runtime execute actions; plugin implements and registers; ports/sdk expose action contract; sandbox enforces capability boundary.
+- **Downstream (depend on nebula-action):** engine, runtime, execution, plugin, sdk — engine/runtime execute actions; plugin implements and registers; runtime sandbox enforces capability boundary.
 
 ## In-crate structure
 
@@ -66,7 +66,7 @@ Contract responsibilities:
 
 - `nebula-action`: types + semantics (`ActionResult`, `ActionOutput`, `ActionError`, contexts).
 - `nebula-runtime`: handler resolution, telemetry, data policy, context assembly.
-- `nebula-ports` + sandbox driver: isolation boundary and execution wrapper (`SandboxedContext` + `SandboxRunner`).
+- nebula-runtime sandbox: isolation boundary and execution wrapper (`SandboxedContext` + `SandboxRunner`).
 - `nebula-engine`: orchestration and state transitions.
 
 ## Cross-Crate Ownership

@@ -32,8 +32,6 @@ Quick reference for all crates in the Nebula workspace. See
 | `crates/macros` | `nebula-macros` | Dev Tools | `#[node]`, `#[action]` proc-macros |
 | `crates/api` | `nebula-api` | API/App | REST + WebSocket server (axum) |
 | `crates/webhook` | `nebula-webhook` | API/App | Inbound webhook ingestion |
-| `crates/ports` | `nebula-ports` | API/App | Port/adapter abstractions |
-
 ## Key Dependency Chains
 
 ```
@@ -79,5 +77,4 @@ nebula-log ◄── everything (no business logic)
 | `nebula-macros` | (see crate docs) |
 | `nebula-api` | [api/README.md](./api/README.md) |
 | `nebula-webhook` | (see crate docs) |
-| `nebula-ports` | (see crate docs) |
 

@@ -18,7 +18,7 @@
 | `nebula-engine` | Downstream | Uses ActionRuntime for node execution; creates NodeTask with runtime |
 | `nebula-action` | Upstream | ActionResult, ActionError, Context/ActionContext; execution traits (StatelessAction, etc.); trigger types (webhook, schedule) |
 | `nebula-plugin` | Upstream | InternalHandler trait (execute with context); handlers registered by key; runtime uses for lookup |
-| `nebula-ports` | Upstream | SandboxRunner trait; runtime receives Arc<dyn SandboxRunner> |
+| (this crate) | — | SandboxRunner, TaskQueue traits and InProcessSandbox, MemoryQueue in nebula-runtime |
 | `nebula-telemetry` | Upstream | EventBus, ExecutionEvent, MetricsRegistry |
 | `nebula-core` | Upstream | Id types (indirect via action) |
 | `nebula-execution` | Sibling | ExecutionPlan, ExecutionState; engine uses; runtime does not |
@@ -27,7 +27,7 @@
 
 | Crate | Relationship | Description |
 |-------|-------------|-------------|
-| `nebula-sandbox-inprocess` | Dev/test | InProcessSandbox implements SandboxRunner |
+| (this crate) | — | InProcessSandbox, MemoryQueue built-in |
 
 ## Context contract (current vs target)
 
@@ -48,7 +48,7 @@
 |-------|------------|---------------|----------|
 | `nebula-action` | Context type (currently NodeContext), ActionResult, ActionError | execute signature | — |
 | `nebula-plugin` | InternalHandler | metadata(), execute() | — |
-| `nebula-ports` | SandboxRunner | execute through sandbox | — |
+| (this crate) | SandboxRunner | execute through sandbox | — |
 | `nebula-telemetry` | EventBus, MetricsRegistry | emit, counter, histogram | — |
 | `nebula-core` | (indirect) | — | — |
 | `dashmap` | ActionRegistry storage | concurrent map | — |
@@ -60,7 +60,7 @@
 | runtime -> engine | out | execute_action | async | Result<RuntimeError> | Engine catches and maps |
 | runtime -> action | in | handler.execute() | async | ActionError | Wrapped in RuntimeError |
 | runtime -> plugin | in | InternalHandler | async | — | Registry stores Arc<dyn InternalHandler> |
-| runtime -> ports | in | SandboxRunner | async | — | TODO: use for isolated actions |
+| runtime -> (sandbox) | in | SandboxRunner | async | — | In-crate sandbox module |
 | runtime -> telemetry | out | emit, metrics | sync | best-effort | Fire-and-forget |
 
 ## Runtime Sequence
@@ -78,7 +78,7 @@
 |----------------|-------|
 | Action execution orchestration | `nebula-runtime` |
 | Action handler implementations | `nebula-plugin`, plugins |
-| Sandbox implementation | `nebula-ports` trait; drivers implement |
+| Sandbox implementation | This crate (SandboxRunner, InProcessSandbox) |
 | Workflow scheduling | `nebula-engine` |
 | Event schema | `nebula-telemetry` |
 | Data policy config | `nebula-runtime` (DataPassingPolicy) |

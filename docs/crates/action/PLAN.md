@@ -114,12 +114,12 @@
 **Risks**:
 - DX layer must not create coupling between action crate and engine internals
 
-**Dependencies**: `nebula-runtime`, `nebula-sandbox-inprocess`
+**Dependencies**: `nebula-runtime` (sandbox in-crate)
 
 ## Inter-Crate Dependencies
 
 - **Depends on**: `nebula-core`, `nebula-credential`, `nebula-parameter`, `nebula-resource`
-- **Depended by**: `nebula-engine`, `nebula-runtime`, `nebula-plugin`, sandbox drivers
+- **Depended by**: `nebula-engine`, `nebula-runtime`, `nebula-plugin`
 
 ## Verification
 

@@ -28,7 +28,7 @@
 
 **Context:** Actions may need isolation (untrusted code). Sandbox provides capability checks, resource limits.
 
-**Decision:** Runtime receives `Arc<dyn SandboxRunner>` from ports. Runtime does not implement sandbox; drivers (e.g. sandbox-inprocess) do.
+**Decision:** Runtime defines SandboxRunner and provides InProcessSandbox. Sandbox and task queue (TaskQueue, MemoryQueue) live in nebula-runtime.
 
 **Alternatives considered:**
 - Runtime owns sandbox impl — couples runtime to specific isolation

@@ -30,7 +30,7 @@
 
 - **Current:** All actions run in process; no isolation. TODO: route untrusted to sandbox.
 - **Target:** IsolationLevel::CapabilityGated/Isolated → SandboxedContext; capability checks before resource/credential access.
-- **SandboxRunner:** Ports trait; drivers implement (e.g. inprocess, wasm, container).
+- **SandboxRunner:** Trait and InProcessSandbox in nebula-runtime; other backends (e.g. wasm, container) can implement the same trait.
 
 ### Secret Handling
 

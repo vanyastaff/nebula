@@ -149,7 +149,7 @@ Desktop phases unlock as backend phases complete.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Connect to local binary (SQLite + queue-memory) | Planned | Zero Docker |
+| Connect to local binary (SQLite + runtime MemoryQueue) | Planned | Zero Docker |
 | Local mode indicator in connection UI | Planned | "Local" badge |
 | Health check / connection status | Planned | Ping, show latency |
 

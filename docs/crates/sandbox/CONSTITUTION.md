@@ -33,7 +33,7 @@ This is the sandbox contract: port (trait) decouples runtime from backend; capab
 Runtime calls SandboxRunner::run(action, context). Sandbox runs the action (in-process or isolated). Context is a proxy that only allows access to credentials and resources declared in ActionComponents. Violation (e.g. access to undeclared credential) returns error and is logged.
 
 **Acceptance**:
-- SandboxRunner trait (or port) in nebula-ports or sandbox crate
+- SandboxRunner trait in nebula-runtime (or future sandbox crate)
 - Context passed to action is capability-checked; undeclared access → error
 - Cancellation is checked during run (cooperative or periodic)
 - No raw NodeContext or full credential/resource access inside sandbox by default
@@ -78,7 +78,7 @@ When an action tries to access undeclared credential or resource, sandbox return
 **Rationale**: Allows trusted vs untrusted path (in-process vs WASM) without changing runtime code. Testing with mock sandbox.
 
 **Rules**:
-- SandboxRunner (or equivalent) in nebula-ports or nebula-sandbox
+- SandboxRunner (or equivalent) in nebula-runtime or nebula-sandbox
 - Runtime receives SandboxRunner via constructor or config
 - At least two backends: inprocess (trusted), wasm/process (untrusted) for production target
 
@@ -158,9 +158,9 @@ From the archives: sandbox runner port, in-process driver, capability/cancellati
 
 ## Key Decisions
 
-### D-001: Port in nebula-ports or nebula-sandbox
+### D-001: SandboxRunner in nebula-runtime
 
-**Decision**: SandboxRunner trait lives in ports or sandbox crate; runtime depends on it.
+**Decision**: SandboxRunner trait lives in nebula-runtime; InProcessSandbox is the default implementation.
 
 **Rationale**: Decouples runtime from concrete sandbox. Multiple backends possible.
 

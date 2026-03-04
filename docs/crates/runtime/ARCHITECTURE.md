@@ -55,7 +55,7 @@ nebula-runtime/
 - `ActionRuntime::execute_action(action_key, input, context)` → `Result<ActionResult, RuntimeError>`
 - `ActionRegistry::get(key)` → `Result<Arc<dyn InternalHandler>, RuntimeError>`
 - `DataPassingPolicy::check_output_size(output)` → `Result<u64, (u64, u64)>`
-- SandboxRunner trait from `nebula-ports`; runtime does not own sandbox impl
+- SandboxRunner trait and InProcessSandbox in this crate
 
 ### Internal Invariants
 

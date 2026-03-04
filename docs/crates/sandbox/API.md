@@ -3,8 +3,8 @@
 ## Public Surface
 
 - stable APIs:
-  - `nebula_ports::sandbox::SandboxRunner`
-  - `nebula_ports::sandbox::SandboxedContext`
+  - `nebula_runtime::SandboxRunner`
+  - `nebula_runtime::SandboxedContext`
   - `nebula_sandbox_inprocess::InProcessSandbox`
 - experimental APIs:
   - future capability-gated context helpers and full-isolation driver contracts.
@@ -20,7 +20,7 @@
 ## Minimal Example
 
 ```rust
-use nebula_ports::sandbox::{SandboxRunner, SandboxedContext};
+use nebula_runtime::{SandboxRunner, SandboxedContext};
 
 // runtime code sketch
 let ctx = SandboxedContext::new(node_context);

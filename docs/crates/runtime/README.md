@@ -25,13 +25,13 @@ Context: `execute_action` currently takes **NodeContext** (deprecated in action)
 - **Out of scope:**
   - Workflow scheduling (see `nebula-engine`)
   - Trigger type definitions (see `nebula-action` — webhook, schedule, etc.)
-  - Sandbox implementation (see `nebula-ports`, `nebula-sandbox-inprocess`)
+  - Sandbox implementation (this crate: SandboxRunner, InProcessSandbox)
   - Action definitions (see `nebula-action`, `nebula-plugin`)
 
 ## Current State
 
 - **Maturity:** MVP — ActionRuntime, ActionRegistry, DataPassingPolicy; engine integration complete
-- **Key strengths:** Clean separation from engine; sandbox abstraction via ports; data limit enforcement; telemetry events and metrics
+- **Key strengths:** Clean separation from engine; sandbox and queue in-crate; data limit enforcement; telemetry events and metrics
 - **Key risks:** Isolation level logic TODO (all actions run directly); SpillToBlob not implemented; no trigger lifecycle orchestration yet
 
 ## Target State

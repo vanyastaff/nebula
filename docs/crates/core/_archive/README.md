@@ -2,7 +2,7 @@
 
 Pre-SPEC and legacy notes for `nebula-core`. **Mine for insights; do not delete.** See root `docs/SPEC.md` and `docs/docs-deep-pass-checklist.md`.
 
-**Core** is the platform vocabulary layer (IDs, scope, traits, types, keys, constants, error). **Used by:** action, credential, engine, execution, expression, memory, plugin, ports, resilience, runtime, sdk, storage, telemetry, webhook, workflow, drivers/sandbox-inprocess.
+**Core** is the platform vocabulary layer (IDs, scope, traits, types, keys, constants, error). **Used by:** action, credential, engine, execution, expression, memory, plugin, resilience, runtime, sdk, storage, telemetry, webhook, workflow.
 
 ## Contents
 

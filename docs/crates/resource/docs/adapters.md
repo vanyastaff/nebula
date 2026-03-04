@@ -11,7 +11,7 @@ This guide explains how to implement a driver crate for `nebula-resource`.
 ## Recommended crate layout
 
 ```text
-crates/drivers/resource-<driver>/
+crates/resource-<driver>/ (e.g. crates/resource-postgres)
   Cargo.toml
   src/lib.rs
 ```
@@ -34,7 +34,7 @@ crates/drivers/resource-<driver>/
 ## Example: `nebula-resource-postgres`
 
 Reference adapter exists at:
-- `crates/drivers/resource-postgres`
+- `crates/resource-postgres`
 
 It demonstrates:
 - typed config + validation

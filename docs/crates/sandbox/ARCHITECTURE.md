@@ -10,10 +10,10 @@
 ## Current Architecture
 
 - module map:
-  - `nebula-ports::sandbox`:
+  - `nebula-runtime::sandbox`:
     - `SandboxRunner` trait (port)
     - `SandboxedContext` wrapper over `NodeContext`
-  - `nebula-sandbox-inprocess` driver:
+  - InProcessSandbox (in nebula-runtime):
     - executes actions in-process via runtime-provided executor callback
     - checks cancellation and emits tracing logs
 - data/control flow:

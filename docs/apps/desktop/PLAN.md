@@ -99,7 +99,7 @@ The desktop app is a Tauri 2 application (React + TypeScript frontend, Rust back
 **Deliverables**:
 - Resource list (active/idle/failed) with force release/restart
 - Workspace switcher; workspace settings; member invite
-- Local mode: connect to local binary (SQLite + queue-memory), zero Docker
+- Local mode: connect to local binary (SQLite + runtime MemoryQueue), zero Docker
 
 **Exit Criteria**:
 - Free user runs Nebula locally without Docker

@@ -2,19 +2,19 @@
 
 Pre-SPEC and legacy notes for `nebula-runtime`. **Mine for insights; do not delete.** See root `docs/SPEC.md` and `docs/docs-deep-pass-checklist.md`.
 
-**Runtime** is the action execution layer (ActionRuntime, ActionRegistry, DataPassingPolicy). **Depends on:** core, action, plugin, ports, telemetry. **Used by:** engine.
+**Runtime** is the action execution layer (ActionRuntime, ActionRegistry, DataPassingPolicy). **Depends on:** core, action, plugin, telemetry. **Used by:** engine. Sandbox and queue are in this crate.
 
 ## Mapping to current docs and boundaries
 
 | Archive concept | Current home | Notes |
 |-----------------|--------------|--------|
 | **execute_action(action_id, context)** | This crate (runtime) | Context is **NodeContext** today; target **ActionContext** (see INTERACTIONS, CONSTITUTION P-001). Archive pseudocode often uses ActionContext — that is the target. |
-| **ActionRuntime + Sandbox + isolation** | This crate | resolve_isolation_level, SandboxedContext — ROADMAP Phase 1; sandbox via nebula-ports. |
+| **ActionRuntime + Sandbox + isolation** | This crate | resolve_isolation_level, SandboxedContext — ROADMAP Phase 1; sandbox in nebula-runtime. |
 | **WorkflowEngine, Scheduler, Executor** | **nebula-engine** + **nebula-execution** | Split: engine = orchestration/scheduling; execution = state machine, plan, journal. Not in runtime. |
 | **TriggerManager, TriggerAction lifecycle** | ROADMAP Phase 2; trigger *types* in **nebula-action** | TriggerAction (start/stop) in action crate; runtime or engine runs lifecycle. Archive `from-archive/.../nebula-runtime.md` = broad “runtime” (triggers + coordination); current crate = action execution only. |
 | **WorkflowCoordinator, multi-runtime** | ROADMAP Phase 3 | Coordination and runtime discovery; optional. |
 | **ResourceRuntime, MemoryManager** | nebula-resource, nebula-memory | Not in current runtime deps; resource injection is PROPOSALS P003. |
-| **Dependencies (sandbox, resource, memory, resilience)** | **nebula-ports** (sandbox trait), **nebula-plugin** (InternalHandler) | Current deps: action, plugin, ports, telemetry, metrics. No nebula-sandbox crate; sandbox-inprocess is a driver. |
+| **Dependencies (sandbox, resource, memory, resilience)** | **nebula-plugin** (InternalHandler); sandbox in this crate | Current deps: action, plugin, telemetry, metrics. Sandbox (SandboxRunner, InProcessSandbox) and queue (TaskQueue, MemoryQueue) in nebula-runtime. |
 
 **Contents:**
 - `archive-node-execution.md` — ActionRuntime, ResourceRuntime, isolation levels

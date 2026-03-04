@@ -335,7 +335,7 @@ any external infrastructure:
 | Component | Normal (Docker) | Local mode |
 |-----------|----------------|------------|
 | Database | PostgreSQL | SQLite (sqlx feature flag) |
-| Queue | Redis | `drivers/queue-memory` (in-process) |
+| Queue | Redis | nebula-runtime MemoryQueue (in-process) |
 | Binary | Separate process | Same binary, different feature flags |
 
 Local mode is the default experience for Free plan users. Setup = download binary, run it,

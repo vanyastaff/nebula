@@ -8,14 +8,13 @@ organized in strict architectural layers with enforced one-way dependency direct
 ```
 ┌──────────────────────────────────────────────────────────┐
 │                Presentation / API Layer                   │
-│          api · apps/desktop (Tauri) · webhook · ports     │
+│               api · apps/desktop (Tauri) · webhook        │
 ├──────────────────────────────────────────────────────────┤
 │                  Developer Tools Layer                    │
 │                     sdk · macros                          │
 ├──────────────────────────────────────────────────────────┤
 │                    Execution Layer                        │
-│         engine · runtime · drivers/queue-memory           │
-│               drivers/sandbox-inprocess                   │
+│              engine · runtime (queue, sandbox)            │
 ├──────────────────────────────────────────────────────────┤
 │                 Business Logic Layer                      │
 │         action · resource · credential · plugin           │
@@ -73,9 +72,7 @@ Cross-cutting crates (`config`, `log`, `resilience`) may be imported at any laye
 | Dir | Package | Responsibility |
 |-----|---------|----------------|
 | `crates/engine` | `nebula-engine` | Workflow scheduling, DAG traversal |
-| `crates/runtime` | `nebula-runtime` | Trigger management, workflow lifecycle |
-| `crates/drivers/queue-memory` | `nebula-queue-memory` | In-process bounded work queue |
-| `crates/drivers/sandbox-inprocess` | `nebula-sandbox-inprocess` | In-process Action sandbox |
+| `crates/runtime` | `nebula-runtime` | Trigger management, workflow lifecycle, task queue (MemoryQueue), sandbox (InProcessSandbox) |
 
 ### Cross-Cutting Layer
 
@@ -91,7 +88,7 @@ Cross-cutting crates (`config`, `log`, `resilience`) may be imported at any laye
 
 | Dir | Package | Responsibility |
 |-----|---------|----------------|
-| `crates/storage` | `nebula-storage` | Storage abstraction (key-value backends) |
+| `crates/storage` | `nebula-storage` | Storage abstraction (key-value backends), WorkflowRepo, ExecutionRepo |
 
 ### API / Application Layer
 
@@ -100,7 +97,6 @@ Cross-cutting crates (`config`, `log`, `resilience`) may be imported at any laye
 | `crates/api` | `nebula-api` | REST + WebSocket server (axum) |
 | `apps/desktop` | — | **Desktop app (Tauri)** — React + TypeScript UI, Rust backend; auth, workflows, monitor. Replaces former egui-based `nebula-app`. |
 | `crates/webhook` | `nebula-webhook` | Inbound webhook ingestion |
-| `crates/ports` | `nebula-ports` | Port/adapter abstractions |
 
 ### Developer Tools Layer
 

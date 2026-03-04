@@ -5,7 +5,7 @@ Sandbox execution contracts for action isolation in Nebula.
 ## Scope
 
 - In scope:
-  - sandbox runner port contract (`nebula-ports::sandbox`)
+  - sandbox runner contract (`nebula-runtime::SandboxRunner`)
   - in-process sandbox driver behavior and integration boundaries
   - capability/cancellation enforcement responsibilities at sandbox boundary
 - Out of scope:

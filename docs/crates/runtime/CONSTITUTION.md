@@ -125,7 +125,7 @@ data_policy.rs — DataPassingPolicy (max_node_output_bytes, max_total_execution
 error.rs      — RuntimeError: ActionNotFound { key }, ActionError(ActionError), DataLimitExceeded { limit_bytes, actual_bytes }, Internal(String)
 ```
 
-SandboxRunner (nebula-ports) is the sandbox abstraction; InternalHandler (nebula-plugin) is the current handler contract; action crate defines StatelessAction/ActionContext as target. Isolation level routing (trusted vs sandboxed) is TODO; SpillToBlob is Phase 2. Telemetry: EventBus.emit(NodeStarted / NodeCompleted / NodeFailed), MetricsRegistry counter/histogram.
+SandboxRunner (in nebula-runtime) is the sandbox abstraction; InternalHandler (nebula-plugin) is the current handler contract; action crate defines StatelessAction/ActionContext as target. Isolation level routing (trusted vs sandboxed) is TODO; SpillToBlob is Phase 2. Telemetry: EventBus.emit(NodeStarted / NodeCompleted / NodeFailed), MetricsRegistry counter/histogram.
 
 ### From the archives: node execution and runtime role
 

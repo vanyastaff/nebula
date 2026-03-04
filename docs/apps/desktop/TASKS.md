@@ -89,7 +89,7 @@
 - [ ] DSK-T047 [P] Implement workspace settings (members, billing)
 - [ ] DSK-T048 [P] Implement project list within workspace
 - [ ] DSK-T049 [P] Implement invite member flow
-- [ ] DSK-T050 Implement local mode: connect to local Nebula binary (SQLite + queue-memory)
+- [ ] DSK-T050 Implement local mode: connect to local Nebula binary (SQLite + runtime MemoryQueue)
 - [ ] DSK-T051 [P] Add "Local" badge in connection UI for local mode indicator
 - [ ] DSK-T052 [P] Implement health check / connection status with ping and latency display
 

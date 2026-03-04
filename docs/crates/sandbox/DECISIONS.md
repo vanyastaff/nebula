@@ -10,7 +10,7 @@ Runtime must remain decoupled from concrete isolation implementation.
 
 Decision:
 
-Use `nebula-ports::sandbox::SandboxRunner` as primary contract.
+Use `nebula-runtime::SandboxRunner` as primary contract.
 
 Alternatives considered:
 
@@ -43,7 +43,7 @@ Current implementation exists and is operationally simple.
 
 Decision:
 
-Keep `sandbox-inprocess` as baseline backend while stronger isolation backends are built.
+InProcessSandbox in nebula-runtime is the baseline backend; stronger isolation backends (wasm, container) can implement SandboxRunner.
 
 Alternatives considered:
 
