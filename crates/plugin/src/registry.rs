@@ -6,6 +6,7 @@ use std::sync::Arc;
 use nebula_core::PluginKey;
 
 use crate::PluginError;
+use crate::metadata::normalize_key;
 use crate::plugin_type::PluginType;
 
 /// In-memory registry mapping [`PluginKey`] to [`PluginType`].
@@ -66,9 +67,14 @@ impl PluginRegistry {
             .ok_or_else(|| PluginError::NotFound(key.clone()))
     }
 
-    /// Look up a plugin type by raw string (normalizes the key).
+    /// Look up a plugin type by raw string.
+    ///
+    /// The name is normalized before lookup (lowercase, spaces → underscores),
+    /// so `"HTTP Request"` resolves to the key `"http_request"`.
     pub fn get_by_name(&self, name: &str) -> Result<Arc<PluginType>, PluginError> {
-        let key: PluginKey = name.parse().map_err(PluginError::InvalidKey)?;
+        let key: PluginKey = normalize_key(name)
+            .parse()
+            .map_err(PluginError::InvalidKey)?;
         self.get(&key)
     }
 

@@ -34,22 +34,5 @@ pub use node::{NodeDefinition, ParamValue};
 pub use state::NodeState;
 pub use validate::validate_workflow;
 
-/// Serde helper for `Option<Duration>` serialized as milliseconds.
-pub(crate) mod serde_duration_opt {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::time::Duration;
-
-    /// Serialize an `Option<Duration>` as an optional integer of milliseconds.
-    pub fn serialize<S: Serializer>(duration: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
-        match duration {
-            Some(d) => (d.as_millis() as u64).serialize(s),
-            None => s.serialize_none(),
-        }
-    }
-
-    /// Deserialize an optional integer of milliseconds into `Option<Duration>`.
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
-        let opt: Option<u64> = Option::deserialize(d)?;
-        Ok(opt.map(Duration::from_millis))
-    }
-}
+/// Re-export the shared serde helper so internal `crate::serde_duration_opt` still resolves.
+pub(crate) use nebula_core::serde_helpers::duration_opt_ms as serde_duration_opt;

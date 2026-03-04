@@ -33,6 +33,8 @@ pub mod constants;
 pub mod deps;
 pub mod id;
 pub mod scope;
+/// Shared serde helpers (duration serialization, etc.).
+pub mod serde_helpers;
 pub mod traits;
 pub mod types;
 

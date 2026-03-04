@@ -13,13 +13,18 @@ use crate::error::RuntimeError;
 /// Actions are registered by key (e.g. `"http.request"`) and looked up
 /// at execution time. Uses `DashMap` for lock-free concurrent access.
 ///
+/// Prefer [`ActionRegistry::register_stateless`] over the low-level
+/// [`ActionRegistry::register`] — the typed helper wraps the action in a
+/// [`StatelessActionAdapter`](nebula_action::StatelessActionAdapter) automatically.
+///
 /// # Examples
 ///
 /// ```rust,ignore
 /// use nebula_runtime::registry::ActionRegistry;
 ///
 /// let registry = ActionRegistry::new();
-/// registry.register(Arc::new(my_handler));
+/// registry.register_stateless(my_action);     // typed — preferred
+/// registry.register(Arc::new(my_handler));    // raw handler — low-level
 /// let handler = registry.get("http.request").unwrap();
 /// ```
 pub struct ActionRegistry {
@@ -44,52 +49,25 @@ impl ActionRegistry {
         self.handlers.insert(key, handler);
     }
 
-    // TODO: These methods are disabled until action types are restored
-    /*
-    /// Register a typed [`ProcessAction`](nebula_action::ProcessAction) directly.
+    /// Register a typed [`StatelessAction`](nebula_action::StatelessAction) directly.
     ///
-    /// Wraps the action in a [`ProcessActionAdapter`](nebula_action::ProcessActionAdapter)
-    /// automatically.
-    pub fn register_process<A>(&self, action: A)
+    /// Wraps the action in a [`StatelessActionAdapter`](nebula_action::StatelessActionAdapter)
+    /// automatically — no manual adapter construction needed.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// registry.register_stateless(MyAction::new());
+    /// ```
+    pub fn register_stateless<A>(&self, action: A)
     where
-        A: nebula_action::ProcessAction + Send + Sync + 'static,
-        A::Input: serde::de::DeserializeOwned + Send + Sync + 'static,
-        A::Output: serde::Serialize + Send + Sync + 'static,
+        A: nebula_action::StatelessAction + Send + Sync + 'static,
+        A::Input: serde::de::DeserializeOwned + Send + Sync,
+        A::Output: serde::Serialize + Send + Sync,
     {
-        let adapter = nebula_action::ProcessActionAdapter::new(action);
+        let adapter = nebula_action::StatelessActionAdapter::new(action);
         self.register(Arc::new(adapter));
     }
-
-    /// Register a typed [`StatefulAction`](nebula_action::StatefulAction) directly.
-    ///
-    /// Wraps the action in a [`StatefulActionAdapter`](nebula_action::StatefulActionAdapter)
-    /// automatically.
-    pub fn register_stateful<A>(&self, action: A)
-    where
-        A: nebula_action::StatefulAction + Send + Sync + 'static,
-        A::Input: serde::de::DeserializeOwned + Clone + Send + Sync + 'static,
-        A::Output: serde::Serialize + Send + Sync + 'static,
-        A::State: Send + Sync + 'static,
-    {
-        let adapter = nebula_action::StatefulActionAdapter::new(action);
-        self.register(Arc::new(adapter));
-    }
-
-    /// Register a typed [`TriggerAction`](nebula_action::TriggerAction) directly.
-    ///
-    /// Triggers use TriggerContext instead of InternalHandler, so they are NOT
-    /// registered via adapters. This method is deprecated.
-    #[deprecated(note = "Triggers now use TriggerContext and are managed differently")]
-    pub fn register_trigger<A>(&self, _action: A)
-    where
-        A: nebula_action::TriggerAction + Send + Sync + 'static,
-        A::Config: serde::de::DeserializeOwned + Send + Sync + 'static,
-        A::Event: serde::Serialize + Send + Sync + 'static,
-    {
-        // No-op: triggers are now managed by TriggerCoordinator/Manager
-        panic!("register_trigger is deprecated. Use TriggerManager instead.");
-    }
-    */
 
     /// Look up an action handler by key.
     pub fn get(&self, key: &str) -> Result<Arc<dyn InternalHandler>, RuntimeError> {

@@ -82,10 +82,10 @@ pub mod result;
 
 pub use action::Action;
 pub use components::ActionComponents;
-pub use context::{ActionContext, Context, NodeContext, TriggerContext};
+pub use context::{ActionContext, Context, TriggerContext};
 pub use error::ActionError;
 pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
-pub use handler::InternalHandler;
+pub use handler::{InternalHandler, StatelessActionAdapter};
 pub use metadata::{ActionMetadata, InterfaceVersion};
 pub use output::{
     ActionOutput, BinaryData, BinaryStorage, BufferConfig, CacheInfo, Cost, DataReference,

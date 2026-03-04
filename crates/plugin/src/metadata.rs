@@ -5,6 +5,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::PluginError;
 
+/// Normalize a raw plugin key string: ASCII uppercase → lowercase, spaces → underscores.
+///
+/// This lets callers use human-readable labels like `"HTTP Request"` and receive
+/// the canonical form `"http_request"`.
+pub(crate) fn normalize_key(s: &str) -> String {
+    s.to_ascii_lowercase().replace(' ', "_")
+}
+
 /// Static metadata describing a plugin type.
 ///
 /// Built via the builder API:
@@ -190,8 +198,13 @@ impl PluginMetadataBuilder {
     }
 
     /// Validate and build the metadata.
+    ///
+    /// The raw key is normalized before validation: spaces become underscores and
+    /// ASCII letters are lowercased, so `"HTTP Request"` → `"http_request"`.
     pub fn build(self) -> Result<PluginMetadata, PluginError> {
-        let key: PluginKey = self.key.parse().map_err(PluginError::InvalidKey)?;
+        let key: PluginKey = normalize_key(&self.key)
+            .parse()
+            .map_err(PluginError::InvalidKey)?;
 
         Ok(PluginMetadata {
             key,

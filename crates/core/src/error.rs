@@ -16,10 +16,9 @@
 //! assert_eq!(not_found.error_code(), "NOT_FOUND_ERROR");
 //! ```
 
-use std::fmt;
 use thiserror::Error;
 
-use super::id::{ExecutionId, NodeId, TenantId, UserId, WorkflowId};
+use super::id::{TenantId, UserId};
 
 /// Core error type for Nebula
 #[derive(Error, Debug, Clone)]
@@ -100,14 +99,6 @@ pub enum CoreError {
         duration: std::time::Duration,
     },
 
-    /// Rate limit exceeded error
-    #[error("Rate limit exceeded: {limit} requests per {period:?}")]
-    RateLimitExceeded {
-        limit: u32,
-        period: std::time::Duration,
-        retry_after: Option<std::time::Duration>,
-    },
-
     /// Resource exhausted error
     #[error("Resource exhausted: {resource} (limit: {limit})")]
     ResourceExhausted {
@@ -121,14 +112,6 @@ pub enum CoreError {
     Internal {
         message: String,
         code: Option<String>,
-    },
-
-    /// Service unavailable error
-    #[error("Service unavailable: {service} - {reason}")]
-    ServiceUnavailable {
-        service: String,
-        reason: String,
-        retry_after: Option<std::time::Duration>,
     },
 
     /// Configuration error
@@ -155,94 +138,18 @@ pub enum CoreError {
         operation: Option<String>,
     },
 
-    /// Network error
-    #[error("Network error: {operation} - {reason}")]
-    Network {
-        operation: String,
-        reason: String,
-        retryable: bool,
-    },
-
-    /// Storage error
-    #[error("Storage error: {operation} - {reason}")]
-    Storage {
-        operation: String,
-        reason: String,
-        backend: Option<String>,
-    },
-
-    /// Workflow execution error
-    #[error("Workflow execution error: {workflow_id} - {reason}")]
-    WorkflowExecution {
-        workflow_id: WorkflowId,
-        execution_id: Option<ExecutionId>,
-        node_id: Option<NodeId>,
-        reason: String,
-    },
-
-    /// Node execution error
-    #[error("Node execution error: {node_id} - {reason}")]
-    NodeExecution {
-        node_id: NodeId,
-        execution_id: Option<ExecutionId>,
-        reason: String,
-        retryable: bool,
-    },
-
-    /// Expression evaluation error
-    #[error("Expression evaluation error: {expression} - {reason}")]
-    ExpressionEvaluation {
-        expression: String,
-        reason: String,
-        context: Option<String>,
-    },
-
-    /// Resource management error
-    #[error("Resource management error: {operation} - {reason}")]
-    ResourceManagement {
-        operation: String,
-        resource_type: String,
-        reason: String,
-    },
-
-    /// Cluster error
-    #[error("Cluster error: {operation} - {reason}")]
-    Cluster {
-        operation: String,
-        reason: String,
-        node_id: Option<String>,
-    },
-
-    /// Tenant error
-    #[error("Tenant error: {tenant_id} - {reason}")]
-    Tenant {
-        tenant_id: TenantId,
-        reason: String,
-        operation: Option<String>,
-    },
 }
 
 impl CoreError {
-    /// Check if this error is retryable
+    /// Check if this error is retryable.
+    ///
+    /// Domain-specific retryable errors (rate limiting, network, storage) are handled
+    /// by the respective crate error types.
     pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            CoreError::Timeout { .. }
-                | CoreError::RateLimitExceeded { .. }
-                | CoreError::ServiceUnavailable { .. }
-                | CoreError::Network {
-                    retryable: true,
-                    ..
-                }
-                | CoreError::Storage { .. }
-                | CoreError::NodeExecution {
-                    retryable: true,
-                    ..
-                }
-        )
+        matches!(self, CoreError::Timeout { .. })
     }
 
-    /// Check if this error is a client error (4xx)
+    /// Check if this error is a client error (4xx equivalent).
     pub fn is_client_error(&self) -> bool {
         matches!(
             self,
@@ -253,27 +160,22 @@ impl CoreError {
                 | CoreError::Authentication { .. }
                 | CoreError::Authorization { .. }
                 | CoreError::InvalidInput { .. }
-                | CoreError::RateLimitExceeded { .. }
                 | CoreError::ResourceExhausted { .. }
                 | CoreError::InvalidState { .. }
         )
     }
 
-    /// Check if this error is a server error (5xx)
+    /// Check if this error is a server error (5xx equivalent).
     pub fn is_server_error(&self) -> bool {
         matches!(
             self,
             CoreError::Internal { .. }
-                | CoreError::ServiceUnavailable { .. }
                 | CoreError::Configuration { .. }
                 | CoreError::Dependency { .. }
-                | CoreError::Network { .. }
-                | CoreError::Storage { .. }
-                | CoreError::Cluster { .. }
         )
     }
 
-    /// Get the error code for this error
+    /// Get the error code for this error.
     pub fn error_code(&self) -> &'static str {
         match self {
             CoreError::Validation { .. } => "VALIDATION_ERROR",
@@ -286,21 +188,11 @@ impl CoreError {
             CoreError::Serialization { .. } => "SERIALIZATION_ERROR",
             CoreError::Deserialization { .. } => "DESERIALIZATION_ERROR",
             CoreError::Timeout { .. } => "TIMEOUT_ERROR",
-            CoreError::RateLimitExceeded { .. } => "RATE_LIMIT_ERROR",
             CoreError::ResourceExhausted { .. } => "RESOURCE_EXHAUSTED_ERROR",
             CoreError::Internal { .. } => "INTERNAL_ERROR",
-            CoreError::ServiceUnavailable { .. } => "SERVICE_UNAVAILABLE_ERROR",
             CoreError::Configuration { .. } => "CONFIGURATION_ERROR",
             CoreError::InvalidState { .. } => "INVALID_STATE_ERROR",
             CoreError::Dependency { .. } => "DEPENDENCY_ERROR",
-            CoreError::Network { .. } => "NETWORK_ERROR",
-            CoreError::Storage { .. } => "STORAGE_ERROR",
-            CoreError::WorkflowExecution { .. } => "WORKFLOW_EXECUTION_ERROR",
-            CoreError::NodeExecution { .. } => "NODE_EXECUTION_ERROR",
-            CoreError::ExpressionEvaluation { .. } => "EXPRESSION_EVALUATION_ERROR",
-            CoreError::ResourceManagement { .. } => "RESOURCE_MANAGEMENT_ERROR",
-            CoreError::Cluster { .. } => "CLUSTER_ERROR",
-            CoreError::Tenant { .. } => "TENANT_ERROR",
         }
     }
 
@@ -343,15 +235,9 @@ impl CoreError {
             CoreError::Serialization { .. } => "Failed to process data".to_string(),
             CoreError::Deserialization { .. } => "Failed to process data".to_string(),
             CoreError::Timeout { operation, .. } => format!("{} timed out", operation),
-            CoreError::RateLimitExceeded { .. } => {
-                "Too many requests. Please try again later.".to_string()
-            }
             CoreError::ResourceExhausted { resource, .. } => format!("{} limit reached", resource),
             CoreError::Internal { .. } => {
                 "An internal error occurred. Please try again later.".to_string()
-            }
-            CoreError::ServiceUnavailable { service, .. } => {
-                format!("{} is temporarily unavailable", service)
             }
             CoreError::Configuration { message, .. } => format!("Configuration error: {}", message),
             CoreError::InvalidState {
@@ -362,32 +248,6 @@ impl CoreError {
                 format!("Cannot {} in current state: {}", operation, current_state)
             }
             CoreError::Dependency { dependency, .. } => format!("{} is not available", dependency),
-            CoreError::Network { operation, .. } => format!("Network error during {}", operation),
-            CoreError::Storage { operation, .. } => format!("Storage error during {}", operation),
-            CoreError::WorkflowExecution {
-                workflow_id,
-                reason,
-                ..
-            } => {
-                format!("Workflow '{}' execution failed: {}", workflow_id, reason)
-            }
-            CoreError::NodeExecution {
-                node_id, reason, ..
-            } => {
-                format!("Node '{}' execution failed: {}", node_id, reason)
-            }
-            CoreError::ExpressionEvaluation { .. } => "Expression evaluation failed".to_string(),
-            CoreError::ResourceManagement { operation, .. } => {
-                format!("Resource operation failed: {}", operation)
-            }
-            CoreError::Cluster { operation, .. } => {
-                format!("Cluster operation failed: {}", operation)
-            }
-            CoreError::Tenant {
-                tenant_id, reason, ..
-            } => {
-                format!("Tenant '{}' operation failed: {}", tenant_id, reason)
-            }
         }
     }
 
@@ -485,19 +345,6 @@ impl CoreError {
         }
     }
 
-    /// Create a rate limit exceeded error
-    pub fn rate_limit_exceeded(
-        limit: u32,
-        period: std::time::Duration,
-        retry_after: Option<std::time::Duration>,
-    ) -> Self {
-        CoreError::RateLimitExceeded {
-            limit,
-            period,
-            retry_after,
-        }
-    }
-
     /// Create an internal error
     pub fn internal(message: impl Into<String>) -> Self {
         CoreError::Internal {
@@ -505,44 +352,10 @@ impl CoreError {
             code: None,
         }
     }
-
-    /// Create a service unavailable error
-    pub fn service_unavailable(
-        service: impl Into<String>,
-        reason: impl Into<String>,
-        retry_after: Option<std::time::Duration>,
-    ) -> Self {
-        CoreError::ServiceUnavailable {
-            service: service.into(),
-            reason: reason.into(),
-            retry_after,
-        }
-    }
 }
 
-// Display implementation is provided by thiserror
-
-/// Result type for operations that can fail with a CoreError
+/// Result type for operations that can fail with a CoreError.
 pub type CoreResult<T> = Result<T, CoreError>;
-
-/// Extension trait for adding context to errors
-#[allow(clippy::result_large_err)]
-pub trait ErrorContext<T> {
-    /// Add context to an error
-    fn with_context<C>(self, _context: C) -> CoreResult<T>
-    where
-        C: fmt::Display + Send + Sync + 'static;
-}
-
-#[allow(clippy::result_large_err)]
-impl<T> ErrorContext<T> for CoreResult<T> {
-    fn with_context<C>(self, _context: C) -> CoreResult<T>
-    where
-        C: fmt::Display + Send + Sync + 'static,
-    {
-        self
-    }
-}
 
 /// Error conversion traits
 impl From<std::io::Error> for CoreError {
@@ -650,14 +463,10 @@ mod tests {
         let timeout_error = CoreError::timeout("operation", Duration::from_secs(5));
         assert!(timeout_error.is_retryable());
 
-        let rate_limit_error = CoreError::rate_limit_exceeded(100, Duration::from_secs(60), None);
-        assert!(rate_limit_error.is_retryable());
-
-        let service_unavailable_error =
-            CoreError::service_unavailable("database", "maintenance", None);
-        assert!(service_unavailable_error.is_retryable());
-
         let validation_error = CoreError::validation("test");
         assert!(!validation_error.is_retryable());
+
+        let internal_error = CoreError::internal("server error");
+        assert!(!internal_error.is_retryable());
     }
 }

@@ -2,15 +2,13 @@
 //!
 //! [`Context`] is the base trait for action execution. [`ActionContext`] is the
 //! stable context for StatelessAction/StatefulAction/ResourceAction;
-//! [`TriggerContext`] is used by TriggerAction. [`NodeContext`] is deprecated
-//! in favor of ActionContext.
+//! [`TriggerContext`] is used by TriggerAction.
 
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 use tokio_util::sync::CancellationToken;
 
 /// Base trait for action execution contexts.
 ///
-/// Implemented by [`ActionContext`] and (for backward compatibility) [`NodeContext`].
 /// Engine/runtime/sandbox provide concrete implementations; actions receive `&impl Context`.
 pub trait Context: Send + Sync {
     /// Execution identity.
@@ -104,60 +102,6 @@ impl TriggerContext {
     }
 }
 
-/// Temporary node context (bridge); use [`ActionContext`] instead.
-///
-/// Preserved for backward compatibility during migration.
-#[deprecated(since = "0.1.0", note = "Use ActionContext instead")]
-pub struct NodeContext {
-    /// Execution identity.
-    pub execution_id: ExecutionId,
-    /// Node identity.
-    pub node_id: NodeId,
-    /// Workflow identity.
-    pub workflow_id: WorkflowId,
-    /// Cancellation token.
-    pub cancellation: CancellationToken,
-}
-
-impl Context for NodeContext {
-    fn execution_id(&self) -> ExecutionId {
-        self.execution_id
-    }
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-    fn workflow_id(&self) -> WorkflowId {
-        self.workflow_id
-    }
-    fn cancellation(&self) -> &CancellationToken {
-        &self.cancellation
-    }
-}
-
-impl NodeContext {
-    /// Create a new node context (deprecated: use [`ActionContext::new`]).
-    #[must_use]
-    #[deprecated(since = "0.1.0", note = "Use ActionContext::new instead")]
-    pub fn new(
-        execution_id: ExecutionId,
-        node_id: NodeId,
-        workflow_id: WorkflowId,
-        cancellation: CancellationToken,
-    ) -> Self {
-        Self {
-            execution_id,
-            node_id,
-            workflow_id,
-            cancellation,
-        }
-    }
-}
-
-impl From<NodeContext> for ActionContext {
-    fn from(n: NodeContext) -> Self {
-        Self::new(n.execution_id, n.node_id, n.workflow_id, n.cancellation)
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -194,17 +138,5 @@ mod tests {
         let _: &dyn Context = &ctx;
     }
 
-    #[test]
-    #[allow(deprecated)]
-    fn action_context_from_node_context() {
-        let token = CancellationToken::new();
-        let exec_id = ExecutionId::new();
-        let node_id = NodeId::new();
-        let wf_id = WorkflowId::new();
-        let node = NodeContext::new(exec_id, node_id, wf_id, token);
-        let action_ctx = ActionContext::from(node);
-        assert_eq!(action_ctx.execution_id(), exec_id);
-        assert_eq!(action_ctx.node_id(), node_id);
-        assert_eq!(action_ctx.workflow_id(), wf_id);
-    }
+
 }
