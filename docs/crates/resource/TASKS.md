@@ -58,10 +58,10 @@
 
 **Goal**: Adapter crate guidance; typed key migration path; integration cookbook.
 
-- [ ] RSC-T019 Write adapter crate guide: how to implement a resource driver (postgres, redis) in `docs/adapters.md`
-- [ ] RSC-T020 [P] Implement reference adapter: `resource-postgres` as example in `crates/drivers/`
-- [ ] RSC-T021 Document typed key migration path for consumers
-- [ ] RSC-T022 Write cookbook: runtime/action integration patterns using resource in `docs/cookbook.md`
+- [x] RSC-T019 Write adapter crate guide: how to implement a resource driver (postgres, redis) in `docs/adapters.md`
+- [x] RSC-T020 [P] Implement reference adapter: `resource-postgres` as example in `crates/drivers/`
+- [x] RSC-T021 Document typed key migration path for consumers
+- [x] RSC-T022 Write cookbook: runtime/action integration patterns using resource in `docs/cookbook.md`
 
 **Checkpoint**: Reference adapter works end-to-end; cookbook demonstrates runtime/action/resource composition.
 

@@ -20,6 +20,20 @@
     1. adopt dual registration APIs.
     2. add typed wrappers in action/runtime code.
     3. remove string-only assumptions after deprecation window.
+
+### Typed key migration path (consumer-focused)
+
+1. define typed key wrappers in consumer crate:
+   - `struct DbMain;`
+   - map to canonical `ResourceKey` in one place
+2. replace string literals in action/runtime call sites:
+   - from `acquire("db.main", ctx)`
+   - to wrapper-based key conversion + `acquire(&key, ctx)`
+3. gate old string helpers behind compatibility module:
+   - keep temporary adapters while call sites migrate
+4. enforce lint/review rule:
+   - no new raw string resource IDs in business logic
+5. remove compatibility layer after one minor window
 - change:
   - potential refined reload semantics (in-place vs destructive classes).
   - old behavior:

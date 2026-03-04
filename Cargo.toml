@@ -17,6 +17,7 @@ members = [
     "crates/ports",
     "crates/resilience",
     "crates/resource",
+    "crates/drivers/resource-postgres",
     "crates/runtime",
     "crates/system",
     "crates/telemetry",
