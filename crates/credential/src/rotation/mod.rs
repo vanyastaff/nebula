@@ -53,7 +53,7 @@
 //!
 //! ## Periodic Rotation
 //!
-//! ```rust,no_run
+//! ```rust
 //! use nebula_credential::rotation::{RotationPolicy, PeriodicConfig};
 //! use std::time::Duration;
 //!
@@ -69,7 +69,7 @@
 //!
 //! ## Scheduled Rotation
 //!
-//! ```rust,no_run
+//! ```rust
 //! use nebula_credential::rotation::{RotationPolicy, ScheduledConfig};
 //! use chrono::{Utc, Duration};
 //!
@@ -85,7 +85,7 @@
 //!
 //! ## Manual Emergency Rotation
 //!
-//! ```rust,no_run
+//! ```rust
 //! use nebula_credential::rotation::{RotationPolicy, ManualConfig};
 //!
 //! // Emergency rotation with immediate revocation

@@ -4,6 +4,7 @@
 //! No external docker-compose required.
 #![cfg(feature = "storage-vault")]
 
+use nebula_core::{OrganizationId, ScopeLevel};
 use nebula_credential::core::{CredentialContext, CredentialId, CredentialMetadata};
 use nebula_credential::providers::{HashiCorpVaultProvider, VaultAuthMethod, VaultConfig};
 use nebula_credential::traits::StorageProvider;
@@ -297,11 +298,7 @@ async fn test_list() {
 
     // Verify all IDs are present
     for id in &ids {
-        assert!(
-            listed_ids.contains(id),
-            "Expected {} to be in list",
-            id
-        );
+        assert!(listed_ids.contains(id), "Expected {} to be in list", id);
     }
 
     // Cleanup
@@ -440,4 +437,40 @@ async fn test_vault_versioning() {
     StorageProvider::delete(&provider, &id, &context)
         .await
         .expect("Failed to delete credential");
+}
+
+#[tokio::test]
+#[ignore] // Requires Docker
+async fn test_scope_is_not_enforced_by_vault_provider_contract() {
+    let container = HashicorpVault::default()
+        .start()
+        .await
+        .expect("Failed to start Vault");
+    let port = container
+        .get_host_port_ipv4(8200)
+        .await
+        .expect("Failed to get port");
+    let token = "myroot";
+
+    let provider = create_vault_provider(port, token).await;
+    let id = CredentialId::new();
+    let data = test_encrypted_data(88);
+    let metadata = test_metadata(HashMap::new());
+
+    let ctx_a = CredentialContext::new("user_a")
+        .with_scope(ScopeLevel::Organization(OrganizationId::new()));
+    let ctx_b = CredentialContext::new("user_b")
+        .with_scope(ScopeLevel::Organization(OrganizationId::new()));
+
+    StorageProvider::store(&provider, &id, data.clone(), metadata, &ctx_a)
+        .await
+        .expect("Failed to store credential");
+
+    // Storage provider is scope-agnostic by design. Scope checks are manager-level.
+    let (retrieved_data, _) = StorageProvider::retrieve(&provider, &id, &ctx_b)
+        .await
+        .expect("Failed to retrieve credential");
+    assert_eq!(retrieved_data.ciphertext, data.ciphertext);
+
+    StorageProvider::delete(&provider, &id, &ctx_a).await.ok();
 }

@@ -8,6 +8,7 @@
 #![cfg(feature = "storage-k8s")]
 
 use chrono::Utc;
+use nebula_core::{OrganizationId, ScopeLevel};
 use nebula_credential::core::{
     CredentialContext, CredentialFilter, CredentialId, CredentialMetadata,
 };
@@ -435,4 +436,49 @@ async fn test_k8s_update_credential() {
 
     // Cleanup
     StorageProvider::delete(&provider, &id, &context).await.ok();
+}
+
+#[tokio::test]
+#[ignore] // Requires Docker
+async fn test_scope_is_not_enforced_by_kubernetes_provider_contract() {
+    let temp_dir = std::env::temp_dir();
+
+    let k3s_instance = K3s::default()
+        .with_conf_mount(&temp_dir)
+        .with_privileged(true)
+        .with_userns_mode("host")
+        .start()
+        .await
+        .expect("Failed to start K3s");
+
+    let host = k3s_instance.get_host().await.expect("Failed to get host");
+    let port = k3s_instance
+        .get_host_port_ipv4(6443)
+        .await
+        .expect("Failed to get port");
+
+    let kubeconfig = k3s_instance
+        .image()
+        .read_kube_config()
+        .expect("Failed to read kubeconfig");
+
+    let provider = create_k8s_provider(kubeconfig, host.to_string(), port).await;
+    let id = CredentialId::new();
+    let (data, metadata) = create_test_data();
+    let ctx_a = CredentialContext::new("user_a")
+        .with_scope(ScopeLevel::Organization(OrganizationId::new()));
+    let ctx_b = CredentialContext::new("user_b")
+        .with_scope(ScopeLevel::Organization(OrganizationId::new()));
+
+    StorageProvider::store(&provider, &id, data.clone(), metadata, &ctx_a)
+        .await
+        .expect("Failed to store credential");
+
+    // Storage provider is scope-agnostic by design. Scope checks are manager-level.
+    let (retrieved_data, _) = StorageProvider::retrieve(&provider, &id, &ctx_b)
+        .await
+        .expect("Failed to retrieve credential");
+    assert_eq!(retrieved_data.ciphertext, data.ciphertext);
+
+    StorageProvider::delete(&provider, &id, &ctx_a).await.ok();
 }

@@ -22,9 +22,9 @@
 - **nebula-api** *(Phase 4)*:
   - Credential CRUD surface: `GET /credentials`, `GET /credentials/:id`, `POST /credentials`, `POST /credentials/:id/callback`, `DELETE /credentials/:id`
   - Credential type catalog: `GET /credential-types` — returns registered type schemas from `CredentialManager`
-  - Interactive flow bridge: receives `InitializeResult::RequiresInteraction` → responds 202 with interaction descriptor → accepts callback params → calls `CredentialManager::continue(id, UserInput::Callback { params })`
-  - Expected contract: `CredentialManager::list()`, `get(id)`, `create(type_id, input)`, `continue(id, user_input)`, `delete(id)`
-  - **Gap:** `create`, `continue_flow`, `list_types` are stubs; `CredentialProvider` impl exists for `get(id)` (requires `encryption_key` on builder)
+  - Interactive flow bridge: receives `CreateResult::RequiresInteraction` → responds 202 with interaction descriptor → accepts callback params → calls `CredentialManager::continue_flow(id, UserInput::Callback { params })`
+  - Expected contract: `CredentialManager::list()`, `get(id)`, `create(type_id, input)`, `continue_flow(id, user_input)`, `delete(id)`, `list_types()`
+  - Current status: `create`, `continue_flow`, `list_types` are implemented for built-in protocols (`api_key`, `basic_auth`, `oauth2`); `CredentialProvider` impl supports id-based `get(id)` and type-based `credential<C>()` when type registry is configured
   - **Security boundary**: api layer never stores or logs raw secrets; only passes opaque params to manager
 
 ## Downstream Consumers
@@ -43,7 +43,7 @@
 
 ## Upstream Dependencies
 
-- **nebula-core:** `CredentialId` (UUID for instances), `CredentialKey` (normalized key for protocol types), `ScopeLevel` (hierarchical scope enum for access control), `ScopeResolver` (trait for ownership verification), domain primitives; hard contract on ID format, key format, and scope semantics
+- **nebula-core:** `CredentialId` (UUID for instances), `CredentialKey` (normalized key for protocol types), `ScopeLevel` (hierarchical scope enum for access control), domain primitives; hard contract on ID format, key format, and scope semantics
 - **nebula-log:** Tracing macros; optional; fallback: no-op when disabled
 - **nebula-parameter:** `ParameterCollection`, `ParameterValues`, `ParameterError`; hard contract for schema validation
 - **tokio, async-trait:** Async runtime; required
@@ -54,7 +54,7 @@
 
 | This crate <-> Other | Direction | Contract | Sync/Async | Failure handling | Notes |
 |---------------------|-----------|----------|------------|------------------|-------|
-| credential -> core | out | CredentialId, CredentialKey, ScopeLevel, ScopeResolver, context types | sync | N/A | core owns ID semantics |
+| credential -> core | out | CredentialId, CredentialKey, ScopeLevel, context types | sync | N/A | core owns ID/scope semantics |
 | credential -> parameter | out | ParameterCollection, ParameterValues | sync | ParameterError in SchemaValidation | credential validates protocol schemas |
 | credential -> log | out | tracing macros | sync | N/A | log never fails credential |
 | action -> credential | in | CredentialProvider, CredentialRef | async | CredentialError, ManagerError | action acquires credentials |
@@ -116,7 +116,7 @@ This ensures resource pools never use stale credentials without manual intervent
 ## Cross-Crate Ownership
 
 - **credential owns:** Credential lifecycle, encryption, scope enforcement, rotation orchestration, provider abstraction
-- **core owns:** ID types (CredentialId UUID, CredentialKey domain key), ScopeLevel semantics, ScopeResolver trait; credential uses all three for instance identity, type identity, and access control
+- **core owns:** ID types (CredentialId UUID, CredentialKey domain key), ScopeLevel semantics; credential uses them for instance identity, type identity, and access control
 - **parameter owns:** Schema types, validation rules; credential uses for protocol schemas
 - **action/resource own:** When to fetch credentials, how to use them; credential owns how to store/retrieve
 - **storage (if used):** Credential defines `StorageProvider` trait; concrete backends in credential or storage crate

@@ -5,14 +5,30 @@
 | Level | Meaning |
 |-------|---------|
 | **Stable** | Public API; patch/minor compatible |
-| **Evolving** | May change in minor releases; feedback welcome |
-| **Internal** | Not part of public contract; use at own risk |
+| **Unstable** | Public, but expected to change in minor releases |
+| **Internal** | Not part of public contract; not for external callers |
 
 **Stable:** `CredentialId`, `CredentialContext`, `CredentialMetadata`, `CredentialRef<C>`, `ErasedCredentialRef`, `CredentialProvider`, `CredentialError`, `StorageError`, `ManagerError`, `ValidationError`, `CryptoError`, `SecretString`, `StorageProvider`, `CredentialType`, `CredentialResource`, `RotationStrategy`, `CredentialManager` (builder, store, retrieve, delete, list, validate), `CredentialRotationEvent`, `rotation_subscriber()`.
 
-**Evolving:** `create()`, `continue_flow()`, `list_types()`, `CredentialTypeSchema`, protocol types (ApiKey, OAuth2, etc.), rotation APIs.
+**Unstable:** `create()`, `continue_flow()`, `list_types()`, `CredentialTypeSchema`, protocol type catalogs, rotation orchestration APIs.
 
 **Internal:** `core::adapter` (disabled), `ProtocolRegistry` internals, provider-specific config structs.
+
+### Root Export Stability Map
+
+| Item | Stability |
+|------|-----------|
+| `CredentialContext`, `CredentialDescription`, `CredentialFilter`, `CredentialMetadata`, `CredentialId` | **Stable** |
+| `CredentialProvider`, `CredentialRef<C>`, `ErasedCredentialRef`, `CredentialState`, `CredentialStatus` | **Stable** |
+| `CredentialError`, `StorageError`, `ManagerError`, `ValidationError`, `CryptoError`, `SecretString` | **Stable** |
+| `StorageProvider`, `StateStore`, `DistributedLock`, `LockGuard`, `LockError` | **Stable** |
+| `CredentialType`, `CredentialResource`, `StaticProtocol`, `FlowProtocol`, `InteractiveCredential`, `Refreshable`, `Revocable`, `RotationStrategy` | **Stable** |
+| `CreateResult`, `InitializeResult` | **Unstable** |
+| `CredentialManager`, `CredentialManagerBuilder`, `CredentialTypeSchema` | **Unstable** |
+| `CacheLayer`, `CacheConfig`, `CacheStats`, `ValidationResult`, `ValidationDetails`, `ManagerConfig`, `EvictionStrategy` | **Unstable** |
+| `ApiKeyProtocol`, `BasicAuthProtocol`, `HeaderAuthProtocol`, `DatabaseProtocol`, `OAuth2Protocol`, `LdapProtocol`, `SamlConfig`, `KerberosConfig`, `MtlsConfig` | **Unstable** |
+| `RotationError`, `RotationResult`, `CredentialRotationEvent`, `GracePeriodConfig` | **Unstable** |
+| `encrypt`, `decrypt`, `EncryptionKey`, `EncryptedData` | **Stable** |
 
 ---
 
@@ -30,7 +46,7 @@ Created via `CredentialManager::builder()`.
 ## Core Types
 
 - `CredentialId` (from nebula-core, UUID-backed)
-- `ScopeId` (string-based scope for multi-tenancy)
+- `ScopeLevel` (hierarchical scope from `nebula-core`)
 - `CredentialContext`
 - `CredentialMetadata`
 - `CredentialDescription`
@@ -150,7 +166,7 @@ pub trait InteractiveCredential: CredentialType {
 ```rust
 pub struct CredentialContext {
     pub owner_id:  String,              // credential owner
-    pub scope_id:  Option<ScopeId>,     // optional scope for multi-tenancy
+    pub caller_scope: Option<ScopeLevel>, // optional scope for multi-tenancy
     pub trace_id:  Uuid,                // for audit/tracing
     pub timestamp: DateTime<Utc>,
 }
@@ -163,9 +179,9 @@ pub struct CredentialContext {
 | Method | Status | Notes |
 |--------|--------|-------|
 | `create(type_id, input)` → `CreateResult` | **Implemented** | Drives protocol initialize; supports api_key, basic_auth, oauth2 |
-| `continue_flow(id, type_id, partial_state, UserInput)` → `CreateResult` | **Implemented** | Completes interactive flow (OAuth2 callback) |
+| `continue_flow(id, UserInput)` → `CreateResult` | **Implemented** | Completes interactive flow (OAuth2 callback/device flow polling) |
 | `list_types()` → `Vec<CredentialTypeSchema>` | **Implemented** | Returns registered types from ProtocolRegistry |
-| `credential<C>()` (type-based) | **Evolving** | Requires type registry; id-based `get(id)` preferred |
+| `credential<C>()` (type-based) | **Unstable** | Requires type registry; id-based `get(id)` preferred |
 
 For `CredentialProvider::get`, configure `encryption_key` on the builder to enable decryption.
 
@@ -177,8 +193,8 @@ Methods `nebula-api` calls on `CredentialManager` to serve credential endpoints:
 |----------------|-------------|-------|
 | `list(filter)` → `Vec<CredentialMetadata>` | `GET /credentials` | Metadata only; no secret material |
 | `get(id)` → `Option<(CredentialMetadata, CredentialStatus)>` | `GET /credentials/:id` | Status: active / pending_interaction / error |
-| `create(type_id, input)` → `InitializeResult` | `POST /credentials` | Returns 202 if `RequiresInteraction` |
-| `continue(id, UserInput)` → `InitializeResult<Complete>` | `POST /credentials/:id/callback` | Completes interactive flow |
+| `create(type_id, input)` → `CreateResult` | `POST /credentials` | Returns 202 if `RequiresInteraction` |
+| `continue_flow(id, UserInput)` → `CreateResult` | `POST /credentials/:id/callback` | Completes interactive flow |
 | `delete(id)` → `Result<()>` | `DELETE /credentials/:id` | Revokes tokens; removes from storage |
 | `list_types()` → `Vec<CredentialTypeSchema>` | `GET /credential-types` | Type ids, display names, parameter schemas |
 

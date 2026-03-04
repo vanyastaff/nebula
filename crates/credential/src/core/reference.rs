@@ -45,9 +45,11 @@ impl<C: CredentialType> CredentialRef<C> {
     /// # Errors
     /// Returns `ValidationError::InvalidCredentialId` if the string is not a valid UUID.
     pub fn parse(id: &str) -> Result<Self, crate::core::ValidationError> {
-        let id = CredentialId::parse(id).map_err(|e| crate::core::ValidationError::InvalidCredentialId {
-            id: id.to_string(),
-            reason: e.to_string(),
+        let id = CredentialId::parse(id).map_err(|e| {
+            crate::core::ValidationError::InvalidCredentialId {
+                id: id.to_string(),
+                reason: e.to_string(),
+            }
         })?;
         Ok(Self::from_id(id))
     }
@@ -97,6 +99,35 @@ pub struct ErasedCredentialRef {
 // ─── CredentialProvider ──────────────────────────────────────────────────────
 
 /// Provider trait for acquiring credentials — decouples acquisition from `CredentialManager`.
+///
+/// # Example
+///
+/// ```rust
+/// use std::sync::Arc;
+///
+/// use nebula_credential::core::CredentialProvider;
+/// use nebula_credential::prelude::*;
+///
+/// tokio_test::block_on(async {
+///     let key = EncryptionKey::from_bytes([7u8; 32]);
+///     let manager = CredentialManager::builder()
+///         .storage(Arc::new(MockStorageProvider::new()))
+///         .encryption_key(Arc::new(EncryptionKey::from_bytes([7u8; 32])))
+///         .build();
+///
+///     let id = CredentialId::new();
+///     let ctx = CredentialContext::new("user-123");
+///     let encrypted = encrypt(&key, b"api-token").expect("encrypt");
+///     manager
+///         .store(&id, encrypted, CredentialMetadata::new(), &ctx)
+///         .await
+///         .expect("store");
+///
+///     let secret = manager.get(&id.to_string(), &ctx).await.expect("get");
+///     let value = secret.expose_secret(ToOwned::to_owned);
+///     assert_eq!(value, "api-token");
+/// });
+/// ```
 pub trait CredentialProvider: Send + Sync {
     /// Acquire typed credential state (returns raw `SecretString` for simple cases).
     fn credential<C: Send + 'static>(
@@ -132,8 +163,8 @@ mod new_tests {
     use async_trait::async_trait;
     use nebula_parameter::collection::ParameterCollection;
 
-    use crate::core::result::InitializeResult;
     use crate::core::CredentialDescription;
+    use crate::core::result::InitializeResult;
 
     struct GithubOAuth2;
 
@@ -200,4 +231,3 @@ mod new_tests {
         assert_eq!(erased.key.as_str(), "oauth2_github");
     }
 }
-

@@ -13,12 +13,12 @@
 
 **Goal**: Align docs with codebase, define stable API surface, formalize scope enforcement.
 
-- [ ] CRD-T001 [P] Audit ARCHITECTURE.md against actual codebase — fix any drift in module boundaries
-- [ ] CRD-T002 [P] Audit API.md — add explicit stability annotations (`stable`, `unstable`, `internal`) to every public item
-- [ ] CRD-T003 [P] Audit INTERACTIONS.md — verify all integration points with nebula-action, nebula-resource, nebula-storage
-- [ ] CRD-T004 Write scope enforcement tests for every provider impl (local, AWS, Vault, K8s)
-- [ ] CRD-T005 Run `cargo doc --no-deps -p nebula-credential` and fix all warnings/missing docs
-- [ ] CRD-T006 [P] Add doc-tests for manager/provider/rotation public API examples
+- [x] CRD-T001 [P] Audit ARCHITECTURE.md against actual codebase — fix any drift in module boundaries
+- [x] CRD-T002 [P] Audit API.md — add explicit stability annotations (`stable`, `unstable`, `internal`) to every public item
+- [x] CRD-T003 [P] Audit INTERACTIONS.md — verify all integration points with nebula-action, nebula-resource, nebula-storage
+- [x] CRD-T004 Write scope enforcement tests for every provider impl (local, AWS, Vault, K8s)
+- [x] CRD-T005 Run `cargo doc --no-deps -p nebula-credential` and fix all warnings/missing docs
+- [x] CRD-T006 [P] Add doc-tests for manager/provider/rotation public API examples
 
 **Checkpoint**: ARCHITECTURE.md, API.md, INTERACTIONS.md all reflect actual code; `cargo doc` clean.
 

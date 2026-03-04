@@ -8,7 +8,7 @@ use crate::core::{
 };
 use crate::manager::{CacheConfig, CacheLayer, CacheStats};
 use crate::traits::StorageProvider;
-use crate::utils::{decrypt, encrypt, EncryptedData, EncryptionKey};
+use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
 use nebula_eventbus::EventBus;
 use std::any::TypeId;
 use std::collections::HashMap;
@@ -275,9 +275,7 @@ impl CredentialManager {
                 );
                 // Populate cache if enabled
                 if let Some(cache) = &self.cache {
-                    cache
-                        .insert(*id, data.clone(), metadata.clone())
-                        .await;
+                    cache.insert(*id, data.clone(), metadata.clone()).await;
                     debug!(
                         credential_id = %id,
                         "Populated cache with credential"
@@ -483,10 +481,7 @@ impl CredentialManager {
     ///
     /// Called internally after successful rotation. Also useful in tests to
     /// simulate rotation events for integration with ResourceManager.
-    pub fn emit_rotation(
-        &self,
-        event: crate::rotation::events::CredentialRotationEvent,
-    ) {
+    pub fn emit_rotation(&self, event: crate::rotation::events::CredentialRotationEvent) {
         self.rotation_bus.send(event);
     }
 
@@ -542,24 +537,28 @@ impl CredentialManager {
         use crate::core::result::CreateResult;
         use crate::manager::registry::InitResult;
 
-        let protocol = self.protocol_registry.get(type_id).ok_or_else(|| {
+        let protocol =
+            self.protocol_registry
+                .get(type_id)
+                .ok_or_else(|| ManagerError::ValidationError {
+                    credential_id: "create".to_string(),
+                    reason: format!("unknown credential type: {}", type_id),
+                })?;
+
+        let mut ctx = context.clone();
+        let result = protocol.initialize(input, &mut ctx).await.map_err(|e| {
             ManagerError::ValidationError {
                 credential_id: "create".to_string(),
-                reason: format!("unknown credential type: {}", type_id),
+                reason: format!("protocol init failed: {}", e),
             }
         })?;
 
-        let mut ctx = context.clone();
-        let result = protocol
-            .initialize(input, &mut ctx)
-            .await
-            .map_err(|e| ManagerError::ValidationError {
-                credential_id: "create".to_string(),
-                reason: format!("protocol init failed: {}", e),
-            })?;
-
         // On Complete: encrypt state, store, return credential_id
-        if let InitResult::Complete { type_id: tid, state_json } = result {
+        if let InitResult::Complete {
+            type_id: tid,
+            state_json,
+        } = result
+        {
             let key = self.encryption_key.as_ref().ok_or_else(|| {
                 ManagerError::ValidationError {
                     credential_id: "create".to_string(),
@@ -568,12 +567,11 @@ impl CredentialManager {
                 }
             })?;
 
-            let encrypted = encrypt(key.as_ref(), &state_json).map_err(|e| {
-                ManagerError::ValidationError {
+            let encrypted =
+                encrypt(key.as_ref(), &state_json).map_err(|e| ManagerError::ValidationError {
                     credential_id: "create".to_string(),
                     reason: format!("encryption failed: {}", e),
-                }
-            })?;
+                })?;
 
             let cred_id = CredentialId::new();
 
@@ -615,32 +613,30 @@ impl CredentialManager {
                 type_id: tid,
                 partial_state,
                 interaction,
-            } => (
-                partial_state.clone(),
-                interaction.clone(),
-                tid.clone(),
-            ),
+            } => (partial_state.clone(), interaction.clone(), tid.clone()),
             InitResult::Complete { .. } => unreachable!(),
         };
 
-        let state_json = serde_json::to_vec(&partial_state).map_err(|e| {
-            ManagerError::ValidationError {
+        let state_json =
+            serde_json::to_vec(&partial_state).map_err(|e| ManagerError::ValidationError {
                 credential_id: cred_id.to_string(),
                 reason: format!("partial state serialization failed: {}", e),
-            }
-        })?;
+            })?;
 
-        let encrypted = encrypt(key.as_ref(), &state_json).map_err(|e| {
-            ManagerError::ValidationError {
+        let encrypted =
+            encrypt(key.as_ref(), &state_json).map_err(|e| ManagerError::ValidationError {
                 credential_id: cred_id.to_string(),
                 reason: format!("encryption failed: {}", e),
-            }
-        })?;
+            })?;
 
         let mut metadata = CredentialMetadata::new();
         metadata.owner_scope = context.caller_scope.clone();
-        metadata.tags.insert("credential_type".to_string(), type_id.clone());
-        metadata.tags.insert("credential_status".to_string(), "pending".to_string());
+        metadata
+            .tags
+            .insert("credential_type".to_string(), type_id.clone());
+        metadata
+            .tags
+            .insert("credential_status".to_string(), "pending".to_string());
 
         self.store(&cred_id, encrypted, metadata, context).await?;
 
@@ -680,19 +676,22 @@ impl CredentialManager {
         use crate::core::result::{CreateResult, PartialState};
         use crate::manager::registry::InitResult;
 
-        let key = self.encryption_key.as_ref().ok_or_else(|| {
-            ManagerError::ValidationError {
+        let key = self
+            .encryption_key
+            .as_ref()
+            .ok_or_else(|| ManagerError::ValidationError {
                 credential_id: id.to_string(),
-                reason: "encryption_key required for continue_flow; set via builder.encryption_key()"
-                    .to_string(),
-            }
-        })?;
+                reason:
+                    "encryption_key required for continue_flow; set via builder.encryption_key()"
+                        .to_string(),
+            })?;
 
-        let (encrypted, metadata) = self.retrieve(id, context).await?.ok_or_else(|| {
-            ManagerError::NotFound {
-                credential_id: id.to_string(),
-            }
-        })?;
+        let (encrypted, metadata) =
+            self.retrieve(id, context)
+                .await?
+                .ok_or_else(|| ManagerError::NotFound {
+                    credential_id: id.to_string(),
+                })?;
 
         let type_id = metadata
             .tags
@@ -700,22 +699,21 @@ impl CredentialManager {
             .cloned()
             .ok_or_else(|| ManagerError::ValidationError {
                 credential_id: id.to_string(),
-                reason: "credential missing credential_type tag (not an interactive flow)".to_string(),
+                reason: "credential missing credential_type tag (not an interactive flow)"
+                    .to_string(),
             })?;
 
-        let plaintext = decrypt(key.as_ref(), &encrypted).map_err(|e| {
-            ManagerError::ValidationError {
+        let plaintext =
+            decrypt(key.as_ref(), &encrypted).map_err(|e| ManagerError::ValidationError {
                 credential_id: id.to_string(),
                 reason: format!("decryption failed: {}", e),
-            }
-        })?;
+            })?;
 
-        let partial_state: PartialState = serde_json::from_slice(&plaintext).map_err(|e| {
-            ManagerError::ValidationError {
+        let partial_state: PartialState =
+            serde_json::from_slice(&plaintext).map_err(|e| ManagerError::ValidationError {
                 credential_id: id.to_string(),
                 reason: format!("partial state deserialization failed: {}", e),
-            }
-        })?;
+            })?;
 
         let mut ctx = context.clone();
         let result = self
@@ -728,7 +726,10 @@ impl CredentialManager {
             })?;
 
         match result {
-            InitResult::Complete { type_id: tid, state_json } => {
+            InitResult::Complete {
+                type_id: tid,
+                state_json,
+            } => {
                 let encrypted = encrypt(key.as_ref(), &state_json).map_err(|e| {
                     ManagerError::ValidationError {
                         credential_id: id.to_string(),
@@ -754,12 +755,11 @@ impl CredentialManager {
                 partial_state: ps,
                 next_step,
             } => {
-                let state_json = serde_json::to_vec(&ps).map_err(|e| {
-                    ManagerError::ValidationError {
+                let state_json =
+                    serde_json::to_vec(&ps).map_err(|e| ManagerError::ValidationError {
                         credential_id: id.to_string(),
                         reason: format!("partial state serialization failed: {}", e),
-                    }
-                })?;
+                    })?;
 
                 let encrypted = encrypt(key.as_ref(), &state_json).map_err(|e| {
                     ManagerError::ValidationError {
@@ -771,7 +771,8 @@ impl CredentialManager {
                 let mut meta = CredentialMetadata::new();
                 meta.owner_scope = context.caller_scope.clone();
                 meta.tags.insert("credential_type".to_string(), tid.clone());
-                meta.tags.insert("credential_status".to_string(), "pending".to_string());
+                meta.tags
+                    .insert("credential_status".to_string(), "pending".to_string());
 
                 self.store(id, encrypted, meta, context).await?;
 
@@ -783,7 +784,8 @@ impl CredentialManager {
             }
             InitResult::RequiresInteraction { .. } => Err(ManagerError::ValidationError {
                 credential_id: id.to_string(),
-                reason: "protocol returned RequiresInteraction from continue (unexpected)".to_string(),
+                reason: "protocol returned RequiresInteraction from continue (unexpected)"
+                    .to_string(),
             }),
         }
     }
@@ -792,6 +794,28 @@ impl CredentialManager {
     ///
     /// Returns type ids, display names, parameter schemas for `GET /credential-types`.
     /// Populated from the protocol registry (api_key, basic_auth, oauth2).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::sync::Arc;
+    ///
+    /// use nebula_credential::prelude::*;
+    ///
+    /// let manager = CredentialManager::builder()
+    ///     .storage(Arc::new(MockStorageProvider::new()))
+    ///     .build();
+    ///
+    /// let type_ids: Vec<String> = manager
+    ///     .list_types()
+    ///     .into_iter()
+    ///     .map(|t| t.type_id)
+    ///     .collect();
+    ///
+    /// assert!(type_ids.contains(&"api_key".to_string()));
+    /// assert!(type_ids.contains(&"basic_auth".to_string()));
+    /// assert!(type_ids.contains(&"oauth2".to_string()));
+    /// ```
     #[must_use]
     pub fn list_types(&self) -> Vec<CredentialTypeSchema> {
         self.protocol_registry
@@ -2146,8 +2170,7 @@ impl CredentialManager {
         };
 
         // 3. Create rotation transaction with manual metadata
-        let transaction =
-            RotationTransaction::new_manual(*id, metadata.version, manual.clone());
+        let transaction = RotationTransaction::new_manual(*id, metadata.version, manual.clone());
 
         let transaction_id = transaction.id.to_string();
 
@@ -2791,8 +2814,7 @@ impl<S> CredentialManagerBuilder<S> {
     /// # }
     /// ```
     pub fn register_type<C: Send + 'static>(mut self, credential_id: CredentialId) -> Self {
-        self.type_registry
-            .insert(TypeId::of::<C>(), credential_id);
+        self.type_registry.insert(TypeId::of::<C>(), credential_id);
         self
     }
 
@@ -2884,14 +2906,16 @@ impl crate::core::CredentialProvider for CredentialManager {
         id: &str,
         ctx: &CredentialContext,
     ) -> Result<crate::core::SecretString, CredentialError> {
-        let key = self.encryption_key.as_ref().ok_or_else(|| {
-            CredentialError::Manager {
+        let key = self
+            .encryption_key
+            .as_ref()
+            .ok_or_else(|| CredentialError::Manager {
                 source: ManagerError::ValidationError {
                     credential_id: id.to_string(),
-                    reason: "CredentialProvider::get requires encryption_key on builder".to_string(),
+                    reason: "CredentialProvider::get requires encryption_key on builder"
+                        .to_string(),
                 },
-            }
-        })?;
+            })?;
 
         let cred_id = CredentialId::parse(id).map_err(|e| CredentialError::Validation {
             source: crate::core::ValidationError::InvalidCredentialId {
@@ -2900,20 +2924,23 @@ impl crate::core::CredentialProvider for CredentialManager {
             },
         })?;
 
-        let (data, _meta) = self.retrieve(&cred_id, ctx).await.map_err(|e| match e {
-            ManagerError::NotFound { credential_id } => CredentialError::Manager {
-                source: ManagerError::NotFound { credential_id },
-            },
-            _ => CredentialError::Manager { source: e },
-        })?.ok_or_else(|| CredentialError::Manager {
-            source: ManagerError::NotFound {
-                credential_id: id.to_string(),
-            },
-        })?;
+        let (data, _meta) = self
+            .retrieve(&cred_id, ctx)
+            .await
+            .map_err(|e| match e {
+                ManagerError::NotFound { credential_id } => CredentialError::Manager {
+                    source: ManagerError::NotFound { credential_id },
+                },
+                _ => CredentialError::Manager { source: e },
+            })?
+            .ok_or_else(|| CredentialError::Manager {
+                source: ManagerError::NotFound {
+                    credential_id: id.to_string(),
+                },
+            })?;
 
-        let plaintext = decrypt(key.as_ref(), &data).map_err(|e| CredentialError::Crypto {
-            source: e,
-        })?;
+        let plaintext =
+            decrypt(key.as_ref(), &data).map_err(|e| CredentialError::Crypto { source: e })?;
 
         let s = String::from_utf8(plaintext).map_err(|e| CredentialError::Validation {
             source: crate::core::ValidationError::InvalidFormat(format!(

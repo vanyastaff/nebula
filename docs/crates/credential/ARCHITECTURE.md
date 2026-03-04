@@ -85,7 +85,7 @@ graph TB
 
 | Module | Key types exported | Role |
 |--------|-------------------|------|
-| `core` | `CredentialId` (from nebula-core), `ScopeId`, `CredentialContext`, `CredentialMetadata`, `CredentialDescription`, `CredentialFilter`, `CredentialState`, `CredentialRef<C>`, `ErasedCredentialRef`, `CredentialProvider`, `CredentialError`, `StorageError`, `CryptoError`, `ValidationError`, `ManagerError`, `SecretString` | Identity, scope, errors, primitives |
+| `core` | `CredentialId` (from nebula-core), `ScopeLevel` (via `CredentialContext.caller_scope`), `CredentialContext`, `CredentialMetadata`, `CredentialDescription`, `CredentialFilter`, `CredentialState`, `CredentialRef<C>`, `ErasedCredentialRef`, `CredentialProvider`, `CredentialError`, `StorageError`, `CryptoError`, `ValidationError`, `ManagerError`, `SecretString` | Identity, scope, errors, primitives |
 | `traits` (domain) | `CredentialType`, `StaticProtocol`, `FlowProtocol`, `InteractiveCredential`, `CredentialResource`, `Refreshable`, `Revocable`, `TestableCredential`, `RotatableCredential` | Credential / protocol contracts |
 | `traits` (infrastructure) | `StorageProvider`, `StateStore`, `DistributedLock` | Storage/locking/rotation infrastructure |
 | `providers` | `MockStorageProvider`, `LocalStorageProvider`\*, `AwsSecretsManagerProvider`\*, `HashiCorpVaultProvider`\*, `KubernetesSecretsProvider`\*, `ProviderConfig`, `StorageMetrics` | Concrete backends (feature-gated) |
@@ -98,7 +98,7 @@ graph TB
 
 ### Core vs Traits
 
-- **Core (`core`)** contains only identities, context, descriptions, metadata, errors, and the reference layer (`CredentialRef<C>`, `ErasedCredentialRef`, `CredentialProvider`) without knowledge of protocols or rotation. The `core::adapter` module is disabled (TODO Phase 8 — re-enable after error API update).
+- **Core (`core`)** contains only identities, context, descriptions, metadata, errors, and the reference layer (`CredentialRef<C>`, `ErasedCredentialRef`, `CredentialProvider`) without knowledge of protocols or rotation. The `core::adapter` module is currently disabled in source and is not part of the active public contract.
 - **Domain traits (`traits::credential`)** describe credential types and protocols:
   - `CredentialType` — schema + initialize for a concrete credential
   - `StaticProtocol` — pure form → State without IO (API keys, BasicAuth, DB, header auth)
@@ -288,13 +288,11 @@ The `CredentialContext` carries the caller's runtime scope:
 ```rust
 pub struct CredentialContext {
     pub owner_id:  String,              // credential owner
-    pub scope_id:  Option<ScopeId>,     // optional scope for multi-tenancy
+    pub caller_scope: Option<ScopeLevel>, // optional scope for multi-tenancy
     pub trace_id:  Uuid,                 // for audit/tracing
     pub timestamp: DateTime<Utc>,
 }
 ```
-
-> **Note:** Target architecture (D-014) uses `ScopeLevel` from nebula-core for hierarchical scope. Current implementation uses `ScopeId` (string). Migration path in ROADMAP Phase 5.
 
 ### Rotation Flow (RotationTransaction)
 
@@ -351,7 +349,7 @@ RotationScheduler detects policy trigger
 - `SecretString` implements `Debug` with redaction; never exposes raw secret in error messages or logs
 - `StorageProvider::retrieve` is idempotent and safe to retry; `store`/`delete` are not
 - Rotation failure always triggers rollback to the backup credential; new state is never partially applied
-- `core::adapter` module is disabled (TODO Phase 5 comment in source)
+- `core::adapter` module is disabled in source and excluded from public API
 
 ## Security Boundaries
 
