@@ -14,8 +14,19 @@ use crate::error::PortsError;
 /// so the trait object can be shared across Tokio tasks.
 #[async_trait]
 pub trait WorkflowRepo: Send + Sync {
+    /// Get workflow definition and current version by ID.
+    async fn get_with_version(
+        &self,
+        id: WorkflowId,
+    ) -> Result<Option<(u64, serde_json::Value)>, PortsError>;
+
     /// Get a workflow definition by ID. Returns serialized JSON.
-    async fn get(&self, id: WorkflowId) -> Result<Option<serde_json::Value>, PortsError>;
+    async fn get(&self, id: WorkflowId) -> Result<Option<serde_json::Value>, PortsError> {
+        Ok(self
+            .get_with_version(id)
+            .await?
+            .map(|(_, definition)| definition))
+    }
 
     /// Save a workflow definition with optimistic concurrency.
     /// `version` is the expected current version for CAS.

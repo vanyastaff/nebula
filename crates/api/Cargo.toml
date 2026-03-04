@@ -14,6 +14,7 @@ documentation.workspace = true
 [dependencies]
 nebula-webhook = { path = "../webhook" }
 nebula-ports = { path = "../ports" }
+nebula-core = { path = "../core" }
 
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "net", "signal"] }
 axum = { workspace = true }
@@ -29,3 +30,4 @@ reqwest = { workspace = true, default-features = false, features = ["json", "rus
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+async-trait = { workspace = true }

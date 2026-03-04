@@ -29,9 +29,9 @@
 
 - [x] API-T006 Extend ApiState with engine and storage handles (or port traits)
 - [x] API-T007 Define request/response types and standard error shape `{ error, message }`
-- [ ] API-T008 [P] Implement GET /workflows (list with pagination) and GET /workflows/:id
-- [ ] API-T009 [P] Implement POST /workflows (create) and PATCH /workflows/:id (update)
-- [ ] API-T010 [P] Implement DELETE /workflows/:id
+- [x] API-T008 [P] Implement GET /workflows (list with pagination) and GET /workflows/:id
+- [x] API-T009 [P] Implement POST /workflows (create) and PATCH /workflows/:id (update)
+- [x] API-T010 [P] Implement DELETE /workflows/:id
 - [ ] API-T011 Implement POST /workflows/:id/activate (toggle active state)
 - [ ] API-T012 Implement POST /workflows/:id/execute (manual trigger via engine)
 - [ ] API-T013 [P] Implement GET /runs (list with filter by workflow, status, date) and GET /runs/:id (detail + node trace)

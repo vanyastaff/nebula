@@ -11,11 +11,15 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
+mod auth;
 pub mod contracts;
 mod server;
+mod state;
 mod status;
+mod workflows;
 
 pub use server::{ApiError, ApiServer, ApiServerConfig};
+pub use state::ApiState;
 pub use status::{WebhookStatus, WorkerStatus};
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -30,17 +34,31 @@ use tracing::info;
 /// - `GET /api/v1/status` — workers + webhook status
 /// - `POST /webhooks/*` — webhook endpoints (from embedded webhook server)
 pub fn app(webhook_server: Arc<WebhookServer>, workers: Vec<WorkerStatus>) -> Router {
-    let state = server::ApiState::new(webhook_server.clone(), workers);
-    server::api_router()
-        .with_state(state)
-        .merge(webhook_server.router())
+    let state = ApiState::new(webhook_server, workers);
+    app_with_state(state)
 }
 
 /// Build API-only application (without merging webhook routes).
 ///
 /// Useful for focused API tests that should not depend on webhook route shape.
 pub fn api_only_app(webhook_server: Arc<WebhookServer>, workers: Vec<WorkerStatus>) -> Router {
-    let state = server::ApiState::new(webhook_server.clone(), workers);
+    let state = ApiState::new(webhook_server, workers);
+    api_only_app_with_state(state)
+}
+
+/// Build the combined application from a fully configured [`ApiState`].
+///
+/// This is the preferred entry point for dependency injection in tests and
+/// in host binaries that compose API ports explicitly.
+pub fn app_with_state(state: ApiState) -> Router {
+    let webhook = state.webhook.clone();
+    server::api_router()
+        .with_state(state)
+        .merge(webhook.router())
+}
+
+/// Build API-only application from a fully configured [`ApiState`].
+pub fn api_only_app_with_state(state: ApiState) -> Router {
     server::api_router().with_state(state)
 }
 

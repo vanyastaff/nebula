@@ -120,3 +120,8 @@ All subsequent requests: Authorization: Bearer <accessToken>
 - [ ] POST /auth/oauth/callback returns 200 + `{ accessToken, user }`
 - [x] Unauthenticated request to protected route returns 401 with `{ error, message }`
 - [x] Rate-limited request to protected route returns 429 with `Retry-After`
+- [x] GET `/api/v1/workflows` returns paginated list when repository is configured
+- [x] GET `/api/v1/workflows/:id` returns workflow detail or 404
+- [x] POST `/api/v1/workflows` creates a workflow and returns 201
+- [x] PATCH `/api/v1/workflows/:id` updates selected fields with optimistic concurrency
+- [x] DELETE `/api/v1/workflows/:id` returns 204 or 404

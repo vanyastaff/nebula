@@ -12,7 +12,10 @@
 | Location | Responsibility |
 |----------|----------------|
 | `lib.rs` | app(), run(); Router merge |
-| `server.rs` | api_router(), health, status handlers; ApiState, ApiServer, ApiServerConfig, ApiError |
+| `server.rs` | api_router() composition, health/status handlers, ApiServerConfig/ApiServer/ApiError |
+| `state.rs` | ApiState + dependency wiring (repos, oauth/rate-limit stores) |
+| `auth.rs` | OAuth handlers, auth extractor, rate-limit checks, CORS |
+| `workflows.rs` | Workflow REST handlers (list/get/create/update/delete) |
 | `status.rs` | WorkerStatus, WebhookStatus |
 | `contracts.rs` | Shared API contracts (error envelope, pagination, workflow/run DTOs) |
 
@@ -28,7 +31,7 @@
 ### Known Bottlenecks
 
 - **Static workers:** Workers passed as Vec<WorkerStatus>; no live pool; status is snapshot.
-- **Ports not wired to handlers yet:** ApiState now carries optional `WorkflowRepo` + `ExecutionRepo`, but workflow/run routes are not implemented yet.
+- **Partial ports wiring:** `WorkflowRepo` is now wired for list/get/create/update under `/api/v1/workflows`; delete/activate/execute and all `ExecutionRepo` routes remain.
 - **Auth scope is still narrow:** Auth boundary exists for protected routes (`/api/v1/auth/me`), but workflow/run routes are not yet protected because они пока не реализованы.
 - **No WebSocket:** Real-time updates not implemented.
 

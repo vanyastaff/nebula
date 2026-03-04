@@ -3679,7 +3679,9 @@ dependencies = [
 name = "nebula-api"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
+ "nebula-core",
  "nebula-ports",
  "nebula-webhook",
  "reqwest 0.13.2",

@@ -6,6 +6,8 @@
 
 - `app(webhook_server, workers)` → Router
 - `api_only_app(webhook_server, workers)` → Router (API routes only; no webhook merge)
+- `app_with_state(state)` → Router (API + webhook; explicit dependency injection)
+- `api_only_app_with_state(state)` → Router (API only; explicit dependency injection)
 - `run(config, webhook_config, workers)` → `impl Future<Output = Result<(), ApiError>>`
 - `contracts` module:
   - `ApiErrorResponse { error, message }`
@@ -53,17 +55,17 @@
   - configurable via `NEBULA_RATE_LIMIT_MAX_REQUESTS` and `NEBULA_RATE_LIMIT_WINDOW_SECONDS`
   - on limit breach returns `429` with `Retry-After` header
 
-#### Workflows *(Phase 2)*
+#### Workflows *(Phase 1 baseline)*
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | /workflows | List workflows |
-| GET | /workflows/:id | Get workflow by ID |
-| POST | /workflows | Create workflow |
-| PATCH | /workflows/:id | Update workflow |
-| DELETE | /workflows/:id | Delete workflow |
-| POST | /workflows/:id/activate | Activate / deactivate workflow |
-| POST | /workflows/:id/execute | Manual trigger (test run) |
+| GET | /api/v1/workflows | List workflows (pagination: `offset`, `limit`) |
+| GET | /api/v1/workflows/:id | Get workflow by ID |
+| POST | /api/v1/workflows | Create workflow |
+| PATCH | /api/v1/workflows/:id | Update workflow |
+| DELETE | /api/v1/workflows/:id | Delete workflow |
+| POST | /api/v1/workflows/:id/activate | Activate / deactivate workflow |
+| POST | /api/v1/workflows/:id/execute | Manual trigger (test run) |
 
 #### Runs *(Phase 2–3)*
 
