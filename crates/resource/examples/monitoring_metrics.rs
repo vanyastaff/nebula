@@ -117,6 +117,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 ResourceEvent::Quarantined {
                     resource_key,
                     reason,
+                    ..
                 } => {
                     println!("  [event] Quarantined resource_id={resource_key} reason={reason}");
                 }
@@ -125,6 +126,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     scope,
                 } => {
                     println!("  [event] ConfigReloaded resource_id={resource_key} scope={scope:?}");
+                }
+                ResourceEvent::ConfigReloadRejected {
+                    resource_key,
+                    error,
+                    had_existing_pool,
+                } => {
+                    println!(
+                        "  [event] ConfigReloadRejected resource_id={resource_key} had_existing_pool={had_existing_pool} error={error}"
+                    );
                 }
                 other => {
                     println!("  [event] {other:?}");

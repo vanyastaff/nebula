@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nebula_core::ResourceKey;
-use nebula_resource::events::{EventBus, ResourceEvent};
+use nebula_resource::events::{EventBus, QuarantineTrigger, ResourceEvent};
 use nebula_resource::health::{
     HealthCheckConfig, HealthCheckable, HealthChecker, HealthState, HealthStatus,
 };
@@ -231,6 +231,14 @@ impl HealthCheckable for FlippableHealthCheck {
     }
 }
 
+struct AlwaysFailingHealthCheck;
+
+impl HealthCheckable for AlwaysFailingHealthCheck {
+    async fn health_check(&self) -> nebula_resource::error::Result<HealthStatus> {
+        Ok(HealthStatus::unhealthy("always failing"))
+    }
+}
+
 #[tokio::test]
 async fn health_state_transition_emits_health_changed_event() {
     let bus = Arc::new(EventBus::new(64));
@@ -331,6 +339,56 @@ async fn no_health_changed_event_when_state_unchanged() {
     );
 
     checker.shutdown();
+}
+
+#[tokio::test]
+async fn health_threshold_breach_emits_structured_quarantine_transition_event() {
+    let bus = Arc::new(EventBus::new(64));
+    let mut rx = bus.subscribe();
+
+    let manager = ManagerBuilder::new()
+        .event_bus(Arc::clone(&bus))
+        .health_config(HealthCheckConfig {
+            default_interval: Duration::from_millis(25),
+            failure_threshold: 1,
+            check_timeout: Duration::from_secs(1),
+        })
+        .build();
+
+    manager.start_health_monitoring("health-quarantine", AlwaysFailingHealthCheck);
+
+    let mut quarantined_event = None;
+    for _ in 0..8 {
+        let maybe_event = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await;
+        if let Ok(Some(event)) = maybe_event {
+            if let ResourceEvent::Quarantined {
+                resource_key,
+                trigger,
+                from_health,
+                to_health,
+                ..
+            } = event
+            {
+                quarantined_event = Some((resource_key, trigger, from_health, to_health));
+                break;
+            }
+        }
+    }
+
+    manager.health_checker().shutdown();
+
+    let (resource_key, trigger, from_health, to_health) =
+        quarantined_event.expect("expected Quarantined event with structured transition fields");
+
+    assert_eq!(resource_key.as_ref(), "health-quarantine");
+    assert!(matches!(
+        trigger,
+        QuarantineTrigger::HealthThresholdExceeded {
+            consecutive_failures: 1
+        }
+    ));
+    assert_eq!(from_health, HealthState::Unknown);
+    assert!(matches!(to_health, HealthState::Unhealthy { .. }));
 }
 
 // ---------------------------------------------------------------------------

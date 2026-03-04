@@ -130,6 +130,12 @@ pub enum ResourceEvent {
         resource_key: ResourceKey,
         /// Reason for quarantine.
         reason: String,
+        /// Structured trigger metadata for observability pipelines.
+        trigger: QuarantineTrigger,
+        /// Health state before quarantine propagation.
+        from_health: HealthState,
+        /// Health state after quarantine propagation.
+        to_health: HealthState,
     },
     /// A resource was released from quarantine.
     QuarantineReleased {
@@ -144,6 +150,15 @@ pub enum ResourceEvent {
         resource_key: ResourceKey,
         /// Scope after reload.
         scope: Scope,
+    },
+    /// A config reload attempt was rejected by validation/initialization guardrails.
+    ConfigReloadRejected {
+        /// Resource key.
+        resource_key: ResourceKey,
+        /// Validation/init error message.
+        error: String,
+        /// Whether there was an already-registered pool kept intact.
+        had_existing_pool: bool,
     },
     /// An error occurred during a resource operation.
     Error {
@@ -160,6 +175,21 @@ pub enum ResourceEvent {
         credential_key: nebula_core::CredentialKey,
         /// Strategy that was applied.
         strategy: String,
+    },
+}
+
+/// Structured trigger information for quarantine transitions.
+#[derive(Debug, Clone)]
+pub enum QuarantineTrigger {
+    /// Quarantine was triggered after health-check threshold breach.
+    HealthThresholdExceeded {
+        /// Consecutive health-check failures observed.
+        consecutive_failures: u32,
+    },
+    /// Quarantine was triggered manually by operator/automation.
+    Manual {
+        /// Human-readable reason.
+        reason: String,
     },
 }
 

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use nebula_metrics::naming::{
     NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
     NEBULA_RESOURCE_CLEANUP_TOTAL, NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
-    NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL, NEBULA_RESOURCE_CREATE_TOTAL,
+    NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
     NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
     NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
     NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
@@ -160,6 +160,10 @@ impl MetricsCollector {
                     "resource_id" => id
                 )
                 .increment(1);
+            }
+            ResourceEvent::ConfigReloadRejected { resource_key, .. } => {
+                let id = resource_key.to_string();
+                metrics::counter!(NEBULA_RESOURCE_ERROR_TOTAL, "resource_id" => id).increment(1);
             }
             ResourceEvent::CredentialRotated { resource_key, .. } => {
                 let id = resource_key.to_string();

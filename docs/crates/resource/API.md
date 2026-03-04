@@ -57,8 +57,9 @@ The `EventBus` emits events on every lifecycle transition:
 | `Acquired { wait_duration }` | resource_id | Instance handed to caller |
 | `Released { usage_duration }` | resource_id | Instance returned to pool |
 | `PoolExhausted { waiters }` | resource_id | Pool full, callers waiting |
-| `Quarantined { reason }` | resource_id | Resource put in quarantine |
+| `Quarantined { reason, trigger, from_health, to_health }` | resource_id | Structured health-to-quarantine transition |
 | `QuarantineReleased` | resource_id, recovery_attempts | Recovered |
+| `ConfigReloadRejected { error, had_existing_pool }` | resource_id | Reload guardrail rejection (existing pool preserved) |
 | `Error { error }` | resource_id | Operation failed |
 | `CleanedUp { reason }` | resource_id | Instance permanently removed |
 

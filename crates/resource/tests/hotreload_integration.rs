@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use nebula_core::ResourceKey;
+use nebula_resource::events::{EventBus, ResourceEvent};
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
@@ -259,6 +260,68 @@ async fn reload_config_with_invalid_config_fails_cleanly() {
         .downcast_ref::<String>()
         .expect("should downcast");
     assert_eq!(inst, "instance", "original pool should still be intact");
+}
+
+/// Invalid reload attempts emit a guardrail event and preserve existing pool.
+#[tokio::test(flavor = "multi_thread")]
+async fn invalid_reload_emits_config_reload_rejected_event() {
+    let (resource, cleanup_count) = TrackingResource::new();
+    let bus = Arc::new(EventBus::new(64));
+    let mut rx = bus.subscribe();
+
+    let mgr = Manager::with_event_bus(Arc::clone(&bus));
+    mgr.register(
+        resource,
+        TestConfig,
+        PoolConfig {
+            min_size: 0,
+            max_size: 3,
+            acquire_timeout: Duration::from_secs(1),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // Drain Created event.
+    let _ = rx.recv().await.expect("should receive Created event");
+
+    let result = mgr
+        .reload_config(
+            TrackingResource::with_counter(&cleanup_count),
+            TestConfig,
+            PoolConfig {
+                min_size: 0,
+                max_size: 0, // invalid guardrail trigger
+                acquire_timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(result.is_err(), "invalid reload should be rejected");
+
+    let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out")
+        .expect("should emit ConfigReloadRejected");
+    match event {
+        ResourceEvent::ConfigReloadRejected {
+            resource_key,
+            had_existing_pool,
+            ..
+        } => {
+            assert_eq!(resource_key.as_ref(), "reload-test");
+            assert!(had_existing_pool);
+        }
+        other => panic!("expected ConfigReloadRejected, got {other:?}"),
+    }
+
+    let key = ResourceKey::try_from("reload-test").expect("valid resource key");
+    let guard = mgr.acquire(&key, &ctx()).await.unwrap();
+    let inst = guard
+        .as_any()
+        .downcast_ref::<String>()
+        .expect("should downcast");
+    assert_eq!(inst, "instance");
 }
 
 /// Guards from the old pool clean up on drop instead of returning to idle.

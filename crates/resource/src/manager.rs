@@ -10,17 +10,17 @@ use nebula_core::CredentialId;
 use nebula_credential::traits::RotationStrategy;
 
 use crate::autoscale::{AutoScalePolicy, AutoScaler};
+use crate::components::{HasResourceComponents, TypedCredentialHandler};
 use crate::context::Context;
 use crate::error::{Error, Result};
-use crate::events::{EventBus, ResourceEvent};
+use crate::events::{EventBus, QuarantineTrigger, ResourceEvent};
 use crate::health::{HealthCheckConfig, HealthCheckable, HealthState};
 use crate::hooks::{HookEvent, HookRegistry};
 use crate::instrumented::InstrumentedGuard;
 use crate::manager_guard::ReleaseHookGuard;
-use crate::components::{HasResourceComponents, TypedCredentialHandler};
 use crate::manager_pool::{AnyPool, PoolEntry, RotatablePool};
-use crate::pool::CredentialHandler;
 use crate::metadata::ResourceMetadata;
+use crate::pool::CredentialHandler;
 use crate::pool::{Pool, PoolConfig};
 use crate::quarantine::{QuarantineConfig, QuarantineManager, QuarantineReason};
 use crate::resource::Resource;
@@ -196,6 +196,18 @@ impl ManagerBuilder {
             let hs = health_states.clone();
             let bus = Arc::clone(&event_bus);
             health_checker.set_threshold_callback(move |resource_id, consecutive_failures| {
+                let previous_health = hs
+                    .get(resource_id)
+                    .map(|state| state.value().clone())
+                    .unwrap_or(HealthState::Unknown);
+
+                let next_health = HealthState::Unhealthy {
+                    reason: format!(
+                        "Health check failed ({consecutive_failures} consecutive failures)"
+                    ),
+                    recoverable: true,
+                };
+
                 let newly_quarantined = q.quarantine(
                     resource_id,
                     QuarantineReason::HealthCheckFailed {
@@ -208,17 +220,14 @@ impl ManagerBuilder {
                     bus.emit(ResourceEvent::Quarantined {
                         resource_key: key,
                         reason: format!("health check failed ({consecutive_failures} consecutive)"),
+                        trigger: QuarantineTrigger::HealthThresholdExceeded {
+                            consecutive_failures,
+                        },
+                        from_health: previous_health.clone(),
+                        to_health: next_health.clone(),
                     });
                 }
-                hs.insert(
-                    resource_id.to_string(),
-                    HealthState::Unhealthy {
-                        reason: format!(
-                            "Health check failed ({consecutive_failures} consecutive failures)"
-                        ),
-                        recoverable: true,
-                    },
-                );
+                hs.insert(resource_id.to_string(), next_health);
             });
         }
 
@@ -491,7 +500,9 @@ impl Manager {
                         guard
                             .iter()
                             .filter_map(|e| {
-                                e.pool.upgrade().map(|p| (e.credential_key.clone(), e.strategy, p))
+                                e.pool
+                                    .upgrade()
+                                    .map(|p| (e.credential_key.clone(), e.strategy, p))
                             })
                             .collect::<Vec<_>>()
                     })
@@ -723,10 +734,7 @@ impl Manager {
     /// pool.handle_rotation(&new_state, strategy, credential_key).await?;
     /// ```
     #[must_use]
-    pub fn get_pool<R: Resource>(
-        &self,
-        resource: &R,
-    ) -> Option<Arc<TypedPool<R>>>
+    pub fn get_pool<R: Resource>(&self, resource: &R) -> Option<Arc<TypedPool<R>>>
     where
         R::Instance: Any,
     {
@@ -1113,15 +1121,31 @@ impl Manager {
     {
         let key = resource.metadata().key.clone();
         let id = key.as_ref().to_string();
+        let had_existing_pool = self.pools.contains_key(&id);
 
         // Build the new pool before touching the registry.
-        let new_pool = Pool::with_hooks(
+        let new_pool = match Pool::with_hooks(
             resource,
             config,
             pool_config,
             Some(Arc::clone(&self.event_bus)),
             Some(Arc::clone(&self.hooks)),
-        )?;
+        ) {
+            Ok(pool) => pool,
+            Err(err) => {
+                tracing::warn!(
+                    resource_id = %id,
+                    error = %err,
+                    "Rejected config reload attempt due to invalid configuration"
+                );
+                self.event_bus.emit(ResourceEvent::ConfigReloadRejected {
+                    resource_key: key.clone(),
+                    error: err.to_string(),
+                    had_existing_pool,
+                });
+                return Err(err);
+            }
+        };
 
         // Shut down the old pool (if any), preserving the existing scope.
         let existing_scope = if let Some((_, entry)) = self.pools.remove(&id) {
@@ -1313,10 +1337,18 @@ mod tests {
         }
 
         let mgr = Manager::new();
-        mgr.register(ResourceA, TestConfig { value: "v1".into() }, PoolConfig::default())
-            .unwrap();
-        mgr.register(ResourceA, TestConfig { value: "v2".into() }, PoolConfig::default())
-            .unwrap();
+        mgr.register(
+            ResourceA,
+            TestConfig { value: "v1".into() },
+            PoolConfig::default(),
+        )
+        .unwrap();
+        mgr.register(
+            ResourceA,
+            TestConfig { value: "v2".into() },
+            PoolConfig::default(),
+        )
+        .unwrap();
         // Second register replaces the pool for the same key; no panic.
     }
 

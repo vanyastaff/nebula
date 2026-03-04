@@ -29,11 +29,11 @@
 
 **Goal**: Deterministic shutdown tests; health-to-quarantine observability; reload guardrails.
 
-- [ ] RSC-T008 Write stress tests for pool shutdown under in-flight load in `tests/shutdown_stress.rs`
-- [ ] RSC-T009 [P] Add health-to-quarantine propagation observability — structured events for each transition
-- [ ] RSC-T010 Implement operational guardrails for invalid config reload attempts (reject or warn)
-- [ ] RSC-T011 [P] Write CI race scenario tests — verify no leaked permits/instances under concurrent ops
-- [ ] RSC-T012 Write pool swap integration test — old pool drains, new pool activates cleanly
+- [x] RSC-T008 Write stress tests for pool shutdown under in-flight load in `tests/shutdown_stress.rs`
+- [x] RSC-T009 [P] Add health-to-quarantine propagation observability — structured events for each transition
+- [x] RSC-T010 Implement operational guardrails for invalid config reload attempts (reject or warn)
+- [x] RSC-T011 [P] Write CI race scenario tests — verify no leaked permits/instances under concurrent ops
+- [x] RSC-T012 Write pool swap integration test — old pool drains, new pool activates cleanly
 
 **Checkpoint**: Deterministic shutdown in stress tests; no leaked permits in CI race scenarios.
 
