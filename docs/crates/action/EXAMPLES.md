@@ -92,3 +92,84 @@ async fn main() {
     println!("{out:?}");
 }
 ```
+
+## Stateful Action + State Loop (ACT-T025)
+
+```rust,ignore
+use nebula_action::{
+    Action, ActionComponents, ActionError, ActionMetadata, ActionOutput, ActionResult,
+    BreakReason, StatefulAction,
+};
+
+struct CounterAction {
+    meta: ActionMetadata,
+}
+
+impl Action for CounterAction {
+    fn metadata(&self) -> &ActionMetadata { &self.meta }
+    fn components(&self) -> ActionComponents { ActionComponents::new() }
+}
+
+impl StatefulAction for CounterAction {
+    type Input = ();
+    type Output = u32;
+    type State = u32;
+
+    async fn execute(
+        &self,
+        _input: Self::Input,
+        state: &mut Self::State,
+        _ctx: &impl nebula_action::Context,
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
+        let current = *state;
+        *state += 1;
+
+        if current < 3 {
+            Ok(ActionResult::Continue {
+                output: ActionOutput::Value(current),
+                progress: Some((current + 1) as f64 / 4.0),
+                delay: None,
+            })
+        } else {
+            Ok(ActionResult::Break {
+                output: ActionOutput::Value(current),
+                reason: BreakReason::Completed,
+            })
+        }
+    }
+}
+```
+
+## Trigger Action (Webhook/Poll Starter) (ACT-T026)
+
+```rust,ignore
+use nebula_action::{Action, ActionComponents, ActionError, ActionMetadata, TriggerAction, TriggerContext};
+
+struct CronLikeTrigger {
+    meta: ActionMetadata,
+}
+
+impl Action for CronLikeTrigger {
+    fn metadata(&self) -> &ActionMetadata { &self.meta }
+    fn components(&self) -> ActionComponents { ActionComponents::new() }
+}
+
+impl TriggerAction for CronLikeTrigger {
+    async fn start(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
+        // schedule next tick
+        ctx.schedule_after(std::time::Duration::from_secs(60)).await?;
+
+        // emit new workflow execution payload
+        let _execution_id = ctx.emit_execution(serde_json::json!({
+            "trigger": "cron",
+            "at": chrono::Utc::now().to_rfc3339(),
+        })).await?;
+
+        Ok(())
+    }
+
+    async fn stop(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+        Ok(())
+    }
+}
+```
