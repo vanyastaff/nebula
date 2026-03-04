@@ -113,7 +113,9 @@ pub fn validate_action_package(
         if !output_keys.insert(key.clone()) {
             errors.push(ActionPackageValidationError::DuplicateOutputPortKey { key });
         }
-        if let OutputPort::Dynamic(port) = output && port.source_field.trim().is_empty() {
+        if let OutputPort::Dynamic(port) = output
+            && port.source_field.trim().is_empty()
+        {
             errors.push(ActionPackageValidationError::InvalidDynamicPort {
                 key: port.key.clone(),
             });
@@ -147,8 +149,8 @@ pub fn validate_action_package(
 mod tests {
     use super::*;
     use crate::port::{DynamicPort, SupportPort};
-    use nebula_core::{CredentialId, CredentialKey};
     use nebula_core::ResourceKey;
+    use nebula_core::{CredentialId, CredentialKey};
     use nebula_credential::core::reference::ErasedCredentialRef;
     use nebula_resource::reference::ErasedResourceRef;
 
@@ -171,14 +173,14 @@ mod tests {
         let components = ActionComponents::new();
 
         let err = validate_action_package(&meta, &components).unwrap_err();
-        assert!(
-            err.errors
-                .iter()
-                .any(|e| matches!(e, ActionPackageValidationError::DuplicateInputPortKey { .. }))
-        );
-        assert!(err.errors.iter().any(
-            |e| matches!(e, ActionPackageValidationError::DuplicateOutputPortKey { .. })
-        ));
+        assert!(err.errors.iter().any(|e| matches!(
+            e,
+            ActionPackageValidationError::DuplicateInputPortKey { .. }
+        )));
+        assert!(err.errors.iter().any(|e| matches!(
+            e,
+            ActionPackageValidationError::DuplicateOutputPortKey { .. }
+        )));
     }
 
     #[test]

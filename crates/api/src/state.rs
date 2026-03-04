@@ -1,6 +1,6 @@
 //! Shared API state and related auth/rate-limit records.
 
-use nebula_ports::{ExecutionRepo, WorkflowRepo};
+use nebula_storage::{ExecutionRepo, WorkflowRepo};
 use reqwest::Client;
 use serde::Serialize;
 use std::{collections::HashMap, sync::Arc, time::Instant};

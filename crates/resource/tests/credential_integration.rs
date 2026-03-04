@@ -13,10 +13,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use nebula_core::{CredentialId, CredentialKey, ResourceKey};
 use nebula_credential::prelude::{CredentialManager, MockStorageProvider};
-use nebula_credential::{
-    CredentialRotationEvent, CredentialResource, CredentialType, RotationStrategy,
-};
 use nebula_credential::protocols::HeaderAuthState;
+use nebula_credential::{
+    CredentialResource, CredentialRotationEvent, CredentialType, RotationStrategy,
+};
 use nebula_parameter::collection::ParameterCollection;
 use nebula_resource::context::Context;
 use nebula_resource::metadata::ResourceMetadata;
@@ -24,8 +24,8 @@ use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
 use nebula_resource::{
-    components::{HasResourceComponents, ResourceComponents, TypedCredentialHandler},
     Manager, TypedPool,
+    components::{HasResourceComponents, ResourceComponents, TypedCredentialHandler},
 };
 use std::sync::Arc;
 
@@ -57,10 +57,8 @@ impl CredentialType for TestCred {
         &self,
         _: &Self::Input,
         _: &mut nebula_credential::CredentialContext,
-    ) -> Result<
-        nebula_credential::InitializeResult<Self::State>,
-        nebula_credential::CredentialError,
-    > {
+    ) -> Result<nebula_credential::InitializeResult<Self::State>, nebula_credential::CredentialError>
+    {
         unreachable!()
     }
 }
@@ -105,7 +103,11 @@ impl Resource for HotSwapResource {
         ResourceMetadata::from_key(ResourceKey::try_from("hotswap-client").expect("valid"))
     }
 
-    async fn create(&self, _config: &HotSwapConfig, _ctx: &Context) -> nebula_resource::error::Result<HotSwapClient> {
+    async fn create(
+        &self,
+        _config: &HotSwapConfig,
+        _ctx: &Context,
+    ) -> nebula_resource::error::Result<HotSwapClient> {
         Ok(HotSwapClient {
             token: String::new(),
         })
@@ -158,7 +160,11 @@ impl Resource for DrainResource {
         ResourceMetadata::from_key(ResourceKey::try_from("drain-client").expect("valid"))
     }
 
-    async fn create(&self, _config: &DrainConfig, _ctx: &Context) -> nebula_resource::error::Result<DrainClient> {
+    async fn create(
+        &self,
+        _config: &DrainConfig,
+        _ctx: &Context,
+    ) -> nebula_resource::error::Result<DrainClient> {
         let id = DRAIN_CREATE_COUNT.fetch_add(1, Ordering::SeqCst);
         Ok(DrainClient { id })
     }
@@ -215,9 +221,8 @@ async fn get_pool_direct_handle_rotation_hotswap() {
     )
     .unwrap();
 
-    let pool: Arc<TypedPool<HotSwapResource>> = mgr
-        .get_pool(&HotSwapResource)
-        .expect("pool registered");
+    let pool: Arc<TypedPool<HotSwapResource>> =
+        mgr.get_pool(&HotSwapResource).expect("pool registered");
 
     let cred_key = CredentialKey::new("test_header").unwrap();
 
@@ -236,7 +241,12 @@ async fn get_pool_direct_handle_rotation_hotswap() {
 
     let key = ResourceKey::try_from("hotswap-client").unwrap();
     let guard = mgr.acquire(&key, &ctx()).await.unwrap();
-    let token_before: String = guard.as_any().downcast_ref::<HotSwapClient>().unwrap().token.clone();
+    let token_before: String = guard
+        .as_any()
+        .downcast_ref::<HotSwapClient>()
+        .unwrap()
+        .token
+        .clone();
     drop(guard);
 
     assert_eq!(token_before, "Bearer initial");
@@ -258,7 +268,12 @@ async fn get_pool_direct_handle_rotation_hotswap() {
     assert!(auth_count >= 1);
 
     let guard = mgr.acquire(&key, &ctx()).await.unwrap();
-    let token_after: String = guard.as_any().downcast_ref::<HotSwapClient>().unwrap().token.clone();
+    let token_after: String = guard
+        .as_any()
+        .downcast_ref::<HotSwapClient>()
+        .unwrap()
+        .token
+        .clone();
     assert_eq!(token_after, "Bearer rotated");
 }
 
@@ -276,7 +291,8 @@ async fn get_pool_direct_handle_rotation_drain() {
     )
     .unwrap();
 
-    let pool: Arc<TypedPool<DrainResource>> = mgr.get_pool(&DrainResource).expect("pool registered");
+    let pool: Arc<TypedPool<DrainResource>> =
+        mgr.get_pool(&DrainResource).expect("pool registered");
     let cred_key = CredentialKey::new("test_header").unwrap();
 
     pool.pool
@@ -356,7 +372,12 @@ async fn hotswap_rotation_calls_authorize_on_idle_instances() {
     // Acquire and release — instance becomes idle
     let key = ResourceKey::try_from("hotswap-client").unwrap();
     let guard = mgr.acquire(&key, &ctx()).await.unwrap();
-    let token_before: String = guard.as_any().downcast_ref::<HotSwapClient>().unwrap().token.clone();
+    let token_before: String = guard
+        .as_any()
+        .downcast_ref::<HotSwapClient>()
+        .unwrap()
+        .token
+        .clone();
     drop(guard);
 
     assert_eq!(token_before, "Bearer initial");
@@ -374,11 +395,19 @@ async fn hotswap_rotation_calls_authorize_on_idle_instances() {
 
     // HotSwap should have called authorize on the idle instance
     let auth_count = HOTSWAP_AUTHORIZE_COUNT.load(Ordering::SeqCst);
-    assert!(auth_count >= 1, "authorize should have been called at least once");
+    assert!(
+        auth_count >= 1,
+        "authorize should have been called at least once"
+    );
 
     // Next acquire should return instance with new token
     let guard = mgr.acquire(&key, &ctx()).await.unwrap();
-    let token_after: String = guard.as_any().downcast_ref::<HotSwapClient>().unwrap().token.clone();
+    let token_after: String = guard
+        .as_any()
+        .downcast_ref::<HotSwapClient>()
+        .unwrap()
+        .token
+        .clone();
     assert_eq!(token_after, "Bearer rotated");
 }
 
@@ -442,5 +471,8 @@ async fn drain_recreate_rotation_evicts_idle_instances() {
     drop(guard);
 
     assert_eq!(DRAIN_CREATE_COUNT.load(Ordering::SeqCst), 2);
-    assert_ne!(id_before, id_after, "should have created new instance after drain");
+    assert_ne!(
+        id_before, id_after,
+        "should have created new instance after drain"
+    );
 }

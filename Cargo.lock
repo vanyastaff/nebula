@@ -3682,7 +3682,7 @@ dependencies = [
  "async-trait",
  "axum",
  "nebula-core",
- "nebula-ports",
+ "nebula-storage",
  "reqwest 0.13.2",
  "serde",
  "serde_json",
@@ -3798,7 +3798,6 @@ dependencies = [
  "nebula-plugin",
  "nebula-resource",
  "nebula-runtime",
- "nebula-sandbox-inprocess",
  "nebula-telemetry",
  "nebula-workflow",
  "serde_json",
@@ -3974,20 +3973,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nebula-ports"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "nebula-action",
- "nebula-core",
- "pretty_assertions",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
 name = "nebula-resilience"
 version = "0.1.0"
 dependencies = [
@@ -4063,8 +4048,6 @@ dependencies = [
  "nebula-core",
  "nebula-metrics",
  "nebula-plugin",
- "nebula-ports",
- "nebula-sandbox-inprocess",
  "nebula-telemetry",
  "pretty_assertions",
  "serde",
@@ -4073,21 +4056,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
-]
-
-[[package]]
-name = "nebula-sandbox-inprocess"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "nebula-action",
- "nebula-core",
- "nebula-ports",
- "pretty_assertions",
- "serde_json",
- "tokio",
- "tokio-util",
- "tracing",
+ "uuid",
 ]
 
 [[package]]

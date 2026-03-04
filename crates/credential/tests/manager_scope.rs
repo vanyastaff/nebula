@@ -3,8 +3,8 @@
 //! Tests Phase 4: User Story 2 - Multi-Tenant Credential Isolation
 //! Uses ScopeLevel from nebula-core for platform consistency.
 
-use nebula_credential::prelude::*;
 use nebula_core::{OrganizationId, ProjectId, ScopeLevel};
+use nebula_credential::prelude::*;
 use std::sync::Arc;
 
 /// Helper to create test manager with mock storage
@@ -56,7 +56,8 @@ async fn test_retrieve_with_matching_scope() {
     let metadata = CredentialMetadata::new();
     let project_id = ProjectId::new();
 
-    let store_context = CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_id));
+    let store_context =
+        CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_id));
 
     manager
         .store(&id, data.clone(), metadata, &store_context)
@@ -116,8 +117,7 @@ async fn test_list_credentials_by_scope() {
     let project_eng = ProjectId::new();
     let project_sales = ProjectId::new();
 
-    let eng_context =
-        CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_eng));
+    let eng_context = CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_eng));
     let sales_context =
         CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_sales));
 
@@ -138,7 +138,11 @@ async fn test_list_credentials_by_scope() {
     assert_eq!(eng_creds.len(), 2, "Eng scope sees only eng credentials");
 
     let sales_creds = manager.list_scoped(&sales_context).await.unwrap();
-    assert_eq!(sales_creds.len(), 1, "Sales scope sees only sales credential");
+    assert_eq!(
+        sales_creds.len(),
+        1,
+        "Sales scope sees only sales credential"
+    );
 }
 
 /// T047: Scope hierarchy — Organization can access Project credentials

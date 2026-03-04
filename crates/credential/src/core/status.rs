@@ -32,12 +32,7 @@ pub fn status_from_metadata(metadata: &CredentialMetadata) -> CredentialStatus {
             reason: "credential expired".to_string(),
         };
     }
-    if metadata
-        .tags
-        .get("credential_status")
-        .map(|s| s.as_str())
-        == Some("pending")
-    {
+    if metadata.tags.get("credential_status").map(|s| s.as_str()) == Some("pending") {
         return CredentialStatus::PendingInteraction;
     }
     CredentialStatus::Active

@@ -34,5 +34,4 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 nebula-metrics = { path = "../metrics" }
-nebula-sandbox-inprocess = { path = "../drivers/sandbox-inprocess" }
 chrono = { workspace = true }

@@ -51,7 +51,11 @@ async fn test_store_batch() {
     // Verify credentials are actually stored
     for (id, _, _) in &batch {
         let retrieved = manager.retrieve(id, &context).await.unwrap();
-        assert!(retrieved.is_some(), "Credential {} should be retrievable", id);
+        assert!(
+            retrieved.is_some(),
+            "Credential {} should be retrievable",
+            id
+        );
     }
 }
 
@@ -220,7 +224,9 @@ async fn test_batch_partial_failure() {
 
     // Last 5 should return None (not found, but not an error in retrieve_batch)
     for id in &ids[5..10] {
-        let result = results.get(id).expect("Should have result for non-existing ID");
+        let result = results
+            .get(id)
+            .expect("Should have result for non-existing ID");
         assert!(
             result.is_ok(),
             "Non-existing credential should return Ok(None)"

@@ -11,7 +11,7 @@ use nebula_action::result::ActionResult;
 use nebula_metrics::naming::{
     NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,
 };
-use nebula_ports::sandbox::SandboxRunner;
+use crate::sandbox::SandboxRunner;
 use nebula_telemetry::TelemetryService;
 use nebula_telemetry::event::{EventBus, ExecutionEvent};
 use nebula_telemetry::metrics::MetricsRegistry;
@@ -233,7 +233,7 @@ mod tests {
     use nebula_action::metadata::ActionMetadata;
     use nebula_action::{ActionContext, TriggerContext};
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
-    use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};
+    use crate::sandbox::{ActionExecutor, InProcessSandbox};
 
     struct EchoHandler {
         meta: ActionMetadata,

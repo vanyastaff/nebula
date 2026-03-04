@@ -2,9 +2,9 @@
 //!
 //! Uses ScopeLevel from nebula-core for platform consistency.
 
+use nebula_core::{OrganizationId, ProjectId, ScopeLevel, WorkflowId};
 use nebula_credential::core::ManagerError;
 use nebula_credential::prelude::*;
-use nebula_core::{OrganizationId, ProjectId, ScopeLevel, WorkflowId};
 use std::sync::Arc;
 
 async fn create_test_manager() -> CredentialManager {
@@ -26,8 +26,7 @@ async fn test_retrieve_scoped_exact_match() {
     let metadata = CredentialMetadata::new();
     let project_id = ProjectId::new();
 
-    let context =
-        CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_id));
+    let context = CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_id));
 
     manager
         .store(&id, data.clone(), metadata, &context)
@@ -61,11 +60,13 @@ async fn test_retrieve_scoped_hierarchical_match() {
         .await
         .unwrap();
 
-    let org_context =
-        CredentialContext::new("user-1").with_scope(ScopeLevel::Organization(org_id));
+    let org_context = CredentialContext::new("user-1").with_scope(ScopeLevel::Organization(org_id));
 
     let result = manager.retrieve_scoped(&id, &org_context).await.unwrap();
-    assert!(result.is_some(), "Organization scope should access Project credential");
+    assert!(
+        result.is_some(),
+        "Organization scope should access Project credential"
+    );
 }
 
 #[tokio::test]
@@ -182,10 +183,8 @@ async fn test_list_scoped_hierarchical() {
 
     let project_context =
         CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_id));
-    let workflow_context =
-        CredentialContext::new("user-1").with_scope(ScopeLevel::Workflow(wf_id));
-    let org_context =
-        CredentialContext::new("user-1").with_scope(ScopeLevel::Organization(org_id));
+    let workflow_context = CredentialContext::new("user-1").with_scope(ScopeLevel::Workflow(wf_id));
+    let org_context = CredentialContext::new("user-1").with_scope(ScopeLevel::Organization(org_id));
 
     let project_cred = CredentialId::new();
     let workflow_cred = CredentialId::new();
@@ -215,7 +214,11 @@ async fn test_list_scoped_hierarchical() {
         .unwrap();
 
     let org_creds = manager.list_scoped(&org_context).await.unwrap();
-    assert_eq!(org_creds.len(), 3, "Organization sees all child credentials");
+    assert_eq!(
+        org_creds.len(),
+        3,
+        "Organization sees all child credentials"
+    );
     assert!(org_creds.contains(&project_cred));
     assert!(org_creds.contains(&workflow_cred));
     assert!(org_creds.contains(&org_cred));

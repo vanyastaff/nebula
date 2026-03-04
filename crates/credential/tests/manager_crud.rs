@@ -214,10 +214,7 @@ async fn test_credential_by_type_no_registry_returns_error() {
 
     // THEN: Returns error (existing behavior)
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("type registry"));
+    assert!(result.unwrap_err().to_string().contains("type registry"));
 }
 
 #[tokio::test]

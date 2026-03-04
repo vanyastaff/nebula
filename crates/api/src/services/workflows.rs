@@ -1,7 +1,7 @@
 //! Workflow business service.
 
 use nebula_core::WorkflowId;
-use nebula_ports::WorkflowRepo;
+use nebula_storage::WorkflowRepo;
 use std::sync::Arc;
 
 use crate::{
@@ -49,7 +49,7 @@ impl WorkflowService {
             .repo
             .list(offset, limit)
             .await
-            .map_err(ServiceError::from_ports)?;
+            .map_err(ServiceError::from_workflow_repo)?;
 
         Ok(rows
             .into_iter()
@@ -66,7 +66,7 @@ impl WorkflowService {
     }
 
     pub(crate) async fn get(&self, id: WorkflowId, id_str: &str) -> ServiceResult<WorkflowDetail> {
-        let Some(definition) = self.repo.get(id).await.map_err(ServiceError::from_ports)? else {
+        let Some(definition) = self.repo.get(id).await.map_err(ServiceError::from_workflow_repo)? else {
             return Err(ServiceError::NotFound {
                 code: "workflow_not_found",
                 message: format!("workflow {id_str} was not found"),
@@ -101,7 +101,7 @@ impl WorkflowService {
         self.repo
             .save(id, 0, definition.clone())
             .await
-            .map_err(ServiceError::from_ports)?;
+            .map_err(ServiceError::from_workflow_repo)?;
 
         Ok(WorkflowDetail {
             id: id_str.clone(),
@@ -128,7 +128,7 @@ impl WorkflowService {
             .repo
             .get_with_version(id)
             .await
-            .map_err(ServiceError::from_ports)?
+            .map_err(ServiceError::from_workflow_repo)?
         else {
             return Err(ServiceError::NotFound {
                 code: "workflow_not_found",
@@ -158,7 +158,7 @@ impl WorkflowService {
         self.repo
             .save(id, version, definition.clone())
             .await
-            .map_err(ServiceError::from_ports)?;
+            .map_err(ServiceError::from_workflow_repo)?;
 
         Ok(WorkflowDetail {
             id: id_str.to_string(),
@@ -173,7 +173,7 @@ impl WorkflowService {
             .repo
             .delete(id)
             .await
-            .map_err(ServiceError::from_ports)?;
+            .map_err(ServiceError::from_workflow_repo)?;
         if !deleted {
             return Err(ServiceError::NotFound {
                 code: "workflow_not_found",

@@ -135,10 +135,9 @@ where
     <I::Credential as CredentialType>::State: DeserializeOwned,
 {
     fn authorize(&self, instance: &mut I, state: &serde_json::Value) -> crate::error::Result<()> {
-        let typed = serde_json::from_value::<<I::Credential as CredentialType>::State>(
-            state.clone(),
-        )
-        .map_err(|e| crate::error::Error::configuration(e.to_string()))?;
+        let typed =
+            serde_json::from_value::<<I::Credential as CredentialType>::State>(state.clone())
+                .map_err(|e| crate::error::Error::configuration(e.to_string()))?;
         instance.authorize(&typed);
         Ok(())
     }
@@ -301,4 +300,3 @@ mod tests {
         ));
     }
 }
-

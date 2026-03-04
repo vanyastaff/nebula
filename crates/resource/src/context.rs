@@ -7,11 +7,11 @@ use tokio_util::sync::CancellationToken;
 
 use nebula_core::{ExecutionId, ResourceKey, WorkflowId};
 
-use nebula_telemetry::{NoopRecorder, Recorder};
 use crate::error::Result;
 use crate::guard::Guard;
 use crate::resource::Resource;
 use crate::scope::Scope;
+use nebula_telemetry::{NoopRecorder, Recorder};
 
 /// Context for resource operations.
 ///
@@ -76,11 +76,7 @@ impl Context {
     /// Used when the manager prepares the context before `Resource::create()` for resources
     /// that declare sub-resources via `HasResourceComponents`.
     #[allow(dead_code)] // used in tests; full manager→create() injection wiring in progress
-    pub(crate) fn inject_resource(
-        &mut self,
-        key: ResourceKey,
-        handle: Arc<dyn Any + Send + Sync>,
-    ) {
+    pub(crate) fn inject_resource(&mut self, key: ResourceKey, handle: Arc<dyn Any + Send + Sync>) {
         self.resolved_resources
             .insert(key.as_ref().to_string(), handle);
     }

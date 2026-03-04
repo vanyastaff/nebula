@@ -14,7 +14,9 @@ use nebula_parameter::def::ParameterDef;
 use nebula_parameter::types::{SecretParameter, TextParameter};
 use nebula_parameter::values::ParameterValues;
 
-use crate::core::result::{DisplayData, InitializeResult, InteractionRequest, PartialState, UserInput};
+use crate::core::result::{
+    DisplayData, InitializeResult, InteractionRequest, PartialState, UserInput,
+};
 use crate::core::{CredentialContext, CredentialError, ValidationError};
 use crate::traits::FlowProtocol;
 
@@ -283,15 +285,12 @@ async fn request_device_code(
         .to_owned();
 
     let expires_in = body.get("expires_in").and_then(Value::as_u64);
-    let interval = body
-        .get("interval")
-        .and_then(Value::as_u64)
-        .unwrap_or(5); // RFC 8628: default 5 seconds
+    let interval = body.get("interval").and_then(Value::as_u64).unwrap_or(5); // RFC 8628: default 5 seconds
 
     let device_code = body
         .get("device_code")
         .and_then(Value::as_str)
-        .ok_or_else( || http_error("device code response missing 'device_code'".into()))?
+        .ok_or_else(|| http_error("device code response missing 'device_code'".into()))?
         .to_owned();
 
     Ok(DeviceCodeResponse {
@@ -461,10 +460,11 @@ pub async fn continue_oauth2_flow(
                 _ => {
                     return Err(http_error(
                         "authorization_code flow expects UserInput::Callback with 'code'".into(),
-                    ))
+                    ));
                 }
             };
-            let state = exchange_authorization_code(&config, &client_id, &client_secret, &code).await?;
+            let state =
+                exchange_authorization_code(&config, &client_id, &client_secret, &code).await?;
             Ok(InitializeResult::Complete(state))
         }
         "device_code" => {
@@ -478,12 +478,10 @@ pub async fn continue_oauth2_flow(
                 .and_then(Value::as_str)
                 .ok_or_else(|| http_error("partial_state missing device_code".into()))?
                 .to_owned();
-            let interval = data
-                .get("interval")
-                .and_then(Value::as_u64)
-                .unwrap_or(5);
+            let interval = data.get("interval").and_then(Value::as_u64).unwrap_or(5);
 
-            match poll_device_code(&config, &client_id, &client_secret, &device_code, interval).await
+            match poll_device_code(&config, &client_id, &client_secret, &device_code, interval)
+                .await
             {
                 Ok(state) => Ok(InitializeResult::Complete(state)),
                 Err(e) => {
@@ -538,9 +536,11 @@ async fn exchange_authorization_code(
         }
         AuthStyle::PostBody => {}
     }
-    let resp = req.form(&form).send().await.map_err(|e| {
-        http_error(format!("authorization code exchange failed: {e}"))
-    })?;
+    let resp = req
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| http_error(format!("authorization code exchange failed: {e}")))?;
 
     let body: Value = parse_token_response(resp).await?;
     state_from_token_response(&body, &config.scopes)
@@ -576,9 +576,10 @@ async fn poll_device_code(
         .map_err(|e| http_error(format!("device code poll failed: {e}")))?;
 
     let status = resp.status();
-    let body: Value = resp.json().await.map_err(|e| {
-        http_error(format!("failed to parse device poll response: {e}"))
-    })?;
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| http_error(format!("failed to parse device poll response: {e}")))?;
 
     if status.is_success() {
         state_from_token_response(&body, &config.scopes)

@@ -137,7 +137,6 @@ pub enum CoreError {
         reason: String,
         operation: Option<String>,
     },
-
 }
 
 impl CoreError {

@@ -913,7 +913,7 @@ mod tests {
     use nebula_core::Version;
     use nebula_runtime::DataPassingPolicy;
     use nebula_runtime::registry::ActionRegistry;
-    use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};
+    use nebula_runtime::{ActionExecutor, InProcessSandbox};
     use nebula_workflow::{Connection, NodeDefinition, WorkflowConfig, WorkflowDefinition};
 
     // -- Test handlers --

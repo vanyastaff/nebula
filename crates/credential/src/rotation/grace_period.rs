@@ -428,10 +428,7 @@ pub fn track_credential_usage(
     credential_id: &CredentialId,
     metrics: &mut HashMap<CredentialId, UsageMetrics>,
 ) {
-    metrics
-        .entry(*credential_id)
-        .or_default()
-        .record_usage();
+    metrics.entry(*credential_id).or_default().record_usage();
 }
 
 /// Clean up expired credentials after grace period

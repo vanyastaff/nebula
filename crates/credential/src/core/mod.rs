@@ -22,12 +22,12 @@ pub use error::{
 };
 pub use filter::CredentialFilter;
 
+pub use metadata::CredentialMetadata;
 /// Re-export for instance identification (UUID-backed, like ResourceId).
 pub use nebula_core::CredentialId;
-pub use metadata::CredentialMetadata;
 pub use reference::{CredentialProvider, CredentialRef};
-pub use status::{status_from_metadata, CredentialStatus};
 pub use state::CredentialState;
+pub use status::{CredentialStatus, status_from_metadata};
 
 // Re-exports from utils
 pub use crate::utils::{SecretString, from_unix_timestamp, to_unix_timestamp, unix_now};

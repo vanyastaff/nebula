@@ -5,9 +5,9 @@
 use crate::core::{
     CredentialContext, CredentialFilter, CredentialId, CredentialMetadata, StorageError,
 };
-use crate::providers::credential_file::CredentialFile;
-use crate::providers::config::{ConfigError, ProviderConfig};
 use crate::providers::StorageMetrics;
+use crate::providers::config::{ConfigError, ProviderConfig};
+use crate::providers::credential_file::CredentialFile;
 use crate::traits::StorageProvider;
 use crate::utils::EncryptedData;
 use async_trait::async_trait;

@@ -2,16 +2,16 @@
 
 use async_trait::async_trait;
 use nebula_action::ActionComponents;
-use nebula_credential::core::{CredentialContext, CredentialDescription};
-use nebula_credential::core::result::InitializeResult;
-use nebula_credential::traits::CredentialType;
+use nebula_core::ResourceKey;
 use nebula_credential::CredentialRef;
+use nebula_credential::core::result::InitializeResult;
+use nebula_credential::core::{CredentialContext, CredentialDescription};
+use nebula_credential::traits::CredentialType;
 use nebula_parameter::collection::ParameterCollection;
+use nebula_resource::ResourceRef;
 use nebula_resource::context::Context;
 use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::resource::Resource;
-use nebula_resource::ResourceRef;
-use nebula_core::ResourceKey;
 
 // Example credential types
 struct GithubToken;
@@ -30,7 +30,11 @@ impl CredentialType for GithubToken {
             .build()
             .unwrap()
     }
-    async fn initialize(&self, _: &(), _: &mut CredentialContext) -> Result<InitializeResult<Self::State>, nebula_credential::core::CredentialError> {
+    async fn initialize(
+        &self,
+        _: &(),
+        _: &mut CredentialContext,
+    ) -> Result<InitializeResult<Self::State>, nebula_credential::core::CredentialError> {
         unreachable!()
     }
 }
@@ -48,7 +52,11 @@ impl CredentialType for SlackWebhook {
             .build()
             .unwrap()
     }
-    async fn initialize(&self, _: &(), _: &mut CredentialContext) -> Result<InitializeResult<Self::State>, nebula_credential::core::CredentialError> {
+    async fn initialize(
+        &self,
+        _: &(),
+        _: &mut CredentialContext,
+    ) -> Result<InitializeResult<Self::State>, nebula_credential::core::CredentialError> {
         unreachable!()
     }
 }
@@ -66,7 +74,11 @@ impl Resource for PostgresDb {
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("postgres_db").unwrap())
     }
-    fn create(&self, _: &ExampleResourceConfig, _: &Context) -> impl std::future::Future<Output = nebula_resource::Result<()>> + Send {
+    fn create(
+        &self,
+        _: &ExampleResourceConfig,
+        _: &Context,
+    ) -> impl std::future::Future<Output = nebula_resource::Result<()>> + Send {
         async { Ok(()) }
     }
 }
@@ -77,7 +89,11 @@ impl Resource for RedisCache {
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("redis_cache").unwrap())
     }
-    fn create(&self, _: &ExampleResourceConfig, _: &Context) -> impl std::future::Future<Output = nebula_resource::Result<()>> + Send {
+    fn create(
+        &self,
+        _: &ExampleResourceConfig,
+        _: &Context,
+    ) -> impl std::future::Future<Output = nebula_resource::Result<()>> + Send {
         async { Ok(()) }
     }
 }

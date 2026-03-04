@@ -188,10 +188,7 @@ impl RotationMetrics {
         let avg_duration = Some(total_duration / duration_count);
 
         // Update per-credential metrics
-        let cred_metrics = inner
-            .per_credential
-            .entry(*credential_id)
-            .or_default();
+        let cred_metrics = inner.per_credential.entry(*credential_id).or_default();
 
         cred_metrics.total += 1;
         if success {
@@ -229,10 +226,7 @@ impl RotationMetrics {
             .or_insert(0) += 1;
 
         // Update per-credential failure count
-        let cred_metrics = inner
-            .per_credential
-            .entry(*credential_id)
-            .or_default();
+        let cred_metrics = inner.per_credential.entry(*credential_id).or_default();
 
         cred_metrics.failed += 1;
         cred_metrics.last_success = Some(false);

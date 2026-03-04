@@ -2,9 +2,9 @@
 //!
 //! Verifies retrieve_scoped, list_scoped using ScopeLevel from nebula-core.
 
-use nebula_credential::prelude::*;
-use nebula_credential::ManagerError;
 use nebula_core::{OrganizationId, ProjectId, ScopeLevel};
+use nebula_credential::ManagerError;
+use nebula_credential::prelude::*;
 use std::sync::Arc;
 
 fn create_test_manager() -> CredentialManager {
@@ -25,8 +25,7 @@ async fn retrieve_scoped_requires_scope() {
     let id = CredentialId::new();
     let data = create_test_data("secret");
     let project_id = ProjectId::new();
-    let ctx_with_scope =
-        CredentialContext::new("user").with_scope(ScopeLevel::Project(project_id));
+    let ctx_with_scope = CredentialContext::new("user").with_scope(ScopeLevel::Project(project_id));
     manager
         .store(&id, data, CredentialMetadata::new(), &ctx_with_scope)
         .await
@@ -93,15 +92,13 @@ async fn retrieve_scoped_parent_can_access_child() {
     let data = create_test_data("secret");
     let project_id = ProjectId::new();
     let org_id = OrganizationId::new();
-    let child_ctx =
-        CredentialContext::new("user").with_scope(ScopeLevel::Project(project_id));
+    let child_ctx = CredentialContext::new("user").with_scope(ScopeLevel::Project(project_id));
     manager
         .store(&id, data, CredentialMetadata::new(), &child_ctx)
         .await
         .unwrap();
 
-    let parent_ctx =
-        CredentialContext::new("user").with_scope(ScopeLevel::Organization(org_id));
+    let parent_ctx = CredentialContext::new("user").with_scope(ScopeLevel::Organization(org_id));
     let result = manager.retrieve_scoped(&id, &parent_ctx).await.unwrap();
 
     assert!(
@@ -154,8 +151,7 @@ async fn list_scoped_filters_by_scope() {
     assert!(ids_b.contains(&id_b));
 
     let org_id = OrganizationId::new();
-    let parent_ctx =
-        CredentialContext::new("user").with_scope(ScopeLevel::Organization(org_id));
+    let parent_ctx = CredentialContext::new("user").with_scope(ScopeLevel::Organization(org_id));
     let ids_parent = manager.list_scoped(&parent_ctx).await.unwrap();
     assert_eq!(
         ids_parent.len(),

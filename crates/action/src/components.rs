@@ -104,7 +104,10 @@ impl ActionComponents {
     ///         CredentialRef::of::<Token2>().into(),
     ///     ]);
     /// ```
-    pub fn with_credentials(mut self, creds: impl IntoIterator<Item = impl Into<ErasedCredentialRef>>) -> Self {
+    pub fn with_credentials(
+        mut self,
+        creds: impl IntoIterator<Item = impl Into<ErasedCredentialRef>>,
+    ) -> Self {
         self.credentials.extend(creds.into_iter().map(Into::into));
         self
     }
@@ -126,7 +129,10 @@ impl ActionComponents {
     ///         ResourceRef::of::<Cache>().into(),
     ///     ]);
     /// ```
-    pub fn with_resources(mut self, resources: impl IntoIterator<Item = impl Into<ErasedResourceRef>>) -> Self {
+    pub fn with_resources(
+        mut self,
+        resources: impl IntoIterator<Item = impl Into<ErasedResourceRef>>,
+    ) -> Self {
         self.resources.extend(resources.into_iter().map(Into::into));
         self
     }
@@ -161,18 +167,18 @@ impl ActionComponents {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use nebula_credential::traits::CredentialType;
+    use nebula_core::ResourceKey;
     use nebula_credential::CredentialRef;
     use nebula_credential::core::reference::ErasedCredentialRef;
-    use nebula_resource::ResourceRef;
-    use nebula_resource::reference::ErasedResourceRef;
-    use nebula_credential::core::{CredentialDescription, CredentialContext};
     use nebula_credential::core::result::InitializeResult;
+    use nebula_credential::core::{CredentialContext, CredentialDescription};
+    use nebula_credential::traits::CredentialType;
     use nebula_parameter::collection::ParameterCollection;
-    use nebula_resource::resource::Resource;
-    use nebula_resource::metadata::ResourceMetadata;
+    use nebula_resource::ResourceRef;
     use nebula_resource::context::Context;
-    use nebula_core::ResourceKey;
+    use nebula_resource::metadata::ResourceMetadata;
+    use nebula_resource::reference::ErasedResourceRef;
+    use nebula_resource::resource::Resource;
 
     struct TestCredential;
     struct TestResource;
@@ -192,7 +198,12 @@ mod tests {
                 .build()
                 .unwrap()
         }
-        async fn initialize(&self, _: &(), _: &mut CredentialContext) -> Result<InitializeResult<Self::State>, nebula_credential::core::CredentialError> {
+        async fn initialize(
+            &self,
+            _: &(),
+            _: &mut CredentialContext,
+        ) -> Result<InitializeResult<Self::State>, nebula_credential::core::CredentialError>
+        {
             unreachable!()
         }
     }
@@ -210,7 +221,12 @@ mod tests {
                 .build()
                 .unwrap()
         }
-        async fn initialize(&self, _: &(), _: &mut CredentialContext) -> Result<InitializeResult<Self::State>, nebula_credential::core::CredentialError> {
+        async fn initialize(
+            &self,
+            _: &(),
+            _: &mut CredentialContext,
+        ) -> Result<InitializeResult<Self::State>, nebula_credential::core::CredentialError>
+        {
             unreachable!()
         }
     }
@@ -224,7 +240,11 @@ mod tests {
         fn metadata(&self) -> ResourceMetadata {
             ResourceMetadata::from_key(ResourceKey::try_from("test_resource").unwrap())
         }
-        fn create(&self, _: &TestResourceConfig, _: &Context) -> impl std::future::Future<Output = nebula_resource::Result<()>> + Send {
+        fn create(
+            &self,
+            _: &TestResourceConfig,
+            _: &Context,
+        ) -> impl std::future::Future<Output = nebula_resource::Result<()>> + Send {
             async { Ok(()) }
         }
     }
@@ -235,7 +255,11 @@ mod tests {
         fn metadata(&self) -> ResourceMetadata {
             ResourceMetadata::from_key(ResourceKey::try_from("another_resource").unwrap())
         }
-        fn create(&self, _: &TestResourceConfig, _: &Context) -> impl std::future::Future<Output = nebula_resource::Result<()>> + Send {
+        fn create(
+            &self,
+            _: &TestResourceConfig,
+            _: &Context,
+        ) -> impl std::future::Future<Output = nebula_resource::Result<()>> + Send {
             async { Ok(()) }
         }
     }

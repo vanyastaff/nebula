@@ -160,4 +160,3 @@ mod tests {
         assert_eq!(erased.key.as_str(), "http-global");
     }
 }
-

@@ -80,7 +80,13 @@ impl PluginComponents {
     }
 
     /// Consume and split into parts: credentials, resources, actions.
-    pub fn into_parts(self) -> (Vec<ErasedCredentialRef>, Vec<ErasedResourceRef>, Vec<ActionRef>) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<ErasedCredentialRef>,
+        Vec<ErasedResourceRef>,
+        Vec<ActionRef>,
+    ) {
         (self.credentials, self.resources, self.actions)
     }
 }

@@ -12,8 +12,8 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-nebula-core = { path = "../../core" }
-nebula-resource = { path = "../../resource" }
+nebula-core = { path = "../core" }
+nebula-resource = { path = "../resource" }
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]

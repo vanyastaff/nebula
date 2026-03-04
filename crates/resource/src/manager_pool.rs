@@ -134,7 +134,10 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         let pool = self.pool.clone();
         let new_state = new_state.clone();
-        Box::pin(async move { pool.handle_rotation(&new_state, strategy, credential_key).await })
+        Box::pin(async move {
+            pool.handle_rotation(&new_state, strategy, credential_key)
+                .await
+        })
     }
 }
 

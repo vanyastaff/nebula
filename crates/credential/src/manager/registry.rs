@@ -16,7 +16,10 @@ use crate::core::{
 /// create() converts to public CreateResult (with credential_id) after storing.
 #[derive(Clone, Debug)]
 pub(crate) enum InitResult {
-    Complete { type_id: String, state_json: Vec<u8> },
+    Complete {
+        type_id: String,
+        state_json: Vec<u8>,
+    },
     Pending {
         type_id: String,
         partial_state: PartialState,
@@ -32,8 +35,8 @@ pub(crate) enum InitResult {
 use nebula_parameter::collection::ParameterCollection;
 
 use crate::protocols::{
-    ApiKeyProtocol, ApiKeyState, BasicAuthProtocol, BasicAuthState,
-    OAuth2Config, OAuth2Protocol, OAuth2State,
+    ApiKeyProtocol, ApiKeyState, BasicAuthProtocol, BasicAuthState, OAuth2Config, OAuth2Protocol,
+    OAuth2State,
 };
 use crate::traits::{FlowProtocol, StaticProtocol};
 
@@ -71,9 +74,10 @@ impl RegisteredProtocol {
         Ok(InitResult::Complete {
             type_id: S::KIND.to_string(),
             state_json: serde_json::to_vec(&state).map_err(|e| CredentialError::Validation {
-                source: crate::core::ValidationError::InvalidFormat(
-                    format!("state serialization failed: {}", e),
-                ),
+                source: crate::core::ValidationError::InvalidFormat(format!(
+                    "state serialization failed: {}",
+                    e
+                )),
             })?,
         })
     }
@@ -95,9 +99,10 @@ impl RegisteredProtocol {
                         type_id: OAuth2State::KIND.to_string(),
                         state_json: serde_json::to_vec(&state).map_err(|e| {
                             CredentialError::Validation {
-                                source: crate::core::ValidationError::InvalidFormat(
-                                    format!("state serialization failed: {}", e),
-                                ),
+                                source: crate::core::ValidationError::InvalidFormat(format!(
+                                    "state serialization failed: {}",
+                                    e
+                                )),
                             }
                         })?,
                     },
@@ -124,16 +129,13 @@ impl RegisteredProtocol {
             }
         }
     }
-
 }
 
 /// Build OAuth2Config from ParameterValues.
 ///
 /// Expects optional keys: `auth_url`, `token_url`, `grant_type`, `scopes`.
 /// Defaults: empty URLs, AuthorizationCode grant.
-fn oauth2_config_from_values(
-    values: &ParameterValues,
-) -> Result<OAuth2Config, CredentialError> {
+fn oauth2_config_from_values(values: &ParameterValues) -> Result<OAuth2Config, CredentialError> {
     use crate::protocols::GrantType;
 
     let auth_url = values
@@ -219,11 +221,13 @@ impl ProtocolRegistry {
         user_input: &UserInput,
         ctx: &mut CredentialContext,
     ) -> Result<InitResult, CredentialError> {
-        let protocol = self.get(type_id).ok_or_else(|| CredentialError::Validation {
-            source: crate::core::ValidationError::InvalidFormat(
-                format!("unknown type_id for continue: {type_id}"),
-            ),
-        })?;
+        let protocol = self
+            .get(type_id)
+            .ok_or_else(|| CredentialError::Validation {
+                source: crate::core::ValidationError::InvalidFormat(format!(
+                    "unknown type_id for continue: {type_id}"
+                )),
+            })?;
 
         match protocol {
             RegisteredProtocol::OAuth2 => {
@@ -238,9 +242,9 @@ impl ProtocolRegistry {
                         type_id: OAuth2State::KIND.to_string(),
                         state_json: serde_json::to_vec(&state).map_err(|e| {
                             CredentialError::Validation {
-                                source: crate::core::ValidationError::InvalidFormat(
-                                    format!("state serialization failed: {e}"),
-                                ),
+                                source: crate::core::ValidationError::InvalidFormat(format!(
+                                    "state serialization failed: {e}"
+                                )),
                             }
                         })?,
                     },
@@ -263,9 +267,9 @@ impl ProtocolRegistry {
             }
             RegisteredProtocol::ApiKey | RegisteredProtocol::BasicAuth => {
                 Err(CredentialError::Validation {
-                    source: crate::core::ValidationError::InvalidFormat(
-                        format!("{type_id} does not support interactive flow"),
-                    ),
+                    source: crate::core::ValidationError::InvalidFormat(format!(
+                        "{type_id} does not support interactive flow"
+                    )),
                 })
             }
         }

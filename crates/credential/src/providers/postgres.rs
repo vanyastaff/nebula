@@ -15,8 +15,8 @@ use nebula_storage::{Storage, StorageError as KvStorageError};
 use crate::core::{
     CredentialContext, CredentialFilter, CredentialId, CredentialMetadata, StorageError,
 };
-use crate::providers::credential_file::CredentialFile;
 use crate::providers::StorageMetrics;
+use crate::providers::credential_file::CredentialFile;
 use crate::traits::StorageProvider;
 use crate::utils::EncryptedData;
 
@@ -76,9 +76,7 @@ impl PostgresStorageProvider {
     }
 
     fn record_operation(&self, op: &str, elapsed: std::time::Duration, success: bool) {
-        self.metrics
-            .write()
-            .record_operation(op, elapsed, success);
+        self.metrics.write().record_operation(op, elapsed, success);
     }
 }
 
@@ -100,9 +98,10 @@ impl StorageProvider for PostgresStorageProvider {
             source: io::Error::new(io::ErrorKind::InvalidData, e),
         })?;
 
-        self.storage.set(&key, &bytes).await.map_err(|e| {
-            map_kv_error(&id.to_string(), e, true)
-        })?;
+        self.storage
+            .set(&key, &bytes)
+            .await
+            .map_err(|e| map_kv_error(&id.to_string(), e, true))?;
 
         self.record_operation("store", start.elapsed(), true);
         Ok(())
@@ -116,20 +115,19 @@ impl StorageProvider for PostgresStorageProvider {
         let start = std::time::Instant::now();
         let key = credential_key(id);
 
-        let bytes = self.storage.get(&key).await.map_err(|e| {
-            map_kv_error(&id.to_string(), e, false)
-        })?;
+        let bytes = self
+            .storage
+            .get(&key)
+            .await
+            .map_err(|e| map_kv_error(&id.to_string(), e, false))?;
 
-        let bytes = bytes.ok_or_else(|| StorageError::NotFound {
-            id: id.to_string(),
-        })?;
+        let bytes = bytes.ok_or_else(|| StorageError::NotFound { id: id.to_string() })?;
 
-        let cred_file: CredentialFile = serde_json::from_slice(&bytes).map_err(|e| {
-            StorageError::ReadFailure {
+        let cred_file: CredentialFile =
+            serde_json::from_slice(&bytes).map_err(|e| StorageError::ReadFailure {
                 id: id.to_string(),
                 source: io::Error::new(io::ErrorKind::InvalidData, e),
-            }
-        })?;
+            })?;
 
         self.record_operation("retrieve", start.elapsed(), true);
         Ok((cred_file.encrypted_data, cred_file.metadata))
@@ -143,9 +141,10 @@ impl StorageProvider for PostgresStorageProvider {
         let start = std::time::Instant::now();
         let key = credential_key(id);
 
-        self.storage.delete(&key).await.map_err(|e| {
-            map_kv_error(&id.to_string(), e, true)
-        })?;
+        self.storage
+            .delete(&key)
+            .await
+            .map_err(|e| map_kv_error(&id.to_string(), e, true))?;
 
         self.record_operation("delete", start.elapsed(), true);
         Ok(())
@@ -167,9 +166,10 @@ impl StorageProvider for PostgresStorageProvider {
         _context: &CredentialContext,
     ) -> Result<bool, StorageError> {
         let key = credential_key(id);
-        self.storage.exists(&key).await.map_err(|e| {
-            map_kv_error(&id.to_string(), e, false)
-        })
+        self.storage
+            .exists(&key)
+            .await
+            .map_err(|e| map_kv_error(&id.to_string(), e, false))
     }
 
     async fn store_rotation_state(
@@ -183,9 +183,10 @@ impl StorageProvider for PostgresStorageProvider {
             id: transaction_id.to_string(),
             source: io::Error::new(io::ErrorKind::InvalidData, e),
         })?;
-        self.storage.set(&key, &bytes).await.map_err(|e| {
-            map_kv_error(transaction_id, e, true)
-        })?;
+        self.storage
+            .set(&key, &bytes)
+            .await
+            .map_err(|e| map_kv_error(transaction_id, e, true))?;
         Ok(())
     }
 
@@ -195,9 +196,11 @@ impl StorageProvider for PostgresStorageProvider {
         _context: &CredentialContext,
     ) -> Result<Option<serde_json::Value>, StorageError> {
         let key = rotation_key(transaction_id);
-        let bytes = self.storage.get(&key).await.map_err(|e| {
-            map_kv_error(transaction_id, e, false)
-        })?;
+        let bytes = self
+            .storage
+            .get(&key)
+            .await
+            .map_err(|e| map_kv_error(transaction_id, e, false))?;
         let Some(bytes) = bytes else {
             return Ok(None);
         };
@@ -214,9 +217,10 @@ impl StorageProvider for PostgresStorageProvider {
         _context: &CredentialContext,
     ) -> Result<(), StorageError> {
         let key = rotation_key(transaction_id);
-        self.storage.delete(&key).await.map_err(|e| {
-            map_kv_error(transaction_id, e, true)
-        })?;
+        self.storage
+            .delete(&key)
+            .await
+            .map_err(|e| map_kv_error(transaction_id, e, true))?;
         Ok(())
     }
 }

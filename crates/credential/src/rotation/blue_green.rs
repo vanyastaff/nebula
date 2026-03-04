@@ -277,8 +277,7 @@ impl BlueGreenRotation {
         self.start_transition()?;
 
         // Attempt swap operation
-        match swap_operation(self.active_credential, self.standby_credential).await
-        {
+        match swap_operation(self.active_credential, self.standby_credential).await {
             Ok(()) => {
                 // Complete swap on success
                 self.complete_swap()?;

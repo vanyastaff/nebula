@@ -1,75 +1,12 @@
-use async_trait::async_trait;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
 use nebula_api::{ApiState, api_only_app_with_state};
 use nebula_core::WorkflowId;
-use nebula_ports::{PortsError, WorkflowRepo};
-use std::{collections::HashMap, sync::Arc};
-use tokio::sync::RwLock;
+use nebula_storage::{InMemoryWorkflowRepo, WorkflowRepo};
+use std::sync::Arc;
 use tower::ServiceExt;
-
-#[derive(Default)]
-struct InMemoryWorkflowRepo {
-    definitions: Arc<RwLock<HashMap<WorkflowId, serde_json::Value>>>,
-    versions: Arc<RwLock<HashMap<WorkflowId, u64>>>,
-}
-
-#[async_trait]
-impl WorkflowRepo for InMemoryWorkflowRepo {
-    async fn get_with_version(
-        &self,
-        id: WorkflowId,
-    ) -> Result<Option<(u64, serde_json::Value)>, PortsError> {
-        let definitions = self.definitions.read().await;
-        let Some(definition) = definitions.get(&id).cloned() else {
-            return Ok(None);
-        };
-        let versions = self.versions.read().await;
-        let version = versions.get(&id).copied().unwrap_or(0);
-        Ok(Some((version, definition)))
-    }
-
-    async fn save(
-        &self,
-        id: WorkflowId,
-        version: u64,
-        definition: serde_json::Value,
-    ) -> Result<(), PortsError> {
-        let mut versions = self.versions.write().await;
-        let current = versions.get(&id).copied().unwrap_or(0);
-        if current != version {
-            return Err(PortsError::conflict(
-                "workflow",
-                id.to_string(),
-                version,
-                current,
-            ));
-        }
-
-        versions.insert(id, current + 1);
-        self.definitions.write().await.insert(id, definition);
-        Ok(())
-    }
-
-    async fn delete(&self, id: WorkflowId) -> Result<bool, PortsError> {
-        self.versions.write().await.remove(&id);
-        Ok(self.definitions.write().await.remove(&id).is_some())
-    }
-
-    async fn list(
-        &self,
-        offset: usize,
-        limit: usize,
-    ) -> Result<Vec<(WorkflowId, serde_json::Value)>, PortsError> {
-        let map = self.definitions.read().await;
-        let mut rows: Vec<(WorkflowId, serde_json::Value)> =
-            map.iter().map(|(id, value)| (*id, value.clone())).collect();
-        rows.sort_by_key(|(id, _)| id.to_string());
-        Ok(rows.into_iter().skip(offset).take(limit).collect())
-    }
-}
 
 async fn build_app(repo: Option<Arc<dyn WorkflowRepo>>) -> axum::Router {
     let mut state = ApiState::new();

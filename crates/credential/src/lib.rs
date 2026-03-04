@@ -67,14 +67,14 @@ pub mod utils;
 // Commonly-used types available directly as `nebula_credential::TypeName`.
 
 // Core types & errors
+pub use crate::core::reference::ErasedCredentialRef;
+pub use crate::core::result::{CreateResult, InitializeResult};
 pub use crate::core::{
     CredentialContext, CredentialDescription, CredentialError, CredentialFilter, CredentialId,
     CredentialMetadata, CredentialProvider, CredentialRef, CredentialState, CredentialStatus,
-    CryptoError, ManagerError, ManagerResult, SecretString, StorageError,
-    ValidationError, status_from_metadata,
+    CryptoError, ManagerError, ManagerResult, SecretString, StorageError, ValidationError,
+    status_from_metadata,
 };
-pub use crate::core::reference::ErasedCredentialRef;
-pub use crate::core::result::{CreateResult, InitializeResult};
 
 // Traits
 pub use crate::traits::{
@@ -102,11 +102,11 @@ pub use crate::rotation::{
 /// Commonly used types and traits
 pub mod prelude {
     // Core types
+    pub use crate::core::result::{CreateResult, InitializeResult};
     pub use crate::core::{
         CredentialContext, CredentialError, CredentialFilter, CredentialId, CredentialMetadata,
         CredentialProvider, CredentialRef, CredentialStatus, SecretString, status_from_metadata,
     };
-    pub use crate::core::result::{CreateResult, InitializeResult};
 
     // Rotation types
     pub use crate::rotation::policy::RotationPolicy;

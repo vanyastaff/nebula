@@ -12,7 +12,7 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-nebula-ports = { path = "../ports" }
+nebula-storage = { path = "../storage" }
 nebula-core = { path = "../core" }
 
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "net", "signal"] }

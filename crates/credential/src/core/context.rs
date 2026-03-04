@@ -90,7 +90,9 @@ mod tests {
         let ctx = CredentialContext::new("user_123").with_scope(ScopeLevel::Project(project_id));
 
         assert_eq!(ctx.owner_id, "user_123");
-        assert!(matches!(ctx.caller_scope.as_ref(), Some(ScopeLevel::Project(id)) if *id == project_id));
+        assert!(
+            matches!(ctx.caller_scope.as_ref(), Some(ScopeLevel::Project(id)) if *id == project_id)
+        );
     }
 
     #[test]

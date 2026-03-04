@@ -55,7 +55,10 @@ async fn test_create_basic_auth_complete() {
     values.set("password", serde_json::json!("s3cr3t"));
     let context = CredentialContext::new("user-1");
 
-    let result = manager.create("basic_auth", &values, &context).await.unwrap();
+    let result = manager
+        .create("basic_auth", &values, &context)
+        .await
+        .unwrap();
 
     match &result {
         CreateResult::Complete {

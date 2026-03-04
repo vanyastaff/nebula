@@ -27,10 +27,7 @@ pub mod duration_opt_ms {
     use std::time::Duration;
 
     /// Serialize `Option<Duration>` as an optional `u64` of milliseconds.
-    pub fn serialize<S: Serializer>(
-        duration: &Option<Duration>,
-        s: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(duration: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
         match duration {
             Some(d) => (d.as_millis() as u64).serialize(s),
             None => s.serialize_none(),

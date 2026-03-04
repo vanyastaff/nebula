@@ -18,7 +18,6 @@ struct EchoAction {
 }
 
 impl Action for EchoAction {
-
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
     }
@@ -71,7 +70,6 @@ struct CounterAction {
 }
 
 impl Action for CounterAction {
-
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
     }
@@ -161,7 +159,6 @@ struct NoOpTrigger {
 }
 
 impl Action for NoOpTrigger {
-
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
     }

@@ -86,9 +86,7 @@ async fn test_validate_batch() {
     let context = CredentialContext::new("user-1");
 
     // Store multiple credentials
-    let ids: Vec<CredentialId> = (0..5)
-        .map(|i| CredentialId::new())
-        .collect();
+    let ids: Vec<CredentialId> = (0..5).map(|i| CredentialId::new()).collect();
 
     for id in &ids {
         manager
@@ -183,7 +181,10 @@ async fn test_validate_scoped() {
     manager.store(&id, data, metadata, &scope_a).await.unwrap();
 
     let result_correct = manager.validate(&id, &scope_a).await.unwrap();
-    assert!(result_correct.is_valid(), "Should validate with correct scope");
+    assert!(
+        result_correct.is_valid(),
+        "Should validate with correct scope"
+    );
 
     let scope_b = CredentialContext::new("user-1").with_scope(ScopeLevel::Project(project_b));
 

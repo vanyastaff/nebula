@@ -5,8 +5,8 @@
 //! - Hierarchical scope matching (Organization > Project > Workflow)
 //! - Tenant-specific credential listing
 
-use nebula_credential::prelude::*;
 use nebula_core::{OrganizationId, ProjectId, ScopeLevel};
+use nebula_credential::prelude::*;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -37,7 +37,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &tenant_a_context,
         )
         .await?;
-    println!("   ✓ Stored credential for tenant A (org scope): {}", cred_a1);
+    println!(
+        "   ✓ Stored credential for tenant A (org scope): {}",
+        cred_a1
+    );
 
     // Tenant B credentials (Organization scope)
     let tenant_b_context =
@@ -52,7 +55,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &tenant_b_context,
         )
         .await?;
-    println!("   ✓ Stored credential for tenant B (org scope): {}\n", cred_b1);
+    println!(
+        "   ✓ Stored credential for tenant B (org scope): {}\n",
+        cred_b1
+    );
 
     // 2. Demonstrate scope isolation (use list_scoped / retrieve_scoped for enforcement)
     println!("2. Testing scope isolation...");
@@ -91,8 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let org_id = OrganizationId::new();
 
     // Child scope credential (Project under Organization)
-    let child_context =
-        CredentialContext::new("org-1").with_scope(ScopeLevel::Project(project_id));
+    let child_context = CredentialContext::new("org-1").with_scope(ScopeLevel::Project(project_id));
     let cred_child = CredentialId::new();
     let data_child = encrypt(&key, b"secret-child")?;
     manager

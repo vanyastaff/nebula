@@ -160,7 +160,11 @@ mod tests {
             input: Self::Input,
             _ctx: &impl Context,
         ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send {
-            async move { Ok(ActionResult::success(AddOutput { sum: input.a + input.b })) }
+            async move {
+                Ok(ActionResult::success(AddOutput {
+                    sum: input.a + input.b,
+                }))
+            }
         }
     }
 
