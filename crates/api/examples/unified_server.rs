@@ -1,4 +1,4 @@
-//! One entry point: spawn N node workers (tokio::spawn) + run HTTP server (API + webhook) on one port.
+//! One entry point: spawn N node workers (tokio::spawn) + run HTTP API server.
 //!
 //! ```bash
 //! cargo run -p nebula-api --example unified_server
@@ -6,11 +6,9 @@
 //!
 //! Then:
 //! - `GET http://127.0.0.1:5678/health` → OK
-//! - `GET http://127.0.0.1:5678/api/v1/status` → JSON with workers + webhook
-//! - `POST http://127.0.0.1:5678/webhooks/...` → webhook endpoints (when registered)
+//! - `GET http://127.0.0.1:5678/api/v1/status` → JSON with workers
 
 use nebula_api::{ApiServerConfig, WorkerStatus, run};
-use nebula_webhook::WebhookServerConfig;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
@@ -25,15 +23,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let bind: SocketAddr = "127.0.0.1:5678".parse()?;
     let api_config = ApiServerConfig { bind_addr: bind };
-
-    let webhook_config = WebhookServerConfig {
-        bind_addr: bind, // ignored in embedded mode
-        base_url: format!("http://127.0.0.1:{}", bind.port()),
-        path_prefix: "/webhooks".to_string(),
-        enable_compression: true,
-        enable_cors: true,
-        body_limit: 10 * 1024 * 1024,
-    };
 
     // Одна точка входа: сперва spawn воркеров (в продакшене они бы тянули из TaskQueue и вызывали engine)
     for i in 0..WORKER_COUNT {
@@ -56,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
         .collect::<Vec<_>>();
 
-    // HTTP сервер (API + webhook) — один порт, блокирует до shutdown
-    run(api_config, webhook_config, workers).await?;
+    // HTTP API сервер — блокирует до shutdown
+    run(api_config, workers).await?;
     Ok(())
 }

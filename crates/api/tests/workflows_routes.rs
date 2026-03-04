@@ -6,7 +6,6 @@ use axum::{
 use nebula_api::{ApiState, WorkerStatus, api_only_app_with_state};
 use nebula_core::WorkflowId;
 use nebula_ports::{PortsError, WorkflowRepo};
-use nebula_webhook::{WebhookServer, WebhookServerConfig};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use tower::ServiceExt;
@@ -81,8 +80,7 @@ impl WorkflowRepo for InMemoryWorkflowRepo {
 }
 
 async fn build_app(repo: Option<Arc<dyn WorkflowRepo>>) -> axum::Router {
-    let webhook = WebhookServer::new_embedded(WebhookServerConfig::default()).unwrap();
-    let mut state = ApiState::new(webhook, test_workers());
+    let mut state = ApiState::new(test_workers());
     if let Some(workflow_repo) = repo {
         state = state.with_workflow_repo(workflow_repo);
     }

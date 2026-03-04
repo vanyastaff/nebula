@@ -7,7 +7,7 @@ mod workflows;
 
 pub use common::{ApiErrorResponse, PaginatedResponse, PaginationQuery};
 pub use runs::RunSummary;
-pub use system::{StatusResponse, WebhookStatus, WorkerStatus};
+pub use system::{StatusResponse, WorkerStatus};
 pub use workflows::{
     CreateWorkflowRequest, UpdateWorkflowRequest, WorkflowDetail, WorkflowSummary,
 };

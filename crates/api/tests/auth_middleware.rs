@@ -3,7 +3,6 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use nebula_api::{WorkerStatus, api_only_app};
-use nebula_webhook::{WebhookServer, WebhookServerConfig};
 use tower::ServiceExt;
 
 fn test_workers() -> Vec<WorkerStatus> {
@@ -15,8 +14,7 @@ fn test_workers() -> Vec<WorkerStatus> {
 }
 
 async fn build_app() -> axum::Router {
-    let webhook = WebhookServer::new_embedded(WebhookServerConfig::default()).unwrap();
-    api_only_app(webhook, test_workers())
+    api_only_app(test_workers())
 }
 
 #[tokio::test]

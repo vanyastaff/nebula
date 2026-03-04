@@ -2,11 +2,10 @@
 //!
 //! Unified HTTP server that exposes:
 //! - **API** — status, workers, health for the UI and tooling
-//! - **Webhook** — same process, one port (embedded webhook router)
 //!
 //! **Одна точка входа (Docker / local):** в `main` через `tokio::spawn` запускаются N воркеров
-//! (цикл: очередь → выполнение → ack), затем на одном порту поднимается HTTP (API + webhook).
-//! Один процесс = один бинарник в одном контейнере. См. [architecture](docs/architecture.md).
+//! (цикл: очередь → выполнение → ack), затем на одном порту поднимается HTTP API.
+//! См. [architecture](docs/architecture.md).
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
@@ -24,31 +23,20 @@ mod services;
 mod state;
 
 pub use app::{ApiError, ApiServer, ApiServerConfig};
-pub use models::{WebhookStatus, WorkerStatus};
+pub use models::WorkerStatus;
 pub use state::ApiState;
-use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use axum::Router;
-use nebula_webhook::WebhookServer;
 use tracing::info;
 
-/// Build the combined application: API routes + embedded webhook router.
+/// Build the API application.
 ///
 /// - `GET /health` — liveness
-/// - `GET /api/v1/status` — workers + webhook status
-/// - `POST /webhooks/*` — webhook endpoints (from embedded webhook server)
-pub fn app(webhook_server: Arc<WebhookServer>, workers: Vec<WorkerStatus>) -> Router {
-    let state = ApiState::new(webhook_server, workers);
+/// - `GET /api/v1/status` — workers status snapshot
+pub fn app(workers: Vec<WorkerStatus>) -> Router {
+    let state = ApiState::new(workers);
     app_with_state(state)
-}
-
-/// Build API-only application (without merging webhook routes).
-///
-/// Useful for focused API tests that should not depend on webhook route shape.
-pub fn api_only_app(webhook_server: Arc<WebhookServer>, workers: Vec<WorkerStatus>) -> Router {
-    let state = ApiState::new(webhook_server, workers);
-    api_only_app_with_state(state)
 }
 
 /// Build the combined application from a fully configured [`ApiState`].
@@ -56,29 +44,28 @@ pub fn api_only_app(webhook_server: Arc<WebhookServer>, workers: Vec<WorkerStatu
 /// This is the preferred entry point for dependency injection in tests and
 /// in host binaries that compose API ports explicitly.
 pub fn app_with_state(state: ApiState) -> Router {
-    let webhook = state.webhook.clone();
-    app::api_router().with_state(state).merge(webhook.router())
-}
-
-/// Build API-only application from a fully configured [`ApiState`].
-pub fn api_only_app_with_state(state: ApiState) -> Router {
     app::api_router().with_state(state)
 }
 
-/// Run the unified API server (4 workers + webhook) on the given listener.
+/// Backward-compatible alias for API-only app construction from full state.
+pub fn api_only_app_with_state(state: ApiState) -> Router {
+    app_with_state(state)
+}
+
+/// Build API application from workers snapshot.
+pub fn api_only_app(workers: Vec<WorkerStatus>) -> Router {
+    app(workers)
+}
+
+/// Run the API server on the given listener.
 ///
 /// Uses fixed snapshot of 4 workers for status; replace with dynamic pool later if needed.
-pub async fn run(
-    config: ApiServerConfig,
-    webhook_config: nebula_webhook::WebhookServerConfig,
-    workers: Vec<WorkerStatus>,
-) -> Result<(), ApiError> {
-    let webhook = WebhookServer::new_embedded(webhook_config)?;
+pub async fn run(config: ApiServerConfig, workers: Vec<WorkerStatus>) -> Result<(), ApiError> {
     let listener = TcpListener::bind(&config.bind_addr).await?;
     let addr = listener.local_addr()?;
-    info!(%addr, "Nebula API server listening (API + webhooks on one port)");
+    info!(%addr, "Nebula API server listening");
 
-    let app = app(webhook, workers);
+    let app = app(workers);
     axum::serve(listener, app).await?;
     Ok(())
 }

@@ -1,7 +1,6 @@
 //! Shared API state and related auth/rate-limit records.
 
 use nebula_ports::{ExecutionRepo, WorkflowRepo};
-use nebula_webhook::WebhookServer;
 use reqwest::Client;
 use serde::Serialize;
 use std::{collections::HashMap, sync::Arc, time::Instant};
@@ -12,8 +11,6 @@ use crate::{config, models::WorkerStatus};
 /// Shared state for API handlers.
 #[derive(Clone)]
 pub struct ApiState {
-    /// Embedded webhook server (same process).
-    pub(crate) webhook: Arc<WebhookServer>,
     /// Snapshot of node workers (e.g. 4 workers).
     pub(crate) workers: Vec<WorkerStatus>,
     /// Pending OAuth state values (state -> callback metadata).
@@ -38,9 +35,8 @@ pub struct ApiState {
 
 impl ApiState {
     /// Build API state from environment.
-    pub fn new(webhook: Arc<WebhookServer>, workers: Vec<WorkerStatus>) -> Self {
+    pub fn new(workers: Vec<WorkerStatus>) -> Self {
         Self {
-            webhook,
             workers,
             oauth_pending: Arc::new(RwLock::new(HashMap::new())),
             http_client: Client::new(),

@@ -11,33 +11,9 @@ pub struct WorkerStatus {
     pub queue_len: u32,
 }
 
-/// Webhook server section in status.
-#[derive(Debug, Clone, Serialize)]
-pub struct WebhookStatus {
-    /// Always `"running"` when embedded in API server.
-    pub status: String,
-    /// Number of registered webhook routes.
-    pub route_count: usize,
-    /// Registered paths (e.g. `/webhooks/...`).
-    pub paths: Vec<String>,
-}
-
-impl WebhookStatus {
-    /// Build from a live webhook server.
-    pub fn from_server(server: &nebula_webhook::WebhookServer) -> Self {
-        Self {
-            status: "running".to_string(),
-            route_count: server.route_count(),
-            paths: server.paths(),
-        }
-    }
-}
-
 /// Response for `GET /api/v1/status`.
 #[derive(Debug, Serialize)]
 pub struct StatusResponse {
     /// Node workers (e.g. 4).
     pub workers: Vec<WorkerStatus>,
-    /// Webhook server info.
-    pub webhook: WebhookStatus,
 }
