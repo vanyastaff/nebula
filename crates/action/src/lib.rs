@@ -55,6 +55,8 @@
 
 /// Base action trait defining identity and metadata.
 pub mod action;
+/// Capability interfaces injected into contexts (resources, credentials, logger).
+pub mod capability;
 /// Action component collection for dependency declarations.
 pub mod components;
 /// Runtime context provided to actions during execution.
@@ -81,6 +83,10 @@ pub mod result;
 // ── Public re-exports ───────────────────────────────────────────────────────
 
 pub use action::Action;
+pub use capability::{
+    ActionLogLevel, ActionLogger, CredentialAccessor, ExecutionEmitter, ResourceAccessor,
+    TriggerScheduler,
+};
 pub use components::ActionComponents;
 pub use context::{ActionContext, Context, TriggerContext};
 pub use error::ActionError;

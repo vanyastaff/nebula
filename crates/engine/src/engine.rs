@@ -905,11 +905,11 @@ fn extract_primary_output(result: &ActionResult<serde_json::Value>) -> Option<se
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_action::ActionContext;
     use nebula_action::ActionError;
     use nebula_action::InternalHandler;
     use nebula_action::metadata::ActionMetadata;
     use nebula_action::result::ActionResult;
+    use nebula_action::{ActionContext, TriggerContext};
     use nebula_core::Version;
     use nebula_runtime::DataPassingPolicy;
     use nebula_runtime::registry::ActionRegistry;
@@ -1228,6 +1228,26 @@ mod tests {
                 .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
                 .get()
                 > 0
+        );
+    }
+
+    #[tokio::test]
+    async fn trigger_context_construction_is_usable_in_engine() {
+        let ctx = TriggerContext::new(
+            WorkflowId::new(),
+            NodeId::new(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        assert!(!ctx.has_credential("missing").await);
+        assert!(
+            ctx.schedule_after(std::time::Duration::from_millis(1))
+                .await
+                .is_err()
+        );
+        assert!(
+            ctx.emit_execution(serde_json::json!({"event":"tick"}))
+                .await
+                .is_err()
         );
     }
 

@@ -228,10 +228,10 @@ fn primary_output(result: &ActionResult<serde_json::Value>) -> Option<&serde_jso
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_action::ActionContext;
     use nebula_action::InternalHandler;
     use nebula_action::error::ActionError;
     use nebula_action::metadata::ActionMetadata;
+    use nebula_action::{ActionContext, TriggerContext};
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
     use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};
 
@@ -276,6 +276,14 @@ mod tests {
             ExecutionId::new(),
             NodeId::new(),
             WorkflowId::new(),
+            tokio_util::sync::CancellationToken::new(),
+        )
+    }
+
+    fn test_trigger_context() -> TriggerContext {
+        TriggerContext::new(
+            WorkflowId::new(),
+            NodeId::new(),
             tokio_util::sync::CancellationToken::new(),
         )
     }
@@ -413,5 +421,21 @@ mod tests {
         // Metrics should be recorded.
         assert_eq!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get(), 1);
         assert_eq!(metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).get(), 0);
+    }
+
+    #[tokio::test]
+    async fn trigger_context_construction_is_usable_in_runtime() {
+        let ctx = test_trigger_context();
+        assert!(!ctx.has_credential("missing").await);
+        assert!(
+            ctx.schedule_after(std::time::Duration::from_millis(1))
+                .await
+                .is_err()
+        );
+        assert!(
+            ctx.emit_execution(serde_json::json!({"tick": true}))
+                .await
+                .is_err()
+        );
     }
 }

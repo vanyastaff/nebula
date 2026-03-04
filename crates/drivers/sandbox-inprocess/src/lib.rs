@@ -112,7 +112,7 @@ impl SandboxRunner for InProcessSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_action::ActionContext;
+    use nebula_action::{ActionContext, TriggerContext};
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 
     fn test_metadata() -> ActionMetadata {
@@ -186,5 +186,25 @@ mod tests {
             .execute(sandboxed, &metadata, serde_json::json!(null))
             .await;
         assert!(matches!(result, Err(ActionError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn trigger_context_construction_is_usable_in_sandbox_tests() {
+        let ctx = TriggerContext::new(
+            WorkflowId::new(),
+            NodeId::new(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        assert!(!ctx.has_credential("missing").await);
+        assert!(
+            ctx.schedule_after(std::time::Duration::from_millis(1))
+                .await
+                .is_err()
+        );
+        assert!(
+            ctx.emit_execution(serde_json::json!({"event": "test"}))
+                .await
+                .is_err()
+        );
     }
 }

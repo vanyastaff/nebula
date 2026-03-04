@@ -33,10 +33,10 @@
 - [x] ACT-T008b Implement `StatelessActionAdapter<A>` bridging `StatelessAction` → `dyn InternalHandler` (was missing — P1 fix)
 - [x] ACT-T008c Add `ActionRegistry::register_stateless()` helper in nebula-runtime
 - [x] ACT-T009 Context trait provides `execution_id()`, `node_id()`, `workflow_id()`, `cancellation()` methods ✅ already done
-- [ ] ACT-T010 [P] Define capability module interfaces: ResourceAccessor, CredentialAccessor, ActionLogger
-- [ ] ACT-T011 [P] Add capability fields to ActionContext (resources, credentials, logger)
-- [ ] ACT-T012 Add capability fields to TriggerContext (scheduler, emitter, credentials, logger)
-- [ ] ACT-T013 Write tests verifying engine/sandbox/runtime can construct and use both context types
+- [x] ACT-T010 [P] Define capability module interfaces: ResourceAccessor, CredentialAccessor, ActionLogger
+- [x] ACT-T011 [P] Add capability fields to ActionContext (resources, credentials, logger)
+- [x] ACT-T012 Add capability fields to TriggerContext (scheduler, emitter, credentials, logger)
+- [x] ACT-T013 Write tests verifying engine/sandbox/runtime can construct and use both context types
 
 **Checkpoint**: NodeContext removed. ActionContext and TriggerContext carry all capability modules. Context trait provides identity and cancellation methods.
 

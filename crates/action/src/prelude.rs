@@ -5,6 +5,10 @@
 //! ```
 
 pub use crate::action::Action;
+pub use crate::capability::{
+    ActionLogLevel, ActionLogger, CredentialAccessor, ExecutionEmitter, ResourceAccessor,
+    TriggerScheduler,
+};
 pub use crate::components::ActionComponents;
 pub use crate::context::{ActionContext, Context, TriggerContext};
 pub use crate::error::ActionError;
