@@ -12,10 +12,12 @@
 | Location | Responsibility |
 |----------|----------------|
 | `lib.rs` | app(), run(); Router merge |
-| `server.rs` | api_router() composition, health/status handlers, ApiServerConfig/ApiServer/ApiError |
+| `server.rs` | ApiServerConfig/ApiServer/ApiError (startup surface) |
+| `routes/` | Route groups (`system`, `auth`, `workflows`) + router composition |
+| `handlers/` | Thin HTTP handlers (`system`, `workflows`) |
+| `services/` | Business operations (`workflows`) |
 | `state.rs` | ApiState + dependency wiring (repos, oauth/rate-limit stores) |
 | `auth/` | `extractor`, `oauth`, `cors` split for auth boundary and OAuth flow |
-| `workflows.rs` | Workflow REST handlers (list/get/create/update/delete) |
 | `error.rs` | Unified HTTP error envelope (`ApiHttpError`, `ApiResult`) |
 | `middleware.rs` | Cross-cutting middleware registration (HTTP trace layer) |
 | `status.rs` | WorkerStatus, WebhookStatus |
@@ -27,8 +29,9 @@
 2. **run** binds TcpListener, builds `app(webhook, workers)` = api_router().with_state(state).merge(webhook.router()).
 3. **axum::serve** runs on one port.
 4. **GET /health** → 200 OK.
-5. **GET /api/v1/status** → JSON { workers, webhook }.
-6. **POST /webhooks/*** → webhook server handlers.
+5. **GET /ready** → 200 READY.
+6. **GET /api/v1/status** → JSON { workers, webhook }.
+7. **POST /webhooks/*** → webhook server handlers.
 
 ### Known Bottlenecks
 

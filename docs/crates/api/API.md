@@ -32,6 +32,7 @@
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | /health | Liveness; 200 OK |
+| GET | /ready | Readiness; 200 READY |
 | GET | /api/v1/status | JSON { workers, webhook } |
 | POST | /webhooks/* | Webhook endpoints (from nebula-webhook) |
 

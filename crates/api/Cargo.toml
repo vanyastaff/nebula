@@ -27,7 +27,7 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 url = { workspace = true }
 reqwest = { workspace = true, default-features = false, features = ["json", "rustls"] }
+tower = { version = "0.5", features = ["timeout", "util"] }
 
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
 async-trait = { workspace = true }
