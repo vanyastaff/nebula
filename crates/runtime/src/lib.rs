@@ -18,8 +18,10 @@ pub mod data_policy;
 pub mod error;
 pub mod registry;
 pub mod runtime;
+pub mod stream_backpressure;
 
 pub use data_policy::{DataPassingPolicy, LargeDataStrategy};
 pub use error::RuntimeError;
 pub use registry::ActionRegistry;
 pub use runtime::ActionRuntime;
+pub use stream_backpressure::{BoundedStreamBuffer, PushOutcome};
