@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use nebula_core::id::ExecutionId;
+use serde::{Deserialize, Serialize};
 
 use crate::output::{ActionOutput, BinaryData, DataReference, DeferredOutput};
 
@@ -27,7 +28,8 @@ pub use crate::port::PortKey;
 ///
 /// All output fields are wrapped in [`ActionOutput<T>`] to support binary,
 /// reference, and stream data alongside structured values.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
 #[non_exhaustive]
 pub enum ActionResult<T> {
     /// Successful completion -- engine passes output to dependent nodes.
@@ -53,6 +55,7 @@ pub enum ActionResult<T> {
         /// Progress indicator in `0.0..=1.0` range.
         progress: Option<f64>,
         /// Optional delay before next iteration (e.g. rate limiting).
+        #[serde(default, with = "duration_opt_ms")]
         delay: Option<Duration>,
     },
 
@@ -101,6 +104,7 @@ pub enum ActionResult<T> {
         /// The condition that must be satisfied to resume.
         condition: WaitCondition,
         /// Maximum time to wait before the engine cancels.
+        #[serde(default, with = "duration_opt_ms")]
         timeout: Option<Duration>,
         /// Partial output produced before pausing.
         partial_output: Option<ActionOutput<T>>,
@@ -113,6 +117,7 @@ pub enum ActionResult<T> {
     /// cooldown). The engine re-enqueues the node after `after` elapses.
     Retry {
         /// Suggested delay before re-execution.
+        #[serde(with = "duration_ms")]
         after: Duration,
         /// Human-readable reason for requesting the retry.
         reason: String,
@@ -120,7 +125,7 @@ pub enum ActionResult<T> {
 }
 
 /// Reason a stateful iteration ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum BreakReason {
     /// All work completed naturally.
@@ -134,7 +139,8 @@ pub enum BreakReason {
 }
 
 /// Condition that must be met before a waiting action resumes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
 #[non_exhaustive]
 pub enum WaitCondition {
     /// Wait for an inbound HTTP callback.
@@ -150,6 +156,7 @@ pub enum WaitCondition {
     /// Wait for a fixed duration.
     Duration {
         /// How long to wait before resuming.
+        #[serde(with = "duration_ms")]
         duration: Duration,
     },
     /// Wait for human approval.
@@ -164,6 +171,37 @@ pub enum WaitCondition {
         /// The execution to wait on.
         execution_id: ExecutionId,
     },
+}
+
+mod duration_ms {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S: Serializer>(duration: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        (duration.as_millis() as u64).serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
+        let millis = u64::deserialize(d)?;
+        Ok(Duration::from_millis(millis))
+    }
+}
+
+mod duration_opt_ms {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S: Serializer>(duration: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
+        match duration {
+            Some(d) => (d.as_millis() as u64).serialize(s),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+        let opt: Option<u64> = Option::deserialize(d)?;
+        Ok(opt.map(Duration::from_millis))
+    }
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────

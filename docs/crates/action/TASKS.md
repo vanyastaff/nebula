@@ -17,7 +17,7 @@
 - [x] ACT-T002 [P] Write contract tests in `crates/action/tests/contracts.rs` for ActionOutput and FlowKind
 - [x] ACT-T003 [P] Add compatibility policy in `COMPATIBILITY.md`
 - [ ] ACT-T004 Audit all docs and examples for stale terminology (StatelessAction vs ProcessAction) and update
-- [ ] ACT-T005 Verify contract tests cover serialization roundtrip for all ActionResult variants
+- [x] ACT-T005 Verify contract tests cover serialization roundtrip for all ActionResult variants
 
 **Checkpoint**: No aspirational types remain in docs or code comments. Contract tests green. `COMPATIBILITY.md` published.
 

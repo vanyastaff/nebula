@@ -4,7 +4,14 @@
 //! engine/runtime/API. Changing the output format is a breaking change —
 //! update expected values intentionally and document in MIGRATION.md.
 
-use nebula_action::{ActionOutput, FlowKind};
+use std::collections::HashMap;
+use std::time::Duration;
+
+use chrono::Utc;
+use nebula_action::{
+    ActionOutput, ActionResult, BreakReason, FlowKind, WaitCondition,
+};
+use nebula_core::id::ExecutionId;
 
 #[test]
 fn action_output_value_serialization_contract() {
@@ -40,5 +47,147 @@ fn flow_kind_serialization_contract() {
     }
 }
 
-// BreakReason and WaitCondition do not implement Serialize yet; when added,
-// add contract tests here for their JSON shape.
+fn assert_result_roundtrip(case: ActionResult<serde_json::Value>) {
+    let json = serde_json::to_string(&case).unwrap();
+    let back: ActionResult<serde_json::Value> = serde_json::from_str(&json).unwrap();
+    let v1: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let v2: serde_json::Value = serde_json::to_value(&back).unwrap();
+    assert_eq!(v2, v1, "ActionResult serialization changed");
+}
+
+#[test]
+fn action_result_serialization_contract_all_variants_roundtrip() {
+    assert_result_roundtrip(ActionResult::Success {
+        output: ActionOutput::Value(serde_json::json!({"ok": true})),
+    });
+
+    assert_result_roundtrip(ActionResult::Skip {
+        reason: "filtered".to_string(),
+        output: Some(ActionOutput::Value(serde_json::json!({"reason": "test"}))),
+    });
+
+    assert_result_roundtrip(ActionResult::Continue {
+        output: ActionOutput::Value(serde_json::json!({"step": 1})),
+        progress: Some(0.5),
+        delay: Some(Duration::from_millis(250)),
+    });
+
+    assert_result_roundtrip(ActionResult::Break {
+        output: ActionOutput::Value(serde_json::json!({"done": true})),
+        reason: BreakReason::ConditionMet,
+    });
+
+    let mut alternatives = HashMap::new();
+    alternatives.insert(
+        "true".to_string(),
+        ActionOutput::Value(serde_json::json!({"v": 1})),
+    );
+    alternatives.insert(
+        "false".to_string(),
+        ActionOutput::Value(serde_json::json!({"v": 0})),
+    );
+    assert_result_roundtrip(ActionResult::Branch {
+        selected: "true".to_string(),
+        output: ActionOutput::Value(serde_json::json!({"selected": "true"})),
+        alternatives,
+    });
+
+    assert_result_roundtrip(ActionResult::Route {
+        port: "main".to_string(),
+        data: ActionOutput::Value(serde_json::json!({"routed": true})),
+    });
+
+    let mut outputs = HashMap::new();
+    outputs.insert(
+        "main".to_string(),
+        ActionOutput::Value(serde_json::json!({"main": true})),
+    );
+    outputs.insert(
+        "audit".to_string(),
+        ActionOutput::Value(serde_json::json!({"audit": "ok"})),
+    );
+    assert_result_roundtrip(ActionResult::MultiOutput {
+        outputs,
+        main_output: Some(ActionOutput::Value(serde_json::json!({"main": true}))),
+    });
+
+    assert_result_roundtrip(ActionResult::Wait {
+        condition: WaitCondition::Duration {
+            duration: Duration::from_millis(1500),
+        },
+        timeout: Some(Duration::from_millis(30000)),
+        partial_output: Some(ActionOutput::Value(serde_json::json!({"partial": true}))),
+    });
+
+    assert_result_roundtrip(ActionResult::Retry {
+        after: Duration::from_millis(5000),
+        reason: "backoff".to_string(),
+    });
+}
+
+#[test]
+fn action_result_duration_millis_wire_format_contract() {
+    let retry = ActionResult::<serde_json::Value>::Retry {
+        after: Duration::from_millis(1234),
+        reason: "retry".to_string(),
+    };
+    let json = serde_json::to_string(&retry).unwrap();
+    assert_eq!(json, r#"{"type":"Retry","after":1234,"reason":"retry"}"#);
+
+    let wait = ActionResult::<serde_json::Value>::Wait {
+        condition: WaitCondition::Duration {
+            duration: Duration::from_millis(250),
+        },
+        timeout: Some(Duration::from_millis(5000)),
+        partial_output: None,
+    };
+    let json = serde_json::to_string(&wait).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"Wait","condition":{"type":"Duration","duration":250},"timeout":5000,"partial_output":null}"#
+    );
+}
+
+#[test]
+fn wait_condition_serialization_contract() {
+    let cases = [
+        WaitCondition::Webhook {
+            callback_id: "cb-1".to_string(),
+        },
+        WaitCondition::Until {
+            datetime: Utc::now(),
+        },
+        WaitCondition::Duration {
+            duration: Duration::from_millis(2000),
+        },
+        WaitCondition::Approval {
+            approver: "ops".to_string(),
+            message: "approve".to_string(),
+        },
+        WaitCondition::Execution {
+            execution_id: ExecutionId::new(),
+        },
+    ];
+    for value in cases {
+        let json = serde_json::to_string(&value).unwrap();
+        let back: WaitCondition = serde_json::from_str(&json).unwrap();
+        let json_back = serde_json::to_string(&back).unwrap();
+        assert_eq!(json_back, json, "WaitCondition serialization changed");
+    }
+}
+
+#[test]
+fn break_reason_serialization_contract() {
+    let cases = [
+        BreakReason::Completed,
+        BreakReason::MaxIterations,
+        BreakReason::ConditionMet,
+        BreakReason::Custom("custom".to_string()),
+    ];
+    for value in cases {
+        let json = serde_json::to_string(&value).unwrap();
+        let back: BreakReason = serde_json::from_str(&json).unwrap();
+        let json_back = serde_json::to_string(&back).unwrap();
+        assert_eq!(json_back, json, "BreakReason serialization changed");
+    }
+}
