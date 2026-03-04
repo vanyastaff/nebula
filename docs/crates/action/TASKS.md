@@ -66,7 +66,7 @@
 - [x] ACT-T020 [P] Freeze support port schema semantics in code and docs
 - [x] ACT-T021 Add metadata version compatibility check (breaking change detection)
 - [x] ACT-T022 Build validation function for action packages (validate metadata + ports + components)
-- [ ] ACT-T023 Write migration guide template for action version bumps
+- [x] ACT-T023 Write migration guide template for action version bumps
 
 **Checkpoint**: Port schemas are frozen. CI can validate action packages. Migration guide exists.
 

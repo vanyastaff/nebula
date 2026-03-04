@@ -43,3 +43,55 @@
   - runtime/engine/sandbox contract fixtures.
 - performance checks:
   - ensure no regressions in protocol handling overhead.
+
+## Migration Guide Template (ACT-T023)
+
+Use this template for every action interface version bump:
+
+1. Summary
+- Change title:
+- Release version:
+- Interface version change: `from X.Y` -> `to A.B`
+- Breaking: `yes/no`
+
+2. Why This Change Exists
+- Problem statement:
+- Technical rationale:
+- Alternatives considered:
+
+3. Contract Delta
+- Affected types: (`ActionMetadata`, `ActionResult`, ports, context, etc.)
+- Added fields/variants:
+- Removed/renamed fields/variants:
+- Serialization shape changes (old vs new JSON):
+
+4. Consumer Impact
+- Action authors:
+- Runtime/engine:
+- API/UI/tooling:
+- Existing persisted executions:
+
+5. Migration Steps
+- Code changes required by consumers:
+- Feature flags or dual-compat period:
+- Required version gates:
+
+6. Rollout Plan
+- Phase 1 (canary):
+- Phase 2 (partial rollout):
+- Phase 3 (full rollout):
+
+7. Rollback Plan
+- Rollback trigger:
+- Safe rollback target:
+- Data/state reconciliation notes:
+
+8. Verification
+- Contract tests updated:
+- Cross-crate integration tests passed:
+- Performance/slo checks passed:
+
+9. Deprecation Timeline
+- Deprecated in:
+- Removal in:
+- Sunset communication link:
