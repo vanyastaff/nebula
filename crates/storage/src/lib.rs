@@ -18,6 +18,8 @@ mod backend;
 mod error;
 
 pub use backend::{MemoryStorage, MemoryStorageTyped};
+#[cfg(feature = "postgres")]
+pub use backend::{PostgresStorage, PostgresStorageConfig};
 pub use error::StorageError;
 pub use storage::Storage;
 
