@@ -16,14 +16,14 @@ It must stay stable, explicit, and backward-compatible enough for long-lived wor
 
 ## What lives in this crate
 
-- **action** — `Action` trait (metadata, components); execution is in ProcessAction (→ StatelessAction), StatefulAction, TriggerAction, etc. (see lib.rs re-exports; trait names per DECISIONS D009).
+- **action** — `Action` trait (metadata, components); execution is in `StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`, etc. (see lib.rs re-exports).
 - **metadata** — `ActionMetadata` (key, name, description, version, inputs, outputs, parameters: ParameterCollection); re-exports `InterfaceVersion` from core.
 - **components** — `ActionComponents` (credentials: Vec&lt;CredentialRef&gt;, resources: Vec&lt;ResourceRef&gt;).
 - **port** — `InputPort`, `OutputPort`, `SupportPort`, `DynamicPort`; `FlowKind`, `ConnectionFilter`, `PortKey`.
 - **result** — `ActionResult&lt;T&gt;`: Success, Skip, Continue, Break, Branch, Route, MultiOutput, Wait, Retry; `WaitCondition`, `BreakReason`, `BranchKey`.
 - **output** — `ActionOutput&lt;T&gt;`, BinaryData, DataReference, DeferredOutput, StreamOutput, OutputMeta, etc.
 - **error** — `ActionError`: Retryable, Fatal, Validation, SandboxViolation, Cancelled, DataLimitExceeded.
-- **context** — `Context`, `NodeContext` (bridge). Re-exports: `ParameterCollection`, `ParameterDef` from nebula-parameter.
+- **context** — `Context`, `ActionContext`, `TriggerContext` (+ capability modules). Re-exports: `ParameterCollection`, `ParameterDef` from nebula-parameter.
 
 ## What does not live here
 

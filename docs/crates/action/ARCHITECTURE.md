@@ -28,7 +28,7 @@ The crate is a protocol, not a runtime. It must be small, stable, and explicit.
 
 6. Context placeholder
 - `Context` base trait (bare marker)
-- `NodeContext` (doc-hidden) — temporary bridge carrying execution_id, node_id, workflow_id, cancellation
+- `ActionContext`/`TriggerContext` — stable contexts carrying identity, cancellation, and capability modules
 - **Design decision:** target context types are `ActionContext` and `TriggerContext`, both concrete structs composed of capability modules (ResourceAccessor, CredentialAccessor, etc.) — see API.md
 
 ## Target architecture (production-complete)

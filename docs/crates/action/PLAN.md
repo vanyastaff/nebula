@@ -33,7 +33,7 @@
 - Lock current stable surface (`Action`, metadata, components, result/output/error/ports) -- done
 - Contract tests in `crates/action/tests/contracts.rs` for `ActionOutput`, `FlowKind` -- done
 - Compatibility policy in `COMPATIBILITY.md` -- done
-- Remove stale terminology in docs and examples (StatelessAction vs ProcessAction)
+- Remove stale terminology in docs and examples (StatelessAction vs ProcessAction) — done for active docs; archive left as historical context
 
 **Exit Criteria**:
 - No ambiguity between current API and aspirational design
@@ -43,10 +43,10 @@
 
 ### Phase 2: Context and capability model
 
-**Goal**: Replace temporary `NodeContext` bridge with production context types and establish the capability model.
+**Goal**: Establish production context types and capability model (`ActionContext`/`TriggerContext`).
 
 **Deliverables**:
-- Replace temporary `NodeContext` bridge: `ActionContext` and `TriggerContext` added; `NodeContext` deprecated -- done
+- Replace temporary `NodeContext` bridge: `ActionContext` and `TriggerContext` added; `NodeContext` removed -- done
 - `Context` trait with `execution_id()`, `node_id()`, `workflow_id()`, `cancellation()` methods
 - Core execution traits: `StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction` -- done
 - Capability modules (resources, credentials, logger) to be added by runtime/sandbox as fields on context structs

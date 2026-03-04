@@ -43,8 +43,7 @@
 1. Runtime validates params and capability envelope.
 2. Runtime resolves `ActionComponents` — acquires credentials and resources declared by the action.
 3. Runtime builds context and passes it to the action execute method.
-   - **Current**: `NodeContext` (doc-hidden temporary placeholder) carrying `execution_id`, `node_id`, `workflow_id`, `cancellation`.
-   - **Target**: `ActionContext` (for StatelessAction / StatefulAction / ResourceAction) and `TriggerContext` (for TriggerAction) — concrete structs composed of capability modules (`ResourceAccessor`, `CredentialAccessor`, etc.). Designed for composition: new capabilities add fields without breaking existing signatures.
+   - **Current/stable**: `ActionContext` (for StatelessAction / StatefulAction / ResourceAction) and `TriggerContext` (for TriggerAction) — concrete structs composed of capability modules (`ResourceAccessor`, `CredentialAccessor`, `ActionLogger`, `TriggerScheduler`, `ExecutionEmitter`, etc.).
 4. Action executes and returns `ActionResult<ActionOutput<T>>` or `ActionError`. **Cancellation:** The runtime must race `action.execute(...)` against `ctx.cancellation().cancelled()` (e.g. `tokio::select!`). When cancellation wins, the runtime returns `ActionError::Cancelled`; action implementations do not need to check cancellation in every node.
 5. Engine applies flow-control semantics: `ActionResult::Success` → pass output; `Branch` activates path; `Wait` persists state and suspends; `Continue` re-enqueues (stateful); `Break` finalizes; `Retry` reschedules; `ActionError::Retryable` / `Fatal` drive resilience policy.
 6. Runtime resolves deferred/streaming outputs before passing to downstream nodes.
@@ -86,5 +85,5 @@
 - serialization compatibility tests for result/output variants.
 - metadata/port compatibility tests across interface versions.
 - sandbox violation mapping tests in runtime adapters.
-- `NodeContext` → stable context migration: same execution_id/node_id/workflow_id available post-Phase 2.
+- Context contract continuity: `execution_id` / `node_id` / `workflow_id` / `cancellation` remain available in `ActionContext`.
 - `ActionComponents` resolution: all declared credentials and resources available before execute is called.

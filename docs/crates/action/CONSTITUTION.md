@@ -35,7 +35,7 @@ This is the action contract: stable, versioned, and enforceable by the sandbox.
 A developer writes a "Send Slack Message" action. They implement the `Action` trait, declare required credentials and resources in `ActionComponents`, and return `ActionResult::Done(output)`. They do not need to know how the engine schedules or how the sandbox isolates.
 
 **Acceptance**:
-- Implement `Action`: `metadata()`, `components()`; and one of ProcessAction / StatefulAction / TriggerAction / etc. with `execute(input, &ctx)`
+- Implement `Action`: `metadata()`, `components()`; and one of `StatelessAction` / `StatefulAction` / `TriggerAction` / `ResourceAction` / etc. with typed execution methods.
 - `ActionComponents` lists `CredentialRef` and `ResourceRef` with keys
 - Return `ActionResult::Success { output }` on success; retry/suspend via `ActionResult::Retry` / `Wait` or `ActionError::Retryable` / `Fatal`
 - Retryable vs fatal signaled via `ActionError::Retryable` vs `ActionError::Fatal`
@@ -134,14 +134,14 @@ When the action trait gains new optional methods or output forms, existing actio
 In a production Nebula deployment, hundreds of action types (built-in and plugin) are loaded by the engine. Each action is identified by key, has metadata and components, and is executed inside a sandbox that enforces declared capabilities. The engine never imports concrete action crates for flow control — only for registration and execution.
 
 ```
-action.rs    — Action trait (metadata, components); no execute (that’s in ProcessAction/StatelessAction, StatefulAction, TriggerAction (same crate; D009))
+action.rs    — Action trait (metadata, components); no execute (execution is in StatelessAction, StatefulAction, TriggerAction, ResourceAction)
 metadata.rs  — ActionMetadata (key, name, description, version, inputs, outputs, parameters: ParameterCollection)
 components.rs — ActionComponents (credentials: Vec<CredentialRef>, resources: Vec<ResourceRef>)
 port.rs      — InputPort, OutputPort, SupportPort, DynamicPort; FlowKind; ConnectionFilter; PortKey
 result.rs    — ActionResult<T>: Success, Skip, Continue, Break, Branch, Route, MultiOutput, Wait, Retry
 output.rs    — ActionOutput<T>, BinaryData, DataReference, DeferredOutput, StreamOutput, …
 error.rs     — ActionError: Retryable, Fatal, Validation, SandboxViolation, Cancelled, DataLimitExceeded
-context.rs   — Context, NodeContext (bridge)
+context.rs   — Context, ActionContext, TriggerContext (+ capability modules)
 ```
 
 Engine: registry (plugin_key → ActionMetadata + factory); for each node resolve action → build Context from credential + resource managers → call action.execute(input, &ctx); match ActionResult / ActionError → schedule next / suspend / fail. Action authors implement `Action` and register; runtime provides Context; sandbox wraps context in capability-checked proxy.
@@ -163,7 +163,7 @@ These are not current contract but inform production vision: the core contract s
 |-----|----------|-------|
 | Frozen contract + versioned compatibility policy | High | Document stable surface vs experimental |
 | Capability-checked context proxy (sandbox) | High | Enforce ActionComponents at runtime |
-| ActionContext / TriggerContext concrete types | Medium | Replace NodeContext bridge; capability modules |
+| ActionContext / TriggerContext concrete types | Done | Capability modules are wired (resources/credentials/logger/scheduler/emitter) |
 | StreamingAction / BatchAction optional traits | Low | From archive; engine must support first |
 | Extended result variants (Suspend, Fork, Join) | Low | Backlog; requires engine and migration |
 
@@ -185,7 +185,7 @@ These are not current contract but inform production vision: the core contract s
 
 **Rationale**: Action crate must not depend on runtime or sandbox. Trait (or bridge) keeps dependency direction correct.
 
-**Rejected**: Action depending on nebula-runtime for NodeContext — would create cycle.
+**Rejected**: Action depending on nebula-runtime for context types — would create cycle.
 
 ### D-003: ActionComponents Declare All Dependencies
 
@@ -209,11 +209,11 @@ These are not current contract but inform production vision: the core contract s
 
 ### P-001: ActionContext and TriggerContext Concrete Types
 
-**Problem**: NodeContext is a temporary bridge; target is explicit capability modules.
+**Problem**: Context must carry capabilities without creating engine/runtime coupling.
 
 **Proposal**: Introduce ActionContext and TriggerContext structs composed of ResourceAccessor, CredentialAccessor, etc.; runtime implements these.
 
-**Impact**: Breaking for action authors if NodeContext is removed; migration path required.
+**Impact**: Implemented as breaking change; stable target is `ActionContext` + `TriggerContext`.
 
 ### P-002: Optional StreamingAction and BatchAction Traits
 

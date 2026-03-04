@@ -56,11 +56,11 @@ Core execution traits use the following names (see ARCHITECTURE, API, P001):
 
 | Doc name | Current code name | Semantics |
 |----------|-------------------|-----------|
-| **StatelessAction** | `ProcessAction` | Pure function: `execute(input, &ctx) → ActionResult<Output>`; no state between calls. |
+| **StatelessAction** | `StatelessAction` | Pure function: `execute(input, &ctx) → ActionResult<Output>`; no state between calls. |
 | **StatefulAction** | `StatefulAction` | Persistent state: `execute(input, &mut state, &ctx)`; `Continue`/`Break`. |
 | **TriggerAction** | `TriggerAction` | Workflow starter: `start(&ctx)` / `stop(&ctx)`; lives outside execution graph. |
 | **ResourceAction** | *(not yet in code)* | Graph-level DI: `configure(&ctx)`, `cleanup(instance, &ctx)`; engine runs before downstream. |
 
 DX traits (same crate): **InteractiveAction**, **TransactionalAction**, **WebhookAction**, **PollAction** — stay as-is; they extend StatefulAction or TriggerAction.
 
-**Migration:** Rename `ProcessAction` → `StatelessAction` when aligning code with Phase 2; add `ResourceAction` when engine supports graph-level DI. Deprecate old name for one cycle if needed.
+**Migration status:** `ProcessAction` → `StatelessAction` completed; `ResourceAction` is part of the stable execution trait set.

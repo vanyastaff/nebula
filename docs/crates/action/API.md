@@ -204,7 +204,7 @@ pub struct TriggerContext {
 **Key design decisions:**
 - Composition over inheritance — new capabilities added as fields, not via trait extension
 - `ActionContext` and `TriggerContext` are concrete structs, not traits — easier to construct in tests
-- `NodeContext` (current doc-hidden impl) is a temporary placeholder; `ActionContext` is the target name and shape
+- `NodeContext` is removed; `ActionContext`/`TriggerContext` are the stable context types
 
 ## Planned execution sub-traits (Phase 2)
 

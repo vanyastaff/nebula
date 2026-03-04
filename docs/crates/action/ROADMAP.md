@@ -7,7 +7,7 @@
 - Lock current stable surface (`Action`, metadata, components, result/output/error/ports). ✓
 - Contract tests in `crates/action/tests/contracts.rs` for `ActionOutput`, `FlowKind`. ✓
 - Compatibility policy in `COMPATIBILITY.md`. ✓
-- Remove stale terminology in docs and examples (StatelessAction vs ProcessAction).
+- Remove stale terminology in docs and examples (StatelessAction vs ProcessAction). ✅
 
 Exit criteria:
 - No ambiguity between current API and aspirational design.
@@ -17,7 +17,7 @@ Exit criteria:
 
 **Status:** In progress
 
-- Replace temporary `NodeContext` bridge: `ActionContext` and `TriggerContext` added; `NodeContext` deprecated. ✓
+- Replace temporary `NodeContext` bridge: `ActionContext` and `TriggerContext` added; `NodeContext` removed. ✅
 - `Context` trait now has `execution_id()`, `node_id()`, `workflow_id()`, `cancellation()`.
 - Core execution traits: `StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction` (configure/cleanup). ✓
 - Capability modules (resources, credentials, logger) to be added by runtime/sandbox as fields on context structs.
