@@ -60,7 +60,7 @@
 |-------|--------|-------|
 | `nebula-api` | 🔄 In progress | REST + WebSocket (axum) |
 | `nebula-ports` | 🔄 In progress | Port/adapter layer |
-| `nebula-app` | ⬜ Planned | egui desktop editor |
+| Desktop (Tauri) | 🔄 In progress | `apps/desktop` — React + Tauri; replaces former nebula-app (egui) |
 
 ## CI
 

@@ -1,37 +1,61 @@
 # Roadmap
 
+High-level phase plan for Nebula. **Crate-level detail** lives in each crate’s ROADMAP under `docs/crates/<crate>/ROADMAP.md` — see [Crate-level roadmaps](#crate-level-roadmaps) below. ROADMAPs follow [SPEC.md](SPEC.md): phases, risks, exit criteria, and metrics of readiness.
+
+**Current focus:** Phase 2 (Execution Engine) and credential–resource integration. See [Recommended next tasks](#recommended-next-tasks).
+
+---
+
+## Recommended next tasks
+
+Based on `docs/plans/`, `PROJECT_STATUS.md`, and crate ROADMAPs, the most concrete next steps:
+
+| Priority | Task | Source | Notes |
+|----------|------|--------|--------|
+| **1** | **Credential–Resource integration** | [2026-03-03-credential-resource-integration.md](plans/2026-03-03-credential-resource-integration.md) | Typed `CredentialRef<C>`, `RotationStrategy`, `HasResourceComponents`, rotation subscription. Replaces broken `TypeId`-based refs and `credentials.rs` pull model. |
+| **2** | **Credential Phase 1 exit** | [credential/ROADMAP.md](crates/credential/ROADMAP.md) | Contract consolidation: ARCHITECTURE/API/INTERACTIONS aligned with code, stable API surface, scope enforcement documented and tested. |
+| **3** | **Storage Postgres backend** | [storage/ROADMAP.md](crates/storage/ROADMAP.md) | `PostgresStorage`, KV table, sqlx pool, feature `postgres`. Required for execution state and credential Postgres provider ([POSTGRES_STORAGE_SPEC](crates/credential/POSTGRES_STORAGE_SPEC.md)). |
+| **4** | **Runtime Phase 1** | [runtime/ROADMAP.md](crates/runtime/ROADMAP.md) | Isolation level routing, SandboxRunner, SpillToBlob, `max_total_execution_bytes`. |
+| **5** | **Desktop foundation** | [2026-03-01-desktop-architecture.md](plans/2026-03-01-desktop-architecture.md), [apps/desktop/ROADMAP.md](apps/desktop/ROADMAP.md) | Tauri typed IPC (tauri-specta), AppError, service layer, Zustand, TanStack Query. |
+
+**Phase 2 acceptance criteria** (from main roadmap): single-node workflow end-to-end, multi-node DAG resolution, execution state in PostgreSQL, cancellation and timeout working.
+
+---
+
 ## Phase 1 — Core Foundation ✅
 
 **Goal:** Establish the base crates that all other components depend on.
 
-| Component | Status |
-|-----------|--------|
-| `nebula-core` — identifiers, scope, shared traits | Done |
-| `nebula-workflow` — workflow definition types | Done |
-| `nebula-execution` — execution state types | Done |
-| `nebula-memory` — in-memory state and caching | Done |
-| `nebula-expression` — expression evaluation | Done |
-| `nebula-parameter` — parameter schema | Done |
-| `nebula-validator` — validation combinators | Done |
-| `nebula-config` — configuration, hot-reload | Done |
-| `nebula-log` — structured logging | Done |
-| `nebula-system` — platform utilities | Done |
-| `nebula-resilience` — circuit breaker, retry | Done |
-| `nebula-storage` — storage abstraction | Done |
-| `nebula-macros` — procedural macros | Done |
+| Component | Status | Crate ROADMAP |
+|-----------|--------|----------------|
+| `nebula-core` — identifiers, scope, shared traits | Done | [core/ROADMAP.md](crates/core/ROADMAP.md) |
+| `nebula-workflow` — workflow definition types | Done | [workflow/ROADMAP.md](crates/workflow/ROADMAP.md) |
+| `nebula-execution` — execution state types | Done | [execution/ROADMAP.md](crates/execution/ROADMAP.md) |
+| `nebula-memory` — in-memory state and caching | Done | [memory/ROADMAP.md](crates/memory/ROADMAP.md) |
+| `nebula-expression` — expression evaluation | Done | [expression/ROADMAP.md](crates/expression/ROADMAP.md) |
+| `nebula-parameter` — parameter schema | Done | [parameter/ROADMAP.md](crates/parameter/ROADMAP.md) |
+| `nebula-validator` — validation combinators | Done | [validator/ROADMAP.md](crates/validator/ROADMAP.md) |
+| `nebula-config` — configuration, hot-reload | Done | [config/ROADMAP.md](crates/config/ROADMAP.md) |
+| `nebula-log` — structured logging | Done | — |
+| `nebula-system` — platform utilities | Done | [system/ROADMAP.md](crates/system/ROADMAP.md) |
+| `nebula-resilience` — circuit breaker, retry | Done | [resilience/ROADMAP.md](crates/resilience/ROADMAP.md) |
+| `nebula-storage` — storage abstraction | Done | [storage/ROADMAP.md](crates/storage/ROADMAP.md) |
+| `nebula-macros` — procedural macros | Done | [macros/ROADMAP.md](crates/macros/ROADMAP.md) |
+
+---
 
 ## Phase 2 — Execution Engine 🔄
 
 **Goal:** Working end-to-end execution of workflows.
 
-| Component | Status |
-|-----------|--------|
-| `nebula-action` — Action trait and context | In progress |
-| `nebula-resource` — resource lifecycle, pooling | In progress |
-| `nebula-engine` — DAG scheduler | In progress |
-| `nebula-runtime` — trigger management | In progress |
-| `drivers/queue-memory` — in-process work queue | In progress |
-| `drivers/sandbox-inprocess` — execution sandbox | In progress |
+| Component | Status | Crate ROADMAP |
+|-----------|--------|----------------|
+| `nebula-action` — Action trait and context | In progress | [action/ROADMAP.md](crates/action/ROADMAP.md) |
+| `nebula-resource` — resource lifecycle, pooling | In progress | [resource/ROADMAP.md](crates/resource/ROADMAP.md) |
+| `nebula-engine` — DAG scheduler | In progress | [engine/ROADMAP.md](crates/engine/ROADMAP.md) |
+| `nebula-runtime` — trigger management | In progress | [runtime/ROADMAP.md](crates/runtime/ROADMAP.md) |
+| `drivers/queue-memory` — in-process work queue | In progress | [worker/ROADMAP.md](crates/worker/ROADMAP.md) |
+| `drivers/sandbox-inprocess` — execution sandbox | In progress | [sandbox/ROADMAP.md](crates/sandbox/ROADMAP.md) |
 
 **Acceptance criteria:**
 - [ ] Single-node workflow executes end-to-end
@@ -39,42 +63,100 @@
 - [ ] Execution state persists to PostgreSQL
 - [ ] Cancellation and timeout work correctly
 
+**Dependencies:** Storage Postgres backend (Phase 1 of [storage/ROADMAP.md](crates/storage/ROADMAP.md)); credential–resource integration unblocks actions that need credentials and resources.
+
+---
+
 ## Phase 3 — Credential & Plugin System ⬜
 
 **Goal:** Secure credential storage and extensible plugin loading.
 
-| Component | Status |
-|-----------|--------|
-| `nebula-credential` — encrypted secrets | Planned |
-| `nebula-plugin` — plugin discovery and loading | Planned |
-| `nebula-webhook` — inbound webhooks | Planned |
-| First-party plugins (GitHub, Telegram) | Planned |
+| Component | Status | Crate ROADMAP |
+|-----------|--------|----------------|
+| `nebula-credential` — encrypted secrets, rotation | In progress | [credential/ROADMAP.md](crates/credential/ROADMAP.md) (8 phases to v1.0) |
+| `nebula-plugin` — plugin discovery and loading | In progress | [plugin/ROADMAP.md](crates/plugin/ROADMAP.md) |
+| `nebula-webhook` — inbound webhooks | In progress | — |
+| First-party plugins (GitHub, Telegram) | Planned | — |
+
+**Note:** Credential crate has a long-horizon roadmap (Contract consolidation → Rotation reliability → Provider hardening → Production infra → Security → Performance → Protocols → Toolchain). Current priority: Phase 1 exit + credential–resource integration ([plan](plans/2026-03-03-credential-resource-integration.md)).
+
+---
 
 ## Phase 4 — Developer Experience ⬜
 
 **Goal:** Great SDK, testing utilities, and code generation.
 
-| Component | Status |
-|-----------|--------|
-| `nebula-sdk` — all-in-one developer SDK | Planned |
-| Testing framework — `TestContext`, mock utilities | Planned |
-| CLI — `nebula init`, `nebula build`, `nebula test` | Planned |
-| OpenAPI spec generation | Planned |
-| Dev server with hot-reload | Planned |
+| Component | Status | Crate ROADMAP |
+|-----------|--------|----------------|
+| `nebula-sdk` — all-in-one developer SDK | In progress | [sdk/ROADMAP.md](crates/sdk/ROADMAP.md) |
+| Testing framework — `TestContext`, mock utilities | Planned | — |
+| CLI — `nebula init`, `nebula build`, `nebula test` | Planned | — |
+| OpenAPI spec generation | Planned | — |
+| Dev server with hot-reload | Planned | — |
+
+---
 
 ## Phase 5 — API & UI ⬜
 
 **Goal:** Production-ready REST/WebSocket API and visual workflow editor.
 
-| Component | Status |
-|-----------|--------|
-| `nebula-api` — REST + WebSocket server | Planned |
-| `nebula-app` — egui desktop editor | Planned |
-| `nebula-ports` — port/adapter layer | Planned |
-| `nebula-telemetry` — metrics and tracing | Planned |
-| Kubernetes / Docker deployment | Planned |
+| Component | Status | Crate ROADMAP |
+|-----------|--------|----------------|
+| `nebula-api` — REST + WebSocket server | In progress | [api/ROADMAP.md](crates/api/ROADMAP.md) |
+| **Desktop app (Tauri)** — `apps/desktop` | In progress | [apps/desktop/ROADMAP.md](apps/desktop/ROADMAP.md) |
+| `nebula-ports` — port/adapter layer | In progress | — |
+| `nebula-telemetry` — metrics and tracing | In progress | [telemetry/ROADMAP.md](crates/telemetry/ROADMAP.md), [metrics/ROADMAP.md](crates/metrics/ROADMAP.md) |
+| Kubernetes / Docker deployment | Planned | — |
+
+**Desktop:** The desktop client is the **Tauri app in `apps/desktop`** (React + TypeScript frontend, Rust backend). Not `nebula-app` (egui). Phases aligned with backend; foundation (typed IPC, services, stores) has a detailed [implementation plan](plans/2026-03-01-desktop-architecture.md).
+
+---
+
+## Crate-level roadmaps
+
+Each crate’s ROADMAP holds phased deliverables, risks, exit criteria, and readiness metrics. Use these for “what to do next” inside a crate.
+
+| Crate | Path |
+|-------|------|
+| action | [docs/crates/action/ROADMAP.md](crates/action/ROADMAP.md) |
+| api | [docs/crates/api/ROADMAP.md](crates/api/ROADMAP.md) |
+| config | [docs/crates/config/ROADMAP.md](crates/config/ROADMAP.md) |
+| core | [docs/crates/core/ROADMAP.md](crates/core/ROADMAP.md) |
+| credential | [docs/crates/credential/ROADMAP.md](crates/credential/ROADMAP.md) |
+| engine | [docs/crates/engine/ROADMAP.md](crates/engine/ROADMAP.md) |
+| eventbus | [docs/crates/eventbus/ROADMAP.md](crates/eventbus/ROADMAP.md) |
+| execution | [docs/crates/execution/ROADMAP.md](crates/execution/ROADMAP.md) |
+| expression | [docs/crates/expression/ROADMAP.md](crates/expression/ROADMAP.md) |
+| idempotency | [docs/crates/idempotency/ROADMAP.md](crates/idempotency/ROADMAP.md) |
+| memory | [docs/crates/memory/ROADMAP.md](crates/memory/ROADMAP.md) |
+| macros | [docs/crates/macros/ROADMAP.md](crates/macros/ROADMAP.md) |
+| metrics | [docs/crates/metrics/ROADMAP.md](crates/metrics/ROADMAP.md) |
+| parameter | [docs/crates/parameter/ROADMAP.md](crates/parameter/ROADMAP.md) |
+| plugin | [docs/crates/plugin/ROADMAP.md](crates/plugin/ROADMAP.md) |
+| resource | [docs/crates/resource/ROADMAP.md](crates/resource/ROADMAP.md) |
+| resilience | [docs/crates/resilience/ROADMAP.md](crates/resilience/ROADMAP.md) |
+| runtime | [docs/crates/runtime/ROADMAP.md](crates/runtime/ROADMAP.md) |
+| sandbox | [docs/crates/sandbox/ROADMAP.md](crates/sandbox/ROADMAP.md) |
+| sdk | [docs/crates/sdk/ROADMAP.md](crates/sdk/ROADMAP.md) |
+| storage | [docs/crates/storage/ROADMAP.md](crates/storage/ROADMAP.md) |
+| system | [docs/crates/system/ROADMAP.md](crates/system/ROADMAP.md) |
+| telemetry | [docs/crates/telemetry/ROADMAP.md](crates/telemetry/ROADMAP.md) |
+| validator | [docs/crates/validator/ROADMAP.md](crates/validator/ROADMAP.md) |
+| worker | [docs/crates/worker/ROADMAP.md](crates/worker/ROADMAP.md) |
+| workflow | [docs/crates/workflow/ROADMAP.md](crates/workflow/ROADMAP.md) |
+| tenant | [docs/crates/tenant/ROADMAP.md](crates/tenant/ROADMAP.md) |
+| cluster | [docs/crates/cluster/ROADMAP.md](crates/cluster/ROADMAP.md) |
+| locale | [docs/crates/locale/ROADMAP.md](crates/locale/ROADMAP.md) |
+| **Desktop app** | [docs/apps/desktop/ROADMAP.md](apps/desktop/ROADMAP.md) |
+
+Crates without a ROADMAP yet (log, webhook): add per [SPEC.md](SPEC.md) when the crate doc set is created.
+
+Implementation plans (task-level) live in `docs/plans/`, e.g. credential–resource integration and desktop architecture.
+
+---
 
 ## Non-Goals
 
-- **GraphQL** — not planned; REST + WebSocket covers all use cases.
-- **nebula-value** — removed; `serde_json::Value` is used directly everywhere.
+- **GraphQL** — not planned; REST + WebSocket cover our use cases.
+- **nebula-value** — removed; `serde_json::Value` is used everywhere.
+- **nebula-app (egui)** — superseded by the Tauri desktop app at `apps/desktop`.

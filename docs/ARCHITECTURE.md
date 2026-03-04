@@ -8,7 +8,7 @@ organized in strict architectural layers with enforced one-way dependency direct
 ```
 ┌──────────────────────────────────────────────────────────┐
 │                Presentation / API Layer                   │
-│             api · app · webhook · ports                   │
+│          api · apps/desktop (Tauri) · webhook · ports     │
 ├──────────────────────────────────────────────────────────┤
 │                  Developer Tools Layer                    │
 │                     sdk · macros                          │
@@ -98,7 +98,7 @@ Cross-cutting crates (`config`, `log`, `resilience`) may be imported at any laye
 | Dir | Package | Responsibility |
 |-----|---------|----------------|
 | `crates/api` | `nebula-api` | REST + WebSocket server (axum) |
-| `crates/app` | `nebula-app` | egui desktop application |
+| `apps/desktop` | — | **Desktop app (Tauri)** — React + TypeScript UI, Rust backend; auth, workflows, monitor. Replaces former egui-based `nebula-app`. |
 | `crates/webhook` | `nebula-webhook` | Inbound webhook ingestion |
 | `crates/ports` | `nebula-ports` | Port/adapter abstractions |
 

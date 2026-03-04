@@ -23,8 +23,16 @@ Workflow definition, DAG graph, and validation for the Nebula workflow engine. D
 ## Document Map
 
 - [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
-- [INTERACTIONS.md](./INTERACTIONS.md) — ecosystem, upstream/downstream, contracts
-- Further docs (ARCHITECTURE, API, DECISIONS, ROADMAP, PROPOSALS, SECURITY, RELIABILITY, TEST_STRATEGY, MIGRATION) to be added per [docs-deep-pass-checklist.md](../../docs-deep-pass-checklist.md).
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — problem, current/target architecture, comparative analysis
+- [API.md](./API.md) — public surface, usage patterns, error semantics, compatibility
+- [INTERACTIONS.md](./INTERACTIONS.md) — ecosystem, upstream/downstream, contract matrix
+- [DECISIONS.md](./DECISIONS.md) — D-001 to D-003 (workflow as data, DAG storage, validation)
+- [ROADMAP.md](./ROADMAP.md) — phases, risks, exit criteria
+- [PROPOSALS.md](./PROPOSALS.md) — P-001 schema snapshot, P-002 version field, P-003 validator integration
+- [SECURITY.md](./SECURITY.md) — threat model, validation, abuse cases
+- [RELIABILITY.md](./RELIABILITY.md) — SLO, failure modes, capacity
+- [TEST_STRATEGY.md](./TEST_STRATEGY.md) — pyramid, invariants, scenario matrix
+- [MIGRATION.md](./MIGRATION.md) — versioning, breaking changes, rollout/rollback
 
 ## Archive
 
