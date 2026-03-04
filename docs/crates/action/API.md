@@ -123,6 +123,50 @@ ActionResult::success_deferred(DeferredOutput {
 })
 ```
 
+## Deferred Resolution Contract (ACT-T014)
+
+`ActionOutput::Deferred` is a protocol-level handoff from action execution to runtime/engine.
+
+1. Producer:
+`Action` returns `ActionOutput::Deferred(Box<DeferredOutput>)` when final value is not ready yet.
+2. Resolver:
+`runtime/engine` owns resolution. Action authors do not resolve deferred handles directly after return.
+3. Persistence:
+Engine persists deferred handle metadata in execution state before scheduling downstream dependents.
+Persisted minimum fields: `handle_id`, `resolution`, `expected`, `producer`, `timeout`, `retry`.
+4. Resolution timing:
+Engine resolves deferred output before routing data to downstream nodes that require concrete payload.
+5. Failure mapping:
+Resolver transient errors map to retry (`ActionResult::Retry` or `ActionError::Retryable` path).
+Permanent resolver errors map to execution failure (`ActionError::Fatal` path).
+6. Idempotency:
+Resolution must be idempotent by `handle_id` within one execution, including resume/replay.
+7. Resume behavior:
+On engine restart/resume, unresolved deferred handles are reloaded from persisted state and resumed.
+
+## Streaming Backpressure Contract (ACT-T015)
+
+`ActionOutput::Streaming(StreamOutput)` represents a bounded producer-consumer channel owned by runtime.
+
+1. Ownership:
+Action produces stream events; runtime enforces buffering policy and consumer pace.
+2. Bounded buffering:
+Streaming transport must use bounded buffering (never unbounded in-memory growth).
+3. Backpressure behavior:
+When consumer lags, runtime applies configured policy:
+- `block`: pause producer until capacity is available.
+- `drop_oldest`: evict oldest buffered item and keep newest.
+- `drop_newest`: reject newest item and keep existing buffer.
+- `fail`: terminate stream with error and surface retry/fatal mapping policy.
+4. Consumer contract:
+Consumers must tolerate partial delivery and explicit terminal states (`completed`, `error`, `cancelled`).
+5. Ordering:
+Per-stream event ordering is FIFO for delivered items after backpressure policy is applied.
+6. Visibility:
+Runtime emits telemetry for buffer saturation, dropped events, and stream termination reason.
+7. Recovery:
+On resume, stream recovery is best-effort unless producer explicitly supports replay cursor semantics.
+
 ## `ActionResult<T>` variants
 
 | Variant | Engine action |
