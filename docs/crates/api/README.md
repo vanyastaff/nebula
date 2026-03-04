@@ -35,6 +35,7 @@ Unified HTTP server for Nebula: API + webhook on one port.
 ## Document Map
 
 - [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
+- [VISION.md](./VISION.md) — target architecture, module layout, ports, enqueue-and-return
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [API.md](./API.md)
 - [INTERACTIONS.md](./INTERACTIONS.md)

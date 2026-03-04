@@ -1,5 +1,7 @@
 # Architecture
 
+Target layout and structural principles are detailed in [VISION.md](./VISION.md). This document focuses on current state and problem statement.
+
 ## Problem Statement
 
 - **Business problem:** Nebula needs an HTTP entry point for health checks, status, and webhooks. One process should serve API and webhook on one port (Docker/local simplicity).

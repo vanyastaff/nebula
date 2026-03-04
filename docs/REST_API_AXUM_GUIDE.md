@@ -11,6 +11,7 @@
 
 - [1. Архитектура проекта](#1-архитектура-проекта)
   - [1.1 API как точка входа в многокрейтовой платформе (n8n/Temporal-класс)](#11-api-как-точка-входа-в-многокрейтовой-платформе-n8ntemporal-класс)
+  - [1.2 Масштабирование структуры для больших проектов](#12-масштабирование-структуры-для-больших-проектов)
 - [2. Настройка Axum Router (Production-Grade)](#2-настройка-axum-router-production-grade)
 - [3. High-Load: Производительность и масштабирование](#3-high-load-производительность-и-масштабирование)
   - [3.1 Tokio Runtime — правильная настройка](#31-tokio-runtime--правильная-настройка)
@@ -161,6 +162,62 @@ API зависит только от **контрактов** (traits из `nebu
 - **INTERACTIONS:** API — downstream от webhook; engine, storage, workers — downstream от app; API получает в state уже собранные реализации портов.
 
 Соблюдение этого разделения позволяет масштабировать API горизонтально (несколько инстансов за балансировщиком), а выполнение — отдельно (пул workers, отдельные очереди), как в n8n и Temporal.
+
+### 1.2 Масштабирование структуры для больших проектов
+
+Для больших API (много доменов, команд, эндпоинтов) полезно усилить модульность и при необходимости ввести явные слои. Ниже — сжатые рекомендации по структуре и ссылки на актуальные материалы.
+
+#### Модульная маршрутизация: `create_routes()` и вложенные роутеры
+
+- **Единая точка сборки маршрутов:** функция `create_routes()` (или `router()`) в `routes/mod.rs`, которая собирает все роуты в один `Router`. В `main.rs` / `app.rs` остаётся только вызов этой функции и подключение state/layers.
+- **Подмодули по доменам:** каждый домен (users, workflows, runs, health) — отдельный модуль с собственным роутером, возвращающим `Router<AppState>`. В корне `routes` они объединяются через `.nest()`:
+  - `routes/users.rs` → `users_router()`, монтируется как `.nest("/users", users_router())`
+  - `routes/workflows.rs` → `workflows_router()`, `.nest("/workflows", workflows_router())`
+- **Handlers отдельно от роутов:** маршруты только «привязывают» путь и метод к handler’у; сами handler’ы лежат в `handlers/` (или внутри доменного модуля в `handlers/`), чтобы не раздувать файлы роутов и упростить тестирование.
+
+Так сохраняется один слой (Handler → Service/Port → Repository), но код масштабируется за счёт модулей и вложенных роутеров без монолитного `main.rs`.
+
+**Источники:** [Rust Step by Step — Organizing Routes and Handlers](https://www.ruststepbystep.com/create-scalable-axum-web-apps-by-organizing-routes-and-handlers/), [Leapcell — Building Modular Web APIs with Axum](https://leapcell.io/blog/building-modular-web-apis-with-axum-in-rust).
+
+#### Layered DDD для очень больших кодовых баз
+
+Когда доменная логика и сценарии усложняются, имеет смысл явно разделить слои по направлению зависимостей: **Domain → Application → Infrastructure → Presentation**.
+
+| Слой | Содержимое | Зависимости |
+|------|------------|-------------|
+| **Domain** | Сущности, value objects, агрегаты, доменные сервисы, контракты репозиториев (traits). | Без инфраструктуры и фреймворков. |
+| **Application** | Use cases: commands/queries, application-сервисы, оркестрация домена. | Только domain. |
+| **Infrastructure** | Реализации репозиториев (БД, кэш), внешние API, логирование, очереди. | Domain + при необходимости Application. |
+| **Presentation** | HTTP: роуты, handlers, DTO, маппинг ошибок в HTTP (в т.ч. RFC 9457). | Application (и опосредованно Domain). |
+
+В такой схеме API (Axum) живёт в Presentation (и частично в Infrastructure как «веб-сервер»). Handlers вызывают только application-сервисы или порты; бизнес-правила и переходы состояний остаются в Domain/Application. Это хорошо сочетается с подходом «API — тонкая точка входа» из раздела 1.1.
+
+**Источники:** [Leapcell — Crafting Maintainable Rust Web Apps with Layered DDD](https://leapcell.io/blog/crafting-maintainable-rust-web-apps-with-layered-ddd), [Building an API Server with Rust and DDD (Zenn)](https://zenn.dev/tattu/articles/rust-ddd-7353b79179-en).
+
+#### Практические правила при росте проекта
+
+- **Один модуль — одна зона ответственности:** не смешивать в одном файле роуты нескольких доменов, не держать бизнес-логику в handler’ах.
+- **Избегать избыточного `pub`:** делать публичным только то, что реально используется снаружи модуля; это упрощает рефакторинг и понимание границ.
+- **State и типы:** общий `AppState` (или разбитый по доменам) передаётся через `Router::with_state`; типы ошибок и DTO лучше держать в общих модулях (`errors`, `models`/`dto`), чтобы все слои использовали одни контракты.
+- **Тестируемость:** тонкие handlers и отдельные роутеры по доменам позволяют тестировать маршруты и handler’ы по отдельности; application/domain слои тестировать без HTTP.
+
+Эти приёмы дополняют уже описанную в гайде схему Handler → Service → Repository и порты (traits), делая структуру предсказуемой при росте числа эндпоинтов и доменов.
+
+#### Nest vs Merge в Axum
+
+- **`nest("/prefix", router)`** — подмешивает роутер под префикс пути; префикс «съедается» до передачи во вложенные роуты. Идеально для иерархии вида `/api/v1/users`, `/api/v1/workflows`. В корень (`/`) вложить нельзя — для объединения без префикса используется `merge`.
+- **`merge(router)`** — объединяет два роутера без изменения путей: все маршруты обоих сохраняют свои пути. Удобно для сборки из независимых модулей (health, users, workflows) на одном уровне. Важно: только у одного из объединяемых роутеров может быть `fallback` — иначе возможна паника при сборке.
+
+**Источник:** [Axum routing: nest](https://github.com/tokio-rs/axum/blob/main/axum/src/docs/routing/nest.md), [Axum routing: merge](https://github.com/tokio-rs/axum/blob/main/axum/src/docs/routing/merge.md).
+
+#### Дополнительные источники (интернет)
+
+| Тема | Источник | Что полезного |
+|------|----------|----------------|
+| Структура Rust web-сервисов, workspaces, чистая архитектура | [LogRocket — The best way to structure Rust web services](https://blog.logrocket.com/best-way-structure-rust-web-services/) | Cargo workspaces (api/domain/infrastructure/shared), видимость `pub`/`pub(crate)`, антипаттерны (god modules, циклические зависимости), Axum: централизованный `AppError`, `.nest()` и `.layer()`. |
+| Production-ready REST API на Axum | [OneUptime — How to Build Production-Ready REST APIs in Rust with Axum](https://oneuptime.com/blog/post/2026-01-07-rust-axum-rest-api/view) | Структура папок (routes, handlers, models, middleware, error, state), рекомендуемый набор зависимостей (tower-http, validator, tracing, graceful shutdown). |
+| Структура проекта Axum | [Learning Angarsa — Rust Axum Project Structuring](https://learning.angarsa.com/rust-axum/project-structuring/) | Модульная разбивка, единая точка входа модулей (`mod.rs`), фокус файлов. |
+| Hexagonal (Ports & Adapters) в Rust | [Medium — Hexagonal architecture in Rust](https://medium.com/@lucorset/hexagonal-architecture-in-rust-72f8958eb26d), [Cogs and Levers — Hexagonal Architecture in Rust](http://tuttlem.github.io/2025/08/31/hexagonal-architecture-in-rust.html) | Порты как traits, ядро без зависимостей от фреймворка/БД, driving/driven адаптеры; разнесение по крейтам (core, adapters, http). |
 
 ---
 
