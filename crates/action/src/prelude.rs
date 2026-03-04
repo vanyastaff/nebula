@@ -13,7 +13,7 @@ pub use crate::components::ActionComponents;
 pub use crate::context::{ActionContext, Context, TriggerContext};
 pub use crate::error::ActionError;
 pub use crate::execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
-pub use crate::metadata::ActionMetadata;
+pub use crate::metadata::{ActionMetadata, MetadataCompatibilityError};
 pub use crate::output::{
     ActionOutput, DeferredOutput, ExpectedOutput, Producer, ProducerKind, Progress, Resolution,
     StreamMode, StreamOutput,

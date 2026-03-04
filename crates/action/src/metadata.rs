@@ -4,6 +4,36 @@ use nebula_parameter::collection::ParameterCollection;
 // Re-export from core so downstream code can continue using `nebula_action::InterfaceVersion`.
 pub use nebula_core::InterfaceVersion;
 
+/// Compatibility validation errors for metadata evolution.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MetadataCompatibilityError {
+    /// Action key changed across versions.
+    #[error("action key changed from `{previous}` to `{current}`")]
+    KeyChanged {
+        /// Previous key.
+        previous: String,
+        /// Current key.
+        current: String,
+    },
+    /// Interface version regressed.
+    #[error(
+        "interface version regressed from {previous_major}.{previous_minor} to {current_major}.{current_minor}"
+    )]
+    VersionRegressed {
+        /// Previous major.
+        previous_major: u32,
+        /// Previous minor.
+        previous_minor: u32,
+        /// Current major.
+        current_major: u32,
+        /// Current minor.
+        current_minor: u32,
+    },
+    /// Breaking schema change without a major version bump.
+    #[error("breaking metadata change detected without major version bump")]
+    BreakingChangeWithoutMajorBump,
+}
+
 /// Static metadata describing an action type.
 ///
 /// Used by the engine for action discovery, capability checks, schema
@@ -68,6 +98,45 @@ impl ActionMetadata {
     pub fn with_parameters(mut self, parameters: ParameterCollection) -> Self {
         self.parameters = parameters;
         self
+    }
+
+    /// Validate that this metadata update is version-compatible with `previous`.
+    ///
+    /// Rules:
+    /// - `key` is immutable across versions.
+    /// - Interface version cannot go backwards.
+    /// - If input/output/parameter schema changed, major must increase.
+    pub fn validate_compatibility(
+        &self,
+        previous: &Self,
+    ) -> Result<(), MetadataCompatibilityError> {
+        if self.key != previous.key {
+            return Err(MetadataCompatibilityError::KeyChanged {
+                previous: previous.key.clone(),
+                current: self.key.clone(),
+            });
+        }
+
+        let regressed = self.version.major < previous.version.major
+            || (self.version.major == previous.version.major
+                && self.version.minor < previous.version.minor);
+        if regressed {
+            return Err(MetadataCompatibilityError::VersionRegressed {
+                previous_major: previous.version.major,
+                previous_minor: previous.version.minor,
+                current_major: self.version.major,
+                current_minor: self.version.minor,
+            });
+        }
+
+        let schema_changed = self.inputs != previous.inputs
+            || self.outputs != previous.outputs
+            || self.parameters != previous.parameters;
+        if schema_changed && self.version.major == previous.version.major {
+            return Err(MetadataCompatibilityError::BreakingChangeWithoutMajorBump);
+        }
+
+        Ok(())
     }
 }
 
@@ -193,5 +262,54 @@ mod tests {
         assert_eq!(meta.version, InterfaceVersion::new(2, 0));
         assert_eq!(meta.inputs.len(), 1);
         assert_eq!(meta.outputs.len(), 2);
+    }
+
+    #[test]
+    fn schema_change_requires_major_bump() {
+        let prev = ActionMetadata::new("http.request", "HTTP Request", "desc")
+            .with_version(1, 0)
+            .with_outputs(vec![OutputPort::flow("out")]);
+        let next = ActionMetadata::new("http.request", "HTTP Request", "desc")
+            .with_version(1, 1)
+            .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")]);
+
+        let err = next.validate_compatibility(&prev).unwrap_err();
+        assert_eq!(
+            err,
+            MetadataCompatibilityError::BreakingChangeWithoutMajorBump
+        );
+    }
+
+    #[test]
+    fn schema_change_with_major_bump_is_valid() {
+        let prev = ActionMetadata::new("http.request", "HTTP Request", "desc")
+            .with_version(1, 0)
+            .with_outputs(vec![OutputPort::flow("out")]);
+        let next = ActionMetadata::new("http.request", "HTTP Request", "desc")
+            .with_version(2, 0)
+            .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")]);
+
+        assert!(next.validate_compatibility(&prev).is_ok());
+    }
+
+    #[test]
+    fn key_change_is_rejected() {
+        let prev = ActionMetadata::new("a.one", "A", "desc").with_version(1, 0);
+        let next = ActionMetadata::new("a.two", "A", "desc").with_version(2, 0);
+
+        let err = next.validate_compatibility(&prev).unwrap_err();
+        assert!(matches!(err, MetadataCompatibilityError::KeyChanged { .. }));
+    }
+
+    #[test]
+    fn version_regression_is_rejected() {
+        let prev = ActionMetadata::new("a.one", "A", "desc").with_version(2, 1);
+        let next = ActionMetadata::new("a.one", "A", "desc").with_version(2, 0);
+
+        let err = next.validate_compatibility(&prev).unwrap_err();
+        assert!(matches!(
+            err,
+            MetadataCompatibilityError::VersionRegressed { .. }
+        ));
     }
 }
