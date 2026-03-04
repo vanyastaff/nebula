@@ -40,6 +40,8 @@ See [credential POSTGRES_STORAGE_SPEC](../credential/POSTGRES_STORAGE_SPEC.md) a
 - **Auth contract:** `POST /auth/oauth/start` + `POST /auth/oauth/callback` — GitHub OAuth flow with deep-link redirect to `nebula://auth/callback`
 - **Token usage:** All authenticated routes require `Authorization: Bearer <access_token>` from the OAuth callback response
 - **Auth boundary:** API validates bearer token against tokens issued by `/auth/oauth/callback`; invalid/missing token returns `401 { error, message }`
+- **M2M contract:** API also accepts `X-API-Key` (keys configured in `NEBULA_API_KEYS`) for machine-to-machine calls
+- **Rate limit contract:** protected routes return `429` with `Retry-After` when request budget is exceeded
 - **Phase 2 contract:** Full workflow CRUD + execution trigger (see `docs/apps/desktop/INTEGRATION.md`)
 - **Phase 3 contract:** Run list, run detail, real-time log streaming via WebSocket (`GET /runs/:id/logs`)
 - **Error shape:** `{ "error": "error_code", "message": "Human readable" }` on all non-2xx responses
@@ -117,3 +119,4 @@ All subsequent requests: Authorization: Bearer <accessToken>
 - [ ] POST /auth/oauth/start returns 200 + `{ authUrl }`
 - [ ] POST /auth/oauth/callback returns 200 + `{ accessToken, user }`
 - [x] Unauthenticated request to protected route returns 401 with `{ error, message }`
+- [x] Rate-limited request to protected route returns 429 with `Retry-After`

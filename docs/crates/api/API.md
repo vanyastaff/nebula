@@ -32,6 +32,18 @@
 | POST | /auth/oauth/callback | Exchange code; body `{ provider, code, redirectUri }`; returns `{ accessToken, user }` |
 | GET | /api/v1/auth/me | Protected probe endpoint; requires `Authorization: Bearer <token>` |
 
+### Protected Route Security Contract
+
+- Accepts either:
+  - `Authorization: Bearer <access_token>` where token was issued by `/auth/oauth/callback`
+  - `X-API-Key: <key>` where key is configured in `NEBULA_API_KEYS` (comma-separated)
+- Missing/invalid auth returns `401` with shape:
+  - `{ "error": "error_code", "message": "Human readable" }`
+- Protected routes are rate-limited:
+  - default: 120 requests / 60 seconds per auth principal + path
+  - configurable via `NEBULA_RATE_LIMIT_MAX_REQUESTS` and `NEBULA_RATE_LIMIT_WINDOW_SECONDS`
+  - on limit breach returns `429` with `Retry-After` header
+
 #### Workflows *(Phase 2)*
 
 | Method | Path | Description |

@@ -3,13 +3,17 @@
 use axum::{
     Json, Router,
     extract::{FromRef, FromRequestParts, Query, State},
-    http::{StatusCode, header, request::Parts},
+    http::{HeaderValue, StatusCode, header, request::Parts},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Instant,
+};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
@@ -50,6 +54,12 @@ pub struct ApiState {
     pub github_oauth: Option<GithubOAuthConfig>,
     /// Access tokens issued by `/auth/oauth/callback`.
     pub access_tokens: Arc<RwLock<HashMap<String, IssuedAccessToken>>>,
+    /// API keys for machine-to-machine auth (`X-API-Key`).
+    pub api_keys: Arc<HashSet<String>>,
+    /// Sliding window counters for protected route rate limiting.
+    pub rate_limits: Arc<RwLock<HashMap<String, RateLimitEntry>>>,
+    /// Rate limit config for protected routes.
+    pub rate_limit_config: RateLimitConfig,
 }
 
 impl ApiState {
@@ -62,8 +72,22 @@ impl ApiState {
             http_client: Client::new(),
             github_oauth: GithubOAuthConfig::from_env(),
             access_tokens: Arc::new(RwLock::new(HashMap::new())),
+            api_keys: Arc::new(load_api_keys()),
+            rate_limits: Arc::new(RwLock::new(HashMap::new())),
+            rate_limit_config: RateLimitConfig::from_env(),
         }
     }
+}
+
+fn load_api_keys() -> HashSet<String> {
+    std::env::var("NEBULA_API_KEYS")
+        .ok()
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +143,35 @@ pub struct AuthPrincipal {
     user: Option<OAuthUserProfile>,
 }
 
+#[derive(Debug, Clone)]
+pub struct RateLimitConfig {
+    window_seconds: u64,
+    max_requests: u32,
+}
+
+impl RateLimitConfig {
+    fn from_env() -> Self {
+        let window_seconds = std::env::var("NEBULA_RATE_LIMIT_WINDOW_SECONDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60);
+        let max_requests = std::env::var("NEBULA_RATE_LIMIT_MAX_REQUESTS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(120);
+        Self {
+            window_seconds: window_seconds.max(1),
+            max_requests: max_requests.max(1),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RateLimitEntry {
+    window_started_at: Instant,
+    request_count: u32,
+}
+
 /// Response for `GET /api/v1/status`.
 #[derive(Debug, Serialize)]
 pub struct StatusResponse {
@@ -151,6 +204,49 @@ fn unauthorized_json(error: &str, message: &str) -> Response {
         .into_response()
 }
 
+fn too_many_requests_json(retry_after_seconds: u64) -> Response {
+    let mut response = (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(serde_json::json!({
+            "error": "rate_limited",
+            "message": "too many requests",
+        })),
+    )
+        .into_response();
+    if let Ok(v) = HeaderValue::from_str(&retry_after_seconds.to_string()) {
+        response.headers_mut().insert(header::RETRY_AFTER, v);
+    }
+    response
+}
+
+async fn check_rate_limit(state: &ApiState, key: &str) -> Option<u64> {
+    let window_seconds = state.rate_limit_config.window_seconds;
+    let max_requests = state.rate_limit_config.max_requests;
+    let now = Instant::now();
+
+    let mut limits = state.rate_limits.write().await;
+    limits.retain(|_, entry| entry.window_started_at.elapsed().as_secs() <= window_seconds);
+
+    let entry = limits.entry(key.to_string()).or_insert(RateLimitEntry {
+        window_started_at: now,
+        request_count: 0,
+    });
+
+    let elapsed = entry.window_started_at.elapsed().as_secs();
+    if elapsed >= window_seconds {
+        entry.window_started_at = now;
+        entry.request_count = 0;
+    }
+
+    if entry.request_count >= max_requests {
+        let remaining = window_seconds.saturating_sub(entry.window_started_at.elapsed().as_secs());
+        return Some(remaining.max(1));
+    }
+
+    entry.request_count += 1;
+    None
+}
+
 pub struct Authenticated(pub AuthPrincipal);
 
 impl<S> FromRequestParts<S> for Authenticated
@@ -162,36 +258,28 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let state = ApiState::from_ref(state);
+        let principal = if let Some(header_value) = parts.headers.get(header::AUTHORIZATION) {
+            let Ok(raw) = header_value.to_str() else {
+                return Err(unauthorized_json(
+                    "invalid_authorization_header",
+                    "authorization header is invalid",
+                ));
+            };
 
-        let Some(header_value) = parts.headers.get(header::AUTHORIZATION) else {
-            return Err(unauthorized_json(
-                "missing_bearer_token",
-                "Authorization: Bearer <token> is required",
-            ));
-        };
+            let Some(token) = raw.strip_prefix("Bearer ").map(str::trim) else {
+                return Err(unauthorized_json(
+                    "invalid_authorization_scheme",
+                    "authorization scheme must be Bearer",
+                ));
+            };
 
-        let Ok(raw) = header_value.to_str() else {
-            return Err(unauthorized_json(
-                "invalid_authorization_header",
-                "authorization header is invalid",
-            ));
-        };
+            if token.is_empty() {
+                return Err(unauthorized_json(
+                    "invalid_bearer_token",
+                    "bearer token must not be empty",
+                ));
+            }
 
-        let Some(token) = raw.strip_prefix("Bearer ").map(str::trim) else {
-            return Err(unauthorized_json(
-                "invalid_authorization_scheme",
-                "authorization scheme must be Bearer",
-            ));
-        };
-
-        if token.is_empty() {
-            return Err(unauthorized_json(
-                "invalid_bearer_token",
-                "bearer token must not be empty",
-            ));
-        }
-
-        let principal = {
             let mut tokens = state.access_tokens.write().await;
             tokens.retain(|_, record| record.issued_at.elapsed().as_secs() <= record.expires_in);
             let Some(record) = tokens.get(token).cloned() else {
@@ -205,7 +293,38 @@ where
                 access_token: token.to_string(),
                 user: record.user,
             }
+        } else if let Some(api_key_header) = parts.headers.get("x-api-key") {
+            let Ok(api_key) = api_key_header.to_str() else {
+                return Err(unauthorized_json("invalid_api_key", "x-api-key is invalid"));
+            };
+
+            if api_key.trim().is_empty() {
+                return Err(unauthorized_json(
+                    "invalid_api_key",
+                    "x-api-key must not be empty",
+                ));
+            }
+
+            if !state.api_keys.contains(api_key) {
+                return Err(unauthorized_json("invalid_api_key", "x-api-key is invalid"));
+            }
+
+            AuthPrincipal {
+                provider: "api_key".to_string(),
+                access_token: "[api_key]".to_string(),
+                user: None,
+            }
+        } else {
+            return Err(unauthorized_json(
+                "missing_authentication",
+                "provide Authorization: Bearer <token> or X-API-Key",
+            ));
         };
+
+        let rate_key = format!("{}:{}", principal.provider, parts.uri.path());
+        if let Some(retry_after) = check_rate_limit(&state, &rate_key).await {
+            return Err(too_many_requests_json(retry_after));
+        }
 
         Ok(Self(principal))
     }
