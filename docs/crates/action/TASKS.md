@@ -79,7 +79,7 @@
 - [x] ACT-T024 [P] Publish end-to-end example: stateless action with runtime
 - [x] ACT-T025 [P] Publish end-to-end example: stateful action with state management
 - [x] ACT-T026 [P] Publish end-to-end example: trigger action (webhook)
-- [ ] ACT-T027 Define error-to-retry mapping patterns and document recommended conventions
+- [x] ACT-T027 Define error-to-retry mapping patterns and document recommended conventions
 - [ ] ACT-T028 Implement ergonomic authoring layer (dx/authoring module) with common action patterns
 - [ ] ACT-T029 Document runtime and sandbox integration end-to-end
 
