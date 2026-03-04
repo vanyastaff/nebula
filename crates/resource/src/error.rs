@@ -9,6 +9,17 @@ use thiserror::Error;
 /// Result type for resource operations
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// High-level error category used by callers (`action`, `runtime`) to decide policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCategory {
+    /// Temporary failure that may succeed when retried.
+    Retryable,
+    /// Permanent failure for the current operation.
+    Fatal,
+    /// Input/contract/config validation failure.
+    Validation,
+}
+
 /// A single field validation failure.
 #[derive(Debug, Clone)]
 pub struct FieldViolation {
@@ -237,6 +248,31 @@ impl Error {
             Self::CircuitBreakerOpen { .. } => true,
             _ => false,
         }
+    }
+
+    /// Classify the error into a stable, policy-friendly category.
+    ///
+    /// `Configuration` and `Validation` are treated as `Validation`.
+    /// Other errors are classified by retryability.
+    #[must_use]
+    pub fn category(&self) -> ErrorCategory {
+        match self {
+            Self::Configuration { .. } | Self::Validation { .. } => ErrorCategory::Validation,
+            _ if self.is_retryable() => ErrorCategory::Retryable,
+            _ => ErrorCategory::Fatal,
+        }
+    }
+
+    /// Check if this error is a validation failure.
+    #[must_use]
+    pub fn is_validation(&self) -> bool {
+        self.category() == ErrorCategory::Validation
+    }
+
+    /// Check if this error is fatal (non-retryable, non-validation).
+    #[must_use]
+    pub fn is_fatal(&self) -> bool {
+        self.category() == ErrorCategory::Fatal
     }
 
     /// Get the resource key associated with this error (if any).
@@ -480,5 +516,41 @@ mod tests {
         };
         assert!(err.to_string().contains("pg"));
         assert!(err.to_string().contains("5/5"));
+    }
+
+    #[test]
+    fn category_validation_for_configuration_and_validation_errors() {
+        let cfg = Error::configuration("bad config");
+        assert_eq!(cfg.category(), ErrorCategory::Validation);
+        assert!(cfg.is_validation());
+
+        let validation = Error::validation(vec![FieldViolation::new("x", "required", "")]);
+        assert_eq!(validation.category(), ErrorCategory::Validation);
+        assert!(validation.is_validation());
+    }
+
+    #[test]
+    fn category_retryable_for_retryable_errors() {
+        let key = ResourceKey::try_from("retryable").expect("valid resource key");
+        let err = Error::PoolExhausted {
+            resource_key: key,
+            current_size: 2,
+            max_size: 2,
+            waiters: 1,
+        };
+        assert_eq!(err.category(), ErrorCategory::Retryable);
+        assert!(!err.is_fatal());
+    }
+
+    #[test]
+    fn category_fatal_for_non_retryable_operational_errors() {
+        let key = ResourceKey::try_from("fatal").expect("valid resource key");
+        let err = Error::Unavailable {
+            resource_key: key,
+            reason: "missing registration".into(),
+            retryable: false,
+        };
+        assert_eq!(err.category(), ErrorCategory::Fatal);
+        assert!(err.is_fatal());
     }
 }

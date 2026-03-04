@@ -77,14 +77,14 @@ pub mod metrics;
 pub mod pool;
 pub mod quarantine;
 
+pub use components::{HasResourceComponents, ResourceComponents, TypedCredentialHandler};
 pub use context::{Context, ResourcePoolHandle};
-pub use error::{Error, FieldViolation, Result};
+pub use error::{Error, ErrorCategory, FieldViolation, Result};
 pub use guard::Guard;
 pub use instrumented::InstrumentedGuard;
 pub use lifecycle::Lifecycle;
 pub use metadata::{ResourceCategory, ResourceMetadata, ResourceMetadataBuilder};
 pub use reference::{ErasedResourceRef, ResourceProvider, ResourceRef};
-pub use components::{HasResourceComponents, ResourceComponents, TypedCredentialHandler};
 pub use resource::{Config, Resource};
 pub use scope::{Scope, Strategy};
 // Re-export execution trace types from telemetry for compatibility.
@@ -123,13 +123,13 @@ pub use nebula_core::{ExecutionId, PluginKey, ResourceId, ResourceKey, WorkflowI
 /// use nebula_resource::prelude::*;
 /// ```
 pub mod prelude {
+    pub use crate::components::{HasResourceComponents, ResourceComponents};
     pub use crate::context::Context;
-    pub use crate::error::{Error, Result};
+    pub use crate::error::{Error, ErrorCategory, Result};
     pub use crate::guard::Guard;
     pub use crate::lifecycle::Lifecycle;
     pub use crate::metadata::ResourceMetadata;
     pub use crate::reference::{ErasedResourceRef, ResourceProvider, ResourceRef};
-    pub use crate::components::{HasResourceComponents, ResourceComponents};
     pub use crate::resource::{Config, Resource};
     pub use crate::scope::{Scope, Strategy};
 

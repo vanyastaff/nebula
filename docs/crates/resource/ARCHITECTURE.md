@@ -84,6 +84,10 @@ shutdown:
   - no acquire bypasses scope + quarantine + health checks.
   - no dropped guard leaks permits or instances.
   - failed register/reload cannot leave dependency graph in dirty state.
+  - **deny-by-default scope invariant**:
+    - if parent-chain information is missing or mismatched, containment is denied.
+    - `Scope::contains` must return `false` for ambiguous ancestry (`None` child parent where parent scope is known).
+    - manager acquire path treats all scope mismatch as non-retryable (`Error::Unavailable { retryable: false }`).
 
 ## Design Reasoning
 

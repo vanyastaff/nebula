@@ -13,13 +13,13 @@
 
 **Goal**: Finalize cross-crate contracts; formalize error taxonomy; lock scope invariants.
 
-- [ ] RSC-T001 Finalize INTERACTIONS.md — map every integration point with action/runtime/credential to actual code
-- [ ] RSC-T002 [P] Update API.md — annotate every public item with stability guarantee
-- [ ] RSC-T003 [P] Update MIGRATION.md — document breaking change policy and migration path for consumers
-- [ ] RSC-T004 Define error handling taxonomy in `src/error.rs`: retryable, fatal, validation categories
-- [ ] RSC-T005 [P] Lock scope invariants — document deny-by-default behavior in ARCHITECTURE.md
-- [ ] RSC-T006 [P] Add integration contract tests with nebula-action in `tests/action_integration.rs`
-- [ ] RSC-T007 Add integration contract tests with nebula-runtime in `tests/runtime_integration.rs`
+- [x] RSC-T001 Finalize INTERACTIONS.md — map every integration point with action/runtime/credential to actual code
+- [x] RSC-T002 [P] Update API.md — annotate every public item with stability guarantee
+- [x] RSC-T003 [P] Update MIGRATION.md — document breaking change policy and migration path for consumers
+- [x] RSC-T004 Define error handling taxonomy in `src/error.rs`: retryable, fatal, validation categories
+- [x] RSC-T005 [P] Lock scope invariants — document deny-by-default behavior in ARCHITECTURE.md
+- [x] RSC-T006 [P] Add integration contract tests with nebula-action in `tests/action_integration.rs`
+- [x] RSC-T007 Add integration contract tests with nebula-runtime in `tests/runtime_integration.rs`
 
 **Checkpoint**: Contract docs match implementation; error taxonomy documented; scope invariants locked and tested.
 

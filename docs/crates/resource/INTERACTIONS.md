@@ -66,6 +66,21 @@
 | resource <-> telemetry/log | out | hooks/events/metrics stream | async | observability errors never block acquire | additive layer |
 | resource <-> nebula-api | out | `list_status()`, `event_bus().subscribe()` | sync/async | api reads snapshot; errors return 503 | read-only; Phase 2 |
 
+## Code-Level Contract Map
+
+- `resource -> action` (acquire contract):
+  - `Manager::acquire` in `crates/resource/src/manager.rs`
+  - `ResourceProvider` in `crates/resource/src/reference.rs`
+  - contract tests: `crates/resource/tests/action_integration.rs`
+- `resource -> runtime` (shutdown + health + quarantine):
+  - `Manager::shutdown`, `Manager::shutdown_scope`, `Manager::set_health_state` in `crates/resource/src/manager.rs`
+  - `QuarantineManager` in `crates/resource/src/quarantine.rs`
+  - contract tests: `crates/resource/tests/runtime_integration.rs`
+- `resource -> credential` (rotation dispatch):
+  - `Manager::register_with_components` and `Manager::spawn_rotation_listener` in `crates/resource/src/manager.rs`
+  - pool rotation handler in `crates/resource/src/pool.rs`
+  - integration tests: `crates/resource/tests/credential_integration.rs`
+
 ## Runtime Sequence
 
 1. Runtime builds manager and registers resources (scoped where needed).
