@@ -6,13 +6,11 @@ use serde::Serialize;
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tokio::sync::RwLock;
 
-use crate::{config, models::WorkerStatus};
+use crate::config;
 
 /// Shared state for API handlers.
 #[derive(Clone)]
 pub struct ApiState {
-    /// Snapshot of node workers (e.g. 4 workers).
-    pub(crate) workers: Vec<WorkerStatus>,
     /// Pending OAuth state values (state -> callback metadata).
     pub(crate) oauth_pending: Arc<RwLock<HashMap<String, PendingOAuthState>>>,
     /// Shared HTTP client used for OAuth token exchange.
@@ -35,9 +33,8 @@ pub struct ApiState {
 
 impl ApiState {
     /// Build API state from environment.
-    pub fn new(workers: Vec<WorkerStatus>) -> Self {
+    pub fn new() -> Self {
         Self {
-            workers,
             oauth_pending: Arc::new(RwLock::new(HashMap::new())),
             http_client: Client::new(),
             github_oauth: config::load_github_oauth_config(),

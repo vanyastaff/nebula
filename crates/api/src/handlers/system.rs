@@ -15,8 +15,9 @@ pub(crate) async fn ready() -> impl IntoResponse {
 
 pub(crate) async fn status(State(state): State<ApiState>) -> impl IntoResponse {
     debug!("GET /api/v1/status");
+    let _ = state;
     let response = StatusResponse {
-        workers: state.workers.clone(),
+        status: "ok".to_string(),
     };
     Json(response)
 }

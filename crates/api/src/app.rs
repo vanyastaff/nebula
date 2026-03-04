@@ -3,7 +3,7 @@
 use axum::Router;
 use thiserror::Error;
 
-use crate::{models::WorkerStatus, routes, state::ApiState};
+use crate::{routes, state::ApiState};
 
 /// Configuration for the API server.
 #[derive(Debug, Clone)]
@@ -38,8 +38,8 @@ impl ApiServer {
     }
 
     /// Build the API app for this server.
-    pub fn app(&self, workers: Vec<WorkerStatus>) -> Router {
-        crate::app(workers)
+    pub fn app(&self) -> Router {
+        crate::app()
     }
 }
 

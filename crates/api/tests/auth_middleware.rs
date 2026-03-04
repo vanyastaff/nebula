@@ -2,19 +2,11 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
-use nebula_api::{WorkerStatus, api_only_app};
+use nebula_api::api_only_app;
 use tower::ServiceExt;
 
-fn test_workers() -> Vec<WorkerStatus> {
-    vec![WorkerStatus {
-        id: "wrk-1".to_string(),
-        status: "idle".to_string(),
-        queue_len: 0,
-    }]
-}
-
 async fn build_app() -> axum::Router {
-    api_only_app(test_workers())
+    api_only_app()
 }
 
 #[tokio::test]

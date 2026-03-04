@@ -3,20 +3,12 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
-use nebula_api::{ApiState, WorkerStatus, api_only_app_with_state};
+use nebula_api::{ApiState, api_only_app_with_state};
 use nebula_core::WorkflowId;
 use nebula_ports::{PortsError, WorkflowRepo};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use tower::ServiceExt;
-
-fn test_workers() -> Vec<WorkerStatus> {
-    vec![WorkerStatus {
-        id: "wrk-1".to_string(),
-        status: "idle".to_string(),
-        queue_len: 0,
-    }]
-}
 
 #[derive(Default)]
 struct InMemoryWorkflowRepo {
@@ -80,7 +72,7 @@ impl WorkflowRepo for InMemoryWorkflowRepo {
 }
 
 async fn build_app(repo: Option<Arc<dyn WorkflowRepo>>) -> axum::Router {
-    let mut state = ApiState::new(test_workers());
+    let mut state = ApiState::new();
     if let Some(workflow_repo) = repo {
         state = state.with_workflow_repo(workflow_repo);
     }
