@@ -35,6 +35,14 @@ pub fn app(webhook_server: Arc<WebhookServer>, workers: Vec<WorkerStatus>) -> Ro
         .merge(webhook_server.router())
 }
 
+/// Build API-only application (without merging webhook routes).
+///
+/// Useful for focused API tests that should not depend on webhook route shape.
+pub fn api_only_app(webhook_server: Arc<WebhookServer>, workers: Vec<WorkerStatus>) -> Router {
+    let state = server::ApiState::new(webhook_server.clone(), workers);
+    server::api_router().with_state(state)
+}
+
 /// Run the unified API server (4 workers + webhook) on the given listener.
 ///
 /// Uses fixed snapshot of 4 workers for status; replace with dynamic pool later if needed.

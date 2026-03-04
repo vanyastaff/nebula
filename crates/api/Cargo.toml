@@ -27,3 +27,4 @@ url = { workspace = true }
 reqwest = { workspace = true, default-features = false, features = ["json", "rustls"] }
 
 [dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

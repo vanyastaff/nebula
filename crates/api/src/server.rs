@@ -2,9 +2,9 @@
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Redirect},
+    extract::{FromRef, FromRequestParts, Query, State},
+    http::{StatusCode, header, request::Parts},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use reqwest::Client;
@@ -48,6 +48,8 @@ pub struct ApiState {
     pub http_client: Client,
     /// GitHub OAuth configuration (enabled when env vars are present).
     pub github_oauth: Option<GithubOAuthConfig>,
+    /// Access tokens issued by `/auth/oauth/callback`.
+    pub access_tokens: Arc<RwLock<HashMap<String, IssuedAccessToken>>>,
 }
 
 impl ApiState {
@@ -59,6 +61,7 @@ impl ApiState {
             oauth_pending: Arc::new(RwLock::new(HashMap::new())),
             http_client: Client::new(),
             github_oauth: GithubOAuthConfig::from_env(),
+            access_tokens: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -99,6 +102,23 @@ pub struct PendingOAuthState {
     created_at: Instant,
 }
 
+#[derive(Debug, Clone)]
+pub struct IssuedAccessToken {
+    provider: String,
+    issued_at: Instant,
+    expires_in: u64,
+    user: Option<OAuthUserProfile>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthPrincipal {
+    provider: String,
+    access_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<OAuthUserProfile>,
+}
+
 /// Response for `GET /api/v1/status`.
 #[derive(Debug, Serialize)]
 pub struct StatusResponse {
@@ -116,7 +136,124 @@ pub fn api_router() -> Router<ApiState> {
         .route("/auth/oauth/start", post(oauth_start))
         .route("/auth/oauth/callback", post(oauth_callback))
         .route("/auth/github/callback", get(github_callback))
+        .route("/api/v1/auth/me", get(auth_me))
         .layer(api_cors_layer())
+}
+
+fn unauthorized_json(error: &str, message: &str) -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({
+            "error": error,
+            "message": message
+        })),
+    )
+        .into_response()
+}
+
+pub struct Authenticated(pub AuthPrincipal);
+
+impl<S> FromRequestParts<S> for Authenticated
+where
+    ApiState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let state = ApiState::from_ref(state);
+
+        let Some(header_value) = parts.headers.get(header::AUTHORIZATION) else {
+            return Err(unauthorized_json(
+                "missing_bearer_token",
+                "Authorization: Bearer <token> is required",
+            ));
+        };
+
+        let Ok(raw) = header_value.to_str() else {
+            return Err(unauthorized_json(
+                "invalid_authorization_header",
+                "authorization header is invalid",
+            ));
+        };
+
+        let Some(token) = raw.strip_prefix("Bearer ").map(str::trim) else {
+            return Err(unauthorized_json(
+                "invalid_authorization_scheme",
+                "authorization scheme must be Bearer",
+            ));
+        };
+
+        if token.is_empty() {
+            return Err(unauthorized_json(
+                "invalid_bearer_token",
+                "bearer token must not be empty",
+            ));
+        }
+
+        let principal = {
+            let mut tokens = state.access_tokens.write().await;
+            tokens.retain(|_, record| record.issued_at.elapsed().as_secs() <= record.expires_in);
+            let Some(record) = tokens.get(token).cloned() else {
+                return Err(unauthorized_json(
+                    "invalid_token",
+                    "token is unknown, expired, or revoked",
+                ));
+            };
+            AuthPrincipal {
+                provider: record.provider,
+                access_token: token.to_string(),
+                user: record.user,
+            }
+        };
+
+        Ok(Self(principal))
+    }
+}
+
+async fn auth_me(Authenticated(principal): Authenticated) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "provider": principal.provider,
+            "accessToken": principal.access_token,
+            "user": principal.user
+        })),
+    )
+}
+
+async fn issue_access_token(
+    state: &ApiState,
+    provider: &str,
+    access_token: String,
+    token_type: String,
+    expires_in: u64,
+    user: Option<OAuthUserProfile>,
+) -> Response {
+    {
+        let mut tokens = state.access_tokens.write().await;
+        tokens.insert(
+            access_token.clone(),
+            IssuedAccessToken {
+                provider: provider.to_string(),
+                issued_at: Instant::now(),
+                expires_in,
+                user: user.clone(),
+            },
+        );
+        tokens.retain(|_, record| record.issued_at.elapsed().as_secs() <= record.expires_in);
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!(OAuthCallbackResponse {
+            access_token,
+            token_type,
+            expires_in,
+            user
+        })),
+    )
+        .into_response()
 }
 
 fn api_cors_layer() -> CorsLayer {
@@ -541,16 +678,8 @@ async fn oauth_callback(
     if provider == "github" {
         if is_mock_oauth_enabled() && req.code.starts_with("mock_") {
             let token = format!("mock_token_{}_{}", provider, Uuid::new_v4());
-            return (
-                StatusCode::OK,
-                Json(serde_json::json!(OAuthCallbackResponse {
-                    access_token: token,
-                    token_type: "Bearer".to_string(),
-                    expires_in: 3600,
-                    user: None
-                })),
-            )
-                .into_response();
+            return issue_access_token(&state, &provider, token, "Bearer".to_string(), 3600, None)
+                .await;
         }
 
         let Some(github) = state.github_oauth.as_ref() else {
@@ -646,30 +775,21 @@ async fn oauth_callback(
             .await
             .ok();
 
-        return (
-            StatusCode::OK,
-            Json(serde_json::json!(OAuthCallbackResponse {
-                access_token,
-                token_type: payload.token_type.unwrap_or_else(|| "Bearer".to_string()),
-                expires_in: 3600,
-                user: user_profile
-            })),
+        return issue_access_token(
+            &state,
+            &provider,
+            access_token,
+            payload.token_type.unwrap_or_else(|| "Bearer".to_string()),
+            3600,
+            user_profile,
         )
-            .into_response();
+        .await;
     }
 
     if is_mock_oauth_enabled() && req.code.starts_with("mock_") {
         let token = format!("mock_token_{}_{}", provider, Uuid::new_v4());
-        return (
-            StatusCode::OK,
-            Json(serde_json::json!(OAuthCallbackResponse {
-                access_token: token,
-                token_type: "Bearer".to_string(),
-                expires_in: 3600,
-                user: None
-            })),
-        )
-            .into_response();
+        return issue_access_token(&state, &provider, token, "Bearer".to_string(), 3600, None)
+            .await;
     }
 
     (

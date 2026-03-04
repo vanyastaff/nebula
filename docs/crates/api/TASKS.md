@@ -45,11 +45,11 @@
 
 **Goal**: Protected routes; production-ready for self-hosted deployment.
 
-- [ ] API-T015 Implement bearer token middleware (validate tokens from /auth/oauth/callback)
+- [x] API-T015 Implement bearer token middleware (validate tokens from /auth/oauth/callback)
 - [ ] API-T016 Implement API key middleware for machine-to-machine access
 - [ ] API-T017 Add rate limiting layer (tower or custom) returning 429 with Retry-After header
 - [ ] API-T018 Refine CORS configuration (allow `tauri://localhost` origin for desktop)
-- [ ] API-T019 Define 401 response shape and wire all protected routes
+- [x] API-T019 Define 401 response shape and wire all protected routes
 - [ ] API-T020 Write tests: unauthenticated request gets 401, rate-limited request gets 429
 
 **Checkpoint**: Workflow routes reject unauthenticated requests. Rate limit triggers correctly. Desktop auto-signs-out on 401.

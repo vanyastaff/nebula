@@ -5,6 +5,7 @@
 ### Stable APIs
 
 - `app(webhook_server, workers)` → Router
+- `api_only_app(webhook_server, workers)` → Router (API routes only; no webhook merge)
 - `run(config, webhook_config, workers)` → `impl Future<Output = Result<(), ApiError>>`
 - `ApiServer` — `new(config)`, `app(webhook, workers)`
 - `ApiServerConfig` — `bind_addr`; Default: 0.0.0.0:5678
@@ -29,6 +30,7 @@
 |--------|------|-------------|
 | POST | /auth/oauth/start | Begin OAuth flow; body `{ provider, redirectUri }`; returns `{ authUrl }` |
 | POST | /auth/oauth/callback | Exchange code; body `{ provider, code, redirectUri }`; returns `{ accessToken, user }` |
+| GET | /api/v1/auth/me | Protected probe endpoint; requires `Authorization: Bearer <token>` |
 
 #### Workflows *(Phase 2)*
 
