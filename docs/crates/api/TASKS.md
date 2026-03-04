@@ -48,7 +48,7 @@
 - [x] API-T015 Implement bearer token middleware (validate tokens from /auth/oauth/callback)
 - [x] API-T016 Implement API key middleware for machine-to-machine access
 - [x] API-T017 Add rate limiting layer (tower or custom) returning 429 with Retry-After header
-- [ ] API-T018 Refine CORS configuration (allow `tauri://localhost` origin for desktop)
+- [x] API-T018 Refine CORS configuration (allow `tauri://localhost` origin for desktop)
 - [x] API-T019 Define 401 response shape and wire all protected routes
 - [x] API-T020 Write tests: unauthenticated request gets 401, rate-limited request gets 429
 
