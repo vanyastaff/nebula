@@ -49,6 +49,26 @@
 6. Runtime resolves deferred/streaming outputs before passing to downstream nodes.
 7. Resilience layer applies retry/backoff on `ActionError::Retryable` or `ActionResult::Retry`.
 
+## End-to-End Runtime + Sandbox Integration (ACT-T029)
+
+Reference execution path for one node:
+
+1. Engine selects ready node and resolves action key.
+2. Runtime loads handler from `ActionRegistry` (typed action via `StatelessActionAdapter` or raw `InternalHandler`).
+3. Runtime constructs `ActionContext` with identity (`execution_id`, `node_id`, `workflow_id`), cancellation token, and capability modules.
+4. Runtime wraps context in `SandboxedContext` and calls `SandboxRunner::execute(...)`.
+5. Sandbox enforces cancellation/capability boundary, then delegates execution to action handler.
+6. Handler returns `ActionResult` or `ActionError`.
+7. Runtime enforces output data policy (size limits / strategy), emits telemetry, and returns result to engine.
+8. Engine applies flow-control semantics (`Success`, `Branch`, `Wait`, `Retry`, etc.) and schedules downstream behavior.
+
+Contract responsibilities:
+
+- `nebula-action`: types + semantics (`ActionResult`, `ActionOutput`, `ActionError`, contexts).
+- `nebula-runtime`: handler resolution, telemetry, data policy, context assembly.
+- `nebula-ports` + sandbox driver: isolation boundary and execution wrapper (`SandboxedContext` + `SandboxRunner`).
+- `nebula-engine`: orchestration and state transitions.
+
 ## Cross-Crate Ownership
 
 - `action`: contract semantics and stable protocol surface.

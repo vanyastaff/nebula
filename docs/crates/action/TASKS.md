@@ -81,7 +81,7 @@
 - [x] ACT-T026 [P] Publish end-to-end example: trigger action (webhook)
 - [x] ACT-T027 Define error-to-retry mapping patterns and document recommended conventions
 - [x] ACT-T028 Implement ergonomic authoring layer (dx/authoring module) with common action patterns
-- [ ] ACT-T029 Document runtime and sandbox integration end-to-end
+- [x] ACT-T029 Document runtime and sandbox integration end-to-end
 
 **Checkpoint**: Three working examples. Authoring DX module available. Error-to-retry conventions documented.
 
