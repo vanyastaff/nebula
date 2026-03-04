@@ -47,6 +47,21 @@ Rules:
 - key is globally unique per action type (`namespace.name` style recommended)
 - default ports are acceptable, but explicit port declaration is preferred for stable contracts
 
+### Port Schema Freeze (ACT-T019 / ACT-T020)
+
+Dynamic output and support input semantics are frozen as follows:
+
+1. `DynamicPort`:
+- `key` is a stable prefix for generated concrete output keys.
+- `source_field` must resolve to an array in node parameters/config.
+- `label_field` is optional and only affects UI labels (not routing identity).
+- `include_fallback=true` appends one deterministic fallback output after generated ports.
+2. `SupportPort`:
+- `required=true` means action execution must fail validation if no upstream support connection exists.
+- `multi=true` allows N upstream support connections; `multi=false` allows at most 1.
+- `filter` is an allow-list constraint (`allowed_node_types`, `allowed_tags`) validated by runtime/editor wiring.
+- Support payloads are side-channel inputs and must not alter primary flow edge semantics.
+
 ## Dependency declaration (resources + credentials)
 
 ```rust

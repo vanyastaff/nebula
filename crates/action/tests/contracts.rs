@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use chrono::Utc;
 use nebula_action::{
-    ActionOutput, ActionResult, BreakReason, FlowKind, WaitCondition,
+    ActionOutput, ActionResult, BreakReason, DynamicPort, FlowKind, InputPort, OutputPort,
+    SupportPort, WaitCondition,
 };
 use nebula_core::id::ExecutionId;
 
@@ -45,6 +46,42 @@ fn flow_kind_serialization_contract() {
             value
         );
     }
+}
+
+#[test]
+fn support_port_serialization_contract() {
+    let port = InputPort::Support(SupportPort {
+        key: "model".to_string(),
+        name: "AI Model".to_string(),
+        description: "Primary model input".to_string(),
+        required: true,
+        multi: false,
+        filter: Default::default(),
+    });
+    let json = serde_json::to_string(&port).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"support","key":"model","name":"AI Model","description":"Primary model input","required":true,"multi":false,"filter":{}}"#
+    );
+    let back: InputPort = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, port);
+}
+
+#[test]
+fn dynamic_port_serialization_contract() {
+    let port = OutputPort::Dynamic(DynamicPort {
+        key: "rule".to_string(),
+        source_field: "rules".to_string(),
+        label_field: Some("label".to_string()),
+        include_fallback: true,
+    });
+    let json = serde_json::to_string(&port).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"dynamic","key":"rule","source_field":"rules","label_field":"label","include_fallback":true}"#
+    );
+    let back: OutputPort = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, port);
 }
 
 fn assert_result_roundtrip(case: ActionResult<serde_json::Value>) {

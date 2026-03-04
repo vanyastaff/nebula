@@ -9,15 +9,17 @@ The following types are **schema-stable**. Their serialized form (JSON at engine
 | Type | Location | Serialization | Notes |
 |------|----------|---------------|-------|
 | `ActionOutput<T>` | output.rs | Tagged enum `{"type":"Variant","data":...}` | `Value`, `Empty`, `Binary`, `Reference`, `Deferred`, `Streaming`, `Collection` |
+| `ActionResult<T>` | result.rs | Tagged enum `{"type":"Variant",...}` | `Success`, `Skip`, `Continue`, `Break`, `Branch`, `Route`, `MultiOutput`, `Wait`, `Retry`; duration fields serialized as milliseconds |
 | `FlowKind` | port.rs | String | `"main"`, `"error"` |
-| `InputPort` / `OutputPort` / `SupportPort` | port.rs | Tagged by port type | Port schema used by UI and engine |
+| `InputPort` / `OutputPort` / `SupportPort` / `DynamicPort` | port.rs | Tagged by port type | Port schema used by UI and engine |
+| `BreakReason` / `WaitCondition` | result.rs | Enum/tagged enum | Flow-control compatibility contract |
 | `ActionMetadata` (key, version, ports) | metadata.rs | Stable structure | Interface version governs breaking changes |
 
-Types not yet serialized at boundaries (e.g. `ActionResult`, `ActionError`, `BreakReason`, `WaitCondition`) are still part of the *semantic* contract: variant names and semantics must not change in patch/minor; adding serde later must not break existing consumers.
+`ActionError` remains semantic-contract stable even where not serialized at all boundaries: variant names and meanings must not change in patch/minor releases.
 
 ## Enforcement
 
-- **Contract tests** in `crates/action/tests/contracts.rs` assert JSON shape for `ActionOutput` and `FlowKind`.
+- **Contract tests** in `crates/action/tests/contracts.rs` assert JSON shape for `ActionOutput`, `ActionResult`, `FlowKind`, `SupportPort`, `DynamicPort`, `BreakReason`, and `WaitCondition`.
 - CI runs these tests; accidental drift fails the build.
 - Intentional changes: update expected values, bump major version, document in MIGRATION.md.
 

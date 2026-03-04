@@ -62,8 +62,8 @@
 
 **Goal**: Freeze port schema, add validation tooling.
 
-- [ ] ACT-T019 [P] Freeze dynamic port schema semantics in code and docs
-- [ ] ACT-T020 [P] Freeze support port schema semantics in code and docs
+- [x] ACT-T019 [P] Freeze dynamic port schema semantics in code and docs
+- [x] ACT-T020 [P] Freeze support port schema semantics in code and docs
 - [ ] ACT-T021 Add metadata version compatibility check (breaking change detection)
 - [ ] ACT-T022 Build validation function for action packages (validate metadata + ports + components)
 - [ ] ACT-T023 Write migration guide template for action version bumps
