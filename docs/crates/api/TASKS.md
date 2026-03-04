@@ -27,8 +27,8 @@
 
 **Goal**: Desktop app can create, list, execute workflows and see run results.
 
-- [ ] API-T006 Extend ApiState with engine and storage handles (or port traits)
-- [ ] API-T007 Define request/response types and standard error shape `{ error, message }`
+- [x] API-T006 Extend ApiState with engine and storage handles (or port traits)
+- [x] API-T007 Define request/response types and standard error shape `{ error, message }`
 - [ ] API-T008 [P] Implement GET /workflows (list with pagination) and GET /workflows/:id
 - [ ] API-T009 [P] Implement POST /workflows (create) and PATCH /workflows/:id (update)
 - [ ] API-T010 [P] Implement DELETE /workflows/:id

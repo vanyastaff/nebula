@@ -21,7 +21,9 @@ use tracing::debug;
 use url::Url;
 use uuid::Uuid;
 
+use crate::contracts::ApiErrorResponse;
 use crate::status::{WebhookStatus, WorkerStatus};
+use nebula_ports::{ExecutionRepo, WorkflowRepo};
 use nebula_webhook::WebhookServer;
 
 /// Configuration for the API server.
@@ -60,6 +62,12 @@ pub struct ApiState {
     pub rate_limits: Arc<RwLock<HashMap<String, RateLimitEntry>>>,
     /// Rate limit config for protected routes.
     pub rate_limit_config: RateLimitConfig,
+    /// Optional workflow persistence port (Phase 1).
+    #[allow(dead_code)] // wired by upcoming workflow handlers
+    pub workflow_repo: Option<Arc<dyn WorkflowRepo>>,
+    /// Optional execution persistence/coordination port (Phase 1).
+    #[allow(dead_code)] // wired by upcoming run handlers
+    pub execution_repo: Option<Arc<dyn ExecutionRepo>>,
 }
 
 impl ApiState {
@@ -75,7 +83,23 @@ impl ApiState {
             api_keys: Arc::new(load_api_keys()),
             rate_limits: Arc::new(RwLock::new(HashMap::new())),
             rate_limit_config: RateLimitConfig::from_env(),
+            workflow_repo: None,
+            execution_repo: None,
         }
+    }
+
+    /// Attach workflow repository dependency.
+    #[allow(dead_code)] // used once workflow routes are implemented
+    pub fn with_workflow_repo(mut self, workflow_repo: Arc<dyn WorkflowRepo>) -> Self {
+        self.workflow_repo = Some(workflow_repo);
+        self
+    }
+
+    /// Attach execution repository dependency.
+    #[allow(dead_code)] // used once run routes are implemented
+    pub fn with_execution_repo(mut self, execution_repo: Arc<dyn ExecutionRepo>) -> Self {
+        self.execution_repo = Some(execution_repo);
+        self
     }
 }
 
@@ -196,10 +220,7 @@ pub fn api_router() -> Router<ApiState> {
 fn unauthorized_json(error: &str, message: &str) -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        Json(serde_json::json!({
-            "error": error,
-            "message": message
-        })),
+        Json(ApiErrorResponse::new(error, message)),
     )
         .into_response()
 }
@@ -207,10 +228,7 @@ fn unauthorized_json(error: &str, message: &str) -> Response {
 fn too_many_requests_json(retry_after_seconds: u64) -> Response {
     let mut response = (
         StatusCode::TOO_MANY_REQUESTS,
-        Json(serde_json::json!({
-            "error": "rate_limited",
-            "message": "too many requests",
-        })),
+        Json(ApiErrorResponse::new("rate_limited", "too many requests")),
     )
         .into_response();
     if let Ok(v) = HeaderValue::from_str(&retry_after_seconds.to_string()) {

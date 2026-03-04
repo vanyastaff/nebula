@@ -3680,6 +3680,7 @@ name = "nebula-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "nebula-ports",
  "nebula-webhook",
  "reqwest 0.13.2",
  "serde",

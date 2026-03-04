@@ -7,12 +7,21 @@
 - `app(webhook_server, workers)` → Router
 - `api_only_app(webhook_server, workers)` → Router (API routes only; no webhook merge)
 - `run(config, webhook_config, workers)` → `impl Future<Output = Result<(), ApiError>>`
+- `contracts` module:
+  - `ApiErrorResponse { error, message }`
+  - `PaginationQuery`, `PaginatedResponse<T>`
+  - workflow/run DTOs for Phase 1 endpoints
 - `ApiServer` — `new(config)`, `app(webhook, workers)`
 - `ApiServerConfig` — `bind_addr`; Default: 0.0.0.0:5678
 - `ApiError` — Webhook(webhook::Error), Io(std::io::Error)
 - `WorkerStatus` — id, status, queue_len
 - `WebhookStatus` — status, route_count, paths; `from_server(server)`
 - `StatusResponse` — workers, webhook (internal; JSON response)
+
+### ApiState Dependencies (Phase 1)
+
+- `workflow_repo: Option<Arc<dyn WorkflowRepo>>` — workflow persistence port (`nebula-ports`)
+- `execution_repo: Option<Arc<dyn ExecutionRepo>>` — execution persistence/coordination port (`nebula-ports`)
 
 ### Routes
 

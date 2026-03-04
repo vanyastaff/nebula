@@ -13,6 +13,7 @@ documentation.workspace = true
 
 [dependencies]
 nebula-webhook = { path = "../webhook" }
+nebula-ports = { path = "../ports" }
 
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "net", "signal"] }
 axum = { workspace = true }

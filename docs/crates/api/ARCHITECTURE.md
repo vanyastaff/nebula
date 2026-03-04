@@ -14,6 +14,7 @@
 | `lib.rs` | app(), run(); Router merge |
 | `server.rs` | api_router(), health, status handlers; ApiState, ApiServer, ApiServerConfig, ApiError |
 | `status.rs` | WorkerStatus, WebhookStatus |
+| `contracts.rs` | Shared API contracts (error envelope, pagination, workflow/run DTOs) |
 
 ### Data/Control Flow
 
@@ -27,8 +28,8 @@
 ### Known Bottlenecks
 
 - **Static workers:** Workers passed as Vec<WorkerStatus>; no live pool; status is snapshot.
-- **No engine/storage:** API does not hold engine or storage; cannot serve workflow/execution endpoints.
-- **No auth:** All routes unauthenticated.
+- **Ports not wired to handlers yet:** ApiState now carries optional `WorkflowRepo` + `ExecutionRepo`, but workflow/run routes are not implemented yet.
+- **Auth scope is still narrow:** Auth boundary exists for protected routes (`/api/v1/auth/me`), but workflow/run routes are not yet protected because они пока не реализованы.
 - **No WebSocket:** Real-time updates not implemented.
 
 ## Target Architecture
