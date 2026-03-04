@@ -4,7 +4,7 @@ use axum::{
     Json,
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::IntoResponse,
 };
 use nebula_core::WorkflowId;
 use nebula_ports::{PortsError, WorkflowRepo};
@@ -13,9 +13,10 @@ use std::sync::Arc;
 use crate::{
     auth::Authenticated,
     contracts::{
-        ApiErrorResponse, CreateWorkflowRequest, PaginatedResponse, PaginationQuery,
-        UpdateWorkflowRequest, WorkflowDetail, WorkflowSummary,
+        CreateWorkflowRequest, PaginatedResponse, PaginationQuery, UpdateWorkflowRequest,
+        WorkflowDetail, WorkflowSummary,
     },
+    error::{ApiHttpError, ApiResult},
     state::ApiState,
 };
 
@@ -23,29 +24,17 @@ const WORKFLOW_LIST_DEFAULT_OFFSET: usize = 0;
 const WORKFLOW_LIST_DEFAULT_LIMIT: usize = 50;
 const WORKFLOW_LIST_MAX_LIMIT: usize = 200;
 
-fn parse_workflow_id(raw: &str) -> Result<WorkflowId, Response> {
-    WorkflowId::parse(raw).map_err(|_| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ApiErrorResponse::new(
-                "invalid_workflow_id",
-                "workflow id must be a UUID",
-            )),
-        )
-            .into_response()
-    })
+fn parse_workflow_id(raw: &str) -> ApiResult<WorkflowId> {
+    WorkflowId::parse(raw)
+        .map_err(|_| ApiHttpError::bad_request("invalid_workflow_id", "workflow id must be a UUID"))
 }
 
-fn workflow_repo(state: &ApiState) -> Result<Arc<dyn WorkflowRepo>, Response> {
+fn workflow_repo(state: &ApiState) -> ApiResult<Arc<dyn WorkflowRepo>> {
     state.workflow_repo.clone().ok_or_else(|| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiErrorResponse::new(
-                "workflow_repo_unavailable",
-                "workflow repository is not configured",
-            )),
+        ApiHttpError::service_unavailable(
+            "workflow_repo_unavailable",
+            "workflow repository is not configured",
         )
-            .into_response()
     })
 }
 
@@ -94,33 +83,21 @@ fn apply_workflow_active(definition: &mut serde_json::Value, active: bool) {
     });
 }
 
-fn map_ports_error(error: PortsError) -> Response {
+fn map_ports_error(error: PortsError) -> ApiHttpError {
     match error {
-        PortsError::NotFound { entity, id } => (
-            StatusCode::NOT_FOUND,
-            Json(ApiErrorResponse::new(
-                "not_found",
-                format!("{entity} not found: {id}"),
-            )),
-        )
-            .into_response(),
-        PortsError::Conflict { .. } => (
-            StatusCode::CONFLICT,
-            Json(ApiErrorResponse::new("conflict", "resource version conflict")),
-        )
-            .into_response(),
+        PortsError::NotFound { entity, id } => {
+            ApiHttpError::not_found("not_found", format!("{entity} not found: {id}"))
+        }
+        PortsError::Conflict { .. } => {
+            ApiHttpError::conflict("conflict", "resource version conflict")
+        }
         PortsError::Connection(_)
         | PortsError::Serialization(_)
         | PortsError::Timeout { .. }
         | PortsError::LeaseUnavailable { .. }
-        | PortsError::Internal(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiErrorResponse::new(
-                "internal_error",
-                "failed to access workflow storage",
-            )),
-        )
-            .into_response(),
+        | PortsError::Internal(_) => {
+            ApiHttpError::internal("internal_error", "failed to access workflow storage")
+        }
     }
 }
 
@@ -128,7 +105,7 @@ pub(crate) async fn list_workflows(
     _auth: Authenticated,
     State(state): State<ApiState>,
     Query(query): Query<PaginationQuery>,
-) -> Result<impl IntoResponse, Response> {
+) -> ApiResult<impl IntoResponse> {
     let repo = workflow_repo(&state)?;
     let offset = query.offset.unwrap_or(WORKFLOW_LIST_DEFAULT_OFFSET);
     let limit = query
@@ -161,18 +138,14 @@ pub(crate) async fn get_workflow(
     _auth: Authenticated,
     State(state): State<ApiState>,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, Response> {
+) -> ApiResult<impl IntoResponse> {
     let repo = workflow_repo(&state)?;
     let workflow_id = parse_workflow_id(&id)?;
     let Some(definition) = repo.get(workflow_id).await.map_err(map_ports_error)? else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiErrorResponse::new(
-                "workflow_not_found",
-                format!("workflow {id} was not found"),
-            )),
-        )
-            .into_response());
+        return Err(ApiHttpError::not_found(
+            "workflow_not_found",
+            format!("workflow {id} was not found"),
+        ));
     };
 
     Ok(Json(WorkflowDetail {
@@ -187,18 +160,14 @@ pub(crate) async fn create_workflow(
     _auth: Authenticated,
     State(state): State<ApiState>,
     Json(req): Json<CreateWorkflowRequest>,
-) -> Result<impl IntoResponse, Response> {
+) -> ApiResult<impl IntoResponse> {
     let repo = workflow_repo(&state)?;
     let name = req.name.trim();
     if name.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiErrorResponse::new(
-                "invalid_workflow_name",
-                "workflow name must not be empty",
-            )),
-        )
-            .into_response());
+        return Err(ApiHttpError::bad_request(
+            "invalid_workflow_name",
+            "workflow name must not be empty",
+        ));
     }
 
     let id = WorkflowId::new();
@@ -229,19 +198,15 @@ pub(crate) async fn update_workflow(
     State(state): State<ApiState>,
     Path(id): Path<String>,
     Json(req): Json<UpdateWorkflowRequest>,
-) -> Result<impl IntoResponse, Response> {
+) -> ApiResult<impl IntoResponse> {
     let repo = workflow_repo(&state)?;
     let workflow_id = parse_workflow_id(&id)?;
 
     if req.name.is_none() && req.definition.is_none() && req.active.is_none() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiErrorResponse::new(
-                "empty_update",
-                "at least one field must be provided",
-            )),
-        )
-            .into_response());
+        return Err(ApiHttpError::bad_request(
+            "empty_update",
+            "at least one field must be provided",
+        ));
     }
 
     let Some((version, mut definition)) = repo
@@ -249,14 +214,10 @@ pub(crate) async fn update_workflow(
         .await
         .map_err(map_ports_error)?
     else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiErrorResponse::new(
-                "workflow_not_found",
-                format!("workflow {id} was not found"),
-            )),
-        )
-            .into_response());
+        return Err(ApiHttpError::not_found(
+            "workflow_not_found",
+            format!("workflow {id} was not found"),
+        ));
     };
 
     if let Some(new_definition) = req.definition {
@@ -266,14 +227,10 @@ pub(crate) async fn update_workflow(
     if let Some(name) = req.name {
         let trimmed = name.trim();
         if trimmed.is_empty() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ApiErrorResponse::new(
-                    "invalid_workflow_name",
-                    "workflow name must not be empty",
-                )),
-            )
-                .into_response());
+            return Err(ApiHttpError::bad_request(
+                "invalid_workflow_name",
+                "workflow name must not be empty",
+            ));
         }
         apply_workflow_name(&mut definition, trimmed.to_string());
     }
@@ -298,19 +255,15 @@ pub(crate) async fn delete_workflow(
     _auth: Authenticated,
     State(state): State<ApiState>,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, Response> {
+) -> ApiResult<impl IntoResponse> {
     let repo = workflow_repo(&state)?;
     let workflow_id = parse_workflow_id(&id)?;
     let deleted = repo.delete(workflow_id).await.map_err(map_ports_error)?;
     if !deleted {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiErrorResponse::new(
-                "workflow_not_found",
-                format!("workflow {id} was not found"),
-            )),
-        )
-            .into_response());
+        return Err(ApiHttpError::not_found(
+            "workflow_not_found",
+            format!("workflow {id} was not found"),
+        ));
     }
 
     Ok(StatusCode::NO_CONTENT)

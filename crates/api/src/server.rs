@@ -1,12 +1,6 @@
 //! API router composition and server configuration.
 
-use axum::{
-    Json, Router,
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::get,
-};
+use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
 use serde::Serialize;
 use std::sync::Arc;
 use thiserror::Error;
@@ -14,11 +8,10 @@ use tracing::debug;
 
 use crate::{
     auth::{auth_me, cors_layer, github_callback, oauth_callback, oauth_start},
+    middleware::http_trace_layer,
     state::ApiState,
     status::{WebhookStatus, WorkerStatus},
-    workflows::{
-        create_workflow, delete_workflow, get_workflow, list_workflows, update_workflow,
-    },
+    workflows::{create_workflow, delete_workflow, get_workflow, list_workflows, update_workflow},
 };
 use nebula_webhook::WebhookServer;
 
@@ -61,8 +54,11 @@ pub fn api_router() -> Router<ApiState> {
         )
         .route(
             "/api/v1/workflows/{id}",
-            get(get_workflow).patch(update_workflow).delete(delete_workflow),
+            get(get_workflow)
+                .patch(update_workflow)
+                .delete(delete_workflow),
         )
+        .layer(http_trace_layer())
         .layer(cors_layer())
 }
 

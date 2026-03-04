@@ -13,6 +13,8 @@
 
 mod auth;
 pub mod contracts;
+mod error;
+mod middleware;
 mod server;
 mod state;
 mod status;
