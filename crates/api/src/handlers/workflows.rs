@@ -8,9 +8,9 @@ use axum::{
 };
 
 use crate::{
-    auth::Authenticated,
-    contracts::{CreateWorkflowRequest, PaginatedResponse, PaginationQuery, UpdateWorkflowRequest},
-    error::{ApiHttpError, ApiResult},
+    errors::{ApiHttpError, ApiResult},
+    extractors::Authenticated,
+    models::{CreateWorkflowRequest, PaginatedResponse, PaginationQuery, UpdateWorkflowRequest},
     services::{error::ServiceError, workflows::WorkflowService},
     state::ApiState,
 };

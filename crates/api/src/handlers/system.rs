@@ -1,22 +1,12 @@
 //! System/infra handlers.
 
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use serde::Serialize;
 use tracing::debug;
 
 use crate::{
+    models::{StatusResponse, WebhookStatus},
     state::ApiState,
-    status::{WebhookStatus, WorkerStatus},
 };
-
-/// Response for `GET /api/v1/status`.
-#[derive(Debug, Serialize)]
-pub struct StatusResponse {
-    /// Node workers (e.g. 4).
-    pub workers: Vec<WorkerStatus>,
-    /// Webhook server info.
-    pub webhook: WebhookStatus,
-}
 
 pub(crate) async fn health() -> impl IntoResponse {
     (StatusCode::OK, "OK")

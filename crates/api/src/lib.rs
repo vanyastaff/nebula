@@ -11,20 +11,21 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
+mod app;
 mod auth;
-pub mod contracts;
-mod error;
+mod config;
+mod errors;
+mod extractors;
 mod handlers;
 mod middleware;
+pub mod models;
 mod routes;
-mod server;
 mod services;
 mod state;
-mod status;
 
-pub use server::{ApiError, ApiServer, ApiServerConfig};
+pub use app::{ApiError, ApiServer, ApiServerConfig};
+pub use models::{WebhookStatus, WorkerStatus};
 pub use state::ApiState;
-pub use status::{WebhookStatus, WorkerStatus};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -56,14 +57,12 @@ pub fn api_only_app(webhook_server: Arc<WebhookServer>, workers: Vec<WorkerStatu
 /// in host binaries that compose API ports explicitly.
 pub fn app_with_state(state: ApiState) -> Router {
     let webhook = state.webhook.clone();
-    server::api_router()
-        .with_state(state)
-        .merge(webhook.router())
+    app::api_router().with_state(state).merge(webhook.router())
 }
 
 /// Build API-only application from a fully configured [`ApiState`].
 pub fn api_only_app_with_state(state: ApiState) -> Router {
-    server::api_router().with_state(state)
+    app::api_router().with_state(state)
 }
 
 /// Run the unified API server (4 workers + webhook) on the given listener.

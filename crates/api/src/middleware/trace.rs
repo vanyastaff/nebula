@@ -1,5 +1,3 @@
-//! Cross-cutting HTTP middleware setup.
-
 use tower_http::trace::TraceLayer;
 
 /// Standard HTTP tracing layer for all API routes.

@@ -6,7 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::contracts::ApiErrorResponse;
+use crate::models::ApiErrorResponse;
 
 /// Canonical result type for API handlers.
 pub(crate) type ApiResult<T> = Result<T, ApiHttpError>;

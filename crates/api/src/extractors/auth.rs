@@ -8,7 +8,7 @@ use std::time::Instant;
 use tokio::sync::RwLockWriteGuard;
 
 use crate::{
-    error::ApiHttpError,
+    errors::ApiHttpError,
     state::{ApiState, AuthPrincipal, RateLimitEntry},
 };
 

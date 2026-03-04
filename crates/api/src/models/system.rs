@@ -1,5 +1,3 @@
-//! API response types for status and workers.
-
 use serde::Serialize;
 
 /// Single node worker status (for `/api/v1/status`).
@@ -33,4 +31,13 @@ impl WebhookStatus {
             paths: server.paths(),
         }
     }
+}
+
+/// Response for `GET /api/v1/status`.
+#[derive(Debug, Serialize)]
+pub struct StatusResponse {
+    /// Node workers (e.g. 4).
+    pub workers: Vec<WorkerStatus>,
+    /// Webhook server info.
+    pub webhook: WebhookStatus,
 }

@@ -1,10 +1,10 @@
-//! Server configuration and startup surface.
+//! App/server composition and public server types.
 
 use axum::Router;
 use std::sync::Arc;
 use thiserror::Error;
 
-use crate::{routes, state::ApiState, status::WorkerStatus};
+use crate::{models::WorkerStatus, routes, state::ApiState};
 use nebula_webhook::WebhookServer;
 
 /// Configuration for the API server.
@@ -23,7 +23,7 @@ impl Default for ApiServerConfig {
 }
 
 /// API-only router (no webhook). Merge with `webhook_server.router()` for full app.
-pub fn api_router() -> Router<ApiState> {
+pub(crate) fn api_router() -> Router<ApiState> {
     routes::api_router()
 }
 

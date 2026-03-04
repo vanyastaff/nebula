@@ -5,7 +5,7 @@ use nebula_ports::WorkflowRepo;
 use std::sync::Arc;
 
 use crate::{
-    contracts::{CreateWorkflowRequest, UpdateWorkflowRequest, WorkflowDetail, WorkflowSummary},
+    models::{CreateWorkflowRequest, UpdateWorkflowRequest, WorkflowDetail, WorkflowSummary},
     services::error::{ServiceError, ServiceResult},
 };
 

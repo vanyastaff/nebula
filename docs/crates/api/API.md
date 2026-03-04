@@ -9,9 +9,10 @@
 - `app_with_state(state)` → Router (API + webhook; explicit dependency injection)
 - `api_only_app_with_state(state)` → Router (API only; explicit dependency injection)
 - `run(config, webhook_config, workers)` → `impl Future<Output = Result<(), ApiError>>`
-- `contracts` module:
+- `models` module:
   - `ApiErrorResponse { error, message }`
   - `PaginationQuery`, `PaginatedResponse<T>`
+  - `WorkerStatus`, `WebhookStatus`, `StatusResponse`
   - workflow/run DTOs for Phase 1 endpoints
 - `ApiServer` — `new(config)`, `app(webhook, workers)`
 - `ApiServerConfig` — `bind_addr`; Default: 0.0.0.0:5678

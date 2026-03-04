@@ -12,16 +12,17 @@
 | Location | Responsibility |
 |----------|----------------|
 | `lib.rs` | app(), run(); Router merge |
-| `server.rs` | ApiServerConfig/ApiServer/ApiError (startup surface) |
+| `app.rs` | ApiServerConfig/ApiServer/ApiError + API router entry |
 | `routes/` | Route groups (`system`, `auth`, `workflows`) + router composition |
 | `handlers/` | Thin HTTP handlers (`system`, `workflows`) |
 | `services/` | Business operations (`workflows`) with service-level errors (no HTTP coupling) |
+| `models/` | API DTOs and response models (common/system/workflows/runs) |
 | `state.rs` | ApiState + dependency wiring (repos, oauth/rate-limit stores) |
 | `auth/` | `extractor`, `oauth`, `cors` split for auth boundary and OAuth flow |
-| `error.rs` | Unified HTTP error envelope (`ApiHttpError`, `ApiResult`) |
-| `middleware.rs` | Cross-cutting middleware registration (HTTP trace layer) |
-| `status.rs` | WorkerStatus, WebhookStatus |
-| `contracts.rs` | Shared API contracts (error envelope, pagination, workflow/run DTOs) |
+| `errors.rs` | Unified HTTP error envelope (`ApiHttpError`, `ApiResult`) |
+| `extractors/` | Custom extractors (`Authenticated`) |
+| `middleware/` | Cross-cutting middleware registration (HTTP trace layer) |
+| `config.rs` | Env-backed runtime configuration loading |
 
 ### Data/Control Flow
 
@@ -47,8 +48,8 @@
 ```
 nebula-api/
 ├── lib.rs         — app, run (current)
-├── server.rs      — api_router, ApiState, ApiServer (current)
-├── status.rs      — WorkerStatus, WebhookStatus (current)
+├── app.rs         — api_router, ApiServer (current)
+├── models/        — shared API DTOs
 ├── routes/        — (Phase 2) workflows, executions, nodes
 ├── auth/          — (Phase 2) JWT, API key
 ├── websocket/     — (Phase 2) real-time

@@ -4,14 +4,10 @@ use nebula_ports::{ExecutionRepo, WorkflowRepo};
 use nebula_webhook::WebhookServer;
 use reqwest::Client;
 use serde::Serialize;
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-    time::Instant,
-};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 use tokio::sync::RwLock;
 
-use crate::status::WorkerStatus;
+use crate::{config, models::WorkerStatus};
 
 /// Shared state for API handlers.
 #[derive(Clone)]
@@ -29,7 +25,7 @@ pub struct ApiState {
     /// Access tokens issued by `/auth/oauth/callback`.
     pub(crate) access_tokens: Arc<RwLock<HashMap<String, IssuedAccessToken>>>,
     /// API keys for machine-to-machine auth (`X-API-Key`).
-    pub(crate) api_keys: Arc<HashSet<String>>,
+    pub(crate) api_keys: Arc<std::collections::HashSet<String>>,
     /// Sliding window counters for protected route rate limiting.
     pub(crate) rate_limits: Arc<RwLock<HashMap<String, RateLimitEntry>>>,
     /// Rate limit config for protected routes.
@@ -48,11 +44,11 @@ impl ApiState {
             workers,
             oauth_pending: Arc::new(RwLock::new(HashMap::new())),
             http_client: Client::new(),
-            github_oauth: GithubOAuthConfig::from_env(),
+            github_oauth: config::load_github_oauth_config(),
             access_tokens: Arc::new(RwLock::new(HashMap::new())),
-            api_keys: Arc::new(load_api_keys()),
+            api_keys: Arc::new(config::load_api_keys()),
             rate_limits: Arc::new(RwLock::new(HashMap::new())),
-            rate_limit_config: RateLimitConfig::from_env(),
+            rate_limit_config: config::load_rate_limit_config(),
             workflow_repo: None,
             execution_repo: None,
         }
@@ -71,44 +67,12 @@ impl ApiState {
     }
 }
 
-fn load_api_keys() -> HashSet<String> {
-    std::env::var("NEBULA_API_KEYS")
-        .ok()
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct GithubOAuthConfig {
     pub(crate) client_id: String,
     pub(crate) client_secret: String,
     pub(crate) redirect_uri: String,
     pub(crate) scope: String,
-}
-
-impl GithubOAuthConfig {
-    pub(crate) fn from_env() -> Option<Self> {
-        let client_id = std::env::var("GITHUB_OAUTH_CLIENT_ID").ok()?;
-        let client_secret = std::env::var("GITHUB_OAUTH_CLIENT_SECRET").ok()?;
-        let redirect_uri = std::env::var("GITHUB_OAUTH_REDIRECT_URI")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| "http://localhost:5678/auth/github/callback".to_string());
-        let scope = std::env::var("GITHUB_OAUTH_SCOPE")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| "read:user user:email".to_string());
-        Some(Self {
-            client_id,
-            client_secret,
-            redirect_uri,
-            scope,
-        })
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -139,23 +103,6 @@ pub(crate) struct AuthPrincipal {
 pub(crate) struct RateLimitConfig {
     pub(crate) window_seconds: u64,
     pub(crate) max_requests: u32,
-}
-
-impl RateLimitConfig {
-    pub(crate) fn from_env() -> Self {
-        let window_seconds = std::env::var("NEBULA_RATE_LIMIT_WINDOW_SECONDS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(60);
-        let max_requests = std::env::var("NEBULA_RATE_LIMIT_MAX_REQUESTS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(120);
-        Self {
-            window_seconds: window_seconds.max(1),
-            max_requests: max_requests.max(1),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

@@ -12,9 +12,11 @@ use std::time::Instant;
 use url::Url;
 use uuid::Uuid;
 
-use crate::state::{ApiState, IssuedAccessToken, OAuthUserProfile, PendingOAuthState};
-
-use super::Authenticated;
+use crate::{
+    config,
+    extractors::Authenticated,
+    state::{ApiState, IssuedAccessToken, OAuthUserProfile, PendingOAuthState},
+};
 
 pub(crate) async fn auth_me(Authenticated(principal): Authenticated) -> impl IntoResponse {
     (
@@ -59,13 +61,6 @@ struct OAuthCallbackResponse {
     user: Option<OAuthUserProfile>,
 }
 
-fn is_mock_oauth_enabled() -> bool {
-    std::env::var("NEBULA_OAUTH_MOCK")
-        .ok()
-        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
-        .unwrap_or(true)
-}
-
 fn is_supported_provider(provider: &str) -> bool {
     matches!(provider, "google" | "github")
 }
@@ -88,7 +83,7 @@ pub(crate) async fn oauth_start(
 
     if provider == "github" {
         let Some(github) = state.github_oauth.clone() else {
-            if is_mock_oauth_enabled() {
+            if config::is_mock_oauth_enabled() {
                 let state_token = Uuid::new_v4().to_string();
                 let auth_url = format!(
                     "{}?code=mock_{}&provider={}&state={}",
@@ -147,7 +142,7 @@ pub(crate) async fn oauth_start(
             .into_response();
     }
 
-    if is_mock_oauth_enabled() {
+    if config::is_mock_oauth_enabled() {
         let state_token = Uuid::new_v4().to_string();
         let auth_url = format!(
             "{}?code=mock_{}&provider={}&state={}",
@@ -427,7 +422,7 @@ pub(crate) async fn oauth_callback(
     }
 
     if provider == "github" {
-        if is_mock_oauth_enabled() && req.code.starts_with("mock_") {
+        if config::is_mock_oauth_enabled() && req.code.starts_with("mock_") {
             let token = format!("mock_token_{}_{}", provider, Uuid::new_v4());
             return issue_access_token(&state, &provider, token, "Bearer".to_string(), 3600, None)
                 .await;
@@ -537,7 +532,7 @@ pub(crate) async fn oauth_callback(
         .await;
     }
 
-    if is_mock_oauth_enabled() && req.code.starts_with("mock_") {
+    if config::is_mock_oauth_enabled() && req.code.starts_with("mock_") {
         let token = format!("mock_token_{}_{}", provider, Uuid::new_v4());
         return issue_access_token(&state, &provider, token, "Bearer".to_string(), 3600, None)
             .await;
