@@ -167,6 +167,27 @@ Runtime emits telemetry for buffer saturation, dropped events, and stream termin
 7. Recovery:
 On resume, stream recovery is best-effort unless producer explicitly supports replay cursor semantics.
 
+## Downstream Compatibility Matrix (ACT-T016)
+
+Compatibility defines whether a downstream node can consume output **directly** (`native`),
+**after runtime normalization** (`normalized`), or **not supported** (`unsupported`).
+
+| `ActionOutput` variant | Default downstream compatibility | Runtime requirement |
+|---|---|---|
+| `Value(T)` | native | none |
+| `Empty` | native | downstream must handle no payload |
+| `Collection(Vec<ActionOutput<T>>)` | normalized | runtime flattens/fans out or passes as array by edge contract |
+| `Binary(BinaryData)` | normalized | downstream must declare binary support or receive converted reference/metadata |
+| `Reference(DataReference)` | normalized | runtime fetches/streams or passes reference if downstream supports reference mode |
+| `Deferred(DeferredOutput)` | normalized | runtime resolves deferred handle before delivery unless downstream explicitly supports deferred |
+| `Streaming(StreamOutput)` | unsupported (default DAG edges) | requires stream-aware downstream contract; otherwise runtime materializes/terminates stream |
+
+Rules:
+1. `Value` and `Empty` are baseline-compatible for all standard DAG edges.
+2. Non-value variants require explicit runtime handling before generic downstream execution.
+3. Stream/deferred passthrough is opt-in and must be declared by downstream capability metadata.
+4. If compatibility cannot be satisfied, runtime must fail fast with explicit error mapping (retryable/fatal).
+
 ## `ActionResult<T>` variants
 
 | Variant | Engine action |

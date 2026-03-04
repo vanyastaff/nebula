@@ -50,7 +50,7 @@
 
 - [x] ACT-T014 [P] Document deferred output resolution contract (who resolves, when, persistence)
 - [x] ACT-T015 [P] Document streaming output backpressure semantics and consumer contract
-- [ ] ACT-T016 Define compatibility matrix: which ActionOutput variants downstream nodes can consume
+- [x] ACT-T016 Define compatibility matrix: which ActionOutput variants downstream nodes can consume
 - [ ] ACT-T017 Add resume/recovery scenario tests for deferred ActionOutput
 - [ ] ACT-T018 Add streaming backpressure integration test (bounded channel, slow consumer)
 
