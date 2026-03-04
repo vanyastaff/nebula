@@ -79,6 +79,8 @@ pub mod prelude;
 pub mod reference;
 /// Execution result types carrying data and flow-control intent.
 pub mod result;
+/// Action package validation utilities.
+pub mod validation;
 
 // ── Public re-exports ───────────────────────────────────────────────────────
 
@@ -102,6 +104,9 @@ pub use output::{
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use reference::ActionRef;
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
+pub use validation::{
+    ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
+};
 
 pub use nebula_parameter::collection::ParameterCollection;
 pub use nebula_parameter::def::ParameterDef;

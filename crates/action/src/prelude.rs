@@ -23,6 +23,9 @@ pub use crate::port::{
 };
 pub use crate::reference::ActionRef;
 pub use crate::result::ActionResult;
+pub use crate::validation::{
+    ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
+};
 
 pub use nebula_parameter::collection::ParameterCollection;
 pub use nebula_parameter::def::ParameterDef;

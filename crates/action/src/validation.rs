@@ -1,0 +1,241 @@
+//! Action package validation (`metadata` + `ports` + `components`).
+
+use std::collections::HashSet;
+
+use crate::components::ActionComponents;
+use crate::metadata::ActionMetadata;
+use crate::port::{InputPort, OutputPort};
+
+/// Validation error for action package integrity checks.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ActionPackageValidationError {
+    /// Required metadata field is empty.
+    #[error("metadata field `{field}` must not be empty")]
+    EmptyMetadataField {
+        /// Metadata field name.
+        field: &'static str,
+    },
+    /// Input port list is empty.
+    #[error("action must declare at least one input port")]
+    MissingInputPorts,
+    /// Output port list is empty.
+    #[error("action must declare at least one output port")]
+    MissingOutputPorts,
+    /// Duplicate input port key found.
+    #[error("duplicate input port key `{key}`")]
+    DuplicateInputPortKey {
+        /// Duplicate key.
+        key: String,
+    },
+    /// Duplicate output port key found.
+    #[error("duplicate output port key `{key}`")]
+    DuplicateOutputPortKey {
+        /// Duplicate key.
+        key: String,
+    },
+    /// Invalid support port declaration.
+    #[error("support port `{key}` must have non-empty name and description")]
+    InvalidSupportPort {
+        /// Support port key.
+        key: String,
+    },
+    /// Invalid dynamic output declaration.
+    #[error("dynamic output port `{key}` must define non-empty source_field")]
+    InvalidDynamicPort {
+        /// Dynamic port key.
+        key: String,
+    },
+    /// Duplicate credential dependency declaration.
+    #[error("duplicate credential dependency `{key}`")]
+    DuplicateCredentialDependency {
+        /// Credential key.
+        key: String,
+    },
+    /// Duplicate resource dependency declaration.
+    #[error("duplicate resource dependency `{key}`")]
+    DuplicateResourceDependency {
+        /// Resource key.
+        key: String,
+    },
+}
+
+/// Collection of package validation failures.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("action package validation failed with {errors:?}")]
+pub struct ActionPackageValidationErrors {
+    /// Collected validation errors.
+    pub errors: Vec<ActionPackageValidationError>,
+}
+
+/// Validate action package structure and declarations.
+pub fn validate_action_package(
+    metadata: &ActionMetadata,
+    components: &ActionComponents,
+) -> Result<(), ActionPackageValidationErrors> {
+    let mut errors = Vec::new();
+
+    if metadata.key.trim().is_empty() {
+        errors.push(ActionPackageValidationError::EmptyMetadataField { field: "key" });
+    }
+    if metadata.name.trim().is_empty() {
+        errors.push(ActionPackageValidationError::EmptyMetadataField { field: "name" });
+    }
+    if metadata.description.trim().is_empty() {
+        errors.push(ActionPackageValidationError::EmptyMetadataField {
+            field: "description",
+        });
+    }
+    if metadata.inputs.is_empty() {
+        errors.push(ActionPackageValidationError::MissingInputPorts);
+    }
+    if metadata.outputs.is_empty() {
+        errors.push(ActionPackageValidationError::MissingOutputPorts);
+    }
+
+    let mut input_keys = HashSet::new();
+    for input in &metadata.inputs {
+        let key = input.key().to_string();
+        if !input_keys.insert(key.clone()) {
+            errors.push(ActionPackageValidationError::DuplicateInputPortKey { key });
+        }
+        if let InputPort::Support(port) = input
+            && (port.name.trim().is_empty() || port.description.trim().is_empty())
+        {
+            errors.push(ActionPackageValidationError::InvalidSupportPort {
+                key: port.key.clone(),
+            });
+        }
+    }
+
+    let mut output_keys = HashSet::new();
+    for output in &metadata.outputs {
+        let key = output.key().to_string();
+        if !output_keys.insert(key.clone()) {
+            errors.push(ActionPackageValidationError::DuplicateOutputPortKey { key });
+        }
+        if let OutputPort::Dynamic(port) = output && port.source_field.trim().is_empty() {
+            errors.push(ActionPackageValidationError::InvalidDynamicPort {
+                key: port.key.clone(),
+            });
+        }
+    }
+
+    let mut credential_keys = HashSet::new();
+    for cred in components.credentials() {
+        let key = cred.key.as_str().to_string();
+        if !credential_keys.insert(key.clone()) {
+            errors.push(ActionPackageValidationError::DuplicateCredentialDependency { key });
+        }
+    }
+
+    let mut resource_keys = HashSet::new();
+    for res in components.resources() {
+        let key = res.key.as_str().to_string();
+        if !resource_keys.insert(key.clone()) {
+            errors.push(ActionPackageValidationError::DuplicateResourceDependency { key });
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(ActionPackageValidationErrors { errors })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::port::{DynamicPort, SupportPort};
+    use nebula_core::{CredentialId, CredentialKey};
+    use nebula_core::ResourceKey;
+    use nebula_credential::core::reference::ErasedCredentialRef;
+    use nebula_resource::reference::ErasedResourceRef;
+
+    fn valid_metadata() -> ActionMetadata {
+        ActionMetadata::new("test.action", "Test", "desc")
+    }
+
+    #[test]
+    fn valid_package_passes() {
+        let meta = valid_metadata();
+        let components = ActionComponents::new();
+        assert!(validate_action_package(&meta, &components).is_ok());
+    }
+
+    #[test]
+    fn duplicate_ports_fail_validation() {
+        let meta = ActionMetadata::new("test.action", "Test", "desc")
+            .with_inputs(vec![InputPort::flow("in"), InputPort::flow("in")])
+            .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("out")]);
+        let components = ActionComponents::new();
+
+        let err = validate_action_package(&meta, &components).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| matches!(e, ActionPackageValidationError::DuplicateInputPortKey { .. }))
+        );
+        assert!(err.errors.iter().any(
+            |e| matches!(e, ActionPackageValidationError::DuplicateOutputPortKey { .. })
+        ));
+    }
+
+    #[test]
+    fn invalid_support_and_dynamic_ports_fail_validation() {
+        let meta = ActionMetadata::new("test.action", "Test", "desc")
+            .with_inputs(vec![InputPort::Support(SupportPort {
+                key: "tools".into(),
+                name: "".into(),
+                description: "".into(),
+                required: false,
+                multi: true,
+                filter: Default::default(),
+            })])
+            .with_outputs(vec![OutputPort::Dynamic(DynamicPort {
+                key: "rule".into(),
+                source_field: "".into(),
+                label_field: None,
+                include_fallback: false,
+            })]);
+        let components = ActionComponents::new();
+
+        let err = validate_action_package(&meta, &components).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| matches!(e, ActionPackageValidationError::InvalidSupportPort { .. }))
+        );
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| matches!(e, ActionPackageValidationError::InvalidDynamicPort { .. }))
+        );
+    }
+
+    #[test]
+    fn duplicate_dependencies_fail_validation() {
+        let cred = ErasedCredentialRef {
+            id: CredentialId::new(),
+            key: CredentialKey::new("test_credential").unwrap(),
+        };
+        let res_key = ResourceKey::new("shared_resource").unwrap();
+        let res: ErasedResourceRef = ErasedResourceRef {
+            key: res_key.clone(),
+        };
+
+        let components = ActionComponents::new()
+            .with_credentials(vec![cred.clone(), cred])
+            .with_resources(vec![res.clone(), res]);
+        let meta = valid_metadata();
+        let err = validate_action_package(&meta, &components).unwrap_err();
+        assert!(err.errors.iter().any(|e| matches!(
+            e,
+            ActionPackageValidationError::DuplicateCredentialDependency { .. }
+        )));
+        assert!(err.errors.iter().any(|e| matches!(
+            e,
+            ActionPackageValidationError::DuplicateResourceDependency { .. }
+        )));
+    }
+}
