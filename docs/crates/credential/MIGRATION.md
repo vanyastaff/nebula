@@ -63,6 +63,29 @@ let manager = CredentialManager::builder()
     .build()?;
 ```
 
+## Migration to Postgres-backed storage (DB storage)
+
+To move credentials from another provider (e.g. local filesystem or mock) to database-backed storage:
+
+1. **Prerequisites**
+   - PostgreSQL with the shared KV table (run repo-root migrations including `storage_kv`; see `migrations/` and [nebula-storage ROADMAP](../storage/ROADMAP.md)).
+   - `nebula-storage` built with feature `postgres` and `nebula-credential` with feature `storage-postgres`.
+
+2. **Create Postgres storage and provider**
+   - Build KV storage: `nebula_storage::PostgresStorage::new(config).await` (e.g. from `PostgresStorageConfig` with `database_url`, `table: "storage_kv"`).
+   - Wrap in credential provider: `PostgresStorageProvider::new(Arc::new(postgres_storage))`.
+
+3. **Data migration (application-level)**
+   - **Export:** Using the current provider, list credentials (e.g. `manager.list_ids(...)`) and for each ID call `retrieve`; persist the returned `(EncryptedData, CredentialMetadata)` in a safe format (e.g. temp files or in-memory list).
+   - **Import:** With the new `PostgresStorageProvider` set on the manager (or a second manager instance), for each exported credential call `store(id, data, metadata, &context)`.
+   - **Verify:** List credentials from the new provider (note: `PostgresStorageProvider::list` currently returns empty until `ListableStorage` is available; use `exists` per ID or a separate index if you need to verify).
+
+4. **Switch configuration**
+   - Point `CredentialManager::builder().with_storage(...)` to the new `PostgresStorageProvider` and deploy. Ensure the same encryption key is used so existing encrypted payloads remain readable.
+
+5. **Rollback**
+   - Keep the previous provider and config until verification is complete. To roll back, reconfigure the manager to use the old provider; no automatic data copy-back.
+
 ## Rollout Plan
 
 1. **Preparation:** Introduce new APIs additively; document migration path

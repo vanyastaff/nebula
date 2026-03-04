@@ -17,7 +17,14 @@
 |-------|-------------|-------------|
 | `nebula-engine` | Downstream | Phase 2; execute workflow from API |
 | `nebula-storage` | Downstream | Phase 2; workflow/execution persistence |
+| `nebula-credential` | Downstream | Phase 4; credential CRUD + interactive flows; API receives `CredentialManager` in state |
 | `nebula-app` | Downstream | Main binary; spawns workers, calls run() |
+
+### Credential storage (Phase 4)
+
+Credential routes (`GET/POST/DELETE /credentials`, etc.) call `CredentialManager` methods. The **storage backend** (in-memory mock, local filesystem, or **Postgres**) is **not** chosen inside nebula-api. The application that composes the stack (e.g. nebula-app or a custom main) builds `CredentialManager` with the desired `StorageProvider` (e.g. `PostgresStorageProvider` over `nebula-storage::PostgresStorage`) and passes it into API state. So "credentials in DB" is a deployment/composition choice; API code stays backend-agnostic.
+
+See [credential POSTGRES_STORAGE_SPEC](../credential/POSTGRES_STORAGE_SPEC.md) and [credential MIGRATION — Postgres](../credential/MIGRATION.md#migration-to-postgres-backed-storage-db-storage) for DB-backed storage.
 
 ## Downstream Consumers
 

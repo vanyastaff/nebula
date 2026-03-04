@@ -13,8 +13,9 @@ Unified HTTP server for Nebula: API + webhook on one port.
   - ApiServer, ApiServerConfig, ApiError
   - WorkerStatus, WebhookStatus
 
-- **Out of scope:**
+- **Out of scope (for now):**
   - Workflow/execution REST endpoints (planned Phase 2)
+  - Credential REST endpoints (planned Phase 4; see [API.md](./API.md) and [INTERACTIONS.md](./INTERACTIONS.md) — storage backend chosen at app composition, e.g. Postgres via [credential MIGRATION](../credential/MIGRATION.md))
   - Authentication, rate limiting (planned)
   - WebSocket (planned)
   - OpenAPI spec (planned)

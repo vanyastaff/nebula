@@ -2,6 +2,8 @@
 
 Key-value storage abstraction for Nebula: pluggable backends (memory, Postgres, Redis, S3).
 
+**Status:** `Storage` trait + in-memory backend and **Postgres backend** (`PostgresStorage`, feature `postgres`) are implemented; Redis/S3 are still design-only.
+
 ## Scope
 
 - **In scope:**
@@ -19,9 +21,9 @@ Key-value storage abstraction for Nebula: pluggable backends (memory, Postgres, 
 
 ## Current State
 
-- **Maturity:** MVP — Storage trait, MemoryStorage, MemoryStorageTyped; no persistent backends implemented yet
-- **Key strengths:** Simple key-value abstraction; typed wrapper for JSON; optional features for postgres/redis/s3
-- **Key risks:** Postgres, Redis, S3 backends are optional deps only — no implementations in crate yet; no list/scan
+- **Maturity:** Postgres backend implemented (feature `postgres`); MemoryStorage, MemoryStorageTyped; Redis/S3 not yet
+- **Key strengths:** Simple key-value abstraction; typed wrapper for JSON; PostgresStorage with `storage_kv` table; optional features
+- **Key risks:** No list/prefix yet (see [DESIGN_LIST_TX_CACHE.md](./DESIGN_LIST_TX_CACHE.md)); Redis/S3 pending
 
 ## Target State
 
@@ -41,6 +43,7 @@ Key-value storage abstraction for Nebula: pluggable backends (memory, Postgres, 
 - [RELIABILITY.md](./RELIABILITY.md)
 - [TEST_STRATEGY.md](./TEST_STRATEGY.md)
 - [MIGRATION.md](./MIGRATION.md)
+- [DESIGN_LIST_TX_CACHE.md](./DESIGN_LIST_TX_CACHE.md) — design for list/prefix, transactions, caching
 
 ## Archive
 

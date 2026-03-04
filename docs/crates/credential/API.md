@@ -66,6 +66,7 @@ Internal representation of a credential instance. Public API uses `CredentialMet
 
 - `MockStorageProvider` (always available)
 - `LocalStorageProvider` (`storage-local`)
+- `PostgresStorageProvider` (`storage-postgres`) — uses `nebula-storage` KV layer (e.g. `PostgresStorage`); key format `cred:{id}`; see [POSTGRES_STORAGE_SPEC.md](./POSTGRES_STORAGE_SPEC.md)
 - `AwsSecretsManagerProvider` (`storage-aws`)
 - `HashiCorpVaultProvider` (`storage-vault`)
 - `KubernetesSecretsProvider` (`storage-k8s`)
