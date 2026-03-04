@@ -6,7 +6,7 @@ use axum::{
 use std::time::Duration;
 use tower::{ServiceBuilder, timeout::TimeoutLayer};
 
-use crate::{middleware::http_trace_layer, state::ApiState};
+use crate::{auth::cors_layer, middleware::http_trace_layer, state::ApiState};
 
 mod auth;
 mod system;
@@ -30,6 +30,6 @@ pub(crate) fn api_router() -> Router<ApiState> {
                 }))
                 .layer(TimeoutLayer::new(Duration::from_secs(10)))
                 .layer(http_trace_layer())
-                .layer(auth::cors_layer()),
+                .layer(cors_layer()),
         )
 }

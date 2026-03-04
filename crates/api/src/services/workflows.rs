@@ -1,13 +1,12 @@
 //! Workflow business service.
 
 use nebula_core::WorkflowId;
-use nebula_ports::{PortsError, WorkflowRepo};
+use nebula_ports::WorkflowRepo;
 use std::sync::Arc;
 
 use crate::{
     contracts::{CreateWorkflowRequest, UpdateWorkflowRequest, WorkflowDetail, WorkflowSummary},
-    error::{ApiHttpError, ApiResult},
-    state::ApiState,
+    services::error::{ServiceError, ServiceResult},
 };
 
 const WORKFLOW_LIST_DEFAULT_OFFSET: usize = 0;
@@ -19,19 +18,14 @@ pub(crate) struct WorkflowService {
 }
 
 impl WorkflowService {
-    pub(crate) fn from_state(state: &ApiState) -> ApiResult<Self> {
-        let repo = state.workflow_repo.clone().ok_or_else(|| {
-            ApiHttpError::service_unavailable(
-                "workflow_repo_unavailable",
-                "workflow repository is not configured",
-            )
-        })?;
-        Ok(Self { repo })
+    pub(crate) fn new(repo: Arc<dyn WorkflowRepo>) -> Self {
+        Self { repo }
     }
 
-    pub(crate) fn parse_workflow_id(raw: &str) -> ApiResult<WorkflowId> {
-        WorkflowId::parse(raw).map_err(|_| {
-            ApiHttpError::bad_request("invalid_workflow_id", "workflow id must be a UUID")
+    pub(crate) fn parse_workflow_id(raw: &str) -> ServiceResult<WorkflowId> {
+        WorkflowId::parse(raw).map_err(|_| ServiceError::InvalidInput {
+            code: "invalid_workflow_id",
+            message: "workflow id must be a UUID".to_string(),
         })
     }
 
@@ -50,12 +44,12 @@ impl WorkflowService {
         &self,
         offset: usize,
         limit: usize,
-    ) -> ApiResult<Vec<WorkflowSummary>> {
+    ) -> ServiceResult<Vec<WorkflowSummary>> {
         let rows = self
             .repo
             .list(offset, limit)
             .await
-            .map_err(map_ports_error)?;
+            .map_err(ServiceError::from_ports)?;
 
         Ok(rows
             .into_iter()
@@ -71,12 +65,12 @@ impl WorkflowService {
             .collect())
     }
 
-    pub(crate) async fn get(&self, id: WorkflowId, id_str: &str) -> ApiResult<WorkflowDetail> {
-        let Some(definition) = self.repo.get(id).await.map_err(map_ports_error)? else {
-            return Err(ApiHttpError::not_found(
-                "workflow_not_found",
-                format!("workflow {id_str} was not found"),
-            ));
+    pub(crate) async fn get(&self, id: WorkflowId, id_str: &str) -> ServiceResult<WorkflowDetail> {
+        let Some(definition) = self.repo.get(id).await.map_err(ServiceError::from_ports)? else {
+            return Err(ServiceError::NotFound {
+                code: "workflow_not_found",
+                message: format!("workflow {id_str} was not found"),
+            });
         };
 
         Ok(WorkflowDetail {
@@ -87,13 +81,13 @@ impl WorkflowService {
         })
     }
 
-    pub(crate) async fn create(&self, req: CreateWorkflowRequest) -> ApiResult<WorkflowDetail> {
+    pub(crate) async fn create(&self, req: CreateWorkflowRequest) -> ServiceResult<WorkflowDetail> {
         let name = req.name.trim();
         if name.is_empty() {
-            return Err(ApiHttpError::bad_request(
-                "invalid_workflow_name",
-                "workflow name must not be empty",
-            ));
+            return Err(ServiceError::InvalidInput {
+                code: "invalid_workflow_name",
+                message: "workflow name must not be empty".to_string(),
+            });
         }
 
         let id = WorkflowId::new();
@@ -107,7 +101,7 @@ impl WorkflowService {
         self.repo
             .save(id, 0, definition.clone())
             .await
-            .map_err(map_ports_error)?;
+            .map_err(ServiceError::from_ports)?;
 
         Ok(WorkflowDetail {
             id: id_str.clone(),
@@ -122,24 +116,24 @@ impl WorkflowService {
         id: WorkflowId,
         id_str: &str,
         req: UpdateWorkflowRequest,
-    ) -> ApiResult<WorkflowDetail> {
+    ) -> ServiceResult<WorkflowDetail> {
         if req.name.is_none() && req.definition.is_none() && req.active.is_none() {
-            return Err(ApiHttpError::bad_request(
-                "empty_update",
-                "at least one field must be provided",
-            ));
+            return Err(ServiceError::InvalidInput {
+                code: "empty_update",
+                message: "at least one field must be provided".to_string(),
+            });
         }
 
         let Some((version, mut definition)) = self
             .repo
             .get_with_version(id)
             .await
-            .map_err(map_ports_error)?
+            .map_err(ServiceError::from_ports)?
         else {
-            return Err(ApiHttpError::not_found(
-                "workflow_not_found",
-                format!("workflow {id_str} was not found"),
-            ));
+            return Err(ServiceError::NotFound {
+                code: "workflow_not_found",
+                message: format!("workflow {id_str} was not found"),
+            });
         };
 
         if let Some(new_definition) = req.definition {
@@ -149,10 +143,10 @@ impl WorkflowService {
         if let Some(name) = req.name {
             let trimmed = name.trim();
             if trimmed.is_empty() {
-                return Err(ApiHttpError::bad_request(
-                    "invalid_workflow_name",
-                    "workflow name must not be empty",
-                ));
+                return Err(ServiceError::InvalidInput {
+                    code: "invalid_workflow_name",
+                    message: "workflow name must not be empty".to_string(),
+                });
             }
             apply_workflow_name(&mut definition, trimmed.to_string());
         }
@@ -164,7 +158,7 @@ impl WorkflowService {
         self.repo
             .save(id, version, definition.clone())
             .await
-            .map_err(map_ports_error)?;
+            .map_err(ServiceError::from_ports)?;
 
         Ok(WorkflowDetail {
             id: id_str.to_string(),
@@ -174,13 +168,17 @@ impl WorkflowService {
         })
     }
 
-    pub(crate) async fn delete(&self, id: WorkflowId, id_str: &str) -> ApiResult<()> {
-        let deleted = self.repo.delete(id).await.map_err(map_ports_error)?;
+    pub(crate) async fn delete(&self, id: WorkflowId, id_str: &str) -> ServiceResult<()> {
+        let deleted = self
+            .repo
+            .delete(id)
+            .await
+            .map_err(ServiceError::from_ports)?;
         if !deleted {
-            return Err(ApiHttpError::not_found(
-                "workflow_not_found",
-                format!("workflow {id_str} was not found"),
-            ));
+            return Err(ServiceError::NotFound {
+                code: "workflow_not_found",
+                message: format!("workflow {id_str} was not found"),
+            });
         }
         Ok(())
     }
@@ -229,22 +227,4 @@ fn apply_workflow_active(definition: &mut serde_json::Value, active: bool) {
     *definition = serde_json::json!({
         "active": active
     });
-}
-
-fn map_ports_error(error: PortsError) -> ApiHttpError {
-    match error {
-        PortsError::NotFound { entity, id } => {
-            ApiHttpError::not_found("not_found", format!("{entity} not found: {id}"))
-        }
-        PortsError::Conflict { .. } => {
-            ApiHttpError::conflict("conflict", "resource version conflict")
-        }
-        PortsError::Connection(_)
-        | PortsError::Serialization(_)
-        | PortsError::Timeout { .. }
-        | PortsError::LeaseUnavailable { .. }
-        | PortsError::Internal(_) => {
-            ApiHttpError::internal("internal_error", "failed to access workflow storage")
-        }
-    }
 }

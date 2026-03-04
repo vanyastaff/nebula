@@ -15,7 +15,7 @@
 | `server.rs` | ApiServerConfig/ApiServer/ApiError (startup surface) |
 | `routes/` | Route groups (`system`, `auth`, `workflows`) + router composition |
 | `handlers/` | Thin HTTP handlers (`system`, `workflows`) |
-| `services/` | Business operations (`workflows`) |
+| `services/` | Business operations (`workflows`) with service-level errors (no HTTP coupling) |
 | `state.rs` | ApiState + dependency wiring (repos, oauth/rate-limit stores) |
 | `auth/` | `extractor`, `oauth`, `cors` split for auth boundary and OAuth flow |
 | `error.rs` | Unified HTTP error envelope (`ApiHttpError`, `ApiResult`) |
