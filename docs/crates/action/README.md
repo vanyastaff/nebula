@@ -39,6 +39,7 @@ Those belong to runtime/engine/sandbox/resource/credential crates.
 - [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](./ARCHITECTURE.md): current + target architecture
 - [API.md](./API.md): stable API and authoring patterns
+- [EXAMPLES.md](./EXAMPLES.md): end-to-end examples
 - [INTERACTIONS.md](./INTERACTIONS.md): crate-to-crate integration contracts
 - [DECISIONS.md](./DECISIONS.md): accepted architectural decisions
 - [ROADMAP.md](./ROADMAP.md): phased path to hardened production state

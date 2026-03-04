@@ -76,7 +76,7 @@
 
 **Goal**: External authors can build action nodes with predictable behavior.
 
-- [ ] ACT-T024 [P] Publish end-to-end example: stateless action with runtime
+- [x] ACT-T024 [P] Publish end-to-end example: stateless action with runtime
 - [ ] ACT-T025 [P] Publish end-to-end example: stateful action with state management
 - [ ] ACT-T026 [P] Publish end-to-end example: trigger action (webhook)
 - [ ] ACT-T027 Define error-to-retry mapping patterns and document recommended conventions
