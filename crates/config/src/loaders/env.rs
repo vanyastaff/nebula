@@ -6,6 +6,16 @@ use crate::core::{
 use async_trait::async_trait;
 use std::collections::HashMap;
 
+/// Environment value parsing mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EnvParseMode {
+    /// Parse values as strings only.
+    Strict,
+    /// Parse booleans, numbers, JSON and CSV arrays where applicable.
+    #[default]
+    Permissive,
+}
+
 /// Environment variable loader
 #[derive(Debug, Clone)]
 pub struct EnvLoader {
@@ -20,6 +30,9 @@ pub struct EnvLoader {
 
     /// Whether to log sensitive values
     pub log_sensitive: bool,
+
+    /// Environment value parsing strategy.
+    pub parse_mode: EnvParseMode,
 }
 
 impl EnvLoader {
@@ -30,6 +43,7 @@ impl EnvLoader {
             separator: "_".to_string(),
             case_sensitive: false,
             log_sensitive: false,
+            parse_mode: EnvParseMode::Permissive,
         }
     }
 
@@ -40,6 +54,7 @@ impl EnvLoader {
             separator: "_".to_string(),
             case_sensitive: false,
             log_sensitive: false,
+            parse_mode: EnvParseMode::Permissive,
         }
     }
 
@@ -61,6 +76,13 @@ impl EnvLoader {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_log_sensitive(mut self, log_sensitive: bool) -> Self {
         self.log_sensitive = log_sensitive;
+        self
+    }
+
+    /// Set environment value parse mode.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_parse_mode(mut self, parse_mode: EnvParseMode) -> Self {
+        self.parse_mode = parse_mode;
         self
     }
 
@@ -138,6 +160,10 @@ impl EnvLoader {
 
     /// Parse environment variable value
     fn parse_env_value(&self, value: &str) -> serde_json::Value {
+        if self.parse_mode == EnvParseMode::Strict {
+            return serde_json::Value::String(value.to_string());
+        }
+
         // Empty string
         if value.is_empty() {
             return serde_json::Value::String(String::new());
@@ -325,6 +351,28 @@ mod tests {
         assert_eq!(
             loader.parse_env_value("hello world"),
             serde_json::Value::String("hello world".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_env_value_strict_mode() {
+        let loader = EnvLoader::new().with_parse_mode(EnvParseMode::Strict);
+
+        assert_eq!(
+            loader.parse_env_value("true"),
+            serde_json::Value::String("true".to_string())
+        );
+        assert_eq!(
+            loader.parse_env_value("42"),
+            serde_json::Value::String("42".to_string())
+        );
+        assert_eq!(
+            loader.parse_env_value("one,two"),
+            serde_json::Value::String("one,two".to_string())
+        );
+        assert_eq!(
+            loader.parse_env_value(r#"{"k":1}"#),
+            serde_json::Value::String(r#"{"k":1}"#.to_string())
         );
     }
 

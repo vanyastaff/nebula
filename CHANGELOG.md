@@ -19,6 +19,16 @@ commit history using the configuration in [`.github/release.yml`](.github/releas
 - CI pipeline: format check, Clippy, tests, security audit, Miri
 - Dependabot configured for Cargo and GitHub Actions
 
+### ⚡ Performance
+- `nebula-config`: removed per-validator JSON cloning in parallel validation path (`CompositeValidator::validate_parallel`) to reduce allocations.
+
+### 💥 Breaking Changes
+- `nebula-config`: `ConfigSource` narrowed to implemented variants only (`Env`, `EnvWithPrefix`, `File`, `FileAuto`, `Directory`, `Default`).
+- `nebula-config`: `with_fail_on_missing(true)` now applies consistently to both `build()` and `reload()`.
+
+### 🔧 Improvements
+- `nebula-config`: added `EnvParseMode` (`Permissive`/`Strict`) and new builder controls: `with_env_parse_mode`, `with_env_strict_parsing`.
+
 ### 📖 Documentation
 - `vision/` hub with architecture, crate map, dependency graph, roadmap, and decision records
 - `docs/` with per-crate documentation

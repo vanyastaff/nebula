@@ -66,6 +66,17 @@ impl CompositeLoader {
             .add_loader(EnvLoader::new())
     }
 
+    /// Create default composite loader with file and env loaders,
+    /// using a specific env parse mode.
+    #[cfg(feature = "env")]
+    pub fn default_loaders_with_env_parse_mode(parse_mode: super::EnvParseMode) -> Self {
+        use super::{EnvLoader, FileLoader};
+
+        Self::new()
+            .add_loader(FileLoader::new())
+            .add_loader(EnvLoader::new().with_parse_mode(parse_mode))
+    }
+
     /// Create default composite loader with file-only support when `env` feature is disabled.
     #[cfg(not(feature = "env"))]
     pub fn default_loaders() -> Self {
@@ -190,6 +201,6 @@ mod tests {
         assert!(loader.supports(&ConfigSource::EnvWithPrefix("APP".to_string())));
         #[cfg(not(feature = "env"))]
         assert!(!loader.supports(&ConfigSource::Env));
-        assert!(!loader.supports(&ConfigSource::Remote("http://example.com".to_string())));
+        assert!(!loader.supports(&ConfigSource::Default));
     }
 }

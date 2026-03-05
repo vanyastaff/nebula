@@ -1,8 +1,11 @@
 //! Configuration builder
 
 use super::config::merge_json;
+use super::config::ConfigRuntimeOptions;
 use super::{Config, ConfigError, ConfigResult, ConfigSource};
 use crate::loaders::CompositeLoader;
+#[cfg(feature = "env")]
+use crate::loaders::EnvParseMode;
 use crate::{ConfigLoader, ConfigValidator, ConfigWatcher};
 use std::sync::Arc;
 
@@ -31,6 +34,10 @@ pub struct ConfigBuilder {
 
     /// Whether to fail on missing optional sources
     fail_on_missing: bool,
+
+    /// Environment parsing strategy (applied for default loader construction).
+    #[cfg(feature = "env")]
+    env_parse_mode: EnvParseMode,
 }
 
 impl ConfigBuilder {
@@ -45,6 +52,8 @@ impl ConfigBuilder {
             hot_reload: false,
             auto_reload_interval: None,
             fail_on_missing: false,
+            #[cfg(feature = "env")]
+            env_parse_mode: EnvParseMode::Permissive,
         }
     }
 
@@ -121,6 +130,25 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set environment parse mode for default env loader.
+    ///
+    /// Applied only when an explicit loader is not provided.
+    #[cfg(feature = "env")]
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_env_parse_mode(mut self, mode: EnvParseMode) -> Self {
+        self.env_parse_mode = mode;
+        self
+    }
+
+    /// Enable strict environment parsing for default env loader.
+    ///
+    /// Applied only when an explicit loader is not provided.
+    #[cfg(feature = "env")]
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_env_strict_parsing(self) -> Self {
+        self.with_env_parse_mode(EnvParseMode::Strict)
+    }
+
     /// Validate builder configuration
     fn validate(&self) -> ConfigResult<()> {
         // Ensure at least one source if no defaults
@@ -140,9 +168,19 @@ impl ConfigBuilder {
         self.validate()?;
 
         // Use default loader if none provided
-        let loader = self
-            .loader
-            .unwrap_or_else(|| Arc::new(CompositeLoader::default()));
+        let loader = self.loader.unwrap_or_else(|| {
+            #[cfg(feature = "env")]
+            {
+                Arc::new(CompositeLoader::default_loaders_with_env_parse_mode(
+                    self.env_parse_mode,
+                ))
+            }
+
+            #[cfg(not(feature = "env"))]
+            {
+                Arc::new(CompositeLoader::default())
+            }
+        });
 
         // Keep defaults for reload baselines.
         let defaults = self.defaults;
@@ -218,7 +256,10 @@ impl ConfigBuilder {
             loader,
             self.validator,
             self.watcher,
-            self.hot_reload,
+            ConfigRuntimeOptions {
+                hot_reload: self.hot_reload,
+                fail_on_missing: self.fail_on_missing,
+            },
         );
 
         // Start watching if hot reload is enabled
@@ -262,7 +303,8 @@ impl Default for ConfigBuilder {
 
 impl std::fmt::Debug for ConfigBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ConfigBuilder")
+        let mut debug = f.debug_struct("ConfigBuilder");
+        debug
             .field("sources", &self.sources.len())
             .field("has_defaults", &self.defaults.is_some())
             .field("has_loader", &self.loader.is_some())
@@ -270,15 +312,19 @@ impl std::fmt::Debug for ConfigBuilder {
             .field("has_watcher", &self.watcher.is_some())
             .field("hot_reload", &self.hot_reload)
             .field("auto_reload_interval", &self.auto_reload_interval)
-            .field("fail_on_missing", &self.fail_on_missing)
-            .finish()
+            .field("fail_on_missing", &self.fail_on_missing);
+        #[cfg(feature = "env")]
+        debug.field("env_parse_mode", &self.env_parse_mode);
+        debug.finish()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
     async fn test_builder_defaults_only() {
@@ -366,5 +412,72 @@ mod tests {
         assert!(debug.contains("ConfigBuilder"));
         assert!(debug.contains("sources"));
         assert!(debug.contains("hot_reload"));
+    }
+
+    struct FlakyOptionalLoader {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl crate::core::ConfigLoader for FlakyOptionalLoader {
+        async fn load(&self, source: &ConfigSource) -> ConfigResult<serde_json::Value> {
+            match source {
+                ConfigSource::Env => {
+                    let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                    if call == 0 {
+                        Ok(json!({"ok": true}))
+                    } else {
+                        Err(ConfigError::source_error("simulated reload failure", source.name()))
+                    }
+                }
+                _ => Err(ConfigError::source_error("unsupported", source.name())),
+            }
+        }
+
+        fn supports(&self, source: &ConfigSource) -> bool {
+            matches!(source, ConfigSource::Env)
+        }
+
+        async fn metadata(&self, source: &ConfigSource) -> ConfigResult<crate::SourceMetadata> {
+            Ok(crate::SourceMetadata::new(source.clone()))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reload_respects_fail_on_missing_true_for_optional_sources() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let loader = Arc::new(FlakyOptionalLoader {
+            calls: Arc::clone(&calls),
+        });
+
+        let config = ConfigBuilder::new()
+            .with_source(ConfigSource::Env)
+            .with_loader(loader)
+            .with_fail_on_missing(true)
+            .build()
+            .await
+            .unwrap();
+
+        let reload = config.reload().await;
+        assert!(reload.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_reload_skips_optional_source_failures_by_default() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let loader = Arc::new(FlakyOptionalLoader {
+            calls: Arc::clone(&calls),
+        });
+
+        let config = ConfigBuilder::new()
+            .with_source(ConfigSource::Env)
+            .with_loader(loader)
+            .with_fail_on_missing(false)
+            .build()
+            .await
+            .unwrap();
+
+        let reload = config.reload().await;
+        assert!(reload.is_ok());
     }
 }

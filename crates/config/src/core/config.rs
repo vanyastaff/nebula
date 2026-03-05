@@ -9,6 +9,13 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+/// Runtime behavior options for `Config`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ConfigRuntimeOptions {
+    pub hot_reload: bool,
+    pub fail_on_missing: bool,
+}
+
 /// Main configuration container
 #[derive(Clone)]
 pub struct Config {
@@ -36,6 +43,9 @@ pub struct Config {
     /// Hot reload enabled
     hot_reload: bool,
 
+    /// Whether reload should fail on optional source errors.
+    fail_on_missing: bool,
+
     /// Cancellation token for background tasks (auto-reload, etc.)
     cancel_token: CancellationToken,
 }
@@ -49,7 +59,7 @@ impl Config {
         loader: Arc<dyn ConfigLoader>,
         validator: Option<Arc<dyn ConfigValidator>>,
         watcher: Option<Arc<dyn ConfigWatcher>>,
-        hot_reload: bool,
+        options: ConfigRuntimeOptions,
     ) -> Self {
         Self {
             data: Arc::new(RwLock::new(data)),
@@ -59,7 +69,8 @@ impl Config {
             loader,
             validator,
             watcher,
-            hot_reload,
+            hot_reload: options.hot_reload,
+            fail_on_missing: options.fail_on_missing,
             cancel_token: CancellationToken::new(),
         }
     }
@@ -209,7 +220,7 @@ impl Config {
                 Err(e) => {
                     nebula_log::warn!("Failed to load from source {}: {}", source, e);
 
-                    if !source.is_optional() {
+                    if self.fail_on_missing || !source.is_optional() {
                         return Err(e);
                     }
                 }
@@ -541,6 +552,7 @@ impl std::fmt::Debug for Config {
             .field("watching", &self.is_watching())
             .field("has_validator", &self.validator.is_some())
             .field("has_watcher", &self.watcher.is_some())
+            .field("fail_on_missing", &self.fail_on_missing)
             .finish()
     }
 }
@@ -572,7 +584,10 @@ mod tests {
             Arc::new(crate::loaders::CompositeLoader::default()),
             None,
             None,
-            false,
+            ConfigRuntimeOptions {
+                hot_reload: false,
+                fail_on_missing: false,
+            },
         )
     }
 

@@ -67,7 +67,7 @@ pub use core::{
 
 // Re-export concrete implementations
 #[cfg(feature = "env")]
-pub use loaders::EnvLoader;
+pub use loaders::{EnvLoader, EnvParseMode};
 pub use loaders::{CompositeLoader, FileLoader};
 
 pub use validators::{CompositeValidator, FunctionValidator, NoOpValidator, SchemaValidator};
@@ -98,7 +98,7 @@ pub mod prelude {
 
     // Common loaders
     #[cfg(feature = "env")]
-    pub use crate::loaders::EnvLoader;
+    pub use crate::loaders::{EnvLoader, EnvParseMode};
     pub use crate::loaders::{CompositeLoader, FileLoader};
 
     // Common validators

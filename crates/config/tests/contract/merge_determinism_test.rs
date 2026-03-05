@@ -6,7 +6,7 @@ use std::sync::Arc;
 async fn build_snapshot() -> serde_json::Value {
     let file_source = ConfigSource::File("contract-file.toml".into());
     let env_source = ConfigSource::EnvWithPrefix("CONTRACT".to_string());
-    let inline_source = ConfigSource::Inline("contract-inline".to_string());
+    let override_source = ConfigSource::EnvWithPrefix("CONTRACT_RUNTIME".to_string());
 
     let loader = StaticFixtureLoader::default()
         .with_payload(
@@ -14,13 +14,13 @@ async fn build_snapshot() -> serde_json::Value {
             json!({"a": 2, "shared": {"b": "file"}}),
         )
         .with_payload(env_source.clone(), json!({"shared": {"b": "env", "c": 3}}))
-        .with_payload(inline_source.clone(), json!({"shared": {"c": 4}}));
+        .with_payload(override_source.clone(), json!({"shared": {"c": 4}}));
 
     ConfigBuilder::new()
         .with_defaults_json(json!({"a": 1, "shared": {"b": "default"}}))
         .with_source(file_source)
         .with_source(env_source)
-        .with_source(inline_source)
+        .with_source(override_source)
         .with_loader(Arc::new(loader))
         .build()
         .await

@@ -2,6 +2,7 @@
 
 use crate::core::{ConfigResult, ConfigValidator};
 use async_trait::async_trait;
+use futures::stream::{FuturesUnordered, StreamExt};
 use std::sync::Arc;
 
 /// Composite validator that runs multiple validators
@@ -90,20 +91,13 @@ impl CompositeValidator {
 
     /// Run validators in parallel
     async fn validate_parallel(&self, data: &serde_json::Value) -> ConfigResult<()> {
-        let futures: Vec<_> = self
-            .validators
-            .iter()
-            .map(|validator| {
-                let validator = Arc::clone(validator);
-                let data = data.clone();
-                async move { validator.validate(&data).await }
-            })
-            .collect();
-
-        let results = futures::future::join_all(futures).await;
+        let mut futures = FuturesUnordered::new();
+        for validator in &self.validators {
+            futures.push(validator.validate(data));
+        }
 
         let mut errors = Vec::new();
-        for result in results {
+        while let Some(result) = futures.next().await {
             if let Err(e) = result {
                 if self.fail_fast {
                     return Err(e);

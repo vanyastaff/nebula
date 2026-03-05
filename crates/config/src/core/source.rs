@@ -22,35 +22,8 @@ pub enum ConfigSource {
     /// Configuration directory (load all files)
     Directory(PathBuf),
 
-    /// Remote configuration (HTTP/HTTPS)
-    Remote(String),
-
-    /// Database configuration
-    Database {
-        /// Database connection URL
-        url: String,
-        /// Table or collection name containing configuration
-        table: String,
-        /// Key name to identify configuration record
-        key: String,
-    },
-
-    /// Key-value store
-    KeyValue {
-        /// Key-value store connection URL
-        url: String,
-        /// Bucket or namespace for configuration data
-        bucket: String,
-    },
-
     /// Default values
     Default,
-
-    /// Command line arguments
-    CommandLine,
-
-    /// Inline configuration
-    Inline(String),
 }
 
 impl ConfigSource {
@@ -65,21 +38,6 @@ impl ConfigSource {
     /// Check if this source is environment-based
     pub fn is_env_based(&self) -> bool {
         matches!(self, ConfigSource::Env | ConfigSource::EnvWithPrefix(_))
-    }
-
-    /// Check if this source is remote
-    pub fn is_remote(&self) -> bool {
-        matches!(self, ConfigSource::Remote(_))
-    }
-
-    /// Check if this source is database-based
-    pub fn is_database(&self) -> bool {
-        matches!(self, ConfigSource::Database { .. })
-    }
-
-    /// Check if this source is key-value based
-    pub fn is_key_value(&self) -> bool {
-        matches!(self, ConfigSource::KeyValue { .. })
     }
 
     /// Check if this source is optional (can fail without error)
@@ -97,11 +55,6 @@ impl ConfigSource {
             ConfigSource::File(_) | ConfigSource::FileAuto(_) => 50,
             ConfigSource::Directory(_) => 40,
             ConfigSource::Env | ConfigSource::EnvWithPrefix(_) => 30,
-            ConfigSource::CommandLine => 20,
-            ConfigSource::Remote(_) => 10,
-            ConfigSource::Database { .. } => 5,
-            ConfigSource::KeyValue { .. } => 5,
-            ConfigSource::Inline(_) => 1,
         }
     }
 
@@ -113,12 +66,7 @@ impl ConfigSource {
             ConfigSource::File(_) => "file",
             ConfigSource::FileAuto(_) => "file (auto-detect)",
             ConfigSource::Directory(_) => "directory",
-            ConfigSource::Remote(_) => "remote",
-            ConfigSource::Database { .. } => "database",
-            ConfigSource::KeyValue { .. } => "key-value store",
             ConfigSource::Default => "default",
-            ConfigSource::CommandLine => "command line",
-            ConfigSource::Inline(_) => "inline",
         }
     }
 }
@@ -133,22 +81,7 @@ impl std::fmt::Display for ConfigSource {
             ConfigSource::File(path) => write!(f, "file: {}", path.display()),
             ConfigSource::FileAuto(path) => write!(f, "file (auto): {}", path.display()),
             ConfigSource::Directory(path) => write!(f, "directory: {}", path.display()),
-            ConfigSource::Remote(url) => write!(f, "remote: {}", url),
-            ConfigSource::Database { url, table, key } => {
-                write!(f, "database: {} (table: {}, key: {})", url, table, key)
-            }
-            ConfigSource::KeyValue { url, bucket } => {
-                write!(f, "key-value store: {} (bucket: {})", url, bucket)
-            }
             ConfigSource::Default => write!(f, "default values"),
-            ConfigSource::CommandLine => write!(f, "command line arguments"),
-            ConfigSource::Inline(data) => {
-                if data.len() > 50 {
-                    write!(f, "inline: {}...", &data[..50])
-                } else {
-                    write!(f, "inline: {data}")
-                }
-            }
         }
     }
 }
@@ -410,9 +343,6 @@ mod tests {
         let file = ConfigSource::File(PathBuf::from("config.json"));
         assert!(file.is_file_based());
         assert!(!file.is_env_based());
-        assert!(!file.is_remote());
-        assert!(!file.is_database());
-        assert!(!file.is_key_value());
 
         assert!(ConfigSource::FileAuto(PathBuf::from("f")).is_file_based());
         assert!(ConfigSource::Directory(PathBuf::from("d")).is_file_based());
@@ -420,23 +350,6 @@ mod tests {
         assert!(ConfigSource::Env.is_env_based());
         assert!(ConfigSource::EnvWithPrefix("APP".into()).is_env_based());
         assert!(!ConfigSource::Env.is_file_based());
-
-        assert!(ConfigSource::Remote("http://x".into()).is_remote());
-
-        let db = ConfigSource::Database {
-            url: "pg://".into(),
-            table: "t".into(),
-            key: "k".into(),
-        };
-        assert!(db.is_database());
-        assert!(!db.is_key_value());
-
-        let kv = ConfigSource::KeyValue {
-            url: "redis://".into(),
-            bucket: "b".into(),
-        };
-        assert!(kv.is_key_value());
-        assert!(!kv.is_database());
     }
 
     #[test]
@@ -445,21 +358,17 @@ mod tests {
         assert!(ConfigSource::EnvWithPrefix("X".into()).is_optional());
         assert!(ConfigSource::Default.is_optional());
         assert!(!ConfigSource::File(PathBuf::from("f")).is_optional());
-        assert!(!ConfigSource::Remote("http://x".into()).is_optional());
 
         assert_eq!(ConfigSource::Default.priority(), 100);
         assert_eq!(ConfigSource::File(PathBuf::from("f")).priority(), 50);
         assert_eq!(ConfigSource::Env.priority(), 30);
-        assert_eq!(ConfigSource::CommandLine.priority(), 20);
-        assert_eq!(ConfigSource::Remote("u".into()).priority(), 10);
-        assert_eq!(ConfigSource::Inline("x".into()).priority(), 1);
+        assert_eq!(ConfigSource::Directory(PathBuf::from("d")).priority(), 40);
     }
 
     #[test]
     fn test_config_source_name_and_display() {
         assert_eq!(ConfigSource::Env.name(), "environment");
         assert_eq!(ConfigSource::Default.name(), "default");
-        assert_eq!(ConfigSource::CommandLine.name(), "command line");
         assert_eq!(ConfigSource::File(PathBuf::from("f.json")).name(), "file");
 
         let display = format!("{}", ConfigSource::Env);

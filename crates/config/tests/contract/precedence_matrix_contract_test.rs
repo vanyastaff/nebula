@@ -31,8 +31,8 @@ async fn precedence_matrix_resolves_deterministically() {
     for source in &fixture.sources {
         let config_source = match source.kind.as_str() {
             "file" => ConfigSource::File(source.id.clone().into()),
+            "file_auto" => ConfigSource::FileAuto(source.id.clone().into()),
             "env_with_prefix" => ConfigSource::EnvWithPrefix(source.id.clone()),
-            "inline" => ConfigSource::Inline(source.id.clone()),
             other => panic!("unsupported fixture source kind: {other}"),
         };
         builder = builder.with_source(config_source.clone());

@@ -37,8 +37,8 @@
       }
     },
     {
-      "kind": "inline",
-      "id": "runtime-override",
+      "kind": "env_with_prefix",
+      "id": "APP_RUNTIME",
       "payload": {
         "service": {
           "port": 9000

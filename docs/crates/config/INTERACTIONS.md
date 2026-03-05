@@ -15,7 +15,7 @@
 
 ### Planned / optional
 
-- Adapter crates for `ConfigSource::Remote`, `Database`, `KeyValue` (no default loader implementation today).
+- Additional source adapters may be added as separate crates with explicit, versioned contracts.
 
 ## Downstream Consumers
 
@@ -28,6 +28,7 @@
 - **Async:** tokio, futures, async-trait; ConfigLoader and ConfigWatcher are async.
 - **Watching:** notify (FileWatcher); PollingWatcher uses tokio interval.
 - **Fallback:** Optional sources (`is_optional()`) do not fail build/reload; non-optional source failure returns Err.
+  - If `with_fail_on_missing(true)` is enabled, optional source failures are fatal at both build and reload time.
 
 ## Interaction Matrix
 

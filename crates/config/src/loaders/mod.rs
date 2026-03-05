@@ -7,7 +7,7 @@ pub(crate) mod file;
 
 pub use composite::CompositeLoader;
 #[cfg(feature = "env")]
-pub use env::EnvLoader;
+pub use env::{EnvLoader, EnvParseMode};
 pub use file::FileLoader;
 
 // Re-export trait from core for convenience

@@ -23,7 +23,7 @@ let port: u16 = cfg.get("server.port").await?;
 ## Public Surface
 
 - **Stable APIs:** `ConfigBuilder`, `Config`, `ConfigSource`, `ConfigFormat`, `SourceMetadata`, `ConfigLoader`, `ConfigValidator`, `ConfigWatcher`, `ConfigError`, `ConfigResult`, `ConfigResultExt`, `ConfigResultAggregator`, `try_sources`, watcher types, validator implementations, `builders`, `utils`
-- **Experimental:** `ConfigSource::Remote`, `Database`, `KeyValue` source variants (not fully implemented by default loaders — load via `SourceError`)
+- **Breaking (current):** `ConfigSource` narrowed to implemented variants only (`Env`, `EnvWithPrefix`, `File`, `FileAuto`, `Directory`, `Default`)
 - **Deprecated:** `Config::get_path` (since 0.2.0 → use `get`)
 - **Feature flags:** `json`, `toml`, `yaml`, `env` (all enabled by default)
 
@@ -52,6 +52,8 @@ All builder methods are `#[must_use]`.
 | `with_hot_reload` | `fn with_hot_reload(self, enabled: bool) -> Self` | Enables watcher on `build()` |
 | `with_auto_reload_interval` | `fn with_auto_reload_interval(self, interval: Duration) -> Self` | Spawns Tokio task on `build()` |
 | `with_fail_on_missing` | `fn with_fail_on_missing(self, fail: bool) -> Self` | Default: false (optional sources silently skipped) |
+| `with_env_parse_mode` (feature `env`) | `fn with_env_parse_mode(self, mode: EnvParseMode) -> Self` | Applies when default loader is used |
+| `with_env_strict_parsing` (feature `env`) | `fn with_env_strict_parsing(self) -> Self` | Shortcut for strict env value parsing |
 | `build` | `async fn build(self) -> ConfigResult<Config>` | Validates, loads, merges, activates |
 
 **`build()` behavior:**
@@ -133,16 +135,11 @@ pub struct Config { /* data: Arc<RwLock<Value>>, ... */ }
 
 ```rust
 #[non_exhaustive]
-pub enum ConfigSource { /* 11 variants */ }
+pub enum ConfigSource { /* 6 variants */ }
 ```
 
 | Variant | Priority (lower = higher override) | Optional? |
 |---------|------|----------|
-| `Inline(String)` | 1 | No |
-| `Database { url, table, key }` | 5 | No |
-| `KeyValue { url, bucket }` | 5 | No |
-| `Remote(String)` | 10 | No |
-| `CommandLine` | 20 | No |
 | `Env` | 30 | Yes |
 | `EnvWithPrefix(String)` | 30 | Yes |
 | `Directory(PathBuf)` | 40 | No |
@@ -150,7 +147,7 @@ pub enum ConfigSource { /* 11 variants */ }
 | `FileAuto(PathBuf)` | 50 | No |
 | `Default` | 100 | Yes |
 
-Optional sources that fail to load are silently skipped (unless `with_fail_on_missing(true)`).
+Optional source failures are skipped by default. If `with_fail_on_missing(true)` is enabled, optional failures are fatal in both `build()` and `reload()`.
 
 **Methods:**
 
@@ -158,9 +155,6 @@ Optional sources that fail to load are silently skipped (unless `with_fail_on_mi
 |--------|-------|
 | `is_file_based()` | `File`, `FileAuto`, `Directory` |
 | `is_env_based()` | `Env`, `EnvWithPrefix` |
-| `is_remote()` | `Remote` |
-| `is_database()` | `Database` |
-| `is_key_value()` | `KeyValue` |
 | `is_optional()` | `Env`, `EnvWithPrefix`, `Default` |
 | `priority() -> u8` | See table above |
 | `name() -> &'static str` | Human-readable short name |
@@ -426,9 +420,9 @@ Same as `Configurable` but async (`async fn configure`, `async fn reset_config`)
 
 | Type | Source | Notes |
 |------|--------|-------|
-| `FileLoader` | `File`, `FileAuto`, `Directory` | Parses JSON/TOML/YAML/INI/HCL/Properties/env based on extension |
-| `EnvLoader` (feature `env`) | `Env`, `EnvWithPrefix` | Maps `__` → `.` for nesting; prefix stripped |
-| `CompositeLoader` | All | Default loader; delegates to `FileLoader` + `EnvLoader` |
+| `FileLoader` | `File`, `FileAuto`, `Directory` | Parses JSON/TOML/YAML/INI/Properties based on extension |
+| `EnvLoader` (feature `env`) | `Env`, `EnvWithPrefix` | Separator configurable (default `_`); parse mode `Permissive` or `Strict` |
+| `CompositeLoader` | Supported configured sources | Default loader delegates to `FileLoader` (+ `EnvLoader` with `env` feature) |
 
 `CompositeLoader::default()` — includes all available loaders. `CompositeLoader::default_loaders()` — same.
 
@@ -508,7 +502,7 @@ utils::parse_config_string(content: &str, format: ConfigFormat) -> ConfigResult<
 ### Precedence Order (lowest to highest priority)
 
 ```
-Default (100) < File/FileAuto (50) < Directory (40) < Env (30) < CommandLine (20) < Remote (10) < Database/KeyValue (5) < Inline (1)
+Default (100) < File/FileAuto (50) < Directory (40) < Env/EnvWithPrefix (30)
 ```
 
 Lower priority number overrides higher priority number. Sources with the same priority are merged in insertion order.
