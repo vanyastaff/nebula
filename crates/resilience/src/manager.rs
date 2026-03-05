@@ -389,7 +389,7 @@ impl RuntimeServiceMetrics {
             self.failed_operations.fetch_add(1, Ordering::Relaxed);
         }
 
-        let nanos = elapsed.as_nanos().min(u64::MAX as u128) as u64;
+        let nanos = elapsed.as_nanos().min(u128::from(u64::MAX)) as u64;
         self.total_latency_nanos.fetch_add(nanos, Ordering::Relaxed);
     }
 

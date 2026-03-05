@@ -10,6 +10,10 @@ Budgets apply to `nebula-resilience` Criterion benchmarks:
 - `bulkhead`
 - `retry`
 - `compose`
+- `timeout`
+- `fallback`
+- `hedge`
+- `observability`
 
 ## Baseline Policy
 
@@ -31,6 +35,9 @@ Budgets apply to `nebula-resilience` Criterion benchmarks:
 - `retry/jitter_calculation/full_jitter`: regression > **12%**
 - `timeout/overhead/wrapped_yield_once`: regression > **10%**
 - `circuit_breaker/can_execute/closed`: regression > **6%**
+- `fallback/execute/value_error_path`: regression > **10%**
+- `hedge/contention/parallel_fast/64`: regression > **10%**
+- `observability/contention/parallel_emit/96`: regression > **10%**
 
 ### Soft Gate (needs review)
 

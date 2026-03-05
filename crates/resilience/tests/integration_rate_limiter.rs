@@ -49,14 +49,14 @@ async fn test_adaptive_rate_limiter_adjusts() {
     // Test basic functionality without waiting for stats window
     // Just verify that record_success and record_error don't panic
     for _ in 0..20 {
-        limiter.record_success().await;
+        limiter.record_success();
     }
 
     let initial_rate = limiter.current_rate().await;
     assert_eq!(initial_rate, 100.0, "Initial rate should be 100.0");
 
     for _ in 0..10 {
-        limiter.record_error().await;
+        limiter.record_error();
     }
 
     // Since we haven't waited for the stats window (60s), rate should still be the same

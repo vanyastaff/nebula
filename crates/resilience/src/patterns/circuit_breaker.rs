@@ -608,16 +608,17 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
         }
 
         let now = Instant::now();
-        {
+        let (state_snapshot, elapsed_since_change) = {
             let inner = self.inner.read().await;
-            if !matches!(inner.state, State::Open) {
-                return inner.state;
-            }
+            (inner.state, now.duration_since(inner.last_state_change))
+        };
 
-            let elapsed = now.duration_since(inner.last_state_change);
-            if elapsed < Duration::from_millis(RESET_TIMEOUT_MS) {
-                return State::Open;
-            }
+        if !matches!(state_snapshot, State::Open) {
+            return state_snapshot;
+        }
+
+        if elapsed_since_change < Duration::from_millis(RESET_TIMEOUT_MS) {
+            return State::Open;
         }
 
         let mut inner = self.inner.write().await;
@@ -727,36 +728,37 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
             }
             State::Open => {
                 let now = Instant::now();
-                {
+                let timeout_duration = Duration::from_millis(RESET_TIMEOUT_MS);
+                let (is_open, elapsed_since_change) = {
                     let inner = self.inner.read().await;
-                    if !matches!(inner.state, State::Open) {
-                        return Ok(());
-                    }
+                    (
+                        matches!(inner.state, State::Open),
+                        now.duration_since(inner.last_state_change),
+                    )
+                };
 
-                    let elapsed = now.duration_since(inner.last_state_change);
-                    if elapsed >= Duration::from_millis(RESET_TIMEOUT_MS) {
+                if !is_open {
+                    return Ok(());
+                }
+
+                if elapsed_since_change >= timeout_duration {
+                    let mut inner = self.inner.write().await;
+                    if matches!(inner.state, State::Open)
+                        && now.duration_since(inner.last_state_change) >= timeout_duration
+                    {
+                        info!("Circuit breaker transitioning from open to half-open");
+                        inner.set_state(State::HalfOpen);
+                        inner.half_open_operations = 0;
                         drop(inner);
-                        let mut inner = self.inner.write().await;
-                        if matches!(inner.state, State::Open)
-                            && now.duration_since(inner.last_state_change)
-                                >= Duration::from_millis(RESET_TIMEOUT_MS)
-                        {
-                            info!("Circuit breaker transitioning from open to half-open");
-                            inner.set_state(State::HalfOpen);
-                            inner.half_open_operations = 0;
-                            return Ok(());
-                        }
+                        return Ok(());
                     }
                 }
 
-                let inner = self.inner.read().await;
-                let elapsed = now.duration_since(inner.last_state_change);
-                let timeout_duration = Duration::from_millis(RESET_TIMEOUT_MS);
-                let retry_after = if elapsed < timeout_duration {
+                let retry_after = if elapsed_since_change < timeout_duration {
                     // Use unwrap_or to handle potential clock skew safely
                     Some(
                         timeout_duration
-                            .checked_sub(elapsed)
+                            .checked_sub(elapsed_since_change)
                             .unwrap_or(Duration::ZERO),
                     )
                 } else {
@@ -776,6 +778,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
         inner.total_operations += 1;
         inner.sliding_window.record_operation(false);
         self.record_success_inner(&mut inner);
+        drop(inner);
     }
 
     /// Record a failed operation
@@ -784,6 +787,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
         inner.total_operations += 1;
         inner.sliding_window.record_operation(true);
         self.record_failure_inner(&mut inner);
+        drop(inner);
     }
 }
 

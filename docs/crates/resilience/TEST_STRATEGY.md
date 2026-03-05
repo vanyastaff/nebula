@@ -27,8 +27,26 @@
 
 - **Property testing:** optional; proptest for policy config validity.
 - **Fuzzing:** optional; serde policy deserialization.
-- **Benchmarks:** `cargo bench -p nebula-resilience` — circuit_breaker, rate_limiter, manager, retry.
+- **Benchmarks:** `cargo bench -p nebula-resilience` — circuit_breaker, rate_limiter, manager, retry, compose, timeout, bulkhead, fallback, hedge, observability.
 - **CI quality gates:** `cargo test -p nebula-resilience`; `cargo clippy`; `cargo fmt --check`.
+
+## Coverage Map
+
+| Layer | Scope | Key suites |
+|---|---|---|
+| Unit | Core pattern correctness, policy validation, error taxonomy | `src/**/tests` (`circuit_breaker`, `retry`, `bulkhead`, `rate_limiter`, `timeout`, `manager`, `policy`) |
+| Integration | Cross-pattern behavior and concurrency/fault semantics | `integration_pattern_composition.rs`, `integration_fault_injection.rs`, `integration_concurrent_access.rs`, `integration_bulkhead_fairness.rs`, `integration_retry_storm_guard.rs`, `integration_fallback_fault_injection.rs`, `integration_hedge_stress.rs`, `integration_observability_storm.rs` |
+| Benchmark | Hot-path latency and contention profiles with Criterion | `benches/{manager,rate_limiter,circuit_breaker,retry,compose,timeout,bulkhead,fallback,hedge,observability}.rs` |
+
+## Regression Gates
+
+- Required checks for Phase 8 regression control:
+	- `cargo test -p nebula-resilience`
+	- `cargo clippy -p nebula-resilience -- -D warnings`
+	- `cargo bench -p nebula-resilience --bench fallback`
+	- `cargo bench -p nebula-resilience --bench hedge`
+	- `cargo bench -p nebula-resilience --bench observability`
+- Gate thresholds and interpretation policy are defined in `PERFORMANCE_BUDGET.md`.
 
 ## Exit Criteria
 

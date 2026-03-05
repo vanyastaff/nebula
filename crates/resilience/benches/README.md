@@ -15,6 +15,11 @@ cargo bench -p nebula-resilience --bench circuit_breaker
 cargo bench -p nebula-resilience --bench rate_limiter
 cargo bench -p nebula-resilience --bench manager
 cargo bench -p nebula-resilience --bench retry
+cargo bench -p nebula-resilience --bench timeout
+cargo bench -p nebula-resilience --bench bulkhead
+cargo bench -p nebula-resilience --bench fallback
+cargo bench -p nebula-resilience --bench hedge
+cargo bench -p nebula-resilience --bench observability
 ```
 
 ### Run specific test within a suite
@@ -99,6 +104,38 @@ Measures retry strategies and jitter:
 - Jitter calculation overhead
 - Impact of max_attempts on performance
 - Backoff strategy comparisons
+
+### 5. Timeout (`timeout.rs`)
+
+Measures timeout wrapper and cancellation behavior:
+- **timeout/overhead**: direct execution vs wrapped execution overhead
+- **timeout/cancellation**: timeout firing latency and overshoot at short deadlines
+
+### 6. Bulkhead (`bulkhead.rs`)
+
+Measures bulkhead queueing and contention behavior:
+- **bulkhead/acquire**: permit acquire fast-path by concurrency level
+- **bulkhead/execute**: execute-path overhead with permit lifecycle
+- **bulkhead/contention**: throughput under concurrent saturation
+- **bulkhead/queue_timeout**: timeout behavior while queue is bounded
+
+### 7. Fallback (`fallback.rs`)
+
+Measures fallback-path overhead and contention behavior:
+- **fallback/execute**: success path vs fallback error path overhead
+- **fallback/contention**: error-path throughput under parallel contention
+
+### 8. Hedge (`hedge.rs`)
+
+Measures hedge execution overhead under normal and tail-latency scenarios:
+- **hedge/execute**: primary-fast and hedge-wins path overhead
+- **hedge/contention**: concurrent hedge execution throughput
+
+### 9. Observability (`observability.rs`)
+
+Measures observability hook emission throughput and contention behavior:
+- **observability/emit**: single-hook and fanout hook dispatch overhead
+- **observability/contention**: parallel emit throughput with multi-hook fanout
 
 ## Interpreting Results
 

@@ -13,6 +13,28 @@ struct CountingHook {
     breaker_state_events: AtomicU64,
 }
 
+#[derive(Default)]
+struct SlowHook {
+    observed_events: AtomicU64,
+    delay: Duration,
+}
+
+impl SlowHook {
+    fn new(delay: Duration) -> Self {
+        Self {
+            observed_events: AtomicU64::new(0),
+            delay,
+        }
+    }
+}
+
+impl ObservabilityHook for SlowHook {
+    fn on_event(&self, _event: &PatternEvent) {
+        std::thread::sleep(self.delay);
+        self.observed_events.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 impl ObservabilityHook for CountingHook {
     fn on_event(&self, event: &PatternEvent) {
         match event {
@@ -116,4 +138,40 @@ async fn test_observability_failure_storm_metrics_and_event_delivery() {
 
     let breaker_open = metrics.get("circuit_breaker.storm-svc.state.open").unwrap();
     assert_eq!(breaker_open.sum, expected as f64);
+}
+
+#[tokio::test]
+async fn test_observability_backpressure_no_drop_with_slow_hook() {
+    let slow_hook = Arc::new(SlowHook::new(Duration::from_millis(1)));
+    let fast_hook = Arc::new(CountingHook::default());
+
+    let hooks = Arc::new(
+        ObservabilityHooks::new()
+            .with_hook(slow_hook.clone())
+            .with_hook(fast_hook.clone()),
+    );
+
+    const WORKERS: usize = 8;
+    const EVENTS_PER_WORKER: usize = 40;
+    let expected = (WORKERS * EVENTS_PER_WORKER) as u64;
+
+    let mut tasks = Vec::with_capacity(WORKERS);
+    for _ in 0..WORKERS {
+        let hooks = Arc::clone(&hooks);
+        tasks.push(tokio::spawn(async move {
+            for _ in 0..EVENTS_PER_WORKER {
+                hooks.emit(PatternEvent::TimeoutOccurred {
+                    operation: "slow-path".to_string(),
+                    timeout: Duration::from_millis(5),
+                });
+            }
+        }));
+    }
+
+    for task in tasks {
+        task.await.unwrap();
+    }
+
+    assert_eq!(slow_hook.observed_events.load(Ordering::Relaxed), expected);
+    assert_eq!(fast_hook.timeout_events.load(Ordering::Relaxed), expected);
 }

@@ -265,3 +265,129 @@ async fn test_failure_recovery_scenario() {
         nebula_resilience::patterns::circuit_breaker::State::Closed
     );
 }
+
+#[tokio::test]
+async fn test_execute_with_override_timeout_takes_precedence() {
+    let manager = ResilienceManager::with_defaults();
+    let service_policy = PolicyBuilder::new()
+        .with_timeout(Duration::from_millis(120))
+        .build();
+    manager.register_service("override-timeout", service_policy);
+
+    let override_policy = PolicyBuilder::new()
+        .with_timeout(Duration::from_millis(15))
+        .build();
+
+    let override_result = manager
+        .execute_with_override(
+            "override-timeout",
+            "op",
+            || async {
+                sleep(Duration::from_millis(60)).await;
+                Ok::<_, ResilienceError>("finished")
+            },
+            override_policy,
+        )
+        .await;
+    assert!(matches!(override_result, Err(ResilienceError::Timeout { .. })));
+
+    let normal_result = manager
+        .execute("override-timeout", "op", || async {
+            sleep(Duration::from_millis(60)).await;
+            Ok::<_, ResilienceError>("finished")
+        })
+        .await;
+    assert!(normal_result.is_ok());
+    assert_eq!(normal_result.unwrap(), "finished");
+}
+
+#[tokio::test]
+async fn test_execute_with_override_retry_isolated_from_registered_policy() {
+    let manager = ResilienceManager::with_defaults();
+    let service_policy = PolicyBuilder::new().build();
+    manager.register_service("override-retry", service_policy);
+
+    let first_attempt_counter = Arc::new(AtomicU32::new(0));
+    let with_override = manager
+        .execute_with_override(
+            "override-retry",
+            "op",
+            {
+                let first_attempt_counter = Arc::clone(&first_attempt_counter);
+                move || {
+                    let first_attempt_counter = Arc::clone(&first_attempt_counter);
+                    async move {
+                        let attempt = first_attempt_counter.fetch_add(1, Ordering::SeqCst);
+                        if attempt == 0 {
+                            Err::<&'static str, _>(ResilienceError::custom("transient"))
+                        } else {
+                            Ok::<_, ResilienceError>("recovered")
+                        }
+                    }
+                }
+            },
+            PolicyBuilder::new()
+                .with_retry_fixed(2, Duration::from_millis(1))
+                .build(),
+        )
+        .await;
+
+    assert!(with_override.is_ok());
+    assert_eq!(with_override.unwrap(), "recovered");
+    assert_eq!(first_attempt_counter.load(Ordering::SeqCst), 2);
+
+    let no_retry_counter = Arc::new(AtomicU32::new(0));
+    let without_override = manager
+        .execute("override-retry", "op", {
+            let no_retry_counter = Arc::clone(&no_retry_counter);
+            move || {
+                let no_retry_counter = Arc::clone(&no_retry_counter);
+                async move {
+                    no_retry_counter.fetch_add(1, Ordering::SeqCst);
+                    Err::<&'static str, _>(ResilienceError::custom("still failing"))
+                }
+            }
+        })
+        .await;
+
+    assert!(without_override.is_err());
+    assert_eq!(no_retry_counter.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn test_execute_with_override_isolation_between_parallel_calls() {
+    let manager = Arc::new(ResilienceManager::with_defaults());
+    manager.register_service(
+        "override-parallel",
+        PolicyBuilder::new()
+            .with_timeout(Duration::from_millis(120))
+            .build(),
+    );
+
+    let override_policy = PolicyBuilder::new()
+        .with_timeout(Duration::from_millis(10))
+        .build();
+
+    let override_manager = Arc::clone(&manager);
+    let normal_manager = Arc::clone(&manager);
+
+    let (override_result, normal_result) = tokio::join!(
+        override_manager.execute_with_override(
+            "override-parallel",
+            "op",
+            || async {
+                sleep(Duration::from_millis(40)).await;
+                Ok::<_, ResilienceError>("done")
+            },
+            override_policy
+        ),
+        normal_manager.execute("override-parallel", "op", || async {
+            sleep(Duration::from_millis(40)).await;
+            Ok::<_, ResilienceError>("done")
+        })
+    );
+
+    assert!(matches!(override_result, Err(ResilienceError::Timeout { .. })));
+    assert!(normal_result.is_ok());
+    assert_eq!(normal_result.unwrap(), "done");
+}

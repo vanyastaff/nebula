@@ -6,7 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::{Instant, sleep};
+use tokio::time::{Instant, sleep, timeout};
 
 use crate::{ResilienceError, ResilienceResult};
 
@@ -224,14 +224,10 @@ impl BimodalHedgeExecutor {
         Fut: Future<Output = ResilienceResult<T>> + Send,
         T: Send,
     {
-        let sample_future = operation();
-
-        tokio::select! {
-            _result = sample_future => {
-                let executor = HedgeExecutor::new(self.fast_config.clone());
-                executor.execute(operation).await
-            }
-            () = sleep(self.fast_threshold) => {
+        let fast_executor = HedgeExecutor::new(self.fast_config.clone());
+        match timeout(self.fast_threshold, fast_executor.execute(&operation)).await {
+            Ok(result) => result,
+            Err(_elapsed) => {
                 let executor = HedgeExecutor::new(self.slow_config.clone());
                 executor.execute(operation).await
             }

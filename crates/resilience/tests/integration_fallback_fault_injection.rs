@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use nebula_resilience::patterns::fallback::{
     CacheFallback, ChainFallback, FallbackOperation, FallbackStrategy, FunctionFallback,
-    ValueFallback,
+    PriorityFallback, ValueFallback,
 };
 use nebula_resilience::ResilienceError;
 
@@ -142,5 +142,52 @@ async fn test_fault_injection_invalid_config_skips_fallback() {
             assert_eq!(message, "bad policy");
         }
         other => panic!("Expected InvalidConfig, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_fault_injection_priority_fallback_routes_by_error_type() {
+    let timeout_fallback = Arc::new(ValueFallback::new("timeout-route".to_string()));
+    let default_fallback = Arc::new(ValueFallback::new("default-route".to_string()));
+
+    let priority = Arc::new(
+        PriorityFallback::new()
+            .register("timeout", timeout_fallback as Arc<dyn FallbackStrategy<String>>)
+            .with_default(default_fallback as Arc<dyn FallbackStrategy<String>>),
+    );
+    let operation = FallbackOperation::new(priority);
+
+    let timeout_result = operation
+        .execute(|| async {
+            Err::<String, _>(ResilienceError::timeout(Duration::from_millis(10)))
+        })
+        .await;
+    assert!(timeout_result.is_ok());
+    assert_eq!(timeout_result.unwrap(), "timeout-route");
+
+    let unmatched_result = operation
+        .execute(|| async { Err::<String, _>(ResilienceError::custom("unmapped")) })
+        .await;
+    assert!(unmatched_result.is_ok());
+    assert_eq!(unmatched_result.unwrap(), "default-route");
+}
+
+#[tokio::test]
+async fn test_fault_injection_priority_fallback_without_default_returns_original_error() {
+    let timeout_fallback = Arc::new(ValueFallback::new("timeout-route".to_string()));
+    let priority = Arc::new(
+        PriorityFallback::new()
+            .register("timeout", timeout_fallback as Arc<dyn FallbackStrategy<String>>),
+    );
+    let operation = FallbackOperation::new(priority);
+
+    let result = operation
+        .execute(|| async { Err::<String, _>(ResilienceError::custom("unmapped")) })
+        .await;
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ResilienceError::Custom { message, .. } => assert_eq!(message, "unmapped"),
+        other => panic!("Expected Custom error, got: {other:?}"),
     }
 }

@@ -69,3 +69,15 @@ harness = false
 [[bench]]
 name = "bulkhead"
 harness = false
+
+[[bench]]
+name = "fallback"
+harness = false
+
+[[bench]]
+name = "hedge"
+harness = false
+
+[[bench]]
+name = "observability"
+harness = false

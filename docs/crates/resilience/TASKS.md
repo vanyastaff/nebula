@@ -110,9 +110,25 @@
 
 ---
 
+## Phase 8: Coverage and Code-Quality Remediation
+
+**Goal**: Close remaining test/benchmark blind spots and eliminate high-signal quality issues flagged during post-Phase-7 audit.
+
+- [x] RSL-T038 [P] Add integration tests for `PriorityFallback` routing and default-fallback behavior
+- [x] RSL-T039 [P] Add integration tests for `BimodalHedgeExecutor` semantics and side-effect safety
+- [x] RSL-T040 [P] Add integration coverage for `ResilienceManager::execute_with_override` policy precedence and isolation
+- [x] RSL-T041 [P] Add benchmark targets for fallback and hedge execution overhead under contention
+- [x] RSL-T042 [P] Add observability hook throughput benchmark and backpressure/drop-policy tests
+- [x] RSL-T043 Fix high-signal `clippy` findings in hot paths (`circuit_breaker`, `rate_limiter`, `fallback`, `manager`)
+- [x] RSL-T044 Consolidate coverage map (unit/integration/bench) and define regression gate updates (→ T038, T039, T040, T041, T042, T043)
+
+**Checkpoint**: Previously uncovered APIs have integration/bench coverage and `clippy -D warnings` passes for audited hot paths.
+
+---
+
 ## Dependencies & Execution Order
 
-- Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 → Phase 7
+- Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 → Phase 7 → Phase 8
 - [P] tasks within a phase can run in parallel
 
 ## Verification (after all phases)

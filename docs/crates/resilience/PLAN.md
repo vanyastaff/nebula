@@ -24,6 +24,7 @@ nebula-resilience provides circuit breaker, retry, rate limiting, and timeout pa
 | Phase 5: Toolchain and Compatibility | ⬜ Planned | Rust 1.93+ migration, compatibility guarantees |
 | Phase 6: Pattern Coverage Expansion | ✅ Done | Governor/timeout benchmark baselines plus fallback/hedge reliability coverage and consolidated operational guidance completed |
 | Phase 7: Pattern Hardening Wave | ✅ Done | Bulkhead/retry/fallback/timeout hardening guidance consolidated and performance budgets updated |
+| Phase 8: Coverage and Code-Quality Remediation | ✅ Done | Filled uncovered integration/benchmark areas and remediated post-audit clippy quality issues |
 
 ## Phase Details
 
@@ -133,6 +134,23 @@ nebula-resilience provides circuit breaker, retry, rate limiting, and timeout pa
 
 **Risks**:
 - Fairness and timer-granularity behavior may vary by platform and require tolerance-based assertions
+
+### Phase 8: Coverage and Code-Quality Remediation
+
+**Goal**: Close remaining test/benchmark blind spots and eliminate high-signal quality issues flagged during post-Phase-7 audit.
+
+**Deliverables**:
+- Integration coverage for `PriorityFallback`, `BimodalHedgeExecutor`, and `execute_with_override`
+- Fallback/hedge and observability throughput benchmarks
+- Remediation of hot-path `clippy` findings (`excessive_nesting`, `significant_drop_*`, `cast_lossless`)
+- Consolidated coverage map and updated benchmark/test quality gates
+
+**Exit Criteria**:
+- Uncovered public APIs have integration tests and benchmark visibility where performance-sensitive
+- Audited hot paths pass strict linting and CI policy without suppressing new warnings
+
+**Risks**:
+- Refactoring to satisfy `significant_drop_*` lints may alter lock scopes and require careful concurrency validation
 
 ## Dependencies
 

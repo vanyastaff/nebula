@@ -167,7 +167,8 @@ impl<T: Clone + Send + Sync> FallbackStrategy<T> for CacheFallback<T> {
     async fn fallback(&self, _error: ResilienceError) -> ResilienceResult<T> {
         if !self.is_valid().await {
             if self.stale_if_error {
-                if let Some(value) = self.cache.read().await.clone() {
+                let cached_value = self.cache.read().await.clone();
+                if let Some(value) = cached_value {
                     return Ok(value);
                 }
 

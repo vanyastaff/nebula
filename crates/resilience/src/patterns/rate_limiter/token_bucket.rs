@@ -95,8 +95,10 @@ impl RateLimiter for TokenBucket {
 
         if state.tokens >= 1.0 {
             state.tokens -= 1.0;
+            drop(state);
             Ok(())
         } else {
+            drop(state);
             Err(ResilienceError::RateLimitExceeded {
                 retry_after: Some(Duration::from_secs_f64(1.0 / self.refill_rate)),
                 limit: self.refill_rate,
@@ -117,7 +119,9 @@ impl RateLimiter for TokenBucket {
 
     async fn current_rate(&self) -> f64 {
         let state = self.state.lock();
-        state.tokens
+        let tokens = state.tokens;
+        drop(state);
+        tokens
     }
 
     async fn reset(&self) {

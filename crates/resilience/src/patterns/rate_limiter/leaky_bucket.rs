@@ -55,8 +55,10 @@ impl RateLimiter for LeakyBucket {
 
         if state.level < self.capacity {
             state.level += 1;
+            drop(state);
             Ok(())
         } else {
+            drop(state);
             Err(ResilienceError::RateLimitExceeded {
                 retry_after: Some(Duration::from_secs_f64(1.0 / self.leak_rate)),
                 limit: self.capacity as f64,

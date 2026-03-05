@@ -76,17 +76,19 @@ impl AdaptiveRateLimiter {
     }
 
     /// Record success
-    pub async fn record_success(&self) {
+    pub fn record_success(&self) {
         let mut state = self.state.write();
         state.success_count += 1;
         self.adjust_rate_locked(&mut state);
+        drop(state);
     }
 
     /// Record error
-    pub async fn record_error(&self) {
+    pub fn record_error(&self) {
         let mut state = self.state.write();
         state.error_count += 1;
         self.adjust_rate_locked(&mut state);
+        drop(state);
     }
 }
 
@@ -111,8 +113,8 @@ impl RateLimiter for AdaptiveRateLimiter {
         let result = operation().await;
 
         match &result {
-            Ok(_) => self.record_success().await,
-            Err(_) => self.record_error().await,
+            Ok(_) => self.record_success(),
+            Err(_) => self.record_error(),
         }
 
         result
