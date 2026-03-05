@@ -228,7 +228,7 @@ If you can't use GitHub CLI, you can create labels manually:
 - `bench-resilience.ps1` (Windows)
 - `bench-resilience.sh` (Linux/macOS)
 
-Automates Criterion runs for `nebula-resilience` (`manager`, `rate_limiter`) with baseline support.
+Automates Criterion runs for `nebula-resilience` (`manager`, `rate_limiter`, `circuit_breaker`, `compose`) with baseline support.
 
 **PowerShell examples:**
 

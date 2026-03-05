@@ -7,6 +7,7 @@ Budgets apply to `nebula-resilience` Criterion benchmarks:
 - `manager`
 - `rate_limiter`
 - `circuit_breaker`
+- `compose`
 
 ## Baseline Policy
 

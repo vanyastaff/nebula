@@ -323,7 +323,7 @@ pub use patterns::{
 };
 
 // High-level abstractions
-pub use compose::{LayerBuilder, ResilienceChain, ResilienceLayer};
+pub use compose::{BoxedOperation, LayerBuilder, LayerStack, ResilienceChain, ResilienceLayer};
 pub use manager::{
     PolicyBuilder, ResilienceManager, RetryableOperation, UnTypedServiceMetrics as ServiceMetrics,
 };

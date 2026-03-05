@@ -140,3 +140,20 @@ Using `scripts/bench-resilience.ps1 -Mode single -Benches rate_limiter` after mi
    - `current_rate/sliding_window`: about **37–41% faster**
 
 Interpretation: for these short critical sections (no `await` under lock), moving to `parking_lot` materially reduced synchronization overhead and closed the remaining `RSL-T008` contention gap.
+
+## Sixth Findings: Compose Deep-Chain Profile (2026-03-05)
+
+Using `cargo bench -p nebula-resilience --bench compose -- --noplot` with synthetic no-op layers across depths `1/3/5/8/12/16`:
+
+- Build overhead scales near-linearly by depth:
+   - `build/depth/1`: about **120 ns**
+   - `build/depth/8`: about **0.79 µs**
+   - `build/depth/16`: about **1.36 µs**
+- Execute overhead also scales near-linearly by depth:
+   - `execute/depth/1`: about **0.21 µs**
+   - `execute/depth/8`: about **0.75 µs**
+   - `execute/depth/16`: about **1.77 µs**
+- Retryable-op clone path remains in the same order of magnitude:
+   - `execute_retryable_clone/depth/16`: about **1.68 µs**
+
+Interpretation: layer composition overhead is predictable and mostly linear with chain depth; at depth 16 the framework-only overhead stays sub-2µs for no-op layers, which is acceptable for typical policy stacks.

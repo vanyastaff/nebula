@@ -2,7 +2,7 @@ param(
     [ValidateSet("single", "baseline", "compare")]
     [string]$Mode = "single",
     [string]$Baseline = "main",
-    [string[]]$Benches = @("manager", "rate_limiter", "circuit_breaker")
+    [string[]]$Benches = @("manager", "rate_limiter", "circuit_breaker", "compose")
 )
 
 Set-StrictMode -Version Latest

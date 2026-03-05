@@ -6,7 +6,7 @@ BASELINE="${2:-main}"
 BENCHES=("${@:3}")
 
 if [[ ${#BENCHES[@]} -eq 0 ]]; then
-  BENCHES=(manager rate_limiter circuit_breaker)
+  BENCHES=(manager rate_limiter circuit_breaker compose)
 fi
 
 if [[ "$MODE" != "single" && "$MODE" != "baseline" && "$MODE" != "compare" ]]; then
