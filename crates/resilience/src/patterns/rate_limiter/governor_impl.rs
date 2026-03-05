@@ -1,7 +1,7 @@
 //! Governor-based GCRA rate limiter implementation
 
 use async_trait::async_trait;
-use governor::clock::{Clock, DefaultClock};
+use governor::clock::Clock;
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter as GovernorLimiter};
 use std::future::Future;
 
@@ -95,7 +95,7 @@ impl RateLimiter for GovernorRateLimiter {
             Ok(()) => Ok(()),
             Err(negative) => {
                 // Calculate retry_after from the negative decision
-                let wait_duration = negative.wait_time_from(DefaultClock::default().now());
+                let wait_duration = negative.wait_time_from(self.limiter.clock().now());
 
                 Err(ResilienceError::RateLimitExceeded {
                     retry_after: Some(wait_duration),

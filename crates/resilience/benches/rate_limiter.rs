@@ -11,6 +11,7 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::{
     AdaptiveRateLimiter, LeakyBucket, RateLimiter, ResilienceError, SlidingWindow, TokenBucket,
+    patterns::GovernorRateLimiter,
 };
 use std::hint::black_box;
 use std::sync::Arc;
@@ -61,6 +62,19 @@ fn rate_limiter_acquire(c: &mut Criterion) {
         );
     }
 
+    // GovernorRateLimiter
+    for &rate in &[100, 1000, 10000] {
+        group.bench_with_input(BenchmarkId::new("governor", rate), &rate, |b, &rate| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let limiter = Arc::new(GovernorRateLimiter::new(rate as f64, rate));
+
+            b.to_async(&rt).iter(|| {
+                let limiter = Arc::clone(&limiter);
+                async move { black_box(limiter.acquire().await) }
+            });
+        });
+    }
+
     group.finish();
 }
 
@@ -91,6 +105,22 @@ fn rate_limiter_execute(c: &mut Criterion) {
             100.0,   // min_rate
             10000.0, // max_rate
         ));
+
+        b.to_async(&rt).iter(|| {
+            let limiter = Arc::clone(&limiter);
+            async move {
+                let result = limiter
+                    .execute(|| async { Ok::<_, ResilienceError>(black_box(42)) })
+                    .await;
+                black_box(result)
+            }
+        });
+    });
+
+    // GovernorRateLimiter execute
+    group.bench_function("governor_1000rps", |b| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let limiter = Arc::new(GovernorRateLimiter::new(1000.0, 1000));
 
         b.to_async(&rt).iter(|| {
             let limiter = Arc::clone(&limiter);
@@ -141,6 +171,31 @@ fn rate_limiter_contention(c: &mut Criterion) {
             |b, &num_tasks| {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 let limiter = Arc::new(TokenBucket::new(10000, 10000.0));
+
+                b.to_async(&rt).iter(|| {
+                    let limiter = Arc::clone(&limiter);
+                    async move {
+                        let mut handles = vec![];
+                        for _ in 0..num_tasks {
+                            let limiter = Arc::clone(&limiter);
+                            let handle = tokio::spawn(async move { limiter.acquire().await });
+                            handles.push(handle);
+                        }
+
+                        for handle in handles {
+                            let _ = handle.await;
+                        }
+                    }
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("governor_concurrent_acquire", num_tasks),
+            &num_tasks,
+            |b, &num_tasks| {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                let limiter = Arc::new(GovernorRateLimiter::new(10000.0, 10000));
 
                 b.to_async(&rt).iter(|| {
                     let limiter = Arc::clone(&limiter);

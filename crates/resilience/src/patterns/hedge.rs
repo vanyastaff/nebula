@@ -1,11 +1,12 @@
 //! Hedge request pattern for reducing tail latency
 
-use futures::FutureExt;
-use futures::future::{Either, select};
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::sleep;
+use tokio::time::{Instant, sleep};
 
 use crate::{ResilienceError, ResilienceResult};
 
@@ -52,68 +53,48 @@ impl HedgeExecutor {
         Fut: Future<Output = ResilienceResult<T>> + Send,
         T: Send,
     {
-        // Start primary request
-        let primary = operation();
-        tokio::pin!(primary);
+        let mut in_flight: FuturesUnordered<
+            Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send>>,
+        > = FuturesUnordered::new();
+        in_flight.push(Box::pin(operation()));
 
         let mut hedge_delay = self.config.hedge_delay;
-        let mut hedges_sent = 0;
-
-        // Store hedge futures
-        let mut hedge_futures = Vec::new();
+        let timeout_duration = hedge_delay;
+        let mut hedges_sent = 0usize;
+        let mut delay = Box::pin(sleep(hedge_delay));
 
         loop {
-            // Create delay future
-            let delay = sleep(hedge_delay);
-            tokio::pin!(delay);
+            if hedges_sent >= self.config.max_hedges {
+                return in_flight.next().await.unwrap_or(Err(ResilienceError::Timeout {
+                    duration: timeout_duration,
+                    context: Some("Hedge timeout".to_string()),
+                }));
+            }
 
-            // Race between primary/hedges completing and delay
-            match select(primary.as_mut(), delay).await {
-                Either::Left((result, _)) => {
-                    // Primary completed first
-                    return result;
-                }
-                Either::Right(((), _)) => {
-                    // Delay expired, send hedge request
-                    if hedges_sent >= self.config.max_hedges {
-                        // Max hedges reached, wait for any to complete
-                        break;
+            tokio::select! {
+                maybe_result = in_flight.next() => {
+                    if let Some(result) = maybe_result {
+                        return result;
                     }
 
-                    hedge_futures.push(Box::pin(operation()));
+                    return Err(ResilienceError::Timeout {
+                        duration: timeout_duration,
+                        context: Some("Hedge timeout".to_string()),
+                    });
+                }
+                () = &mut delay => {
+                    in_flight.push(Box::pin(operation()));
                     hedges_sent += 1;
 
-                    // Calculate next hedge delay with exponential backoff
                     if self.config.exponential_backoff {
                         hedge_delay = Duration::from_secs_f64(
                             hedge_delay.as_secs_f64() * self.config.backoff_multiplier,
                         );
                     }
+
+                    delay.as_mut().reset(Instant::now() + hedge_delay);
                 }
             }
-
-            // Check if any hedge completed
-            for hedge in &mut hedge_futures {
-                if let Some(result) = hedge.now_or_never() {
-                    return result;
-                }
-            }
-        }
-
-        // Wait for first to complete
-        tokio::select! {
-            result = primary => result,
-            result = async {
-                for hedge in hedge_futures {
-                    if let Some(result) = hedge.now_or_never() {
-                        return result;
-                    }
-                }
-                Err(ResilienceError::Timeout {
-                    duration: hedge_delay,
-                    context: Some("Hedge timeout".to_string()),
-                })
-            } => result,
         }
     }
 }
@@ -152,7 +133,6 @@ impl AdaptiveHedgeExecutor {
     {
         let start = std::time::Instant::now();
 
-        // Get adaptive hedge delay based on historical latencies
         let hedge_delay = {
             let tracker = self.latency_tracker.lock().await;
             tracker
@@ -168,7 +148,6 @@ impl AdaptiveHedgeExecutor {
         let executor = HedgeExecutor::new(config);
         let result = executor.execute(operation).await;
 
-        // Record latency
         {
             let mut tracker = self.latency_tracker.lock().await;
             tracker.record(start.elapsed());
@@ -245,21 +224,16 @@ impl BimodalHedgeExecutor {
         Fut: Future<Output = ResilienceResult<T>> + Send,
         T: Send,
     {
-        // Sample operation to determine if it's fast or slow
-        let _sample_start = std::time::Instant::now();
         let sample_future = operation();
 
-        // Wait for fast threshold
         tokio::select! {
             _result = sample_future => {
-                // Operation completed within fast threshold - use fast config for hedging
                 let executor = HedgeExecutor::new(self.fast_config.clone());
-                return executor.execute(operation).await;
+                executor.execute(operation).await
             }
             () = sleep(self.fast_threshold) => {
-                // Operation is slow, use slow config
                 let executor = HedgeExecutor::new(self.slow_config.clone());
-                return executor.execute(operation).await;
+                executor.execute(operation).await
             }
         }
     }

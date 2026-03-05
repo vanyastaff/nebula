@@ -61,3 +61,11 @@ harness = false
 [[bench]]
 name = "compose"
 harness = false
+
+[[bench]]
+name = "timeout"
+harness = false
+
+[[bench]]
+name = "bulkhead"
+harness = false

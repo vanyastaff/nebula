@@ -107,6 +107,7 @@ where
 pub struct CacheFallback<T: Clone + Send + Sync> {
     cache: Arc<RwLock<Option<T>>>,
     ttl: Option<std::time::Duration>,
+    stale_if_error: bool,
     last_update: Arc<RwLock<Option<std::time::Instant>>>,
 }
 
@@ -122,6 +123,7 @@ impl<T: Clone + Send + Sync> CacheFallback<T> {
         Self {
             cache: Arc::new(RwLock::new(None)),
             ttl: None,
+            stale_if_error: false,
             last_update: Arc::new(RwLock::new(None)),
         }
     }
@@ -130,6 +132,16 @@ impl<T: Clone + Send + Sync> CacheFallback<T> {
     #[must_use = "builder methods must be chained or built"]
     pub const fn with_ttl(mut self, ttl: std::time::Duration) -> Self {
         self.ttl = Some(ttl);
+        self
+    }
+
+    /// Allow serving stale cached value when TTL is exceeded.
+    ///
+    /// When enabled, expired cache entries can still be returned during fallback
+    /// instead of failing closed with `FallbackFailed`.
+    #[must_use = "builder methods must be chained or built"]
+    pub const fn with_stale_if_error(mut self, enabled: bool) -> Self {
+        self.stale_if_error = enabled;
         self
     }
 
@@ -154,6 +166,17 @@ impl<T: Clone + Send + Sync> CacheFallback<T> {
 impl<T: Clone + Send + Sync> FallbackStrategy<T> for CacheFallback<T> {
     async fn fallback(&self, _error: ResilienceError) -> ResilienceResult<T> {
         if !self.is_valid().await {
+            if self.stale_if_error {
+                if let Some(value) = self.cache.read().await.clone() {
+                    return Ok(value);
+                }
+
+                return Err(ResilienceError::FallbackFailed {
+                    reason: "Cache expired and no stale value available".to_string(),
+                    original_error: None,
+                });
+            }
+
             return Err(ResilienceError::FallbackFailed {
                 reason: "Cache expired".to_string(),
                 original_error: None,

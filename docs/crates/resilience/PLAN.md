@@ -22,6 +22,8 @@ nebula-resilience provides circuit breaker, retry, rate limiting, and timeout pa
 | Phase 3: Policy and Config Hardening | ⬜ Planned | Policy validation, migration/versioning, dynamic config |
 | Phase 4: Reliability and Safety | ⬜ Planned | Fault injection, observability in failure storms, fail-open/closed defaults |
 | Phase 5: Toolchain and Compatibility | ⬜ Planned | Rust 1.93+ migration, compatibility guarantees |
+| Phase 6: Pattern Coverage Expansion | ✅ Done | Governor/timeout benchmark baselines plus fallback/hedge reliability coverage and consolidated operational guidance completed |
+| Phase 7: Pattern Hardening Wave | ✅ Done | Bulkhead/retry/fallback/timeout hardening guidance consolidated and performance budgets updated |
 
 ## Phase Details
 
@@ -98,6 +100,39 @@ nebula-resilience provides circuit breaker, retry, rate limiting, and timeout pa
 
 **Risks**:
 - Breaking changes in Rust edition or dependency updates
+
+### Phase 6: Pattern Coverage Expansion
+
+**Goal**: Close performance and correctness gaps for patterns not deeply covered in earlier phases.
+
+**Deliverables**:
+- Benchmark/tune `GovernorRateLimiter` under high concurrency
+- Benchmark timeout wrapper overhead and cancellation-path latency
+- Add fallback and hedge fault-injection/stress scenarios
+- Document per-pattern operational limits and defaults for governor/timeout/fallback/hedge
+
+**Exit Criteria**:
+- Governor/timeout/fallback/hedge have benchmark + reliability coverage and documented guidance
+
+**Risks**:
+- Hedge and fallback semantics may introduce high-variance timing in CI unless scenarios are carefully bounded
+
+### Phase 7: Pattern Hardening Wave
+
+**Goal**: Improve bulkhead/retry/fallback/timeout operational robustness beyond Phase 6 baseline.
+
+**Deliverables**:
+- Add dedicated bulkhead benchmark target with fast-path/contention/queue-timeout coverage
+- Add bulkhead fairness/starvation stress coverage
+- Add retry storm-guard guidance and adaptive jitter tuning validation
+- Add fallback staleness-policy coverage and bounded-chain guidance
+- Add timeout short-deadline platform/runtime guidance and limits
+
+**Exit Criteria**:
+- Bulkhead/retry/fallback/timeout have hardened stress coverage plus consolidated operator guidance
+
+**Risks**:
+- Fairness and timer-granularity behavior may vary by platform and require tolerance-based assertions
 
 ## Dependencies
 

@@ -46,9 +46,13 @@ Post-optimization measurements (release/criterion) on local development machine.
 
 - `rate_limiter/execute/token_bucket_1000rps`: ~179–183 ns
 - `rate_limiter/execute/adaptive_1000rps`: ~267–271 ns
+- `rate_limiter/execute/governor_1000rps`: ~82.1–83.6 ns
 - `rate_limiter/contention/concurrent_acquire/10`: ~12.7–14.0 µs
 - `rate_limiter/contention/concurrent_acquire/50`: ~47.8–49.7 µs
 - `rate_limiter/contention/concurrent_acquire/100`: ~97.8–100.0 µs
+- `rate_limiter/contention/governor_concurrent_acquire/10`: ~10.0–10.9 µs
+- `rate_limiter/contention/governor_concurrent_acquire/50`: ~26.7–28.0 µs
+- `rate_limiter/contention/governor_concurrent_acquire/100`: ~45.1–46.4 µs
 
 ### Circuit Breaker
 
@@ -59,6 +63,24 @@ Post-optimization measurements (release/criterion) on local development machine.
 - `circuit_breaker/transitions/closed_to_open`: ~2.22–2.26 µs
 - `circuit_breaker/transitions/halfopen_to_closed`: ~13.1–15.3 µs
 - `circuit_breaker/stats/stats_collection`: ~77.8–79.0 ns
+
+### Timeout
+
+- `timeout/overhead/direct_yield_once`: ~11.3–11.4 ns
+- `timeout/overhead/wrapped_yield_once`: ~108.1–109.5 ns
+- `timeout/cancellation/pending_future_1ms`: ~12.4–14.5 ms
+- `timeout/cancellation/pending_future_5ms`: ~15.2–15.4 ms
+
+### Bulkhead
+
+- `bulkhead/acquire/fast_path/4`: ~42.5–43.8 ns
+- `bulkhead/acquire/fast_path/16`: ~41.1–41.6 ns
+- `bulkhead/acquire/fast_path/64`: ~41.3–41.7 ns
+- `bulkhead/execute/no_timeout`: ~42.5–43.8 ns
+- `bulkhead/contention/concurrent_execute/10`: ~14.3–15.1 µs
+- `bulkhead/contention/concurrent_execute/50`: ~34.6–35.7 µs
+- `bulkhead/contention/concurrent_execute/100`: ~78.5–80.0 µs
+- `bulkhead/queue_timeout/acquire_timeout_1ms`: ~11.3–12.8 ms
 
 ## Notes
 
@@ -157,3 +179,69 @@ Using `cargo bench -p nebula-resilience --bench compose -- --noplot` with synthe
    - `execute_retryable_clone/depth/16`: about **1.68 µs**
 
 Interpretation: layer composition overhead is predictable and mostly linear with chain depth; at depth 16 the framework-only overhead stays sub-2µs for no-op layers, which is acceptable for typical policy stacks.
+
+## Seventh Findings: Governor Rate Limiter Coverage (2026-03-05)
+
+Using `cargo bench -p nebula-resilience --bench rate_limiter -- --noplot` after adding dedicated governor benchmark cases and tuning `retry_after` clock sourcing in `GovernorRateLimiter`:
+
+- Governor acquire path is consistently low-latency across configured rates:
+   - `acquire/governor/100`: about **55.3–59.0 ns**
+   - `acquire/governor/1000`: about **54.9–55.6 ns**
+   - `acquire/governor/10000`: about **54.8–56.4 ns**
+- Governor execute path is the fastest measured among current limiter variants in this run:
+   - `execute/governor_1000rps`: about **82.1–83.6 ns**
+   - `execute/token_bucket_1000rps`: about **102.4–105.8 ns**
+   - `execute/adaptive_1000rps`: about **169.6–193.3 ns**
+- Governor contention scales predictably and remains below token-bucket contention in the same run:
+   - `governor_concurrent_acquire/10`: about **10.0–10.9 µs**
+   - `governor_concurrent_acquire/50`: about **26.7–28.0 µs**
+   - `governor_concurrent_acquire/100`: about **45.1–46.4 µs**
+
+Interpretation: dedicated governor coverage confirms stable sub-100ns hot-path overhead and competitive contention behavior under concurrent pressure; this closes `RSL-T027` and provides a baseline for subsequent timeout/fallback/hedge expansion work.
+
+## Eighth Findings: Timeout Overhead and Cancellation Latency (2026-03-05)
+
+Using `cargo bench -p nebula-resilience --bench timeout -- --noplot` after adding a dedicated timeout benchmark target:
+
+- Wrapper overhead on success path remains low and predictable:
+   - `overhead/direct_yield_once`: about **11.3–11.4 ns**
+   - `overhead/wrapped_yield_once`: about **108.1–109.5 ns**
+   - Estimated timeout-wrapper overhead over direct path: about **97 ns** in this run.
+- Cancellation-path latency is stable but platform-sensitive on Windows:
+   - `cancellation/pending_future_1ms`: about **12.4–14.5 ms**
+   - `cancellation/pending_future_5ms`: about **15.2–15.4 ms**
+   - Effective overshoot over requested timeout is in the single-digit to low-double-digit millisecond range.
+
+Interpretation: timeout wrapper cost is negligible for typical I/O workloads, while cancellation latency is dominated by runtime/OS timer granularity under short deadlines; this closes `RSL-T028` and establishes a baseline for timeout-specific operational guidance in `RSL-T031`.
+
+## Ninth Findings: Bulkhead Baseline Kickoff (2026-03-05)
+
+Using `cargo bench -p nebula-resilience --bench bulkhead -- --noplot` after adding dedicated `bulkhead` benchmark scenarios:
+
+- Acquire and execute fast paths remain very low overhead:
+   - `acquire/fast_path/*`: about **41–44 ns**
+   - `execute/no_timeout`: about **42–44 ns**
+- Contention scales predictably under concurrent execute load:
+   - `concurrent_execute/10`: about **14.3–15.1 µs**
+   - `concurrent_execute/50`: about **34.6–35.7 µs**
+   - `concurrent_execute/100`: about **78.5–80.0 µs**
+- Queue-timeout scenario confirms bounded wait behavior under saturation:
+   - `queue_timeout/acquire_timeout_1ms`: about **11.3–12.8 ms** on current Windows runtime.
+
+Interpretation: bulkhead fast path is inexpensive, and the new benchmark baseline establishes a concrete target for Phase 7 fairness/starvation hardening work (`RSL-T033`).
+
+## Tenth Findings: Retry Hardening Baseline (2026-03-05)
+
+Using `cargo bench -p nebula-resilience --bench retry -- --noplot` during Phase 7 consolidation:
+
+- Success-path retry overhead remains low:
+   - `retry/successful_operation/fixed_delay/5`: about **162.6–163.7 ns**
+   - `retry/successful_operation/fixed_delay/1`: about **163.0–164.0 ns**
+- Jitter computation is inexpensive and bounded:
+   - `retry/jitter_calculation/full_jitter`: about **8.25–8.34 ns**
+   - `retry/jitter_calculation/decorrelated_jitter`: about **8.44–8.54 ns**
+- Failure-heavy retry paths are naturally higher-latency and timer-sensitive:
+   - `retry/with_failures/fail_until_last/3`: about **20.2–25.3 ms**
+   - `retry/with_failures/fail_until_last/5`: about **44.6–50.6 ms**
+
+Interpretation: retry hot-path and jitter overhead are stable and suitable for hard-gate budgeting, while failure-heavy paths should be interpreted with scheduler/timer context as stress indicators rather than strict hard gates.

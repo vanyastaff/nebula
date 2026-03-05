@@ -81,9 +81,38 @@
 
 ---
 
+## Phase 6: Pattern Coverage Expansion
+
+**Goal**: Close performance and correctness gaps for patterns not deeply covered in earlier phases.
+
+- [x] RSL-T027 [P] Benchmark and tune `GovernorRateLimiter` under concurrent load
+- [x] RSL-T028 [P] Benchmark timeout wrapper overhead and cancellation-path latency
+- [x] RSL-T029 [P] Add fault-injection matrix for fallback strategies (value/function/cache/chain)
+- [x] RSL-T030 [P] Add stress and correctness tests for hedge executors (`HedgeExecutor`, `AdaptiveHedgeExecutor`)
+- [x] RSL-T031 Consolidate per-pattern defaults/limits guidance for timeout/fallback/hedge/governor (→ T027, T028, T029, T030)
+
+**Checkpoint**: Governor/timeout/fallback/hedge have benchmark coverage, fault-injection checks, and documented operational guidance.
+
+---
+
+## Phase 7: Pattern Hardening Wave
+
+**Goal**: Improve bulkhead/retry/fallback/timeout operational robustness beyond Phase 6 baseline.
+
+- [x] RSL-T032 [P] Add dedicated `bulkhead` benchmark target (fast path, contention, queue-timeout)
+- [x] RSL-T033 [P] Add bulkhead fairness/starvation stress tests under sustained contention
+- [x] RSL-T034 [P] Add retry storm-guard guidance and adaptive jitter tuning tests
+- [x] RSL-T035 [P] Add fallback staleness-policy coverage (`stale-if-error` / bounded chain guidance)
+- [x] RSL-T036 [P] Add timeout short-deadline guidance by platform/runtime constraints
+- [x] RSL-T037 Consolidate Phase 7 hardening guidance and update budgets (→ T033, T034, T035, T036)
+
+**Checkpoint**: Bulkhead/retry/fallback/timeout have hardened stress coverage and consolidated operational guardrails.
+
+---
+
 ## Dependencies & Execution Order
 
-- Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
+- Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 → Phase 7
 - [P] tasks within a phase can run in parallel
 
 ## Verification (after all phases)
