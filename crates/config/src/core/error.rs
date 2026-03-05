@@ -422,13 +422,6 @@ impl From<toml::de::Error> for ConfigError {
     }
 }
 
-#[cfg(feature = "yaml")]
-impl From<yaml_rust2::ScanError> for ConfigError {
-    fn from(err: yaml_rust2::ScanError) -> Self {
-        ConfigError::parse_error(PathBuf::from("yaml"), format!("YAML error: {err:?}"))
-    }
-}
-
 impl From<notify::Error> for ConfigError {
     fn from(err: notify::Error) -> Self {
         ConfigError::watch_error(err.to_string())

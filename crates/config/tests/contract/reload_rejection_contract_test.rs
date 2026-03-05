@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn invalid_reload_candidate_is_rejected() {
-    let path = write_temp_file("reload_reject", "json", r#"{"feature":{"enabled":true}}"#);
+    let path = write_temp_file("reload_reject", "toml", "[feature]\nenabled = true\n");
 
     let validator = FunctionValidator::new(|value| {
         let enabled = value
@@ -26,7 +26,7 @@ async fn invalid_reload_candidate_is_rejected() {
         .await
         .expect("initial valid config should build");
 
-    std::fs::write(&path, r#"{"feature":{"enabled":false}}"#)
+    std::fs::write(&path, "[feature]\nenabled = false\n")
         .expect("should overwrite fixture file");
 
     let reload_error = config.reload().await.expect_err("reload must be rejected");

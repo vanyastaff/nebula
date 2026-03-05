@@ -13,10 +13,8 @@ documentation.workspace = true
 publish = false
 
 [features]
-default = ["json", "toml", "yaml", "env"]
-json = []
+default = ["toml", "env"]
 toml = ["dep:toml"]
-yaml = ["dep:yaml-rust2"]
 env = []
 
 [dependencies]
@@ -31,7 +29,6 @@ thiserror = { workspace = true }
 
 # Format parsers
 toml = { version = "1.0", optional = true }
-yaml-rust2 = { version = "0.11", optional = true }
 
 # Notifications
 notify = { version = "8.2.0" }

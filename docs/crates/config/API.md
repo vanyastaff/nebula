@@ -25,7 +25,7 @@ let port: u16 = cfg.get("server.port").await?;
 - **Stable APIs:** `ConfigBuilder`, `Config`, `ConfigSource`, `ConfigFormat`, `SourceMetadata`, `ConfigLoader`, `ConfigValidator`, `ConfigWatcher`, `ConfigError`, `ConfigResult`, `ConfigResultExt`, `ConfigResultAggregator`, `try_sources`, watcher types, validator implementations, `builders`, `utils`
 - **Breaking (current):** `ConfigSource` narrowed to implemented variants only (`Env`, `EnvWithPrefix`, `File`, `FileAuto`, `Directory`, `Default`)
 - **Deprecated:** `Config::get_path` (since 0.2.0 → use `get`)
-- **Feature flags:** `json`, `toml`, `yaml`, `env` (all enabled by default)
+- **Feature flags:** `toml`, `env` (enabled by default)
 
 ---
 
@@ -168,6 +168,8 @@ Optional source failures are skipped by default. If `with_fail_on_missing(true)`
 #[non_exhaustive]
 pub enum ConfigFormat { Json, Toml, Yaml, Ini, Hcl, Properties, Env, Unknown(String) }
 ```
+
+File-based loading in `nebula-config` is intentionally limited to `Toml`. Other `ConfigFormat` variants remain for compatibility and metadata, but are not accepted by `FileLoader`.
 
 | Method | Notes |
 |--------|-------|
@@ -420,7 +422,7 @@ Same as `Configurable` but async (`async fn configure`, `async fn reset_config`)
 
 | Type | Source | Notes |
 |------|--------|-------|
-| `FileLoader` | `File`, `FileAuto`, `Directory` | Parses JSON/TOML/YAML/INI/Properties based on extension |
+| `FileLoader` | `File`, `FileAuto`, `Directory` | Parses TOML only |
 | `EnvLoader` (feature `env`) | `Env`, `EnvWithPrefix` | Separator configurable (default `_`); parse mode `Permissive` or `Strict` |
 | `CompositeLoader` | Supported configured sources | Default loader delegates to `FileLoader` (+ `EnvLoader` with `env` feature) |
 
@@ -504,6 +506,11 @@ utils::parse_config_string(content: &str, format: ConfigFormat) -> ConfigResult<
 ```
 Default (100) < File/FileAuto (50) < Directory (40) < Env/EnvWithPrefix (30)
 ```
+
+### Supported External Formats
+
+- Workflow/config files: `TOML`
+- Runtime overrides and secrets: `ENV`
 
 Lower priority number overrides higher priority number. Sources with the same priority are merged in insertion order.
 

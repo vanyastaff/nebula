@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn failed_reload_keeps_last_known_good_snapshot() {
-    let path = write_temp_file("lkg", "json", r#"{"app":{"version":"1.0.0","port":8080}}"#);
+    let path = write_temp_file("lkg", "toml", "[app]\nversion = \"1.0.0\"\nport = 8080\n");
 
     let validator = FunctionValidator::new(|value| {
         let valid = value
@@ -32,7 +32,7 @@ async fn failed_reload_keeps_last_known_good_snapshot() {
         .expect("version should exist");
     assert_eq!(before, "1.0.0");
 
-    std::fs::write(&path, r#"{"app":{"version":"2.0.0","port":80}}"#)
+    std::fs::write(&path, "[app]\nversion = \"2.0.0\"\nport = 80\n")
         .expect("should overwrite file with invalid candidate");
 
     assert!(config.reload().await.is_err());

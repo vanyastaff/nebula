@@ -3754,7 +3754,6 @@ dependencies = [
  "tokio-util",
  "toml",
  "url",
- "yaml-rust2",
 ]
 
 [[package]]

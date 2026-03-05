@@ -8,8 +8,8 @@ async fn env_overrides_file_and_defaults() {
     let env_key = format!("{prefix}_SERVICE_PORT");
     let file_path = write_temp_file(
         "env_precedence",
-        "json",
-        r#"{"service":{"port":7000,"host":"file-host"}}"#,
+        "toml",
+        "[service]\nport = 7000\nhost = \"file-host\"\n",
     );
 
     // SAFETY: contract tests use unique variable keys to avoid collisions.

@@ -262,45 +262,12 @@ impl ConfigFormat {
     /// Detect format from file extension
     pub fn from_extension(ext: &str) -> Self {
         match ext.to_lowercase().as_str() {
-            "json" => {
-                #[cfg(feature = "json")]
-                {
-                    ConfigFormat::Json
-                }
-                #[cfg(not(feature = "json"))]
-                {
-                    ConfigFormat::Unknown(ext.to_string())
-                }
-            }
             "toml" => {
                 #[cfg(feature = "toml")]
                 {
                     ConfigFormat::Toml
                 }
                 #[cfg(not(feature = "toml"))]
-                {
-                    ConfigFormat::Unknown(ext.to_string())
-                }
-            }
-            "yml" | "yaml" => {
-                #[cfg(feature = "yaml")]
-                {
-                    ConfigFormat::Yaml
-                }
-                #[cfg(not(feature = "yaml"))]
-                {
-                    ConfigFormat::Unknown(ext.to_string())
-                }
-            }
-            "ini" | "cfg" => ConfigFormat::Ini,
-            "hcl" | "tf" => ConfigFormat::Hcl,
-            "properties" | "props" => ConfigFormat::Properties,
-            "env" => {
-                #[cfg(feature = "env")]
-                {
-                    ConfigFormat::Env
-                }
-                #[cfg(not(feature = "env"))]
                 {
                     ConfigFormat::Unknown(ext.to_string())
                 }
@@ -392,16 +359,18 @@ mod tests {
         assert_eq!(ConfigFormat::Yaml.mime_type(), "application/x-yaml");
         assert_eq!(ConfigFormat::Ini.mime_type(), "text/plain");
 
-        assert_eq!(ConfigFormat::from_extension("json"), ConfigFormat::Json);
-        assert_eq!(ConfigFormat::from_extension("yml"), ConfigFormat::Yaml);
-        assert_eq!(ConfigFormat::from_extension("yaml"), ConfigFormat::Yaml);
-        assert_eq!(ConfigFormat::from_extension("ini"), ConfigFormat::Ini);
-        assert_eq!(ConfigFormat::from_extension("cfg"), ConfigFormat::Ini);
-        assert_eq!(ConfigFormat::from_extension("tf"), ConfigFormat::Hcl);
-        assert_eq!(
-            ConfigFormat::from_extension("props"),
-            ConfigFormat::Properties
-        );
+        assert!(matches!(
+            ConfigFormat::from_extension("json"),
+            ConfigFormat::Unknown(_)
+        ));
+        assert!(matches!(
+            ConfigFormat::from_extension("yml"),
+            ConfigFormat::Unknown(_)
+        ));
+        assert!(matches!(
+            ConfigFormat::from_extension("ini"),
+            ConfigFormat::Unknown(_)
+        ));
         assert!(matches!(
             ConfigFormat::from_extension("xyz"),
             ConfigFormat::Unknown(_)

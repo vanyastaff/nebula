@@ -6,8 +6,8 @@ use std::sync::Arc;
 async fn activation_is_atomic_on_reload() {
     let path = write_temp_file(
         "atomicity",
-        "json",
-        r#"{"service":{"host":"127.0.0.1","port":8080}}"#,
+        "toml",
+        "[service]\nhost = \"127.0.0.1\"\nport = 8080\n",
     );
 
     let validator = FunctionValidator::new(|value| {
@@ -37,7 +37,7 @@ async fn activation_is_atomic_on_reload() {
         .await
         .expect("initial valid config should build");
 
-    std::fs::write(&path, r#"{"service":{"host":"10.0.0.1"}}"#)
+    std::fs::write(&path, "[service]\nhost = \"10.0.0.1\"\n")
         .expect("should write invalid candidate missing port");
 
     assert!(config.reload().await.is_err());

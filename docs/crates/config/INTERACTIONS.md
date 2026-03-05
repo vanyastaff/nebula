@@ -6,7 +6,7 @@
 
 - **nebula-log** — structured logging for load/reload lifecycle (debug, info, warn).
 - **nebula-validator** — `ConfigValidator` blanket impl for `T: Validate<Value>`; validation errors mapped to `ConfigError::ValidationError`; category compatibility pinned by `crates/config/tests/fixtures/compat/validator_contract_v1.json`.
-- **Vendor:** `tokio`, `async-trait`, `futures`, `thiserror`, `serde`, `serde_json`, `chrono`, `url`, `dashmap`, `notify`; optional `toml`, `yaml-rust2`.
+- **Vendor:** `tokio`, `async-trait`, `futures`, `thiserror`, `serde`, `serde_json`, `chrono`, `url`, `dashmap`, `notify`; optional `toml`.
 
 ### Downstream (depend on nebula-config)
 
@@ -24,7 +24,7 @@
 
 ## Upstream Dependencies
 
-- **Parsing:** serde_json (always), toml (feature `toml`), yaml-rust2 (feature `yaml`); FileLoader supports JSON/TOML/YAML/INI/Properties.
+- **Parsing:** serde_json (always), toml (feature `toml`); FileLoader supports TOML only.
 - **Async:** tokio, futures, async-trait; ConfigLoader and ConfigWatcher are async.
 - **Watching:** notify (FileWatcher); PollingWatcher uses tokio interval.
 - **Fallback:** Optional sources (`is_optional()`) do not fail build/reload; non-optional source failure returns Err.

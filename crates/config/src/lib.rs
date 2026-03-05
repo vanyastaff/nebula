@@ -246,58 +246,34 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_config_string_yaml() {
+    fn test_parse_config_string_toml() {
         use crate::core::source::ConfigFormat;
         use crate::utils::parse_config_string;
 
-        let yaml = r#"
-        server:
-          port: 8080
-          host: "localhost"
-        features:
-          - a
-          - b
-        enabled: true
-        "#;
-
-        let value = parse_config_string(yaml, ConfigFormat::Yaml).expect("YAML should parse");
-        assert_eq!(value["server"]["port"], 8080);
-        assert_eq!(value["server"]["host"], "localhost");
-        assert_eq!(value["enabled"], true);
-    }
-
-    #[test]
-    fn test_parse_config_string_ini() {
-        use crate::core::source::ConfigFormat;
-        use crate::utils::parse_config_string;
-
-        let ini = r#"
+        let toml = r#"
         [server]
-        port=8080
-        host=localhost
-        enabled=true
+        port = 8080
+        host = "localhost"
+
+        enabled = true
         "#;
-        let value = parse_config_string(ini, ConfigFormat::Ini).expect("INI should parse");
+
+        let value = parse_config_string(toml, ConfigFormat::Toml).expect("TOML should parse");
         assert_eq!(value["server"]["port"], 8080);
         assert_eq!(value["server"]["host"], "localhost");
         assert_eq!(value["server"]["enabled"], true);
     }
 
     #[test]
-    fn test_parse_config_string_properties() {
+    fn test_parse_config_string_unsupported_formats() {
         use crate::core::source::ConfigFormat;
         use crate::utils::parse_config_string;
 
-        let properties = r#"
-        server.port=8081
-        server.host=localhost
-        enabled=false
-        "#;
-        let value = parse_config_string(properties, ConfigFormat::Properties)
-            .expect("Properties should parse");
-        assert_eq!(value["server"]["port"], 8081);
-        assert_eq!(value["server"]["host"], "localhost");
-        assert_eq!(value["enabled"], false);
+        let sample = "a = 1";
+        assert!(parse_config_string(sample, ConfigFormat::Json).is_err());
+        assert!(parse_config_string(sample, ConfigFormat::Yaml).is_err());
+        assert!(parse_config_string(sample, ConfigFormat::Ini).is_err());
+        assert!(parse_config_string(sample, ConfigFormat::Properties).is_err());
     }
 
     // ── typed value integration tests ──────────────────────────────────────────

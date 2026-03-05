@@ -25,6 +25,7 @@ commit history using the configuration in [`.github/release.yml`](.github/releas
 ### 💥 Breaking Changes
 - `nebula-config`: `ConfigSource` narrowed to implemented variants only (`Env`, `EnvWithPrefix`, `File`, `FileAuto`, `Directory`, `Default`).
 - `nebula-config`: `with_fail_on_missing(true)` now applies consistently to both `build()` and `reload()`.
+- `nebula-config`: external format policy narrowed to `TOML + ENV`; `FileLoader` accepts TOML files only.
 
 ### 🔧 Improvements
 - `nebula-config`: added `EnvParseMode` (`Permissive`/`Strict`) and new builder controls: `with_env_parse_mode`, `with_env_strict_parsing`.

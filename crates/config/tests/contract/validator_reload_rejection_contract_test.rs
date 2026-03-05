@@ -28,8 +28,8 @@ impl Validate<serde_json::Value> for RequireFeatureEnabled {
 async fn invalid_reload_candidate_is_rejected_by_nebula_validator() {
     let path = write_temp_file(
         "validator_reload_reject",
-        "json",
-        r#"{"feature":{"enabled":true}}"#,
+        "toml",
+        "[feature]\nenabled = true\n",
     );
 
     let config = ConfigBuilder::new()
@@ -39,7 +39,7 @@ async fn invalid_reload_candidate_is_rejected_by_nebula_validator() {
         .await
         .expect("initial valid snapshot should build");
 
-    std::fs::write(&path, r#"{"feature":{"enabled":false}}"#)
+    std::fs::write(&path, "[feature]\nenabled = false\n")
         .expect("should write invalid reload candidate");
 
     let err = config.reload().await.expect_err("reload must fail");

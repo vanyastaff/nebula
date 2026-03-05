@@ -28,8 +28,8 @@ impl Validate<serde_json::Value> for RequirePortAtLeast1024 {
 async fn failed_reload_preserves_last_known_good_with_nebula_validator() {
     let path = write_temp_file(
         "validator_lkg",
-        "json",
-        r#"{"service":{"version":"1.0.0","port":8080}}"#,
+        "toml",
+        "[service]\nversion = \"1.0.0\"\nport = 8080\n",
     );
 
     let config = ConfigBuilder::new()
@@ -39,7 +39,7 @@ async fn failed_reload_preserves_last_known_good_with_nebula_validator() {
         .await
         .expect("initial valid config should be active");
 
-    std::fs::write(&path, r#"{"service":{"version":"2.0.0","port":80}}"#)
+    std::fs::write(&path, "[service]\nversion = \"2.0.0\"\nport = 80\n")
         .expect("should write invalid candidate");
 
     let err = config.reload().await.expect_err("reload must fail");
