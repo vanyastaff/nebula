@@ -7,41 +7,16 @@
 //! ```rust,no_run
 //! use nebula_sdk::prelude::*;
 //!
-//! #[derive(Action)]
-//! #[action(
-//!     key = "example.greet",
-//!     name = "Greet",
-//!     description = "A simple greeting action"
-//! )]
-//! struct GreetAction;
+//! let metadata = ActionBuilder::new("example.greet", "Greet")
+//!     .with_description("A simple greeting action")
+//!     .build();
 //!
-//! #[derive(Parameters)]
-//! struct GreetInput {
-//!     #[param(description = "Name to greet", required)]
-//!     name: String,
-//! }
+//! let workflow = WorkflowBuilder::new("example_workflow")
+//!     .add_node("greet", "example_greet")
+//!     .build();
 //!
-//! #[derive(Parameters)]
-//! struct GreetOutput {
-//!     #[param(description = "Greeting message")]
-//!     message: String,
-//! }
-//!
-//! #[async_trait]
-//! impl ProcessAction for GreetAction {
-//!     type Input = GreetInput;
-//!     type Output = GreetOutput;
-//!     
-//!     async fn execute(
-//!         &self,
-//!         input: Self::Input,
-//!         _ctx: &ActionContext,
-//!     ) -> std::result::Result<ActionResult<Self::Output>, ActionError> {
-//!         Ok(ActionResult::success(GreetOutput {
-//!             message: format!("Hello, {}!", input.name),
-//!         }))
-//!     }
-//! }
+//! assert_eq!(metadata.name, "Greet");
+//! assert!(workflow.is_ok());
 //! ```
 //!
 //! ## Modules

@@ -11,8 +11,14 @@
 
 ## Breaking Changes
 
-- currently planned:
-  - none committed.
+- validator v2 (in progress):
+  - `ValidationError::with_field("a.b[0]")` now canonicalizes into RFC 6901 JSON Pointer (`/a/b/0`).
+  - `ValidationError` serialization now includes `pointer` in addition to `field`.
+  - new `ValidationError::with_pointer(..)` and `ValidationError::field_pointer()` helpers.
+  - consumer adapters should prefer `field_pointer()` over raw `field` access.
+  - `nebula-api` switched to `nebula-validator` validation contract in `ValidatedJson` extractor.
+  - API validation problems now carry structured field errors (`code`, `pointer`, `detail`).
+  - derive macros no longer panic on invalid regex patterns; they emit structured validation errors.
 - potential future breaking candidates:
   - typed `FieldPath`
   - explicit fail-fast/collect-all default policy change
@@ -21,13 +27,13 @@
 ## Rollout Plan
 
 1. preparation:
-  - introduce new APIs in additive form behind clear docs.
-2. dual-run / feature-flag stage:
-  - allow old and new behavior side-by-side where possible.
-3. cutover:
-  - switch defaults only in major release.
+  - add pointer-native APIs (`with_pointer`, `field_pointer`) and emit pointer in JSON envelope.
+2. cutover:
+  - normalize all `with_field` inputs to RFC 6901 pointer format.
+3. consumer migration:
+  - update config/parameter/api adapters to consume pointer paths.
 4. cleanup:
-  - remove deprecated path after migration window.
+  - remove remaining raw-field assumptions in tests and fixtures.
 
 ## Rollback Plan
 

@@ -183,3 +183,81 @@ Migration impact:
 
 Validation plan:
 - `crates/config/tests/contract/validator_category_compatibility_test.rs`.
+
+## D008: RFC6901 pointer canonicalization in ValidationError
+
+Status: Adopt
+
+Context:
+- consuming crates (`config`, `parameter`, `api`) need one stable path format for machine handling.
+
+Decision:
+- canonicalize field paths to RFC6901 JSON Pointer in `ValidationError`.
+- `with_field(..)` normalizes dot/bracket notation to pointer.
+- expose pointer-native APIs: `with_pointer(..)` and `field_pointer()`.
+
+Alternatives considered:
+- preserve mixed path formats and normalize only in adapters.
+
+Trade-offs:
+- small behavioral break in `field` representation in exchange for deterministic cross-crate contract.
+
+Consequences:
+- adapters can consume one canonical format without per-crate path heuristics.
+
+Migration impact:
+- consumers reading `field` directly must accept pointer format.
+
+Validation plan:
+- unit tests in validator error module + config/parameter/api integration checks.
+
+## D009: Unified validator contract at API boundary
+
+Status: Adopt
+
+Context:
+- `nebula-api` had a parallel local validation trait/string errors, diverging from validator core.
+
+Decision:
+- use `nebula_validator::foundation::Validate<T>` in API extractor path.
+- convert `ValidationError`/`ValidationErrors` into structured RFC9457 problem details extensions.
+
+Alternatives considered:
+- keep local API trait and adapt only at handler boundaries.
+
+Trade-offs:
+- breaking change for API internals, with improved DX and one contract across crates.
+
+Consequences:
+- consistent code/message/pointer propagation from validator to HTTP responses.
+
+Migration impact:
+- API users implementing custom local `Validate` must move to validator trait.
+
+Validation plan:
+- API unit tests for conversion and nested error mapping.
+
+## D010: Panic-free regex handling in derive macros
+
+Status: Adopt
+
+Context:
+- invalid regex in derive attributes previously caused runtime panic paths.
+
+Decision:
+- generated code now emits structured validation errors (`invalid_regex_pattern`) instead of panicking.
+
+Alternatives considered:
+- keep panic behavior.
+
+Trade-offs:
+- failures become recoverable and diagnosable; slight extra generated code.
+
+Consequences:
+- safer macro DX and predictable failure handling.
+
+Migration impact:
+- callers that relied on panic behavior must handle regular validation errors.
+
+Validation plan:
+- macro crate tests + cross-crate regression runs.

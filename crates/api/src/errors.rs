@@ -8,6 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use nebula_validator::foundation::{ValidationError, ValidationErrors};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -44,9 +45,11 @@ pub struct ProblemDetails {
 /// Validation field error
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationFieldError {
+    /// Validator error code
+    pub code: String,
     /// Error detail message
     pub detail: String,
-    /// JSON Pointer to the field (RFC 6901), e.g. "#/age"
+    /// JSON Pointer to the field (RFC 6901), e.g. "/age"
     pub pointer: String,
 }
 
@@ -93,8 +96,13 @@ impl ProblemDetails {
 #[derive(Debug, Error)]
 pub enum ApiError {
     /// Validation error (400)
-    #[error("Validation failed: {0}")]
-    Validation(String),
+    #[error("Validation failed: {detail}")]
+    Validation {
+        /// High-level validation summary.
+        detail: String,
+        /// Field-level validation details with code and JSON pointer.
+        errors: Vec<ValidationFieldError>,
+    },
     
     /// Authentication error (401)
     #[error("Authentication failed: {0}")]
@@ -137,18 +145,101 @@ pub enum ApiError {
     ExecutionRepo(#[from] nebula_storage::ExecutionRepoError),
 }
 
+fn normalize_pointer(pointer: Option<&str>) -> String {
+    let pointer = pointer.unwrap_or("/").trim();
+    if pointer.is_empty() || pointer == "#" {
+        return "/".to_owned();
+    }
+
+    if let Some(rest) = pointer.strip_prefix('#') {
+        if rest.is_empty() {
+            return "/".to_owned();
+        }
+        if rest.starts_with('/') {
+            return rest.to_owned();
+        }
+    }
+
+    if pointer.starts_with('/') {
+        pointer.to_owned()
+    } else {
+        format!("/{pointer}")
+    }
+}
+
+fn flatten_validation_error(
+    err: &ValidationError,
+    inherited_pointer: Option<&str>,
+    out: &mut Vec<ValidationFieldError>,
+) {
+    let pointer = err
+        .field_pointer()
+        .map(|p| p.into_owned())
+        .or_else(|| inherited_pointer.map(str::to_owned))
+        .unwrap_or_else(|| "/".to_owned());
+
+    out.push(ValidationFieldError {
+        code: err.code.to_string(),
+        detail: err.message.to_string(),
+        pointer: normalize_pointer(Some(&pointer)),
+    });
+
+    for nested in err.nested() {
+        flatten_validation_error(nested, Some(&pointer), out);
+    }
+}
+
+impl ApiError {
+    /// Create validation error without field-level details.
+    pub fn validation_message(detail: impl Into<String>) -> Self {
+        Self::Validation {
+            detail: detail.into(),
+            errors: Vec::new(),
+        }
+    }
+}
+
+impl From<ValidationError> for ApiError {
+    fn from(value: ValidationError) -> Self {
+        let mut errors = Vec::new();
+        flatten_validation_error(&value, None, &mut errors);
+        let detail = if value.code.is_empty() {
+            value.message.to_string()
+        } else {
+            format!("[{}] {}", value.code, value.message)
+        };
+
+        Self::Validation { detail, errors }
+    }
+}
+
+impl From<ValidationErrors> for ApiError {
+    fn from(value: ValidationErrors) -> Self {
+        let mut errors = Vec::new();
+        for item in value.errors() {
+            flatten_validation_error(item, None, &mut errors);
+        }
+
+        Self::Validation {
+            detail: format!("Validation failed with {} error(s)", errors.len()),
+            errors,
+        }
+    }
+}
+
 impl ApiError {
     /// Convert to ProblemDetails
     pub fn to_problem_details(&self) -> (StatusCode, ProblemDetails) {
         match self {
-            ApiError::Validation(msg) => (
+            ApiError::Validation { detail, errors } => (
                 StatusCode::BAD_REQUEST,
                 ProblemDetails::new(
                     "https://nebula.dev/problems/validation-error",
                     "Validation Error",
                     StatusCode::BAD_REQUEST,
                 )
-                .with_detail(msg),
+                .with_detail(detail)
+                .with_errors(errors.clone()),
             ),
             ApiError::Unauthorized(msg) => (
                 StatusCode::UNAUTHORIZED,
@@ -275,4 +366,39 @@ impl IntoResponse for ApiError {
 
 /// Result type for API handlers
 pub type ApiResult<T> = Result<T, ApiError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validation_error_conversion_preserves_code_and_pointer() {
+        let err = ValidationError::new("min_length", "Must be at least 3 characters")
+            .with_field("profile.name");
+
+        let api_error = ApiError::from(err);
+        let (status, problem) = api_error.to_problem_details();
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let errors = problem.errors.expect("validation errors must be present");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, "min_length");
+        assert_eq!(errors[0].pointer, "/profile/name");
+    }
+
+    #[test]
+    fn nested_validation_error_conversion_keeps_nested_entries() {
+        let err = ValidationError::new("object_invalid", "Object validation failed").with_nested(
+            vec![ValidationError::new("required", "Field is required").with_pointer("/email")],
+        );
+
+        let api_error = ApiError::from(err);
+        let (status, problem) = api_error.to_problem_details();
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let errors = problem.errors.expect("validation errors must be present");
+        assert!(errors.iter().any(|e| e.code == "object_invalid"));
+        assert!(errors.iter().any(|e| e.code == "required" && e.pointer == "/email"));
+    }
+}
 

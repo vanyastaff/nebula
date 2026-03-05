@@ -855,7 +855,7 @@ fn errors_have_field_names() {
     assert_eq!(errors.len(), 1);
 
     let error = &errors.errors()[0];
-    assert_eq!(error.field.as_deref(), Some("email"));
+    assert_eq!(error.field.as_deref(), Some("/email"));
 }
 
 // ============================================================================

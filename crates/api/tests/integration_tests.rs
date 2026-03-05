@@ -26,7 +26,7 @@ async fn create_test_state() -> AppState {
 async fn test_health_endpoint() {
     let state = create_test_state().await;
     let api_config = ApiConfig::default();
-    let app = app::build_app(state, &api_config);
+    let _app = app::build_app(state, &api_config);
 
     // TODO: Use axum test helpers to test endpoints
     // let response = app.oneshot(Request::builder()

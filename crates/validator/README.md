@@ -2,6 +2,10 @@
 
 Production-ready validation framework for the Nebula workflow engine with advanced combinators and compositional design.
 
+> Canonical contract and compatibility rules are documented in `docs/crates/validator/API.md`,
+> `docs/crates/validator/DECISIONS.md`, and `docs/crates/validator/MIGRATION.md`.
+> This README is an overview and may lag behind the full contract spec.
+
 ## Features
 
 - **Comprehensive Validators**: 60+ built-in validators for strings, numbers, collections, and network data
@@ -14,12 +18,11 @@ Production-ready validation framework for the Nebula workflow engine with advanc
 ## Quick Start
 
 ```rust
-use nebula_validator::validators::string::{min_length, max_length};
-use nebula_validator::combinators::and;
-use nebula_validator::core::Validator;
+use nebula_validator::foundation::ValidateExt;
+use nebula_validator::validators::{alphanumeric, max_length, min_length};
 
 fn main() {
-    let validator = and(min_length(5), max_length(20));
+    let validator = min_length(5).and(max_length(20)).and(alphanumeric());
 
     match validator.validate("hello") {
         Ok(_) => println!("Valid!"),

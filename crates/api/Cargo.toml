@@ -15,6 +15,7 @@ documentation.workspace = true
 nebula-storage = { path = "../storage" }
 nebula-config = { path = "../config" }
 nebula-core = { path = "../core" }
+nebula-validator = { path = "../validator" }
 
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "net", "signal"] }
 axum = { workspace = true }

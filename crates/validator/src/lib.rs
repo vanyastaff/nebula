@@ -28,7 +28,7 @@
 //! - **Boolean**: [`IsTrue`](validators::IsTrue), [`IsFalse`](validators::IsFalse)
 //! - **Nullable**: [`Required`](validators::Required)
 
-// ValidationError (152 bytes) is the fundamental error type for all validators —
+// ValidationError (<= 80 bytes) is the fundamental error type for all validators —
 // boxing it would add indirection to every validation call for no practical benefit.
 #![allow(clippy::result_large_err)]
 // Deep combinator nesting (And<Or<Not<...>, ...>, ...>) produces complex types

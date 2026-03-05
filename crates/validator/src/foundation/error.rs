@@ -175,8 +175,21 @@ impl ValidationError {
     #[inline]
     pub fn with_field(mut self, field: impl Into<Cow<'static, str>>) -> Self {
         let field = field.into();
-        if !field.is_empty() {
-            self.field = Some(field);
+        if let Some(pointer) = to_json_pointer(field.as_ref()) {
+            self.field = Some(Cow::Owned(pointer));
+        }
+        self
+    }
+
+    /// Sets the field path using JSON Pointer (RFC 6901).
+    ///
+    /// Accepts pointers in `/a/b` format and URI fragment form `#/a/b`.
+    #[must_use = "builder methods must be chained or built"]
+    #[inline]
+    pub fn with_pointer(mut self, pointer: impl Into<Cow<'static, str>>) -> Self {
+        let pointer = pointer.into();
+        if let Some(normalized) = normalize_pointer(pointer.as_ref()) {
+            self.field = Some(Cow::Owned(normalized));
         }
         self
     }
@@ -289,6 +302,16 @@ impl ValidationError {
         self.extras.as_ref()?.help.as_deref()
     }
 
+    /// Returns the field path as canonical JSON Pointer (RFC 6901).
+    #[must_use]
+    #[inline]
+    pub fn field_pointer(&self) -> Option<Cow<'_, str>> {
+        self.field
+            .as_deref()
+            .and_then(to_json_pointer)
+            .map(Cow::Owned)
+    }
+
     /// Returns the number of errors (including nested).
     #[must_use]
     pub fn total_error_count(&self) -> usize {
@@ -323,6 +346,7 @@ impl ValidationError {
             "code": self.code,
             "message": self.message,
             "field": self.field,
+            "pointer": self.field_pointer(),
             "params": params,
             "severity": format!("{:?}", self.severity()),
             "help": self.help(),
@@ -516,6 +540,96 @@ fn redact_if_sensitive(key: &str, value: Cow<'static, str>) -> Cow<'static, str>
     }
 }
 
+fn normalize_pointer(pointer: &str) -> Option<String> {
+    let pointer = pointer.trim();
+    if pointer.is_empty() || pointer == "#" {
+        return None;
+    }
+
+    if let Some(rest) = pointer.strip_prefix("#") {
+        return normalize_pointer(rest);
+    }
+
+    if pointer.starts_with('/') {
+        return Some(pointer.to_owned());
+    }
+
+    None
+}
+
+fn to_json_pointer(path: &str) -> Option<String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+
+    if let Some(pointer) = normalize_pointer(path) {
+        return Some(pointer);
+    }
+
+    let mut segments: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut chars = path.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '.' => {
+                if !current.is_empty() {
+                    segments.push(std::mem::take(&mut current));
+                }
+            }
+            '[' => {
+                if !current.is_empty() {
+                    segments.push(std::mem::take(&mut current));
+                }
+                let mut idx = String::new();
+                let mut closed = false;
+                for c in chars.by_ref() {
+                    if c == ']' {
+                        closed = true;
+                        break;
+                    }
+                    idx.push(c);
+                }
+
+                if closed && !idx.is_empty() {
+                    segments.push(idx);
+                } else {
+                    if !idx.is_empty() {
+                        current.push_str(&idx);
+                    }
+                    break;
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if !current.is_empty() {
+        segments.push(current);
+    }
+
+    if segments.is_empty() {
+        return None;
+    }
+
+    let pointer = segments
+        .into_iter()
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.replace('~', "~0").replace('/', "~1"))
+        .fold(String::new(), |mut acc, segment| {
+            acc.push('/');
+            acc.push_str(&segment);
+            acc
+        });
+
+    if pointer.is_empty() {
+        None
+    } else {
+        Some(pointer)
+    }
+}
+
 // ============================================================================
 // ERROR COLLECTION
 // ============================================================================
@@ -662,7 +776,7 @@ mod tests {
     #[test]
     fn test_error_with_field() {
         let error = ValidationError::new("required", "Field is required").with_field("email");
-        assert_eq!(error.field.as_deref(), Some("email"));
+        assert_eq!(error.field.as_deref(), Some("/email"));
         // Field is inline, should not allocate extras
         assert!(error.extras.is_none());
     }
@@ -750,6 +864,24 @@ mod tests {
     fn test_empty_field_ignored() {
         let error = ValidationError::new("test", "Test").with_field("");
         assert!(error.field.is_none());
+    }
+
+    #[test]
+    fn test_dot_path_is_normalized_to_pointer() {
+        let error = ValidationError::new("test", "Test").with_field("service.port");
+        assert_eq!(error.field_pointer().as_deref(), Some("/service/port"));
+    }
+
+    #[test]
+    fn test_bracket_path_is_normalized_to_pointer() {
+        let error = ValidationError::new("test", "Test").with_field("items[0].name");
+        assert_eq!(error.field_pointer().as_deref(), Some("/items/0/name"));
+    }
+
+    #[test]
+    fn test_pointer_fragment_is_normalized() {
+        let error = ValidationError::new("test", "Test").with_pointer("#/user/email");
+        assert_eq!(error.field.as_deref(), Some("/user/email"));
     }
 
     #[test]

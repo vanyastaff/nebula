@@ -6,3 +6,4 @@
 pub mod attrs;
 pub mod diag;
 pub mod utils;
+pub mod validation_codegen;

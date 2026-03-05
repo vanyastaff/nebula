@@ -67,13 +67,15 @@ Returns `&self` on success, allowing chaining.
 |-------|------|-------|
 | `code` | `Cow<'static, str>` | Machine-readable error code |
 | `message` | `Cow<'static, str>` | Human-readable description |
-| `field` | `Option<Cow<'static, str>>` | Field path (dot or JSON Pointer notation) |
+| `field` | `Option<Cow<'static, str>>` | Canonical field path in JSON Pointer (RFC 6901) |
 
 ### Constructor
 
 ```rust
 ValidationError::new(code: impl Into<Cow<'static, str>>, message: impl Into<Cow<'static, str>>)
 ```
+
+`with_field("a.b[0]")` input is normalized to `"/a/b/0"`.
 
 ### Convenience constructors
 
@@ -93,7 +95,11 @@ ValidationError::new(code: impl Into<Cow<'static, str>>, message: impl Into<Cow<
 
 ```rust
 .with_field(field: impl Into<Cow<'static, str>>)   -> ValidationError
-.with_param(key: &str, value: impl Into<String>)    -> ValidationError  // sensitive keys redacted
+.with_pointer(pointer: impl Into<Cow<'static, str>>) -> ValidationError
+.with_param(
+    key: impl Into<Cow<'static, str>>,
+    value: impl Into<Cow<'static, str>>,
+) -> ValidationError                                 // sensitive keys redacted
 .with_nested(errors: Vec<ValidationError>)          -> ValidationError
 .with_nested_error(e: ValidationError)              -> ValidationError
 .with_severity(s: ErrorSeverity)                    -> ValidationError
@@ -112,10 +118,13 @@ ValidationError::new(code: impl Into<Cow<'static, str>>, message: impl Into<Cow<
 .has_nested() -> bool
 .severity() -> ErrorSeverity
 .help() -> Option<&str>
+.field_pointer() -> Option<Cow<str>>
 .total_error_count() -> usize        // 1 + recursive count of all nested
-.flatten() -> Vec<&ValidationError>  // breadth-first, all nested
+.flatten() -> Vec<&ValidationError>  // depth-first, all nested
 .to_json_value() -> serde_json::Value
 ```
+
+`to_json_value()` emits both `field` and `pointer` keys for compatibility.
 
 ### Display format
 
@@ -138,7 +147,7 @@ ValidationErrors::new() -> Self
 .extend(iter: impl IntoIterator<Item = ValidationError>)
 .has_errors() -> bool
 .into_single_error(msg: &str) -> ValidationError  // wraps all as nested
-.into_result() -> Result<(), ValidationError>      // Ok if empty
+.into_result(ok_value: T) -> Result<T, ValidationErrors>  // Ok(ok_value) if empty
 ```
 
 Implements `FromIterator<ValidationError>` and `IntoIterator`.

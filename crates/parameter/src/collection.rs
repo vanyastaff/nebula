@@ -276,7 +276,14 @@ fn evaluate_rule(
             key: path.to_owned(),
             reason: custom_message
                 .map(str::to_owned)
-                .unwrap_or_else(|| e.message.to_string()),
+                .unwrap_or_else(|| {
+                    let mut reason = format!("[{}] {}", e.code, e.message);
+                    if let Some(pointer) = e.field_pointer() {
+                        reason.push_str(" at ");
+                        reason.push_str(pointer.as_ref());
+                    }
+                    reason
+                }),
         });
     }
 }

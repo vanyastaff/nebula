@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn test_workflow_builder_invalid_action_id() {
         let result = WorkflowBuilder::new("test")
-            .add_node("start", "action.start")
+            .add_node("start", "")
             .build();
 
         assert!(result.is_err());

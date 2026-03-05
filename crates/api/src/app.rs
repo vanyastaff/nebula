@@ -3,7 +3,7 @@
 //! Сборка Router с middleware (Production-Grade).
 
 use crate::{config::ApiConfig, routes, state::AppState, middleware::security_headers::security_headers_middleware};
-use axum::{Router, http::StatusCode, error_handling::HandleErrorLayer, response::Response};
+use axum::{Router, response::Response};
 use std::time::Duration;
 use tower::ServiceBuilder;
 use tower_http::{

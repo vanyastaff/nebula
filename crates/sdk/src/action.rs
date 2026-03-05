@@ -6,13 +6,10 @@
 //!
 //! ```rust,no_run
 //! use nebula_sdk::action::ActionBuilder;
-//! use nebula_sdk::prelude::*;
 //!
 //! let action = ActionBuilder::new("my.action", "My Action")
 //!     .with_description("Does something useful")
-//!     .with_capability(Capability::Network {
-//!         allowed_hosts: vec!["api.example.com".to_string()],
-//!     })
+//!     .with_version(1, 0)
 //!     .build();
 //! ```
 

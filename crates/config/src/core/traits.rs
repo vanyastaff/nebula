@@ -53,16 +53,12 @@ fn map_validation_error(err: ValidationError) -> ConfigError {
         message.push_str(&(total_errors - 1).to_string());
     }
 
-    let field = err
-        .field
-        .as_deref()
-        .map(std::string::ToString::to_string)
-        .or_else(|| {
-            err.flatten()
-                .into_iter()
-                .skip(1)
-                .find_map(|nested| nested.field.as_deref().map(std::string::ToString::to_string))
-        });
+    let field = err.field_pointer().map(std::borrow::Cow::into_owned).or_else(|| {
+        err.flatten()
+            .into_iter()
+            .skip(1)
+            .find_map(|nested| nested.field_pointer().map(std::borrow::Cow::into_owned))
+    });
 
     ConfigError::validation_error(
         message,
@@ -180,7 +176,7 @@ mod tests {
                 assert!(message.contains("[validation_failed]"));
                 assert!(message.contains("help: set service.port to a valid value"));
                 assert!(message.contains("nested_errors=1"));
-                assert_eq!(field.as_deref(), Some("service.port"));
+                assert_eq!(field.as_deref(), Some("/service/port"));
             }
             other => panic!("expected validation error, got {other:?}"),
         }
