@@ -1,0 +1,33 @@
+# CODEOWNERS
+#
+# Each line is a pattern followed by one or more owners.
+# The last matching pattern takes precedence.
+# Owners are automatically requested for review when a PR touches matching files.
+#
+# Syntax: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything
+*                           @vanyastaff
+
+# Core crates
+/crates/core/               @vanyastaff
+/crates/workflow/           @vanyastaff
+/crates/execution/          @vanyastaff
+
+# Engine layer
+/crates/engine/             @vanyastaff
+/crates/runtime/            @vanyastaff
+/crates/action/             @vanyastaff
+
+# Security-sensitive areas — require explicit review
+/crates/credential/         @vanyastaff
+/.github/SECURITY.md        @vanyastaff
+
+# CI/CD and tooling
+/.github/                   @vanyastaff
+/deploy/                    @vanyastaff
+
+# Documentation
+/docs/                      @vanyastaff
+/vision/                    @vanyastaff
+*.md                        @vanyastaff

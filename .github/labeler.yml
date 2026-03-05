@@ -1,20 +1,51 @@
-# Basic labeler configuration for PRs.
-#
-# Example:
-# - Touching only docs -> label "docs"
-# - Touching only workflows -> label "ci"
+# Labeler configuration for PRs.
+# Labels are applied automatically based on the files changed.
+# Docs: https://github.com/actions/labeler
 
 docs:
-  - 'docs/**'
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'docs/**'
+      - 'vision/**'
+      - '*.md'
+      - '.github/*.md'
 
 ci:
-  - '.github/workflows/**'
+  - changed-files:
+    - any-glob-to-any-file:
+      - '.github/workflows/**'
+      - '.github/dependabot.yml'
+      - 'clippy.toml'
+      - 'rustfmt.toml'
+      - 'deny.toml'
+      - 'commitlint.config.cjs'
 
 rust:
-  - 'crates/**'
-  - 'plugins/**'
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'crates/**'
+      - 'plugins/**'
+
+migrations:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'migrations/**'
+
+deploy:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'deploy/**'
+      - '.dockerignore'
+
+frontend:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'apps/**'
 
 release:
-  - 'CHANGELOG.md'
-  - 'Cargo.toml'
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'CHANGELOG.md'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
 
