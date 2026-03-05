@@ -6,10 +6,10 @@
 //!
 //! Hooks are executed in priority order (lower number = earlier).
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
+
+use async_trait::async_trait;
 
 use crate::context::Context;
 use crate::error::Error;
@@ -109,6 +109,7 @@ pub enum HookResult {
 /// Hooks are called before and after lifecycle operations.
 /// Before-hooks can cancel operations by returning [`HookResult::Cancel`].
 /// After-hooks cannot cancel but are called for observability.
+#[async_trait]
 pub trait ResourceHook: Send + Sync {
     /// Human-readable name for this hook.
     fn name(&self) -> &str;
@@ -134,21 +135,10 @@ pub trait ResourceHook: Send + Sync {
     /// [`Cleanup`](HookEvent::Cleanup), the result is ignored (the
     /// operation proceeds regardless) because these occur in
     /// irrevocable contexts (e.g. `Drop`).
-    fn before<'a>(
-        &'a self,
-        event: &'a HookEvent,
-        resource_id: &'a str,
-        ctx: &'a Context,
-    ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>>;
+    async fn before(&self, event: &HookEvent, resource_id: &str, ctx: &Context) -> HookResult;
 
     /// Called after the operation completes (success or failure).
-    fn after<'a>(
-        &'a self,
-        event: &'a HookEvent,
-        resource_id: &'a str,
-        ctx: &'a Context,
-        success: bool,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    async fn after(&self, event: &HookEvent, resource_id: &str, ctx: &Context, success: bool);
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +265,7 @@ impl std::fmt::Debug for HookRegistry {
 /// Priority 10 (runs early). Listens to all events, applies to all resources.
 pub struct AuditHook;
 
+#[async_trait]
 impl ResourceHook for AuditHook {
     fn name(&self) -> &str {
         "audit"
@@ -293,43 +284,28 @@ impl ResourceHook for AuditHook {
         ]
     }
 
-    fn before<'a>(
-        &'a self,
-        event: &'a HookEvent,
-        resource_id: &'a str,
-        _ctx: &'a Context,
-    ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
-        Box::pin(async move {
-            tracing::info!(
-                hook = "audit",
-                resource_id,
-                event = %event,
-                phase = "before",
-                "Lifecycle hook"
-            );
-            let _ = (event, resource_id);
-            HookResult::Continue
-        })
+    async fn before(&self, event: &HookEvent, resource_id: &str, _ctx: &Context) -> HookResult {
+        tracing::info!(
+            hook = "audit",
+            resource_id,
+            event = %event,
+            phase = "before",
+            "Lifecycle hook"
+        );
+        let _ = (event, resource_id);
+        HookResult::Continue
     }
 
-    fn after<'a>(
-        &'a self,
-        event: &'a HookEvent,
-        resource_id: &'a str,
-        _ctx: &'a Context,
-        success: bool,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
-            tracing::info!(
-                hook = "audit",
-                resource_id,
-                event = %event,
-                phase = "after",
-                success,
-                "Lifecycle hook"
-            );
-            let _ = (event, resource_id, success);
-        })
+    async fn after(&self, event: &HookEvent, resource_id: &str, _ctx: &Context, success: bool) {
+        tracing::info!(
+            hook = "audit",
+            resource_id,
+            event = %event,
+            phase = "after",
+            success,
+            "Lifecycle hook"
+        );
+        let _ = (event, resource_id, success);
     }
 }
 
@@ -363,6 +339,7 @@ impl SlowAcquireHook {
     }
 }
 
+#[async_trait]
 impl ResourceHook for SlowAcquireHook {
     fn name(&self) -> &str {
         "slow-acquire"
@@ -376,42 +353,27 @@ impl ResourceHook for SlowAcquireHook {
         vec![HookEvent::Acquire]
     }
 
-    fn before<'a>(
-        &'a self,
-        _event: &'a HookEvent,
-        resource_id: &'a str,
-        ctx: &'a Context,
-    ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
-        Box::pin(async move {
-            let key = Self::timer_key(resource_id, ctx);
-            self.timers.lock().insert(key, Instant::now());
-            HookResult::Continue
-        })
+    async fn before(&self, _event: &HookEvent, resource_id: &str, ctx: &Context) -> HookResult {
+        let key = Self::timer_key(resource_id, ctx);
+        self.timers.lock().insert(key, Instant::now());
+        HookResult::Continue
     }
 
-    fn after<'a>(
-        &'a self,
-        _event: &'a HookEvent,
-        resource_id: &'a str,
-        ctx: &'a Context,
-        _success: bool,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
-            let key = Self::timer_key(resource_id, ctx);
-            if let Some(start) = self.timers.lock().remove(&key) {
-                let elapsed = start.elapsed();
-                if elapsed > self.threshold {
-                    tracing::warn!(
-                        hook = "slow-acquire",
-                        resource_id,
-                        elapsed_ms = elapsed.as_millis() as u64,
-                        threshold_ms = self.threshold.as_millis() as u64,
-                        "Resource acquisition exceeded threshold"
-                    );
-                    let _ = (resource_id, elapsed);
-                }
+    async fn after(&self, _event: &HookEvent, resource_id: &str, ctx: &Context, _success: bool) {
+        let key = Self::timer_key(resource_id, ctx);
+        if let Some(start) = self.timers.lock().remove(&key) {
+            let elapsed = start.elapsed();
+            if elapsed > self.threshold {
+                tracing::warn!(
+                    hook = "slow-acquire",
+                    resource_id,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    threshold_ms = self.threshold.as_millis() as u64,
+                    "Resource acquisition exceeded threshold"
+                );
+                let _ = (resource_id, elapsed);
             }
-        })
+        }
     }
 }
 
@@ -456,6 +418,7 @@ mod tests {
         prio: u32,
     }
 
+    #[async_trait]
     impl ResourceHook for PriorityHook {
         fn name(&self) -> &str {
             &self.name
@@ -466,27 +429,15 @@ mod tests {
         fn events(&self) -> Vec<HookEvent> {
             vec![HookEvent::Acquire]
         }
-        fn before<'a>(
-            &'a self,
-            _event: &'a HookEvent,
-            _resource_id: &'a str,
-            _ctx: &'a Context,
-        ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
-            Box::pin(async { HookResult::Continue })
+        async fn before(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context) -> HookResult {
+            HookResult::Continue
         }
-        fn after<'a>(
-            &'a self,
-            _event: &'a HookEvent,
-            _resource_id: &'a str,
-            _ctx: &'a Context,
-            _success: bool,
-        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-            Box::pin(async {})
-        }
+        async fn after(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context, _success: bool) {}
     }
 
     struct CancelHook;
 
+    #[async_trait]
     impl ResourceHook for CancelHook {
         fn name(&self) -> &str {
             "canceller"
@@ -497,36 +448,22 @@ mod tests {
         fn events(&self) -> Vec<HookEvent> {
             vec![HookEvent::Acquire]
         }
-        fn before<'a>(
-            &'a self,
-            _event: &'a HookEvent,
-            _resource_id: &'a str,
-            _ctx: &'a Context,
-        ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
-            Box::pin(async {
-                HookResult::Cancel(Error::Unavailable {
-                    resource_key: nebula_core::ResourceKey::try_from("test")
-                        .expect("valid resource key"),
-                    reason: "cancelled by hook".to_string(),
-                    retryable: false,
-                })
+        async fn before(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context) -> HookResult {
+            HookResult::Cancel(Error::Unavailable {
+                resource_key: nebula_core::ResourceKey::try_from("test")
+                    .expect("valid resource key"),
+                reason: "cancelled by hook".to_string(),
+                retryable: false,
             })
         }
-        fn after<'a>(
-            &'a self,
-            _event: &'a HookEvent,
-            _resource_id: &'a str,
-            _ctx: &'a Context,
-            _success: bool,
-        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-            Box::pin(async {})
-        }
+        async fn after(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context, _success: bool) {}
     }
 
     struct TrackingHook {
         called: std::sync::atomic::AtomicBool,
     }
 
+    #[async_trait]
     impl ResourceHook for TrackingHook {
         fn name(&self) -> &str {
             "tracker"
@@ -537,26 +474,11 @@ mod tests {
         fn events(&self) -> Vec<HookEvent> {
             vec![HookEvent::Acquire]
         }
-        fn before<'a>(
-            &'a self,
-            _event: &'a HookEvent,
-            _resource_id: &'a str,
-            _ctx: &'a Context,
-        ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
-            Box::pin(async {
-                self.called.store(true, std::sync::atomic::Ordering::SeqCst);
-                HookResult::Continue
-            })
+        async fn before(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context) -> HookResult {
+            self.called.store(true, std::sync::atomic::Ordering::SeqCst);
+            HookResult::Continue
         }
-        fn after<'a>(
-            &'a self,
-            _event: &'a HookEvent,
-            _resource_id: &'a str,
-            _ctx: &'a Context,
-            _success: bool,
-        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-            Box::pin(async {})
-        }
+        async fn after(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context, _success: bool) {}
     }
 
     #[test]

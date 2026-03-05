@@ -83,7 +83,7 @@ impl Resource for PostgresResource {
         })
     }
 
-    async fn is_valid(&self, instance: &Self::Instance) -> Result<bool> {
+    async fn is_reusable(&self, instance: &Self::Instance) -> Result<bool> {
         Ok(!instance.dsn.is_empty())
     }
 }

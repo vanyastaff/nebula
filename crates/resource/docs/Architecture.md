@@ -91,7 +91,7 @@ pub trait Resource: Send + Sync + 'static {
 
     fn id(&self) -> &str;
     fn create(&self, config: &Self::Config, ctx: &Context) -> impl Future<Output = Result<Self::Instance>> + Send;
-    fn is_valid(&self, instance: &Self::Instance) -> impl Future<Output = Result<bool>> + Send;
+    fn is_reusable(&self, instance: &Self::Instance) -> impl Future<Output = Result<bool>> + Send;
     fn recycle(&self, instance: &mut Self::Instance) -> impl Future<Output = Result<()>> + Send;
     fn cleanup(&self, instance: Self::Instance) -> impl Future<Output = Result<()>> + Send;
     fn dependencies(&self) -> Vec<&str>;
@@ -99,7 +99,7 @@ pub trait Resource: Send + Sync + 'static {
 ```
 
 No `async_trait` -- uses `impl Future` in return position (Rust 2024 RPITIT).
-Default implementations return `Ok(true)` for `is_valid`, `Ok(())` for
+Default implementations return `Ok(true)` for `is_reusable`, `Ok(())` for
 `recycle` and `cleanup`, and empty `Vec` for `dependencies`.
 
 ### Pool (`pool.rs`)
@@ -122,7 +122,7 @@ Acquire flow within the pool:
 1. Acquire a semaphore permit (with `acquire_timeout`).
 2. Pop an idle entry (FIFO or LIFO per strategy).
 3. If expired -- cleanup and retry from step 2.
-4. If present -- validate via `is_valid()`. Invalid entries are cleaned up.
+4. If present -- validate via `is_reusable()`. Invalid entries are cleaned up.
 5. If no idle entries -- create a new instance via `Resource::create()`.
 6. Track `created_at` on the entry so lifetime expiration works correctly.
 7. Wrap in `Guard<R::Instance>` whose drop callback spawns `return_instance()`.
@@ -393,7 +393,7 @@ Pool<R>::acquire(ctx)                    [crates/resource/src/pool.rs]
   |     1. Semaphore::acquire (with timeout)
   |     2. Pop idle entry (FIFO/LIFO)
   |     3. Skip expired (cleanup), retry
-  |     4. Validate via is_valid(), cleanup invalid, retry
+  |     4. Validate via is_reusable(), cleanup invalid, retry
   |     5. If no idle: Resource::create(config, ctx)
   |     6. Wrap in Guard<R::Instance> with return callback
   |

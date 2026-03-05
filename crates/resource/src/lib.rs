@@ -107,7 +107,7 @@ pub use hooks::{
 };
 pub use manager::{
     AnyGuard, AnyGuardTrait, DependencyGraph, Manager, ManagerBuilder, ResourceHandle,
-    ShutdownConfig, TypedPool, TypedResourceGuard,
+    ResourcePoolStatus, ResourceStatus, ShutdownConfig, TypedPool, TypedResourceGuard,
 };
 pub use metrics::MetricsCollector;
 pub use pool::{
@@ -143,7 +143,10 @@ pub mod prelude {
     };
     pub use crate::health::{HealthCheckable, HealthState, HealthStatus, ResourceHealthAdapter};
     pub use crate::hooks::{HookEvent, HookFilter, HookRegistry, HookResult, ResourceHook};
-    pub use crate::manager::{Manager, ManagerBuilder, ResourceHandle, TypedResourceGuard};
+    pub use crate::manager::{
+        Manager, ManagerBuilder, ResourceHandle, ResourcePoolStatus, ResourceStatus,
+        TypedResourceGuard,
+    };
     pub use crate::pool::{
         AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig, PoolStats,
         PoolStrategy,

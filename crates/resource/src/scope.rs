@@ -78,14 +78,136 @@ fn parents_consistent(parent: Option<&str>, child: Option<&str>) -> bool {
 }
 
 impl Scope {
+    /// Try to create a tenant scope.
+    pub fn try_tenant<S: Into<String>>(tenant_id: S) -> Result<Self, String> {
+        let tenant_id = tenant_id.into();
+        if tenant_id.is_empty() {
+            return Err("tenant_id must not be empty".to_string());
+        }
+        Ok(Self::Tenant { tenant_id })
+    }
+
+    /// Try to create a workflow scope without parent info.
+    pub fn try_workflow<S: Into<String>>(workflow_id: S) -> Result<Self, String> {
+        let workflow_id = workflow_id.into();
+        if workflow_id.is_empty() {
+            return Err("workflow_id must not be empty".to_string());
+        }
+        Ok(Self::Workflow {
+            workflow_id,
+            tenant_id: None,
+        })
+    }
+
+    /// Try to create a workflow scope with tenant parent.
+    pub fn try_workflow_in_tenant(
+        workflow_id: impl Into<String>,
+        tenant_id: impl Into<String>,
+    ) -> Result<Self, String> {
+        let workflow_id = workflow_id.into();
+        let tenant_id = tenant_id.into();
+        if workflow_id.is_empty() {
+            return Err("workflow_id must not be empty".to_string());
+        }
+        if tenant_id.is_empty() {
+            return Err("tenant_id must not be empty".to_string());
+        }
+        Ok(Self::Workflow {
+            workflow_id,
+            tenant_id: Some(tenant_id),
+        })
+    }
+
+    /// Try to create an execution scope without parent info.
+    pub fn try_execution<S: Into<String>>(execution_id: S) -> Result<Self, String> {
+        let execution_id = execution_id.into();
+        if execution_id.is_empty() {
+            return Err("execution_id must not be empty".to_string());
+        }
+        Ok(Self::Execution {
+            execution_id,
+            workflow_id: None,
+            tenant_id: None,
+        })
+    }
+
+    /// Try to create an execution scope with full parent chain.
+    pub fn try_execution_in_workflow(
+        execution_id: impl Into<String>,
+        workflow_id: impl Into<String>,
+        tenant_id: Option<String>,
+    ) -> Result<Self, String> {
+        let execution_id = execution_id.into();
+        let workflow_id = workflow_id.into();
+        if execution_id.is_empty() {
+            return Err("execution_id must not be empty".to_string());
+        }
+        if workflow_id.is_empty() {
+            return Err("workflow_id must not be empty".to_string());
+        }
+        Ok(Self::Execution {
+            execution_id,
+            workflow_id: Some(workflow_id),
+            tenant_id,
+        })
+    }
+
+    /// Try to create an action scope without parent info.
+    pub fn try_action<S: Into<String>>(action_id: S) -> Result<Self, String> {
+        let action_id = action_id.into();
+        if action_id.is_empty() {
+            return Err("action_id must not be empty".to_string());
+        }
+        Ok(Self::Action {
+            action_id,
+            execution_id: None,
+            workflow_id: None,
+            tenant_id: None,
+        })
+    }
+
+    /// Try to create an action scope with full parent chain.
+    pub fn try_action_in_execution(
+        action_id: impl Into<String>,
+        execution_id: impl Into<String>,
+        workflow_id: Option<String>,
+        tenant_id: Option<String>,
+    ) -> Result<Self, String> {
+        let action_id = action_id.into();
+        let execution_id = execution_id.into();
+        if action_id.is_empty() {
+            return Err("action_id must not be empty".to_string());
+        }
+        if execution_id.is_empty() {
+            return Err("execution_id must not be empty".to_string());
+        }
+        Ok(Self::Action {
+            action_id,
+            execution_id: Some(execution_id),
+            workflow_id,
+            tenant_id,
+        })
+    }
+
+    /// Try to create a custom scope.
+    pub fn try_custom(key: impl Into<String>, value: impl Into<String>) -> Result<Self, String> {
+        let key = key.into();
+        let value = value.into();
+        if key.is_empty() {
+            return Err("custom scope key must not be empty".to_string());
+        }
+        if value.is_empty() {
+            return Err("custom scope value must not be empty".to_string());
+        }
+        Ok(Self::Custom { key, value })
+    }
+
     /// Create a tenant scope.
     ///
     /// # Panics
     /// Panics if `tenant_id` is empty.
     pub fn tenant<S: Into<String>>(tenant_id: S) -> Self {
-        let tenant_id = tenant_id.into();
-        assert!(!tenant_id.is_empty(), "tenant_id must not be empty");
-        Self::Tenant { tenant_id }
+        Self::try_tenant(tenant_id).unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// Create a workflow scope without parent info.
@@ -93,12 +215,7 @@ impl Scope {
     /// # Panics
     /// Panics if `workflow_id` is empty.
     pub fn workflow<S: Into<String>>(workflow_id: S) -> Self {
-        let workflow_id = workflow_id.into();
-        assert!(!workflow_id.is_empty(), "workflow_id must not be empty");
-        Self::Workflow {
-            workflow_id,
-            tenant_id: None,
-        }
+        Self::try_workflow(workflow_id).unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// Create a workflow scope with tenant parent.
@@ -109,14 +226,7 @@ impl Scope {
         workflow_id: impl Into<String>,
         tenant_id: impl Into<String>,
     ) -> Self {
-        let workflow_id = workflow_id.into();
-        let tenant_id = tenant_id.into();
-        assert!(!workflow_id.is_empty(), "workflow_id must not be empty");
-        assert!(!tenant_id.is_empty(), "tenant_id must not be empty");
-        Self::Workflow {
-            workflow_id,
-            tenant_id: Some(tenant_id),
-        }
+        Self::try_workflow_in_tenant(workflow_id, tenant_id).unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// Create an execution scope without parent info.
@@ -124,13 +234,7 @@ impl Scope {
     /// # Panics
     /// Panics if `execution_id` is empty.
     pub fn execution<S: Into<String>>(execution_id: S) -> Self {
-        let execution_id = execution_id.into();
-        assert!(!execution_id.is_empty(), "execution_id must not be empty");
-        Self::Execution {
-            execution_id,
-            workflow_id: None,
-            tenant_id: None,
-        }
+        Self::try_execution(execution_id).unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// Create an execution scope with full parent chain.
@@ -142,15 +246,8 @@ impl Scope {
         workflow_id: impl Into<String>,
         tenant_id: Option<String>,
     ) -> Self {
-        let execution_id = execution_id.into();
-        let workflow_id = workflow_id.into();
-        assert!(!execution_id.is_empty(), "execution_id must not be empty");
-        assert!(!workflow_id.is_empty(), "workflow_id must not be empty");
-        Self::Execution {
-            execution_id,
-            workflow_id: Some(workflow_id),
-            tenant_id,
-        }
+        Self::try_execution_in_workflow(execution_id, workflow_id, tenant_id)
+            .unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// Create an action scope without parent info.
@@ -158,14 +255,7 @@ impl Scope {
     /// # Panics
     /// Panics if `action_id` is empty.
     pub fn action<S: Into<String>>(action_id: S) -> Self {
-        let action_id = action_id.into();
-        assert!(!action_id.is_empty(), "action_id must not be empty");
-        Self::Action {
-            action_id,
-            execution_id: None,
-            workflow_id: None,
-            tenant_id: None,
-        }
+        Self::try_action(action_id).unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// Create an action scope with full parent chain.
@@ -178,16 +268,8 @@ impl Scope {
         workflow_id: Option<String>,
         tenant_id: Option<String>,
     ) -> Self {
-        let action_id = action_id.into();
-        let execution_id = execution_id.into();
-        assert!(!action_id.is_empty(), "action_id must not be empty");
-        assert!(!execution_id.is_empty(), "execution_id must not be empty");
-        Self::Action {
-            action_id,
-            execution_id: Some(execution_id),
-            workflow_id,
-            tenant_id,
-        }
+        Self::try_action_in_execution(action_id, execution_id, workflow_id, tenant_id)
+            .unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// Create a custom scope.
@@ -195,11 +277,7 @@ impl Scope {
     /// # Panics
     /// Panics if `key` or `value` is empty.
     pub fn custom(key: impl Into<String>, value: impl Into<String>) -> Self {
-        let key = key.into();
-        let value = value.into();
-        assert!(!key.is_empty(), "custom scope key must not be empty");
-        assert!(!value.is_empty(), "custom scope value must not be empty");
-        Self::Custom { key, value }
+        Self::try_custom(key, value).unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// Get the scope hierarchy level (lower numbers = broader scope)

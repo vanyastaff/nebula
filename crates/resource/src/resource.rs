@@ -47,8 +47,11 @@ pub trait Resource: Send + Sync + 'static {
         ctx: &Context,
     ) -> impl Future<Output = Result<Self::Instance>> + Send;
 
-    /// Check whether an existing instance is still valid/healthy.
-    fn is_valid(&self, _instance: &Self::Instance) -> impl Future<Output = Result<bool>> + Send {
+    /// Check whether an existing instance can be safely reused.
+    ///
+    /// Return `Ok(true)` when the instance is reusable, `Ok(false)` when it
+    /// should be discarded, and `Err(_)` on validation failure.
+    fn is_reusable(&self, _instance: &Self::Instance) -> impl Future<Output = Result<bool>> + Send {
         async { Ok(true) }
     }
 

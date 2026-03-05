@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
-use nebula_resource::manager::Manager;
 use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
@@ -108,7 +107,7 @@ impl Resource for ReferenceResource {
         })
     }
 
-    async fn is_valid(&self, instance: &ReferenceInstance) -> Result<bool> {
+    async fn is_reusable(&self, instance: &ReferenceInstance) -> Result<bool> {
         Ok(instance.valid)
     }
 
@@ -161,7 +160,7 @@ async fn create_produces_valid_instance() {
 }
 
 #[tokio::test]
-async fn is_valid_reflects_instance_state() {
+async fn is_reusable_reflects_instance_state() {
     let resource = ReferenceResource::new();
 
     let valid_instance = ReferenceInstance {
@@ -169,14 +168,14 @@ async fn is_valid_reflects_instance_state() {
         counter: 0,
         valid: true,
     };
-    assert!(resource.is_valid(&valid_instance).await.unwrap());
+    assert!(resource.is_reusable(&valid_instance).await.unwrap());
 
     let invalid_instance = ReferenceInstance {
         id: "test".into(),
         counter: 0,
         valid: false,
     };
-    assert!(!resource.is_valid(&invalid_instance).await.unwrap());
+    assert!(!resource.is_reusable(&invalid_instance).await.unwrap());
 }
 
 #[tokio::test]
@@ -218,8 +217,8 @@ async fn cleanup_is_called_on_shutdown() {
             self.inner.create(config, ctx).await
         }
 
-        async fn is_valid(&self, instance: &ReferenceInstance) -> Result<bool> {
-            self.inner.is_valid(instance).await
+        async fn is_reusable(&self, instance: &ReferenceInstance) -> Result<bool> {
+            self.inner.is_reusable(instance).await
         }
 
         async fn recycle(&self, instance: &mut ReferenceInstance) -> Result<()> {
@@ -261,6 +260,16 @@ async fn config_validation_rejects_empty_prefix() {
     };
     let result = bad_config.validate();
     assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn config_store_resource_minimal_lifecycle() {
+    let resource = ConfigStoreResource;
+    let metadata = resource.metadata();
+    assert_eq!(metadata.key.as_ref(), "config-store");
+
+    let created = resource.create(&ConfigStoreConfig, &ctx()).await;
+    assert!(created.is_ok());
 }
 
 #[tokio::test(start_paused = true)]

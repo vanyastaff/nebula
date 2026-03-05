@@ -351,7 +351,7 @@ Stale credentials → recycle instance with fresh credential before serving.
 2. **`ScopeViolation` logs full context** — caller scope, resource scope, resource id
 3. **Guard RAII is mandatory** — no raw `Pool::return()` in public API
 4. **`EventBus::send` is non-blocking** — lagging subscriber dropped, pool never blocked
-5. **Health check on instance reuse** — `Resource::is_valid()` called on every acquire
+5. **Health check on instance reuse** — `Resource::is_reusable()` called on every acquire
 6. **`PoolExhausted` is retryable** — never silently block; always surface to caller
 
 ---

@@ -5,12 +5,11 @@
 //! T067: HookFilter scopes hooks to specific resources.
 //! T068: After-hook errors don't affect the operation.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use nebula_core::ResourceKey;
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
@@ -71,6 +70,7 @@ struct OrderTracker {
     prio: u32,
 }
 
+#[async_trait]
 impl ResourceHook for OrderTracker {
     fn name(&self) -> &str {
         &self.name
@@ -84,28 +84,24 @@ impl ResourceHook for OrderTracker {
         vec![HookEvent::Acquire]
     }
 
-    fn before<'a>(
-        &'a self,
-        _event: &'a HookEvent,
-        _resource_id: &'a str,
-        _ctx: &'a Context,
-    ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
-        Box::pin(async {
-            self.order.lock().push(format!("before:{}", self.name));
-            HookResult::Continue
-        })
+    async fn before(
+        &self,
+        _event: &HookEvent,
+        _resource_id: &str,
+        _ctx: &Context,
+    ) -> HookResult {
+        self.order.lock().push(format!("before:{}", self.name));
+        HookResult::Continue
     }
 
-    fn after<'a>(
-        &'a self,
-        _event: &'a HookEvent,
-        _resource_id: &'a str,
-        _ctx: &'a Context,
+    async fn after(
+        &self,
+        _event: &HookEvent,
+        _resource_id: &str,
+        _ctx: &Context,
         _success: bool,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async {
-            self.order.lock().push(format!("after:{}", self.name));
-        })
+    ) {
+        self.order.lock().push(format!("after:{}", self.name));
     }
 }
 
@@ -114,6 +110,7 @@ struct CancelHook {
     reason: String,
 }
 
+#[async_trait]
 impl ResourceHook for CancelHook {
     fn name(&self) -> &str {
         "canceller"
@@ -127,30 +124,20 @@ impl ResourceHook for CancelHook {
         vec![HookEvent::Acquire]
     }
 
-    fn before<'a>(
-        &'a self,
-        _event: &'a HookEvent,
-        resource_id: &'a str,
-        _ctx: &'a Context,
-    ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
-        Box::pin(async move {
-            HookResult::Cancel(Error::Unavailable {
-                resource_key: ResourceKey::try_from(resource_id).expect("valid key"),
-                reason: self.reason.clone(),
-                retryable: false,
-            })
+    async fn before(
+        &self,
+        _event: &HookEvent,
+        resource_id: &str,
+        _ctx: &Context,
+    ) -> HookResult {
+        HookResult::Cancel(Error::Unavailable {
+            resource_key: ResourceKey::try_from(resource_id).expect("valid key"),
+            reason: self.reason.clone(),
+            retryable: false,
         })
     }
 
-    fn after<'a>(
-        &'a self,
-        _event: &'a HookEvent,
-        _resource_id: &'a str,
-        _ctx: &'a Context,
-        _success: bool,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async {})
-    }
+    async fn after(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context, _success: bool) {}
 }
 
 /// Hook with a specific resource filter.
@@ -160,6 +147,7 @@ struct FilteredHook {
     hook_name: String,
 }
 
+#[async_trait]
 impl ResourceHook for FilteredHook {
     fn name(&self) -> &str {
         &self.hook_name
@@ -177,27 +165,17 @@ impl ResourceHook for FilteredHook {
         self.filter.clone()
     }
 
-    fn before<'a>(
-        &'a self,
-        _event: &'a HookEvent,
-        _resource_id: &'a str,
-        _ctx: &'a Context,
-    ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
-        Box::pin(async {
-            self.call_count.fetch_add(1, Ordering::SeqCst);
-            HookResult::Continue
-        })
+    async fn before(
+        &self,
+        _event: &HookEvent,
+        _resource_id: &str,
+        _ctx: &Context,
+    ) -> HookResult {
+        self.call_count.fetch_add(1, Ordering::SeqCst);
+        HookResult::Continue
     }
 
-    fn after<'a>(
-        &'a self,
-        _event: &'a HookEvent,
-        _resource_id: &'a str,
-        _ctx: &'a Context,
-        _success: bool,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async {})
-    }
+    async fn after(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context, _success: bool) {}
 }
 
 /// Hook that always panics in after (simulating an error).
@@ -209,6 +187,7 @@ struct FailingAfterHook {
     after_count: AtomicU32,
 }
 
+#[async_trait]
 impl ResourceHook for FailingAfterHook {
     fn name(&self) -> &str {
         "failing-after"
@@ -222,31 +201,27 @@ impl ResourceHook for FailingAfterHook {
         vec![HookEvent::Acquire]
     }
 
-    fn before<'a>(
-        &'a self,
-        _event: &'a HookEvent,
-        _resource_id: &'a str,
-        _ctx: &'a Context,
-    ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
-        Box::pin(async {
-            self.before_count.fetch_add(1, Ordering::SeqCst);
-            HookResult::Continue
-        })
+    async fn before(
+        &self,
+        _event: &HookEvent,
+        _resource_id: &str,
+        _ctx: &Context,
+    ) -> HookResult {
+        self.before_count.fetch_add(1, Ordering::SeqCst);
+        HookResult::Continue
     }
 
-    fn after<'a>(
-        &'a self,
-        _event: &'a HookEvent,
-        _resource_id: &'a str,
-        _ctx: &'a Context,
+    async fn after(
+        &self,
+        _event: &HookEvent,
+        _resource_id: &str,
+        _ctx: &Context,
         _success: bool,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async {
-            self.after_count.fetch_add(1, Ordering::SeqCst);
-            // The after-hook signature returns (), so it cannot propagate
-            // errors. This test verifies the contract: after-hooks are
-            // called but cannot affect the outcome.
-        })
+    ) {
+        self.after_count.fetch_add(1, Ordering::SeqCst);
+        // The after-hook signature returns (), so it cannot propagate
+        // errors. This test verifies the contract: after-hooks are
+        // called but cannot affect the outcome.
     }
 }
 

@@ -79,14 +79,14 @@ impl ResourceHandle {
 /// Holds the same underlying pool guard as [`AnyGuard`], but exposes the
 /// instance as a concrete type so you avoid manual downcasting.
 ///
-/// Implements [`Deref`](std::ops::Deref) to `T`, so you can call methods on the
-/// instance directly: `guard.get_me().await` instead of `guard.get().get_me().await`.
+/// Provides fallible typed access via [`get`](Self::get) / [`get_mut`](Self::get_mut)
+/// without panicking on type mismatch.
 ///
 /// # Example
 ///
 /// ```rust,ignore
 /// let guard = manager.acquire_typed(TelegramBotResource, &ctx).await?;
-/// let me = guard.get_me().await?;  // Deref to inner type
+/// let bot = guard.get().expect("typed guard must match resource type");
 /// ```
 pub struct TypedResourceGuard<T: Send + Sync + 'static> {
     pub(crate) guard: AnyGuard,
@@ -96,19 +96,13 @@ pub struct TypedResourceGuard<T: Send + Sync + 'static> {
 impl<T: Send + Sync + 'static> TypedResourceGuard<T> {
     /// Access the resource instance. The type is guaranteed by [`Manager::acquire_typed`](crate::manager::Manager::acquire_typed).
     #[must_use]
-    pub fn get(&self) -> &T {
-        self.guard
-            .as_any()
-            .downcast_ref()
-            .expect("TypedResourceGuard type mismatch")
+    pub fn get(&self) -> Option<&T> {
+        self.guard.as_any().downcast_ref()
     }
 
     /// Mutably access the resource instance.
-    pub fn get_mut(&mut self) -> &mut T {
-        self.guard
-            .as_any_mut()
-            .downcast_mut()
-            .expect("TypedResourceGuard type mismatch")
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        self.guard.as_any_mut().downcast_mut()
     }
 }
 
@@ -117,20 +111,6 @@ impl<T: Send + Sync + 'static> std::fmt::Debug for TypedResourceGuard<T> {
         f.debug_struct("TypedResourceGuard")
             .field("type", &std::any::type_name::<T>())
             .finish_non_exhaustive()
-    }
-}
-
-impl<T: Send + Sync + 'static> std::ops::Deref for TypedResourceGuard<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        self.get()
-    }
-}
-
-impl<T: Send + Sync + 'static> std::ops::DerefMut for TypedResourceGuard<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.get_mut()
     }
 }
 

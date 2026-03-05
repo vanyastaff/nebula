@@ -6,12 +6,11 @@
 //! 4. `PoolStats` latency percentiles (p50/p95/p99)
 //! 5. `HealthChecker::stop_monitoring_resource` cancels all instances by resource_id
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use nebula_core::ResourceKey;
 use nebula_resource::autoscale::AutoScalePolicy;
 use nebula_resource::context::Context;
@@ -703,6 +702,7 @@ impl CreateCountingHook {
     }
 }
 
+#[async_trait]
 impl ResourceHook for CreateCountingHook {
     fn name(&self) -> &str {
         "create-counter"
@@ -716,25 +716,17 @@ impl ResourceHook for CreateCountingHook {
         HookFilter::All
     }
 
-    fn before<'a>(
-        &'a self,
-        _event: &'a HookEvent,
-        _resource_id: &'a str,
-        _ctx: &'a Context,
-    ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
+    async fn before(
+        &self,
+        _event: &HookEvent,
+        _resource_id: &str,
+        _ctx: &Context,
+    ) -> HookResult {
         self.count.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { HookResult::Continue })
+        HookResult::Continue
     }
 
-    fn after<'a>(
-        &'a self,
-        _event: &'a HookEvent,
-        _resource_id: &'a str,
-        _ctx: &'a Context,
-        _success: bool,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async {})
-    }
+    async fn after(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context, _success: bool) {}
 }
 
 #[tokio::test]

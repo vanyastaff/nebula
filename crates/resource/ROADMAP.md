@@ -167,9 +167,10 @@ crates/
 ### 2.3 Ключевые трейты (финальное состояние)
 
 ```rust
+use std::future::Future;
+
 /// Основной трейт ресурса.
 /// По аналогии с bb8::ManageConnection — минимальный контракт.
-#[async_trait]
 pub trait Resource: Send + Sync + 'static {
     /// Тип конфигурации (десериализуемый из JSON/YAML).
     type Config: ResourceConfig;
@@ -181,30 +182,39 @@ pub trait Resource: Send + Sync + 'static {
     fn id(&self) -> &str;
 
     /// Создать новый экземпляр ресурса.
-    async fn create(
+    fn create(
         &self,
         config: &Self::Config,
         context: &ResourceContext,
-    ) -> Result<Self::Instance, ResourceError>;
+    ) -> impl Future<Output = Result<Self::Instance, ResourceError>> + Send;
 
     /// Проверить, что экземпляр всё ещё рабочий.
     /// По умолчанию — всегда Ok(true).
-    async fn is_valid(&self, instance: &Self::Instance) -> Result<bool, ResourceError> {
-        let _ = instance;
-        Ok(true)
+    fn is_reusable(
+        &self,
+        _instance: &Self::Instance,
+    ) -> impl Future<Output = Result<bool, ResourceError>> + Send {
+        async { Ok(true) }
     }
 
     /// Подготовить экземпляр к переиспользованию (после возврата в пул).
     /// По умолчанию — no-op.
-    async fn recycle(&self, instance: &mut Self::Instance) -> Result<(), ResourceError> {
-        let _ = instance;
-        Ok(())
+    fn recycle(
+        &self,
+        _instance: &mut Self::Instance,
+    ) -> impl Future<Output = Result<(), ResourceError>> + Send {
+        async { Ok(()) }
     }
 
     /// Очистить экземпляр при удалении из пула / shutdown.
-    async fn cleanup(&self, instance: Self::Instance) -> Result<(), ResourceError> {
-        drop(instance);
-        Ok(())
+    fn cleanup(
+        &self,
+        instance: Self::Instance,
+    ) -> impl Future<Output = Result<(), ResourceError>> + Send {
+        async move {
+            drop(instance);
+            Ok(())
+        }
     }
 
     /// Зависимости — какие ресурсы должны быть инициализированы до этого.
@@ -221,10 +231,9 @@ pub trait ResourceConfig: Send + Sync + serde::de::DeserializeOwned + 'static {
 
 /// Расширение для ресурсов с health check (opt-in).
 /// Не навязывается — ресурс может не реализовывать.
-#[async_trait]
 pub trait HealthCheckable: Send + Sync {
     /// Проверка здоровья. Возвращает детализированный статус.
-    async fn health_check(&self) -> HealthStatus;
+    fn health_check(&self) -> impl Future<Output = HealthStatus> + Send;
 
     /// Рекомендуемый интервал проверки.
     fn check_interval(&self) -> Duration {
@@ -411,7 +420,7 @@ impl<T> Drop for ResourceHandle<T> { ... } // Возвращает в пул
 
 Текущий трейт слишком сложный (2 associated types + 7 методов + отдельные ResourceConfig и ResourceInstance). Новый дизайн — по модели bb8::ManageConnection:
 
-- `Resource` — create, is_valid, recycle, cleanup, dependencies (см. секцию 2.3)
+- `Resource` — create, is_reusable, recycle, cleanup, dependencies (см. секцию 2.3)
 - `ResourceConfig` — validate + DeserializeOwned
 - Убрать `ResourceInstance` как отдельный трейт
 - Убрать `ResourceMetadata` как обязательный — id() возвращает &str, остальное в config
@@ -430,7 +439,7 @@ impl<T> Drop for ResourceHandle<T> { ... } // Возвращает в пул
 Текущая проблема: Pool не использует Poolable трейт. Решение — Pool работает напрямую с Resource:
 
 - `Pool<R: Resource>` вместо `Pool<T: Send + Sync>`
-- Pool вызывает `resource.create()`, `resource.is_valid()`, `resource.recycle()`, `resource.cleanup()`
+- Pool вызывает `resource.create()`, `resource.is_reusable()`, `resource.recycle()`, `resource.cleanup()`
 - Strategies: FIFO (default), LIFO (для connection locality)
 - LRU — отложить до Phase 4, когда будут реальные use cases
 - `PoolConfig`: min_idle, max_size, acquire_timeout, max_lifetime, idle_timeout

@@ -13,7 +13,7 @@ pub trait Resource: Send + Sync + 'static {
 
     fn id(&self) -> &str;
     fn create(&self, config: &Self::Config, ctx: &Context) -> impl Future<Output = Result<Self::Instance>> + Send;
-    fn is_valid(&self, instance: &Self::Instance) -> impl Future<Output = Result<bool>> + Send;     // default: Ok(true)
+    fn is_reusable(&self, instance: &Self::Instance) -> impl Future<Output = Result<bool>> + Send;  // default: Ok(true)
     fn recycle(&self, instance: &mut Self::Instance) -> impl Future<Output = Result<()>> + Send;    // default: Ok(())
     fn cleanup(&self, instance: Self::Instance) -> impl Future<Output = Result<()>> + Send;         // default: drop
     fn dependencies(&self) -> Vec<&str>;                                                             // default: empty
@@ -111,12 +111,12 @@ async fn create(
 }
 ```
 
-### `is_valid()` -- Health Check (optional)
+### `is_reusable()` -- Reuse Check (optional)
 
 Called before returning an idle instance to a caller. Return `Ok(false)` to discard the instance and try the next one (or create a new one).
 
 ```rust
-async fn is_valid(&self, instance: &PgConnection) -> Result<bool> {
+async fn is_reusable(&self, instance: &PgConnection) -> Result<bool> {
     // Simple "ping" query
     match instance.conn.simple_query("SELECT 1").await {
         Ok(_) => Ok(true),
@@ -242,7 +242,7 @@ async fn create(&self, config: &Self::Config, ctx: &Context) -> Result<Self::Ins
 - [ ] Config implements `Config` with meaningful `validate()`
 - [ ] `id()` returns a unique, descriptive string
 - [ ] `create()` maps errors to `Error::Initialization`
-- [ ] `is_valid()` performs a cheap liveness check (if applicable)
+- [ ] `is_reusable()` performs a cheap liveness check (if applicable)
 - [ ] `recycle()` resets per-checkout state (if applicable)
 - [ ] `cleanup()` releases external resources (if applicable)
 - [ ] `dependencies()` lists all required resources (if any)

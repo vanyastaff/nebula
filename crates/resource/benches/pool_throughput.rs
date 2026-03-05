@@ -36,7 +36,7 @@ impl Resource for NoOpResource {
         Ok(0)
     }
 
-    async fn is_valid(&self, _instance: &u64) -> Result<bool> {
+    async fn is_reusable(&self, _instance: &u64) -> Result<bool> {
         Ok(true)
     }
 

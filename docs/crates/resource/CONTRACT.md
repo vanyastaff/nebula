@@ -36,7 +36,7 @@ Resource:
   - type Instance: Send + Sync + 'static
   - fn metadata(&self) -> ResourceMetadata
   - async fn create(&self, config: &Self::Config, ctx: &Context) -> Result<Self::Instance>
-  - async fn is_valid(&self, instance: &Self::Instance) -> Result<bool>   // default: Ok(true)
+  - async fn is_reusable(&self, instance: &Self::Instance) -> Result<bool>   // default: Ok(true)
   - async fn recycle(&self, instance: &mut Self::Instance) -> Result<()>  // default: Ok(())
   - async fn cleanup(&self, instance: Self::Instance) -> Result<()>        // default: drop; Ok(())
 ```
@@ -46,7 +46,7 @@ Resource:
 ### 1.2 Lifecycle Guarantees
 
 - **create**: Called when the pool needs a new instance. Must be deterministic from `(config, ctx)`; no hidden global state that changes semantics.
-- **is_valid**: Called when an instance is considered for reuse. Return `false` to force disposal and a new `create`.
+- **is_reusable**: Called when an instance is considered for reuse. Return `false` to force disposal and a new `create`.
 - **recycle**: Called before an instance is returned to the idle pool. Use for resetting state, not for heavy I/O.
 - **cleanup**: Called when an instance is permanently removed. Must not fail in a way that leaks resources; best effort then log.
 

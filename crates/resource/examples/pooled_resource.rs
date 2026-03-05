@@ -65,7 +65,7 @@ impl Resource for DbResource {
         Ok(DbConnection { id, query_count: 0 })
     }
 
-    async fn is_valid(&self, conn: &DbConnection) -> Result<bool> {
+    async fn is_reusable(&self, conn: &DbConnection) -> Result<bool> {
         // Reject connections that have served too many queries.
         Ok(conn.query_count < 100)
     }

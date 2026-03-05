@@ -56,7 +56,7 @@ impl Resource for InMemoryCache {
     }
 
     /// A cache is always valid unless it has grown too large.
-    async fn is_valid(&self, instance: &HashMap<String, String>) -> Result<bool> {
+    async fn is_reusable(&self, instance: &HashMap<String, String>) -> Result<bool> {
         // In a real resource you might check connectivity, staleness, etc.
         Ok(instance.len() < 10_000)
     }

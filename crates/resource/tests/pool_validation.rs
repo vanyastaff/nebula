@@ -1,6 +1,6 @@
-//! Pool is_valid() rejection path tests.
+//! Pool is_reusable() rejection path tests.
 //!
-//! Verifies that when `Resource::is_valid()` returns `false` or `Err` for
+//! Verifies that when `Resource::is_reusable()` returns `false` or `Err` for
 //! idle instances, the pool correctly discards them and creates replacements.
 
 use std::sync::Arc;
@@ -50,7 +50,7 @@ impl Resource for SharedValidatableResource {
         Ok(format!("inst-{n}"))
     }
 
-    async fn is_valid(&self, _instance: &String) -> Result<bool> {
+    async fn is_reusable(&self, _instance: &String) -> Result<bool> {
         if self.reject.swap(false, Ordering::SeqCst) {
             return Ok(false);
         }
@@ -79,7 +79,7 @@ impl Resource for MultiInvalidResource {
         Ok(format!("inst-{n}"))
     }
 
-    async fn is_valid(&self, _instance: &String) -> Result<bool> {
+    async fn is_reusable(&self, _instance: &String) -> Result<bool> {
         if self.reject_all.load(Ordering::SeqCst) {
             return Ok(false);
         }
@@ -88,7 +88,7 @@ impl Resource for MultiInvalidResource {
 }
 
 // ---------------------------------------------------------------------------
-// Shared resource where is_valid returns Err when flag is set
+// Shared resource where is_reusable returns Err when flag is set
 // ---------------------------------------------------------------------------
 
 struct ErrValidResource {
@@ -108,7 +108,7 @@ impl Resource for ErrValidResource {
         Ok(format!("inst-{n}"))
     }
 
-    async fn is_valid(&self, _instance: &String) -> Result<bool> {
+    async fn is_reusable(&self, _instance: &String) -> Result<bool> {
         if self.error_flag.swap(false, Ordering::SeqCst) {
             return Err(Error::HealthCheck {
                 resource_key: ResourceKey::try_from("err-valid").expect("valid"),
@@ -154,10 +154,10 @@ async fn invalid_idle_instance_replaced_on_acquire() {
 
     assert_eq!(pool.stats().idle, 1, "instance should be idle");
 
-    // Set reject flag so next is_valid returns false (then auto-resets)
+    // Set reject flag so next is_reusable returns false (then auto-resets)
     reject.store(true, Ordering::SeqCst);
 
-    // Acquire: idle instance fails is_valid, gets destroyed, new one created
+    // Acquire: idle instance fails is_reusable, gets destroyed, new one created
     let (guard, _) = pool.acquire(&ctx()).await.unwrap();
     assert_eq!(*guard, "inst-1", "should get a fresh instance");
 

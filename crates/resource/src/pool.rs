@@ -634,7 +634,7 @@ impl<R: Resource> Pool<R> {
                 Some(entry) => {
                     // Validate
                     let created_at = entry.created_at;
-                    match inner.resource.is_valid(&entry.instance).await {
+                    match inner.resource.is_reusable(&entry.instance).await {
                         Ok(true) => break (entry.instance, Some(created_at)),
                         _ => {
                             tracing::debug!("Destroying invalid resource instance");
@@ -1489,7 +1489,7 @@ mod tests {
             Ok(format!("{}-inst", config.prefix))
         }
 
-        async fn is_valid(&self, _instance: &Self::Instance) -> Result<bool> {
+        async fn is_reusable(&self, _instance: &Self::Instance) -> Result<bool> {
             let remaining = self
                 .fail_after
                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -1521,7 +1521,7 @@ mod tests {
     #[tokio::test]
     async fn acquire_skips_invalid_idle_and_creates_new() {
         let resource = InvalidatingResource {
-            // First is_valid call returns false, subsequent ones return true (underflow wraps)
+            // First is_reusable call returns false, subsequent ones return true (underflow wraps)
             fail_after: std::sync::atomic::AtomicU32::new(0),
         };
         let pool_config = PoolConfig {

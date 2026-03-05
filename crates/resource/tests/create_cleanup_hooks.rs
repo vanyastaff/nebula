@@ -6,12 +6,11 @@
 //!
 //! Also verifies that hooks fire through the [`Manager`] registration path.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
@@ -123,6 +122,7 @@ impl CountingHook {
     }
 }
 
+#[async_trait]
 impl ResourceHook for CountingHook {
     fn name(&self) -> &str {
         &self.name
@@ -145,12 +145,12 @@ impl ResourceHook for CountingHook {
         HookFilter::All
     }
 
-    fn before<'a>(
-        &'a self,
-        event: &'a HookEvent,
-        _resource_id: &'a str,
-        _ctx: &'a Context,
-    ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
+    async fn before(
+        &self,
+        event: &HookEvent,
+        _resource_id: &str,
+        _ctx: &Context,
+    ) -> HookResult {
         match event {
             HookEvent::Create => {
                 self.create_before.fetch_add(1, Ordering::SeqCst);
@@ -165,16 +165,16 @@ impl ResourceHook for CountingHook {
                 self.release_before.fetch_add(1, Ordering::SeqCst);
             }
         }
-        Box::pin(async { HookResult::Continue })
+        HookResult::Continue
     }
 
-    fn after<'a>(
-        &'a self,
-        event: &'a HookEvent,
-        _resource_id: &'a str,
-        _ctx: &'a Context,
+    async fn after(
+        &self,
+        event: &HookEvent,
+        _resource_id: &str,
+        _ctx: &Context,
         _success: bool,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    ) {
         match event {
             HookEvent::Create => {
                 self.create_after.fetch_add(1, Ordering::SeqCst);
@@ -189,7 +189,6 @@ impl ResourceHook for CountingHook {
                 self.release_after.fetch_add(1, Ordering::SeqCst);
             }
         }
-        Box::pin(async {})
     }
 }
 
@@ -199,6 +198,7 @@ impl ResourceHook for CountingHook {
 
 struct CancelCreateHook;
 
+#[async_trait]
 impl ResourceHook for CancelCreateHook {
     fn name(&self) -> &str {
         "cancel-create"
@@ -208,30 +208,20 @@ impl ResourceHook for CancelCreateHook {
         vec![HookEvent::Create]
     }
 
-    fn before<'a>(
-        &'a self,
-        _event: &'a HookEvent,
-        _resource_id: &'a str,
-        _ctx: &'a Context,
-    ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
-        Box::pin(async {
-            HookResult::Cancel(nebula_resource::error::Error::Unavailable {
-                resource_key: ResourceKey::try_from("simple").expect("valid resource key"),
-                reason: "Create cancelled by hook".to_string(),
-                retryable: false,
-            })
+    async fn before(
+        &self,
+        _event: &HookEvent,
+        _resource_id: &str,
+        _ctx: &Context,
+    ) -> HookResult {
+        HookResult::Cancel(nebula_resource::error::Error::Unavailable {
+            resource_key: ResourceKey::try_from("simple").expect("valid resource key"),
+            reason: "Create cancelled by hook".to_string(),
+            retryable: false,
         })
     }
 
-    fn after<'a>(
-        &'a self,
-        _event: &'a HookEvent,
-        _resource_id: &'a str,
-        _ctx: &'a Context,
-        _success: bool,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async {})
-    }
+    async fn after(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context, _success: bool) {}
 }
 
 // ---------------------------------------------------------------------------

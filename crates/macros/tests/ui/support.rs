@@ -132,7 +132,7 @@ pub trait Resource: Send + Sync + 'static {
         ctx: &crate::context::Context,
     ) -> impl ::std::future::Future<Output = crate::error::Result<Self::Instance>> + Send;
 
-    fn is_valid(
+    fn is_reusable(
         &self,
         instance: &Self::Instance,
     ) -> impl ::std::future::Future<Output = crate::error::Result<bool>> + Send;

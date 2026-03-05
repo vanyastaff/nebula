@@ -60,7 +60,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                 }
             }
 
-            fn is_valid(
+            fn is_reusable(
                 &self,
                 _instance: &Self::Instance,
             ) -> impl ::std::future::Future<Output = ::nebula_resource::error::Result<bool>> + Send {

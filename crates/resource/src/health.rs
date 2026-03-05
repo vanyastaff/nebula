@@ -845,7 +845,7 @@ impl<R: crate::Resource> HealthCheckable for ResourceHealthAdapter<R> {
         };
 
         // Step 2: validate the new instance.
-        let valid = match self.resource.is_valid(&instance).await {
+        let valid = match self.resource.is_reusable(&instance).await {
             Ok(v) => v,
             Err(e) => {
                 // Cleanup before returning.

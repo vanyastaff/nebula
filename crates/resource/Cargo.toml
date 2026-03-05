@@ -27,6 +27,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync", "macr
 tokio-util = { workspace = true }
 
 # Core
+async-trait = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -40,7 +41,6 @@ reqwest = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
-async-trait = { workspace = true }
 nebula-parameter = { path = "../parameter" }
 tokio-test = { workspace = true }
 proptest = { workspace = true }

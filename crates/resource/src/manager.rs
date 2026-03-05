@@ -50,6 +50,34 @@ pub struct ShutdownConfig {
     pub terminate_timeout: Duration,
 }
 
+/// Lightweight pool dimensions snapshot for external observers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct ResourcePoolStatus {
+    /// Current number of checked-out instances.
+    pub active: usize,
+    /// Current number of idle instances.
+    pub idle: usize,
+    /// Configured maximum pool size.
+    pub max_size: usize,
+}
+
+/// Aggregate status snapshot for a registered resource.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ResourceStatus {
+    /// Static metadata for API/UI discovery.
+    pub metadata: ResourceMetadata,
+    /// Current health state.
+    pub health: HealthState,
+    /// Current pool dimensions.
+    pub pool: ResourcePoolStatus,
+    /// Whether the resource is currently quarantined.
+    pub quarantined: bool,
+    /// Quarantine reason when quarantined.
+    pub quarantine_reason: Option<String>,
+    /// Registration scope.
+    pub scope: Scope,
+}
+
 impl Default for ShutdownConfig {
     fn default() -> Self {
         Self {
@@ -660,13 +688,13 @@ impl Manager {
     /// Acquire a resource by type, without string ID or manual downcast.
     ///
     /// Use this when the resource type is known at compile time. Returns a
-    /// [`TypedResourceGuard<R::Instance>`] so you can call `.get()` directly.
+    /// [`TypedResourceGuard<R::Instance>`] so you can access typed instance via `.get()`.
     ///
     /// # Example
     ///
     /// ```rust,ignore
     /// let guard = manager.acquire_typed(TelegramBotResource, &ctx).await?;
-    /// let bot = guard.get(); // &Arc<teloxide::Bot>
+    /// let bot = guard.get().expect("typed guard must match resource type");
     /// ```
     pub async fn acquire_typed<R: Resource>(
         &self,
@@ -835,6 +863,62 @@ impl Manager {
     #[must_use]
     pub fn event_bus(&self) -> &Arc<EventBus> {
         &self.event_bus
+    }
+
+    /// Get a read-only status snapshot for a single resource.
+    #[must_use]
+    pub fn get_status(&self, resource_key: &ResourceKey) -> Option<ResourceStatus> {
+        let id = resource_key.as_ref();
+        let entry = self.pools.get(id)?;
+        let scope = entry.scope.clone();
+        let (active, idle, max_size) = entry.pool.utilization_snapshot();
+        drop(entry);
+
+        let metadata = self
+            .metadata
+            .get(id)
+            .map(|m| m.clone())
+            .unwrap_or_else(|| ResourceMetadata::from_key(resource_key.clone()));
+
+        let health = self
+            .health_states
+            .get(id)
+            .map(|s| s.clone())
+            .unwrap_or(HealthState::Unknown);
+
+        let quarantine_entry = self.quarantine.get(id);
+        let quarantined = quarantine_entry.is_some();
+        let quarantine_reason = quarantine_entry.map(|entry| entry.reason.to_string());
+
+        Some(ResourceStatus {
+            metadata,
+            health,
+            pool: ResourcePoolStatus {
+                active,
+                idle,
+                max_size,
+            },
+            quarantined,
+            quarantine_reason,
+            scope,
+        })
+    }
+
+    /// Get status snapshots for all registered resources.
+    #[must_use]
+    pub fn list_status(&self) -> Vec<ResourceStatus> {
+        let mut statuses: Vec<ResourceStatus> = self
+            .pools
+            .iter()
+            .filter_map(|entry| {
+                let id = entry.key().clone();
+                let key = ResourceKey::try_from(id.as_str()).ok()?;
+                self.get_status(&key)
+            })
+            .collect();
+
+        statuses.sort_by(|a, b| a.metadata.key.as_ref().cmp(b.metadata.key.as_ref()));
+        statuses
     }
 
     /// Get a reference to the health checker.
@@ -1194,6 +1278,7 @@ impl std::fmt::Debug for Manager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::quarantine::QuarantineReason;
     use crate::resource::Config;
     use crate::scope::Scope;
 
@@ -1361,6 +1446,7 @@ mod tests {
         after_count: std::sync::atomic::AtomicU32,
     }
 
+    #[async_trait::async_trait]
     impl crate::hooks::ResourceHook for CountingHook {
         fn name(&self) -> &str {
             "counter"
@@ -1368,36 +1454,31 @@ mod tests {
         fn events(&self) -> Vec<crate::hooks::HookEvent> {
             vec![crate::hooks::HookEvent::Acquire]
         }
-        fn before<'a>(
-            &'a self,
-            _event: &'a crate::hooks::HookEvent,
-            _resource_id: &'a str,
-            _ctx: &'a Context,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = crate::hooks::HookResult> + Send + 'a>,
-        > {
-            Box::pin(async {
-                self.before_count
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                crate::hooks::HookResult::Continue
-            })
+        async fn before(
+            &self,
+            _event: &crate::hooks::HookEvent,
+            _resource_id: &str,
+            _ctx: &Context,
+        ) -> crate::hooks::HookResult {
+            self.before_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            crate::hooks::HookResult::Continue
         }
-        fn after<'a>(
-            &'a self,
-            _event: &'a crate::hooks::HookEvent,
-            _resource_id: &'a str,
-            _ctx: &'a Context,
+        async fn after(
+            &self,
+            _event: &crate::hooks::HookEvent,
+            _resource_id: &str,
+            _ctx: &Context,
             _success: bool,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
-            Box::pin(async {
-                self.after_count
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            })
+        ) {
+            self.after_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
     struct BlockerHook;
 
+    #[async_trait::async_trait]
     impl crate::hooks::ResourceHook for BlockerHook {
         fn name(&self) -> &str {
             "blocker"
@@ -1405,32 +1486,26 @@ mod tests {
         fn events(&self) -> Vec<crate::hooks::HookEvent> {
             vec![crate::hooks::HookEvent::Acquire]
         }
-        fn before<'a>(
-            &'a self,
-            _event: &'a crate::hooks::HookEvent,
-            _resource_id: &'a str,
-            _ctx: &'a Context,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = crate::hooks::HookResult> + Send + 'a>,
-        > {
-            Box::pin(async {
-                let key = ResourceKey::try_from("test").expect("valid resource key");
-                crate::hooks::HookResult::Cancel(Error::Unavailable {
-                    resource_key: key,
-                    reason: "blocked by hook".to_string(),
-                    retryable: false,
-                })
+        async fn before(
+            &self,
+            _event: &crate::hooks::HookEvent,
+            _resource_id: &str,
+            _ctx: &Context,
+        ) -> crate::hooks::HookResult {
+            let key = ResourceKey::try_from("test").expect("valid resource key");
+            crate::hooks::HookResult::Cancel(Error::Unavailable {
+                resource_key: key,
+                reason: "blocked by hook".to_string(),
+                retryable: false,
             })
         }
-        fn after<'a>(
-            &'a self,
-            _event: &'a crate::hooks::HookEvent,
-            _resource_id: &'a str,
-            _ctx: &'a Context,
+        async fn after(
+            &self,
+            _event: &crate::hooks::HookEvent,
+            _resource_id: &str,
+            _ctx: &Context,
             _success: bool,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
-            Box::pin(async {})
-        }
+        ) {}
     }
 
     // -----------------------------------------------------------------------
@@ -1747,5 +1822,99 @@ mod tests {
             .downcast_ref::<String>()
             .expect("downcast");
         assert_eq!(new_inst, "instance-new");
+    }
+
+    #[test]
+    fn get_status_returns_snapshot() {
+        let mgr = Manager::new();
+        mgr.register(
+            TestResource,
+            TestConfig {
+                value: "status".into(),
+            },
+            PoolConfig {
+                min_size: 0,
+                max_size: 7,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let key = ResourceKey::try_from("test").expect("valid resource key");
+        mgr.set_health_state(&key, HealthState::Degraded {
+            reason: "latency".into(),
+            performance_impact: 0.25,
+        });
+        assert!(mgr.quarantine.quarantine(
+            "test",
+            QuarantineReason::ManualQuarantine {
+                reason: "operator".into()
+            }
+        ));
+
+        let status = mgr.get_status(&key).expect("status should exist");
+        assert_eq!(status.metadata.key, key);
+        assert!(matches!(status.health, HealthState::Degraded { .. }));
+        assert_eq!(status.pool.max_size, 7);
+        assert_eq!(status.scope, Scope::Global);
+        assert!(status.quarantined);
+        assert!(
+            status
+                .quarantine_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("operator"))
+        );
+    }
+
+    #[test]
+    fn list_status_returns_sorted_snapshots() {
+        struct Alpha;
+        impl Resource for Alpha {
+            type Config = TestConfig;
+            type Instance = String;
+            fn metadata(&self) -> ResourceMetadata {
+                ResourceMetadata::from_key(ResourceKey::try_from("alpha").expect("valid"))
+            }
+            async fn create(&self, config: &TestConfig, _ctx: &Context) -> Result<String> {
+                Ok(format!("instance-{}", config.value))
+            }
+        }
+
+        struct Zeta;
+        impl Resource for Zeta {
+            type Config = TestConfig;
+            type Instance = String;
+            fn metadata(&self) -> ResourceMetadata {
+                ResourceMetadata::from_key(ResourceKey::try_from("zeta").expect("valid"))
+            }
+            async fn create(&self, config: &TestConfig, _ctx: &Context) -> Result<String> {
+                Ok(format!("instance-{}", config.value))
+            }
+        }
+
+        let mgr = Manager::new();
+        mgr.register(
+            Zeta,
+            TestConfig {
+                value: "z".into(),
+            },
+            PoolConfig::default(),
+        )
+        .unwrap();
+        mgr.register(
+            Alpha,
+            TestConfig {
+                value: "a".into(),
+            },
+            PoolConfig::default(),
+        )
+        .unwrap();
+
+        let statuses = mgr.list_status();
+        let keys: Vec<String> = statuses
+            .into_iter()
+            .map(|status| status.metadata.key.as_ref().to_string())
+            .collect();
+        assert_eq!(keys, vec!["alpha".to_string(), "zeta".to_string()]);
     }
 }

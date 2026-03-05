@@ -78,7 +78,7 @@ Without `maintenance_interval`, eviction only happens lazily when an expired ins
 1. `acquire()` obtains a semaphore permit (bounded to `max_size`)
 2. Tries to pop an idle instance (FIFO: front, LIFO: back)
 3. If the instance is expired, it is cleaned up and the next one is tried
-4. If the instance is valid (`is_valid()` returns `Ok(true)`), it is returned in a `Guard`
+4. If the instance is valid (`is_reusable()` returns `Ok(true)`), it is returned in a `Guard`
 5. If no idle instance is available, `create()` builds a new one
 6. When the `Guard` is dropped, `recycle()` runs; on success the instance goes back to idle; on failure it is cleaned up
 

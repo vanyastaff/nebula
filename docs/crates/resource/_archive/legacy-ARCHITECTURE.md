@@ -49,7 +49,7 @@ Containment is deny-by-default when parent chain is incomplete. This prevents cr
 ## Health model
 
 Two levels:
-- inline validation in pool (`Resource::is_valid`)
+- inline validation in pool (`Resource::is_reusable`)
 - background monitoring (`HealthChecker`, `HealthCheckConfig`)
 
 When failure threshold is exceeded, callback can quarantine resource and propagate unhealthy state.
