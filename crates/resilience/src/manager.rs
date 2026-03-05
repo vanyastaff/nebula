@@ -26,6 +26,7 @@
 use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -370,6 +371,41 @@ impl UnTypedExecutionContext {
     }
 }
 
+#[derive(Debug, Default)]
+struct RuntimeServiceMetrics {
+    total_operations: AtomicU64,
+    failed_operations: AtomicU64,
+    total_latency_nanos: AtomicU64,
+}
+
+impl RuntimeServiceMetrics {
+    fn record_result(&self, is_failure: bool, elapsed: Duration) {
+        self.total_operations.fetch_add(1, Ordering::Relaxed);
+
+        if is_failure {
+            self.failed_operations.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let nanos = elapsed.as_nanos().min(u64::MAX as u128) as u64;
+        self.total_latency_nanos.fetch_add(nanos, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> (u64, u64, f64) {
+        let total_operations = self.total_operations.load(Ordering::Relaxed);
+        let failed_operations = self.failed_operations.load(Ordering::Relaxed);
+        let total_latency_nanos = self.total_latency_nanos.load(Ordering::Relaxed);
+
+        let avg_latency_ms = if total_operations == 0 {
+            0.0
+        } else {
+            let avg_nanos = total_latency_nanos as f64 / total_operations as f64;
+            avg_nanos / 1_000_000.0
+        };
+
+        (total_operations, failed_operations, avg_latency_ms)
+    }
+}
+
 /// Modern resilience manager with proper async semantics and concurrent access
 ///
 /// Uses `DashMap` for lock-free concurrent reads, optimized for high-throughput scenarios.
@@ -381,6 +417,8 @@ pub struct ResilienceManager {
     circuit_breakers: Arc<DashMap<String, Arc<CircuitBreaker>>>,
     /// Bulkheads per service (concurrent `HashMap`)
     bulkheads: Arc<DashMap<String, Arc<Bulkhead>>>,
+    /// Runtime per-service execution metrics
+    service_metrics: Arc<DashMap<String, Arc<RuntimeServiceMetrics>>>,
     /// Default policy for unregistered services (Arc for cheap cloning)
     default_policy: Arc<ResiliencePolicy>,
 }
@@ -393,6 +431,7 @@ impl ResilienceManager {
             policies: Arc::new(DashMap::new()),
             circuit_breakers: Arc::new(DashMap::new()),
             bulkheads: Arc::new(DashMap::new()),
+            service_metrics: Arc::new(DashMap::new()),
             default_policy: Arc::new(default_policy),
         }
     }
@@ -412,11 +451,19 @@ impl ResilienceManager {
         let service_name = service.into();
 
         // Initialize circuit breaker if configured
-        if policy.circuit_breaker.is_some() {
-            // Use default circuit breaker config (const generic version with defaults)
-            if let Ok(cb) = CircuitBreaker::with_defaults() {
-                self.circuit_breakers
-                    .insert(service_name.clone(), Arc::new(cb));
+        if let Some(config) = policy.circuit_breaker.clone() {
+            match CircuitBreaker::with_config(config) {
+                Ok(cb) => {
+                    self.circuit_breakers
+                        .insert(service_name.clone(), Arc::new(cb));
+                }
+                Err(e) => {
+                    warn!(
+                        service = %service_name,
+                        error = %e,
+                        "Skipping circuit breaker registration due to invalid configuration"
+                    );
+                }
             }
         }
 
@@ -424,9 +471,12 @@ impl ResilienceManager {
         if let Some(ref bulkhead_config) = policy.bulkhead {
             self.bulkheads.insert(
                 service_name.clone(),
-                Arc::new(Bulkhead::new(bulkhead_config.max_concurrency)),
+                Arc::new(Bulkhead::with_config(bulkhead_config.clone())),
             );
         }
+
+        self.service_metrics
+            .insert(service_name.clone(), Arc::new(RuntimeServiceMetrics::default()));
 
         // Store policy (DashMap provides lock-free concurrent writes)
         self.policies.insert(service_name, Arc::new(policy));
@@ -535,6 +585,12 @@ impl ResilienceManager {
         }
 
         let elapsed = context.elapsed();
+        if let Some(metrics) = self.service_metrics.get(&context.service_name) {
+            metrics
+                .value()
+                .record_result(result.is_err(), elapsed);
+        }
+
         match &result {
             Ok(_) => debug!(
                 service = %context.service_name,
@@ -653,13 +709,18 @@ impl ResilienceManager {
         // Collect bulkhead stats (lock-free read)
         let bulkhead = self.bulkheads.get(service).map(|bh| bh.value().stats());
 
+        let (total_operations, failed_operations, avg_latency_ms) = self
+            .service_metrics
+            .get(service)
+            .map_or((0, 0, 0.0), |entry| entry.value().snapshot());
+
         Some(UnTypedServiceMetrics {
             service_name: service.to_string(),
             circuit_breaker,
             bulkhead,
-            total_operations: 0,
-            failed_operations: 0,
-            avg_latency_ms: 0.0,
+            total_operations,
+            failed_operations,
+            avg_latency_ms,
         })
     }
 
@@ -689,6 +750,7 @@ impl ResilienceManager {
         self.policies.remove(service);
         self.circuit_breakers.remove(service);
         self.bulkheads.remove(service);
+        self.service_metrics.remove(service);
     }
 
     /// Get all registered services
@@ -1014,5 +1076,19 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_circuit_breaker_config_is_not_registered() {
+        let manager = ResilienceManager::with_defaults();
+
+        let mut circuit_breaker = CircuitBreakerConfig::default();
+        circuit_breaker.failure_rate_threshold = 1.5;
+
+        let policy = PolicyBuilder::new().with_circuit_breaker(circuit_breaker).build();
+        manager.register_service("invalid-cb", policy);
+
+        let metrics = manager.get_metrics("invalid-cb").await.unwrap();
+        assert!(metrics.circuit_breaker.is_none());
     }
 }

@@ -1,11 +1,11 @@
 //! Sliding window rate limiter implementation
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
 
 use super::RateLimiter;
 use crate::{ResilienceError, ResilienceResult};
@@ -33,13 +33,12 @@ impl SlidingWindow {
         }
     }
 
-    /// Clean old requests outside the window
-    async fn clean_old_requests(&self) {
-        let mut requests = self.requests.lock().await;
-        // Use saturating subtraction to handle edge case where window_duration
-        // might exceed time since process start (e.g., very long windows on fresh start)
-        let now = Instant::now();
-        let cutoff = now.checked_sub(self.window_duration).unwrap_or(now);
+    fn clean_old_requests_locked(
+        requests: &mut VecDeque<Instant>,
+        now: Instant,
+        window_duration: Duration,
+    ) {
+        let cutoff = now.checked_sub(window_duration).unwrap_or(now);
 
         while let Some(&front) = requests.front() {
             if front < cutoff {
@@ -48,28 +47,26 @@ impl SlidingWindow {
                 break;
             }
         }
-        drop(requests);
     }
 }
 
 #[async_trait]
 impl RateLimiter for SlidingWindow {
     async fn acquire(&self) -> ResilienceResult<()> {
-        self.clean_old_requests().await;
+        let now = Instant::now();
+        let mut requests = self.requests.lock();
+        Self::clean_old_requests_locked(&mut requests, now, self.window_duration);
 
-        let mut requests = self.requests.lock().await;
         if requests.len() < self.max_requests {
-            requests.push_back(Instant::now());
-            drop(requests);
+            requests.push_back(now);
             Ok(())
         } else {
             // Calculate retry after based on oldest request
             let retry_after = requests.front().map_or(Duration::from_secs(1), |&oldest| {
                 self.window_duration
-                    .checked_sub(oldest.elapsed())
+                    .checked_sub(now.duration_since(oldest))
                     .unwrap_or(Duration::from_millis(1))
             });
-            drop(requests);
 
             Err(ResilienceError::RateLimitExceeded {
                 retry_after: Some(retry_after),
@@ -90,13 +87,14 @@ impl RateLimiter for SlidingWindow {
     }
 
     async fn current_rate(&self) -> f64 {
-        self.clean_old_requests().await;
-        let requests = self.requests.lock().await;
+        let now = Instant::now();
+        let mut requests = self.requests.lock();
+        Self::clean_old_requests_locked(&mut requests, now, self.window_duration);
         requests.len() as f64
     }
 
     async fn reset(&self) {
-        let mut requests = self.requests.lock().await;
+        let mut requests = self.requests.lock();
         requests.clear();
     }
 }

@@ -109,7 +109,7 @@ async fn test_manager_operation_isolation() {
         .with_timeout(Duration::from_secs(1))
         .with_bulkhead(BulkheadConfig {
             max_concurrency: 5,
-            queue_size: 10,
+            queue_size: 20,
             timeout: None,
         })
         .build();
@@ -253,7 +253,7 @@ async fn test_bulkhead_timeout_under_load() {
                 Ok(_) => {
                     success_count.fetch_add(1, Ordering::SeqCst);
                 }
-                Err(ResilienceError::BulkheadFull { .. }) => {
+                Err(ResilienceError::BulkheadFull { .. }) | Err(ResilienceError::Timeout { .. }) => {
                     timeout_count.fetch_add(1, Ordering::SeqCst);
                 }
                 Err(_) => {}

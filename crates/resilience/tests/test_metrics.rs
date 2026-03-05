@@ -91,3 +91,33 @@ async fn test_metrics_after_service_unregister() {
     // Metrics should return None
     assert!(manager.get_metrics("temp-api").await.is_none());
 }
+
+#[tokio::test]
+async fn test_runtime_metrics_track_outcomes_and_latency() {
+    let manager = ResilienceManager::with_defaults();
+
+    let policy = PolicyBuilder::new()
+        .with_timeout(Duration::from_secs(1))
+        .build();
+    manager.register_service("tracked-api", policy);
+
+    let success = manager
+        .execute("tracked-api", "ok-op", || async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            Ok::<_, ResilienceError>("ok")
+        })
+        .await;
+    assert!(success.is_ok());
+
+    let failure = manager
+        .execute("tracked-api", "fail-op", || async {
+            Err::<(), _>(ResilienceError::custom("boom"))
+        })
+        .await;
+    assert!(failure.is_err());
+
+    let metrics = manager.get_metrics("tracked-api").await.unwrap();
+    assert_eq!(metrics.total_operations, 2);
+    assert_eq!(metrics.failed_operations, 1);
+    assert!(metrics.avg_latency_ms > 0.0);
+}

@@ -26,13 +26,14 @@
 
 **Goal**: Optimize resilience patterns for high-cardinality, high-throughput scenarios.
 
-- [ ] RSL-T004 [P] Benchmark manager hot paths with high service cardinality (`benches/manager.rs`)
-- [ ] RSL-T005 [P] Benchmark circuit breaker under concurrent load (`benches/circuit_breaker.rs`)
-- [ ] RSL-T006 [P] Benchmark rate limiter under concurrent load (`benches/rate_limiter.rs`)
-- [ ] RSL-T007 Optimize circuit breaker contention for high-concurrency scenarios (→ T005)
-- [ ] RSL-T008 Optimize rate limiter contention for high-concurrency scenarios (→ T006)
+- [x] RSL-T004 [P] Benchmark manager hot paths with high service cardinality (`benches/manager.rs`)
+- [x] RSL-T005 [P] Benchmark circuit breaker under concurrent load (`benches/circuit_breaker.rs`)
+- [x] RSL-T006 [P] Benchmark rate limiter under concurrent load (`benches/rate_limiter.rs`)
+- [x] RSL-T007 Optimize circuit breaker contention for high-concurrency scenarios (→ T005)
+- [x] RSL-T008 Optimize rate limiter contention for high-concurrency scenarios (→ T006)
 - [ ] RSL-T009 Profile layer composition overhead in deep chains (→ T004)
-- [ ] RSL-T010 Document performance budget and thresholds (→ T004, T005, T006)
+- [x] RSL-T010 Document performance budget and thresholds (→ T004, T005, T006)
+- [x] RSL-T026 [P] Add reproducible A/B benchmark harness and performance snapshot doc
 
 **Checkpoint**: Benchmarks within budget; contention scenarios optimized; layer overhead profiled.
 

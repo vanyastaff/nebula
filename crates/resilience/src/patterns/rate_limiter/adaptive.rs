@@ -1,10 +1,10 @@
 //! Adaptive rate limiter that adjusts based on error rates
 
 use async_trait::async_trait;
+use parking_lot::RwLock;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
 
 use super::{AnyRateLimiter, RateLimiter, TokenBucket};
 use crate::ResilienceResult;
@@ -24,7 +24,7 @@ struct AdaptiveState {
 /// - High error rate (>10%) → decrease rate
 /// - Low error rate (<1%) → increase rate
 pub struct AdaptiveRateLimiter {
-    state: Arc<Mutex<AdaptiveState>>,
+    state: Arc<RwLock<AdaptiveState>>,
     stats_window: Duration,
     min_rate: f64,
     max_rate: f64,
@@ -37,7 +37,7 @@ impl AdaptiveRateLimiter {
         let token_bucket = TokenBucket::new(initial_rate as usize, initial_rate);
 
         Self {
-            state: Arc::new(Mutex::new(AdaptiveState {
+            state: Arc::new(RwLock::new(AdaptiveState {
                 inner: AnyRateLimiter::TokenBucket(Arc::new(token_bucket)),
                 success_count: 0,
                 error_count: 0,
@@ -77,25 +77,28 @@ impl AdaptiveRateLimiter {
 
     /// Record success
     pub async fn record_success(&self) {
-        let mut state = self.state.lock().await;
+        let mut state = self.state.write();
         state.success_count += 1;
         self.adjust_rate_locked(&mut state);
-        drop(state);
     }
 
     /// Record error
     pub async fn record_error(&self) {
-        let mut state = self.state.lock().await;
+        let mut state = self.state.write();
         state.error_count += 1;
         self.adjust_rate_locked(&mut state);
-        drop(state);
     }
 }
 
 #[async_trait]
 impl RateLimiter for AdaptiveRateLimiter {
     async fn acquire(&self) -> ResilienceResult<()> {
-        self.state.lock().await.inner.acquire().await
+        let limiter = {
+            let state = self.state.read();
+            state.inner.clone()
+        };
+
+        limiter.acquire().await
     }
 
     async fn execute<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
@@ -116,13 +119,20 @@ impl RateLimiter for AdaptiveRateLimiter {
     }
 
     async fn current_rate(&self) -> f64 {
-        self.state.lock().await.current_rate
+        self.state.read().current_rate
     }
 
     async fn reset(&self) {
-        let mut state = self.state.lock().await;
-        state.inner.reset().await;
+        let limiter = {
+            let state = self.state.read();
+            state.inner.clone()
+        };
+
+        limiter.reset().await;
+
+        let mut state = self.state.write();
         state.success_count = 0;
         state.error_count = 0;
+        state.last_stats_reset = Instant::now();
     }
 }

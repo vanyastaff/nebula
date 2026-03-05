@@ -1,14 +1,19 @@
 //! Token bucket rate limiter implementation
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use std::fmt;
 use std::future::Future;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
 
 use super::RateLimiter;
 use crate::{ResilienceError, ResilienceResult};
+
+#[derive(Debug)]
+struct TokenBucketState {
+    tokens: f64,
+    last_refill: Instant,
+}
 
 /// Token bucket rate limiter
 ///
@@ -30,12 +35,10 @@ use crate::{ResilienceError, ResilienceResult};
 pub struct TokenBucket {
     /// Maximum tokens in bucket
     capacity: usize,
-    /// Tokens currently available
-    tokens: Arc<Mutex<f64>>,
+    /// Mutable runtime state
+    state: Mutex<TokenBucketState>,
     /// Token refill rate per second
     refill_rate: f64,
-    /// Last refill timestamp
-    last_refill: Arc<Mutex<Instant>>,
     /// Burst size
     burst_size: usize,
 }
@@ -61,9 +64,11 @@ impl TokenBucket {
 
         Self {
             capacity: safe_capacity,
-            tokens: Arc::new(Mutex::new(safe_capacity as f64)),
+            state: Mutex::new(TokenBucketState {
+                tokens: safe_capacity as f64,
+                last_refill: Instant::now(),
+            }),
             refill_rate: safe_refill_rate,
-            last_refill: Arc::new(Mutex::new(Instant::now())),
             burst_size: safe_capacity,
         }
     }
@@ -75,33 +80,23 @@ impl TokenBucket {
         self
     }
 
-    /// Refill tokens based on elapsed time
-    async fn refill(&self) {
-        let mut tokens = self.tokens.lock().await;
-        let mut last_refill = self.last_refill.lock().await;
-
-        let now = Instant::now();
-        let elapsed = now.duration_since(*last_refill).as_secs_f64();
-
-        let tokens_to_add = elapsed * self.refill_rate;
-        *tokens = (*tokens + tokens_to_add).min(self.capacity as f64);
-        drop(tokens);
-        *last_refill = now;
-    }
 }
 
 #[async_trait]
 impl RateLimiter for TokenBucket {
     async fn acquire(&self) -> ResilienceResult<()> {
-        self.refill().await;
+        let mut state = self.state.lock();
 
-        let mut tokens = self.tokens.lock().await;
-        if *tokens >= 1.0 {
-            *tokens -= 1.0;
-            drop(tokens);
+        let now = Instant::now();
+        let elapsed = now.duration_since(state.last_refill).as_secs_f64();
+        let tokens_to_add = elapsed * self.refill_rate;
+        state.tokens = (state.tokens + tokens_to_add).min(self.capacity as f64);
+        state.last_refill = now;
+
+        if state.tokens >= 1.0 {
+            state.tokens -= 1.0;
             Ok(())
         } else {
-            drop(tokens);
             Err(ResilienceError::RateLimitExceeded {
                 retry_after: Some(Duration::from_secs_f64(1.0 / self.refill_rate)),
                 limit: self.refill_rate,
@@ -121,12 +116,13 @@ impl RateLimiter for TokenBucket {
     }
 
     async fn current_rate(&self) -> f64 {
-        let tokens = self.tokens.lock().await;
-        *tokens
+        let state = self.state.lock();
+        state.tokens
     }
 
     async fn reset(&self) {
-        let mut tokens = self.tokens.lock().await;
-        *tokens = self.capacity as f64;
+        let mut state = self.state.lock();
+        state.tokens = self.capacity as f64;
+        state.last_refill = Instant::now();
     }
 }

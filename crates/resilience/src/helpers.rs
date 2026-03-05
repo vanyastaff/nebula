@@ -152,17 +152,14 @@ macro_rules! execute_logged {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_resilience::{policy, ResiliencePolicy};
+/// use nebula_resilience::policy;
 /// use std::time::Duration;
 ///
 /// let my_policy = policy! {
 ///     name: "api-calls",
 ///     timeout: Duration::from_secs(5),
 ///     retry: exponential(3, Duration::from_millis(100)),
-///     circuit_breaker: {
-///         failure_threshold: 5,
-///         reset_timeout: Duration::from_secs(30),
-///     }
+///     circuit_breaker: default,
 /// };
 /// ```
 #[macro_export]
@@ -171,24 +168,30 @@ macro_rules! policy {
         name: $name:expr,
         timeout: $timeout:expr,
         retry: exponential($max_attempts:expr, $base_delay:expr),
-        circuit_breaker: {
-            failure_threshold: $threshold:expr,
-            reset_timeout: $reset:expr $(,)?
-        }
+        circuit_breaker: default
         $(,)?
     ) => {
-        $crate::ResiliencePolicy::new($name)
+        $crate::PolicyBuilder::new()
             .with_timeout($timeout)
-            .with_retry($crate::RetryStrategy::exponential(
-                $max_attempts,
-                $base_delay,
-            ))
-            .with_circuit_breaker($crate::CircuitBreakerConfig {
-                failure_threshold: $threshold,
-                reset_timeout: $reset,
-                half_open_max_operations: 2,
-                count_timeouts: true,
-            })
+            .with_retry_exponential($max_attempts, $base_delay)
+            .with_circuit_breaker($crate::CircuitBreakerConfig::default())
+            .build()
+            .with_name($name)
+    };
+
+    (
+        name: $name:expr,
+        timeout: $timeout:expr,
+        retry: exponential($max_attempts:expr, $base_delay:expr),
+        circuit_breaker: $circuit_breaker:expr
+        $(,)?
+    ) => {
+        $crate::PolicyBuilder::new()
+            .with_timeout($timeout)
+            .with_retry_exponential($max_attempts, $base_delay)
+            .with_circuit_breaker($circuit_breaker)
+            .build()
+            .with_name($name)
     };
 
     (
@@ -197,18 +200,53 @@ macro_rules! policy {
         retry: fixed($max_attempts:expr, $delay:expr)
         $(,)?
     ) => {
-        $crate::ResiliencePolicy::new($name)
+        $crate::PolicyBuilder::new()
             .with_timeout($timeout)
-            .with_retry($crate::RetryStrategy::fixed($max_attempts, $delay))
+            .with_retry_fixed($max_attempts, $delay)
+            .build()
+            .with_name($name)
+    };
+
+    (
+        name: $name:expr,
+        timeout: $timeout:expr,
+        retry: fixed($max_attempts:expr, $delay:expr),
+        circuit_breaker: $circuit_breaker:expr
+        $(,)?
+    ) => {
+        $crate::PolicyBuilder::new()
+            .with_timeout($timeout)
+            .with_retry_fixed($max_attempts, $delay)
+            .with_circuit_breaker($circuit_breaker)
+            .build()
+            .with_name($name)
     };
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     #[test]
     fn test_macros_compile() {
-        // Just verify macros compile correctly
         let result: Result<i32, String> = Ok(42);
         print_result!(short result);
+
+        let fixed_policy = policy! {
+            name: "fixed",
+            timeout: Duration::from_secs(1),
+            retry: fixed(2, Duration::from_millis(50)),
+        };
+        assert_eq!(fixed_policy.metadata.name, "fixed");
+        assert!(fixed_policy.retry.is_some());
+
+        let exp_policy = policy! {
+            name: "exp-cb",
+            timeout: Duration::from_secs(2),
+            retry: exponential(3, Duration::from_millis(100)),
+            circuit_breaker: default,
+        };
+        assert_eq!(exp_policy.metadata.name, "exp-cb");
+        assert!(exp_policy.circuit_breaker.is_some());
     }
 }

@@ -219,5 +219,44 @@ If you can't use GitHub CLI, you can create labels manually:
 - [ISSUES.md](../ISSUES.md) — Issue guidelines
 - [.github/PROJECT_SETUP.md](../.github/PROJECT_SETUP.md) — Step-by-step project setup
 
+---
+
+## Benchmark Scripts
+
+### Resilience A/B Benchmarks
+
+- `bench-resilience.ps1` (Windows)
+- `bench-resilience.sh` (Linux/macOS)
+
+Automates Criterion runs for `nebula-resilience` (`manager`, `rate_limiter`) with baseline support.
+
+**PowerShell examples:**
+
+```powershell
+# Single run
+./scripts/bench-resilience.ps1
+
+# Save baseline named "main"
+./scripts/bench-resilience.ps1 -Mode baseline -Baseline main
+
+# Compare current branch against saved baseline
+./scripts/bench-resilience.ps1 -Mode compare -Baseline main
+```
+
+**Bash examples:**
+
+```bash
+# Single run
+./scripts/bench-resilience.sh
+
+# Save baseline named "main"
+./scripts/bench-resilience.sh baseline main
+
+# Compare current branch against saved baseline
+./scripts/bench-resilience.sh compare main
+```
+
+Reports are generated in `target/criterion/`.
+
 
 

@@ -1,13 +1,18 @@
 //! Leaky bucket rate limiter implementation
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use std::future::Future;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
 
 use super::RateLimiter;
 use crate::{ResilienceError, ResilienceResult};
+
+#[derive(Debug)]
+struct LeakyBucketState {
+    level: usize,
+    last_leak: Instant,
+}
 
 /// Leaky bucket rate limiter
 ///
@@ -16,12 +21,10 @@ use crate::{ResilienceError, ResilienceResult};
 pub struct LeakyBucket {
     /// Bucket capacity
     capacity: usize,
-    /// Current water level
-    level: Arc<Mutex<usize>>,
+    /// Mutable runtime state
+    state: Mutex<LeakyBucketState>,
     /// Leak rate per second
     leak_rate: f64,
-    /// Last leak timestamp
-    last_leak: Arc<Mutex<Instant>>,
 }
 
 impl LeakyBucket {
@@ -30,39 +33,30 @@ impl LeakyBucket {
     pub fn new(capacity: usize, leak_rate: f64) -> Self {
         Self {
             capacity,
-            level: Arc::new(Mutex::new(0)),
+            state: Mutex::new(LeakyBucketState {
+                level: 0,
+                last_leak: Instant::now(),
+            }),
             leak_rate,
-            last_leak: Arc::new(Mutex::new(Instant::now())),
         }
-    }
-
-    /// Process leaks based on elapsed time
-    async fn leak(&self) {
-        let mut level = self.level.lock().await;
-        let mut last_leak = self.last_leak.lock().await;
-
-        let now = Instant::now();
-        let elapsed = now.duration_since(*last_leak).as_secs_f64();
-
-        let leaked = (elapsed * self.leak_rate) as usize;
-        *level = level.saturating_sub(leaked);
-        drop(level);
-        *last_leak = now;
     }
 }
 
 #[async_trait]
 impl RateLimiter for LeakyBucket {
     async fn acquire(&self) -> ResilienceResult<()> {
-        self.leak().await;
+        let mut state = self.state.lock();
 
-        let mut level = self.level.lock().await;
-        if *level < self.capacity {
-            *level += 1;
-            drop(level);
+        let now = Instant::now();
+        let elapsed = now.duration_since(state.last_leak).as_secs_f64();
+        let leaked = (elapsed * self.leak_rate) as usize;
+        state.level = state.level.saturating_sub(leaked);
+        state.last_leak = now;
+
+        if state.level < self.capacity {
+            state.level += 1;
             Ok(())
         } else {
-            drop(level);
             Err(ResilienceError::RateLimitExceeded {
                 retry_after: Some(Duration::from_secs_f64(1.0 / self.leak_rate)),
                 limit: self.capacity as f64,
@@ -82,12 +76,13 @@ impl RateLimiter for LeakyBucket {
     }
 
     async fn current_rate(&self) -> f64 {
-        let level = self.level.lock().await;
-        (self.capacity - *level) as f64
+        let state = self.state.lock();
+        (self.capacity - state.level) as f64
     }
 
     async fn reset(&self) {
-        let mut level = self.level.lock().await;
-        *level = 0;
+        let mut state = self.state.lock();
+        state.level = 0;
+        state.last_leak = Instant::now();
     }
 }

@@ -71,7 +71,13 @@ impl RetryPolicyConfig {
         let delay = (self.base_delay_ms as f64) * multiplier.powi(attempt as i32);
         let capped = (delay as u64).min(self.max_delay_ms);
 
-        Some(Duration::from_millis(capped))
+        let effective = if self.use_jitter {
+            fastrand::u64(0..=capped)
+        } else {
+            capped
+        };
+
+        Some(Duration::from_millis(effective))
     }
 
     /// Validate the configuration
@@ -465,7 +471,8 @@ mod tests {
 
     #[test]
     fn test_retry_policy_config() {
-        let config = RetryPolicyConfig::exponential(3, Duration::from_millis(100));
+        let mut config = RetryPolicyConfig::exponential(3, Duration::from_millis(100));
+        config.use_jitter = false;
 
         assert_eq!(
             config.delay_for_attempt(0),
@@ -480,6 +487,21 @@ mod tests {
             Some(Duration::from_millis(400))
         );
         assert_eq!(config.delay_for_attempt(3), None); // exceeds max_attempts
+    }
+
+    #[test]
+    fn test_retry_policy_config_with_jitter_stays_within_bounds() {
+        let config = RetryPolicyConfig::exponential(3, Duration::from_millis(100));
+
+        for _ in 0..64 {
+            let d0 = config.delay_for_attempt(0).unwrap();
+            let d1 = config.delay_for_attempt(1).unwrap();
+            let d2 = config.delay_for_attempt(2).unwrap();
+
+            assert!(d0 <= Duration::from_millis(100));
+            assert!(d1 <= Duration::from_millis(200));
+            assert!(d2 <= Duration::from_millis(400));
+        }
     }
 
     #[test]

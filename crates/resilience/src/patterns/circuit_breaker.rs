@@ -243,6 +243,29 @@ impl SlidingWindow {
         }
     }
 
+    fn get_stats(&self) -> (usize, f64) {
+        let now = Instant::now();
+        let mut total = 0usize;
+        let mut failures = 0usize;
+
+        for entry in &self.entries {
+            if now.duration_since(entry.timestamp) <= self.window_duration {
+                total += 1;
+                if entry.was_failure {
+                    failures += 1;
+                }
+            }
+        }
+
+        let failure_rate = if total == 0 {
+            0.0
+        } else {
+            failures as f64 / total as f64
+        };
+
+        (total, failure_rate)
+    }
+
     fn get_operation_count(&self) -> usize {
         let now = Instant::now();
         self.entries
@@ -550,8 +573,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
         match inner.state {
             State::Closed => {
                 // Check if we should open the circuit
-                let operation_count = inner.sliding_window.get_operation_count();
-                let failure_rate = inner.sliding_window.get_failure_rate();
+                let (operation_count, failure_rate) = inner.sliding_window.get_stats();
 
                 if operation_count >= inner.config.min_operations
                     && failure_rate >= inner.config.failure_rate_threshold
@@ -580,11 +602,27 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
 
     /// Get current state
     pub async fn state(&self) -> State {
-        let mut inner = self.inner.write().await;
+        let state = self.state_fast();
+        if !matches!(state, State::Open) {
+            return state;
+        }
 
-        // Check for automatic state transitions
+        let now = Instant::now();
+        {
+            let inner = self.inner.read().await;
+            if !matches!(inner.state, State::Open) {
+                return inner.state;
+            }
+
+            let elapsed = now.duration_since(inner.last_state_change);
+            if elapsed < Duration::from_millis(RESET_TIMEOUT_MS) {
+                return State::Open;
+            }
+        }
+
+        let mut inner = self.inner.write().await;
         if matches!(inner.state, State::Open) {
-            let elapsed = Instant::now().duration_since(inner.last_state_change);
+            let elapsed = now.duration_since(inner.last_state_change);
             if elapsed >= Duration::from_millis(RESET_TIMEOUT_MS) {
                 info!("Circuit breaker transitioning from open to half-open");
                 inner.set_state(State::HalfOpen);
@@ -673,7 +711,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
     /// Check if the circuit breaker allows execution
     /// Returns Ok(()) if execution is allowed, Err if circuit is open
     pub async fn can_execute(&self) -> ResilienceResult<()> {
-        let state = self.state().await;
+        let state = self.state_fast();
         match state {
             State::Closed => Ok(()),
             State::HalfOpen => {
@@ -688,9 +726,31 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
                 }
             }
             State::Open => {
+                let now = Instant::now();
+                {
+                    let inner = self.inner.read().await;
+                    if !matches!(inner.state, State::Open) {
+                        return Ok(());
+                    }
+
+                    let elapsed = now.duration_since(inner.last_state_change);
+                    if elapsed >= Duration::from_millis(RESET_TIMEOUT_MS) {
+                        drop(inner);
+                        let mut inner = self.inner.write().await;
+                        if matches!(inner.state, State::Open)
+                            && now.duration_since(inner.last_state_change)
+                                >= Duration::from_millis(RESET_TIMEOUT_MS)
+                        {
+                            info!("Circuit breaker transitioning from open to half-open");
+                            inner.set_state(State::HalfOpen);
+                            inner.half_open_operations = 0;
+                            return Ok(());
+                        }
+                    }
+                }
+
                 let inner = self.inner.read().await;
-                let elapsed = Instant::now().duration_since(inner.last_state_change);
-                drop(inner);
+                let elapsed = now.duration_since(inner.last_state_change);
                 let timeout_duration = Duration::from_millis(RESET_TIMEOUT_MS);
                 let retry_after = if elapsed < timeout_duration {
                     // Use unwrap_or to handle potential clock skew safely
