@@ -6,7 +6,7 @@
 //! # Module Overview
 //!
 //! - [`advanced`] - Advanced type system features (typestate, GADTs, variance)
-//! - [`category`] - Sealed category traits for pattern classification
+//! - [`categories`] - Sealed category traits for pattern classification
 //! - [`config`] - Configuration management and validation
 //! - [`traits`] - Core resilience traits and abstractions
 //! - [`types`] - Type-safe newtypes for configuration values

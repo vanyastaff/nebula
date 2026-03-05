@@ -72,10 +72,10 @@
 
 **Goal**: Ensure forward compatibility and define serialization guarantees.
 
-- [ ] RSL-T022 [P] Verify workspace builds cleanly on Rust 1.93+
-- [ ] RSL-T023 [P] Define compatibility guarantees for policy serialization format
-- [ ] RSL-T024 [P] Define compatibility guarantees for metrics schema
-- [ ] RSL-T025 Document compatibility guarantees and migration path (→ T022, T023, T024)
+- [x] RSL-T022 [P] Verify workspace builds cleanly on Rust 1.93+
+- [x] RSL-T023 [P] Define compatibility guarantees for policy serialization format
+- [x] RSL-T024 [P] Define compatibility guarantees for metrics schema
+- [x] RSL-T025 Document compatibility guarantees and migration path (→ T022, T023, T024)
 
 **Checkpoint**: Compatibility guarantees documented; no MSRV regression.
 
@@ -133,7 +133,7 @@
 
 ## Verification (after all phases)
 
-- [ ] `cargo check -p nebula-resilience --all-features`
-- [ ] `cargo test -p nebula-resilience`
-- [ ] `cargo clippy -p nebula-resilience -- -D warnings`
-- [ ] `cargo doc --no-deps -p nebula-resilience`
+- [x] `cargo check -p nebula-resilience --all-features`
+- [x] `cargo test -p nebula-resilience`
+- [x] `cargo clippy -p nebula-resilience -- -D warnings`
+- [x] `cargo doc --no-deps -p nebula-resilience`

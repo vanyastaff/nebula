@@ -21,7 +21,7 @@ nebula-resilience provides circuit breaker, retry, rate limiting, and timeout pa
 | Phase 2: Performance and Scalability | ⬜ Planned | Benchmark hot paths, optimize contention, profile layer composition |
 | Phase 3: Policy and Config Hardening | ⬜ Planned | Policy validation, migration/versioning, dynamic config |
 | Phase 4: Reliability and Safety | ⬜ Planned | Fault injection, observability in failure storms, fail-open/closed defaults |
-| Phase 5: Toolchain and Compatibility | ⬜ Planned | Rust 1.93+ migration, compatibility guarantees |
+| Phase 5: Toolchain and Compatibility | ✅ Done | Rust 1.93+ workspace check completed; policy/metrics compatibility guarantees documented |
 | Phase 6: Pattern Coverage Expansion | ✅ Done | Governor/timeout benchmark baselines plus fallback/hedge reliability coverage and consolidated operational guidance completed |
 | Phase 7: Pattern Hardening Wave | ✅ Done | Bulkhead/retry/fallback/timeout hardening guidance consolidated and performance budgets updated |
 | Phase 8: Coverage and Code-Quality Remediation | ✅ Done | Filled uncovered integration/benchmark areas and remediated post-audit clippy quality issues |
