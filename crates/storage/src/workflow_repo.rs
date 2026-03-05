@@ -13,28 +13,43 @@ use tokio::sync::RwLock;
 /// Errors returned by workflow repository operations.
 #[derive(Debug, Error)]
 pub enum WorkflowRepoError {
+    /// Requested entity is absent in storage.
     #[error("{entity} not found: {id}")]
-    NotFound { entity: String, id: String },
+    NotFound {
+        /// Entity kind (for example: `workflow`).
+        entity: String,
+        /// Entity identifier.
+        id: String,
+    },
 
+    /// Optimistic concurrency check failed.
     #[error("{entity} {id}: expected version {expected_version}, got {actual_version}")]
     Conflict {
+        /// Entity kind (for example: `workflow`).
         entity: String,
+        /// Entity identifier.
         id: String,
+        /// Version expected by caller.
         expected_version: u64,
+        /// Actual persisted version.
         actual_version: u64,
     },
 
+    /// Backend/network connection failure.
     #[error("connection error: {0}")]
     Connection(String),
 
+    /// Serialization or deserialization failure.
     #[error("serialization error: {0}")]
     Serialization(String),
 
+    /// Unexpected internal repository failure.
     #[error("internal error: {0}")]
     Internal(String),
 }
 
 impl WorkflowRepoError {
+    /// Builds a [`WorkflowRepoError::NotFound`].
     pub fn not_found(entity: impl Into<String>, id: impl Into<String>) -> Self {
         Self::NotFound {
             entity: entity.into(),
@@ -42,6 +57,7 @@ impl WorkflowRepoError {
         }
     }
 
+    /// Builds a [`WorkflowRepoError::Conflict`].
     pub fn conflict(
         entity: impl Into<String>,
         id: impl Into<String>,
@@ -101,6 +117,7 @@ pub struct InMemoryWorkflowRepo {
 }
 
 impl InMemoryWorkflowRepo {
+    /// Creates empty in-memory repository.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
