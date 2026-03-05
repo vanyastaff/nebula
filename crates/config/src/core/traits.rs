@@ -36,9 +36,37 @@ pub trait ConfigValidator: Send + Sync {
 }
 
 fn map_validation_error(err: ValidationError) -> ConfigError {
+    let mut message = if err.code.is_empty() {
+        err.message.to_string()
+    } else {
+        format!("[{}] {}", err.code, err.message)
+    };
+
+    if let Some(help) = err.help() {
+        message.push_str("; help: ");
+        message.push_str(help);
+    }
+
+    let total_errors = err.total_error_count();
+    if total_errors > 1 {
+        message.push_str("; nested_errors=");
+        message.push_str(&(total_errors - 1).to_string());
+    }
+
+    let field = err
+        .field
+        .as_deref()
+        .map(std::string::ToString::to_string)
+        .or_else(|| {
+            err.flatten()
+                .into_iter()
+                .skip(1)
+                .find_map(|nested| nested.field.as_deref().map(std::string::ToString::to_string))
+        });
+
     ConfigError::validation_error(
-        err.message.into_owned(),
-        err.field.map(|field| field.into_owned()),
+        message,
+        field,
     )
 }
 
@@ -118,5 +146,43 @@ pub trait AsyncConfigurable: Send + Sync {
     /// Reset to default configuration
     async fn reset_config(&mut self) -> Result<(), ConfigError> {
         self.configure(Self::Config::default_config()).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone)]
+    struct NestedFieldValidator;
+
+    impl Validate<Value> for NestedFieldValidator {
+        fn validate(&self, _input: &Value) -> Result<(), ValidationError> {
+            Err(
+                ValidationError::new("validation_failed", "top level failed")
+                    .with_help("set service.port to a valid value")
+                    .with_nested(vec![
+                        ValidationError::new("type_mismatch", "port must be integer")
+                            .with_field("service.port"),
+                    ]),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn bridge_preserves_code_and_nested_field_context() {
+        let err = ConfigValidator::validate(&NestedFieldValidator, &serde_json::json!({}))
+            .await
+            .expect_err("validator should fail");
+
+        match err {
+            ConfigError::ValidationError { message, field } => {
+                assert!(message.contains("[validation_failed]"));
+                assert!(message.contains("help: set service.port to a valid value"));
+                assert!(message.contains("nested_errors=1"));
+                assert_eq!(field.as_deref(), Some("service.port"));
+            }
+            other => panic!("expected validation error, got {other:?}"),
+        }
     }
 }
