@@ -57,7 +57,10 @@ impl PostgresStorageConfig {
 #[derive(Clone)]
 pub struct PostgresStorage {
     pool: Pool<Postgres>,
-    table: Arc<str>,
+    select_sql: Arc<str>,
+    insert_sql: Arc<str>,
+    delete_sql: Arc<str>,
+    exists_sql: Arc<str>,
 }
 
 impl PostgresStorage {
@@ -82,32 +85,25 @@ impl PostgresStorage {
             .await
             .map_err(|err| StorageError::Backend(err.to_string()))?;
 
-        Ok(Self {
-            pool,
-            table: Arc::from(config.table),
-        })
-    }
-
-    fn select_sql(&self) -> String {
-        format!("SELECT value FROM {} WHERE key = $1", self.table)
-    }
-
-    fn insert_sql(&self) -> String {
-        format!(
+        let table = &config.table;
+        let select_sql = format!("SELECT value FROM {} WHERE key = $1", table);
+        let insert_sql = format!(
             "INSERT INTO {} (key, value) \
              VALUES ($1, $2) \
              ON CONFLICT (key) DO UPDATE \
              SET value = EXCLUDED.value, updated_at = NOW()",
-            self.table
-        )
-    }
+            table
+        );
+        let delete_sql = format!("DELETE FROM {} WHERE key = $1", table);
+        let exists_sql = format!("SELECT 1 FROM {} WHERE key = $1", table);
 
-    fn delete_sql(&self) -> String {
-        format!("DELETE FROM {} WHERE key = $1", self.table)
-    }
-
-    fn exists_sql(&self) -> String {
-        format!("SELECT 1 FROM {} WHERE key = $1", self.table)
+        Ok(Self {
+            pool,
+            select_sql: Arc::from(select_sql),
+            insert_sql: Arc::from(insert_sql),
+            delete_sql: Arc::from(delete_sql),
+            exists_sql: Arc::from(exists_sql),
+        })
     }
 }
 
@@ -117,7 +113,7 @@ impl Storage for PostgresStorage {
     type Value = serde_json::Value;
 
     async fn get(&self, key: &Self::Key) -> Result<Option<Self::Value>, StorageError> {
-        let row = sqlx::query_scalar::<_, Json<serde_json::Value>>(&self.select_sql())
+        let row = sqlx::query_scalar::<_, Json<serde_json::Value>>(&self.select_sql)
             .bind(key)
             .fetch_optional(&self.pool)
             .await
@@ -127,7 +123,7 @@ impl Storage for PostgresStorage {
     }
 
     async fn set(&self, key: &Self::Key, value: &Self::Value) -> Result<(), StorageError> {
-        sqlx::query(&self.insert_sql())
+        sqlx::query(&self.insert_sql)
             .bind(key)
             .bind(Json(value.clone()))
             .execute(&self.pool)
@@ -138,7 +134,7 @@ impl Storage for PostgresStorage {
     }
 
     async fn delete(&self, key: &Self::Key) -> Result<(), StorageError> {
-        sqlx::query(&self.delete_sql())
+        sqlx::query(&self.delete_sql)
             .bind(key)
             .execute(&self.pool)
             .await
@@ -148,7 +144,7 @@ impl Storage for PostgresStorage {
     }
 
     async fn exists(&self, key: &Self::Key) -> Result<bool, StorageError> {
-        let row = sqlx::query_scalar::<_, i32>(&self.exists_sql())
+        let row = sqlx::query_scalar::<_, i32>(&self.exists_sql)
             .bind(key)
             .fetch_optional(&self.pool)
             .await

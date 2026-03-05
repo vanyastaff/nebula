@@ -3,7 +3,7 @@
 //! This module provides functionality for capturing, storing, and comparing
 //! memory state snapshots for debugging and analysis purposes.
 
-use std::{collections::HashMap, time::Instant};
+use std::{collections::{HashMap, HashSet}, time::Instant};
 
 use super::memory_stats::MemoryMetrics;
 use crate::error::{MemoryError, MemoryResult};
@@ -152,8 +152,11 @@ impl MemorySnapshot {
 
     /// Add multiple tags
     pub fn add_tags(&mut self, tags: Vec<String>) {
+        let mut seen: HashSet<String> = self.tags.iter().cloned().collect();
         for tag in tags {
-            self.add_tag(tag);
+            if seen.insert(tag.clone()) {
+                self.tags.push(tag);
+            }
         }
     }
 
@@ -903,5 +906,25 @@ mod tests {
         let snapshot3 = MemorySnapshot::new(3, metrics3);
         let diff = snapshot1.diff(&snapshot3);
         assert!(diff.has_significant_changes());
+    }
+
+    #[test]
+    fn test_add_tags_deduplication() {
+        let metrics = create_test_metrics(1000, 1500, 10);
+        let mut snapshot = MemorySnapshot::new(1, metrics);
+
+        // add_tag skips duplicates already in the list
+        snapshot.add_tag("a".to_string());
+        snapshot.add_tag("a".to_string());
+        assert_eq!(snapshot.tags.len(), 1);
+
+        // add_tags skips tags already present
+        snapshot.add_tags(vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(snapshot.tags.len(), 2);
+
+        // add_tags deduplicates within the input itself
+        snapshot.add_tags(vec!["c".to_string(), "c".to_string()]);
+        assert_eq!(snapshot.tags.len(), 3);
+        assert!(snapshot.tags.contains(&"c".to_string()));
     }
 }
