@@ -8,6 +8,8 @@ For inter-crate dependencies (who depends on what) see **[DEPENDENCIES.md](./DEP
 
 ## Quick Reference
 
+### Implemented
+
 | Crate | Layer | One-line purpose |
 |-------|-------|-----------------|
 | [`nebula-core`](#nebula-core) | Foundation | Universal vocabulary: IDs, keys, scope, base traits |
@@ -36,6 +38,22 @@ For inter-crate dependencies (who depends on what) see **[DEPENDENCIES.md](./DEP
 | [`nebula-api`](#nebula-api) | Entry point | Thin REST/WebSocket server with no business logic |
 | [`nebula-webhook`](#nebula-webhook) | Entry point | Inbound webhook server with UUID-isolated trigger endpoints |
 | [`nebula-sdk`](#nebula-sdk) | Entry point | All-in-one developer library for building plugins and workflows |
+
+### Planned
+
+> These crates are designed and documented in `docs/crates/` but **not yet implemented**. They represent the next phases of development.
+
+| Crate | Layer | One-line purpose | Priority |
+|-------|-------|-----------------|----------|
+| [`nebula-sandbox`](#nebula-sandbox-planned) | Execution | Action isolation contract: capability enforcement, WASM/process backends | P1 |
+| [`nebula-worker`](#nebula-worker-planned) | Execution | Distributed worker: task state machine, heartbeats, graceful drain | P1 |
+| [`nebula-idempotency`](#nebula-idempotency-planned) | Cross-cutting | Deduplication, retry-safety, exactly-once execution | P1 |
+| [`nebula-testing`](#nebula-testing-planned) | Tooling | Test harnesses for workflows, actions, and integrations | P1 |
+| [`nebula-tenant`](#nebula-tenant-planned) | Domain | Multi-tenancy: isolation strategies, quota enforcement | P2 |
+| [`nebula-cluster`](#nebula-cluster-planned) | Infrastructure | Distributed coordination: membership, consensus, failover | P2 |
+| [`nebula-locale`](#nebula-locale-planned) | Cross-cutting | Internationalisation: locale negotiation, translation bundles | P2 |
+| [`nebula-cli`](#nebula-cli-planned) | Entry point | Command-line interface for workflows, executions, and cluster ops | P2 |
+| [`nebula-desktop`](#nebula-desktop-planned) | Entry point | Tauri 2 visual workflow editor and execution monitor | P2 |
 
 ---
 
@@ -729,6 +747,269 @@ The all-in-one developer library for building plugins, actions, and workflows. R
 #### What does NOT belong here
 
 Engine internals, API server code, or anything that changes the runtime behaviour of the system. The SDK is a *surface* crate — it adds ergonomics, not new functionality.
+
+---
+
+## Planned Crates
+
+> These crates are fully designed (see `docs/crates/<name>/`) but **not yet implemented** in `crates/`.
+> Sections below describe their intended purpose, scope, and relationship to existing crates.
+
+---
+
+### nebula-sandbox (planned)
+
+**Layer:** Execution  
+**Priority:** P1 — required before distributing community/untrusted plugins
+
+#### Purpose
+
+The sandbox execution contract and isolation boundary for actions. Workflow actions (especially community or user-defined ones) may be untrusted — running them in-process without isolation risks crashes, infinite loops, resource abuse, and data leakage. The sandbox crate owns the **port** (trait) that the runtime calls, and the **drivers** that implement it.
+
+#### Responsibilities
+
+- **`SandboxRunner` trait** — port: `run(action, sandboxed_context)` → `ActionResult`; decouples runtime from backend
+- **`SandboxedContext`** — capability-checked context proxy: only declared credentials and resources are accessible; undeclared access returns an auditable error
+- **Cancellation enforcement** — cooperative or periodic check during action execution
+- **In-process driver** — low-latency backend for trusted/built-in actions; still enforces capability proxy
+- **WASM driver** _(future)_ — hard isolation for untrusted/community actions
+- **Process driver** _(future)_ — OS-level isolation for highest-security deployments
+- **Audit trail** — sandbox violation and policy decision events
+
+#### Current state
+
+The `SandboxRunner` trait exists today inside `nebula-runtime` (see `runtime/sandbox.rs`). The capability model in `SandboxedContext` currently largely forwards to `NodeContext` without enforcement — full capability checking is the P1 gap. The standalone `nebula-sandbox` crate will extract this port + in-process driver and make the contract stable and independently versioned.
+
+#### What does NOT belong here
+
+Action business logic, workflow scheduling, or generic retry/resilience patterns.
+
+---
+
+### nebula-worker (planned)
+
+**Layer:** Execution  
+**Priority:** P1 — required for distributed deployments
+
+#### Purpose
+
+The distributed worker runtime. In a distributed Nebula deployment, the API enqueues workflow tasks and workers claim and execute them in isolation. The worker owns the full task lifecycle from queue pull through heartbeat through result reporting — without knowing anything about workflow semantics.
+
+#### Responsibilities
+
+- **Task state machine** — `queued → claimed → running → succeeded / failed / timed_out`
+- **Pull/ack protocol** — claim task from broker, heartbeat to extend lease, ack on success, nack/requeue on failure
+- **Bounded concurrency** — configurable `max_concurrent_tasks`; back-pressure to queue when at limit
+- **Graceful drain** — on SIGTERM: stop pulling, complete in-flight tasks within timeout, release or requeue leases
+- **Isolation** — delegates execution to `nebula-runtime` + `nebula-sandbox`; no business logic in worker itself
+- **Observability** — per-task traces, worker-level metrics (tasks/s, concurrency, queue depth, error rate), structured logs
+
+#### Relationship to existing crates
+
+`nebula-engine` schedules nodes within a single execution; `nebula-worker` acquires work from a queue across the fleet and drives `nebula-engine` per-task. Workers are the **fleet-level** execution unit; the engine is the **per-workflow** execution unit.
+
+#### What does NOT belong here
+
+Workflow DAG orchestration (engine), action business logic (action/plugin), or API surface (api/webhook).
+
+---
+
+### nebula-idempotency (planned)
+
+**Layer:** Cross-cutting  
+**Priority:** P1 — required for production queue-based deployments
+
+#### Purpose
+
+Deduplication, retry-safety, and exactly-once execution semantics. Workflow runs and API requests can be retried or duplicated (at-least-once queue delivery, client retry on network failure). Idempotency ensures that the same logical operation executed twice produces the same observable result as executing it once.
+
+#### Responsibilities
+
+- **`IdempotencyKey`** — deterministic composite key: `f(execution_id, node_id, attempt)`
+- **`IdempotencyManager`** — `check(key)` → `AlreadyDone(result) | Run`; `record(key, result)`
+- **Storage backends** — in-memory (MVP, already in `nebula-execution`), PostgreSQL, Redis
+- **HTTP `Idempotency-Key` header** — middleware layer for the API: extract key, check before handler, cache response
+- **`IdempotentAction` trait** — opt-in per-action exactly-once contract
+- **Workflow checkpoint / resume** — persist execution progress so a workflow can resume mid-run after a crash
+
+#### Current state
+
+`IdempotencyKey` and `IdempotencyManager` exist today in `nebula-execution` with an in-memory `HashSet` backend. The gap is: no persistent storage, no HTTP layer, no per-action idempotency, and no checkpoint/resume. Extracting to a dedicated crate makes the storage pluggability and HTTP middleware cleaner.
+
+#### What does NOT belong here
+
+General retry and resilience patterns (those are `nebula-resilience`), credential storage (`nebula-credential`), or execution orchestration (`nebula-engine`).
+
+---
+
+### nebula-testing (planned)
+
+**Layer:** Tooling  
+**Priority:** P1 — improves developer experience and test quality across all crates
+
+#### Purpose
+
+Shared test harnesses, mock implementations, and test utilities for the entire workspace. Eliminates the pattern of every crate re-implementing its own mock context, mock credential provider, or fake resource manager.
+
+#### Responsibilities
+
+- **`WorkflowTestHarness`** — run a full workflow against a mock engine; capture output, events, metrics, per-node output
+- **`ActionTestHarness`** — run a single action with injected mock resources and credentials
+- **Mock implementations** — `MockCredentialProvider`, `MockResourceManager`, `MockTelemetryService`, `MockEventBus`
+- **`TestContext`** — implementation of `nebula-action::Context` backed by mocks
+- **Assertion helpers** — `assert_node_output`, `assert_execution_status`, `assert_event_emitted`
+- **`#[workflow_test]` macro** — ergonomic `#[tokio::test]`-like attribute for workflow tests
+
+#### Relationship to `nebula-sdk`
+
+`nebula-sdk` already has a `testing` module with basic helpers. When `nebula-testing` is extracted, the SDK's testing module will re-export from here to avoid a breaking change for SDK users.
+
+#### What does NOT belong here
+
+Production code, integration against real external services (those are integration tests in individual crates), or performance benchmarking infrastructure.
+
+---
+
+### nebula-tenant (planned)
+
+**Layer:** Domain  
+**Priority:** P2 — required for multi-tenant SaaS deployments
+
+#### Purpose
+
+The single authoritative multi-tenancy layer. Provides tenant identity resolution, isolation strategy selection, and quota enforcement so that every other crate that needs to be tenant-aware consults one place rather than implementing its own tenant semantics.
+
+#### Responsibilities
+
+- **`TenantContext`** — resolved tenant identity + isolation strategy + quota policy; passed through execution scope
+- **Tenant resolution** — from JWT claim, API key, request header, or execution metadata
+- **Isolation strategies** — `Shared` (logical isolation, same process), `Dedicated` (dedicated pool), `Isolated` (hard process/WASM isolation)
+- **Quota policy** — max concurrent executions, storage limit, action rate limit; checked before execution start
+- **`QuotaEnforcer`** — pre-execution quota check; explicit rejection with structured error
+- **Governance hooks** — `TenantLifecycleHook` for provisioning and teardown events
+- **Audit trail** — quota decisions and isolation boundary events
+
+#### Relationship to existing crates
+
+`nebula-core` already has `TenantId` and `OrganizationId`. `nebula-resource` and `nebula-credential` already accept a `Scope` that can encode tenant. `nebula-tenant` provides the authoritative *resolution and enforcement* layer on top of these primitives.
+
+#### What does NOT belong here
+
+Storage engine internals, workflow execution orchestration, or credential protocol implementation.
+
+---
+
+### nebula-cluster (planned)
+
+**Layer:** Infrastructure  
+**Priority:** P2 — required for distributed, multi-node deployments
+
+#### Purpose
+
+Distributed execution coordination. When multiple Nebula nodes (API servers, workers) run in a fleet, cluster membership, task ownership, and failover must be coordinated so that work is never lost, duplicated, or executed in parallel on two nodes simultaneously.
+
+#### Responsibilities
+
+- **Membership protocol** — node join/leave; convergent membership view; no split-brain
+- **Task ownership** — which worker owns which task; handoff or reassignment on node failure
+- **Distributed scheduling** — deterministic assignment of tasks to nodes; observable scheduling decisions
+- **Consensus-backed state** _(future)_ — Raft or leader-based replication of control-plane state (task ownership, config)
+- **Autoscaling signals** — demand metrics fed to cluster scheduler for fleet scaling decisions
+- **Failover semantics** — documented: at-most-once, at-least-once, or exactly-once per task class
+
+#### Relationship to existing crates
+
+`nebula-engine` runs a workflow on a single node; `nebula-worker` runs a single task; `nebula-cluster` decides *which* worker runs *which* task and handles node failures. `nebula-resilience` provides retry patterns that cluster uses internally.
+
+#### What does NOT belong here
+
+Local single-node execution internals (engine, runtime), workflow definition semantics (workflow), or tenant policy ownership (tenant).
+
+---
+
+### nebula-locale (planned)
+
+**Layer:** Cross-cutting  
+**Priority:** P2 — required for multi-language user-facing deployments
+
+#### Purpose
+
+Centralised internationalisation and localisation. API error messages, validation failures, and UI strings should be returned in the user's language. A single locale crate provides locale negotiation, translation bundle management, and localized formatting so that API, runtime, and action surfaces all behave consistently.
+
+#### Responsibilities
+
+- **Locale negotiation** — resolve from `Accept-Language` header, tenant locale setting, or global default; deterministic fallback chain (e.g. `pt-BR → pt → en`)
+- **`TranslationBundle`** — load and cache translation files (Fluent FTL or TOML key-value)
+- **`MessageKey`** — stable string identifier for a translatable message
+- **`t!(key, args)` macro** — ergonomic lookup with interpolation
+- **Localized formatting** — dates, numbers, and units according to locale
+- **Cross-crate contract** — `nebula-api`, `nebula-validator`, and `nebula-action` all call the same locale interface; no duplicate locale logic per crate
+- **Message key stability** — minor releases: additive only; breaking key changes require a major release with MIGRATION notes
+
+#### What does NOT belong here
+
+Business logic, authentication, workflow scheduling, or any domain-specific Nebula concept.
+
+---
+
+### nebula-cli (planned)
+
+**Layer:** Entry point  
+**Priority:** P2
+
+#### Purpose
+
+Command-line interface for developers and operators to manage Nebula from the terminal. A thin CLI shell over the REST API.
+
+#### Responsibilities
+
+- **Workflow management** — `nebula workflow deploy`, `list`, `activate`, `deactivate`
+- **Execution management** — `nebula execution watch`, `logs`, `cancel`
+- **Action development** — `nebula action create --template`, `test`, `publish`
+- **Cluster operations** — `nebula cluster status`, `add-node`, `rebalance`
+- **Configuration** — profiles, environments, authentication tokens
+- **Output formats** — human-readable and `--output json` for scripting
+
+#### What does NOT belong here
+
+Business logic. The CLI delegates everything to `nebula-api` via HTTP; it is a pure UX surface.
+
+---
+
+### nebula-desktop (planned)
+
+**Layer:** Entry point  
+**Priority:** P2
+
+#### Purpose
+
+The visual workflow editor and execution monitor — a Tauri 2 desktop application (React + TypeScript frontend, Rust backend). Provides a native macOS / Windows / Linux app that connects to a local or remote Nebula instance.
+
+#### Responsibilities
+
+- **Rust side (Tauri backend)**
+  - OAuth2 deep-link callback handling
+  - Secure credential storage via OS keychain (`tauri-plugin-keychain`)
+  - Connection profiles (multiple Nebula instances)
+  - System tray and native notifications
+  - Auto-update via `tauri-plugin-updater`
+  - Typed IPC commands/events via `tauri-specta` (no raw `invoke` strings)
+- **Frontend (React + TypeScript)**
+  - Visual workflow canvas (drag-and-drop node editor)
+  - Real-time execution monitor (WebSocket event stream)
+  - Node catalog with parameter forms
+  - Credential and resource management screens
+  - TanStack Query for all API data; Zustand for auth/connection state
+
+#### Technical choices
+
+- **Tauri 2** over pure-Rust UI (gpui/egui/iced) — platform integration features (OAuth deep-link, OS keychain, tray, auto-update) are first-party Tauri plugins, avoiding significant from-scratch implementation work for each platform integration feature
+- **React calls HTTP API directly** for workflow/execution data; Rust owns only auth + connection + native features
+- **`pnpm`** in `apps/desktop/`; Rust crate at `crates/desktop/` (Tauri backend logic)
+
+#### What does NOT belong here
+
+Business logic, API server code, or any modification of execution semantics.
 
 ---
 
