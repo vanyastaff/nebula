@@ -139,7 +139,7 @@ impl WebhookServer {
         };
         let app = Router::new()
             .route(
-                &format!("{}/*path", self.config.path_prefix),
+                &format!("{}/{{*path}}", self.config.path_prefix),
                 any(webhook_handler),
             )
             .with_state(state)
@@ -174,7 +174,7 @@ impl WebhookServer {
         let app = Router::new()
             .route("/health", get(health_check))
             .route(
-                &format!("{}/*path", config.path_prefix),
+                &format!("{}/{{*path}}", config.path_prefix),
                 any(webhook_handler),
             )
             .with_state(state)

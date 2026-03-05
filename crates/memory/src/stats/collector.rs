@@ -238,7 +238,6 @@ mod tests {
         use super::super::histogram::MemoryHistogram;
 
         let config = HistogramConfig {
-            enabled: true,
             bucket_count: 10,
             min_value: Some(0),
             max_value: Some(1000),

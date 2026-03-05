@@ -95,7 +95,7 @@ impl FlowProtocol for OAuth2Protocol {
                         "interval": device_resp.interval,
                     })),
                 )?;
-                let user_code = device_resp.user_code.clone();
+                let user_code = device_resp.user_code;
                 Ok(InitializeResult::Pending {
                     partial_state: partial,
                     next_step: InteractionRequest::DisplayInfo {
