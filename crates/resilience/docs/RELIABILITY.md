@@ -20,6 +20,73 @@
 - **Fallback behavior:** `FallbackStrategy`, `ValueFallback`; primary failure triggers fallback path.
 - **Graceful degradation:** hedge (parallel slow path); bulkhead isolation; rate limiting to protect downstream.
 
+## Reliability Control Loop (Diagram-First)
+
+This is the core runtime control loop that keeps failure handling bounded and predictable.
+
+```mermaid
+flowchart LR
+	A[Incoming operation] --> B[Apply timeout budget]
+	B --> C[Acquire bulkhead permit]
+	C --> D{Circuit state}
+	D -->|Open| E[Fail fast]
+	D -->|Closed/HalfOpen| F[Execute attempt]
+	F --> G{Result}
+	G -->|Success| H[Return success]
+	G -->|Retryable error| I{Retry budget left}
+	I -->|Yes| J[Backoff + jitter]
+	J --> F
+	I -->|No| K[Retry exhausted]
+	E --> L{Fallback/Hedge enabled}
+	K --> L
+	L -->|Yes| M[Degraded success path]
+	L -->|No| N[Return error]
+```
+
+What this gives you operationally:
+- bounded time (`timeout`),
+- bounded concurrency (`bulkhead`),
+- bounded retry cost (`retry budget`),
+- controlled degradation (`fallback`/`hedge` only when explicitly configured).
+
+## Incident Decision Flow
+
+Use this sequence to triage alerts quickly and apply safe mitigations.
+
+```mermaid
+flowchart TD
+	A[Alert fires] --> B{Alert type}
+	B -->|High timeout rate| C[Check downstream latency and timeout budget]
+	B -->|BulkheadFull spike| D[Check saturation and queue settings]
+	B -->|Circuit open spike| E[Check downstream health and breaker thresholds]
+	B -->|Retry exhaustion spike| F[Check retryability rules and jitter]
+	C --> G[Apply smallest safe policy adjustment]
+	D --> G
+	E --> G
+	F --> G
+	G --> H[Observe metrics for stabilization window]
+	H --> I{Stable?}
+	I -->|Yes| J[Keep new config]
+	I -->|No| K[Rollback and escalate]
+```
+
+Safe-change principle:
+- change one control at a time,
+- prefer tightening safety envelopes before increasing throughput,
+- always observe post-change metrics before additional tuning.
+
+## Pattern Interaction Notes
+
+How controls interact in production:
+- `timeout + retry`: retries multiply total latency unless both budgets are coordinated.
+- `bulkhead + retry`: retries under saturation can worsen queue pressure; keep retry budgets conservative.
+- `circuit_breaker + retry`: breaker protects dependencies from retry storms once failure threshold is crossed.
+- `fallback/hedge + timeout`: both should still be bounded by explicit deadlines.
+
+Common target order remains:
+
+`timeout -> bulkhead -> circuit_breaker -> retry -> fallback/hedge (opt-in)`
+
 ### Fallback Fault-Injection Coverage
 
 - Integration coverage now validates fallback behavior across `value`, `function`, `cache`, and `chain` strategies.
@@ -62,7 +129,7 @@
 ### Timeout Short-Deadline Platform Guidance
 
 - Timeout wrapper overhead is low, but very short deadlines are constrained by runtime/OS timer granularity rather than wrapper code path cost.
-- Current local Windows benchmark evidence shows noticeable overshoot for 1-5ms deadlines (`timeout/cancellation/*` in `PERFORMANCE.md`), so treat sub-10ms deadlines as best-effort on this profile.
+- Current local Windows benchmark evidence shows noticeable overshoot for 1-5ms deadlines (`timeout/cancellation/*` in `crates/resilience/benches/timeout.rs`), so treat sub-10ms deadlines as best-effort on this profile.
 - For latency-sensitive production paths, prefer deadline budgets that include scheduler/timer headroom instead of matching raw p50 service latency.
 
 #### Recommended Timeout Budgeting by Deadline Class
@@ -88,7 +155,7 @@ Phase 7 operationally hardens four patterns (`bulkhead`, `retry`, `fallback`, `t
 | `bulkhead` | Added contention benchmark baseline + fairness/starvation stress coverage | `benches/bulkhead.rs`, `tests/integration_bulkhead_fairness.rs` |
 | `retry` | Added retry storm guard validation (`max_total_duration`, terminal-error short-circuit) + jitter de-synchronization checks | `tests/integration_retry_storm_guard.rs`, `benches/retry.rs` |
 | `fallback` | Added explicit stale-cache degraded-mode control (`stale-if-error`) + bounded-chain guidance | `tests/integration_fallback_fault_injection.rs`, `patterns/fallback.rs` |
-| `timeout` | Added platform-sensitive short-deadline budgeting rules and gate policy separation for cancellation-latency signals | `benches/timeout.rs`, `PERFORMANCE_BUDGET.md` |
+| `timeout` | Added platform-sensitive short-deadline budgeting rules and gate policy separation for cancellation-latency signals | `benches/timeout.rs` |
 
 ### Operator Checklist
 
@@ -110,8 +177,8 @@ This section is the operational baseline for Phase 6 patterns (`governor`, `time
 
 ### Evidence and References
 
-- Governor benchmark evidence: `crates/resilience/benches/rate_limiter.rs`, `docs/crates/resilience/PERFORMANCE.md` (Seventh Findings).
-- Timeout benchmark evidence: `crates/resilience/benches/timeout.rs`, `docs/crates/resilience/PERFORMANCE.md` (Eighth Findings).
+- Governor benchmark evidence: `crates/resilience/benches/rate_limiter.rs`.
+- Timeout benchmark evidence: `crates/resilience/benches/timeout.rs`.
 - Fallback reliability evidence: `crates/resilience/tests/integration_fallback_fault_injection.rs`.
 - Hedge reliability evidence: `crates/resilience/tests/integration_hedge_stress.rs`.
 
@@ -151,3 +218,20 @@ The crate uses **fail-closed by default** for protective controls. Explicit grac
 
 - **Load profile assumptions:** configurable per service; default timeouts (30s), retries (3), circuit threshold (5). Tune for HTTP (10s), DB (5s), queue (30s).
 - **Scaling constraints:** circuit breaker and rate limiter are per-instance; bulkhead limits concurrency. For horizontal scaling, consider per-node limits and global rate limits (future).
+
+## Security Baseline
+
+- **Trust boundary:** this crate is in-process and does not own authn/authz; callers enforce access control.
+- **Input safety:** validate policy payloads before apply (`ResiliencePolicy::validate`, retry config validation).
+- **Secret safety:** do not put secrets in policy metadata, error messages, or observability labels.
+- **Abuse resistance:** combine bounded retries + bulkhead + circuit breaker + rate limiting to mitigate retry/traffic storms.
+
+## Verification and Performance Gates
+
+- **Core verification commands:**
+	- `cargo check -p nebula-resilience --all-features`
+	- `cargo test -p nebula-resilience`
+	- `cargo clippy -p nebula-resilience -- -D warnings`
+	- `cargo doc --no-deps -p nebula-resilience`
+- **Benchmark focus areas:** manager overhead, limiter contention, circuit fast-path, timeout wrapper, fallback/hedge overhead.
+- **Gate policy:** treat significant regressions on hot paths as release blockers; rerun noisy benches before final decision.

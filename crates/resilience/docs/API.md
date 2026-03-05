@@ -289,7 +289,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Conditional:** `retry` remains fail-closed at budget/terminal boundaries.
 - **Opt-in fail-open:** `fallback` and `hedge` provide graceful degradation only when explicitly configured.
 
-For consolidated operational defaults/limits and tuning guidance for `governor`, `timeout`, `fallback`, and `hedge`, see `docs/crates/resilience/RELIABILITY.md` (`Consolidated Pattern Defaults and Limits`).
+For consolidated operational defaults/limits and tuning guidance for `governor`, `timeout`, `fallback`, and `hedge`, see `RELIABILITY.md` (`Consolidated Pattern Defaults and Limits`).
 
 ## Compatibility Rules
 

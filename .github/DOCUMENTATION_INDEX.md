@@ -88,7 +88,7 @@ Located in `docs/crates/`:
 - **[metrics](../docs/crates/metrics/)** — Metrics collection
 - **[parameter](../docs/crates/parameter/)** — Parameter handling
 - **[plugin](../docs/crates/plugin/)** — Plugin system
-- **[resilience](../docs/crates/resilience/)** — Resilience patterns
+- **[resilience](../crates/resilience/docs/)** — Resilience patterns
 - **[resource](../docs/crates/resource/)** — Resource lifecycle
 - **[resource-postgres](../docs/crates/resource-postgres/)** — PostgreSQL adapter
 - **[runtime](../docs/crates/runtime/)** — Action runtime

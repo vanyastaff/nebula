@@ -132,7 +132,7 @@ Each crate’s ROADMAP holds phased deliverables, risks, exit criteria, and read
 | parameter | [docs/crates/parameter/ROADMAP.md](crates/parameter/ROADMAP.md) |
 | plugin | [docs/crates/plugin/ROADMAP.md](crates/plugin/ROADMAP.md) |
 | resource | [docs/crates/resource/ROADMAP.md](crates/resource/ROADMAP.md) |
-| resilience | [docs/crates/resilience/ROADMAP.md](crates/resilience/ROADMAP.md) |
+| resilience | [crates/resilience/docs/README.md](../crates/resilience/docs/README.md) |
 | runtime | [docs/crates/runtime/ROADMAP.md](crates/runtime/ROADMAP.md) |
 | sandbox | [docs/crates/sandbox/ROADMAP.md](crates/sandbox/ROADMAP.md) |
 | sdk | [docs/crates/sdk/ROADMAP.md](crates/sdk/ROADMAP.md) |
