@@ -144,18 +144,42 @@ pub trait ResourceProvider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::Context;
+    use crate::error::Result;
+    use crate::metadata::ResourceMetadata;
+    use crate::resource::Config;
+
+    #[derive(Clone)]
+    struct MarkerConfig;
+
+    impl Config for MarkerConfig {}
+
+    struct MarkerResource;
+
+    impl Resource for MarkerResource {
+        type Config = MarkerConfig;
+        type Instance = ();
+
+        fn metadata(&self) -> ResourceMetadata {
+            ResourceMetadata::from_key(nebula_core::ResourceKey::try_from("marker").expect("valid key"))
+        }
+
+        async fn create(&self, _config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn resource_ref_captures_key() {
         // ResourceRef<R> only uses Resource as a marker bound in tests;
         // we don't need a concrete Resource impl here, just validate key wiring.
-        let r = ResourceRef::<crate::http::HttpResource>::new("http-global").unwrap();
+        let r = ResourceRef::<MarkerResource>::new("http-global").unwrap();
         assert_eq!(r.key.as_str(), "http-global");
     }
 
     #[test]
     fn erase_preserves_key() {
-        let r = ResourceRef::<crate::http::HttpResource>::new("http-global").unwrap();
+        let r = ResourceRef::<MarkerResource>::new("http-global").unwrap();
         let erased = r.erase();
         assert_eq!(erased.key.as_str(), "http-global");
     }

@@ -37,8 +37,6 @@ parking_lot = { workspace = true }
 tracing = { workspace = true }
 metrics = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
-reqwest = { workspace = true }
-url = { workspace = true }
 
 [dev-dependencies]
 nebula-parameter = { path = "../parameter" }
@@ -48,6 +46,8 @@ test-case = { workspace = true }
 mockall = { workspace = true }
 tempfile = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
+reqwest = { workspace = true }
+url = { workspace = true }
 
 [[bench]]
 name = "pool_throughput"

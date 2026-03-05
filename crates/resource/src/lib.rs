@@ -55,7 +55,6 @@
 pub mod context;
 pub mod error;
 pub mod guard;
-pub mod http;
 pub mod lifecycle;
 pub mod metadata;
 pub mod reference;
@@ -151,8 +150,6 @@ pub mod prelude {
         AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig, PoolStats,
         PoolStrategy,
     };
-
-    pub use crate::http::{HttpResource, HttpResourceConfig, HttpResourceInstance};
 
     pub use nebula_core::{ExecutionId, ResourceId, ResourceKey, WorkflowId};
 }

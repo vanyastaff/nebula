@@ -224,24 +224,41 @@ mod tests {
     async fn context_resolves_sub_resource_by_type() {
         use std::any::Any;
 
-        use crate::http::{HttpResource, HttpResourceConfig};
+        use crate::error::Result;
         use crate::manager_pool::TypedPool;
+        use crate::metadata::ResourceMetadata;
         use crate::pool::{Pool, PoolConfig};
+        use crate::resource::{Config, Resource};
+
+        #[derive(Clone)]
+        struct TestConfig;
+
+        impl Config for TestConfig {}
+
+        struct TestResource;
+
+        impl Resource for TestResource {
+            type Config = TestConfig;
+            type Instance = String;
+
+            fn metadata(&self) -> ResourceMetadata {
+                ResourceMetadata::from_key(ResourceKey::try_from("test-http").expect("valid key"))
+            }
+
+            async fn create(&self, _config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
+                Ok("ok".to_string())
+            }
+        }
 
         let key = ResourceKey::try_from("http-global").expect("valid key");
-        let pool = Pool::new(
-            HttpResource,
-            HttpResourceConfig::default(),
-            PoolConfig::default(),
-        )
-        .expect("pool creation");
+        let pool = Pool::new(TestResource, TestConfig, PoolConfig::default()).expect("pool creation");
         let typed = Arc::new(TypedPool { pool });
         let handle: Arc<dyn Any + Send + Sync> = typed.clone();
 
         let mut ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
         ctx.inject_resource(key, handle);
 
-        let retrieved = ctx.resource::<HttpResource>("http-global");
+        let retrieved = ctx.resource::<TestResource>("http-global");
         assert!(retrieved.is_some(), "resource handle should be resolved");
     }
 }
