@@ -1,434 +1,212 @@
 # Nebula Config
 
-Production-ready configuration management for Rust applications, fully integrated with the Nebula ecosystem.
+Production-ready configuration management for Rust applications in the Nebula ecosystem.
 
 ## Overview
 
-`nebula-config` provides a flexible and extensible configuration management system with support for multiple sources, formats, validation, hot-reloading, and seamless integration with other Nebula crates.
+`nebula-config` provides typed configuration loading from **TOML files** and **environment variables**, with deterministic source precedence, async-safe access, validation, and optional hot reload.
+
+Current format policy is intentionally strict:
+
+- File-based configuration: **TOML only**
+- Environment overrides: **ENV / prefixed ENV**
 
 ## Key Features
 
-### 🔧 Configuration Sources
-- **File-based**: TOML, YAML, JSON configuration files
-- **Environment Variables**: Automatic detection and parsing
-- **Programmatic**: Set defaults and overrides in code
-- **Composite**: Combine multiple sources with priority ordering
+- TOML + ENV source composition with predictable precedence
+- Typed reads via `serde` (`config.get::<T>(...)`)
+- Defaults + runtime overrides (`set_value`, `set_typed`, `merge`)
+- Validator integration (`SchemaValidator`, `FunctionValidator`, custom `ConfigValidator`)
+- File watcher and interval-based reload options
+- Strict/permissive environment value parsing
 
-### 🌟 Ecosystem Integration
-- **NebulaValue**: Native support for `nebula-value` types for dynamic configuration
-- **Structured Logging**: Built-in logging with `nebula-log`
-- **Type Safety**: Full Rust type system integration
-
-### 📊 Advanced Features
-- **Hot Reloading**: Automatic configuration updates without restarts
-- **Validation**: Built-in and custom configuration validation
-- **Path Queries**: Dot notation for nested configuration access
-- **Merging**: Intelligent configuration source merging
-- **Watching**: File system monitoring for configuration changes
-
-## Quick Start
-
-Add to your `Cargo.toml`:
+## Installation
 
 ```toml
 [dependencies]
 nebula-config = "0.1.0"
-nebula-log = "0.1.0"  # For logging
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 ```
 
-## Basic Usage
+Default crate features already include `toml` and `env`.
+
+## Quick Start
 
 ```rust
 use nebula_config::prelude::*;
 
 #[tokio::main]
 async fn main() -> ConfigResult<()> {
-    // Initialize logging
-    nebula_log::auto_init()?;
-
-    // Build configuration from multiple sources
     let config = ConfigBuilder::new()
+        .with_defaults_json(serde_json::json!({
+            "server": { "port": 3000 },
+            "database": { "host": "localhost" }
+        }))
         .with_source(ConfigSource::File("config.toml".into()))
         .with_source(ConfigSource::Env)
-        .with_hot_reload(true)
         .build()
         .await?;
 
-    // Get typed configuration
     let port: u16 = config.get("server.port").await?;
-    let database_url: String = config.get("database.url").await?;
+    let db_host: String = config.get("database.host").await?;
 
-    info!(port = port, database_url = %database_url, "Configuration loaded");
+    println!("server.port={port}, database.host={db_host}");
     Ok(())
 }
 ```
 
-## Configuration Sources
+## Sources and Precedence
 
-### File-based Configuration
+Available `ConfigSource` variants:
 
-```rust
-use nebula_config::prelude::*;
+- `ConfigSource::Default`
+- `ConfigSource::File(path)`
+- `ConfigSource::FileAuto(path)`
+- `ConfigSource::Directory(path)`
+- `ConfigSource::Env`
+- `ConfigSource::EnvWithPrefix(prefix)`
 
-let config = ConfigBuilder::new()
-    .with_source(ConfigSource::File("app.toml".into()))
-    .with_source(ConfigSource::File("database.yaml".into()))
-    .build()
-    .await?;
-```
+Effective precedence (higher wins):
 
-**TOML Example (`app.toml`):**
-```toml
-[app]
-name = "my-service"
-port = 8080
-debug = false
+1. Environment (`Env`, `EnvWithPrefix`)
+2. Directory
+3. File / FileAuto
+4. Defaults
 
-[database]
-host = "localhost"
-port = 5432
-name = "mydb"
-
-[features]
-enabled = ["logging", "metrics"]
-```
-
-### Environment Variables
+Optional-source failures (`Env`, `EnvWithPrefix`, `Default`) are skipped by default.
+Enable strict behavior in both `build()` and `reload()`:
 
 ```rust
-use nebula_config::prelude::*;
-
-// Automatic environment variable detection
 let config = ConfigBuilder::new()
+    .with_source(ConfigSource::File("config.toml".into()))
     .with_source(ConfigSource::Env)
-    .build()
-    .await?;
-
-// With prefix filtering
-let config = ConfigBuilder::new()
-    .with_source(ConfigSource::EnvWithPrefix("MYAPP".to_string()))
+    .with_fail_on_missing(true)
     .build()
     .await?;
 ```
 
-**Environment Variables:**
-```bash
-MYAPP_SERVER_PORT=8080
-MYAPP_DATABASE_HOST=localhost
-MYAPP_FEATURES_DEBUG=true
-```
+## TOML Example
 
-### Composite Configuration
+`config.toml`:
 
-```rust
-use nebula_config::prelude::*;
-
-let config = ConfigBuilder::new()
-    // Defaults (lowest priority)
-    .with_defaults(serde_json::json!({
-        "app": {
-            "name": "default-app",
-            "port": 3000
-        }
-    }))
-    // Configuration file (medium priority)
-    .with_source(ConfigSource::File("config.toml".into()))
-    // Environment variables (highest priority)
-    .with_source(ConfigSource::Env)
-    .build()
-    .await?;
-```
-
-## NebulaValue Integration
-
-### Working with Dynamic Configuration
-
-```rust
-use nebula_config::prelude::*;
-
-// Get configuration as NebulaValue
-let app_config = config.get_value("app").await?;
-
-// Set dynamic configuration
-let dynamic_value = NebulaValue::Object({
-    let mut obj = nebula_value::Object::new();
-    obj.insert("feature_flags".to_string(), NebulaValue::Array(vec![
-        NebulaValue::Text("feature_a".to_string().into()),
-        NebulaValue::Text("feature_b".to_string().into()),
-    ].into()));
-    obj.insert("timeout".to_string(), NebulaValue::Integer(30));
-    obj
-});
-
-config.set_value("runtime", dynamic_value).await?;
-```
-
-### Typed Configuration with NebulaValue
-
-```rust
-use nebula_config::prelude::*;
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct DatabaseConfig {
-    host: String,
-    port: u16,
-    ssl: bool,
-}
-
-// Set typed configuration
-let db_config = DatabaseConfig {
-    host: "localhost".to_string(),
-    port: 5432,
-    ssl: true,
-};
-config.set_typed("database", &db_config).await?;
-
-// Get typed configuration
-let loaded_config: DatabaseConfig = config.get_typed("database").await?;
-```
-
-## Configuration Validation
-
-### Built-in Validation
-
-```rust
-use nebula_config::prelude::*;
-
-let config = ConfigBuilder::new()
-    .with_source(ConfigSource::File("config.toml".into()))
-    .with_validator(SchemaValidator::from_file("schema.json")?)
-    .build()
-    .await?;
-```
-
-### Custom Validation
-
-```rust
-use nebula_config::prelude::*;
-
-async fn validate_database_config(config: &Config) -> ConfigResult<()> {
-    let host: String = config.get("database.host").await?;
-    if host.is_empty() {
-        return Err(ConfigError::validation_with_field(
-            "Database host cannot be empty",
-            "database.host"
-        ));
-    }
-
-    let port: u16 = config.get("database.port").await?;
-    if port < 1024 {
-        return Err(ConfigError::validation_with_field(
-            "Database port must be >= 1024",
-            "database.port"
-        ));
-    }
-
-    Ok(())
-}
-
-// Use custom validation
-validate_database_config(&config).await?;
-```
-
-## Hot Reloading
-
-```rust
-use nebula_config::prelude::*;
-
-let config = ConfigBuilder::new()
-    .with_source(ConfigSource::File("config.toml".into()))
-    .with_hot_reload(true)
-    .with_auto_reload_interval(Duration::from_secs(5))
-    .build()
-    .await?;
-
-// Configuration will automatically reload when files change
-// Access updated values normally
-let current_port: u16 = config.get("server.port").await?;
-```
-
-
-## Structured Logging
-
-All configuration operations include structured logging:
-
-```rust
-use nebula_config::prelude::*;
-
-// Initialize logging once
-nebula_log::auto_init()?;
-
-// All operations automatically log with structured fields
-let config = ConfigBuilder::new()
-    .with_source(ConfigSource::File("config.toml".into()))
-    .build()
-    .await?;
-
-// Logs include:
-// - Configuration source loading status
-// - Validation results
-// - Hot reload events
-// - Error details with context
-```
-
-## Advanced Usage
-
-### Configuration Debugging
-
-```rust
-use nebula_config::prelude::*;
-
-// Get flat configuration map for debugging
-let flat_map = config.flatten().await;
-for (key, value) in &flat_map {
-    debug!(config_key = %key, config_value = %value, "Configuration entry");
-}
-
-// Check configuration sources
-for source in config.sources() {
-    info!(source = %source, priority = source.priority(), "Configuration source");
-}
-```
-
-### Configuration Merging
-
-```rust
-use nebula_config::prelude::*;
-
-// Merge additional configuration at runtime
-let override_config = NebulaValue::Object({
-    let mut obj = nebula_value::Object::new();
-    obj.insert("debug".to_string(), NebulaValue::Bool(true));
-    obj.insert("log_level".to_string(), NebulaValue::Text("debug".to_string().into()));
-    obj
-});
-
-config.merge(override_config).await?;
-```
-
-### Configuration Watching
-
-```rust
-use nebula_config::prelude::*;
-
-let config = ConfigBuilder::new()
-    .with_source(ConfigSource::File("config.toml".into()))
-    .with_watcher(FileWatcher::new())
-    .build()
-    .await?;
-
-// Set up watch callback
-config.watch(|event| async move {
-    match event.event_type {
-        ConfigWatchEventType::Changed => {
-            info!(path = %event.path, "Configuration file changed");
-        }
-        ConfigWatchEventType::Deleted => {
-            warn!(path = %event.path, "Configuration file deleted");
-        }
-    }
-}).await?;
-```
-
-## Configuration Formats
-
-### TOML
 ```toml
 [server]
 host = "0.0.0.0"
 port = 8080
 
 [database]
-url = "postgresql://localhost/mydb"
-pool_size = 10
+host = "localhost"
+port = 5432
 
 [features]
-enabled = ["auth", "metrics"]
+enabled = ["logging", "metrics"]
 ```
 
-### YAML
-```yaml
-server:
-  host: "0.0.0.0"
-  port: 8080
+## Environment Mapping
 
-database:
-  url: "postgresql://localhost/mydb"
-  pool_size: 10
+Environment keys are converted into nested paths using `_` as separator.
 
-features:
-  enabled:
-    - auth
-    - metrics
+- `SERVER_PORT=9000` → `server.port = 9000`
+- `DATABASE_HOST=db.internal` → `database.host = "db.internal"`
+- `FEATURES_ENABLED=auth,metrics` → `features.enabled = ["auth", "metrics"]` (permissive mode)
+
+With a prefix:
+
+```rust
+let config = ConfigBuilder::new()
+    .with_source(ConfigSource::EnvWithPrefix("MYAPP".to_string()))
+    .build()
+    .await?;
 ```
 
-### JSON
-```json
-{
-  "server": {
-    "host": "0.0.0.0",
-    "port": 8080
-  },
-  "database": {
-    "url": "postgresql://localhost/mydb",
-    "pool_size": 10
-  },
-  "features": {
-    "enabled": ["auth", "metrics"]
+Example input: `MYAPP_SERVER_PORT=8081`.
+
+## Environment Parse Modes
+
+By default, env parsing is permissive (`bool`, numbers, JSON snippets, CSV arrays).
+
+Use strict mode to keep all env values as strings:
+
+```rust
+use nebula_config::EnvParseMode;
+
+let config = ConfigBuilder::new()
+    .with_source(ConfigSource::Env)
+    .with_env_parse_mode(EnvParseMode::Strict)
+    .build()
+    .await?;
+```
+
+Shortcut:
+
+```rust
+let config = ConfigBuilder::new()
+    .with_source(ConfigSource::Env)
+    .with_env_strict_parsing()
+    .build()
+    .await?;
+```
+
+## Validation
+
+Schema validation (JSON schema represented as `serde_json::Value`):
+
+```rust
+use nebula_config::prelude::*;
+use std::sync::Arc;
+
+let schema = r#"{
+    "type": "object",
+    "properties": {
+        "server": {
+            "type": "object",
+            "properties": {
+                "port": { "type": "integer" }
+      }
+    }
   }
-}
+}"#;
+
+let config = ConfigBuilder::new()
+    .with_source(ConfigSource::File("config.toml".into()))
+    .with_validator(Arc::new(SchemaValidator::from_json(schema)?))
+    .build()
+    .await?;
 ```
 
-## Best Practices
-
-1. **Use Type Safety**: Always use typed configuration access when possible
-2. **Structured Logging**: Initialize `nebula-log` for comprehensive observability
-3. **Validation**: Implement configuration validation for critical settings
-4. **Environment Overrides**: Use environment variables for deployment-specific settings
-5. **Hot Reloading**: Enable for development and staging environments
-6. **Error Handling**: Leverage `NebulaError` integration for consistent error handling
-
-## Examples
-
-See the `examples/` directory for complete examples:
-
-- `ecosystem_integration.rs` - Full ecosystem integration demo
-- `basic_usage.rs` - Simple configuration loading
-- `hot_reload.rs` - Hot reloading demonstration
-- `validation.rs` - Configuration validation examples
-
-## Integration with Other Nebula Crates
-
-### With nebula-resilience
+## Hot Reload
 
 ```rust
 use nebula_config::prelude::*;
-use nebula_resilience::prelude::*;
+use std::sync::Arc;
+use std::time::Duration;
 
-// Load resilience configuration
-let resilience_config = config.get_typed::<DynamicConfig>("resilience").await?;
+let config = ConfigBuilder::new()
+    .with_source(ConfigSource::File("config.toml".into()))
+    .with_watcher(Arc::new(FileWatcher::new_noop()))
+    .with_hot_reload(true)
+    .with_auto_reload_interval(Duration::from_secs(10))
+    .build()
+    .await?;
 
-// Use with resilience patterns
-let circuit_config = resilience_config.get_config::<CircuitBreakerConfig>("circuit_breaker")?;
-let circuit_breaker = CircuitBreaker::with_config(circuit_config);
+config.reload().await?;
 ```
 
-### With nebula-log
+## Runtime API Highlights
 
-```rust
-use nebula_config::prelude::*;
+- Typed access: `get`, `get_all`, `get_opt`, `get_or`, `get_or_else`, `has`
+- Raw access: `get_raw`, `get_value`, `as_value`, `keys`, `flatten`
+- Mutation: `set_value`, `set_typed`, `merge`
+- Lifecycle: `reload`, `start_watching`, `stop_watching`, `is_watching`
 
-// Configure logging from configuration
-let log_level: String = config.get("logging.level").await.unwrap_or_else(|_| "info".to_string());
-let log_format: String = config.get("logging.format").await.unwrap_or_else(|_| "json".to_string());
+## Notes
 
-nebula_log::builder()
-    .with_level(&log_level)
-    .with_format(&log_format)
-    .init()?;
-```
+- `Config::get_path` is deprecated; use `get`.
+- `ConfigFormat` still includes non-TOML variants for compatibility/metadata, but file loading is TOML-only.
+- If you need to parse config text manually, use `nebula_config::utils::parse_config_string` with `ConfigFormat::Toml`.
 
 ## License
 
-Licensed under either of Apache License, Version 2.0 or MIT license at your option.
+Licensed under either Apache-2.0 or MIT, at your option.
