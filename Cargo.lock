@@ -4069,16 +4069,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nebula-resource-postgres"
-version = "0.1.0"
-dependencies = [
- "nebula-core",
- "nebula-resource",
- "serde",
- "tokio",
-]
-
-[[package]]
 name = "nebula-runtime"
 version = "0.1.0"
 dependencies = [
