@@ -301,7 +301,6 @@ docker-compose.override.yml
 .aider*
 
 # Project docs for AI
-AGENTS.md
 CLAUDE.md
 
 # AI-generated and temp
