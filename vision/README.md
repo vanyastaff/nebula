@@ -11,6 +11,7 @@ Nebula is a modular, open-source workflow automation engine written in Rust — 
 | Document | Purpose |
 |----------|---------|
 | **[ARCHITECTURE.md](./ARCHITECTURE.md)** | Crate layers, dependency rules, data flow, async conventions |
+| **[DEPENDENCIES.md](./DEPENDENCIES.md)** | Full inter-crate dependency map, Mermaid graph, blast-radius table |
 | **[STATUS.md](./STATUS.md)** | Current completion state per crate and area |
 | **[ROADMAP.md](./ROADMAP.md)** | Phased plan: what's done, what's next, exit criteria |
 | **[DECISIONS.md](./DECISIONS.md)** | Architectural decision records (why Rust, why serde_json::Value, etc.) |
@@ -94,6 +95,8 @@ nebula/
 ## Where to Start
 
 **I want to understand the code structure** → [ARCHITECTURE.md](./ARCHITECTURE.md)
+
+**I want to see what depends on what** → [DEPENDENCIES.md](./DEPENDENCIES.md)
 
 **I want to know what to work on next** → [ROADMAP.md](./ROADMAP.md) → "Recommended next tasks"
 
