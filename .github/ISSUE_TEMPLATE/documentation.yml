@@ -1,0 +1,54 @@
+name: 📖 Documentation Issue
+description: Report missing, incorrect, or confusing documentation
+labels: ["docs", "triage"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Good documentation makes Nebula easier for everyone. Let us know what needs improving!
+
+  - type: dropdown
+    id: doc_type
+    attributes:
+      label: Type of Documentation Issue
+      options:
+        - "Missing documentation"
+        - "Incorrect or outdated information"
+        - "Confusing or unclear explanation"
+        - "Broken link or missing file"
+        - "Typo or grammar issue"
+        - "Example does not compile or run"
+        - "Other"
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Location
+      description: "File path, URL, or section name where the issue is. e.g. `docs/ARCHITECTURE.md`, `crates/engine/README.md`"
+      placeholder: "docs/…"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe what is wrong or missing.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested Improvement
+      description: If you have a suggestion for how to fix or improve this, describe it here.
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to open a pull request to fix this.
