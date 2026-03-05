@@ -20,6 +20,32 @@
 - **Fallback behavior:** `FallbackStrategy`, `ValueFallback`; primary failure triggers fallback path.
 - **Graceful degradation:** hedge (parallel slow path); bulkhead isolation; rate limiting to protect downstream.
 
+## Fail-Open / Fail-Closed Defaults
+
+The crate uses **fail-closed by default** for protective controls. Explicit graceful-degradation patterns (`fallback`, `hedge`) are opt-in.
+
+| Pattern | Default | Behavior |
+|---|---|---|
+| `timeout` | **Fail-closed** | On deadline exceed returns `ResilienceError::Timeout`; operation result is not accepted. |
+| `bulkhead` | **Fail-closed** | At capacity/queue overflow returns `BulkheadFull`; acquire timeout returns `Timeout`. |
+| `rate_limiter` | **Fail-closed** | On limit hit returns `RateLimitExceeded` with retry hint where available. |
+| `circuit_breaker` | **Fail-closed** | In open state rejects with `CircuitBreakerOpen` until half-open probe window. |
+| `retry` | **Conditional fail-closed** | Retries only retryable errors; terminal/no-budget paths end with original error or `RetryLimitExceeded`. |
+| `fallback` | **Fail-open (opt-in)** | If configured and eligible, returns degraded value; if fallback chain fails -> `FallbackFailed` (fail-closed). |
+| `hedge` | **Fail-open (opt-in)** | Returns first successful replica; if none succeeds, returns failure/timeout. |
+
+### Operational Contract
+
+- Without `fallback`/`hedge`, resilience never masks failures: errors propagate upstream.
+- `fallback`/`hedge` are explicit business decisions to trade strict correctness for availability/latency.
+- Invalid policy updates are treated as no-op (existing runtime state remains active), preventing accidental fail-open behavior from bad config.
+
+### Override Guidance
+
+- Prefer fail-closed for write paths and side-effecting operations.
+- Allow fail-open only for read/derived data where stale/default responses are acceptable.
+- Record degraded-path usage with observability hooks and alert on sustained activation.
+
 ## Operational Runbook
 
 - **Alert conditions:** high circuit-open rate; retry exhaustion; bulkhead rejections; rate limit hits. Emit via observability hooks.

@@ -283,6 +283,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Retryable** (`is_retryable() == true`): `Timeout`, `RateLimitExceeded`, `CircuitBreakerOpen`, `Custom { retryable: true }`, `BulkheadFull`.
 - **Terminal** (`is_terminal() == true`): `RetryLimitExceeded`, `FallbackFailed`, `Cancelled`, `InvalidConfig`, `Custom { retryable: false }`.
 
+## Failure Defaults
+
+- **Default stance:** fail-closed for `timeout`, `bulkhead`, `rate_limiter`, and `circuit_breaker`.
+- **Conditional:** `retry` remains fail-closed at budget/terminal boundaries.
+- **Opt-in fail-open:** `fallback` and `hedge` provide graceful degradation only when explicitly configured.
+
 ## Compatibility Rules
 
 - **Major version bump:** policy schema change; pattern order contract; cancellation semantics.

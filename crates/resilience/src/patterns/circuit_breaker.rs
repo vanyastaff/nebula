@@ -773,12 +773,16 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
     /// Record a successful operation
     pub async fn record_success(&self) {
         let mut inner = self.inner.write().await;
+        inner.total_operations += 1;
+        inner.sliding_window.record_operation(false);
         self.record_success_inner(&mut inner);
     }
 
     /// Record a failed operation
     pub async fn record_failure(&self) {
         let mut inner = self.inner.write().await;
+        inner.total_operations += 1;
+        inner.sliding_window.record_operation(true);
         self.record_failure_inner(&mut inner);
     }
 }

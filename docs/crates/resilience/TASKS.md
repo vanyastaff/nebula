@@ -57,12 +57,12 @@
 
 **Goal**: Expand fault-injection testing and formalize failure defaults.
 
-- [ ] RSL-T016 [P] Implement fault-injection tests for retry+breaker interplay
-- [ ] RSL-T017 [P] Implement fault-injection tests for retry+timeout interplay
-- [ ] RSL-T018 [P] Implement fault-injection tests for breaker+timeout interplay
-- [ ] RSL-T019 Implement fault-injection test for retry+breaker+timeout combined (→ T016, T017, T018)
-- [ ] RSL-T020 Validate observability behavior in failure storms (→ T019)
-- [ ] RSL-T021 Formalize and document fail-open/fail-closed defaults per pattern (→ T019)
+- [x] RSL-T016 [P] Implement fault-injection tests for retry+breaker interplay
+- [x] RSL-T017 [P] Implement fault-injection tests for retry+timeout interplay
+- [x] RSL-T018 [P] Implement fault-injection tests for breaker+timeout interplay
+- [x] RSL-T019 Implement fault-injection test for retry+breaker+timeout combined (→ T016, T017, T018)
+- [x] RSL-T020 Validate observability behavior in failure storms (→ T019)
+- [x] RSL-T021 Formalize and document fail-open/fail-closed defaults per pattern (→ T019)
 
 **Checkpoint**: Fault-injection tests cover all pattern combinations; defaults documented.
 
