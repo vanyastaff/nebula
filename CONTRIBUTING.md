@@ -2,6 +2,8 @@
 
 Thank you for your interest in contributing to Nebula! This document provides guidelines and instructions for contributing.
 
+> **New here?** Start with [QUICK_START.md](QUICK_START.md) (5 min) then come back here.
+
 ## Table of Contents
 
 - [Code of Conduct](#code-of-conduct)
@@ -12,6 +14,7 @@ Thank you for your interest in contributing to Nebula! This document provides gu
 - [Submitting Changes](#submitting-changes)
 - [Style Guidelines](#style-guidelines)
 - [Project Structure](#project-structure)
+- [Related Documents](#related-documents)
 
 ## Code of Conduct
 
@@ -98,6 +101,8 @@ Use descriptive branch names:
 - `refactor/improve-xyz` - For refactoring
 - `test/add-tests-for-xyz` - For adding tests
 
+**Full guide:** See [WORKFLOW.md#branch-naming](WORKFLOW.md#branch-naming)
+
 ### Commit Messages
 
 Follow conventional commits format:
@@ -136,6 +141,8 @@ fix(combinator): Fix memory leak in cached combinator
 The LRU cache was not properly evicting old entries, causing
 unbounded memory growth.
 ```
+
+**Full guide:** See [WORKFLOW.md#commit-conventions](WORKFLOW.md#commit-conventions)
 
 ### Writing Tests
 
@@ -196,6 +203,16 @@ cargo install cargo-tarpaulin
 cargo tarpaulin --out Html
 ```
 
+## Reporting Issues
+
+Before contributing code, you may want to report a bug or request a feature.
+
+- **Bug Report**: [ISSUES.md#bug-reports](ISSUES.md#bug-reports) | [Template](https://github.com/vanyastaff/nebula/issues/new?template=01-bug-report.yml)
+- **Feature Request**: [ISSUES.md#feature-requests](ISSUES.md#feature-requests) | [Template](https://github.com/vanyastaff/nebula/issues/new?template=02-feature-request.yml)
+- **Documentation Issue**: [ISSUES.md#documentation-issues](ISSUES.md#documentation-issues) | [Template](https://github.com/vanyastaff/nebula/issues/new?template=03-documentation.yml)
+
+See [ISSUES.md](ISSUES.md) for detailed guidelines and examples.
+
 ## Submitting Changes
 
 ### Before Submitting
@@ -226,6 +243,7 @@ git push origin your-branch-name
    - Reference any related issues
    - Explain the changes and their impact
    - Add screenshots if UI changes
+   - Use the [PR template](.github/ISSUE_TEMPLATE/pull_request_template.md)
 
 4. **Address review comments**:
    - Make requested changes
@@ -234,34 +252,7 @@ git push origin your-branch-name
 
 5. **Wait for approval** and merge
 
-### Pull Request Template
-
-```markdown
-## Description
-
-Brief description of changes
-
-## Type of Change
-
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Breaking change
-- [ ] Documentation update
-
-## Testing
-
-- [ ] All tests pass
-- [ ] New tests added
-- [ ] Manual testing performed
-
-## Checklist
-
-- [ ] Code follows style guidelines
-- [ ] Self-review completed
-- [ ] Comments added for complex code
-- [ ] Documentation updated
-- [ ] No new warnings introduced
-```
+**Full guide:** See [WORKFLOW.md#pull-request-process](WORKFLOW.md#pull-request-process)
 
 ## Style Guidelines
 
@@ -356,6 +347,22 @@ nebula/
 - Check existing issues and PRs
 - Read the documentation
 - Ask in discussions
+
+## Related Documents
+
+This guide is part of a comprehensive documentation system for Nebula:
+
+| Document | Purpose |
+|----------|---------|
+| **[README.md](README.md)** | Project overview, quick start, links to all docs |
+| **[QUICK_START.md](QUICK_START.md)** | 5-minute guide to getting started (start here!) |
+| **[WORKFLOW.md](WORKFLOW.md)** | Branch naming, commits, PR process, releases |
+| **[ISSUES.md](ISSUES.md)** | Issue templates, triage, labels |
+| **[LABELS.md](LABELS.md)** | Label system and meanings |
+| **[PROJECT_BOARD.md](PROJECT_BOARD.md)** | GitHub Projects setup and usage |
+| **[vision/ARCHITECTURE.md](vision/ARCHITECTURE.md)** | System design, crate dependencies |
+| **[vision/CRATES.md](vision/CRATES.md)** | Purpose of each crate |
+| **[vision/ROADMAP.md](vision/ROADMAP.md)** | Long-term plan and phases |
 
 ## Recognition
 

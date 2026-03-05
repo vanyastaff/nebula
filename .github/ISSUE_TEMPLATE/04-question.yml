@@ -1,0 +1,48 @@
+name: Discussion / Question
+description: Ask a question or start a discussion (not a bug or feature)
+labels: ["type:question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question? Want to discuss something with the community?
+        This template is for questions and discussions, not bug reports or feature requests.
+        If you have a bug or feature idea, please use those templates instead.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What would you like to know or discuss?
+      placeholder: "How do I implement custom error handling in actions?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What are you trying to accomplish? What have you already tried?
+      placeholder: |
+        I'm building a custom HTTP action and need to handle 5xx errors differently.
+        I've looked at the action examples but they don't show error handling patterns.
+    validations:
+      required: true
+
+  - type: textarea
+    id: relevant
+    attributes:
+      label: Relevant Code or Links
+      description: Code snippets, docs, or related issues
+      placeholder: |
+        See example action in crates/action/examples/http.rs
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I've searched documentation and existing issues
+        - label: I've checked the vision/ folder for architecture docs
+        - label: This is a question/discussion, not a bug or feature request
+

@@ -1,69 +1,73 @@
-<div align="center">
+# Nebula — Workflow Automation Engine
 
-# 🌌 Nebula
+[![Rust](https://img.shields.io/badge/rust-1.93%2B-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/status-Active%20Development-brightgreen.svg)](docs/PROJECT_STATUS.md)
 
-**A modular, high-performance workflow automation engine — built in Rust.**
-
-[![CI](https://github.com/vanyastaff/nebula/actions/workflows/ci.yml/badge.svg)](https://github.com/vanyastaff/nebula/actions/workflows/ci.yml)
-[![Security Audit](https://github.com/vanyastaff/nebula/actions/workflows/security-audit.yml/badge.svg)](https://github.com/vanyastaff/nebula/actions/workflows/security-audit.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.93%2B-orange.svg)](https://www.rust-lang.org)
-
-[Getting Started](#getting-started) · [Architecture](#architecture) · [Roadmap](docs/ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [Security](.github/SECURITY.md)
-
-</div>
+> **A modular, type-safe, high-performance workflow automation engine** — think n8n or Zapier, but built with Rust for performance, type safety, and extensibility.
 
 ---
 
-## What is Nebula?
+## 🚀 What Is Nebula?
 
-Nebula is a **workflow automation engine** — think n8n or Zapier, but built from the ground up in Rust for performance, type safety, and extensibility.
+Nebula lets you:
 
-Workflows are **directed acyclic graphs (DAGs)** of *actions*. Actions are typed Rust implementations that can send HTTP requests, query databases, call APIs, trigger external systems, or do any custom computation.
+- **Define workflows** as directed acyclic graphs (DAGs) of composable actions
+- **Execute reliably** with built-in retries, timeouts, and error handling
+- **Store safely** with encryption, versioning, and audit logging
+- **Extend easily** via first-party plugins and third-party SDKs
+- **Monitor visually** with a Tauri desktop app or REST API
 
 ```
-User defines a workflow:
-
-  trigger (webhook / cron / event)
-      │
-      ▼
-  [HTTP Request] ──▶ [Transform JSON] ──▶ [Send Slack message]
-      │
-      ▼ (on error)
-  [Alert on-call]
-
-Nebula runs it reliably:
-  ✔ Schedules the DAG
-  ✔ Injects credentials and resources
-  ✔ Enforces isolation, retries, and timeouts
-  ✔ Persists state to PostgreSQL
-  ✔ Exposes real-time progress via WebSocket
-  ✔ Provides a visual editor (Tauri desktop app)
+trigger (webhook / cron / event)
+    ↓
+node A: HTTP Request  →  node B: Transform JSON  →  node C: Send Slack message
+    ↓ (on error)
+node D: Alert on-call
 ```
-
-### Core Properties
-
-| Property | Description |
-|----------|-------------|
-| **Type-safe** | Rust's compiler catches wrong-ID bugs, missing credentials, and invalid state transitions at compile time |
-| **Modular** | 26 focused crates with strict one-way dependency rules — add a new action without touching the engine |
-| **Async-first** | Built on Tokio: concurrent node fan-out, bounded work queues, cooperative cancellation |
-| **Storage-agnostic** | In-memory for tests; PostgreSQL for production — same API |
-| **Extensible** | First-party plugins (GitHub, Telegram) and third-party via `nebula-plugin` |
 
 ---
 
-## Getting Started
+## ✨ Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Type-Safe** | Rust's compiler catches invalid state transitions, missing credentials, and type mismatches at compile time |
+| **Async-First** | Built on Tokio for concurrent execution, bounded work queues, and backpressure |
+| **Modular** | 26 focused crates with one-way dependencies; add features without touching the engine |
+| **Storage-Agnostic** | In-memory for tests; PostgreSQL for production; same API everywhere |
+| **Extensible** | Action trait system + plugin ecosystem for custom integrations |
+| **Observable** | Detailed execution logs, telemetry, WebSocket real-time progress, audit trails |
+
+---
+
+## 📖 Documentation Map
+
+| Document | Purpose |
+|----------|---------|
+| **[vision/README.md](vision/README.md)** | Project vision, high-level overview, workspace layout |
+| **[vision/ARCHITECTURE.md](vision/ARCHITECTURE.md)** | Crate layers, dependency rules, data flow patterns |
+| **[vision/CRATES.md](vision/CRATES.md)** | Purpose and responsibility of every crate |
+| **[vision/STATUS.md](vision/STATUS.md)** | Current completion state per crate |
+| **[vision/ROADMAP.md](vision/ROADMAP.md)** | Phased plan: what's done, what's next |
+| **[vision/DECISIONS.md](vision/DECISIONS.md)** | Architectural decision records (ADRs) |
+| **[CONTRIBUTING.md](CONTRIBUTING.md)** | Contributor guidelines, code standards, review process |
+| **[ISSUES.md](ISSUES.md)** | Issue templates, labels, triage process |
+| **[WORKFLOW.md](WORKFLOW.md)** | Branch naming, commit conventions, PR process |
+| **[PROJECT_BOARD.md](PROJECT_BOARD.md)** | GitHub Project Board structure and usage |
+| **[LABELS.md](LABELS.md)** | Issue label hierarchy and definitions |
+
+---
+
+## 🏁 Quick Start
 
 ### Prerequisites
 
-| Tool | Version |
-|------|---------|
-| [Rust](https://rustup.rs) | 1.93 or later |
-| [Cargo](https://doc.rust-lang.org/cargo/) | bundled with Rust |
-| [PostgreSQL](https://www.postgresql.org/) | 14+ (for production; optional for dev) |
+- **Rust 1.93+** ([Install](https://rustup.rs/))
+- **Cargo** (comes with Rust)
+- **Git**
 
-### Build
+### Clone & Build
 
 ```bash
 git clone https://github.com/vanyastaff/nebula.git
@@ -73,109 +77,151 @@ cd nebula
 cargo build
 
 # Run tests
-cargo test --workspace
+cargo test
 
-# Check formatting and lints
-cargo fmt --check
+# Check code quality
 cargo clippy -- -D warnings
+cargo fmt --check
 ```
 
-### Development Quick Start
+### First Steps
 
+1. **New contributor?** Start with [NEWCOMERS.md](NEWCOMERS.md) (5 min guide)
+2. **Understand the project**: Read [vision/README.md](vision/README.md)
+3. **Explore the architecture**: Check [vision/ARCHITECTURE.md](vision/ARCHITECTURE.md)
+4. **Find something to work on**: Browse [Good First Issues](https://github.com/vanyastaff/nebula/issues?q=label:difficulty:good-first-issue)
+5. **Set up your environment**: Follow [CONTRIBUTING.md](CONTRIBUTING.md#development-setup)
+
+### Repository Setup (for maintainers)
+
+**Automated setup with scripts:**
 ```bash
-# Copy environment config
-cp deploy/.env.example deploy/.env
+# Create all GitHub labels automatically
+python scripts/setup-github-api.py
 
-# Run a specific crate's tests
-cargo test -p nebula-validator
-
-# Build documentation
-cargo doc --no-deps --open
+# Or with GitHub CLI
+gh auth login
+./scripts/setup-github.sh  # Linux/macOS
+# or
+.\scripts\setup-github.ps1  # Windows
 ```
+
+See [scripts/README.md](scripts/README.md) for details.
 
 ---
 
-## Architecture
-
-Nebula is organised into **five layers** — each layer only depends on layers below it:
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  Applications  │  api · desktop (Tauri) · web           │
-├─────────────────────────────────────────────────────────┤
-│  Engine        │  engine · runtime · scheduler          │
-├─────────────────────────────────────────────────────────┤
-│  Business      │  action · credential · plugin          │
-├─────────────────────────────────────────────────────────┤
-│  Infrastructure│  storage · resource · resilience       │
-├─────────────────────────────────────────────────────────┤
-│  Foundation    │  core · workflow · execution · memory  │
-└─────────────────────────────────────────────────────────┘
-```
-
-Full architecture details → [`vision/ARCHITECTURE.md`](vision/ARCHITECTURE.md)  
-Crate responsibilities → [`vision/CRATES.md`](vision/CRATES.md)  
-Dependency graph → [`vision/DEPENDENCIES.md`](vision/DEPENDENCIES.md)
-
----
-
-## Workspace Structure
+## 🏗️ Project Structure
 
 ```
 nebula/
-├── crates/              # Rust library crates (26 members)
-│   ├── core/            # Identifiers, scope, shared traits
-│   ├── workflow/        # Workflow definition + DAG model
-│   ├── execution/       # Execution state machine
-│   ├── action/          # Action trait + execution contract
-│   ├── engine/          # DAG scheduler and orchestrator
-│   ├── runtime/         # Action runner, isolation, task queue
-│   ├── storage/         # KV storage abstraction
-│   ├── credential/      # Encrypted secrets + rotation
-│   ├── resource/        # Resource lifecycle + pooling
-│   ├── api/             # REST + WebSocket server (axum)
-│   └── ...              # See vision/CRATES.md for full list
+├── crates/                    # 26 Rust library crates
+│   ├── core/                  # Fundamental types (IDs, Scope)
+│   ├── workflow/              # Workflow definition & DAG model
+│   ├── execution/             # Execution state machine
+│   ├── action/                # Action trait & contract
+│   ├── engine/                # DAG scheduler & orchestrator
+│   ├── runtime/               # Action runner, isolation, work queue
+│   ├── storage/               # KV storage abstraction
+│   ├── credential/            # Encrypted secrets & rotation
+│   ├── resource/              # Resource lifecycle & pooling
+│   ├── api/                   # REST + WebSocket server (Axum)
+│   └── ... (18 more)          # See vision/CRATES.md for full list
 ├── apps/
-│   ├── desktop/         # Tauri app (React + TypeScript + Rust)
-│   └── web/             # Web frontend
-├── docs/                # Detailed documentation per crate
-├── vision/              # Project-level navigation hub
-├── migrations/          # SQL database migrations
-└── deploy/              # Deployment configuration
+│   ├── desktop/               # Tauri desktop app (React + Rust)
+│   └── web/                   # Web frontend
+├── docs/                      # Per-crate documentation
+├── vision/                    # Project strategy & architecture
+├── migrations/                # SQL database migrations
+└── deploy/                    # Deployment config (Docker, K8s)
 ```
 
----
-
-## Project Status
-
-**Current phase:** 🔄 Phase 2 — Execution Engine (active development)
-
-| Phase | Status | Description |
-|-------|--------|-------------|
-| 1 — Core Foundation | ✅ Complete | Base crates: core, workflow, execution, memory, validator, etc. |
-| 2 — Execution Engine | 🔄 Active | Action trait, DAG engine, runtime, PostgreSQL storage backend |
-| 3 — Credential & Plugin | ⬜ Planned | Secure credential storage, plugin loading, webhooks |
-| 4 — Developer Experience | ⬜ Planned | SDK, CLI, OpenAPI, testing framework |
-| 5 — API & UI | ⬜ Planned | REST/WebSocket API, visual workflow editor (Tauri) |
-
-Full roadmap → [`docs/ROADMAP.md`](docs/ROADMAP.md)  
-Per-crate status → [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md)
+See [vision/ARCHITECTURE.md](vision/ARCHITECTURE.md) for detailed layer breakdown.
 
 ---
 
-## Contributing
+## 🎯 Current Status (March 2026)
 
-Contributions of all kinds are welcome — bug reports, feature requests, documentation, and code.
+| Phase | Status | Details |
+|-------|--------|---------|
+| **Phase 1: Core Foundation** | ✅ Complete | All foundation crates implemented and tested |
+| **Phase 2: Execution Engine** | 🔄 Active | Action trait, DAG engine, runtime in progress |
+| **Phase 3: Credential System** | ⬜ Planned | Hardening, rotation policies, audit |
+| **Phase 4: Plugin Ecosystem** | ⬜ Planned | First-party & third-party plugin SDKs |
+| **Phase 5: Desktop App** | ⬜ Planned | Visual editor, workflow debugging, monitoring |
 
-1. Read the [Contributing Guide](CONTRIBUTING.md)
-2. Browse [open issues](https://github.com/vanyastaff/nebula/issues)
-3. Check the [Roadmap](docs/ROADMAP.md) for planned work
-4. Open an issue before starting large changes
-
-Please follow the [commit convention](CONTRIBUTING.md#commit-messages) (`feat`, `fix`, `docs`, etc.) and ensure all CI checks pass before requesting review.
+See [vision/ROADMAP.md](vision/ROADMAP.md) for detailed timelines and exit criteria.
 
 ---
 
-## License
+## 🤝 Contributing
 
-Nebula is licensed under the **MIT License** — see [LICENSE](LICENSE) for details.
+We welcome contributions! Before you start:
+
+1. **Read**: [CONTRIBUTING.md](CONTRIBUTING.md) — Code of conduct, development setup, style guide
+2. **Understand**: [WORKFLOW.md](WORKFLOW.md) — Branch naming, commit conventions, PR process
+3. **Choose**: [Issues](https://github.com/vanyastaff/nebula/issues) — Filter by `good-first-issue` or `help-wanted`
+4. **Discuss**: Open an issue or discussion before major changes
+
+**Quick Checklist Before Submitting a PR:**
+- [ ] Tests pass: `cargo test`
+- [ ] Clippy passes: `cargo clippy -- -D warnings`
+- [ ] Code formatted: `cargo fmt`
+- [ ] Commit messages follow conventions (see [WORKFLOW.md](WORKFLOW.md))
+- [ ] PR description references issue (e.g., "Closes #123")
+- [ ] No breaking changes without discussion
+
+---
+
+## 📊 Stats
+
+- **Language**: Rust 🦀
+- **Crates**: 26
+- **Edition**: 2024
+- **MSRV**: 1.93
+- **License**: MIT OR Apache-2.0
+
+---
+
+## 🐛 Reporting Issues
+
+Found a bug? Have a feature idea? Please file an issue!
+
+- **Bug Reports**: [ISSUES.md#bug-report](ISSUES.md#bug-report)
+- **Feature Requests**: [ISSUES.md#feature-request](ISSUES.md#feature-request)
+- **Documentation**: [ISSUES.md#documentation](ISSUES.md#documentation)
+
+---
+
+## 📚 Learning Resources
+
+- **[Architecture Deep Dive](vision/ARCHITECTURE.md)** — Understand how components interact
+- **[Crates Overview](vision/CRATES.md)** — Learn what each crate does
+- **[Decision Records](vision/DECISIONS.md)** — Understand the "why" behind key choices
+- **[Design Documents](docs/)** — In-depth per-crate specifications
+- **[Status Report](vision/STATUS.md)** — Track progress across crates
+
+---
+
+## 💬 Community
+
+- **GitHub Issues**: [vanyastaff/nebula/issues](https://github.com/vanyastaff/nebula/issues)
+- **Discussions**: [vanyastaff/nebula/discussions](https://github.com/vanyastaff/nebula/discussions)
+- **Code of Conduct**: [CONTRIBUTING.md#code-of-conduct](CONTRIBUTING.md#code-of-conduct)
+
+---
+
+## 📄 License
+
+This project is dual-licensed under MIT OR Apache-2.0. See [LICENSE](LICENSE) for details.
+
+---
+
+## 🙏 Acknowledgments
+
+Built with ❤️ by the Nebula team and contributors. Thanks for being part of this journey!
+
+---
+
+**Questions?** Start with [vision/README.md](vision/README.md) or open a [discussion](https://github.com/vanyastaff/nebula/discussions).
+
+

@@ -1,11 +1,12 @@
 blank_issues_enabled: false
 contact_links:
-  - name: 💬 Discussions
+  - name: 💬 GitHub Discussions
     url: https://github.com/vanyastaff/nebula/discussions
-    about: Ask questions, share ideas, or discuss anything about Nebula.
-  - name: 🔒 Security Vulnerability
-    url: https://github.com/vanyastaff/nebula/security/advisories/new
-    about: Report a security vulnerability privately via GitHub Security Advisories.
+    about: Ask questions and discuss ideas with the community
   - name: 📖 Documentation
-    url: https://github.com/vanyastaff/nebula/blob/main/vision/README.md
-    about: Browse the Nebula documentation and vision hub.
+    url: https://github.com/vanyastaff/nebula/blob/main/README.md
+    about: Read the project documentation and guides
+  - name: 🏗️ Architecture
+    url: https://github.com/vanyastaff/nebula/blob/main/vision/ARCHITECTURE.md
+    about: Learn about the system architecture and design
+

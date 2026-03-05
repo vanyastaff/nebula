@@ -1,0 +1,117 @@
+name: Bug Report
+description: Report something that's broken or not working as expected
+labels: ["type:bug", "status:needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug! Please provide as much detail as possible.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Clear, concise description of the bug
+      placeholder: "What's the problem?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal steps to reproduce the bug
+      placeholder: |
+        1. Step one
+        2. Step two
+        3. Step three
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should happen?
+      placeholder: "The workflow should execute successfully"
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happens?
+      placeholder: "The engine panics with: ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error Output or Stack Trace
+      description: Include logs, stack traces, or error messages
+      placeholder: |
+        ```
+        thread 'tokio-runtime-worker' panicked at '...'
+        at nebula-runtime/src/executor.rs:142
+        ```
+      render: shell
+
+  - type: dropdown
+    id: affected-crate
+    attributes:
+      label: Affected Crate(s)
+      description: Which crate(s) are affected?
+      multiple: true
+      options:
+        - nebula-action
+        - nebula-engine
+        - nebula-runtime
+        - nebula-storage
+        - nebula-credential
+        - nebula-resource
+        - nebula-api
+        - nebula-workflow
+        - nebula-execution
+        - nebula-plugin
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: input
+    id: rust-version
+    attributes:
+      label: Rust Version
+      description: Output of `rustc --version`
+      placeholder: "rustc 1.93.0 (2024-...)"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      description: Linux, macOS, Windows, Docker, etc.
+      placeholder: "macOS 14.2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Screenshots, related issues, or other info?
+      placeholder: "Related to issue #456"
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I've searched for existing issues
+          required: true
+        - label: This is not a security vulnerability (see SECURITY.md)
+          required: true
+        - label: I've provided all necessary information
+

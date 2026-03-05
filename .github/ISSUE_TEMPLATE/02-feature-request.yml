@@ -1,0 +1,102 @@
+name: Feature Request
+description: Suggest a new feature or capability
+labels: ["type:feature", "status:needs-discussion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature! Help us understand your needs.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What's the limitation or gap you're facing?
+      placeholder: "Users can't throttle concurrent workflow executions, leading to API overload"
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How would you solve this problem?
+      placeholder: |
+        Add a `max_concurrent_executions` config per tenant:
+        ```rust
+        TenantConfig {
+            max_concurrent_executions: 10,
+            // ...
+        }
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative Solutions
+      description: Other approaches you've considered
+      placeholder: "Rate-limiting at the API gateway level (external solution)"
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case
+      description: Why is this important? Who benefits?
+      placeholder: |
+        E-commerce platforms running thousands of order workflows simultaneously.
+        Current behavior: 100 concurrent executions overwhelm downstream APIs.
+        This feature: Graceful queuing, controlled throughput.
+    validations:
+      required: true
+
+  - type: textarea
+    id: example
+    attributes:
+      label: Example or Sketch
+      description: Code example, diagram, or wireframe
+      placeholder: |
+        ```rust
+        // Sketch of how this might work
+        let config = TenantConfig::new()
+            .with_max_concurrent_executions(10);
+        ```
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary Area
+      description: Which part of the project does this affect?
+      options:
+        - action
+        - engine
+        - runtime
+        - storage
+        - credential
+        - resource
+        - api
+        - workflow
+        - execution
+        - plugin
+        - ui
+        - other
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Related Issues or Discussions
+      description: Link to related items
+      placeholder: "Related to #789 (performance issues under load)"
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I've searched for existing feature requests
+        - label: This feature would benefit multiple users (not just me)
+        - label: I've provided a clear problem statement and proposed solution
+

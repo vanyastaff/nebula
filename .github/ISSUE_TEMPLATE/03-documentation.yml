@@ -1,0 +1,73 @@
+name: Documentation Issue
+description: Documentation is unclear, missing, or incorrect
+labels: ["type:docs", "status:ready"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help us improve our documentation!
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the Problem?
+      description: Is documentation unclear, missing, or incorrect?
+      placeholder: |
+        - Missing: No guide for testing custom actions
+        - Unclear: ARCHITECTURE.md doesn't explain credential injection
+        - Incorrect: Code examples in docs don't compile
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Location
+      description: File/section that needs updating (or "docs don't exist for X")
+      placeholder: "vision/ARCHITECTURE.md#async-patterns"
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested Improvement
+      description: What should the documentation say or include?
+      placeholder: |
+        Add a section explaining the credential injection pattern with:
+        1. Overview of when credentials are resolved
+        2. Code example
+        3. Error handling
+      validations:
+        required: true
+
+  - type: dropdown
+    id: audience
+    attributes:
+      label: Target Audience
+      description: Who needs this documentation?
+      options:
+        - "New contributors"
+        - "Workflow users"
+        - "Action developers"
+        - "Plugin developers"
+        - "Maintainers"
+        - "Everyone"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: What confused you? How did you find the gap?
+      placeholder: "I was trying to create a custom action and couldn't find..."
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I've searched existing documentation
+        - label: This documentation gap affects others, not just me
+
