@@ -150,6 +150,12 @@ let result = manager.execute("api", "call", || async { Ok::<_, ResilienceError>(
 - `execute(service, operation, fut)` — applies full policy stack
 - `execute_with_override(service, operation, policy_override, fut)` — per-call override
 
+`register_service` semantics for existing services:
+- validates incoming policy before mutating runtime state,
+- rejects invalid updates as no-op (previous policy remains effective),
+- removes runtime components absent in reloaded policy (`circuit_breaker`, `bulkhead`),
+- preserves already-collected service metrics across reload.
+
 ### `ResiliencePolicy`
 
 Serializable policy model (serde). Fields:

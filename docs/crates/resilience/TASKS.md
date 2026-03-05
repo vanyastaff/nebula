@@ -43,11 +43,11 @@
 
 **Goal**: Strengthen policy validation and dynamic configuration behavior.
 
-- [ ] RSL-T011 [P] Implement validation for conflicting policy combinations (`src/policy/`)
-- [ ] RSL-T012 [P] Design and document policy migration/versioning strategy (`docs/crates/resilience/MIGRATION.md`)
-- [ ] RSL-T013 Tighten dynamic config reload behavior and document semantics (→ T011)
-- [ ] RSL-T014 Add tests for conflicting policy detection (→ T011)
-- [ ] RSL-T015 Add tests for policy reload determinism (→ T013)
+- [x] RSL-T011 [P] Implement validation for conflicting policy combinations (`src/policy/`)
+- [x] RSL-T012 [P] Design and document policy migration/versioning strategy (`docs/crates/resilience/MIGRATION.md`)
+- [x] RSL-T013 Tighten dynamic config reload behavior and document semantics (→ T011)
+- [x] RSL-T014 Add tests for conflicting policy detection (→ T011)
+- [x] RSL-T015 Add tests for policy reload determinism (→ T013)
 
 **Checkpoint**: No conflicting policies accepted; migration strategy documented; reload behavior deterministic.
 

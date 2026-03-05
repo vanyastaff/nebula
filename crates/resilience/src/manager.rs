@@ -35,7 +35,10 @@ use tracing::{debug, warn};
 
 use crate::{
     ResilienceError, ResilienceResult,
-    core::categories::{Category, ServiceCategory},
+    core::{
+        categories::{Category, ServiceCategory},
+        config::ResilienceConfig,
+    },
     patterns::{
         bulkhead::{Bulkhead, BulkheadConfig, BulkheadStats},
         circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerStats},
@@ -446,37 +449,66 @@ impl ResilienceManager {
         Self::new(default_policy)
     }
 
-    /// Register a service with specific resilience policy
+    /// Register or reload a service policy.
+    ///
+    /// Reload semantics are deterministic:
+    /// - The incoming policy is validated before any state mutation.
+    /// - If validation fails, existing service state is kept unchanged.
+    /// - If component construction fails (e.g. circuit breaker config), update is rejected.
+    /// - Components absent in the new policy are removed from runtime state.
     pub fn register_service(&self, service: impl Into<String>, policy: ResiliencePolicy) {
         let service_name = service.into();
 
-        // Initialize circuit breaker if configured
-        if let Some(config) = policy.circuit_breaker.clone() {
-            match CircuitBreaker::with_config(config) {
-                Ok(cb) => {
-                    self.circuit_breakers
-                        .insert(service_name.clone(), Arc::new(cb));
-                }
-                Err(e) => {
+        if let Err(error) = policy.validate() {
+            warn!(
+                service = %service_name,
+                error = %error,
+                "Skipping service registration due to invalid policy"
+            );
+            return;
+        }
+
+        let circuit_breaker = match policy.circuit_breaker.clone() {
+            Some(config) => match CircuitBreaker::with_config(config) {
+                Ok(cb) => Some(Arc::new(cb)),
+                Err(error) => {
                     warn!(
                         service = %service_name,
-                        error = %e,
-                        "Skipping circuit breaker registration due to invalid configuration"
+                        error = %error,
+                        "Skipping service registration due to invalid circuit breaker configuration"
                     );
+                    return;
                 }
+            },
+            None => None,
+        };
+
+        let bulkhead = policy
+            .bulkhead
+            .as_ref()
+            .map(|config| Arc::new(Bulkhead::with_config(config.clone())));
+
+        match circuit_breaker {
+            Some(cb) => {
+                self.circuit_breakers.insert(service_name.clone(), cb);
+            }
+            None => {
+                self.circuit_breakers.remove(&service_name);
             }
         }
 
-        // Initialize bulkhead if configured
-        if let Some(ref bulkhead_config) = policy.bulkhead {
-            self.bulkheads.insert(
-                service_name.clone(),
-                Arc::new(Bulkhead::with_config(bulkhead_config.clone())),
-            );
+        match bulkhead {
+            Some(bulkhead) => {
+                self.bulkheads.insert(service_name.clone(), bulkhead);
+            }
+            None => {
+                self.bulkheads.remove(&service_name);
+            }
         }
 
         self.service_metrics
-            .insert(service_name.clone(), Arc::new(RuntimeServiceMetrics::default()));
+            .entry(service_name.clone())
+            .or_insert_with(|| Arc::new(RuntimeServiceMetrics::default()));
 
         // Store policy (DashMap provides lock-free concurrent writes)
         self.policies.insert(service_name, Arc::new(policy));
@@ -1079,7 +1111,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_invalid_circuit_breaker_config_is_not_registered() {
+    async fn test_invalid_circuit_breaker_config_rejects_registration() {
         let manager = ResilienceManager::with_defaults();
 
         let mut circuit_breaker = CircuitBreakerConfig::default();
@@ -1088,7 +1120,72 @@ mod tests {
         let policy = PolicyBuilder::new().with_circuit_breaker(circuit_breaker).build();
         manager.register_service("invalid-cb", policy);
 
-        let metrics = manager.get_metrics("invalid-cb").await.unwrap();
-        assert!(metrics.circuit_breaker.is_none());
+        let metrics = manager.get_metrics("invalid-cb").await;
+        assert!(metrics.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_reload_removes_components_absent_in_new_policy() {
+        let manager = ResilienceManager::with_defaults();
+
+        let initial_policy = PolicyBuilder::new()
+            .with_timeout(Duration::from_secs(1))
+            .with_circuit_breaker(CircuitBreakerConfig::default())
+            .with_bulkhead(BulkheadConfig {
+                timeout: Some(Duration::from_millis(500)),
+                ..BulkheadConfig::default()
+            })
+            .build();
+        manager.register_service("reload-components", initial_policy);
+
+        let initial_metrics = manager.get_metrics("reload-components").await.unwrap();
+        assert!(initial_metrics.circuit_breaker.is_some());
+        assert!(initial_metrics.bulkhead.is_some());
+
+        let reloaded_policy = PolicyBuilder::new().with_timeout(Duration::from_secs(1)).build();
+        manager.register_service("reload-components", reloaded_policy);
+
+        let reloaded_metrics = manager.get_metrics("reload-components").await.unwrap();
+        assert!(reloaded_metrics.circuit_breaker.is_none());
+        assert!(reloaded_metrics.bulkhead.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_invalid_reload_keeps_previous_policy_effective() {
+        let manager = ResilienceManager::with_defaults();
+
+        let valid_policy = PolicyBuilder::new()
+            .with_timeout(Duration::from_secs(1))
+            .with_retry_fixed(4, Duration::from_millis(1))
+            .build();
+        manager.register_service("reload-policy", valid_policy);
+
+        let invalid_policy = ResiliencePolicy::new("invalid-reload")
+            .without_timeout()
+            .with_retry(RetryPolicyConfig::fixed(4, Duration::from_millis(1)));
+        manager.register_service("reload-policy", invalid_policy);
+
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+        let result = manager
+            .execute("reload-policy", "operation", move || {
+                let attempts = Arc::clone(&attempts_clone);
+                async move {
+                    let current = attempts.fetch_add(1, Ordering::SeqCst);
+                    if current < 3 {
+                        Err(ResilienceError::Custom {
+                            message: "retry me".to_string(),
+                            retryable: true,
+                            source: None,
+                        })
+                    } else {
+                        Ok::<u32, ResilienceError>(42)
+                    }
+                }
+            })
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 4);
     }
 }

@@ -133,7 +133,7 @@ async fn test_full_policy_composition() {
         .with_bulkhead(BulkheadConfig {
             max_concurrency: 10,
             queue_size: 20,
-            timeout: Some(Duration::from_secs(5)),
+            timeout: Some(Duration::from_millis(500)),
         })
         .build();
 

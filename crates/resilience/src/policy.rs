@@ -407,6 +407,31 @@ impl ResilienceConfig for ResiliencePolicy {
             return Err(ConfigError::validation("Policy name cannot be empty"));
         }
 
+        // Conflicting policy combinations
+        if self.retry.is_some() && self.timeout.is_none() {
+            return Err(ConfigError::validation(
+                "Retry requires timeout to bound total execution time",
+            ));
+        }
+
+        if let (Some(timeout), Some(bulkhead)) = (self.timeout, &self.bulkhead)
+            && let Some(bulkhead_timeout) = bulkhead.timeout
+            && bulkhead_timeout > timeout
+        {
+            return Err(ConfigError::validation(
+                "Bulkhead timeout cannot exceed policy timeout",
+            ));
+        }
+
+        if let (Some(timeout), Some(retry)) = (self.timeout, &self.retry)
+            && retry.max_attempts > 1
+            && Duration::from_millis(retry.base_delay_ms) >= timeout
+        {
+            return Err(ConfigError::validation(
+                "Retry base delay must be less than timeout when multiple attempts are configured",
+            ));
+        }
+
         // Check for conflicting configurations
         if let (Some(_timeout), Some(_retry)) = (self.timeout, &self.retry)
             && let Some(max_exec_time) = self.max_execution_time()
@@ -432,6 +457,7 @@ impl ResilienceConfig for ResiliencePolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::patterns::bulkhead::BulkheadConfig;
 
     #[test]
     fn test_policy_creation() {
@@ -521,5 +547,57 @@ mod tests {
             Some(Duration::from_millis(500))
         );
         assert_eq!(config.delay_for_attempt(5), None);
+    }
+
+    #[test]
+    fn test_conflict_retry_without_timeout_is_rejected() {
+        let policy = ResiliencePolicy::new("retry-without-timeout")
+            .without_timeout()
+            .with_retry(RetryPolicyConfig::fixed(3, Duration::from_millis(100)));
+
+        let err = policy.validate().unwrap_err();
+        assert!(err.to_string().contains("Retry requires timeout"));
+    }
+
+    #[test]
+    fn test_conflict_bulkhead_timeout_exceeds_policy_timeout_is_rejected() {
+        let policy = ResiliencePolicy::new("bulkhead-timeout-conflict")
+            .with_timeout(Duration::from_millis(100))
+            .with_bulkhead(BulkheadConfig {
+                max_concurrency: 4,
+                queue_size: 8,
+                timeout: Some(Duration::from_millis(200)),
+            });
+
+        let err = policy.validate().unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Bulkhead timeout cannot exceed policy timeout"));
+    }
+
+    #[test]
+    fn test_conflict_retry_base_delay_exceeding_timeout_is_rejected() {
+        let policy = ResiliencePolicy::new("retry-delay-conflict")
+            .with_timeout(Duration::from_millis(100))
+            .with_retry(RetryPolicyConfig::fixed(3, Duration::from_millis(100)));
+
+        let err = policy.validate().unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Retry base delay must be less than timeout"));
+    }
+
+    #[test]
+    fn test_non_conflicting_policy_combination_is_valid() {
+        let policy = ResiliencePolicy::new("valid-combo")
+            .with_timeout(Duration::from_millis(500))
+            .with_retry(RetryPolicyConfig::fixed(2, Duration::from_millis(100)))
+            .with_bulkhead(BulkheadConfig {
+                max_concurrency: 4,
+                queue_size: 8,
+                timeout: Some(Duration::from_millis(50)),
+            });
+
+        assert!(policy.validate().is_ok());
     }
 }
