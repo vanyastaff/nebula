@@ -18,6 +18,8 @@ commit history using the configuration in [`.github/release.yml`](.github/releas
   `nebula-macros`
 - CI pipeline: format check, Clippy, tests, security audit, Miri
 - Dependabot configured for Cargo and GitHub Actions
+- `nebula-api`: unified request validation on `nebula-validator::foundation::Validate<T>` and removed local parallel validation trait.
+- `nebula-macros`: shared derive validation codegen extracted to support module and reused by both `Validator` and `Config` derives.
 
 ### ⚡ Performance
 - `nebula-config`: removed per-validator JSON cloning in parallel validation path (`CompositeValidator::validate_parallel`) to reduce allocations.
@@ -26,15 +28,20 @@ commit history using the configuration in [`.github/release.yml`](.github/releas
 - `nebula-config`: `ConfigSource` narrowed to implemented variants only (`Env`, `EnvWithPrefix`, `File`, `FileAuto`, `Directory`, `Default`).
 - `nebula-config`: `with_fail_on_missing(true)` now applies consistently to both `build()` and `reload()`.
 - `nebula-config`: external format policy narrowed to `TOML + ENV`; `FileLoader` accepts TOML files only.
+- `nebula-validator`: `ValidationError::with_field(..)` now canonicalizes paths to RFC6901 JSON Pointer (for example, `a.b[0]` -> `/a/b/0`).
+- `nebula-api`: validation error payload now uses structured field entries (`code`, `pointer`, `detail`) in RFC 9457 Problem Details extensions.
 
 ### 🔧 Improvements
 - `nebula-config`: added `EnvParseMode` (`Permissive`/`Strict`) and new builder controls: `with_env_parse_mode`, `with_env_strict_parsing`.
+- `nebula-parameter`: validator rule failures now surface enriched reasons with canonical pointer context.
+- `nebula-sdk`: doctests and workflow invalid-action test updated to current action key contract.
 
 ### 📖 Documentation
 - `vision/` hub with architecture, crate map, dependency graph, roadmap, and decision records
 - `docs/` with per-crate documentation
 - `CONTRIBUTING.md` with development setup, branch naming, and commit conventions
 - `SECURITY.md` with responsible disclosure policy
+- `docs/crates/validator`: synchronized `API`, `DECISIONS`, `MIGRATION`, and crate `README` for validator v2 contract.
 
 ---
 
