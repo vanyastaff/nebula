@@ -20,7 +20,7 @@ mod execution_repo;
 mod workflow_repo;
 
 pub use backend::{MemoryStorage, MemoryStorageTyped};
-pub use execution_repo::{ExecutionRepo, ExecutionRepoError};
+pub use execution_repo::{ExecutionRepo, ExecutionRepoError, InMemoryExecutionRepo};
 pub use workflow_repo::{InMemoryWorkflowRepo, WorkflowRepo, WorkflowRepoError};
 #[cfg(feature = "postgres")]
 pub use backend::{PostgresStorage, PostgresStorageConfig};

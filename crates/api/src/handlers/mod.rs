@@ -1,4 +1,13 @@
-//! HTTP handlers (thin transport layer).
+//! Handlers
+//!
+//! Thin handlers для HTTP endpoints.
+//! Каждый handler только извлекает данные и делегирует в service/port.
 
-pub(crate) mod system;
-pub(crate) mod workflows;
+pub mod health;
+pub mod workflow;
+pub mod execution;
+
+pub use health::*;
+pub use workflow::*;
+pub use execution::*;
+

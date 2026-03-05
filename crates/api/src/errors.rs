@@ -1,94 +1,278 @@
-//! Unified HTTP error envelope for API handlers.
+//! Error Handling
+//!
+//! RFC 9457 Problem Details for HTTP APIs implementation.
+//! Единая обработка ошибок для всего API.
 
 use axum::{
-    Json,
-    http::{HeaderValue, StatusCode, header},
+    http::StatusCode,
     response::{IntoResponse, Response},
+    Json,
 };
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-use crate::models::ApiErrorResponse;
+/// RFC 9457 Problem Details
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProblemDetails {
+    /// URI reference identifying the problem type
+    #[serde(rename = "type")]
+    pub type_uri: String,
+    
+    /// Short human-readable summary
+    pub title: String,
+    
+    /// HTTP status code
+    pub status: u16,
+    
+    /// Human-readable explanation specific to this occurrence
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    
+    /// URI reference identifying the specific occurrence
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
+    
+    /// Additional extension members
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<serde_json::Value>,
 
-/// Canonical result type for API handlers.
-pub(crate) type ApiResult<T> = Result<T, ApiHttpError>;
-
-/// HTTP error with standard `{ error, message }` JSON payload.
-#[derive(Debug, Clone)]
-pub(crate) struct ApiHttpError {
-    status: StatusCode,
-    error: String,
-    message: String,
-    retry_after_seconds: Option<u64>,
+    /// Validation errors
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub errors: Option<Vec<ValidationFieldError>>,
 }
 
-impl ApiHttpError {
-    pub(crate) fn new(
-        status: StatusCode,
-        error: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self {
+/// Validation field error
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationFieldError {
+    /// Error detail message
+    pub detail: String,
+    /// JSON Pointer to the field (RFC 6901), e.g. "#/age"
+    pub pointer: String,
+}
+
+impl ProblemDetails {
+    /// Create a new ProblemDetails
+    pub fn new(type_uri: impl Into<String>, title: impl Into<String>, status: StatusCode) -> Self {
         Self {
-            status,
-            error: error.into(),
-            message: message.into(),
-            retry_after_seconds: None,
+            type_uri: type_uri.into(),
+            title: title.into(),
+            status: status.as_u16(),
+            detail: None,
+            instance: None,
+            extensions: None,
+            errors: None,
         }
     }
-
-    pub(crate) fn bad_request(error: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::new(StatusCode::BAD_REQUEST, error, message)
+    
+    /// Add detail message
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+    
+    /// Add instance URI
+    pub fn with_instance(mut self, instance: impl Into<String>) -> Self {
+        self.instance = Some(instance.into());
+        self
+    }
+    
+    /// Add extension data
+    pub fn with_extensions(mut self, extensions: serde_json::Value) -> Self {
+        self.extensions = Some(extensions);
+        self
     }
 
-    pub(crate) fn unauthorized(error: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::new(StatusCode::UNAUTHORIZED, error, message)
+    /// Add validation errors
+    pub fn with_errors(mut self, errors: Vec<ValidationFieldError>) -> Self {
+        self.errors = Some(errors);
+        self
     }
+}
 
-    pub(crate) fn not_found(error: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::new(StatusCode::NOT_FOUND, error, message)
-    }
+/// Main API Error Type
+#[derive(Debug, Error)]
+pub enum ApiError {
+    /// Validation error (400)
+    #[error("Validation failed: {0}")]
+    Validation(String),
+    
+    /// Authentication error (401)
+    #[error("Authentication failed: {0}")]
+    Unauthorized(String),
+    
+    /// Authorization error (403)
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+    
+    /// Not found (404)
+    #[error("Not found: {0}")]
+    NotFound(String),
+    
+    /// Conflict (409)
+    #[error("Conflict: {0}")]
+    Conflict(String),
+    
+    /// Rate limit exceeded (429)
+    #[error("Rate limit exceeded")]
+    RateLimitExceeded,
+    
+    /// Internal server error (500)
+    #[error("Internal server error: {0}")]
+    Internal(String),
+    
+    /// Service unavailable (503)
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
+    
+    /// Storage error
+    #[error("Storage error: {0}")]
+    Storage(#[from] nebula_storage::StorageError),
+    
+    /// Workflow repository error
+    #[error("Workflow repository error: {0}")]
+    WorkflowRepo(#[from] nebula_storage::WorkflowRepoError),
+    
+    /// Execution repository error
+    #[error("Execution repository error: {0}")]
+    ExecutionRepo(#[from] nebula_storage::ExecutionRepoError),
+}
 
-    pub(crate) fn conflict(error: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::new(StatusCode::CONFLICT, error, message)
-    }
-
-    pub(crate) fn service_unavailable(
-        error: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self {
-        Self::new(StatusCode::SERVICE_UNAVAILABLE, error, message)
-    }
-
-    pub(crate) fn internal(error: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::new(StatusCode::INTERNAL_SERVER_ERROR, error, message)
-    }
-
-    pub(crate) fn too_many_requests(
-        error: impl Into<String>,
-        message: impl Into<String>,
-        retry_after_seconds: u64,
-    ) -> Self {
-        Self {
-            status: StatusCode::TOO_MANY_REQUESTS,
-            error: error.into(),
-            message: message.into(),
-            retry_after_seconds: Some(retry_after_seconds),
+impl ApiError {
+    /// Convert to ProblemDetails
+    pub fn to_problem_details(&self) -> (StatusCode, ProblemDetails) {
+        match self {
+            ApiError::Validation(msg) => (
+                StatusCode::BAD_REQUEST,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/validation-error",
+                    "Validation Error",
+                    StatusCode::BAD_REQUEST,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::Unauthorized(msg) => (
+                StatusCode::UNAUTHORIZED,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/unauthorized",
+                    "Unauthorized",
+                    StatusCode::UNAUTHORIZED,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::Forbidden(msg) => (
+                StatusCode::FORBIDDEN,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/forbidden",
+                    "Forbidden",
+                    StatusCode::FORBIDDEN,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::NotFound(msg) => (
+                StatusCode::NOT_FOUND,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/not-found",
+                    "Not Found",
+                    StatusCode::NOT_FOUND,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::Conflict(msg) => (
+                StatusCode::CONFLICT,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/conflict",
+                    "Conflict",
+                    StatusCode::CONFLICT,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::RateLimitExceeded => (
+                StatusCode::TOO_MANY_REQUESTS,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/rate-limit",
+                    "Rate Limit Exceeded",
+                    StatusCode::TOO_MANY_REQUESTS,
+                ),
+            ),
+            ApiError::Internal(msg) => {
+                // Security: don't reveal internal details to client
+                tracing::error!("Internal error: {}", msg);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ProblemDetails::new(
+                        "about:blank",
+                        "Internal Server Error",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    ),
+                )
+            },
+            ApiError::ServiceUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/service-unavailable",
+                    "Service Unavailable",
+                    StatusCode::SERVICE_UNAVAILABLE,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::Storage(err) => {
+                tracing::error!("Storage error: {}", err);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ProblemDetails::new(
+                        "https://nebula.dev/problems/storage-error",
+                        "Internal Server Error",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    ),
+                )
+            },
+            ApiError::WorkflowRepo(err) => {
+                tracing::error!("Workflow repository error: {}", err);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ProblemDetails::new(
+                        "https://nebula.dev/problems/workflow-repo-error",
+                        "Internal Server Error",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    ),
+                )
+            },
+            ApiError::ExecutionRepo(err) => {
+                tracing::error!("Execution repository error: {}", err);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ProblemDetails::new(
+                        "https://nebula.dev/problems/execution-repo-error",
+                        "Internal Server Error",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    ),
+                )
+            },
         }
     }
 }
 
-impl IntoResponse for ApiHttpError {
+impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let mut response = (
-            self.status,
-            Json(ApiErrorResponse::new(self.error, self.message)),
-        )
-            .into_response();
-
-        if let Some(retry_after_seconds) = self.retry_after_seconds
-            && let Ok(v) = HeaderValue::from_str(&retry_after_seconds.to_string())
-        {
-            response.headers_mut().insert(header::RETRY_AFTER, v);
-        }
-
+        let (status, problem) = self.to_problem_details();
+        
+        // Log error
+        tracing::error!(
+            error = ?self,
+            status = status.as_u16(),
+            "API error occurred"
+        );
+        
+        // RFC 9457: Content-Type MUST be application/problem+json
+        let mut response = (status, Json(problem)).into_response();
+        response.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/problem+json".parse().unwrap(),
+        );
         response
     }
 }
+
+/// Result type for API handlers
+pub type ApiResult<T> = Result<T, ApiError>;
+

@@ -3,10 +3,13 @@
 //! State (versioned CAS), journal (append-only), leases. Used by API and engine;
 //! implementations in this crate or in adapters.
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use nebula_core::ExecutionId;
+use tokio::sync::RwLock;
 use thiserror::Error;
 
 /// Errors returned by execution repository operations.
@@ -110,4 +113,93 @@ pub trait ExecutionRepo: Send + Sync {
     ) -> Result<bool, ExecutionRepoError>;
 
     async fn release_lease(&self, id: ExecutionId, holder: &str) -> Result<bool, ExecutionRepoError>;
+}
+
+/// In-memory execution repository for tests and single-process/health-only mode.
+#[derive(Default)]
+pub struct InMemoryExecutionRepo {
+    state: Arc<RwLock<HashMap<ExecutionId, (u64, serde_json::Value)>>>,
+    journal: Arc<RwLock<HashMap<ExecutionId, Vec<serde_json::Value>>>>,
+    leases: Arc<RwLock<HashMap<ExecutionId, String>>>,
+}
+
+impl InMemoryExecutionRepo {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl ExecutionRepo for InMemoryExecutionRepo {
+    async fn get_state(
+        &self,
+        id: ExecutionId,
+    ) -> Result<Option<(u64, serde_json::Value)>, ExecutionRepoError> {
+        let state = self.state.read().await;
+        Ok(state.get(&id).cloned())
+    }
+
+    async fn transition(
+        &self,
+        id: ExecutionId,
+        expected_version: u64,
+        new_state: serde_json::Value,
+    ) -> Result<bool, ExecutionRepoError> {
+        let mut state = self.state.write().await;
+        let current = state.get(&id).map(|(v, _)| *v).unwrap_or(0);
+        if current != expected_version {
+            return Ok(false);
+        }
+        state.insert(id, (expected_version + 1, new_state));
+        Ok(true)
+    }
+
+    async fn get_journal(&self, id: ExecutionId) -> Result<Vec<serde_json::Value>, ExecutionRepoError> {
+        let journal = self.journal.read().await;
+        Ok(journal.get(&id).cloned().unwrap_or_default())
+    }
+
+    async fn append_journal(
+        &self,
+        id: ExecutionId,
+        entry: serde_json::Value,
+    ) -> Result<(), ExecutionRepoError> {
+        let mut journal = self.journal.write().await;
+        journal.entry(id).or_default().push(entry);
+        Ok(())
+    }
+
+    async fn acquire_lease(
+        &self,
+        id: ExecutionId,
+        holder: String,
+        _ttl: Duration,
+    ) -> Result<bool, ExecutionRepoError> {
+        let mut leases = self.leases.write().await;
+        if leases.contains_key(&id) {
+            return Ok(false);
+        }
+        leases.insert(id, holder);
+        Ok(true)
+    }
+
+    async fn renew_lease(
+        &self,
+        id: ExecutionId,
+        holder: &str,
+        _ttl: Duration,
+    ) -> Result<bool, ExecutionRepoError> {
+        let leases = self.leases.read().await;
+        Ok(leases.get(&id).map(|h| h.as_str()) == Some(holder))
+    }
+
+    async fn release_lease(&self, id: ExecutionId, holder: &str) -> Result<bool, ExecutionRepoError> {
+        let mut leases = self.leases.write().await;
+        let ok = leases.get(&id).map(|h| h.as_str()) == Some(holder);
+        if ok {
+            leases.remove(&id);
+        }
+        Ok(ok)
+    }
 }

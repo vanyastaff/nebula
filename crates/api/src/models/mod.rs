@@ -1,13 +1,12 @@
-//! API DTO/models used by transport and services.
+//! Models (DTOs)
+//!
+//! Request and response models for API endpoints.
 
-mod common;
-mod runs;
-mod system;
-mod workflows;
+pub mod health;
+pub mod workflow;
+pub mod execution;
 
-pub use common::{ApiErrorResponse, PaginatedResponse, PaginationQuery};
-pub use runs::RunSummary;
-pub use system::StatusResponse;
-pub use workflows::{
-    CreateWorkflowRequest, UpdateWorkflowRequest, WorkflowDetail, WorkflowSummary,
-};
+pub use health::*;
+pub use workflow::*;
+pub use execution::*;
+

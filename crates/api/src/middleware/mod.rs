@@ -1,5 +1,13 @@
-//! Cross-cutting HTTP middleware setup.
+//! Middleware
+//!
+//! Custom middleware для API: auth, rate limiting, request ID, etc.
 
-mod trace;
+pub mod auth;
+pub mod rate_limit;
+pub mod request_id;
+pub mod security_headers;
 
-pub(crate) use trace::http_trace_layer;
+pub use auth::AuthMiddleware;
+pub use request_id::RequestIdLayer;
+pub use security_headers::security_headers_middleware;
+

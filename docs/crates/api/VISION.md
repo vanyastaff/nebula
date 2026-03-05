@@ -125,14 +125,21 @@ Execution runs in **workers**, not in the request path. This keeps API latency l
 
 ## 4. Dependencies and Ports
 
-- **API depends on**:
-  - **Traits (ports)** from `nebula-storage`: `WorkflowRepo`, `ExecutionRepo` (and their errors).
-  - **Traits from nebula-runtime** (when runs/execute are implemented): e.g. `TaskQueue` for enqueue.
-  - **nebula-core**: identifiers (`WorkflowId`, etc.) and shared types used in DTOs.
-- **API does not depend on**:
-  - Concrete storage backends (e.g. `nebula-storage` Postgres feature only in app binary).
-  - **nebula-engine** or execution engine types in handler code (only port interfaces).
-- **App binary** (or test harness) constructs `ApiState` with `with_workflow_repo(Arc::new(PostgresWorkflowRepo::new(…)))` etc., so API stays backend-agnostic and testable with in-memory mocks.
+**Allowed dependencies (nebula-api must not exceed these):**
+
+- **nebula-core** — identifiers (`WorkflowId`, `ExecutionId`), shared types used in DTOs.
+- **nebula-storage** — **only traits**: `WorkflowRepo`, `ExecutionRepo` (and their error types). No concrete backends (Postgres/Redis features stay in app binary).
+- **nebula-config** (optional) — config loaders if unified with platform config.
+- **nebula-log** / telemetry (optional) — tracing, observability.
+- **nebula-engine / nebula-runtime / workers** — only via **port traits** (e.g. `TaskQueue` when added); no direct use of engine or workflow execution types.
+- **nebula-webhook** (optional) — only to merge webhook router; no workflow logic.
+
+**API must not depend on:**
+
+- **nebula-workflow** — no types, no validators, no domain rules. Workflow “shape” is opaque to API (e.g. serialized as `serde_json::Value` or DTO); engine and workers own the domain.
+- Concrete storage or runtime implementations (only traits in API’s dependency tree).
+
+**App binary** (or test harness) builds `ApiPorts` with concrete repos and passes them into `ApiState::with_ports(ports)` or `app_with_ports(ports)`.
 
 This aligns with [remove-ports-and-drivers](../../plans/remove-ports-and-drivers.md): contracts in nebula-storage (and runtime); API and app only use those contracts.
 

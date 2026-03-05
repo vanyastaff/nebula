@@ -1,81 +1,101 @@
-//! Runtime configuration loaders (env-based).
+//! API Configuration
+//!
+//! Централизованная конфигурация для Nebula API server.
 
-use std::collections::HashSet;
+use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
+use std::time::Duration;
 
-use crate::state::{GithubOAuthConfig, RateLimitConfig};
+/// API Server Configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiConfig {
+    /// Host and port to bind (e.g. "0.0.0.0:8080")
+    pub bind_address: SocketAddr,
 
-pub(crate) fn load_api_keys() -> HashSet<String> {
-    std::env::var("NEBULA_API_KEYS")
-        .ok()
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
+    /// Request timeout
+    pub request_timeout: Duration,
+
+    /// Maximum request body size (bytes)
+    pub max_body_size: usize,
+
+    /// CORS allowed origins
+    pub cors_allowed_origins: Vec<String>,
+
+    /// Enable compression (gzip, brotli, zstd)
+    pub enable_compression: bool,
+
+    /// Enable request tracing
+    pub enable_tracing: bool,
+
+    /// JWT secret for authentication
+    pub jwt_secret: String,
+
+    /// Rate limiting: requests per second per IP
+    pub rate_limit_per_second: u32,
 }
 
-pub(crate) fn load_github_oauth_config() -> Option<GithubOAuthConfig> {
-    let client_id = std::env::var("GITHUB_OAUTH_CLIENT_ID").ok()?;
-    let client_secret = std::env::var("GITHUB_OAUTH_CLIENT_SECRET").ok()?;
-    let redirect_uri = std::env::var("GITHUB_OAUTH_REDIRECT_URI")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "http://localhost:5678/auth/github/callback".to_string());
-    let scope = std::env::var("GITHUB_OAUTH_SCOPE")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "read:user user:email".to_string());
-    Some(GithubOAuthConfig {
-        client_id,
-        client_secret,
-        redirect_uri,
-        scope,
-    })
-}
-
-pub(crate) fn load_rate_limit_config() -> RateLimitConfig {
-    let window_seconds = std::env::var("NEBULA_RATE_LIMIT_WINDOW_SECONDS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(60);
-    let max_requests = std::env::var("NEBULA_RATE_LIMIT_MAX_REQUESTS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(120);
-    RateLimitConfig {
-        window_seconds: window_seconds.max(1),
-        max_requests: max_requests.max(1),
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            bind_address: "0.0.0.0:8080".parse().unwrap(),
+            request_timeout: Duration::from_secs(30),
+            max_body_size: 2 * 1024 * 1024, // 2MB
+            cors_allowed_origins: vec!["*".to_string()],
+            enable_compression: true,
+            enable_tracing: true,
+            jwt_secret: "dev-secret-change-in-production".to_string(),
+            rate_limit_per_second: 100,
+        }
     }
 }
 
-pub(crate) fn is_mock_oauth_enabled() -> bool {
-    std::env::var("NEBULA_OAUTH_MOCK")
-        .ok()
-        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
-        .unwrap_or(true)
-}
+impl ApiConfig {
+    /// Load configuration from environment variables
+    pub fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
+        let bind_address = std::env::var("API_BIND_ADDRESS")
+            .unwrap_or_else(|_| "0.0.0.0:8080".to_string())
+            .parse()?;
 
-pub(crate) fn load_cors_allowed_origins() -> Vec<axum::http::HeaderValue> {
-    let configured = std::env::var("NEBULA_CORS_ALLOW_ORIGINS")
-        .ok()
-        .unwrap_or_default();
+        let request_timeout = std::env::var("API_REQUEST_TIMEOUT")
+            .unwrap_or_else(|_| "30".to_string())
+            .parse::<u64>()
+            .map(Duration::from_secs)?;
 
-    let mut origins: Vec<axum::http::HeaderValue> = configured
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .filter_map(|value| axum::http::HeaderValue::from_str(value).ok())
-        .collect();
+        let max_body_size = std::env::var("API_MAX_BODY_SIZE")
+            .unwrap_or_else(|_| "2097152".to_string())
+            .parse()?;
 
-    if origins.is_empty() {
-        origins = vec![
-            axum::http::HeaderValue::from_static("http://localhost:5173"),
-            axum::http::HeaderValue::from_static("http://127.0.0.1:5173"),
-            axum::http::HeaderValue::from_static("http://tauri.localhost"),
-            axum::http::HeaderValue::from_static("tauri://localhost"),
-        ];
+        let cors_allowed_origins = std::env::var("API_CORS_ORIGINS")
+            .unwrap_or_else(|_| "*".to_string())
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
+
+        let enable_compression = std::env::var("API_ENABLE_COMPRESSION")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse()?;
+
+        let enable_tracing = std::env::var("API_ENABLE_TRACING")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse()?;
+
+        let jwt_secret = std::env::var("API_JWT_SECRET")
+            .unwrap_or_else(|_| "dev-secret-change-in-production".to_string());
+
+        let rate_limit_per_second = std::env::var("API_RATE_LIMIT")
+            .unwrap_or_else(|_| "100".to_string())
+            .parse()?;
+
+        Ok(Self {
+            bind_address,
+            request_timeout,
+            max_body_size,
+            cors_allowed_origins,
+            enable_compression,
+            enable_tracing,
+            jwt_secret,
+            rate_limit_per_second,
+        })
     }
-
-    origins
 }
+

@@ -1,5 +1,8 @@
-//! Custom request extractors.
+//! Custom Extractors
+//!
+//! Кастомные extractors для извлечения данных из запросов.
 
-mod auth;
+pub mod json_extractor;
 
-pub(crate) use auth::Authenticated;
+pub use json_extractor::ValidatedJson;
+
