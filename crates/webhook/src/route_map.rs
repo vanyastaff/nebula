@@ -45,9 +45,8 @@ impl RouteMap {
         }
 
         let (tx, rx) = broadcast::channel(capacity);
-        self.routes.insert(path.clone(), tx);
-
         debug!(path = %path, capacity = %capacity, "Registered webhook route");
+        self.routes.insert(path, tx);
         Ok(rx)
     }
 

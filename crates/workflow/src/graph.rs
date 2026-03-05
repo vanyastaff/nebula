@@ -1,6 +1,6 @@
 //! DAG dependency graph built on `petgraph`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use nebula_core::NodeId;
 use petgraph::Direction;
@@ -78,7 +78,7 @@ impl DependencyGraph {
         let mut remaining: Vec<NodeIndex> = self.graph.node_indices().collect();
 
         while !remaining.is_empty() {
-            let current_level: Vec<NodeIndex> = remaining
+            let current_level: HashSet<NodeIndex> = remaining
                 .iter()
                 .filter(|idx| in_degree[idx] == 0)
                 .copied()
