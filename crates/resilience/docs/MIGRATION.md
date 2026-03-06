@@ -58,6 +58,41 @@ This defines an **all-or-nothing apply contract** for runtime updates and preven
 
 ## Breaking Changes
 
+### 2026-03 Retry/Hedge/Dynamic API updates
+
+- **Retry APIs now return structured failure with stats**
+  - **Old behavior:**
+    - `RetryStrategy::execute(...) -> Result<(T, RetryStats), E>`
+    - `RetryStrategy::execute_resilient(...) -> ResilienceResult<(T, RetryStats)>`
+  - **New behavior:**
+    - `RetryStrategy::execute(...) -> RetryExecutionResult<T, E>`
+    - `RetryStrategy::execute_resilient(...) -> RetryExecutionResult<T, ResilienceError>`
+    - where error variant is `RetryFailure<E> { error, stats }`.
+  - **Migration steps:**
+    - replace `Err(e)` handling with `Err(failure)` and use `failure.error` / `failure.stats`.
+    - when nesting under `CircuitBreaker::execute(...)`, map error back to `ResilienceError`:
+      - `.await.map_err(|failure| failure.error)`.
+
+- **Adaptive hedge percentile builder is now fallible**
+  - **Old behavior:** `AdaptiveHedgeExecutor::with_target_percentile(p) -> Self`.
+  - **New behavior:** `AdaptiveHedgeExecutor::with_target_percentile(p) -> ConfigResult<Self>` with validation (`finite`, `0.0..=1.0`).
+  - **Migration steps:** unwrap or propagate: `.with_target_percentile(0.9)?`.
+
+- **Dynamic conversion now surfaces errors**
+  - **Old behavior:** `DynamicConfigurable::to_dynamic() -> DynamicConfig` (could silently degrade).
+  - **New behavior:** `DynamicConfigurable::to_dynamic() -> ConfigResult<DynamicConfig>`.
+  - **Migration steps:** handle `Result` and propagate validation/conversion failures.
+
+- **Dynamic merge semantics changed to deep merge**
+  - **Old behavior:** top-level overwrite on key collisions.
+  - **New behavior:** recursive merge for nested JSON objects.
+  - **Migration steps:** if your workflow relied on replacement semantics, switch to explicit key replacement before merge.
+
+- **Governor fractional rate behavior corrected**
+  - **Old behavior:** fractional `rate_per_second` was effectively rounded up.
+  - **New behavior:** period-based quota preserves intended fractional throughput.
+  - **Migration steps:** re-check low-rate policies (`< 1 req/s`) and adjust alert thresholds.
+
 ### 2026-03 Contract Updates (Rust 1.93 wave)
 
 - **Bulkhead queue is now enforced at runtime**

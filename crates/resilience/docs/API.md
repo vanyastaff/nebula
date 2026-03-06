@@ -80,8 +80,18 @@ let config = RetryConfig::new(
     ConservativeCondition::<3>::new(),
 ).with_jitter(JitterPolicy::Equal);
 let strategy = RetryStrategy::new(config)?;
-let (result, stats) = strategy.execute(|| async { Ok::<_, ResilienceError>("ok") }).await?;
+let (result, stats) = strategy
+        .execute(|| async { Ok::<_, ResilienceError>("ok") })
+        .await
+        .map_err(|failure| failure.error)?;
 ```
+
+Error model:
+
+- `execute(...)`, `execute_resilient(...)`, `execute_resilient_with_cancellation(...)` return
+    `RetryExecutionResult<T, E> = Result<(T, RetryStats), RetryFailure<E>>`.
+- `RetryFailure<E>` contains both `error` and `stats` so failed executions keep telemetry.
+- Use `failure.into_parts()` to split `(error, stats)`.
 
 Backoff policies: `ExponentialBackoff`, `FixedDelay`, `LinearBackoff`, `CustomBackoff`.
 
@@ -116,6 +126,8 @@ let bulkhead = Bulkhead::new(BulkheadConfig {
 
 - `FallbackStrategy`, `AnyStringFallbackStrategy`, `ValueFallback`
 - `HedgeExecutor`, `HedgeConfig`
+- `AdaptiveHedgeExecutor::with_target_percentile(percentile) -> ConfigResult<Self>`
+    validates that percentile is finite and within `[0.0, 1.0]`.
 
 ## `Retryable` Trait
 
@@ -249,7 +261,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let breaker = StandardCircuitBreaker::default();
     let retry = exponential_retry::<3>()?;
     let result = breaker.execute(|| async {
-        retry.execute_resilient(|| async { Ok::<_, ResilienceError>("ok") }).await
+        retry
+            .execute_resilient(|| async { Ok::<_, ResilienceError>("ok") })
+            .await
+            .map_err(|failure| failure.error)
     }).await;
     Ok(())
 }
