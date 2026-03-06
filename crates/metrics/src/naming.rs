@@ -72,6 +72,19 @@ pub const NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL: &str =
     "nebula_resource_credential_rotated_total";
 
 // ---------------------------------------------------------------------------
+// EventBus (generic bus layer)
+// ---------------------------------------------------------------------------
+
+/// Gauge: snapshot of sent events for an EventBus instance.
+pub const NEBULA_EVENTBUS_SENT: &str = "nebula_eventbus_sent";
+/// Gauge: snapshot of dropped events for an EventBus instance.
+pub const NEBULA_EVENTBUS_DROPPED: &str = "nebula_eventbus_dropped";
+/// Gauge: snapshot of active subscribers for an EventBus instance.
+pub const NEBULA_EVENTBUS_SUBSCRIBERS: &str = "nebula_eventbus_subscribers";
+/// Gauge: snapshot drop ratio (`0.0..=1.0`) scaled by 1_000_000.
+pub const NEBULA_EVENTBUS_DROP_RATIO_PPM: &str = "nebula_eventbus_drop_ratio_ppm";
+
+// ---------------------------------------------------------------------------
 // Legacy names (for backward compatibility during migration)
 // ---------------------------------------------------------------------------
 

@@ -17,3 +17,12 @@ tokio = { workspace = true, features = ["sync"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 pretty_assertions = { workspace = true }
+criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
+
+[[bench]]
+name = "emit"
+harness = false
+
+[[bench]]
+name = "throughput"
+harness = false

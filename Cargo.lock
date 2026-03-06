@@ -3851,6 +3851,7 @@ dependencies = [
 name = "nebula-eventbus"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "pretty_assertions",
  "tokio",
 ]
@@ -3978,6 +3979,7 @@ version = "0.1.0"
 dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
+ "nebula-eventbus",
  "nebula-telemetry",
  "pretty_assertions",
  "thiserror 2.0.18",

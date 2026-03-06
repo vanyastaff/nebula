@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use nebula_eventbus::EventBusStats;
 use nebula_telemetry::metrics::{Counter, Gauge, Histogram, MetricsRegistry};
 
 use crate::naming::*;
@@ -101,12 +102,64 @@ impl TelemetryAdapter {
     pub fn histogram(&self, name: &str) -> Histogram {
         self.registry.histogram(name)
     }
+
+    // ---------- EventBus snapshots ----------
+
+    /// Gauge: eventbus sent events snapshot.
+    #[must_use]
+    pub fn eventbus_sent(&self) -> Gauge {
+        self.registry.gauge(NEBULA_EVENTBUS_SENT)
+    }
+
+    /// Gauge: eventbus dropped events snapshot.
+    #[must_use]
+    pub fn eventbus_dropped(&self) -> Gauge {
+        self.registry.gauge(NEBULA_EVENTBUS_DROPPED)
+    }
+
+    /// Gauge: eventbus active subscriber snapshot.
+    #[must_use]
+    pub fn eventbus_subscribers(&self) -> Gauge {
+        self.registry.gauge(NEBULA_EVENTBUS_SUBSCRIBERS)
+    }
+
+    /// Gauge: eventbus drop ratio snapshot in parts-per-million (`0..=1_000_000`).
+    #[must_use]
+    pub fn eventbus_drop_ratio_ppm(&self) -> Gauge {
+        self.registry.gauge(NEBULA_EVENTBUS_DROP_RATIO_PPM)
+    }
+
+    /// Records an [`EventBusStats`] snapshot under standard `nebula_eventbus_*` gauges.
+    pub fn record_eventbus_stats(&self, stats: &EventBusStats) {
+        self.eventbus_sent().set(clamp_u64_to_i64(stats.sent_count));
+        self.eventbus_dropped()
+            .set(clamp_u64_to_i64(stats.dropped_count));
+        self.eventbus_subscribers()
+            .set(clamp_usize_to_i64(stats.subscriber_count));
+
+        let ppm = (stats.drop_ratio() * 1_000_000.0).round();
+        let ppm = if ppm.is_finite() {
+            ppm.clamp(0.0, i64::MAX as f64) as i64
+        } else {
+            0
+        };
+        self.eventbus_drop_ratio_ppm().set(ppm);
+    }
+}
+
+fn clamp_u64_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn clamp_usize_to_i64(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
+    use nebula_eventbus::EventBusStats;
     use nebula_telemetry::metrics::MetricsRegistry;
 
     use super::TelemetryAdapter;
@@ -124,5 +177,24 @@ mod tests {
         assert_eq!(adapter.workflow_executions_started_total().get(), 2);
         assert_eq!(adapter.action_executions_total().get(), 1);
         assert_eq!(adapter.action_failures_total().get(), 1);
+    }
+
+    #[test]
+    fn adapter_records_eventbus_snapshot_metrics() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let adapter = TelemetryAdapter::new(Arc::clone(&registry));
+
+        let stats = EventBusStats {
+            sent_count: 75,
+            dropped_count: 25,
+            subscriber_count: 3,
+        };
+
+        adapter.record_eventbus_stats(&stats);
+
+        assert_eq!(adapter.eventbus_sent().get(), 75);
+        assert_eq!(adapter.eventbus_dropped().get(), 25);
+        assert_eq!(adapter.eventbus_subscribers().get(), 3);
+        assert_eq!(adapter.eventbus_drop_ratio_ppm().get(), 250_000);
     }
 }

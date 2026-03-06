@@ -436,8 +436,9 @@ mod tests {
     #[test]
     fn filtered_subscription_only_receives_matching_events() {
         let bus = EventBus::<TestEvent>::new(16);
-        let mut filtered =
-            bus.subscribe_filtered(EventFilter::custom(|event: &TestEvent| event.0 % 2 == 0));
+        let mut filtered = bus.subscribe_filtered(EventFilter::custom(|event: &TestEvent| {
+            event.0.is_multiple_of(2)
+        }));
 
         let _ = bus.send(TestEvent(1));
         let _ = bus.send(TestEvent(2));
