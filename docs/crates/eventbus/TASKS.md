@@ -79,8 +79,8 @@
 
 ## Verification (after all phases)
 
-- [ ] `cargo check -p nebula-eventbus --all-features`
-- [ ] `cargo test -p nebula-eventbus`
-- [ ] `cargo clippy -p nebula-eventbus -- -D warnings`
-- [ ] `cargo doc --no-deps -p nebula-eventbus`
-- [ ] emit latency < 1µs in benchmark
+- [x] `cargo check -p nebula-eventbus --all-features`
+- [x] `cargo test -p nebula-eventbus`
+- [x] `cargo clippy -p nebula-eventbus -- -D warnings`
+- [x] `cargo doc --no-deps -p nebula-eventbus`
+- [x] emit latency < 1µs in benchmark
