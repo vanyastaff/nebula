@@ -215,6 +215,19 @@ Suppress lints with `#[expect(lint, reason = "...")]`, never `#[allow(...)]` wit
 
 ---
 
+## Change Policy (Current Stage)
+
+- The project is in an active development stage where **breaking changes are allowed** if they
+  materially improve architecture, API clarity, or long-term maintainability.
+- Prefer coherent API surfaces over temporary compatibility shims when a cleaner design is clear.
+- When making a breaking change, update:
+  - local crate docs and examples,
+  - direct wrappers/adapters in dependent crates,
+  - tests that validate the changed contract.
+- Keep breaking changes intentional and well-scoped; avoid unrelated churn.
+
+---
+
 ## CI Checklist
 
 Before opening a PR, ensure all of the following pass locally:

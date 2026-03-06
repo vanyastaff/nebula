@@ -8,37 +8,49 @@
 //! Backed by [`tokio::sync::broadcast`] per architecture: bounded, Lagged semantics,
 //! zero-copy clone, minimal hot-path overhead (no extra allocations on send).
 //!
+//! ## Quick Start
+//!
+//! ```rust
+//! use nebula_eventbus::EventBus;
+//!
+//! #[derive(Clone)]
+//! struct MyEvent {
+//!     id: u64,
+//! }
+//!
+//! let bus = EventBus::<MyEvent>::new(64);
+//! let mut sub = bus.subscribe();
+//!
+//! let outcome = bus.emit(MyEvent { id: 1 });
+//! assert!(outcome.is_sent());
+//! let event = sub.try_recv().expect("event must be available");
+//! assert_eq!(event.id, 1);
+//! ```
+//!
+//! ## Core Types
+//!
+//! - [`EventBus`] - typed event broadcaster.
+//! - [`BackPressurePolicy`] - buffer saturation behavior.
+//! - [`PublishOutcome`] - explicit send result for control-flow decisions.
+//! - [`EventBusStats`] - observability counters for sent/dropped/subscribers.
+//!
 //! # Contract
 //!
 //! - **Non-blocking send by default** — producers never block on subscriber speed.
 //! - **Best-effort delivery** — no guarantee of delivery or global ordering.
 //! - **EventBusStats** — `sent_count`, `dropped_count`, `subscriber_count` for observability.
-//!
-//! # Example
-//!
-//! ```ignore
-//! use nebula_eventbus::{EventBus, BackPressurePolicy, Subscriber};
-//!
-//! #[derive(Clone)]
-//! struct MyEvent { id: u64 }
-//!
-//! let bus = EventBus::<MyEvent>::new(64);
-//! let mut sub = bus.subscribe();
-//!
-//! bus.send(MyEvent { id: 1 });
-//! let event = sub.try_recv().unwrap();
-//! assert_eq!(event.id, 1);
-//!
-//! let stats = bus.stats();
-//! assert_eq!(stats.sent_count, 1);
-//! ```
+
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 mod bus;
+mod outcome;
 mod policy;
 mod stats;
 mod subscriber;
 
 pub use bus::EventBus;
+pub use outcome::PublishOutcome;
 pub use policy::BackPressurePolicy;
 pub use stats::EventBusStats;
 pub use subscriber::Subscriber;

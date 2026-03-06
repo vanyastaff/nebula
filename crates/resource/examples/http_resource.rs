@@ -172,7 +172,8 @@ impl Resource for HttpResource {
     }
 
     fn metadata(&self) -> ResourceMetadata {
-        let key = ResourceKey::try_from("http.client").expect("HttpResource uses a valid resource key");
+        let key =
+            ResourceKey::try_from("http.client").expect("HttpResource uses a valid resource key");
         ResourceMetadata::build(
             key.clone(),
             "HTTP Client",
@@ -209,9 +210,9 @@ impl Resource for HttpResource {
                 builder = builder.user_agent(ua);
             }
 
-            let client = builder
-                .build()
-                .map_err(|err| Error::configuration(format!("failed to build HTTP client: {err}")))?;
+            let client = builder.build().map_err(|err| {
+                Error::configuration(format!("failed to build HTTP client: {err}"))
+            })?;
 
             let base_url = match cfg.base_url {
                 Some(url) => Some(Url::parse(&url).map_err(|err| {

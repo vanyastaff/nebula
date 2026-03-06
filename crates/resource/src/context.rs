@@ -245,13 +245,18 @@ mod tests {
                 ResourceMetadata::from_key(ResourceKey::try_from("test-http").expect("valid key"))
             }
 
-            async fn create(&self, _config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
+            async fn create(
+                &self,
+                _config: &Self::Config,
+                _ctx: &Context,
+            ) -> Result<Self::Instance> {
                 Ok("ok".to_string())
             }
         }
 
         let key = ResourceKey::try_from("http-global").expect("valid key");
-        let pool = Pool::new(TestResource, TestConfig, PoolConfig::default()).expect("pool creation");
+        let pool =
+            Pool::new(TestResource, TestConfig, PoolConfig::default()).expect("pool creation");
         let typed = Arc::new(TypedPool { pool });
         let handle: Arc<dyn Any + Send + Sync> = typed.clone();
 

@@ -21,7 +21,8 @@ pub enum BackPressurePolicy {
 
     /// Block the emitter for up to `timeout` waiting for buffer space.
     ///
-    /// Use [`EventBus::send_async`](crate::EventBus::send_async) for this policy.
+    /// Use [`EventBus::send_async`](crate::EventBus::send_async) or
+    /// [`EventBus::emit_async`](crate::EventBus::emit_async) for this policy.
     /// Synchronous [`EventBus::send`](crate::EventBus::send) falls back to
     /// `DropOldest` when this policy is set.
     Block {

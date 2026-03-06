@@ -84,23 +84,12 @@ impl ResourceHook for OrderTracker {
         vec![HookEvent::Acquire]
     }
 
-    async fn before(
-        &self,
-        _event: &HookEvent,
-        _resource_id: &str,
-        _ctx: &Context,
-    ) -> HookResult {
+    async fn before(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context) -> HookResult {
         self.order.lock().push(format!("before:{}", self.name));
         HookResult::Continue
     }
 
-    async fn after(
-        &self,
-        _event: &HookEvent,
-        _resource_id: &str,
-        _ctx: &Context,
-        _success: bool,
-    ) {
+    async fn after(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context, _success: bool) {
         self.order.lock().push(format!("after:{}", self.name));
     }
 }
@@ -124,12 +113,7 @@ impl ResourceHook for CancelHook {
         vec![HookEvent::Acquire]
     }
 
-    async fn before(
-        &self,
-        _event: &HookEvent,
-        resource_id: &str,
-        _ctx: &Context,
-    ) -> HookResult {
+    async fn before(&self, _event: &HookEvent, resource_id: &str, _ctx: &Context) -> HookResult {
         HookResult::Cancel(Error::Unavailable {
             resource_key: ResourceKey::try_from(resource_id).expect("valid key"),
             reason: self.reason.clone(),
@@ -165,12 +149,7 @@ impl ResourceHook for FilteredHook {
         self.filter.clone()
     }
 
-    async fn before(
-        &self,
-        _event: &HookEvent,
-        _resource_id: &str,
-        _ctx: &Context,
-    ) -> HookResult {
+    async fn before(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context) -> HookResult {
         self.call_count.fetch_add(1, Ordering::SeqCst);
         HookResult::Continue
     }
@@ -201,23 +180,12 @@ impl ResourceHook for FailingAfterHook {
         vec![HookEvent::Acquire]
     }
 
-    async fn before(
-        &self,
-        _event: &HookEvent,
-        _resource_id: &str,
-        _ctx: &Context,
-    ) -> HookResult {
+    async fn before(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context) -> HookResult {
         self.before_count.fetch_add(1, Ordering::SeqCst);
         HookResult::Continue
     }
 
-    async fn after(
-        &self,
-        _event: &HookEvent,
-        _resource_id: &str,
-        _ctx: &Context,
-        _success: bool,
-    ) {
+    async fn after(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context, _success: bool) {
         self.after_count.fetch_add(1, Ordering::SeqCst);
         // The after-hook signature returns (), so it cannot propagate
         // errors. This test verifies the contract: after-hooks are

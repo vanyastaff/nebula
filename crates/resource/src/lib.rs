@@ -94,8 +94,8 @@ pub use nebula_telemetry::{
 
 pub use autoscale::{AutoScalePolicy, AutoScaler};
 pub use events::{
-    BackPressurePolicy, CleanupReason, EventBus, EventBusStats, EventSubscriber,
-    QuarantineTrigger, ResourceEvent,
+    BackPressurePolicy, CleanupReason, EventBus, EventBusStats, EventSubscriber, QuarantineTrigger,
+    ResourceEvent,
 };
 pub use health::{
     HealthCheckConfig, HealthCheckable, HealthChecker, HealthRecord, HealthStage, HealthState,

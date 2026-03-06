@@ -112,8 +112,8 @@ impl EventBus {
     /// Non-blocking; if there are no active subscribers, the event is dropped
     /// and counted in [`stats()`](Self::stats).
     #[inline]
-    pub fn emit(&self, event: ExecutionEvent) {
-        self.0.emit(event);
+    pub fn emit(&self, event: ExecutionEvent) -> nebula_eventbus::PublishOutcome {
+        self.0.emit(event)
     }
 
     /// Subscribe to events.

@@ -429,10 +429,22 @@ mod tests {
         fn events(&self) -> Vec<HookEvent> {
             vec![HookEvent::Acquire]
         }
-        async fn before(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context) -> HookResult {
+        async fn before(
+            &self,
+            _event: &HookEvent,
+            _resource_id: &str,
+            _ctx: &Context,
+        ) -> HookResult {
             HookResult::Continue
         }
-        async fn after(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context, _success: bool) {}
+        async fn after(
+            &self,
+            _event: &HookEvent,
+            _resource_id: &str,
+            _ctx: &Context,
+            _success: bool,
+        ) {
+        }
     }
 
     struct CancelHook;
@@ -448,7 +460,12 @@ mod tests {
         fn events(&self) -> Vec<HookEvent> {
             vec![HookEvent::Acquire]
         }
-        async fn before(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context) -> HookResult {
+        async fn before(
+            &self,
+            _event: &HookEvent,
+            _resource_id: &str,
+            _ctx: &Context,
+        ) -> HookResult {
             HookResult::Cancel(Error::Unavailable {
                 resource_key: nebula_core::ResourceKey::try_from("test")
                     .expect("valid resource key"),
@@ -456,7 +473,14 @@ mod tests {
                 retryable: false,
             })
         }
-        async fn after(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context, _success: bool) {}
+        async fn after(
+            &self,
+            _event: &HookEvent,
+            _resource_id: &str,
+            _ctx: &Context,
+            _success: bool,
+        ) {
+        }
     }
 
     struct TrackingHook {
@@ -474,11 +498,23 @@ mod tests {
         fn events(&self) -> Vec<HookEvent> {
             vec![HookEvent::Acquire]
         }
-        async fn before(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context) -> HookResult {
+        async fn before(
+            &self,
+            _event: &HookEvent,
+            _resource_id: &str,
+            _ctx: &Context,
+        ) -> HookResult {
             self.called.store(true, std::sync::atomic::Ordering::SeqCst);
             HookResult::Continue
         }
-        async fn after(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context, _success: bool) {}
+        async fn after(
+            &self,
+            _event: &HookEvent,
+            _resource_id: &str,
+            _ctx: &Context,
+            _success: bool,
+        ) {
+        }
     }
 
     #[test]

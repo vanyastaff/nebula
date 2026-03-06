@@ -1506,7 +1506,8 @@ mod tests {
             _resource_id: &str,
             _ctx: &Context,
             _success: bool,
-        ) {}
+        ) {
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1842,10 +1843,13 @@ mod tests {
         .unwrap();
 
         let key = ResourceKey::try_from("test").expect("valid resource key");
-        mgr.set_health_state(&key, HealthState::Degraded {
-            reason: "latency".into(),
-            performance_impact: 0.25,
-        });
+        mgr.set_health_state(
+            &key,
+            HealthState::Degraded {
+                reason: "latency".into(),
+                performance_impact: 0.25,
+            },
+        );
         assert!(mgr.quarantine.quarantine(
             "test",
             QuarantineReason::ManualQuarantine {
@@ -1896,17 +1900,13 @@ mod tests {
         let mgr = Manager::new();
         mgr.register(
             Zeta,
-            TestConfig {
-                value: "z".into(),
-            },
+            TestConfig { value: "z".into() },
             PoolConfig::default(),
         )
         .unwrap();
         mgr.register(
             Alpha,
-            TestConfig {
-                value: "a".into(),
-            },
+            TestConfig { value: "a".into() },
             PoolConfig::default(),
         )
         .unwrap();

@@ -716,12 +716,7 @@ impl ResourceHook for CreateCountingHook {
         HookFilter::All
     }
 
-    async fn before(
-        &self,
-        _event: &HookEvent,
-        _resource_id: &str,
-        _ctx: &Context,
-    ) -> HookResult {
+    async fn before(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context) -> HookResult {
         self.count.fetch_add(1, Ordering::SeqCst);
         HookResult::Continue
     }

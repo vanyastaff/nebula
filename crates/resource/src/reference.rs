@@ -161,7 +161,9 @@ mod tests {
         type Instance = ();
 
         fn metadata(&self) -> ResourceMetadata {
-            ResourceMetadata::from_key(nebula_core::ResourceKey::try_from("marker").expect("valid key"))
+            ResourceMetadata::from_key(
+                nebula_core::ResourceKey::try_from("marker").expect("valid key"),
+            )
         }
 
         async fn create(&self, _config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {

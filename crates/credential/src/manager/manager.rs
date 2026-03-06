@@ -481,8 +481,11 @@ impl CredentialManager {
     ///
     /// Called internally after successful rotation. Also useful in tests to
     /// simulate rotation events for integration with ResourceManager.
-    pub fn emit_rotation(&self, event: crate::rotation::events::CredentialRotationEvent) {
-        self.rotation_bus.send(event);
+    pub fn emit_rotation(
+        &self,
+        event: crate::rotation::events::CredentialRotationEvent,
+    ) -> nebula_eventbus::PublishOutcome {
+        self.rotation_bus.emit(event)
     }
 
     /// Get cache performance statistics

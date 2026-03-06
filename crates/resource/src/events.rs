@@ -9,7 +9,7 @@ use crate::health::HealthState;
 use crate::scope::Scope;
 use nebula_core::ResourceKey;
 
-pub use nebula_eventbus::{BackPressurePolicy, EventBusStats, EventSubscriber};
+pub use nebula_eventbus::{BackPressurePolicy, EventBusStats, EventSubscriber, PublishOutcome};
 
 /// Resource lifecycle event bus (wrapper around `nebula_eventbus::EventBus<ResourceEvent>`).
 #[derive(Debug, Default)]
@@ -30,13 +30,13 @@ impl EventBus {
 
     /// Sends an event synchronously (non-blocking; may drop if buffer full per policy).
     #[inline]
-    pub fn emit(&self, event: ResourceEvent) {
-        self.0.send(event);
+    pub fn emit(&self, event: ResourceEvent) -> PublishOutcome {
+        self.0.emit(event)
     }
 
     /// Sends an event asynchronously (may block or timeout depending on policy).
-    pub async fn emit_async(&self, event: ResourceEvent) {
-        self.0.send_async(event).await;
+    pub async fn emit_async(&self, event: ResourceEvent) -> PublishOutcome {
+        self.0.emit_async(event).await
     }
 
     /// Returns a new subscriber that receives clones of emitted events.

@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::broadcast;
 
+use crate::PublishOutcome;
 use crate::policy::BackPressurePolicy;
 use crate::stats::EventBusStats;
 use crate::subscriber::Subscriber;
@@ -77,89 +78,121 @@ impl<E: Clone + Send> EventBus<E> {
     /// - **DropNewest**: event is dropped and counted in stats.
     /// - **Block**: behaves as DropOldest; use [`send_async`](Self::send_async) to block.
     #[inline(always)]
-    pub fn send(&self, event: E) {
-        match &self.policy {
+    pub fn send(&self, event: E) -> PublishOutcome {
+        let outcome = match &self.policy {
             BackPressurePolicy::DropOldest | BackPressurePolicy::Block { .. } => {
-                match self.sender.send(event) {
-                    Ok(_) => {
-                        self.sent_count.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Err(_) => {
-                        self.dropped_count.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
+                self.publish_drop_oldest(event)
             }
-            BackPressurePolicy::DropNewest => {
-                if self.sender.receiver_count() == 0 {
-                    self.dropped_count.fetch_add(1, Ordering::Relaxed);
-                    return;
-                }
-                if self.sender.len() >= self.buffer_size {
-                    self.dropped_count.fetch_add(1, Ordering::Relaxed);
-                    return;
-                }
-                match self.sender.send(event) {
-                    Ok(_) => {
-                        self.sent_count.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Err(_) => {
-                        self.dropped_count.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
+            BackPressurePolicy::DropNewest => self.publish_drop_newest(event),
+        };
+        self.record_outcome(outcome);
+        outcome
+    }
+
+    #[inline(always)]
+    fn publish_drop_oldest(&self, event: E) -> PublishOutcome {
+        match self.sender.send(event) {
+            Ok(_) => PublishOutcome::Sent,
+            Err(_) => PublishOutcome::DroppedNoSubscribers,
+        }
+    }
+
+    #[inline(always)]
+    fn publish_drop_newest(&self, event: E) -> PublishOutcome {
+        if self.sender.receiver_count() == 0 {
+            return PublishOutcome::DroppedNoSubscribers;
+        }
+
+        if self.sender.len() >= self.buffer_size {
+            return PublishOutcome::DroppedByPolicy;
+        }
+
+        match self.sender.send(event) {
+            Ok(_) => PublishOutcome::Sent,
+            Err(_) => PublishOutcome::DroppedNoSubscribers,
+        }
+    }
+
+    #[inline(always)]
+    fn record_outcome(&self, outcome: PublishOutcome) {
+        match outcome {
+            PublishOutcome::Sent => {
+                self.sent_count.fetch_add(1, Ordering::Relaxed);
+            }
+            PublishOutcome::DroppedNoSubscribers
+            | PublishOutcome::DroppedByPolicy
+            | PublishOutcome::DroppedTimeout => {
+                self.dropped_count.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
 
     /// Alias for [`send`](Self::send). Use from engine/runtime when the term "emit" is preferred (matches INTERACTIONS).
     #[inline(always)]
-    pub fn emit(&self, event: E) {
-        self.send(event);
+    pub fn emit(&self, event: E) -> PublishOutcome {
+        self.send(event)
     }
 
     /// Sends an event asynchronously, respecting [`BackPressurePolicy::Block`].
     ///
     /// For `DropOldest` and `DropNewest`, behaves like [`send`](Self::send).
     /// For `Block { timeout }`, waits up to `timeout` for buffer space before dropping.
-    pub async fn send_async(&self, event: E)
+    pub async fn send_async(&self, event: E) -> PublishOutcome
     where
         E: Clone,
     {
         match &self.policy {
             BackPressurePolicy::Block { timeout } => {
-                self.send_blocking(event, *timeout).await;
+                let outcome = self.send_blocking(event, *timeout).await;
+                self.record_outcome(outcome);
+                outcome
             }
             _ => self.send(event),
         }
     }
 
-    async fn send_blocking(&self, event: E, timeout: std::time::Duration)
+    /// Alias for [`send_async`](Self::send_async) with emit naming.
+    pub async fn emit_async(&self, event: E) -> PublishOutcome
+    where
+        E: Clone,
+    {
+        self.send_async(event).await
+    }
+
+    async fn send_blocking(&self, event: E, timeout: std::time::Duration) -> PublishOutcome
     where
         E: Clone,
     {
         let deadline = tokio::time::Instant::now() + timeout;
+        let mut event = Some(event);
+
         loop {
             if self.sender.receiver_count() == 0 {
-                self.dropped_count.fetch_add(1, Ordering::Relaxed);
-                return;
+                return PublishOutcome::DroppedNoSubscribers;
             }
+
             if self.sender.len() < self.buffer_size {
-                match self.sender.send(event.clone()) {
-                    Ok(_) => {
-                        self.sent_count.fetch_add(1, Ordering::Relaxed);
-                        return;
-                    }
-                    Err(_) => {
-                        self.dropped_count.fetch_add(1, Ordering::Relaxed);
-                        return;
-                    }
-                }
+                let event = event
+                    .take()
+                    .expect("event should only be consumed once when capacity is available");
+                return match self.sender.send(event) {
+                    Ok(_) => PublishOutcome::Sent,
+                    Err(_) => PublishOutcome::DroppedNoSubscribers,
+                };
             }
+
             if tokio::time::Instant::now() >= deadline {
-                self.dropped_count.fetch_add(1, Ordering::Relaxed);
-                return;
+                return PublishOutcome::DroppedTimeout;
             }
+
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
+    }
+
+    /// Returns `true` when at least one active subscriber exists.
+    #[must_use]
+    pub fn has_subscribers(&self) -> bool {
+        self.sender.receiver_count() > 0
     }
 
     /// Subscribes to events.
@@ -272,7 +305,8 @@ mod tests {
     #[test]
     fn drop_newest_no_subscribers_drops() {
         let bus = EventBus::<TestEvent>::with_policy(4, BackPressurePolicy::DropNewest);
-        bus.send(TestEvent(1));
+        let outcome = bus.send(TestEvent(1));
+        assert_eq!(outcome, PublishOutcome::DroppedNoSubscribers);
         let stats = bus.stats();
         assert_eq!(stats.dropped_count, 1);
         assert_eq!(stats.sent_count, 0);
@@ -298,7 +332,8 @@ mod tests {
             },
         );
         let mut sub = bus.subscribe();
-        bus.send_async(TestEvent(99)).await;
+        let outcome = bus.send_async(TestEvent(99)).await;
+        assert_eq!(outcome, PublishOutcome::Sent);
         let event = sub.recv().await.expect("should receive");
         assert_eq!(event, TestEvent(99));
     }
@@ -311,8 +346,33 @@ mod tests {
                 timeout: Duration::from_millis(10),
             },
         );
-        bus.send_async(TestEvent(1)).await;
+        let outcome = bus.send_async(TestEvent(1)).await;
+        assert_eq!(outcome, PublishOutcome::DroppedNoSubscribers);
         assert_eq!(bus.stats().dropped_count, 1);
+    }
+
+    #[test]
+    fn send_reports_sent_for_active_subscriber() {
+        let bus = EventBus::<TestEvent>::new(8);
+        let _sub = bus.subscribe();
+
+        let outcome = bus.send(TestEvent(5));
+
+        assert_eq!(outcome, PublishOutcome::Sent);
+        assert_eq!(bus.stats().sent_count, 1);
+        assert_eq!(bus.stats().dropped_count, 0);
+    }
+
+    #[test]
+    fn has_subscribers_reflects_runtime_state() {
+        let bus = EventBus::<TestEvent>::new(8);
+        assert!(!bus.has_subscribers());
+
+        let sub = bus.subscribe();
+        assert!(bus.has_subscribers());
+
+        drop(sub);
+        assert!(!bus.has_subscribers());
     }
 
     #[test]

@@ -145,12 +145,7 @@ impl ResourceHook for CountingHook {
         HookFilter::All
     }
 
-    async fn before(
-        &self,
-        event: &HookEvent,
-        _resource_id: &str,
-        _ctx: &Context,
-    ) -> HookResult {
+    async fn before(&self, event: &HookEvent, _resource_id: &str, _ctx: &Context) -> HookResult {
         match event {
             HookEvent::Create => {
                 self.create_before.fetch_add(1, Ordering::SeqCst);
@@ -168,13 +163,7 @@ impl ResourceHook for CountingHook {
         HookResult::Continue
     }
 
-    async fn after(
-        &self,
-        event: &HookEvent,
-        _resource_id: &str,
-        _ctx: &Context,
-        _success: bool,
-    ) {
+    async fn after(&self, event: &HookEvent, _resource_id: &str, _ctx: &Context, _success: bool) {
         match event {
             HookEvent::Create => {
                 self.create_after.fetch_add(1, Ordering::SeqCst);
@@ -208,12 +197,7 @@ impl ResourceHook for CancelCreateHook {
         vec![HookEvent::Create]
     }
 
-    async fn before(
-        &self,
-        _event: &HookEvent,
-        _resource_id: &str,
-        _ctx: &Context,
-    ) -> HookResult {
+    async fn before(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context) -> HookResult {
         HookResult::Cancel(nebula_resource::error::Error::Unavailable {
             resource_key: ResourceKey::try_from("simple").expect("valid resource key"),
             reason: "Create cancelled by hook".to_string(),

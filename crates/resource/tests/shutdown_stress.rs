@@ -128,7 +128,10 @@ async fn manager_shutdown_phased_completes_under_inflight_load() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     let created_count = created.load(Ordering::SeqCst);
     let cleaned_count = cleaned.load(Ordering::SeqCst);
-    assert!(created_count > 0, "stress run should create at least one instance");
+    assert!(
+        created_count > 0,
+        "stress run should create at least one instance"
+    );
     assert!(
         cleaned_count > 0,
         "shutdown should clean at least one instance"
