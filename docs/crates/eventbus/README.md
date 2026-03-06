@@ -1,4 +1,4 @@
-# nebula-eventbus (Planned)
+# nebula-eventbus
 
 Generic pub/sub event bus for asynchronous communication between Nebula components.
 
@@ -19,14 +19,51 @@ Generic pub/sub event bus for asynchronous communication between Nebula componen
 
 ## Current State
 
-- **Maturity:** Planned — no standalone crate; EventBus implementations exist in `nebula-telemetry` (ExecutionEvent) and `nebula-resource` (ResourceEvent)
-- **Key strengths:** Proven broadcast pattern in telemetry and resource; tokio::sync::broadcast; fire-and-forget semantics; zero blocking in hot path
-- **Key risks:** Duplicated EventBus logic across crates; no unified scoped subscriptions or filtering; no shared abstraction
+- **Maturity:** Active in workspace (`crates/eventbus`) and integrated by telemetry/resource.
+- **Implemented:** Generic `EventBus<E>`, `BackPressurePolicy`, `PublishOutcome`, `EventBusStats`, scoped/filter subscriptions, `EventBusRegistry`, benchmarks, and `nebula-metrics` snapshot integration.
+- **Current risks:** Distributed transport backends (Redis/NATS) are not implemented yet; single-node in-process delivery only.
 
 ## Target State
 
-- **Production criteria:** Single generic EventBus crate; scoped subscriptions; event filtering; BackPressurePolicy; consumers: telemetry, resource, log, metrics
-- **Compatibility guarantees:** Event schema additive-only; emit never blocks; backward-compatible with current telemetry/resource EventBus APIs
+- **Production criteria:** Eventbus remains transport-focused with predictable back-pressure semantics and explicit publish outcomes.
+- **Compatibility guarantees:** Event schemas are additive-first; emit path remains non-blocking by default; wrappers in domain crates preserve stable ergonomics.
+
+## Event Schema Versioning (T024)
+
+Eventbus transports opaque domain events and does not own event payload schemas. Versioning policy applies to domain crates (`nebula-telemetry`, `nebula-resource`, etc.) that define events.
+
+- Keep event enum variants additive in minor releases.
+- Avoid reusing variant names with changed semantics.
+- Add optional fields instead of replacing/removing existing fields.
+- Reserve removals and semantic rewrites for major versions.
+- Prefer explicit variant evolution (`NodeCompletedV2`) when semantics materially change.
+
+### Recommended Pattern
+
+```rust
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum ExecutionEvent {
+  Started {
+    schema_version: u16,
+    execution_id: String,
+    workflow_id: String,
+  },
+  NodeCompleted {
+    schema_version: u16,
+    execution_id: String,
+    node_id: String,
+    duration_ms: u64,
+    // New optional field for additive evolution.
+    retries: Option<u32>,
+  },
+}
+```
+
+### Compatibility Rules
+
+- Producers may emit newer additive payloads.
+- Consumers must ignore unknown optional fields and unknown variants when possible.
+- Schema version should be carried by domain events, not by `EventBus` transport types.
 
 ## Document Map
 

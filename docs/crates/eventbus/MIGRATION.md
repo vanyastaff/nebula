@@ -7,24 +7,21 @@
 
 ## Breaking Changes
 
-### Extraction from nebula-telemetry
+### Telemetry Wrapper Alignment
 
 | Change | Old behavior | New behavior | Migration steps |
 |--------|--------------|--------------|-----------------|
-| EventBus location | `nebula_telemetry::event::EventBus` | `nebula_eventbus::EventBus` | Update imports; use `EventBus::new()` from eventbus |
-| EventSubscriber | `nebula_telemetry::event::EventSubscriber` | `nebula_eventbus::EventSubscriber` | Update imports |
-| ExecutionEvent | Stays in telemetry | Stays in telemetry | No change |
-| total_emitted() | EventBus method | EventBusStats.emitted | Use `bus.stats().emitted` |
+| Emit return type | `emit(...) -> ()` | `emit(...) -> PublishOutcome` | Keep call sites or explicitly handle outcome |
+| Scoped subscriptions | N/A | `subscribe_scoped(...)` and `subscribe_filtered(...)` | Implement `ScopedEvent` for domain events |
+| EventSubscriber diagnostics | Minimal | `lagged_count`, `is_closed`, `close` | Optionally update subscriber loops/observability |
 
-### Extraction from nebula-resource
+### Resource Wrapper Alignment
 
 | Change | Old behavior | New behavior | Migration steps |
 |--------|--------------|--------------|-----------------|
-| EventBus location | `nebula_resource::events::EventBus` | `nebula_eventbus::EventBus` | Update imports |
-| BackPressurePolicy | `nebula_resource::events::BackPressurePolicy` | `nebula_eventbus::BackPressurePolicy` | Update imports |
-| ResourceEvent | Stays in resource | Stays in resource | No change |
-| EventBusStats | `nebula_resource::events::EventBusStats` | `nebula_eventbus::EventBusStats` | Update imports |
-| subscribe() return type | `broadcast::Receiver<ResourceEvent>` | `EventSubscriber<ResourceEvent>` | Use `sub.recv().await` instead of `rx.recv().await`; EventSubscriber handles Lagged |
+| Emit return type | `emit(...) -> ()` | `emit(...) -> PublishOutcome` | Keep call sites or branch on outcome |
+| Scoped subscriptions | N/A | `subscribe_scoped(...)` | Use `SubscriptionScope::resource/workflow/execution` |
+| Metrics bridge | Per-crate custom counters | `TelemetryAdapter::record_eventbus_stats` | Record snapshots under `nebula_eventbus_*` |
 
 ## Rollout Plan
 
@@ -32,6 +29,48 @@
 2. **Dual-run:** Add eventbus as dependency to telemetry and resource; keep internal implementations; feature-flag or cfg to switch.
 3. **Cutover:** Replace internal EventBus with eventbus in telemetry; replace in resource; remove duplicate code.
 4. **Cleanup:** Remove feature flags; update docs; deprecate old paths if any remain.
+
+## Adding New Event Types (T026)
+
+Use this path when adding a new domain event bus (for example `ProjectEvent` in a future crate):
+
+1. Define domain event enum in the domain crate (`nebula-<domain>`), not in `nebula-eventbus`.
+2. Add `impl ScopedEvent for <DomainEvent>` if workflow/execution/resource scoping is needed.
+3. Wrap `nebula_eventbus::EventBus<DomainEvent>` in a domain-facing `EventBus` API if ergonomic aliases are useful.
+4. Expose `emit`, `emit_async`, `subscribe`, and optional `subscribe_scoped`/`subscribe_filtered` from wrapper.
+5. Add integration tests that validate:
+   - publish outcomes (`Sent` / drops),
+   - scoped filtering behavior,
+   - subscriber lag handling under pressure.
+6. Add metric snapshot recording via `nebula_metrics::TelemetryAdapter::record_eventbus_stats`.
+7. Document schema versioning for the new event enum (additive-first policy).
+
+### Minimal Template
+
+```rust
+use nebula_eventbus::{EventBus, ScopedEvent, SubscriptionScope};
+
+#[derive(Debug, Clone)]
+pub enum ProjectEvent {
+	Started { project_id: String, execution_id: String },
+}
+
+impl ScopedEvent for ProjectEvent {
+	fn execution_id(&self) -> Option<&str> {
+		match self {
+			Self::Started { execution_id, .. } => Some(execution_id),
+		}
+	}
+}
+
+let bus = EventBus::<ProjectEvent>::new(256);
+let mut sub = bus.subscribe_scoped(SubscriptionScope::execution("exec-1"));
+let _ = bus.emit(ProjectEvent::Started {
+	project_id: "proj-1".into(),
+	execution_id: "exec-1".into(),
+});
+assert!(sub.try_recv().is_some());
+```
 
 ## Rollback Plan
 
