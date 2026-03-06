@@ -14,12 +14,14 @@
 - `EventBus::subscribe_filtered(&self, filter) -> FilteredSubscriber<E>`
 - `EventBus::subscribe_scoped(&self, scope) -> FilteredSubscriber<E>` (when `E: ScopedEvent`)
 - `EventBus::stats(&self) -> EventBusStats`
+- `EventBus::pending_len(&self) -> usize`
 - `BackPressurePolicy` — DropOldest, DropNewest, Block { timeout }
 - `EventSubscriber<E>::recv(&mut self) -> impl Future<Output = Option<E>>`
 - `EventSubscriber<E>::try_recv(&mut self) -> Option<E>`
 - `EventSubscriber<E>::lagged_count(&self) -> u64`, `EventSubscriber<E>::is_closed(&self) -> bool`, `EventSubscriber<E>::close(self)`
 - `PublishOutcome` — Sent, DroppedNoSubscribers, DroppedByPolicy, DroppedTimeout
 - `SubscriptionScope`, `ScopedEvent`, `EventFilter<E>`, `FilteredSubscriber<E>`
+- `EventBusRegistry<K, E>` — isolated bus instances by key (e.g. tenant)
 
 ### Experimental APIs (Phase 2)
 

@@ -33,6 +33,7 @@
 //! - [`BackPressurePolicy`] - buffer saturation behavior.
 //! - [`PublishOutcome`] - explicit send result for control-flow decisions.
 //! - [`EventBusStats`] - observability counters for sent/dropped/subscribers.
+//! - [`EventBusRegistry`] - multi-bus isolation by key (e.g. per-tenant buses).
 //! - [`SubscriptionScope`] and [`ScopedEvent`] - scope metadata for targeted subscriptions.
 //! - [`EventFilter`] and [`FilteredSubscriber`] - predicate-based event selection.
 //!
@@ -50,6 +51,7 @@ mod filter;
 mod filtered_subscriber;
 mod outcome;
 mod policy;
+mod registry;
 mod scope;
 mod stats;
 mod subscriber;
@@ -59,6 +61,8 @@ pub use filter::EventFilter;
 pub use filtered_subscriber::FilteredSubscriber;
 pub use outcome::PublishOutcome;
 pub use policy::BackPressurePolicy;
+pub use registry::EventBusRegistry;
+pub use registry::EventBusRegistryStats;
 pub use scope::ScopedEvent;
 pub use scope::SubscriptionScope;
 pub use stats::EventBusStats;

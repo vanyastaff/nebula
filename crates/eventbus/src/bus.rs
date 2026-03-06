@@ -249,6 +249,12 @@ impl<E: Clone + Send> EventBus<E> {
     pub fn policy(&self) -> &BackPressurePolicy {
         &self.policy
     }
+
+    /// Returns current queued event count in the internal broadcast buffer.
+    #[must_use]
+    pub fn pending_len(&self) -> usize {
+        self.sender.len()
+    }
 }
 
 impl<E: Clone + Send> Default for EventBus<E> {
@@ -487,5 +493,19 @@ mod tests {
             let _ = EventBus::<TestEvent>::new(0);
         });
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn sustained_emit_keeps_pending_len_bounded_by_buffer() {
+        let bus = EventBus::<TestEvent>::new(32);
+        let _sub = bus.subscribe();
+
+        for i in 0..10_000_u64 {
+            let _ = bus.emit(TestEvent(i));
+        }
+
+        assert!(bus.pending_len() <= bus.buffer_size());
+        let stats = bus.stats();
+        assert_eq!(stats.sent_count, 10_000);
     }
 }

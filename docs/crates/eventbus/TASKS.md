@@ -22,7 +22,7 @@
 - [x] EVB-T007 Migrate `nebula-resource` to use `nebula-eventbus` — remove internal EventBus
 - [x] EVB-T008 Verify `cargo test -p nebula-telemetry` still passes after migration
 - [x] EVB-T009 [P] Verify `cargo test -p nebula-resource` still passes
-- [ ] EVB-T010 [P] Verify `cargo test -p nebula-engine` still passes
+- [x] EVB-T010 [P] Verify `cargo test -p nebula-engine` still passes
 
 **Checkpoint**: No duplicate EventBus code; all consumer tests pass; crate published in workspace.
 
@@ -50,8 +50,8 @@
 - [x] EVB-T017 Integrate `EventBusStats` with `nebula-metrics` — emit `nebula_eventbus_*` metrics
 - [x] EVB-T018 [P] Add criterion benchmarks for emit latency in `benches/emit.rs`
 - [x] EVB-T019 [P] Add benchmarks for subscriber throughput under load
-- [ ] EVB-T020 Implement optional multiple `EventBus` instances per process (per-tenant isolation)
-- [ ] EVB-T021 Verify memory bounded under sustained emit — add memory usage test
+- [x] EVB-T020 Implement optional multiple `EventBus` instances per process (per-tenant isolation)
+- [x] EVB-T021 Verify memory bounded under sustained emit — add memory usage test
 
 **Checkpoint**: Emit < 1µs benchmark target verified; stats accurate; memory bounded.
 
