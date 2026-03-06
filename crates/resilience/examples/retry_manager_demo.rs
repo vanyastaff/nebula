@@ -139,7 +139,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = circuit_breaker
         .execute(|| {
             let retry_ref = &retry;
-            async move { retry_ref.execute_resilient(|| service4.call()).await }
+            async move {
+                retry_ref
+                    .execute_resilient(|| service4.call())
+                    .await
+                    .map_err(|failure| failure.error)
+            }
         })
         .await;
     let elapsed = start.elapsed();

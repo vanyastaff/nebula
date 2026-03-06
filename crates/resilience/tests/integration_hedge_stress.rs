@@ -124,7 +124,8 @@ async fn test_adaptive_hedge_executor_completes_under_concurrency() {
             exponential_backoff: true,
             backoff_multiplier: 2.0,
         })
-        .with_target_percentile(0.9),
+        .with_target_percentile(0.9)
+        .expect("valid percentile"),
     );
 
     let mut handles = Vec::new();
@@ -159,7 +160,8 @@ async fn test_adaptive_hedge_executor_reduces_tail_after_warmup() {
         exponential_backoff: false,
         backoff_multiplier: 1.0,
     })
-    .with_target_percentile(0.8);
+    .with_target_percentile(0.8)
+    .expect("valid percentile");
 
     for _ in 0..8 {
         let _ = executor

@@ -850,16 +850,13 @@ impl<R: Resource> Pool<R> {
         let mut result = inner.resource.create(&inner.config, ctx).await;
 
         // Apply credential authorization if handler and state are set.
-        if result.is_ok() {
-            if let (Some(handler), Some(state)) =
+        if result.is_ok()
+            && let (Some(handler), Some(state)) =
                 (&inner.credential_handler, &*inner.credential_state.read())
-            {
-                if let Ok(ref mut instance) = result {
-                    if let Err(e) = handler.authorize(instance, state) {
-                        result = Err(e);
-                    }
-                }
-            }
+            && let Ok(ref mut instance) = result
+            && let Err(e) = handler.authorize(instance, state)
+        {
+            result = Err(e);
         }
 
         // Run Create after-hooks (errors are logged, never propagated).

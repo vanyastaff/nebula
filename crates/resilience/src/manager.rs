@@ -668,6 +668,10 @@ impl ResilienceManager {
     }
 
     /// Execute with retry logic
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "Retry loop coordinates attempts, delay, timeout, and cooperative cancellation"
+    )]
     async fn execute_with_retry<T, Op>(
         &self,
         context: &mut UnTypedExecutionContext,
@@ -714,13 +718,14 @@ impl ResilienceManager {
 
                     // Calculate delay for next attempt
                     if let Some(delay) = retry_config.delay_for_attempt(attempt) {
-                        if let Some(ctx) = cancellation {
-                            tokio::select! {
-                                () = tokio::time::sleep(delay) => {}
-                                () = ctx.token().cancelled() => return Err(Self::cancelled_error(ctx)),
+                        match cancellation {
+                            Some(ctx) => {
+                                tokio::select! {
+                                    () = tokio::time::sleep(delay) => {}
+                                    () = ctx.token().cancelled() => return Err(Self::cancelled_error(ctx)),
+                                }
                             }
-                        } else {
-                            tokio::time::sleep(delay).await;
+                            None => tokio::time::sleep(delay).await,
                         }
                     }
                 }
@@ -779,15 +784,13 @@ impl ResilienceManager {
                     context: Some("Operation timed out".to_string()),
                 }),
             }
-        } else {
-            if let Some(ctx) = cancellation {
-                tokio::select! {
-                    result = operation.execute() => result,
-                    () = ctx.token().cancelled() => Err(Self::cancelled_error(ctx)),
-                }
-            } else {
-                operation.execute().await
+        } else if let Some(ctx) = cancellation {
+            tokio::select! {
+                result = operation.execute() => result,
+                () = ctx.token().cancelled() => Err(Self::cancelled_error(ctx)),
             }
+        } else {
+            operation.execute().await
         }
     }
 

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, sleep, timeout};
 
+use crate::core::config::{ConfigError, ConfigResult};
 use crate::{ResilienceError, ResilienceResult};
 
 /// Hedge strategy configuration
@@ -122,9 +123,21 @@ impl AdaptiveHedgeExecutor {
 
     /// Set target percentile for hedge delay calculation
     #[must_use = "builder methods must be chained or built"]
-    pub const fn with_target_percentile(mut self, percentile: f64) -> Self {
+    pub fn with_target_percentile(mut self, percentile: f64) -> ConfigResult<Self> {
+        if !percentile.is_finite() {
+            return Err(ConfigError::validation(
+                "target percentile must be a finite number",
+            ));
+        }
+
+        if !(0.0..=1.0).contains(&percentile) {
+            return Err(ConfigError::validation(
+                "target percentile must be in range [0.0, 1.0]",
+            ));
+        }
+
         self.target_percentile = percentile;
-        self
+        Ok(self)
     }
 
     /// Execute with adaptive hedging
@@ -190,10 +203,16 @@ impl LatencyTracker {
             return None;
         }
 
+        if !p.is_finite() {
+            return None;
+        }
+
         let mut sorted = self.samples.clone();
         sorted.sort();
 
-        let index = ((sorted.len() as f64 - 1.0) * p) as usize;
+        let percentile = p.clamp(0.0, 1.0);
+        let max_index = sorted.len().saturating_sub(1);
+        let index = (((sorted.len() as f64 - 1.0) * percentile) as usize).min(max_index);
         Some(sorted[index])
     }
 }

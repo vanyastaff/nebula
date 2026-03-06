@@ -6,11 +6,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::core::config::{ConfigError, ConfigResult, ResilienceConfig};
 use serde_json::{Map, Value};
 
-/// Get current timestamp as ISO 8601 string
+/// Get current timestamp as Unix epoch seconds with milliseconds suffix.
 fn current_timestamp() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards");
+        .unwrap_or_default();
     format!("{}.{:03}Z", now.as_secs(), now.subsec_millis())
 }
 
@@ -69,9 +69,14 @@ impl DynamicConfig {
 
     /// Merge with another dynamic configuration
     pub fn merge(&mut self, other: &Self) -> ConfigResult<()> {
-        // Manually merge maps (serde_json::Map doesn't have a merge method)
+        // Deep-merge nested objects to avoid dropping sibling keys.
         for (key, value) in &other.values {
-            self.values.insert(key.clone(), value.clone());
+            match self.values.get_mut(key) {
+                Some(existing) => Self::merge_value(existing, value.clone()),
+                None => {
+                    self.values.insert(key.clone(), value.clone());
+                }
+            }
         }
         // Update timestamp when configuration changes
         self.last_updated = Some(current_timestamp());
@@ -191,15 +196,33 @@ impl DynamicConfig {
             }
         }
     }
+
+    fn merge_value(existing: &mut Value, incoming: Value) {
+        match (existing, incoming) {
+            (Value::Object(existing_obj), Value::Object(incoming_obj)) => {
+                for (child_key, child_value) in incoming_obj {
+                    match existing_obj.get_mut(&child_key) {
+                        Some(existing_child) => Self::merge_value(existing_child, child_value),
+                        None => {
+                            existing_obj.insert(child_key, child_value);
+                        }
+                    }
+                }
+            }
+            (existing_value, incoming_value) => {
+                *existing_value = incoming_value;
+            }
+        }
+    }
 }
 
 /// Helper trait for types that can be converted to/from dynamic configuration
 pub trait DynamicConfigurable: ResilienceConfig {
     /// Convert to dynamic configuration
-    fn to_dynamic(&self) -> DynamicConfig {
+    fn to_dynamic(&self) -> ConfigResult<DynamicConfig> {
         let mut dynamic = DynamicConfig::new();
-        dynamic.set_config("root", self).unwrap_or_default();
-        dynamic
+        dynamic.set_config("root", self)?;
+        Ok(dynamic)
     }
 
     /// Create from dynamic configuration

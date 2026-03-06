@@ -515,6 +515,10 @@ impl Manager {
     ///
     /// Call once at application startup after all resources are registered.
     /// Pass the subscriber from [`CredentialManager::rotation_subscriber`](nebula_credential::CredentialManager::rotation_subscriber).
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "Background listener combines map lookup, weak-upgrade filtering, and async rotation handling"
+    )]
     pub fn spawn_rotation_listener(
         &self,
         mut sub: nebula_eventbus::EventSubscriber<nebula_credential::CredentialRotationEvent>,
@@ -522,25 +526,22 @@ impl Manager {
         let map = Arc::clone(&self.credential_pool_map);
         tokio::spawn(async move {
             while let Some(event) = sub.recv().await {
-                let entries = map
-                    .get(&event.credential_id)
-                    .map(|guard| {
-                        guard
-                            .iter()
-                            .filter_map(|e| {
-                                e.pool
-                                    .upgrade()
-                                    .map(|p| (e.credential_key.clone(), e.strategy, p))
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
+                let mut entries = Vec::new();
+                if let Some(guard) = map.get(&event.credential_id) {
+                    for entry in guard.iter() {
+                        if let Some(pool) = entry.pool.upgrade() {
+                            entries.push((entry.credential_key.clone(), entry.strategy, pool));
+                        }
+                    }
+                }
+
                 for (credential_key, strategy, pool) in entries {
-                    if let Err(e) = pool
+                    match pool
                         .handle_rotation(&event.new_state, strategy, credential_key)
                         .await
                     {
-                        tracing::error!(?e, "rotation failed for pool");
+                        Ok(()) => {}
+                        Err(e) => tracing::error!(?e, "rotation failed for pool"),
                     }
                 }
             }

@@ -4,6 +4,8 @@ use async_trait::async_trait;
 use governor::clock::Clock;
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter as GovernorLimiter};
 use std::future::Future;
+use std::num::NonZeroU32;
+use std::time::Duration;
 
 use super::RateLimiter;
 use crate::{ResilienceError, ResilienceResult};
@@ -49,14 +51,14 @@ impl GovernorRateLimiter {
         // Security: validate inputs
         let safe_rate = rate_per_second.clamp(0.001, 1_000_000.0);
         let safe_burst = burst_capacity.min(100_000);
+        let burst = NonZeroU32::new(safe_burst.max(1)).unwrap_or(NonZeroU32::MIN);
 
-        // Convert rate to quota
-        // governor uses NonZeroU32 for rate, so we need to be careful
-        let rate_u32 = safe_rate.ceil() as u32;
-        let quota = Quota::per_second(
-            std::num::NonZeroU32::new(rate_u32.max(1)).expect("Rate must be > 0"),
-        )
-        .allow_burst(std::num::NonZeroU32::new(safe_burst.max(1)).expect("Burst must be > 0"));
+        // Preserve fractional rates by using period-based quotas instead of ceil-per-second.
+        let request_period = Duration::from_secs_f64(1.0 / safe_rate).max(Duration::from_nanos(1));
+        let quota = Quota::with_period(request_period).map_or_else(
+            || Quota::per_second(NonZeroU32::MIN).allow_burst(burst),
+            |base| base.allow_burst(burst),
+        );
 
         Self {
             limiter: GovernorLimiter::direct(quota),

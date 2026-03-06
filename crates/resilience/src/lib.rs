@@ -33,7 +33,9 @@
 //!         retry_strategy.execute_resilient(|| async {
 //!             // Your operation here
 //!             Ok::<_, ResilienceError>("success")
-//!         }).await
+//!         })
+//!         .await
+//!         .map_err(|failure| failure.error)
 //!     }).await;
 //!     Ok(())
 //! }
@@ -642,6 +644,7 @@ mod tests {
                 retry
                     .execute_resilient(|| async { Ok::<_, ResilienceError>("success") })
                     .await
+                    .map_err(|failure| failure.error)
             })
             .await;
 

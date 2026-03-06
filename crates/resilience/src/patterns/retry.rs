@@ -565,6 +565,42 @@ impl PatternMetrics for RetryStats {
     }
 }
 
+/// Retry failure payload containing both error and collected statistics.
+#[derive(Debug, Clone)]
+pub struct RetryFailure<E> {
+    /// Final operation error.
+    pub error: E,
+    /// Collected retry statistics.
+    pub stats: RetryStats,
+}
+
+impl<E> RetryFailure<E> {
+    /// Split failure payload into `(error, stats)`.
+    #[must_use]
+    pub fn into_parts(self) -> (E, RetryStats) {
+        (self.error, self.stats)
+    }
+}
+
+impl<E: fmt::Display> fmt::Display for RetryFailure<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "retry failed after {} attempts in {:?}: {}",
+            self.stats.total_attempts, self.stats.total_duration, self.error
+        )
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for RetryFailure<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+/// Retry result that preserves statistics on both success and failure.
+pub type RetryExecutionResult<T, E> = Result<(T, RetryStats), RetryFailure<E>>;
+
 /// Type-safe retry configuration with const generics
 #[derive(Debug, Clone)]
 pub struct RetryConfig<B: BackoffPolicy, C> {
@@ -642,7 +678,7 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
     }
 
     /// Execute operation with retry logic using HRTB
-    pub async fn execute<T, E, F, Fut>(&self, mut operation: F) -> Result<(T, RetryStats), E>
+    pub async fn execute<T, E, F, Fut>(&self, mut operation: F) -> RetryExecutionResult<T, E>
     where
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<T, E>>,
@@ -707,7 +743,7 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
                             "Retry failed: maximum duration exceeded"
                         );
 
-                        let _stats = RetryStats {
+                        let stats = RetryStats {
                             total_attempts: attempt + 1,
                             total_duration: elapsed,
                             succeeded: false,
@@ -716,7 +752,7 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
                             policy_name: self.config.backoff.policy_name().to_string(),
                             condition_name: self.config.condition.condition_name().to_string(),
                         };
-                        return Err(error);
+                        return Err(RetryFailure { error, stats });
                     }
 
                     if !should_retry {
@@ -726,7 +762,7 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
                             "Retry failed: no more attempts"
                         );
 
-                        let _stats = RetryStats {
+                        let stats = RetryStats {
                             total_attempts: attempt + 1,
                             total_duration: elapsed,
                             succeeded: false,
@@ -735,7 +771,7 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
                             policy_name: self.config.backoff.policy_name().to_string(),
                             condition_name: self.config.condition.condition_name().to_string(),
                         };
-                        return Err(error);
+                        return Err(RetryFailure { error, stats });
                     }
 
                     // Calculate delay for next attempt
@@ -768,7 +804,7 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
     pub async fn execute_resilient<T, F, Fut>(
         &self,
         operation: F,
-    ) -> ResilienceResult<(T, RetryStats)>
+    ) -> RetryExecutionResult<T, ResilienceError>
     where
         F: FnMut() -> Fut,
         Fut: Future<Output = ResilienceResult<T>>,
@@ -781,11 +817,15 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
     ///
     /// Cancellation is checked before each attempt, while an attempt is running,
     /// and while waiting in backoff delay between attempts.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Function keeps full retry/cancellation state machine in one place for auditability"
+    )]
     pub async fn execute_resilient_with_cancellation<T, F, Fut>(
         &self,
         mut operation: F,
         cancellation: &CancellationContext,
-    ) -> ResilienceResult<(T, RetryStats)>
+    ) -> RetryExecutionResult<T, ResilienceError>
     where
         F: FnMut() -> Fut,
         Fut: Future<Output = ResilienceResult<T>>,
@@ -799,8 +839,20 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
 
         loop {
             if cancellation.is_cancelled() {
-                return Err(ResilienceError::Cancelled {
-                    reason: cancellation.reason().map(str::to_owned),
+                let stats = RetryStats {
+                    total_attempts: attempt,
+                    total_duration: start_time.elapsed(),
+                    succeeded: false,
+                    attempt_delays,
+                    attempt_durations,
+                    policy_name: self.config.backoff.policy_name().to_string(),
+                    condition_name: self.config.condition.condition_name().to_string(),
+                };
+                return Err(RetryFailure {
+                    error: ResilienceError::Cancelled {
+                        reason: cancellation.reason().map(str::to_owned),
+                    },
+                    stats,
                 });
             }
 
@@ -860,7 +912,16 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
                             max_ms = max_duration.as_millis(),
                             "Retry failed: maximum duration exceeded"
                         );
-                        return Err(error);
+                        let stats = RetryStats {
+                            total_attempts: attempt + 1,
+                            total_duration: elapsed,
+                            succeeded: false,
+                            attempt_delays,
+                            attempt_durations,
+                            policy_name: self.config.backoff.policy_name().to_string(),
+                            condition_name: self.config.condition.condition_name().to_string(),
+                        };
+                        return Err(RetryFailure { error, stats });
                     }
 
                     if !should_retry {
@@ -869,7 +930,16 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
                             error = ?error,
                             "Retry failed: no more attempts"
                         );
-                        return Err(error);
+                        let stats = RetryStats {
+                            total_attempts: attempt + 1,
+                            total_duration: elapsed,
+                            succeeded: false,
+                            attempt_delays,
+                            attempt_durations,
+                            policy_name: self.config.backoff.policy_name().to_string(),
+                            condition_name: self.config.condition.condition_name().to_string(),
+                        };
+                        return Err(RetryFailure { error, stats });
                     }
 
                     let base_delay = self
@@ -893,8 +963,20 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
                     tokio::select! {
                         () = sleep(jittered_delay) => {}
                         () = cancellation.token().cancelled() => {
-                            return Err(ResilienceError::Cancelled {
-                                reason: cancellation.reason().map(str::to_owned),
+                            let stats = RetryStats {
+                                total_attempts: attempt,
+                                total_duration: start_time.elapsed(),
+                                succeeded: false,
+                                attempt_delays,
+                                attempt_durations,
+                                policy_name: self.config.backoff.policy_name().to_string(),
+                                condition_name: self.config.condition.condition_name().to_string(),
+                            };
+                            return Err(RetryFailure {
+                                error: ResilienceError::Cancelled {
+                                    reason: cancellation.reason().map(str::to_owned),
+                                },
+                                stats,
                             });
                         }
                     }
@@ -940,7 +1022,7 @@ pub fn aggressive_retry<const MAX_ATTEMPTS: usize>()
 pub async fn retry<T, E, F, Fut, B, C>(
     strategy: &RetryStrategy<B, C>,
     operation: F,
-) -> Result<(T, RetryStats), E>
+) -> RetryExecutionResult<T, E>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>>,
@@ -1247,7 +1329,13 @@ mod tests {
             )
             .await;
 
-        assert!(matches!(result, Err(ResilienceError::Cancelled { .. })));
+        assert!(matches!(
+            result,
+            Err(RetryFailure {
+                error: ResilienceError::Cancelled { .. },
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
