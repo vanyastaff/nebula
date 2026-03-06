@@ -4,8 +4,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::broadcast;
 
+use crate::EventFilter;
+use crate::FilteredSubscriber;
 use crate::PublishOutcome;
 use crate::policy::BackPressurePolicy;
+use crate::scope::ScopedEvent;
+use crate::scope::SubscriptionScope;
 use crate::stats::EventBusStats;
 use crate::subscriber::Subscriber;
 
@@ -205,6 +209,25 @@ impl<E: Clone + Send> EventBus<E> {
         Subscriber::new(self.sender.subscribe())
     }
 
+    /// Subscribes with a custom filter predicate.
+    ///
+    /// Returned subscriber only yields events matching `filter`.
+    #[must_use]
+    pub fn subscribe_filtered(&self, filter: EventFilter<E>) -> FilteredSubscriber<E> {
+        FilteredSubscriber::new(self.subscribe(), filter)
+    }
+
+    /// Subscribes to a specific scope.
+    ///
+    /// Requires event type metadata via [`ScopedEvent`].
+    #[must_use]
+    pub fn subscribe_scoped(&self, scope: SubscriptionScope) -> FilteredSubscriber<E>
+    where
+        E: ScopedEvent,
+    {
+        self.subscribe_filtered(EventFilter::by_scope(scope))
+    }
+
     /// Returns a snapshot of event bus statistics.
     #[must_use]
     pub fn stats(&self) -> EventBusStats {
@@ -243,6 +266,28 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TestEvent(u64);
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ScopedTestEvent {
+        workflow_id: Option<String>,
+        execution_id: Option<String>,
+        resource_id: Option<String>,
+        payload: u64,
+    }
+
+    impl ScopedEvent for ScopedTestEvent {
+        fn workflow_id(&self) -> Option<&str> {
+            self.workflow_id.as_deref()
+        }
+
+        fn execution_id(&self) -> Option<&str> {
+            self.execution_id.as_deref()
+        }
+
+        fn resource_id(&self) -> Option<&str> {
+            self.resource_id.as_deref()
+        }
+    }
 
     #[test]
     fn send_without_subscribers_does_not_panic() {
@@ -373,6 +418,60 @@ mod tests {
 
         drop(sub);
         assert!(!bus.has_subscribers());
+    }
+
+    #[test]
+    fn subscriber_tracks_lagged_count() {
+        let bus = EventBus::<TestEvent>::new(2);
+        let mut sub = bus.subscribe();
+
+        let _ = bus.send(TestEvent(1));
+        let _ = bus.send(TestEvent(2));
+        let _ = bus.send(TestEvent(3));
+
+        assert_eq!(sub.try_recv(), Some(TestEvent(2)));
+        assert_eq!(sub.lagged_count(), 1);
+    }
+
+    #[test]
+    fn filtered_subscription_only_receives_matching_events() {
+        let bus = EventBus::<TestEvent>::new(16);
+        let mut filtered =
+            bus.subscribe_filtered(EventFilter::custom(|event: &TestEvent| event.0 % 2 == 0));
+
+        let _ = bus.send(TestEvent(1));
+        let _ = bus.send(TestEvent(2));
+
+        assert_eq!(filtered.try_recv(), Some(TestEvent(2)));
+    }
+
+    #[test]
+    fn scoped_subscription_filters_by_workflow() {
+        let bus = EventBus::<ScopedTestEvent>::new(16);
+        let mut sub = bus.subscribe_scoped(SubscriptionScope::workflow("wf-1"));
+
+        let _ = bus.send(ScopedTestEvent {
+            workflow_id: Some("wf-2".to_string()),
+            execution_id: None,
+            resource_id: None,
+            payload: 1,
+        });
+        let _ = bus.send(ScopedTestEvent {
+            workflow_id: Some("wf-1".to_string()),
+            execution_id: None,
+            resource_id: None,
+            payload: 2,
+        });
+
+        assert_eq!(
+            sub.try_recv(),
+            Some(ScopedTestEvent {
+                workflow_id: Some("wf-1".to_string()),
+                execution_id: None,
+                resource_id: None,
+                payload: 2,
+            })
+        );
     }
 
     #[test]

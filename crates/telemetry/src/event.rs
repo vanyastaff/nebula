@@ -7,6 +7,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nebula_eventbus::EventBus as EventBusInner;
+use nebula_eventbus::EventFilter;
+use nebula_eventbus::FilteredSubscriber;
+use nebula_eventbus::ScopedEvent;
+use nebula_eventbus::SubscriptionScope;
 use serde::{Deserialize, Serialize};
 
 /// Execution lifecycle event.
@@ -68,6 +72,27 @@ pub enum ExecutionEvent {
     },
 }
 
+impl ScopedEvent for ExecutionEvent {
+    fn workflow_id(&self) -> Option<&str> {
+        match self {
+            Self::Started { workflow_id, .. } => Some(workflow_id),
+            _ => None,
+        }
+    }
+
+    fn execution_id(&self) -> Option<&str> {
+        match self {
+            Self::Started { execution_id, .. }
+            | Self::NodeStarted { execution_id, .. }
+            | Self::NodeCompleted { execution_id, .. }
+            | Self::NodeFailed { execution_id, .. }
+            | Self::Completed { execution_id, .. }
+            | Self::Failed { execution_id, .. }
+            | Self::Cancelled { execution_id } => Some(execution_id),
+        }
+    }
+}
+
 /// Broadcast-based event bus for execution events.
 ///
 /// Wraps [`nebula_eventbus::EventBus<ExecutionEvent>`] so the telemetry API
@@ -96,6 +121,8 @@ pub struct EventBus(Arc<EventBusInner<ExecutionEvent>>);
 
 /// Subscription handle for receiving events from the [`EventBus`].
 pub type EventSubscriber = nebula_eventbus::Subscriber<ExecutionEvent>;
+/// Scoped/filtering subscription handle for [`ExecutionEvent`].
+pub type ScopedSubscriber = FilteredSubscriber<ExecutionEvent>;
 
 impl EventBus {
     /// Create a new event bus with the given channel capacity.
@@ -120,6 +147,18 @@ impl EventBus {
     #[must_use]
     pub fn subscribe(&self) -> EventSubscriber {
         self.0.subscribe()
+    }
+
+    /// Subscribe with a custom filter predicate.
+    #[must_use]
+    pub fn subscribe_filtered(&self, filter: EventFilter<ExecutionEvent>) -> ScopedSubscriber {
+        self.0.subscribe_filtered(filter)
+    }
+
+    /// Subscribe to events belonging to a specific scope.
+    #[must_use]
+    pub fn subscribe_scoped(&self, scope: SubscriptionScope) -> ScopedSubscriber {
+        self.0.subscribe_scoped(scope)
     }
 
     /// Total number of events successfully sent since creation.
@@ -255,5 +294,29 @@ mod tests {
             let roundtrip: ExecutionEvent = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(event, roundtrip);
         }
+    }
+
+    #[tokio::test]
+    async fn scoped_subscription_filters_by_execution_id() {
+        let bus = EventBus::new(16);
+        let mut sub = bus.subscribe_scoped(SubscriptionScope::execution("exec-1"));
+
+        let _ = bus.emit(ExecutionEvent::NodeStarted {
+            execution_id: "exec-2".into(),
+            node_id: "n2".into(),
+        });
+        let _ = bus.emit(ExecutionEvent::NodeStarted {
+            execution_id: "exec-1".into(),
+            node_id: "n1".into(),
+        });
+
+        let event = sub.recv().await.expect("should receive scoped event");
+        assert!(matches!(
+            event,
+            ExecutionEvent::NodeStarted {
+                execution_id,
+                node_id
+            } if execution_id == "exec-1" && node_id == "n1"
+        ));
     }
 }

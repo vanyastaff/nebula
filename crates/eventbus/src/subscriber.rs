@@ -9,11 +9,15 @@ use tokio::sync::broadcast;
 #[derive(Debug)]
 pub struct Subscriber<E> {
     receiver: broadcast::Receiver<E>,
+    lagged_count: u64,
 }
 
 impl<E: Clone + Send> Subscriber<E> {
     pub(crate) fn new(receiver: broadcast::Receiver<E>) -> Self {
-        Self { receiver }
+        Self {
+            receiver,
+            lagged_count: 0,
+        }
     }
 
     /// Receive the next event asynchronously.
@@ -24,7 +28,10 @@ impl<E: Clone + Send> Subscriber<E> {
         loop {
             match self.receiver.recv().await {
                 Ok(event) => return Some(event),
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    self.lagged_count = self.lagged_count.saturating_add(skipped);
+                    continue;
+                }
                 Err(broadcast::error::RecvError::Closed) => return None,
             }
         }
@@ -37,9 +44,27 @@ impl<E: Clone + Send> Subscriber<E> {
         loop {
             match self.receiver.try_recv() {
                 Ok(event) => return Some(event),
-                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    self.lagged_count = self.lagged_count.saturating_add(skipped);
+                    continue;
+                }
                 Err(_) => return None,
             }
         }
     }
+
+    /// Returns the total count of events skipped due to lag.
+    #[must_use]
+    pub fn lagged_count(&self) -> u64 {
+        self.lagged_count
+    }
+
+    /// Returns `true` if all senders are dropped.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.receiver.is_closed()
+    }
+
+    /// Closes this subscription handle by consuming it.
+    pub fn close(self) {}
 }

@@ -9,11 +9,17 @@ use crate::health::HealthState;
 use crate::scope::Scope;
 use nebula_core::ResourceKey;
 
-pub use nebula_eventbus::{BackPressurePolicy, EventBusStats, EventSubscriber, PublishOutcome};
+pub use nebula_eventbus::{
+    BackPressurePolicy, EventBusStats, EventFilter, EventSubscriber, FilteredSubscriber,
+    PublishOutcome, ScopedEvent, SubscriptionScope,
+};
 
 /// Resource lifecycle event bus (wrapper around `nebula_eventbus::EventBus<ResourceEvent>`).
 #[derive(Debug, Default)]
 pub struct EventBus(pub(crate) nebula_eventbus::EventBus<ResourceEvent>);
+
+/// Scoped/filtering subscription handle for [`ResourceEvent`].
+pub type ScopedSubscriber = FilteredSubscriber<ResourceEvent>;
 
 impl EventBus {
     /// Creates a new event bus with the given buffer size (default back-pressure policy).
@@ -43,6 +49,18 @@ impl EventBus {
     #[must_use]
     pub fn subscribe(&self) -> EventSubscriber<ResourceEvent> {
         self.0.subscribe()
+    }
+
+    /// Returns a filtered subscriber for custom predicates.
+    #[must_use]
+    pub fn subscribe_filtered(&self, filter: EventFilter<ResourceEvent>) -> ScopedSubscriber {
+        self.0.subscribe_filtered(filter)
+    }
+
+    /// Returns a scoped subscriber based on workflow/execution/resource metadata.
+    #[must_use]
+    pub fn subscribe_scoped(&self, scope: SubscriptionScope) -> ScopedSubscriber {
+        self.0.subscribe_scoped(scope)
     }
 
     /// Returns current bus statistics (sent, dropped, subscriber count).
@@ -176,6 +194,67 @@ pub enum ResourceEvent {
         /// Strategy that was applied.
         strategy: String,
     },
+}
+
+impl ResourceEvent {
+    fn key(&self) -> &ResourceKey {
+        match self {
+            Self::Created { resource_key, .. }
+            | Self::Acquired { resource_key, .. }
+            | Self::Released { resource_key, .. }
+            | Self::HealthChanged { resource_key, .. }
+            | Self::PoolExhausted { resource_key, .. }
+            | Self::CleanedUp { resource_key, .. }
+            | Self::Quarantined { resource_key, .. }
+            | Self::QuarantineReleased { resource_key, .. }
+            | Self::ConfigReloaded { resource_key, .. }
+            | Self::ConfigReloadRejected { resource_key, .. }
+            | Self::Error { resource_key, .. }
+            | Self::CredentialRotated { resource_key, .. } => resource_key,
+        }
+    }
+}
+
+impl ScopedEvent for ResourceEvent {
+    fn workflow_id(&self) -> Option<&str> {
+        let scope = match self {
+            Self::Created { scope, .. } | Self::ConfigReloaded { scope, .. } => scope,
+            _ => return None,
+        };
+
+        match scope {
+            Scope::Workflow { workflow_id, .. } => Some(workflow_id),
+            Scope::Execution {
+                workflow_id: Some(workflow_id),
+                ..
+            }
+            | Scope::Action {
+                workflow_id: Some(workflow_id),
+                ..
+            } => Some(workflow_id),
+            _ => None,
+        }
+    }
+
+    fn execution_id(&self) -> Option<&str> {
+        let scope = match self {
+            Self::Created { scope, .. } | Self::ConfigReloaded { scope, .. } => scope,
+            _ => return None,
+        };
+
+        match scope {
+            Scope::Execution { execution_id, .. } => Some(execution_id),
+            Scope::Action {
+                execution_id: Some(execution_id),
+                ..
+            } => Some(execution_id),
+            _ => None,
+        }
+    }
+
+    fn resource_id(&self) -> Option<&str> {
+        Some(self.key().as_ref())
+    }
 }
 
 /// Structured trigger information for quarantine transitions.
@@ -396,6 +475,30 @@ mod tests {
     fn back_pressure_policy_default_is_drop_oldest() {
         let policy = BackPressurePolicy::default();
         assert!(matches!(policy, BackPressurePolicy::DropOldest));
+    }
+
+    #[tokio::test]
+    async fn scoped_subscription_filters_by_resource_key() {
+        let bus = EventBus::new(16);
+        let mut sub = bus.subscribe_scoped(SubscriptionScope::resource("db.main"));
+
+        let _ = bus.emit(ResourceEvent::Error {
+            resource_key: ResourceKey::try_from("cache.redis").expect("valid resource key"),
+            error: "miss".to_string(),
+        });
+        let _ = bus.emit(ResourceEvent::Error {
+            resource_key: ResourceKey::try_from("db.main").expect("valid resource key"),
+            error: "timeout".to_string(),
+        });
+
+        let event = sub.recv().await.expect("should receive scoped event");
+        assert!(matches!(
+            event,
+            ResourceEvent::Error {
+                resource_key,
+                error
+            } if resource_key.as_ref() == "db.main" && error == "timeout"
+        ));
     }
 }
 

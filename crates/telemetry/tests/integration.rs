@@ -5,6 +5,7 @@
 
 use std::time::Duration;
 
+use nebula_telemetry::SubscriptionScope;
 use nebula_telemetry::event::{EventBus, ExecutionEvent};
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_telemetry::{NoopTelemetry, TelemetryService};
@@ -45,6 +46,33 @@ async fn events_received_in_emit_order() {
     assert!(matches!(second, ExecutionEvent::NodeStarted { .. }));
     assert!(matches!(third, ExecutionEvent::NodeCompleted { .. }));
     assert!(matches!(fourth, ExecutionEvent::Completed { .. }));
+}
+
+#[tokio::test]
+async fn scoped_subscription_receives_only_matching_execution() {
+    let bus = EventBus::new(64);
+    let mut sub = bus.subscribe_scoped(SubscriptionScope::execution("e-target"));
+
+    let _ = bus.emit(ExecutionEvent::NodeStarted {
+        execution_id: "e-other".into(),
+        node_id: "n-other".into(),
+    });
+    let _ = bus.emit(ExecutionEvent::NodeStarted {
+        execution_id: "e-target".into(),
+        node_id: "n-target".into(),
+    });
+
+    let event = sub
+        .recv()
+        .await
+        .expect("scoped subscriber should receive event");
+    assert!(matches!(
+        event,
+        ExecutionEvent::NodeStarted {
+            execution_id,
+            node_id
+        } if execution_id == "e-target" && node_id == "n-target"
+    ));
 }
 
 #[test]

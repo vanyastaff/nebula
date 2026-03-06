@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nebula_core::ResourceKey;
-use nebula_resource::events::{EventBus, QuarantineTrigger, ResourceEvent};
+use nebula_resource::events::{EventBus, QuarantineTrigger, ResourceEvent, SubscriptionScope};
 use nebula_resource::health::{
     HealthCheckConfig, HealthCheckable, HealthChecker, HealthState, HealthStatus,
 };
@@ -148,6 +148,33 @@ async fn event_bus_multiple_subscribers_all_receive() {
     assert!(matches!(
         rx3.recv().await.unwrap(),
         ResourceEvent::Created { .. }
+    ));
+}
+
+#[tokio::test]
+async fn event_bus_scoped_subscription_filters_resource_key() {
+    let bus = EventBus::new(64);
+    let mut rx = bus.subscribe_scoped(SubscriptionScope::resource("db.primary"));
+
+    bus.emit(ResourceEvent::Error {
+        resource_key: ResourceKey::try_from("cache.shared").expect("valid resource key"),
+        error: "cache miss".to_string(),
+    });
+    bus.emit(ResourceEvent::Error {
+        resource_key: ResourceKey::try_from("db.primary").expect("valid resource key"),
+        error: "db timeout".to_string(),
+    });
+
+    let event = rx
+        .recv()
+        .await
+        .expect("should receive filtered error event");
+    assert!(matches!(
+        event,
+        ResourceEvent::Error {
+            resource_key,
+            error
+        } if resource_key.as_ref() == "db.primary" && error == "db timeout"
     ));
 }
 

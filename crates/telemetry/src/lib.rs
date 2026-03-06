@@ -25,8 +25,9 @@ pub mod metrics;
 pub mod service;
 pub mod trace;
 
-pub use event::{EventBus, EventSubscriber, ExecutionEvent};
+pub use event::{EventBus, EventSubscriber, ExecutionEvent, ScopedSubscriber};
 pub use metrics::{Counter, Gauge, Histogram, MetricsRegistry, NoopMetricsRegistry};
+pub use nebula_eventbus::{EventFilter, PublishOutcome, ScopedEvent, SubscriptionScope};
 pub use service::{NoopTelemetry, TelemetryService};
 pub use trace::{
     CallBody, CallPayload, CallRecord, CallStatus, DropReason, NoopRecorder, Recorder,
