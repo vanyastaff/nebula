@@ -5,6 +5,10 @@
 //! - Timeout + Bulkhead
 //! - Circuit Breaker + Timeout + Retry
 //! - Full policy composition
+#![expect(
+    clippy::excessive_nesting,
+    reason = "Composition scenarios require nested async pipelines to model pattern interaction"
+)]
 
 use nebula_resilience::prelude::*;
 use std::sync::Arc;

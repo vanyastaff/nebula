@@ -117,7 +117,7 @@ impl TimeoutPolicy for LenientPolicy {
         "lenient"
     }
     fn default_timeout() -> Duration {
-        Duration::from_secs(60)
+        Duration::from_mins(1)
     }
 }
 

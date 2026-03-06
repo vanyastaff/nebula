@@ -44,7 +44,7 @@ impl AdaptiveRateLimiter {
                 last_stats_reset: Instant::now(),
                 current_rate: initial_rate,
             })),
-            stats_window: Duration::from_secs(60),
+            stats_window: Duration::from_mins(1),
             min_rate,
             max_rate,
         }

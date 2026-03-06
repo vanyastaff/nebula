@@ -466,10 +466,12 @@ mod tests {
             Err(ResilienceError::BulkheadFull { queued, .. }) => assert_eq!(queued, 1),
             _ => panic!("expected bulkhead full when queue is saturated"),
         }
+        drop(third);
 
         drop(first);
         let queued_result = queued_task.await.unwrap();
         assert!(queued_result.is_ok());
+        drop(queued_result);
     }
 
     #[tokio::test]
@@ -487,6 +489,7 @@ mod tests {
             Err(ResilienceError::Timeout { .. }) => {}
             _ => panic!("expected timeout while waiting for permit"),
         }
+        drop(result);
 
         drop(held);
     }

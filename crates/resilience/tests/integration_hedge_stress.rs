@@ -1,4 +1,8 @@
 //! Stress and correctness tests for hedge executors.
+#![expect(
+    clippy::excessive_nesting,
+    reason = "Scenario tests use nested async closures to model race and hedge winner behavior"
+)]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

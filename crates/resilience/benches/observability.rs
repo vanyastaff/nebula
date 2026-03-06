@@ -1,4 +1,8 @@
 //! Benchmarks for observability hook throughput and fanout contention behavior
+#![expect(
+    clippy::excessive_nesting,
+    reason = "Fanout benchmark intentionally nests spawn and await loops for load modeling"
+)]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::observability::{ObservabilityHook, ObservabilityHooks, PatternEvent};

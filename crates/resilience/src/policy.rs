@@ -329,7 +329,7 @@ impl ResiliencePolicy {
     /// Get estimated maximum execution time including retries
     #[must_use]
     pub fn max_execution_time(&self) -> Option<Duration> {
-        let base_timeout = self.timeout.unwrap_or(Duration::from_secs(60));
+        let base_timeout = self.timeout.unwrap_or(Duration::from_mins(1));
 
         self.retry.as_ref().map_or(Some(base_timeout), |retry| {
             let retry_time: Duration = (0..retry.max_attempts)
@@ -382,7 +382,7 @@ impl ResilienceConfig for ResiliencePolicy {
             if timeout.is_zero() {
                 return Err(ConfigError::validation("Timeout cannot be zero"));
             }
-            if timeout > Duration::from_secs(3600) {
+            if timeout > Duration::from_hours(1) {
                 return Err(ConfigError::validation("Timeout cannot exceed 1 hour"));
             }
         }
@@ -435,7 +435,7 @@ impl ResilienceConfig for ResiliencePolicy {
         // Check for conflicting configurations
         if let (Some(_timeout), Some(_retry)) = (self.timeout, &self.retry)
             && let Some(max_exec_time) = self.max_execution_time()
-            && max_exec_time > Duration::from_secs(600)
+            && max_exec_time > Duration::from_mins(10)
         {
             return Err(ConfigError::validation(
                 "Combined timeout and retry configuration would exceed 10 minutes",

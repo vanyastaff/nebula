@@ -3,6 +3,10 @@
 //! Measures:
 //! - chain build cost by depth
 //! - chain execute overhead with no-op layers
+#![expect(
+    clippy::excessive_nesting,
+    reason = "Composition benchmark scenarios require deeply nested async setup and execution"
+)]
 
 use async_trait::async_trait;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};

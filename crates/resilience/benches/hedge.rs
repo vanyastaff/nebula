@@ -1,4 +1,8 @@
 //! Benchmarks for hedge executor overhead and contention behavior
+#![expect(
+    clippy::excessive_nesting,
+    reason = "Hedge stress benchmark intentionally keeps nested scenario orchestration"
+)]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::ResilienceError;

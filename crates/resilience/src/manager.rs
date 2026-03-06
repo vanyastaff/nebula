@@ -1223,8 +1223,10 @@ mod tests {
     async fn test_invalid_circuit_breaker_config_rejects_registration() {
         let manager = ResilienceManager::with_defaults();
 
-        let mut circuit_breaker = CircuitBreakerConfig::default();
-        circuit_breaker.failure_rate_threshold = 1.5;
+        let circuit_breaker = CircuitBreakerConfig {
+            failure_rate_threshold: 1.5,
+            ..CircuitBreakerConfig::default()
+        };
 
         let policy = PolicyBuilder::new()
             .with_circuit_breaker(circuit_breaker)
@@ -1264,6 +1266,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "Test intentionally nests async closure and retry outcome branching"
+    )]
     async fn test_invalid_reload_keeps_previous_policy_effective() {
         let manager = ResilienceManager::with_defaults();
 
@@ -1286,14 +1292,14 @@ mod tests {
                 async move {
                     let current = attempts.fetch_add(1, Ordering::SeqCst);
                     if current < 3 {
-                        Err(ResilienceError::Custom {
+                        return Err(ResilienceError::Custom {
                             message: "retry me".to_string(),
                             retryable: true,
                             source: None,
-                        })
-                    } else {
-                        Ok::<u32, ResilienceError>(42)
+                        });
                     }
+
+                    Ok::<u32, ResilienceError>(42)
                 }
             })
             .await;

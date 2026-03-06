@@ -1055,7 +1055,7 @@ where
             Err(_) => {
                 tokio::time::sleep(current_delay).await;
                 // Exponential backoff with cap
-                current_delay = std::cmp::min(current_delay * 2, Duration::from_secs(60));
+                current_delay = std::cmp::min(current_delay * 2, Duration::from_mins(1));
             }
         }
     }
@@ -1115,8 +1115,8 @@ mod tests {
     #[test]
     fn test_backoff_calculations() {
         let fixed = FixedDelay::<1000>::default();
-        assert_eq!(fixed.calculate_delay(0), Duration::from_millis(1000));
-        assert_eq!(fixed.calculate_delay(5), Duration::from_millis(1000));
+        assert_eq!(fixed.calculate_delay(0), Duration::from_secs(1));
+        assert_eq!(fixed.calculate_delay(5), Duration::from_secs(1));
 
         let linear = LinearBackoff::<100, 5000>::default();
         assert_eq!(linear.calculate_delay(0), Duration::from_millis(100));
@@ -1131,7 +1131,7 @@ mod tests {
 
     #[test]
     fn test_jitter_policies() {
-        let delay = Duration::from_millis(1000);
+        let delay = Duration::from_secs(1);
 
         assert_eq!(JitterPolicy::None.apply(delay, None), delay);
 
@@ -1257,7 +1257,7 @@ mod tests {
 
         // Should have stopped due to time limit
         assert!(elapsed >= Duration::from_millis(200));
-        assert!(elapsed < Duration::from_millis(1000)); // Shouldn't take too long
+        assert!(elapsed < Duration::from_secs(1)); // Shouldn't take too long
     }
 
     #[tokio::test]
@@ -1345,6 +1345,6 @@ mod tests {
         assert_eq!(custom.calculate_delay(0), Duration::from_millis(100));
         assert_eq!(custom.calculate_delay(1), Duration::from_millis(200));
         assert_eq!(custom.calculate_delay(2), Duration::from_millis(400));
-        assert_eq!(custom.calculate_delay(10), Duration::from_millis(1000)); // Default
+        assert_eq!(custom.calculate_delay(10), Duration::from_secs(1)); // Default
     }
 }

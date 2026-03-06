@@ -1,4 +1,8 @@
 //! Retry storm-guard and jitter tuning integration tests.
+#![expect(
+    clippy::excessive_nesting,
+    reason = "Stress tests intentionally compose nested async closures for retry wave simulation"
+)]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

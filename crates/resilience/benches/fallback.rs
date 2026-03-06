@@ -1,4 +1,8 @@
 //! Benchmarks for fallback execution overhead under normal and contention paths
+#![expect(
+    clippy::excessive_nesting,
+    reason = "Benchmark task fanout uses nested async closures and join loops by design"
+)]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::ResilienceError;

@@ -463,6 +463,6 @@ mod tests {
         const VALID: ValidatedRetryConfig<3, 100, 5000> = ValidatedRetryConfig::new();
         assert_eq!(VALID.max_attempts(), 3);
         assert_eq!(VALID.base_delay(), Duration::from_millis(100));
-        assert_eq!(VALID.max_delay(), Duration::from_millis(5000));
+        assert_eq!(VALID.max_delay(), Duration::from_secs(5));
     }
 }
