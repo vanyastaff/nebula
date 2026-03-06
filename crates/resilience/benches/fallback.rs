@@ -1,10 +1,10 @@
 //! Benchmarks for fallback execution overhead under normal and contention paths
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use nebula_resilience::ResilienceError;
 use nebula_resilience::patterns::fallback::{
     ChainFallback, FallbackOperation, FallbackStrategy, ValueFallback,
 };
-use nebula_resilience::ResilienceError;
 use std::hint::black_box;
 use std::sync::Arc;
 
@@ -46,9 +46,8 @@ fn fallback_execute_overhead(c: &mut Criterion) {
     group.bench_function("chain_error_path", |b| {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let chain = Arc::new(
-            ChainFallback::new()
-                .add(Arc::new(ValueFallback::new("chain-fallback".to_string()))
-                    as Arc<dyn FallbackStrategy<String>>),
+            ChainFallback::new().add(Arc::new(ValueFallback::new("chain-fallback".to_string()))
+                as Arc<dyn FallbackStrategy<String>>),
         );
         let operation = Arc::new(FallbackOperation::new(chain));
 

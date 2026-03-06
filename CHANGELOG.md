@@ -30,11 +30,14 @@ commit history using the configuration in [`.github/release.yml`](.github/releas
 - `nebula-config`: external format policy narrowed to `TOML + ENV`; `FileLoader` accepts TOML files only.
 - `nebula-validator`: `ValidationError::with_field(..)` now canonicalizes paths to RFC6901 JSON Pointer (for example, `a.b[0]` -> `/a/b/0`).
 - `nebula-api`: validation error payload now uses structured field entries (`code`, `pointer`, `detail`) in RFC 9457 Problem Details extensions.
+- `nebula-resilience`: `compose` layer interfaces now pass operations by reference (`&BoxedOperation<T>`) and add cancellation-aware execution path via `LayerStack::execute_with_cancellation(...)` and `ResilienceLayer::apply(..., cancellation)`.
 
 ### 🔧 Improvements
 - `nebula-config`: added `EnvParseMode` (`Permissive`/`Strict`) and new builder controls: `with_env_parse_mode`, `with_env_strict_parsing`.
 - `nebula-parameter`: validator rule failures now surface enriched reasons with canonical pointer context.
 - `nebula-sdk`: doctests and workflow invalid-action test updated to current action key contract.
+- `nebula-resilience`: `ResilienceManager` now supports cooperative cancellation (`execute_with_cancellation`) and interrupts retry backoff when cancellation is requested.
+- `nebula-resilience`: `RetryStrategy` adds cooperative cancellation entry point (`execute_resilient_with_cancellation`) with cancellation-aware attempt execution and backoff sleep interruption.
 
 ### 📖 Documentation
 - `vision/` hub with architecture, crate map, dependency graph, roadmap, and decision records

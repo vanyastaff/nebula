@@ -18,8 +18,9 @@ struct NoopLayer;
 impl ResilienceLayer<u64> for NoopLayer {
     async fn apply(
         &self,
-        operation: BoxedOperation<u64>,
-        next: Arc<dyn LayerStack<u64> + Send + Sync>,
+        operation: &BoxedOperation<u64>,
+        next: &(dyn LayerStack<u64> + Send + Sync),
+        _cancellation: Option<&nebula_resilience::core::CancellationContext>,
     ) -> Result<u64, ResilienceError> {
         next.execute(operation).await
     }
@@ -65,7 +66,7 @@ fn compose_execute_overhead(c: &mut Criterion) {
                 async move {
                     let operation = || async { Ok::<u64, ResilienceError>(black_box(42)) };
                     let boxed = BoxedOperation::new(operation);
-                    let result = chain.execute(boxed).await;
+                    let result = chain.execute(&boxed).await;
                     black_box(result)
                 }
             });
@@ -88,8 +89,10 @@ fn compose_execute_retry_shape(c: &mut Criterion) {
                 let chain = Arc::clone(&chain);
                 let operation = Arc::clone(&operation);
                 async move {
-                    let boxed = BoxedOperation::from_arc(operation as Arc<dyn RetryableOperation<u64> + Send + Sync>);
-                    let result = chain.execute(boxed).await;
+                    let boxed = BoxedOperation::from_arc(
+                        operation as Arc<dyn RetryableOperation<u64> + Send + Sync>,
+                    );
+                    let result = chain.execute(&boxed).await;
                     black_box(result)
                 }
             });

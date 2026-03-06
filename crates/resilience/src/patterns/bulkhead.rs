@@ -4,8 +4,8 @@
 
 use nebula_log::debug;
 use std::future::Future;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Semaphore;
 
 use crate::core::config::{ConfigError, ConfigResult, ResilienceConfig};
@@ -135,8 +135,11 @@ impl Bulkhead {
             )?;
 
         let acquire_result = if let Some(timeout_duration) = self.config.timeout {
-            match tokio::time::timeout(timeout_duration, Arc::clone(&self.semaphore).acquire_owned())
-                .await
+            match tokio::time::timeout(
+                timeout_duration,
+                Arc::clone(&self.semaphore).acquire_owned(),
+            )
+            .await
             {
                 Ok(result) => result.map_err(|_| ResilienceError::BulkheadFull {
                     max_concurrency: self.config.max_concurrency,

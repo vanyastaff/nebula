@@ -12,9 +12,12 @@ use tokio::sync::Mutex;
 #[tokio::test]
 async fn test_retry_max_duration_caps_retry_storm() {
     let strategy = RetryStrategy::new(
-        RetryConfig::new(FixedDelay::<20>::default(), AggressiveCondition::<100>::new())
-            .with_jitter(JitterPolicy::None)
-            .with_max_duration(Duration::from_millis(70)),
+        RetryConfig::new(
+            FixedDelay::<20>::default(),
+            AggressiveCondition::<100>::new(),
+        )
+        .with_jitter(JitterPolicy::None)
+        .with_max_duration(Duration::from_millis(70)),
     )
     .expect("retry strategy config should be valid");
 
@@ -34,7 +37,10 @@ async fn test_retry_max_duration_caps_retry_storm() {
         })
         .await;
 
-    assert!(result.is_err(), "operation should fail after retry budget is exhausted");
+    assert!(
+        result.is_err(),
+        "operation should fail after retry budget is exhausted"
+    );
     let elapsed = started.elapsed();
     let executed_attempts = attempts.load(Ordering::SeqCst);
 
@@ -93,8 +99,8 @@ async fn test_full_jitter_desynchronizes_retry_wave() {
     async fn collect_second_attempt_offsets(jitter: JitterPolicy) -> Vec<u128> {
         let strategy = Arc::new(
             RetryStrategy::new(
-            RetryConfig::new(FixedDelay::<20>::default(), AggressiveCondition::<3>::new())
-                .with_jitter(jitter),
+                RetryConfig::new(FixedDelay::<20>::default(), AggressiveCondition::<3>::new())
+                    .with_jitter(jitter),
             )
             .expect("retry strategy config should be valid"),
         );

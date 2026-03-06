@@ -117,7 +117,10 @@ fn bulkhead_queue_timeout(c: &mut Criterion) {
         b.to_async(&rt).iter(|| {
             let bulkhead = Arc::clone(&bulkhead);
             async move {
-                let permit = bulkhead.acquire().await.expect("first permit should succeed");
+                let permit = bulkhead
+                    .acquire()
+                    .await
+                    .expect("first permit should succeed");
                 let timeout_result = bulkhead.acquire().await;
                 drop(permit);
                 black_box(timeout_result)

@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{
+    core::CancellationContext,
     ResilienceError, ResilienceResult,
     manager::RetryableOperation,
     patterns::{bulkhead::Bulkhead, circuit_breaker::CircuitBreaker, timeout::timeout},
@@ -75,8 +76,9 @@ pub trait ResilienceLayer<T>: Send + Sync {
     /// Apply this layer to an operation
     async fn apply(
         &self,
-        operation: BoxedOperation<T>,
-        next: Arc<dyn LayerStack<T> + Send + Sync>,
+        operation: &BoxedOperation<T>,
+        next: &(dyn LayerStack<T> + Send + Sync),
+        cancellation: Option<&CancellationContext>,
     ) -> ResilienceResult<T>;
 
     /// Get layer name for debugging
@@ -87,7 +89,16 @@ pub trait ResilienceLayer<T>: Send + Sync {
 #[async_trait::async_trait]
 pub trait LayerStack<T>: Send + Sync {
     /// Execute the operation with remaining layers
-    async fn execute(&self, operation: BoxedOperation<T>) -> ResilienceResult<T>;
+    async fn execute(&self, operation: &BoxedOperation<T>) -> ResilienceResult<T> {
+        self.execute_with_cancellation(operation, None).await
+    }
+
+    /// Execute the operation with remaining layers and cooperative cancellation.
+    async fn execute_with_cancellation(
+        &self,
+        operation: &BoxedOperation<T>,
+        cancellation: Option<&CancellationContext>,
+    ) -> ResilienceResult<T>;
 }
 
 // =============================================================================
@@ -99,7 +110,17 @@ pub struct TerminalLayer;
 
 #[async_trait::async_trait]
 impl<T: Send + 'static> LayerStack<T> for TerminalLayer {
-    async fn execute(&self, operation: BoxedOperation<T>) -> ResilienceResult<T> {
+    async fn execute_with_cancellation(
+        &self,
+        operation: &BoxedOperation<T>,
+        cancellation: Option<&CancellationContext>,
+    ) -> ResilienceResult<T> {
+        if let Some(ctx) = cancellation
+            && ctx.is_cancelled()
+        {
+            return Err(cancelled_error(ctx));
+        }
+
         operation.execute().await
     }
 }
@@ -112,8 +133,20 @@ pub struct ComposedStack<T> {
 
 #[async_trait::async_trait]
 impl<T: Send + 'static> LayerStack<T> for ComposedStack<T> {
-    async fn execute(&self, operation: BoxedOperation<T>) -> ResilienceResult<T> {
-        self.layer.apply(operation, self.next.clone()).await
+    async fn execute_with_cancellation(
+        &self,
+        operation: &BoxedOperation<T>,
+        cancellation: Option<&CancellationContext>,
+    ) -> ResilienceResult<T> {
+        self.layer
+            .apply(operation, self.next.as_ref(), cancellation)
+            .await
+    }
+}
+
+fn cancelled_error(cancellation: &CancellationContext) -> ResilienceError {
+    ResilienceError::Cancelled {
+        reason: cancellation.reason().map(str::to_owned),
     }
 }
 
@@ -132,10 +165,14 @@ impl TimeoutLayer {
 impl<T: Send + 'static> ResilienceLayer<T> for TimeoutLayer {
     async fn apply(
         &self,
-        operation: BoxedOperation<T>,
-        next: Arc<dyn LayerStack<T> + Send + Sync>,
+        operation: &BoxedOperation<T>,
+        next: &(dyn LayerStack<T> + Send + Sync),
+        cancellation: Option<&CancellationContext>,
     ) -> ResilienceResult<T> {
-        timeout(self.duration, next.execute(operation))
+        timeout(
+            self.duration,
+            next.execute_with_cancellation(operation, cancellation),
+        )
             .await
             .unwrap_or_else(|_| {
                 Err(ResilienceError::Timeout {
@@ -165,14 +202,20 @@ impl RetryLayer {
 impl<T: Send + 'static> ResilienceLayer<T> for RetryLayer {
     async fn apply(
         &self,
-        operation: BoxedOperation<T>,
-        next: Arc<dyn LayerStack<T> + Send + Sync>,
+        operation: &BoxedOperation<T>,
+        next: &(dyn LayerStack<T> + Send + Sync),
+        cancellation: Option<&CancellationContext>,
     ) -> ResilienceResult<T> {
         let mut last_error = None;
 
         for attempt in 0..self.config.max_attempts {
-            let op_clone = operation.clone();
-            let result = next.execute(op_clone).await;
+            if let Some(ctx) = cancellation
+                && ctx.is_cancelled()
+            {
+                return Err(cancelled_error(ctx));
+            }
+
+            let result = next.execute_with_cancellation(operation, cancellation).await;
 
             match result {
                 Ok(value) => return Ok(value),
@@ -184,7 +227,14 @@ impl<T: Send + 'static> ResilienceLayer<T> for RetryLayer {
                     last_error = Some(e);
 
                     if let Some(delay) = self.config.delay_for_attempt(attempt) {
-                        tokio::time::sleep(delay).await;
+                        if let Some(ctx) = cancellation {
+                            tokio::select! {
+                                () = tokio::time::sleep(delay) => {}
+                                () = ctx.token().cancelled() => return Err(cancelled_error(ctx)),
+                            }
+                        } else {
+                            tokio::time::sleep(delay).await;
+                        }
                     }
                 }
                 Err(e) => {
@@ -219,12 +269,15 @@ impl CircuitBreakerLayer {
 impl<T: Send + 'static> ResilienceLayer<T> for CircuitBreakerLayer {
     async fn apply(
         &self,
-        operation: BoxedOperation<T>,
-        next: Arc<dyn LayerStack<T> + Send + Sync>,
+        operation: &BoxedOperation<T>,
+        next: &(dyn LayerStack<T> + Send + Sync),
+        cancellation: Option<&CancellationContext>,
     ) -> ResilienceResult<T> {
         self.circuit_breaker.can_execute().await?;
 
-        let result = next.execute(operation).await;
+        let result = next
+            .execute_with_cancellation(operation, cancellation)
+            .await;
 
         match &result {
             Ok(_) => self.circuit_breaker.record_success().await,
@@ -254,11 +307,12 @@ impl BulkheadLayer {
 impl<T: Send + 'static> ResilienceLayer<T> for BulkheadLayer {
     async fn apply(
         &self,
-        operation: BoxedOperation<T>,
-        next: Arc<dyn LayerStack<T> + Send + Sync>,
+        operation: &BoxedOperation<T>,
+        next: &(dyn LayerStack<T> + Send + Sync),
+        cancellation: Option<&CancellationContext>,
     ) -> ResilienceResult<T> {
         let _permit = self.bulkhead.acquire().await?;
-        next.execute(operation).await
+        next.execute_with_cancellation(operation, cancellation).await
     }
 
     fn name(&self) -> &'static str {
@@ -379,7 +433,21 @@ mod tests {
         Op: RetryableOperation<T> + Send + Sync + 'static,
     {
         let boxed_op = BoxedOperation::new(operation);
-        chain.execute(boxed_op).await
+        chain.execute(&boxed_op).await
+    }
+
+    async fn execute_with_chain_and_cancellation<T, Op>(
+        chain: ResilienceChain<T>,
+        operation: Op,
+        cancellation: &CancellationContext,
+    ) -> ResilienceResult<T>
+    where
+        Op: RetryableOperation<T> + Send + Sync + 'static,
+    {
+        let boxed_op = BoxedOperation::new(operation);
+        chain
+            .execute_with_cancellation(&boxed_op, Some(cancellation))
+            .await
     }
 
     #[tokio::test]
@@ -436,5 +504,35 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 100);
         assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_retry_sleep_is_interruptible_by_cancellation() {
+        let cancellation = CancellationContext::with_reason("retry cancelled");
+        let cancellation_clone = cancellation.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            cancellation_clone.cancel();
+        });
+
+        let chain = create_chain()
+            .with_retry_fixed(5, Duration::from_millis(500))
+            .build();
+
+        let result = execute_with_chain_and_cancellation(
+            chain,
+            || async {
+                Err::<u32, ResilienceError>(ResilienceError::Custom {
+                    message: "transient".to_string(),
+                    retryable: true,
+                    source: None,
+                })
+            },
+            &cancellation,
+        )
+        .await;
+
+        assert!(matches!(result, Err(ResilienceError::Cancelled { .. })));
     }
 }

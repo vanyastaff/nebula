@@ -289,7 +289,10 @@ async fn test_execute_with_override_timeout_takes_precedence() {
             override_policy,
         )
         .await;
-    assert!(matches!(override_result, Err(ResilienceError::Timeout { .. })));
+    assert!(matches!(
+        override_result,
+        Err(ResilienceError::Timeout { .. })
+    ));
 
     let normal_result = manager
         .execute("override-timeout", "op", || async {
@@ -387,7 +390,10 @@ async fn test_execute_with_override_isolation_between_parallel_calls() {
         })
     );
 
-    assert!(matches!(override_result, Err(ResilienceError::Timeout { .. })));
+    assert!(matches!(
+        override_result,
+        Err(ResilienceError::Timeout { .. })
+    ));
     assert!(normal_result.is_ok());
     assert_eq!(normal_result.unwrap(), "done");
 }

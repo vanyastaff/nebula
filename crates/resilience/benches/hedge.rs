@@ -1,8 +1,8 @@
 //! Benchmarks for hedge executor overhead and contention behavior
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use nebula_resilience::patterns::hedge::{HedgeConfig, HedgeExecutor};
 use nebula_resilience::ResilienceError;
+use nebula_resilience::patterns::hedge::{HedgeConfig, HedgeExecutor};
 use std::hint::black_box;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

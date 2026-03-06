@@ -570,9 +570,10 @@ mod tests {
             });
 
         let err = policy.validate().unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("Bulkhead timeout cannot exceed policy timeout"));
+        assert!(
+            err.to_string()
+                .contains("Bulkhead timeout cannot exceed policy timeout")
+        );
     }
 
     #[test]
@@ -582,9 +583,10 @@ mod tests {
             .with_retry(RetryPolicyConfig::fixed(3, Duration::from_millis(100)));
 
         let err = policy.validate().unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("Retry base delay must be less than timeout"));
+        assert!(
+            err.to_string()
+                .contains("Retry base delay must be less than timeout")
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 use crate::core::{
-    ResilienceError, ResilienceResult,
+    CancellationContext, ResilienceError, ResilienceResult,
     config::{ConfigError, ConfigResult},
     traits::PatternMetrics,
 };
@@ -777,6 +777,132 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
         self.execute(operation).await
     }
 
+    /// Execute with `ResilienceError` handling and cooperative cancellation.
+    ///
+    /// Cancellation is checked before each attempt, while an attempt is running,
+    /// and while waiting in backoff delay between attempts.
+    pub async fn execute_resilient_with_cancellation<T, F, Fut>(
+        &self,
+        mut operation: F,
+        cancellation: &CancellationContext,
+    ) -> ResilienceResult<(T, RetryStats)>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = ResilienceResult<T>>,
+        C: RetryCondition<ResilienceError>,
+    {
+        let start_time = Instant::now();
+        let mut attempt = 0;
+        let mut attempt_delays = Vec::new();
+        let mut attempt_durations = Vec::new();
+        let mut previous_delay = None;
+
+        loop {
+            if cancellation.is_cancelled() {
+                return Err(ResilienceError::Cancelled {
+                    reason: cancellation.reason().map(str::to_owned),
+                });
+            }
+
+            let attempt_start = Instant::now();
+
+            debug!(
+                attempt = attempt + 1,
+                policy = self.config.backoff.policy_name(),
+                condition = self.config.condition.condition_name(),
+                "Starting retry attempt"
+            );
+
+            let result = tokio::select! {
+                result = operation() => result,
+                () = cancellation.token().cancelled() => {
+                    Err(ResilienceError::Cancelled {
+                        reason: cancellation.reason().map(str::to_owned),
+                    })
+                }
+            };
+
+            let attempt_duration = attempt_start.elapsed();
+            attempt_durations.push(attempt_duration);
+
+            match result {
+                Ok(value) => {
+                    let stats = RetryStats {
+                        total_attempts: attempt + 1,
+                        total_duration: start_time.elapsed(),
+                        succeeded: true,
+                        attempt_delays,
+                        attempt_durations,
+                        policy_name: self.config.backoff.policy_name().to_string(),
+                        condition_name: self.config.condition.condition_name().to_string(),
+                    };
+
+                    info!(
+                        attempts = stats.total_attempts,
+                        duration_ms = stats.total_duration.as_millis(),
+                        "Retry succeeded"
+                    );
+
+                    return Ok((value, stats));
+                }
+                Err(error) => {
+                    let elapsed = start_time.elapsed();
+
+                    let should_retry = self.config.condition.should_retry(&error, attempt, elapsed)
+                        && !self.config.condition.is_terminal(&error);
+
+                    if let Some(max_duration) = self.config.max_total_duration
+                        && elapsed >= max_duration
+                    {
+                        warn!(
+                            attempts = attempt + 1,
+                            elapsed_ms = elapsed.as_millis(),
+                            max_ms = max_duration.as_millis(),
+                            "Retry failed: maximum duration exceeded"
+                        );
+                        return Err(error);
+                    }
+
+                    if !should_retry {
+                        warn!(
+                            attempts = attempt + 1,
+                            error = ?error,
+                            "Retry failed: no more attempts"
+                        );
+                        return Err(error);
+                    }
+
+                    let base_delay = self
+                        .config
+                        .condition
+                        .custom_delay(&error, attempt)
+                        .unwrap_or_else(|| self.config.backoff.calculate_delay(attempt));
+
+                    let jittered_delay = self.config.jitter.apply(base_delay, previous_delay);
+                    attempt_delays.push(jittered_delay);
+                    previous_delay = Some(jittered_delay);
+                    attempt += 1;
+
+                    debug!(
+                        attempt = attempt,
+                        delay_ms = jittered_delay.as_millis(),
+                        error = ?error,
+                        "Retrying after delay"
+                    );
+
+                    tokio::select! {
+                        () = sleep(jittered_delay) => {}
+                        () = cancellation.token().cancelled() => {
+                            return Err(ResilienceError::Cancelled {
+                                reason: cancellation.reason().map(str::to_owned),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Get configuration
     pub const fn config(&self) -> &RetryConfig<B, C> {
         &self.config
@@ -1090,6 +1216,38 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "success");
         assert_eq!(counter.load(Ordering::Relaxed), 3);
+    }
+
+    #[tokio::test]
+    async fn test_resilient_retry_cancellation_interrupts_backoff() {
+        let strategy = RetryStrategy::with_policy(
+            FixedDelay::<500>::default(),
+            AggressiveCondition::<5>::new(),
+        )
+        .unwrap();
+
+        let cancellation = CancellationContext::with_reason("shutdown");
+        let cancellation_clone = cancellation.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cancellation_clone.cancel();
+        });
+
+        let result = strategy
+            .execute_resilient_with_cancellation(
+                || async {
+                    Err::<u32, ResilienceError>(ResilienceError::Custom {
+                        message: "transient".to_string(),
+                        retryable: true,
+                        source: None,
+                    })
+                },
+                &cancellation,
+            )
+            .await;
+
+        assert!(matches!(result, Err(ResilienceError::Cancelled { .. })));
     }
 
     #[tokio::test]

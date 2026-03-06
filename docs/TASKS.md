@@ -37,7 +37,7 @@ These are the highest-impact tasks across the entire project right now:
 | [nebula-memory](crates/memory/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/memory/TASKS.md) |
 | [nebula-parameter](crates/parameter/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/parameter/TASKS.md) |
 | [nebula-system](crates/system/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/system/TASKS.md) |
-| [nebula-resilience](crates/resilience/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/resilience/TASKS.md) |
+| [nebula-resilience](crates/resilience/Task.md) | Phase 9 (Integration) | 🔄 In Progress | [Tasks](crates/resilience/Task.md) |
 | [nebula-macros](crates/macros/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/macros/TASKS.md) |
 
 **Recommended order for remaining Group 1 work**:
@@ -45,7 +45,8 @@ These are the highest-impact tasks across the entire project right now:
 2. `nebula-expression` Phase 3 (cache tuning) — independent
 3. `nebula-validator` Phase 2 (compatibility/governance) — independent
 4. `nebula-metrics` Phase 4 (OTLP) — independent, wire `/metrics` in api
-5. Remaining crates (workflow, memory, parameter, system, resilience, macros) — can proceed in parallel
+5. Remaining crates (workflow, memory, parameter, system, macros) — can proceed in parallel
+6. `nebula-resilience` post-Phase backlog (runtime/engine integration, telemetry, CI perf gates)
 
 ---
 

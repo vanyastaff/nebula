@@ -1,6 +1,8 @@
 //! Integration tests validating observability behavior under failure storms.
 
-use nebula_resilience::observability::{MetricsHook, ObservabilityHook, ObservabilityHooks, PatternEvent};
+use nebula_resilience::observability::{
+    MetricsHook, ObservabilityHook, ObservabilityHooks, PatternEvent,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -112,10 +114,7 @@ async fn test_observability_failure_storm_metrics_and_event_delivery() {
         counting_hook.failed_events.load(Ordering::Relaxed),
         expected
     );
-    assert_eq!(
-        counting_hook.retry_events.load(Ordering::Relaxed),
-        expected
-    );
+    assert_eq!(counting_hook.retry_events.load(Ordering::Relaxed), expected);
     assert_eq!(
         counting_hook.timeout_events.load(Ordering::Relaxed),
         expected

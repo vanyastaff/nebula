@@ -38,7 +38,10 @@ async fn test_bulkhead_sustained_contention_all_queued_requests_progress() {
 
     for handle in handles {
         let result = handle.await.expect("task join should succeed");
-        assert!(result.is_ok(), "all queued tasks should eventually complete");
+        assert!(
+            result.is_ok(),
+            "all queued tasks should eventually complete"
+        );
     }
 
     assert_eq!(completed.load(Ordering::SeqCst), 96);
@@ -114,7 +117,10 @@ async fn test_bulkhead_queue_backpressure_remains_bounded() {
         timeout: Some(Duration::from_millis(200)),
     }));
 
-    let first_permit = bulkhead.acquire().await.expect("first permit should succeed");
+    let first_permit = bulkhead
+        .acquire()
+        .await
+        .expect("first permit should succeed");
 
     let b1 = Arc::clone(&bulkhead);
     let queued_1 = tokio::spawn(async move { b1.acquire().await });

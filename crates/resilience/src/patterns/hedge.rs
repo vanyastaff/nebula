@@ -65,10 +65,13 @@ impl HedgeExecutor {
 
         loop {
             if hedges_sent >= self.config.max_hedges {
-                return in_flight.next().await.unwrap_or(Err(ResilienceError::Timeout {
-                    duration: timeout_duration,
-                    context: Some("Hedge timeout".to_string()),
-                }));
+                return in_flight
+                    .next()
+                    .await
+                    .unwrap_or(Err(ResilienceError::Timeout {
+                        duration: timeout_duration,
+                        context: Some("Hedge timeout".to_string()),
+                    }));
             }
 
             tokio::select! {

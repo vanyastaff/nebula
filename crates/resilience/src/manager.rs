@@ -36,6 +36,7 @@ use tracing::{debug, warn};
 use crate::{
     ResilienceError, ResilienceResult,
     core::{
+        CancellationContext,
         categories::{Category, ServiceCategory},
         config::ResilienceConfig,
     },
@@ -528,7 +529,26 @@ impl ResilienceManager {
         let mut context = UnTypedExecutionContext::new(service, operation_name);
         let policy = self.get_policy(service);
 
-        self.execute_with_policy(&mut context, &operation, &policy)
+        self.execute_with_policy(&mut context, &operation, &policy, None)
+            .await
+    }
+
+    /// Execute operation with resilience patterns and cooperative cancellation.
+    pub async fn execute_with_cancellation<T, Op>(
+        &self,
+        service: &str,
+        operation_name: &str,
+        operation: Op,
+        cancellation: &CancellationContext,
+    ) -> ResilienceResult<T>
+    where
+        Op: RetryableOperation<T> + Send + Sync,
+        T: Send,
+    {
+        let mut context = UnTypedExecutionContext::new(service, operation_name);
+        let policy = self.get_policy(service);
+
+        self.execute_with_policy(&mut context, &operation, &policy, Some(cancellation))
             .await
     }
 
@@ -545,7 +565,7 @@ impl ResilienceManager {
         T: Send,
     {
         let mut context = UnTypedExecutionContext::new(service, operation_name);
-        self.execute_with_policy(&mut context, &operation, &policy_override)
+        self.execute_with_policy(&mut context, &operation, &policy_override, None)
             .await
     }
 
@@ -565,11 +585,18 @@ impl ResilienceManager {
         context: &mut UnTypedExecutionContext,
         operation: &Op,
         policy: &ResiliencePolicy,
+        cancellation: Option<&CancellationContext>,
     ) -> ResilienceResult<T>
     where
         Op: RetryableOperation<T> + Send + Sync,
         T: Send,
     {
+        if let Some(ctx) = cancellation
+            && ctx.is_cancelled()
+        {
+            return Err(Self::cancelled_error(ctx));
+        }
+
         // Get components with lock-free reads from DashMap
         let circuit_breaker = self
             .circuit_breakers
@@ -601,11 +628,11 @@ impl ResilienceManager {
 
         // Execute with retry if configured
         let result = if let Some(ref retry_config) = policy.retry {
-            self.execute_with_retry(context, operation, retry_config, policy.timeout)
+            self.execute_with_retry(context, operation, retry_config, policy.timeout, cancellation)
                 .await
         } else {
             // Single execution with optional timeout
-            self.execute_single(operation, policy.timeout).await
+            self.execute_single(operation, policy.timeout, cancellation).await
         };
 
         // Update circuit breaker based on result
@@ -618,9 +645,7 @@ impl ResilienceManager {
 
         let elapsed = context.elapsed();
         if let Some(metrics) = self.service_metrics.get(&context.service_name) {
-            metrics
-                .value()
-                .record_result(result.is_err(), elapsed);
+            metrics.value().record_result(result.is_err(), elapsed);
         }
 
         match &result {
@@ -649,6 +674,7 @@ impl ResilienceManager {
         operation: &Op,
         retry_config: &RetryPolicyConfig,
         timeout_duration: Option<Duration>,
+        cancellation: Option<&CancellationContext>,
     ) -> ResilienceResult<T>
     where
         Op: RetryableOperation<T> + Send + Sync,
@@ -657,9 +683,17 @@ impl ResilienceManager {
         let mut last_error = None;
 
         for attempt in 0..retry_config.max_attempts {
+            if let Some(ctx) = cancellation
+                && ctx.is_cancelled()
+            {
+                return Err(Self::cancelled_error(ctx));
+            }
+
             context.attempt = attempt + 1;
 
-            let result = self.execute_single(operation, timeout_duration).await;
+            let result = self
+                .execute_single(operation, timeout_duration, cancellation)
+                .await;
 
             match result {
                 Ok(value) => return Ok(value),
@@ -680,7 +714,14 @@ impl ResilienceManager {
 
                     // Calculate delay for next attempt
                     if let Some(delay) = retry_config.delay_for_attempt(attempt) {
-                        tokio::time::sleep(delay).await;
+                        if let Some(ctx) = cancellation {
+                            tokio::select! {
+                                () = tokio::time::sleep(delay) => {}
+                                () = ctx.token().cancelled() => return Err(Self::cancelled_error(ctx)),
+                            }
+                        } else {
+                            tokio::time::sleep(delay).await;
+                        }
                     }
                 }
                 Err(e) => {
@@ -707,13 +748,31 @@ impl ResilienceManager {
         &self,
         operation: &Op,
         timeout_duration: Option<Duration>,
+        cancellation: Option<&CancellationContext>,
     ) -> ResilienceResult<T>
     where
         Op: RetryableOperation<T> + Send + Sync,
         T: Send,
     {
+        if let Some(ctx) = cancellation
+            && ctx.is_cancelled()
+        {
+            return Err(Self::cancelled_error(ctx));
+        }
+
         if let Some(duration) = timeout_duration {
-            match timeout(duration, operation.execute()).await {
+            let execution = async {
+                if let Some(ctx) = cancellation {
+                    tokio::select! {
+                        result = operation.execute() => result,
+                        () = ctx.token().cancelled() => Err(Self::cancelled_error(ctx)),
+                    }
+                } else {
+                    operation.execute().await
+                }
+            };
+
+            match timeout(duration, execution).await {
                 Ok(result) => result,
                 Err(_timeout_err) => Err(ResilienceError::Timeout {
                     duration,
@@ -721,7 +780,20 @@ impl ResilienceManager {
                 }),
             }
         } else {
-            operation.execute().await
+            if let Some(ctx) = cancellation {
+                tokio::select! {
+                    result = operation.execute() => result,
+                    () = ctx.token().cancelled() => Err(Self::cancelled_error(ctx)),
+                }
+            } else {
+                operation.execute().await
+            }
+        }
+    }
+
+    fn cancelled_error(cancellation: &CancellationContext) -> ResilienceError {
+        ResilienceError::Cancelled {
+            reason: cancellation.reason().map(str::to_owned),
         }
     }
 
@@ -946,6 +1018,40 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 
+    #[tokio::test]
+    async fn test_cancellation_interrupts_retry_backoff() {
+        let manager = ResilienceManager::with_defaults();
+        let policy = PolicyBuilder::new()
+            .with_retry_fixed(5, Duration::from_millis(500))
+            .build();
+        manager.register_service("cancel-service", policy);
+
+        let cancellation = CancellationContext::with_reason("shutdown");
+        let cancellation_clone = cancellation.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            cancellation_clone.cancel();
+        });
+
+        let result = manager
+            .execute_with_cancellation(
+                "cancel-service",
+                "cancel-op",
+                || async {
+                    Err::<u32, ResilienceError>(ResilienceError::Custom {
+                        message: "transient failure".to_string(),
+                        retryable: true,
+                        source: None,
+                    })
+                },
+                &cancellation,
+            )
+            .await;
+
+        assert!(matches!(result, Err(ResilienceError::Cancelled { .. })));
+    }
+
     // =========================================================================
     // TYPED API TESTS
     // =========================================================================
@@ -1117,7 +1223,9 @@ mod tests {
         let mut circuit_breaker = CircuitBreakerConfig::default();
         circuit_breaker.failure_rate_threshold = 1.5;
 
-        let policy = PolicyBuilder::new().with_circuit_breaker(circuit_breaker).build();
+        let policy = PolicyBuilder::new()
+            .with_circuit_breaker(circuit_breaker)
+            .build();
         manager.register_service("invalid-cb", policy);
 
         let metrics = manager.get_metrics("invalid-cb").await;
@@ -1142,7 +1250,9 @@ mod tests {
         assert!(initial_metrics.circuit_breaker.is_some());
         assert!(initial_metrics.bulkhead.is_some());
 
-        let reloaded_policy = PolicyBuilder::new().with_timeout(Duration::from_secs(1)).build();
+        let reloaded_policy = PolicyBuilder::new()
+            .with_timeout(Duration::from_secs(1))
+            .build();
         manager.register_service("reload-components", reloaded_policy);
 
         let reloaded_metrics = manager.get_metrics("reload-components").await.unwrap();

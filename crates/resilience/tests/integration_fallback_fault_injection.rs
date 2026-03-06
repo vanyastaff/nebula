@@ -3,11 +3,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use nebula_resilience::ResilienceError;
 use nebula_resilience::patterns::fallback::{
     CacheFallback, ChainFallback, FallbackOperation, FallbackStrategy, FunctionFallback,
     PriorityFallback, ValueFallback,
 };
-use nebula_resilience::ResilienceError;
 
 #[tokio::test]
 async fn test_fault_injection_value_fallback_on_timeout() {
@@ -36,9 +36,7 @@ async fn test_fault_injection_function_fallback_receives_original_error() {
 
     let operation = FallbackOperation::new(fallback);
     let result = operation
-        .execute(|| async {
-            Err::<String, _>(ResilienceError::circuit_breaker_open("open"))
-        })
+        .execute(|| async { Err::<String, _>(ResilienceError::circuit_breaker_open("open")) })
         .await;
 
     assert!(result.is_ok());
@@ -100,12 +98,14 @@ async fn test_fault_injection_cache_fallback_stale_if_error_returns_expired_valu
 
 #[tokio::test]
 async fn test_fault_injection_chain_fallback_cascades_to_next_strategy() {
-    let first = Arc::new(FunctionFallback::new(|_error: ResilienceError| async move {
-        Err::<String, _>(ResilienceError::FallbackFailed {
-            reason: "first fallback failed".to_string(),
-            original_error: None,
-        })
-    }));
+    let first = Arc::new(FunctionFallback::new(
+        |_error: ResilienceError| async move {
+            Err::<String, _>(ResilienceError::FallbackFailed {
+                reason: "first fallback failed".to_string(),
+                original_error: None,
+            })
+        },
+    ));
     let second = Arc::new(ValueFallback::new("chain-success".to_string()));
 
     let chain = Arc::new(
@@ -152,15 +152,16 @@ async fn test_fault_injection_priority_fallback_routes_by_error_type() {
 
     let priority = Arc::new(
         PriorityFallback::new()
-            .register("timeout", timeout_fallback as Arc<dyn FallbackStrategy<String>>)
+            .register(
+                "timeout",
+                timeout_fallback as Arc<dyn FallbackStrategy<String>>,
+            )
             .with_default(default_fallback as Arc<dyn FallbackStrategy<String>>),
     );
     let operation = FallbackOperation::new(priority);
 
     let timeout_result = operation
-        .execute(|| async {
-            Err::<String, _>(ResilienceError::timeout(Duration::from_millis(10)))
-        })
+        .execute(|| async { Err::<String, _>(ResilienceError::timeout(Duration::from_millis(10))) })
         .await;
     assert!(timeout_result.is_ok());
     assert_eq!(timeout_result.unwrap(), "timeout-route");
@@ -175,10 +176,10 @@ async fn test_fault_injection_priority_fallback_routes_by_error_type() {
 #[tokio::test]
 async fn test_fault_injection_priority_fallback_without_default_returns_original_error() {
     let timeout_fallback = Arc::new(ValueFallback::new("timeout-route".to_string()));
-    let priority = Arc::new(
-        PriorityFallback::new()
-            .register("timeout", timeout_fallback as Arc<dyn FallbackStrategy<String>>),
-    );
+    let priority = Arc::new(PriorityFallback::new().register(
+        "timeout",
+        timeout_fallback as Arc<dyn FallbackStrategy<String>>,
+    ));
     let operation = FallbackOperation::new(priority);
 
     let result = operation

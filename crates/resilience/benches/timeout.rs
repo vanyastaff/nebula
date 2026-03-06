@@ -73,5 +73,9 @@ fn timeout_cancellation_latency(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, timeout_wrapper_overhead, timeout_cancellation_latency);
+criterion_group!(
+    benches,
+    timeout_wrapper_overhead,
+    timeout_cancellation_latency
+);
 criterion_main!(benches);

@@ -43,7 +43,10 @@ async fn test_fault_injection_retry_and_circuit_breaker_interplay() {
         })
         .await;
 
-    assert!(matches!(first, Err(ResilienceError::RetryLimitExceeded { .. })));
+    assert!(matches!(
+        first,
+        Err(ResilienceError::RetryLimitExceeded { .. })
+    ));
 
     let attempts_second = Arc::clone(&attempts);
     let second = manager
@@ -187,7 +190,10 @@ async fn test_fault_injection_retry_breaker_timeout_combined() {
         })
         .await;
 
-    assert!(matches!(first, Err(ResilienceError::RetryLimitExceeded { .. })));
+    assert!(matches!(
+        first,
+        Err(ResilienceError::RetryLimitExceeded { .. })
+    ));
 
     let attempts_second = Arc::clone(&attempts);
     let second = manager

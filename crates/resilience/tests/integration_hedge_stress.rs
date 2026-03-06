@@ -245,8 +245,7 @@ async fn test_bimodal_hedge_executor_slow_path_allows_hedge_winner() {
         exponential_backoff: false,
         backoff_multiplier: 1.0,
     };
-    let executor =
-        BimodalHedgeExecutor::new(Duration::from_millis(20), fast_config, slow_config);
+    let executor = BimodalHedgeExecutor::new(Duration::from_millis(20), fast_config, slow_config);
     let calls = Arc::new(AtomicUsize::new(0));
 
     let result = executor
@@ -287,8 +286,7 @@ async fn test_bimodal_hedge_executor_side_effect_guard_prevents_duplicates() {
         exponential_backoff: false,
         backoff_multiplier: 1.0,
     };
-    let executor =
-        BimodalHedgeExecutor::new(Duration::from_millis(20), fast_config, slow_config);
+    let executor = BimodalHedgeExecutor::new(Duration::from_millis(20), fast_config, slow_config);
     let committed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let commits = Arc::new(AtomicUsize::new(0));
     let calls = Arc::new(AtomicUsize::new(0));

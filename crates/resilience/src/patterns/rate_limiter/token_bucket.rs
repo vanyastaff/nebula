@@ -79,7 +79,6 @@ impl TokenBucket {
         self.burst_size = burst_size;
         self
     }
-
 }
 
 #[async_trait]

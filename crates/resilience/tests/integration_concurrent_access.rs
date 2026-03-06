@@ -253,7 +253,8 @@ async fn test_bulkhead_timeout_under_load() {
                 Ok(_) => {
                     success_count.fetch_add(1, Ordering::SeqCst);
                 }
-                Err(ResilienceError::BulkheadFull { .. }) | Err(ResilienceError::Timeout { .. }) => {
+                Err(ResilienceError::BulkheadFull { .. })
+                | Err(ResilienceError::Timeout { .. }) => {
                     timeout_count.fetch_add(1, Ordering::SeqCst);
                 }
                 Err(_) => {}
