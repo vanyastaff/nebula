@@ -86,7 +86,7 @@ async fn test_validate_batch() {
     let context = CredentialContext::new("user-1");
 
     // Store multiple credentials
-    let ids: Vec<CredentialId> = (0..5).map(|i| CredentialId::new()).collect();
+    let ids: Vec<CredentialId> = (0..5).map(|_| CredentialId::new()).collect();
 
     for id in &ids {
         manager

@@ -17,7 +17,12 @@ use std::collections::HashMap;
 pub enum QueueError {
     /// Task not found (e.g. ack/nack unknown id).
     #[error("{entity} not found: {id}")]
-    NotFound { entity: String, id: String },
+    NotFound {
+        /// Entity type (for example, `task`).
+        entity: String,
+        /// Missing entity identifier.
+        id: String,
+    },
 
     /// Internal queue failure (full, closed, etc.).
     #[error("internal error: {0}")]

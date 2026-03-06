@@ -106,4 +106,9 @@ impl<T> BoundedStreamBuffer<T> {
     pub async fn len(&self) -> usize {
         self.inner.queue.lock().await.len()
     }
+
+    /// Whether the queue currently has no buffered items.
+    pub async fn is_empty(&self) -> bool {
+        self.len().await == 0
+    }
 }

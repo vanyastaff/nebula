@@ -92,18 +92,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 6. Demonstrate cache with multiple credentials
     println!("6. Storing and retrieving multiple credentials...");
+    let mut stored_ids = Vec::with_capacity(5);
     for i in 1..=5 {
         let cred_id = CredentialId::new();
         let cred_data = encrypt(&key, format!("secret-{}", i).as_bytes())?;
         manager
             .store(&cred_id, cred_data, CredentialMetadata::new(), &context)
             .await?;
+        stored_ids.push(cred_id);
     }
     println!("   ✓ Stored 5 credentials");
 
     // Retrieve all to populate cache
-    for i in 1..=5 {
-        let cred_id = CredentialId::new();
+    for cred_id in &stored_ids {
         manager.retrieve(&cred_id, &context).await?;
     }
 

@@ -60,7 +60,7 @@ where
         
         // Add request ID to response headers
         Box::pin(async move {
-            let mut response = future.await.map_err(|e| e)?.into_response();
+            let mut response = future.await?.into_response();
             if let Ok(value) = request_id.parse() {
                 response.headers_mut().insert(X_REQUEST_ID, value);
             }
