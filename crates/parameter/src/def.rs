@@ -228,6 +228,274 @@ impl ParameterDef {
     }
 }
 
+impl<S> From<crate::typed::Text<S>> for ParameterDef
+where
+    S: crate::subtype::traits::TextSubtype,
+{
+    fn from(value: crate::typed::Text<S>) -> Self {
+        let subtype = crate::subtype::TextSubtype::from_name(S::name()).unwrap_or_default();
+
+        let options = value.options.map(|opts| TextOptions {
+            pattern: opts.pattern,
+            max_length: opts.max_length,
+            min_length: opts.min_length,
+        });
+
+        Self::Text(TextParameter {
+            metadata: value.metadata,
+            default: value.default,
+            options,
+            subtype,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+impl<S> From<crate::typed::Number<S>> for ParameterDef
+where
+    S: crate::subtype::traits::NumberSubtype,
+{
+    fn from(value: crate::typed::Number<S>) -> Self {
+        let subtype = crate::subtype::NumberSubtype::from_name(S::name()).unwrap_or_default();
+
+        let options = value.options.map(|opts| NumberOptions {
+            min: opts.min.map(crate::subtype::traits::Numeric::to_f64),
+            max: opts.max.map(crate::subtype::traits::Numeric::to_f64),
+            step: opts.step.map(crate::subtype::traits::Numeric::to_f64),
+            precision: opts.precision,
+        });
+
+        Self::Number(NumberParameter {
+            metadata: value.metadata,
+            default: value.default.map(crate::subtype::traits::Numeric::to_f64),
+            options,
+            subtype,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+impl<S> From<crate::typed::Checkbox<S>> for ParameterDef
+where
+    S: crate::subtype::traits::BooleanSubtype,
+{
+    fn from(value: crate::typed::Checkbox<S>) -> Self {
+        let subtype = crate::subtype::BooleanSubtype::from_name(S::name()).unwrap_or_default();
+
+        let options = value.options.map(|opts| CheckboxOptions {
+            label: opts.label,
+            help_text: opts.help_text,
+        });
+
+        Self::Checkbox(CheckboxParameter {
+            metadata: value.metadata,
+            default: value.default,
+            options,
+            subtype,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+// ── Conversions for complex typed parameters ─────────────────────────────────
+
+impl From<crate::typed::Select> for ParameterDef {
+    fn from(value: crate::typed::Select) -> Self {
+        Self::Select(SelectParameter {
+            metadata: value.metadata,
+            default: value.default,
+            options: value.options,
+            select_options: value.select_options,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+impl From<crate::typed::MultiSelect> for ParameterDef {
+    fn from(value: crate::typed::MultiSelect) -> Self {
+        Self::MultiSelect(MultiSelectParameter {
+            metadata: value.metadata,
+            default: value.default,
+            options: value.options,
+            multi_select_options: value.multi_select_options,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+impl From<crate::typed::Object> for ParameterDef {
+    fn from(value: crate::typed::Object) -> Self {
+        Self::Object(ObjectParameter {
+            metadata: value.metadata,
+            fields: value.fields,
+            default: value.default,
+            options: value.options,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+impl From<crate::typed::Group> for ParameterDef {
+    fn from(value: crate::typed::Group) -> Self {
+        Self::Group(GroupParameter {
+            metadata: value.metadata,
+            parameters: value.parameters,
+            options: value.options,
+            display: value.display,
+        })
+    }
+}
+
+impl From<crate::typed::List> for ParameterDef {
+    fn from(value: crate::typed::List) -> Self {
+        Self::List(ListParameter {
+            metadata: value.metadata,
+            item_template: value.item_template,
+            default: value.default,
+            options: value.options,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+impl From<crate::typed::Notice> for ParameterDef {
+    fn from(value: crate::typed::Notice) -> Self {
+        Self::Notice(NoticeParameter {
+            metadata: value.metadata,
+            notice_type: value.notice_type,
+            content: value.content,
+            display: value.display,
+        })
+    }
+}
+
+impl From<crate::typed::Hidden> for ParameterDef {
+    fn from(value: crate::typed::Hidden) -> Self {
+        Self::Hidden(HiddenParameter {
+            metadata: value.metadata,
+            default: value.default,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+impl From<crate::typed::Mode> for ParameterDef {
+    fn from(value: crate::typed::Mode) -> Self {
+        Self::Mode(ModeParameter {
+            metadata: value.metadata,
+            variants: value.variants,
+            default_variant: value.default_variant,
+            options: value.options,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+impl From<crate::typed::Expirable> for ParameterDef {
+    fn from(value: crate::typed::Expirable) -> Self {
+        Self::Expirable(ExpirableParameter {
+            metadata: value.metadata,
+            inner: value.inner,
+            options: value.options,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+impl From<crate::typed::Secret> for ParameterDef {
+    fn from(value: crate::typed::Secret) -> Self {
+        Self::Secret(SecretParameter {
+            metadata: value.metadata,
+            default: value.default,
+            options: value.options,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+impl From<crate::typed::Textarea> for ParameterDef {
+    fn from(value: crate::typed::Textarea) -> Self {
+        Self::Textarea(TextareaParameter {
+            metadata: value.metadata,
+            default: value.default,
+            options: value.options,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+impl From<crate::typed::Code> for ParameterDef {
+    fn from(value: crate::typed::Code) -> Self {
+        Self::Code(CodeParameter {
+            metadata: value.metadata,
+            default: value.default,
+            options: value.options,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+impl From<crate::typed::Color> for ParameterDef {
+    fn from(value: crate::typed::Color) -> Self {
+        Self::Color(ColorParameter {
+            metadata: value.metadata,
+            default: value.default,
+            options: value.options,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+impl From<crate::typed::Date> for ParameterDef {
+    fn from(value: crate::typed::Date) -> Self {
+        Self::Date(DateParameter {
+            metadata: value.metadata,
+            default: value.default,
+            options: value.options,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+impl From<crate::typed::DateTime> for ParameterDef {
+    fn from(value: crate::typed::DateTime) -> Self {
+        Self::DateTime(DateTimeParameter {
+            metadata: value.metadata,
+            default: value.default,
+            options: value.options,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
+impl From<crate::typed::TimePicker> for ParameterDef {
+    fn from(value: crate::typed::TimePicker) -> Self {
+        Self::Time(TimeParameter {
+            metadata: value.metadata,
+            default: value.default,
+            options: value.options,
+            display: value.display,
+            validation: value.validation,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

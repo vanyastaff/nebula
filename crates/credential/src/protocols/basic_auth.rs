@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use nebula_parameter::collection::ParameterCollection;
 use nebula_parameter::def::ParameterDef;
-use nebula_parameter::types::{SecretParameter, TextParameter};
+use nebula_parameter::typed::{Plain, Text};
+use nebula_parameter::types::SecretParameter;
 use nebula_parameter::values::ParameterValues;
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
@@ -42,14 +43,16 @@ impl StaticProtocol for BasicAuthProtocol {
     type State = BasicAuthState;
 
     fn parameters() -> ParameterCollection {
-        let mut username = TextParameter::new("username", "Username");
-        username.metadata.required = true;
+        let username = Text::<Plain>::builder("username")
+            .label("Username")
+            .required()
+            .build();
 
         let mut password = SecretParameter::new("password", "Password");
         password.metadata.required = true;
 
         ParameterCollection::new()
-            .with(ParameterDef::Text(username))
+            .with(ParameterDef::from(username))
             .with(ParameterDef::Secret(password))
     }
 

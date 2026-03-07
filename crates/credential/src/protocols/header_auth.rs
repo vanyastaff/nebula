@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use nebula_parameter::collection::ParameterCollection;
 use nebula_parameter::def::ParameterDef;
-use nebula_parameter::types::{SecretParameter, TextParameter};
+use nebula_parameter::typed::{Plain, Text};
+use nebula_parameter::types::SecretParameter;
 use nebula_parameter::values::ParameterValues;
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
@@ -33,15 +34,17 @@ impl StaticProtocol for HeaderAuthProtocol {
     type State = HeaderAuthState;
 
     fn parameters() -> ParameterCollection {
-        let mut name = TextParameter::new("header_name", "Header Name");
-        name.metadata.required = true;
+        let mut name = Text::<Plain>::builder("header_name")
+            .label("Header Name")
+            .required()
+            .build();
         name.metadata.placeholder = Some("X-Auth-Token".into());
 
         let mut value = SecretParameter::new("header_value", "Header Value");
         value.metadata.required = true;
 
         ParameterCollection::new()
-            .with(ParameterDef::Text(name))
+            .with(ParameterDef::from(name))
             .with(ParameterDef::Secret(value))
     }
 

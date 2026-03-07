@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use nebula_parameter::collection::ParameterCollection;
 use nebula_parameter::def::ParameterDef;
-use nebula_parameter::types::{SecretParameter, TextParameter};
+use nebula_parameter::typed::{Text, Url};
+use nebula_parameter::types::SecretParameter;
 use nebula_parameter::values::ParameterValues;
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
@@ -66,17 +67,18 @@ impl StaticProtocol for ApiKeyProtocol {
     type State = ApiKeyState;
 
     fn parameters() -> ParameterCollection {
-        let mut server = TextParameter::new("server", "Server URL");
-        server.metadata.description =
-            Some("Base URL of the service (e.g. https://api.github.com)".into());
-        server.metadata.required = true;
+        let server = Text::<Url>::builder("server")
+            .label("Server URL")
+            .description("Base URL of the service (e.g. https://api.github.com)")
+            .required()
+            .build();
 
         let mut token = SecretParameter::new("token", "API Token");
         token.metadata.description = Some("Secret API token or personal access token".into());
         token.metadata.required = true;
 
         ParameterCollection::new()
-            .with(ParameterDef::Text(server))
+            .with(ParameterDef::from(server))
             .with(ParameterDef::Secret(token))
     }
 

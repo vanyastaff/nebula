@@ -3,6 +3,8 @@ use std::ops::Index;
 
 use serde::{Deserialize, Serialize};
 
+use crate::subtype::traits::Numeric;
+
 /// A set of parameter values, keyed by parameter key.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParameterValues {
@@ -65,13 +67,69 @@ impl ParameterValues {
     /// Try to get a value as f64.
     #[must_use]
     pub fn get_f64(&self, key: &str) -> Option<f64> {
-        self.values.get(key)?.as_f64()
+        self.get_number(key)
     }
 
     /// Try to get a value as bool.
     #[must_use]
     pub fn get_bool(&self, key: &str) -> Option<bool> {
         self.values.get(key)?.as_bool()
+    }
+
+    /// Try to get a value as i64.
+    #[must_use]
+    pub fn get_i64(&self, key: &str) -> Option<i64> {
+        self.get_number(key)
+    }
+
+    /// Try to get a numeric value as a specific Rust numeric type.
+    #[must_use]
+    pub fn get_number<T: Numeric>(&self, key: &str) -> Option<T> {
+        self.values.get(key).and_then(T::from_json)
+    }
+
+    /// Try to get a value as array slice.
+    #[must_use]
+    pub fn get_array(&self, key: &str) -> Option<&[serde_json::Value]> {
+        self.values.get(key)?.as_array().map(Vec::as_slice)
+    }
+
+    /// Try to get a value as object.
+    #[must_use]
+    pub fn get_object(&self, key: &str) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        self.values.get(key)?.as_object()
+    }
+
+    /// Try to deserialize a value to a specific type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deserialization fails.
+    pub fn get_as<T: serde::de::DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> Option<Result<T, serde_json::Error>> {
+        self.values
+            .get(key)
+            .map(|v| serde_json::from_value(v.clone()))
+    }
+
+    /// Set a value with automatic JSON conversion.
+    pub fn set_json<T: serde::Serialize>(
+        &mut self,
+        key: impl Into<String>,
+        value: T,
+    ) -> Result<(), serde_json::Error> {
+        let json_value = serde_json::to_value(value)?;
+        self.values.insert(key.into(), json_value);
+        Ok(())
+    }
+
+    /// Merge another value set into this one, overwriting existing keys.
+    pub fn merge(&mut self, other: &Self) {
+        for (k, v) in &other.values {
+            self.values.insert(k.clone(), v.clone());
+        }
     }
 
     /// Create a snapshot of the current values for later restore.
@@ -221,9 +279,20 @@ mod tests {
 
         assert_eq!(vals.get_f64("age"), Some(30.0));
         assert_eq!(vals.get_f64("name"), None);
-
         assert_eq!(vals.get_bool("active"), Some(true));
         assert_eq!(vals.get_bool("name"), None);
+    }
+
+    #[test]
+    fn get_number_preserves_integer_types() {
+        let mut vals = ParameterValues::new();
+        vals.set("port", serde_json::json!(8080));
+        vals.set("ratio", serde_json::json!(0.5));
+
+        assert_eq!(vals.get_number::<u16>("port"), Some(8080));
+        assert_eq!(vals.get_number::<i64>("port"), Some(8080));
+        assert_eq!(vals.get_number::<f64>("ratio"), Some(0.5));
+        assert_eq!(vals.get_number::<u16>("ratio"), None);
     }
 
     #[test]

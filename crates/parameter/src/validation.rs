@@ -162,6 +162,16 @@ impl ValidationRule {
         }
         self
     }
+
+    /// Replaces any existing rule of the same variant kind in-place.
+    pub(crate) fn replace_in(rules: &mut Vec<Self>, rule: Self) {
+        rules.retain(|existing| !existing.is_same_kind(&rule));
+        rules.push(rule);
+    }
+
+    fn is_same_kind(&self, other: &Self) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
 }
 
 #[cfg(test)]
@@ -393,5 +403,20 @@ mod tests {
         let c = ValidationRule::min_length(20);
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn replace_in_keeps_only_latest_rule_of_same_kind() {
+        let mut rules = vec![
+            ValidationRule::min(1.0),
+            ValidationRule::max(10.0),
+            ValidationRule::min(2.0),
+        ];
+
+        ValidationRule::replace_in(&mut rules, ValidationRule::min(5.0));
+
+        assert_eq!(rules.len(), 2);
+        assert!(rules.contains(&ValidationRule::min(5.0)));
+        assert!(rules.contains(&ValidationRule::max(10.0)));
     }
 }
