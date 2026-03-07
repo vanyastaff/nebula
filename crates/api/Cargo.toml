@@ -27,7 +27,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 thiserror = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
-uuid = { version = "1.11", features = ["v4", "serde"] }
+uuid = { version = "1.22", features = ["v4", "serde"] }
 async-trait = { workspace = true }
 futures = "0.3"
 
