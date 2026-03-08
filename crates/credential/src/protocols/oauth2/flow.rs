@@ -11,7 +11,8 @@ use serde_json::Value;
 
 use nebula_parameter::collection::ParameterCollection;
 use nebula_parameter::def::ParameterDef;
-use nebula_parameter::types::{SecretParameter, TextParameter};
+use nebula_parameter::typed::{Plain, Text};
+use nebula_parameter::types::SecretParameter;
 use nebula_parameter::values::ParameterValues;
 
 use crate::core::result::{
@@ -39,16 +40,18 @@ impl FlowProtocol for OAuth2Protocol {
     type State = OAuth2State;
 
     fn parameters() -> ParameterCollection {
-        let mut client_id = TextParameter::new("client_id", "Client ID");
-        client_id.metadata.description = Some("OAuth2 client identifier".into());
-        client_id.metadata.required = true;
+        let client_id = Text::<Plain>::builder("client_id")
+            .label("Client ID")
+            .description("OAuth2 client identifier")
+            .required()
+            .build();
 
         let mut client_secret = SecretParameter::new("client_secret", "Client Secret");
         client_secret.metadata.description = Some("OAuth2 client secret".into());
         client_secret.metadata.required = true;
 
         ParameterCollection::new()
-            .with(ParameterDef::Text(client_id))
+            .with(ParameterDef::from(client_id))
             .with(ParameterDef::Secret(client_secret))
     }
 

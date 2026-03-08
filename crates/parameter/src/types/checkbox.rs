@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::display::ParameterDisplay;
 use crate::metadata::ParameterMetadata;
+use crate::subtype::BooleanSubtype;
 use crate::validation::ValidationRule;
 
 /// Options specific to checkbox parameters.
@@ -28,6 +29,10 @@ pub struct CheckboxParameter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<CheckboxOptions>,
 
+    /// Semantic boolean subtype.
+    #[serde(default, skip_serializing_if = "is_default_boolean_subtype")]
+    pub subtype: BooleanSubtype,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<ParameterDisplay>,
 
@@ -42,10 +47,34 @@ impl CheckboxParameter {
             metadata: ParameterMetadata::new(key, name),
             default: None,
             options: None,
+            subtype: BooleanSubtype::default(),
             display: None,
             validation: Vec::new(),
         }
     }
+
+    /// Sets semantic subtype for this checkbox parameter.
+    #[must_use]
+    pub fn subtype(mut self, subtype: BooleanSubtype) -> Self {
+        self.subtype = subtype;
+        self
+    }
+
+    /// Creates a feature-flag checkbox.
+    #[must_use]
+    pub fn feature_flag(key: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new(key, name).subtype(BooleanSubtype::FeatureFlag)
+    }
+
+    /// Creates a consent checkbox.
+    #[must_use]
+    pub fn consent(key: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new(key, name).subtype(BooleanSubtype::Consent)
+    }
+}
+
+fn is_default_boolean_subtype(subtype: &BooleanSubtype) -> bool {
+    *subtype == BooleanSubtype::default()
 }
 
 #[cfg(test)]
@@ -68,6 +97,7 @@ mod tests {
                 label: Some("Enable debug logging".into()),
                 help_text: Some("Verbose output".into()),
             }),
+            subtype: BooleanSubtype::Toggle,
             display: None,
             validation: vec![],
         };

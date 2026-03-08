@@ -98,7 +98,13 @@ impl ParameterCollection {
     pub fn validate(&self, values: &ParameterValues) -> Result<(), Vec<ParameterError>> {
         let mut errors = Vec::new();
         for param in &self.parameters {
-            validate_param(param, values.get(param.key()), param.key(), &mut errors);
+            validate_param(
+                param,
+                values.get(param.key()),
+                param.key(),
+                values,
+                &mut errors,
+            );
         }
         if errors.is_empty() {
             Ok(())
@@ -116,8 +122,22 @@ fn validate_param(
     param: &ParameterDef,
     value: Option<&Value>,
     path: &str,
+    root_values: &ParameterValues,
     errors: &mut Vec<ParameterError>,
 ) {
+    if let ParameterDef::Group(group) = param {
+        for child in &group.parameters {
+            validate_param(
+                child,
+                root_values.get(child.key()),
+                child.key(),
+                root_values,
+                errors,
+            );
+        }
+        return;
+    }
+
     let expected_type = param.kind().value_type();
 
     // Display-only parameters (Notice, Group) carry no value.
@@ -146,7 +166,9 @@ fn validate_param(
         _ => {}
     }
 
-    let value = value.expect("handled None above");
+    let Some(value) = value else {
+        return;
+    };
 
     // --- Type check ---
     if !value_matches_type(value, expected_type) {
@@ -170,7 +192,7 @@ fn validate_param(
                 for field in &obj.fields {
                     let child_path = format!("{path}.{}", field.key());
                     let child_value = map.get(field.key());
-                    validate_param(field, child_value, &child_path, errors);
+                    validate_param(field, child_value, &child_path, root_values, errors);
                 }
             }
         }
@@ -178,9 +200,18 @@ fn validate_param(
             if let Some(arr) = value.as_array() {
                 for (i, item) in arr.iter().enumerate() {
                     let child_path = format!("{path}[{i}]");
-                    validate_param(&list.item_template, Some(item), &child_path, errors);
+                    validate_param(
+                        &list.item_template,
+                        Some(item),
+                        &child_path,
+                        root_values,
+                        errors,
+                    );
                 }
             }
+        }
+        ParameterDef::Expirable(expirable) => {
+            validate_param(&expirable.inner, Some(value), path, root_values, errors);
         }
         _ => {}
     }
@@ -274,16 +305,14 @@ fn evaluate_rule(
         };
         errors.push(ParameterError::ValidationError {
             key: path.to_owned(),
-            reason: custom_message
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    let mut reason = format!("[{}] {}", e.code, e.message);
-                    if let Some(pointer) = e.field_pointer() {
-                        reason.push_str(" at ");
-                        reason.push_str(pointer.as_ref());
-                    }
-                    reason
-                }),
+            reason: custom_message.map(str::to_owned).unwrap_or_else(|| {
+                let mut reason = format!("[{}] {}", e.code, e.message);
+                if let Some(pointer) = e.field_pointer() {
+                    reason.push_str(" at ");
+                    reason.push_str(pointer.as_ref());
+                }
+                reason
+            }),
         });
     }
 }
@@ -1196,5 +1225,43 @@ mod tests {
 
         values.set("token", json!(true));
         assert!(col.validate(&values).is_ok());
+    }
+
+    #[test]
+    fn validate_group_reaches_flat_child_parameters() {
+        let mut group = GroupParameter::new("advanced", "Advanced");
+        group.parameters.push(required_text("api_key", "API Key"));
+
+        let col = ParameterCollection::new().with(ParameterDef::Group(group));
+
+        let values = ParameterValues::new();
+        let errs = col.validate(&values).unwrap_err();
+
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(
+            &errs[0],
+            ParameterError::MissingValue { key } if key == "api_key"
+        ));
+    }
+
+    #[test]
+    fn validate_expirable_applies_inner_validation_at_outer_key() {
+        let mut inner = TextParameter::new("token", "Token");
+        inner.validation.push(ValidationRule::min_length(5));
+
+        let expirable =
+            ExpirableParameter::new("access_token", "Access Token", ParameterDef::Text(inner));
+
+        let col = ParameterCollection::new().with(ParameterDef::Expirable(expirable));
+
+        let mut values = ParameterValues::new();
+        values.set("access_token", json!("abc"));
+
+        let errs = col.validate(&values).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(
+            &errs[0],
+            ParameterError::ValidationError { key, .. } if key == "access_token"
+        ));
     }
 }

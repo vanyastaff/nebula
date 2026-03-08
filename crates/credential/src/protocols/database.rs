@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use nebula_parameter::collection::ParameterCollection;
 use nebula_parameter::def::ParameterDef;
-use nebula_parameter::types::{SecretParameter, TextParameter};
+use nebula_parameter::typed::{Plain, Text};
+use nebula_parameter::types::SecretParameter;
 use nebula_parameter::values::ParameterValues;
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
@@ -37,32 +38,40 @@ impl StaticProtocol for DatabaseProtocol {
     type State = DatabaseState;
 
     fn parameters() -> ParameterCollection {
-        let mut host = TextParameter::new("host", "Host");
-        host.metadata.required = true;
+        let mut host = Text::<Plain>::builder("host")
+            .label("Host")
+            .required()
+            .build();
         host.metadata.placeholder = Some("localhost".into());
 
-        let mut port = TextParameter::new("port", "Port");
+        let mut port = Text::<Plain>::builder("port").label("Port").build();
         port.metadata.placeholder = Some("5432".into());
 
-        let mut database = TextParameter::new("database", "Database");
-        database.metadata.required = true;
+        let database = Text::<Plain>::builder("database")
+            .label("Database")
+            .required()
+            .build();
 
-        let mut username = TextParameter::new("username", "Username");
-        username.metadata.required = true;
+        let username = Text::<Plain>::builder("username")
+            .label("Username")
+            .required()
+            .build();
 
         let mut password = SecretParameter::new("password", "Password");
         password.metadata.required = true;
 
-        let mut ssl_mode = TextParameter::new("ssl_mode", "SSL Mode");
+        let mut ssl_mode = Text::<Plain>::builder("ssl_mode")
+            .label("SSL Mode")
+            .build();
         ssl_mode.metadata.placeholder = Some("disable".into());
 
         ParameterCollection::new()
-            .with(ParameterDef::Text(host))
-            .with(ParameterDef::Text(port))
-            .with(ParameterDef::Text(database))
-            .with(ParameterDef::Text(username))
+            .with(ParameterDef::from(host))
+            .with(ParameterDef::from(port))
+            .with(ParameterDef::from(database))
+            .with(ParameterDef::from(username))
             .with(ParameterDef::Secret(password))
-            .with(ParameterDef::Text(ssl_mode))
+            .with(ParameterDef::from(ssl_mode))
     }
 
     fn build_state(values: &ParameterValues) -> Result<Self::State, CredentialError> {

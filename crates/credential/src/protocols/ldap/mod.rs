@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use nebula_parameter::collection::ParameterCollection;
 use nebula_parameter::def::ParameterDef;
-use nebula_parameter::types::{SecretParameter, TextParameter};
+use nebula_parameter::typed::{Plain, Text};
+use nebula_parameter::types::SecretParameter;
 use nebula_parameter::values::ParameterValues;
 
 use crate::core::result::InitializeResult;
@@ -52,24 +53,28 @@ impl FlowProtocol for LdapProtocol {
     type State = LdapState;
 
     fn parameters() -> ParameterCollection {
-        let mut host = TextParameter::new("host", "LDAP Host");
-        host.metadata.required = true;
+        let mut host = Text::<Plain>::builder("host")
+            .label("LDAP Host")
+            .required()
+            .build();
         host.metadata.placeholder = Some("ldap.example.com".into());
 
-        let mut port = TextParameter::new("port", "Port");
+        let mut port = Text::<Plain>::builder("port").label("Port").build();
         port.metadata.placeholder = Some("389".into());
 
-        let mut bind_dn = TextParameter::new("bind_dn", "Bind DN");
-        bind_dn.metadata.required = true;
+        let mut bind_dn = Text::<Plain>::builder("bind_dn")
+            .label("Bind DN")
+            .required()
+            .build();
         bind_dn.metadata.placeholder = Some("cn=admin,dc=example,dc=com".into());
 
         let mut bind_password = SecretParameter::new("bind_password", "Bind Password");
         bind_password.metadata.required = true;
 
         ParameterCollection::new()
-            .with(ParameterDef::Text(host))
-            .with(ParameterDef::Text(port))
-            .with(ParameterDef::Text(bind_dn))
+            .with(ParameterDef::from(host))
+            .with(ParameterDef::from(port))
+            .with(ParameterDef::from(bind_dn))
             .with(ParameterDef::Secret(bind_password))
     }
 
