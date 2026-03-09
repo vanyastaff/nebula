@@ -22,3 +22,4 @@ async-trait = { workspace = true }
 [dev-dependencies]
 pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
+reqwest = { workspace = true, features = ["json", "rustls"] }
