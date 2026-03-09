@@ -173,7 +173,7 @@ mod tests {
     use nebula_credential::core::result::InitializeResult;
     use nebula_credential::core::{CredentialContext, CredentialDescription};
     use nebula_credential::traits::CredentialType;
-    use nebula_parameter::collection::ParameterCollection;
+    use nebula_parameter::schema::Schema;
     use nebula_resource::ResourceRef;
     use nebula_resource::context::Context;
     use nebula_resource::metadata::ResourceMetadata;
@@ -194,7 +194,7 @@ mod tests {
                 .key("test_credential")
                 .name("Test")
                 .description("")
-                .properties(ParameterCollection::new())
+                .properties(Schema::new())
                 .build()
                 .unwrap()
         }
@@ -217,7 +217,7 @@ mod tests {
                 .key("another_credential")
                 .name("Another")
                 .description("")
-                .properties(ParameterCollection::new())
+                .properties(Schema::new())
                 .build()
                 .unwrap()
         }

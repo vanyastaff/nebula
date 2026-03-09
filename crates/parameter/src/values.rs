@@ -1,9 +1,115 @@
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::ops::Index;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::subtype::traits::Numeric;
+/// Reserved object key that marks expression-backed runtime values.
+pub const EXPRESSION_KEY: &str = "$expr";
+
+/// Typed runtime value model used on top of the JSON wire format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParameterValue {
+    /// Plain JSON literal.
+    Literal(serde_json::Value),
+    /// Expression-backed value encoded as `{ "$expr": "..." }`.
+    Expression(String),
+    /// Mode selection encoded as `{ "mode": "...", "value"?: ... }`.
+    Mode {
+        /// Selected variant key.
+        mode: String,
+        /// Optional payload for the selected variant.
+        value: Option<serde_json::Value>,
+    },
+}
+
+impl ParameterValue {
+    /// Parses a typed value from JSON runtime data.
+    #[must_use]
+    pub fn from_json(value: &serde_json::Value) -> Self {
+        if let Some(object) = value.as_object() {
+            if object.len() == 1
+                && let Some(expression) = object
+                    .get(EXPRESSION_KEY)
+                    .and_then(serde_json::Value::as_str)
+            {
+                return Self::Expression(expression.to_owned());
+            }
+
+            if let Some(mode) = object.get("mode").and_then(serde_json::Value::as_str) {
+                return Self::Mode {
+                    mode: mode.to_owned(),
+                    value: object.get("value").cloned(),
+                };
+            }
+        }
+
+        Self::Literal(value.clone())
+    }
+
+    /// Converts this typed value to the JSON wire representation.
+    #[must_use]
+    pub fn into_json(self) -> serde_json::Value {
+        match self {
+            Self::Literal(value) => value,
+            Self::Expression(expression) => {
+                serde_json::json!({ EXPRESSION_KEY: expression })
+            }
+            Self::Mode { mode, value } => {
+                let mut object = serde_json::Map::new();
+                object.insert("mode".to_owned(), serde_json::Value::String(mode));
+                if let Some(value) = value {
+                    object.insert("value".to_owned(), value);
+                }
+                serde_json::Value::Object(object)
+            }
+        }
+    }
+}
+
+/// Borrowed view of a mode selection value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModeValueRef<'a> {
+    /// Selected mode key.
+    pub mode: &'a str,
+    /// Optional variant payload.
+    pub value: Option<&'a serde_json::Value>,
+}
+
+/// Trait for numeric types supported by [`ParameterValues::get_number`].
+pub trait Numeric:
+    Copy + PartialOrd + Debug + Send + Sync + Serialize + DeserializeOwned + 'static
+{
+    /// Parse this type from a [`serde_json::Value`].
+    fn from_json(value: &serde_json::Value) -> Option<Self>;
+}
+
+impl Numeric for f64 {
+    fn from_json(value: &serde_json::Value) -> Option<Self> {
+        value.as_f64()
+    }
+}
+
+impl Numeric for i64 {
+    fn from_json(value: &serde_json::Value) -> Option<Self> {
+        value
+            .as_i64()
+            .or_else(|| value.as_u64().and_then(|v| i64::try_from(v).ok()))
+    }
+}
+
+impl Numeric for u64 {
+    fn from_json(value: &serde_json::Value) -> Option<Self> {
+        value.as_u64()
+    }
+}
+
+impl Numeric for u16 {
+    fn from_json(value: &serde_json::Value) -> Option<Self> {
+        value.as_u64().and_then(|v| u16::try_from(v).ok())
+    }
+}
 
 /// A set of parameter values, keyed by parameter key.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +134,32 @@ impl ParameterValues {
     /// Set a value for a parameter key.
     pub fn set(&mut self, key: impl Into<String>, value: serde_json::Value) {
         self.values.insert(key.into(), value);
+    }
+
+    /// Set a typed runtime value for a parameter key.
+    pub fn set_typed(&mut self, key: impl Into<String>, value: ParameterValue) {
+        self.values.insert(key.into(), value.into_json());
+    }
+
+    /// Set an expression-backed value.
+    pub fn set_expression(&mut self, key: impl Into<String>, expression: impl Into<String>) {
+        self.set_typed(key, ParameterValue::Expression(expression.into()));
+    }
+
+    /// Set a mode selection value.
+    pub fn set_mode(
+        &mut self,
+        key: impl Into<String>,
+        mode: impl Into<String>,
+        value: Option<serde_json::Value>,
+    ) {
+        self.set_typed(
+            key,
+            ParameterValue::Mode {
+                mode: mode.into(),
+                value,
+            },
+        );
     }
 
     /// Remove a value by key, returning it if it existed.
@@ -62,6 +194,35 @@ impl ParameterValues {
     #[must_use]
     pub fn get_string(&self, key: &str) -> Option<&str> {
         self.values.get(key)?.as_str()
+    }
+
+    /// Get a value classified into the typed runtime model.
+    #[must_use]
+    pub fn get_typed(&self, key: &str) -> Option<ParameterValue> {
+        self.values.get(key).map(ParameterValue::from_json)
+    }
+
+    /// Get an expression body if the value is expression-backed.
+    #[must_use]
+    pub fn get_expression(&self, key: &str) -> Option<&str> {
+        let object = self.values.get(key)?.as_object()?;
+        if object.len() != 1 {
+            return None;
+        }
+        object
+            .get(EXPRESSION_KEY)
+            .and_then(serde_json::Value::as_str)
+    }
+
+    /// Get mode selection details if the value is mode-based.
+    #[must_use]
+    pub fn get_mode(&self, key: &str) -> Option<ModeValueRef<'_>> {
+        let object = self.values.get(key)?.as_object()?;
+        let mode = object.get("mode")?.as_str()?;
+        Some(ModeValueRef {
+            mode,
+            value: object.get("value"),
+        })
     }
 
     /// Try to get a value as f64.
@@ -109,9 +270,7 @@ impl ParameterValues {
         &self,
         key: &str,
     ) -> Option<Result<T, serde_json::Error>> {
-        self.values
-            .get(key)
-            .map(|v| serde_json::from_value(v.clone()))
+        self.values.get(key).map(T::deserialize)
     }
 
     /// Set a value with automatic JSON conversion.
@@ -386,5 +545,50 @@ mod tests {
         // Should be flat, not nested under "values"
         assert!(json_str.contains("\"name\":\"test\""));
         assert!(!json_str.contains("\"values\""));
+    }
+
+    #[test]
+    fn typed_value_expression_roundtrip() {
+        let mut vals = ParameterValues::new();
+        vals.set_expression("timeout", "inputs.retries * 1000");
+
+        assert_eq!(
+            vals.get_expression("timeout"),
+            Some("inputs.retries * 1000")
+        );
+        assert_eq!(
+            vals.get_typed("timeout"),
+            Some(ParameterValue::Expression(
+                "inputs.retries * 1000".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn typed_value_mode_roundtrip() {
+        let mut vals = ParameterValues::new();
+        vals.set_mode("auth", "bearer", Some(json!({ "token": "abc" })));
+
+        let mode = vals.get_mode("auth").expect("mode value expected");
+        assert_eq!(mode.mode, "bearer");
+        assert_eq!(mode.value, Some(&json!({ "token": "abc" })));
+        assert_eq!(
+            vals.get_typed("auth"),
+            Some(ParameterValue::Mode {
+                mode: "bearer".to_owned(),
+                value: Some(json!({ "token": "abc" })),
+            })
+        );
+    }
+
+    #[test]
+    fn typed_value_literal_classification() {
+        let mut vals = ParameterValues::new();
+        vals.set("port", json!(8080));
+
+        assert_eq!(
+            vals.get_typed("port"),
+            Some(ParameterValue::Literal(json!(8080)))
+        );
     }
 }

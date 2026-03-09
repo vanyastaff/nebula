@@ -36,8 +36,8 @@ impl EvaluationContext {
     }
 
     /// Set data for a specific node
-    pub fn set_node_data(&mut self, node_id: impl Into<String>, data: Value) {
-        let key: Arc<str> = Arc::from(node_id.into().as_str());
+    pub fn set_node_data(&mut self, node_id: impl AsRef<str>, data: Value) {
+        let key: Arc<str> = Arc::from(node_id.as_ref());
         self.nodes.insert(key, Arc::new(data));
     }
 
@@ -47,8 +47,8 @@ impl EvaluationContext {
     }
 
     /// Set an execution variable
-    pub fn set_execution_var(&mut self, name: impl Into<String>, value: Value) {
-        let key: Arc<str> = Arc::from(name.into().as_str());
+    pub fn set_execution_var(&mut self, name: impl AsRef<str>, value: Value) {
+        let key: Arc<str> = Arc::from(name.as_ref());
         self.execution_vars.insert(key, Arc::new(value));
     }
 
@@ -146,15 +146,15 @@ impl EvaluationContextBuilder {
     }
 
     /// Add node data
-    pub fn node(mut self, node_id: impl Into<String>, data: Value) -> Self {
-        let key: Arc<str> = Arc::from(node_id.into().as_str());
+    pub fn node(mut self, node_id: impl AsRef<str>, data: Value) -> Self {
+        let key: Arc<str> = Arc::from(node_id.as_ref());
         self.nodes.insert(key, Arc::new(data));
         self
     }
 
     /// Add an execution variable
-    pub fn execution_var(mut self, name: impl Into<String>, value: Value) -> Self {
-        let key: Arc<str> = Arc::from(name.into().as_str());
+    pub fn execution_var(mut self, name: impl AsRef<str>, value: Value) -> Self {
+        let key: Arc<str> = Arc::from(name.as_ref());
         self.execution_vars.insert(key, Arc::new(value));
         self
     }

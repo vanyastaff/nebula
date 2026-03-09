@@ -4,21 +4,18 @@
 //! that can be used for type registry and documentation.
 
 use nebula_credential::core::CredentialDescription;
-use nebula_parameter::collection::ParameterCollection;
-use nebula_parameter::def::ParameterDef;
-use nebula_parameter::types::{SecretParameter, TextParameter};
+use nebula_parameter::schema::{Field, Schema};
 
 fn main() {
-    // Example 1: GitHub OAuth2 credential type (using builder)
-    let github_properties = ParameterCollection::new()
-        .with(ParameterDef::Text(TextParameter::new(
-            "client_id",
-            "Client ID",
-        )))
-        .with(ParameterDef::Secret(SecretParameter::new(
-            "client_secret",
-            "Client Secret",
-        )));
+    // Example 1: GitHub OAuth2 credential type
+    let github_properties = Schema::new()
+        .field(Field::text("client_id").with_label("Client ID").required())
+        .field(
+            Field::text("client_secret")
+                .with_label("Client Secret")
+                .required()
+                .secret(),
+        );
 
     let github_oauth2 = CredentialDescription::builder()
         .key("github_oauth2")
@@ -39,15 +36,16 @@ fn main() {
     println!("  Properties: {} fields", github_oauth2.properties.len());
     println!();
 
-    // Example 2: PostgreSQL database credential type (using builder)
-    let postgres_properties = ParameterCollection::new()
-        .with(ParameterDef::Text(TextParameter::new("host", "Host")))
-        .with(ParameterDef::Text(TextParameter::new(
-            "username", "Username",
-        )))
-        .with(ParameterDef::Secret(SecretParameter::new(
-            "password", "Password",
-        )));
+    // Example 2: PostgreSQL database credential type
+    let postgres_properties = Schema::new()
+        .field(Field::text("host").with_label("Host").required())
+        .field(Field::text("username").with_label("Username").required())
+        .field(
+            Field::text("password")
+                .with_label("Password")
+                .required()
+                .secret(),
+        );
 
     let postgres_db = CredentialDescription::builder()
         .key("postgres_db")
@@ -72,9 +70,12 @@ fn main() {
         icon: Some("key".to_string()),
         icon_url: None,
         documentation_url: None,
-        properties: ParameterCollection::new().with(ParameterDef::Secret(SecretParameter::new(
-            "api_key", "API Key",
-        ))),
+        properties: Schema::new().field(
+            Field::text("api_key")
+                .with_label("API Key")
+                .required()
+                .secret(),
+        ),
     };
 
     println!("API Key Credential Type:");
@@ -87,3 +88,4 @@ fn main() {
     let json = serde_json::to_string_pretty(&github_oauth2).expect("Failed to serialize");
     println!("{json}");
 }
+

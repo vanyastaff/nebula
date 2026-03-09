@@ -2606,7 +2606,7 @@ pub struct CredentialTypeSchema {
     /// Optional icon
     pub icon: Option<String>,
     /// Parameter schema for POST body
-    pub params: nebula_parameter::collection::ParameterCollection,
+    pub params: nebula_parameter::schema::Schema,
     /// Capabilities (e.g. `["refresh", "revoke", "rotate"]`)
     pub capabilities: Vec<String>,
 }

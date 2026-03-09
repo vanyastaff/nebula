@@ -1,5 +1,5 @@
 use crate::port::{self, InputPort, OutputPort};
-use nebula_parameter::collection::ParameterCollection;
+use nebula_parameter::schema::Schema;
 
 // Re-export from core so downstream code can continue using `nebula_action::InterfaceVersion`.
 pub use nebula_core::InterfaceVersion;
@@ -55,7 +55,7 @@ pub struct ActionMetadata {
     /// Defaults to a single main flow output `"out"`.
     pub outputs: Vec<OutputPort>,
     /// Parameter definitions for this action (from nebula-parameter).
-    pub parameters: ParameterCollection,
+    pub parameters: Schema,
 }
 
 impl ActionMetadata {
@@ -72,7 +72,7 @@ impl ActionMetadata {
             version: InterfaceVersion::new(1, 0),
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
-            parameters: ParameterCollection::new(),
+            parameters: Schema::new(),
         }
     }
 
@@ -95,7 +95,7 @@ impl ActionMetadata {
     }
 
     /// Set the parameter definitions for this action.
-    pub fn with_parameters(mut self, parameters: ParameterCollection) -> Self {
+    pub fn with_parameters(mut self, parameters: Schema) -> Self {
         self.parameters = parameters;
         self
     }

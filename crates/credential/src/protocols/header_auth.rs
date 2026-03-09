@@ -2,10 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use nebula_parameter::collection::ParameterCollection;
-use nebula_parameter::def::ParameterDef;
-use nebula_parameter::typed::{Plain, Text};
-use nebula_parameter::types::SecretParameter;
+use nebula_parameter::schema::{Field, Schema};
 use nebula_parameter::values::ParameterValues;
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
@@ -33,19 +30,15 @@ pub struct HeaderAuthProtocol;
 impl StaticProtocol for HeaderAuthProtocol {
     type State = HeaderAuthState;
 
-    fn parameters() -> ParameterCollection {
-        let mut name = Text::<Plain>::builder("header_name")
-            .label("Header Name")
-            .required()
-            .build();
-        name.metadata.placeholder = Some("X-Auth-Token".into());
-
-        let mut value = SecretParameter::new("header_value", "Header Value");
-        value.metadata.required = true;
-
-        ParameterCollection::new()
-            .with(ParameterDef::from(name))
-            .with(ParameterDef::Secret(value))
+    fn parameters() -> Schema {
+        Schema::new()
+            .field(
+                Field::text("header_name")
+                    .with_label("Header Name")
+                    .with_placeholder("X-Auth-Token")
+                    .required(),
+            )
+            .field(Field::text("header_value").with_label("Header Value").required().secret())
     }
 
     fn build_state(values: &ParameterValues) -> Result<Self::State, CredentialError> {

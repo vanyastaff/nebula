@@ -129,11 +129,18 @@ impl ExpressionEngine {
         self.evaluator = Evaluator::with_policy(Arc::clone(&self.builtins), self.policy.clone());
     }
 
-    /// Register a custom builtin function
-    pub fn register_function(&mut self, name: &str, func: crate::builtins::BuiltinFunction) {
-        Arc::get_mut(&mut self.builtins)
-            .expect("Cannot register function after builtins have been shared")
-            .register(name, func);
+    /// Register a custom builtin function.
+    ///
+    /// This method is safe to call after the engine has been used. Internally,
+    /// it performs copy-on-write on the builtin registry when needed and then
+    /// rebuilds the evaluator so subsequent evaluations observe the new function.
+    pub fn register_function(
+        &mut self,
+        name: impl AsRef<str>,
+        func: crate::builtins::BuiltinFunction,
+    ) {
+        Arc::make_mut(&mut self.builtins).register(name, func);
+        self.rebuild_evaluator();
     }
 
     /// Evaluate an expression string in the given context
@@ -299,6 +306,14 @@ impl Default for ExpressionEngine {
 mod tests {
     use super::*;
     use crate::EvaluationPolicy;
+
+    fn constant_one(
+        _args: &[Value],
+        _evaluator: &crate::eval::Evaluator,
+        _context: &EvaluationContext,
+    ) -> ExpressionResult<Value> {
+        Ok(Value::from(1))
+    }
 
     #[test]
     fn test_evaluate_literal() {
@@ -546,6 +561,30 @@ mod tests {
         let template1 = engine.parse_template("Test").unwrap();
         let template2 = engine.get_template("Test").unwrap();
         assert_eq!(template1.source(), template2.source());
+    }
+
+    #[test]
+    fn test_register_function_before_evaluate() {
+        let mut engine = ExpressionEngine::new();
+        engine.register_function("constant_one", constant_one);
+
+        let context = EvaluationContext::new();
+        let result = engine.evaluate("constant_one()", &context).unwrap();
+        assert_eq!(result.as_i64(), Some(1));
+    }
+
+    #[test]
+    fn test_register_function_after_evaluate() {
+        let mut engine = ExpressionEngine::new();
+        let context = EvaluationContext::new();
+
+        let baseline = engine.evaluate("1 + 1", &context).unwrap();
+        assert_eq!(baseline.as_i64(), Some(2));
+
+        engine.register_function("constant_one", constant_one);
+
+        let result = engine.evaluate("constant_one()", &context).unwrap();
+        assert_eq!(result.as_i64(), Some(1));
     }
 
     #[test]

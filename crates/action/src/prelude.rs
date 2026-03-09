@@ -28,5 +28,4 @@ pub use crate::validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
 };
 
-pub use nebula_parameter::collection::ParameterCollection;
-pub use nebula_parameter::def::ParameterDef;
+pub use nebula_parameter::schema::{Field, Schema};

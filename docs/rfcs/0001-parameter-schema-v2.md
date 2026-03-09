@@ -1,7 +1,12 @@
 # RFC 0001: Parameter Schema v2
 
+**Type:** Standards Track RFC  
 **Status:** Draft  
 **Created:** 2026-03-08  
+**Updated:** 2026-03-08  
+**Authors:** Nebula design notes  
+**Depends on:** None  
+**Supersedes:** None  
 **Target:** `nebula-parameter` v1.0  
 
 ---
@@ -15,7 +20,56 @@ A new parameter schema that is the **single source of truth** for:
 3. **Conditional logic** — show/hide/require/disable fields based on other field values
 4. **HTTP transport** — the Rust types serialize directly to the JSON API contract
 
-**Design rule:** the Rust struct IS the JSON shape. No translation layer, no adapters.
+**Design rule:** the Rust struct IS the JSON shape inside the canonical v2 model.
+Boundary adapters remain allowed for legacy compatibility and migrations.
+
+## Normative Status
+
+This document is the canonical RFC for the v2 JSON wire contract.
+
+If any working paper, playground, or example document disagrees with this RFC,
+this RFC wins for API shape, serialization, and migration behavior.
+
+Compatibility adapters are allowed only at system boundaries such as legacy
+`ParameterDef`, import/export, and migration paths. Inside the v2 model, the
+Rust types map directly to the JSON contract.
+
+## Numeric Resolution
+
+The canonical v2 wire contract uses JSON numbers plus an explicit `integer`
+flag on numeric fields.
+
+This RFC intentionally keeps the public JSON shape simple for frontend
+renderers. Internal Rust models may still use richer numeric representations
+such as exact decimal wrappers or `NumberKind`-style enums before emitting the
+canonical contract.
+
+In other words:
+- wire contract: JSON number semantics + `integer: bool`
+- internal implementation: richer numeric typing is allowed
+- compatibility rule: do not expose internal numeric variants directly in the
+  canonical HTTP schema unless a future RFC standardizes them
+
+## Naming Decision
+
+Nebula keeps the crate name `nebula-parameter` in v1.
+
+The terminology split is intentional:
+- `parameter`: the bounded context and product concept used by actions,
+  credentials, and workflow nodes
+- `field`: a single canonical schema node in the v2 JSON contract
+- `ui element`: non-value schema content such as notices and buttons
+
+For implementation and docs:
+- public v2 authoring API should expose `Schema`, `Field`, `UiElement`, `Rule`,
+  and `Condition`
+- legacy names such as `ParameterDef` and `ParameterCollection` are migration
+  inputs only, not part of the long-lived v2 runtime API surface
+- `ParameterValues` may keep its name because it represents runtime node/action
+  parameter payloads, not individual field definitions
+
+No crate rename is planned for v1. Revisit only if the crate grows beyond the
+parameter domain into a broader general-purpose form/schema system.
 
 ---
 
@@ -220,12 +274,15 @@ pub enum Field {
         /// true = integer only, false = decimal allowed.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         integer: bool,
+      /// Minimum JSON number accepted by the field.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        min: Option<f64>,
+      min: Option<serde_json::Number>,
+      /// Maximum JSON number accepted by the field.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        max: Option<f64>,
+      max: Option<serde_json::Number>,
+      /// UI step hint represented as a JSON number.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        step: Option<f64>,
+      step: Option<serde_json::Number>,
     },
     Boolean {
         #[serde(flatten)]
@@ -387,14 +444,14 @@ pub enum Condition {
     Eq { field: String, value: serde_json::Value },
     /// field != value
     Ne { field: String, value: serde_json::Value },
-    /// field > value (numeric)
-    Gt { field: String, value: f64 },
-    /// field < value (numeric)
-    Lt { field: String, value: f64 },
-    /// field >= value (numeric)
-    Gte { field: String, value: f64 },
-    /// field <= value (numeric)
-    Lte { field: String, value: f64 },
+    /// field > value (numeric JSON value)
+    Gt { field: String, value: serde_json::Number },
+    /// field < value (numeric JSON value)
+    Lt { field: String, value: serde_json::Number },
+    /// field >= value (numeric JSON value)
+    Gte { field: String, value: serde_json::Number },
+    /// field <= value (numeric JSON value)
+    Lte { field: String, value: serde_json::Number },
     /// field value is one of the listed values
     In { field: String, values: Vec<serde_json::Value> },
     /// field value contains substring (string) or element (array)
@@ -475,12 +532,12 @@ pub enum Rule {
         message: Option<String>,
     },
     Min {
-        min: f64,
+        min: serde_json::Number,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
     },
     Max {
-        max: f64,
+      max: serde_json::Number,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
     },
@@ -560,8 +617,24 @@ pub struct ModeVariant {
 ### Dynamic Option Provider (Rust runtime)
 
 ```rust
+/// Shared response envelope for dynamic providers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicProviderEnvelope<T> {
+  pub response_version: u16,
+  pub kind: DynamicResponseKind,
+  pub items: Vec<T>,
+  pub next_cursor: Option<String>,
+  pub schema_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DynamicResponseKind {
+  Options,
+  Fields,
+}
+
 /// Runtime interface for loading select options.
-///
 /// Registered by provider key. Called when a dynamic select field
 /// needs options or when a `depends_on` field changes.
 pub trait OptionProvider: Send + Sync {
@@ -570,7 +643,7 @@ pub trait OptionProvider: Send + Sync {
     fn resolve(
         &self,
         request: &OptionRequest,
-    ) -> impl Future<Output = Result<OptionPage, OptionError>> + Send;
+  ) -> impl Future<Output = Result<DynamicProviderEnvelope<SelectOption>, OptionError>> + Send;
 }
 
 pub struct OptionRequest {
@@ -583,13 +656,10 @@ pub struct OptionRequest {
     /// Pagination cursor.
     pub cursor: Option<String>,
 }
-
-pub struct OptionPage {
-    pub options: Vec<SelectOption>,
-    /// Cursor for the next page. `None` = no more pages.
-    pub next_cursor: Option<String>,
-}
 ```
+
+  For base v2 selects, `kind` must be `options` and `items` contains
+  `SelectOption` values in display order.
 
 ### Canonical Dynamic Providers
 
@@ -601,9 +671,32 @@ The following provider keys are canonical for reusable parameter schemas.
 | `eventbus.channels` | Event/signal channel selection | stable channel key string |
 | `workflow.catalog` | Workflow/subflow selection | stable workflow id string |
 
-All providers return paged `SelectOption` values (`value`, `label`, optional
-`description`). Stale selected values may remain visible in UI but must fail
+All providers return paged `SelectOption` values through the shared versioned
+envelope (`response_version`, `kind`, `items`, optional `next_cursor`, optional
+`schema_version`). Stale selected values may remain visible in UI but must fail
 validation with field-specific error codes.
+
+### Expression Integration (`nebula-expression`)
+
+The v2 schema distinguishes between deterministic form conditions and general
+expression evaluation.
+
+`nebula-parameter` owns the declarative schema layer:
+- `Condition` for visibility/required/disabled behavior
+- `Rule::Custom { expression, ... }` for custom validation rules
+- `expression: true` as a field capability flag
+
+`nebula-expression` owns runtime parsing and evaluation of expression strings.
+
+Rules for v1:
+- `Condition` is evaluated by a small deterministic condition evaluator shared
+  across Rust and JS/TS. It does not go through `nebula-expression`.
+- `Rule::Custom.expression` is evaluated through `nebula-expression` under an
+  explicit policy controlled by the runtime.
+- expression-enabled field values are evaluated through `nebula-expression`
+  only where the host product explicitly supports that workflow.
+- provider responses must not return executable expressions.
+- expression AST types do not become part of the schema JSON contract.
 
 ### UI Elements
 
@@ -833,8 +926,12 @@ impl FieldBuilder {
     pub fn multiline(self) -> Self;
 
     // ── Number-specific ─────────────────────────────────
-    pub fn range(self, min: impl Into<f64>, max: impl Into<f64>) -> Self;
-    pub fn step(self, step: impl Into<f64>) -> Self;
+    pub fn range(
+        self,
+        min: impl Into<serde_json::Number>,
+        max: impl Into<serde_json::Number>,
+    ) -> Self;
+    pub fn step(self, step: impl Into<serde_json::Number>) -> Self;
 
     // ── Select-specific ─────────────────────────────────
     pub fn option(self, value: &str, label: &str) -> Self;
@@ -871,8 +968,8 @@ impl FieldBuilder {
 impl Condition {
     pub fn eq(field: &str, value: impl Into<serde_json::Value>) -> Self;
     pub fn ne(field: &str, value: impl Into<serde_json::Value>) -> Self;
-    pub fn gt(field: &str, value: f64) -> Self;
-    pub fn lt(field: &str, value: f64) -> Self;
+    pub fn gt(field: &str, value: impl Into<serde_json::Number>) -> Self;
+    pub fn lt(field: &str, value: impl Into<serde_json::Number>) -> Self;
     pub fn is_true(field: &str) -> Self;
     pub fn is_false(field: &str) -> Self;
     pub fn is_set(field: &str) -> Self;
@@ -944,7 +1041,8 @@ function validate(schema, values) {
 
 ### Condition evaluator (shared logic)
 
-The same algorithm works in Rust and JS:
+This evaluator is intentionally separate from `nebula-expression`. The same
+small deterministic algorithm works in Rust and JS:
 
 ```javascript
 function evaluate(condition, values) {
@@ -1612,6 +1710,11 @@ let schema = Schema::builder()
 
 ### What changes
 
+Public naming after migration:
+- canonical authoring surface: `Schema`, `Field`, `UiElement`
+- runtime payload surface: `ParameterValues`
+- migration input surface only: `ParameterDef`, `ParameterCollection`
+
 | v1 (ParameterDef) | v2 (Schema/Field) |
 |---|---|
 | `TextParameter` | `Field::text(id)` |
@@ -1637,8 +1740,9 @@ let schema = Schema::builder()
   In Nebula, subtype-like behavior is modeled as explicit validation rules
   (for example `Rule::Pattern` with predefined regex shortcuts), while UI behavior
   still comes from `type`, `rules`, `expression`, and provider-based selects.
-- **IntBits/NumberKind** — replaced by `integer: bool`. The schema tells the frontend
-  "this is an integer" or "this is a decimal". Rust-side range enforcement handles precision.
+- **IntBits/NumberKind** — not exposed in the canonical wire contract.
+  RFC 0001 standardizes JSON numeric values plus `integer: bool` for the public
+  schema. Internal Rust layers may still keep richer numeric kinds if needed.
 - **SecurityPolicy/RedactionTargets/PersistPolicy** — replaced by `secret: bool`.
   The rest is implementation detail in credential/runtime crates.
 - **LayoutNode/GroupNode/PanelNode hierarchy** — replaced by flat `Group`.

@@ -22,6 +22,7 @@ use std::collections::HashMap;
 pub type BuiltinFunction = fn(&[Value], &Evaluator, &EvaluationContext) -> ExpressionResult<Value>;
 
 /// Registry of all builtin functions
+#[derive(Clone)]
 pub struct BuiltinRegistry {
     functions: HashMap<String, BuiltinFunction>,
 }
@@ -47,8 +48,8 @@ impl BuiltinRegistry {
     }
 
     /// Register a builtin function
-    pub fn register(&mut self, name: impl Into<String>, func: BuiltinFunction) {
-        self.functions.insert(name.into(), func);
+    pub fn register(&mut self, name: impl AsRef<str>, func: BuiltinFunction) {
+        self.functions.insert(name.as_ref().to_owned(), func);
     }
 
     /// Call a builtin function by name

@@ -12,10 +12,7 @@ pub use config::{LdapConfig, TlsMode};
 
 use serde::{Deserialize, Serialize};
 
-use nebula_parameter::collection::ParameterCollection;
-use nebula_parameter::def::ParameterDef;
-use nebula_parameter::typed::{Plain, Text};
-use nebula_parameter::types::SecretParameter;
+use nebula_parameter::schema::{Field, Schema};
 use nebula_parameter::values::ParameterValues;
 
 use crate::core::result::InitializeResult;
@@ -52,30 +49,22 @@ impl FlowProtocol for LdapProtocol {
     type Config = LdapConfig;
     type State = LdapState;
 
-    fn parameters() -> ParameterCollection {
-        let mut host = Text::<Plain>::builder("host")
-            .label("LDAP Host")
-            .required()
-            .build();
-        host.metadata.placeholder = Some("ldap.example.com".into());
-
-        let mut port = Text::<Plain>::builder("port").label("Port").build();
-        port.metadata.placeholder = Some("389".into());
-
-        let mut bind_dn = Text::<Plain>::builder("bind_dn")
-            .label("Bind DN")
-            .required()
-            .build();
-        bind_dn.metadata.placeholder = Some("cn=admin,dc=example,dc=com".into());
-
-        let mut bind_password = SecretParameter::new("bind_password", "Bind Password");
-        bind_password.metadata.required = true;
-
-        ParameterCollection::new()
-            .with(ParameterDef::from(host))
-            .with(ParameterDef::from(port))
-            .with(ParameterDef::from(bind_dn))
-            .with(ParameterDef::Secret(bind_password))
+    fn parameters() -> Schema {
+        Schema::new()
+            .field(
+                Field::text("host")
+                    .with_label("LDAP Host")
+                    .with_placeholder("ldap.example.com")
+                    .required(),
+            )
+            .field(Field::text("port").with_label("Port").with_placeholder("389"))
+            .field(
+                Field::text("bind_dn")
+                    .with_label("Bind DN")
+                    .with_placeholder("cn=admin,dc=example,dc=com")
+                    .required(),
+            )
+            .field(Field::text("bind_password").with_label("Bind Password").required().secret())
     }
 
     async fn initialize(

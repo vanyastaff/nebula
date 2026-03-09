@@ -1,4 +1,9 @@
 # Parameter & Property System Deep Dive
+
+**Type:** Informational Research  
+**Status:** Draft  
+**Depends on:** None  
+
 ### Technical reference across 18 platforms — schema design, type encoding, constraint propagation, UI generation
 
 ---

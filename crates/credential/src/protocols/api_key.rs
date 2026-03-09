@@ -2,10 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use nebula_parameter::collection::ParameterCollection;
-use nebula_parameter::def::ParameterDef;
-use nebula_parameter::typed::{Text, Url};
-use nebula_parameter::types::SecretParameter;
+use nebula_parameter::schema::{Field, Schema};
 use nebula_parameter::values::ParameterValues;
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
@@ -66,20 +63,21 @@ pub struct ApiKeyProtocol;
 impl StaticProtocol for ApiKeyProtocol {
     type State = ApiKeyState;
 
-    fn parameters() -> ParameterCollection {
-        let server = Text::<Url>::builder("server")
-            .label("Server URL")
-            .description("Base URL of the service (e.g. https://api.github.com)")
-            .required()
-            .build();
-
-        let mut token = SecretParameter::new("token", "API Token");
-        token.metadata.description = Some("Secret API token or personal access token".into());
-        token.metadata.required = true;
-
-        ParameterCollection::new()
-            .with(ParameterDef::from(server))
-            .with(ParameterDef::Secret(token))
+    fn parameters() -> Schema {
+        Schema::new()
+            .field(
+                Field::text("server")
+                    .with_label("Server URL")
+                    .with_description("Base URL of the service (e.g. https://api.github.com)")
+                    .required(),
+            )
+            .field(
+                Field::text("token")
+                    .with_label("API Token")
+                    .with_description("Secret API token or personal access token")
+                    .required()
+                    .secret(),
+            )
     }
 
     fn build_state(values: &ParameterValues) -> Result<Self::State, CredentialError> {
@@ -117,15 +115,15 @@ mod tests {
     #[test]
     fn server_is_required() {
         let params = ApiKeyProtocol::parameters();
-        assert!(params.get_by_key("server").unwrap().is_required());
+        assert!(params.get_field("server").unwrap().meta().required);
     }
 
     #[test]
     fn token_is_secret_and_required() {
         let params = ApiKeyProtocol::parameters();
-        let token = params.get_by_key("token").unwrap();
-        assert!(token.is_required());
-        assert!(matches!(token, ParameterDef::Secret(_)));
+        let token = params.get_field("token").unwrap();
+        assert!(token.meta().required);
+        assert!(token.meta().secret);
     }
 
     #[test]

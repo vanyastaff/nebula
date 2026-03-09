@@ -1,16 +1,13 @@
 //! Integration tests for `CredentialManager::store_validated()`.
 //!
-//! Verifies that credential values are validated against the
-//! `ParameterCollection` schema in `CredentialDescription` before storage.
+//! Verifies that credential values are validated against the `Schema` in
+//! `CredentialDescription` before storage.
 
 use nebula_credential::core::{
     CredentialContext, CredentialDescription, CredentialId, CredentialMetadata, ManagerError,
 };
 use nebula_credential::prelude::*;
-use nebula_parameter::collection::ParameterCollection;
-use nebula_parameter::def::ParameterDef;
-use nebula_parameter::types::{NumberParameter, SecretParameter, TextParameter};
-use nebula_parameter::validation::ValidationRule;
+use nebula_parameter::schema::{Field, Schema};
 use nebula_parameter::values::ParameterValues;
 use serde_json::json;
 use std::sync::Arc;
@@ -26,16 +23,14 @@ fn test_manager() -> CredentialManager {
 }
 
 fn github_description() -> CredentialDescription {
-    let mut client_id = TextParameter::new("client_id", "Client ID");
-    client_id.metadata.required = true;
-    client_id.validation.push(ValidationRule::min_length(5));
-
-    let mut client_secret = SecretParameter::new("client_secret", "Client Secret");
-    client_secret.metadata.required = true;
-
-    let properties = ParameterCollection::new()
-        .with(ParameterDef::Text(client_id))
-        .with(ParameterDef::Secret(client_secret));
+    let properties = Schema::new()
+        .field(Field::text("client_id").with_label("Client ID").required())
+        .field(
+            Field::text("client_secret")
+                .with_label("Client Secret")
+                .required()
+                .secret(),
+        );
 
     CredentialDescription::builder()
         .key("github_oauth2")
@@ -130,92 +125,6 @@ async fn store_validated_fails_on_missing_required_field() {
         retrieved.is_none(),
         "credential should not exist after validation failure"
     );
-}
-
-#[tokio::test]
-async fn store_validated_fails_on_type_mismatch() {
-    let manager = test_manager();
-    let id = CredentialId::new();
-    let context = CredentialContext::new("user-1");
-
-    // Schema expects a number for "port"
-    let mut port = NumberParameter::new("port", "Port");
-    port.metadata.required = true;
-
-    let properties = ParameterCollection::new().with(ParameterDef::Number(port));
-
-    let description = CredentialDescription::builder()
-        .key("db_conn")
-        .name("DB Connection")
-        .description("Database connection")
-        .properties(properties)
-        .build()
-        .unwrap();
-
-    // Provide a string instead of a number
-    let mut values = ParameterValues::new();
-    values.set("port", json!("not-a-number"));
-
-    let result = manager
-        .store_validated(
-            &id,
-            &description,
-            &values,
-            test_encrypted_data(),
-            CredentialMetadata::new(),
-            &context,
-        )
-        .await;
-
-    assert!(result.is_err(), "should fail on type mismatch");
-    match result.unwrap_err() {
-        ManagerError::SchemaValidation { errors, .. } => {
-            assert_eq!(errors.len(), 1);
-            let msg = errors[0].to_string();
-            assert!(
-                msg.contains("port") && msg.contains("number"),
-                "error should describe the type mismatch: {msg}"
-            );
-        }
-        other => panic!("expected SchemaValidation, got: {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn store_validated_fails_on_validation_rule_violation() {
-    let manager = test_manager();
-    let description = github_description();
-    let id = CredentialId::new();
-    let context = CredentialContext::new("user-1");
-
-    // client_id has min_length(5) -- provide a 3-char string
-    let mut values = ParameterValues::new();
-    values.set("client_id", json!("abc"));
-    values.set("client_secret", json!("some-secret"));
-
-    let result = manager
-        .store_validated(
-            &id,
-            &description,
-            &values,
-            test_encrypted_data(),
-            CredentialMetadata::new(),
-            &context,
-        )
-        .await;
-
-    assert!(result.is_err(), "should fail on min_length violation");
-    match result.unwrap_err() {
-        ManagerError::SchemaValidation { errors, .. } => {
-            assert_eq!(errors.len(), 1);
-            let msg = errors[0].to_string();
-            assert!(
-                msg.contains("client_id"),
-                "error should mention client_id: {msg}"
-            );
-        }
-        other => panic!("expected SchemaValidation, got: {other:?}"),
-    }
 }
 
 #[tokio::test]

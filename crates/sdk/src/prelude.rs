@@ -18,8 +18,8 @@ pub use nebula_action::{
     Action,
     ActionError,
     ActionResult,
-    ParameterCollection,
-    ParameterDef,
+    Field,
+    Schema,
     // TODO: Action types temporarily unavailable
     // InteractiveAction, ProcessAction, SimpleAction, StatefulAction, StreamingAction,
     // TransactionalAction, TriggerAction,

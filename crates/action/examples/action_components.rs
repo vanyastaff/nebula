@@ -7,7 +7,7 @@ use nebula_credential::CredentialRef;
 use nebula_credential::core::result::InitializeResult;
 use nebula_credential::core::{CredentialContext, CredentialDescription};
 use nebula_credential::traits::CredentialType;
-use nebula_parameter::collection::ParameterCollection;
+use nebula_parameter::schema::Schema;
 use nebula_resource::ResourceRef;
 use nebula_resource::context::Context;
 use nebula_resource::metadata::ResourceMetadata;
@@ -26,7 +26,7 @@ impl CredentialType for GithubToken {
             .key("github_token")
             .name("GitHub Token")
             .description("")
-            .properties(ParameterCollection::new())
+            .properties(Schema::new())
             .build()
             .unwrap()
     }
@@ -48,7 +48,7 @@ impl CredentialType for SlackWebhook {
             .key("slack_webhook")
             .name("Slack Webhook")
             .description("")
-            .properties(ParameterCollection::new())
+            .properties(Schema::new())
             .build()
             .unwrap()
     }

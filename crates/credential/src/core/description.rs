@@ -1,4 +1,4 @@
-use nebula_parameter::collection::ParameterCollection;
+use nebula_parameter::schema::Schema;
 use serde::{Deserialize, Serialize};
 
 /// Describes a credential type (OAuth2, API Key, Database, etc.)
@@ -14,13 +14,11 @@ use serde::{Deserialize, Serialize};
 ///
 /// ```
 /// use nebula_credential::core::CredentialDescription;
-/// use nebula_parameter::collection::ParameterCollection;
-/// use nebula_parameter::def::ParameterDef;
-/// use nebula_parameter::types::{TextParameter, SecretParameter};
+/// use nebula_parameter::schema::{Field, Schema};
 ///
-/// let properties = ParameterCollection::new()
-///     .with(ParameterDef::Text(TextParameter::new("client_id", "Client ID")))
-///     .with(ParameterDef::Secret(SecretParameter::new("client_secret", "Client Secret")));
+/// let properties = Schema::new()
+///     .field(Field::text("client_id").with_label("Client ID").required())
+///     .field(Field::text("client_secret").with_label("Client Secret").required().secret());
 ///
 /// let github_oauth2 = CredentialDescription {
 ///     key: "github_oauth2".to_string(),
@@ -56,14 +54,7 @@ pub struct CredentialDescription {
     pub documentation_url: Option<String>,
 
     /// Parameter definitions - what fields this credential type requires.
-    ///
-    /// Uses `ParameterCollection` for type-safe parameter definitions.
-    ///
-    /// Example for GitHub OAuth2:
-    /// - client_id: Text (required)
-    /// - client_secret: Secret (required, sensitive)
-    /// - scopes: MultiSelect (optional)
-    pub properties: ParameterCollection,
+    pub properties: Schema,
 }
 
 impl CredentialDescription {
@@ -82,7 +73,7 @@ pub struct CredentialDescriptionBuilder {
     icon: Option<String>,
     icon_url: Option<String>,
     documentation_url: Option<String>,
-    properties: Option<ParameterCollection>,
+    properties: Option<Schema>,
 }
 
 impl CredentialDescriptionBuilder {
@@ -123,7 +114,7 @@ impl CredentialDescriptionBuilder {
     }
 
     /// Set the parameter schema
-    pub fn properties(mut self, properties: ParameterCollection) -> Self {
+    pub fn properties(mut self, properties: Schema) -> Self {
         self.properties = Some(properties);
         self
     }

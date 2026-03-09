@@ -21,7 +21,7 @@ impl<'a> Token<'a> {
 }
 
 /// The kind of token
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TokenKind<'a> {
     // Literals
     /// Integer literal (e.g., 42, -10)

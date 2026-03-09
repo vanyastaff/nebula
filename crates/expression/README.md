@@ -29,17 +29,17 @@ nebula-expression = { path = "../nebula-expression" }
 
 ```rust
 use nebula_expression::{ExpressionEngine, EvaluationContext};
-use nebula_value::Value;
+use serde_json::Value;
 
 // Создаем движок
 let engine = ExpressionEngine::new();
 
 // Создаем контекст с данными
 let mut context = EvaluationContext::new();
-context.set_input(Value::text("World"));
+context.set_input(Value::String("World".to_string()));
 
-// Вычисляем выражение
-let result = engine.evaluate("{{ $input }}", &context).unwrap();
+// Вычисляем выражение (без {{ }} - это для Template)
+let result = engine.evaluate("$input", &context).unwrap();
 println!("{}", result); // "World"
 ```
 
@@ -52,10 +52,10 @@ use nebula_expression::Template;
 let template = Template::new("Hello {{ $input }}!").unwrap();
 
 // Рендерим много раз с разными данными
-context.set_input(Value::text("Alice"));
+context.set_input(Value::String("Alice".to_string()));
 let result1 = template.render(&engine, &context).unwrap(); // "Hello Alice!"
 
-context.set_input(Value::text("Bob"));
+context.set_input(Value::String("Bob".to_string()));
 let result2 = template.render(&engine, &context).unwrap(); // "Hello Bob!"
 ```
 
@@ -68,12 +68,13 @@ let engine = ExpressionEngine::with_cache_sizes(1000, 500);
 // Парсинг происходит только один раз для одинаковых шаблонов
 let template = engine.parse_template("Hello {{ $input }}!").unwrap();
 
-// Статистика кеша
-#[cfg(feature = "std")]
-{
-    let stats = engine.template_cache_stats().unwrap();
-    println!("Cache hits: {}, misses: {}", stats.hits, stats.misses);
-}
+// Текущий снимок кешей
+let overview = engine.cache_overview();
+println!(
+    "expr entries: {}, template entries: {}",
+    overview.expr_entries,
+    overview.template_entries
+);
 ```
 
 ## 🎨 Whitespace Control
@@ -134,18 +135,18 @@ Expression: $execution.page_title
 ### Арифметика и логика
 
 ```rust
-let result = engine.evaluate("{{ 2 + 2 * 3 }}", &context)?; // 8
-let result = engine.evaluate("{{ 10 % 3 }}", &context)?;    // 1
-let result = engine.evaluate("{{ 2 ** 8 }}", &context)?;    // 256
+let result = engine.evaluate("2 + 2 * 3", &context)?; // 8
+let result = engine.evaluate("10 % 3", &context)?;    // 1
+let result = engine.evaluate("2 ** 8", &context)?;    // 256
 ```
 
 ### Строковые операции
 
 ```rust
-let result = engine.evaluate("{{ \"hello\" + \" world\" }}", &context)?;
+let result = engine.evaluate("\"hello\" + \" world\"", &context)?;
 // "hello world"
 
-let result = engine.evaluate("{{ \"HELLO\" | lowercase() }}", &context)?;
+let result = engine.evaluate("\"HELLO\" | lowercase()", &context)?;
 // "hello"
 ```
 
@@ -153,7 +154,7 @@ let result = engine.evaluate("{{ \"HELLO\" | lowercase() }}", &context)?;
 
 ```rust
 let result = engine.evaluate(
-    "{{ \"  hello world  \" | trim() | uppercase() | split(\" \") | first() }}",
+    "\"  hello world  \" | trim() | uppercase() | split(\" \") | first()",
     &context
 )?;
 // "HELLO"
@@ -162,10 +163,10 @@ let result = engine.evaluate(
 ### Условные выражения
 
 ```rust
-context.set_execution_var("age", Value::integer(25));
+context.set_execution_var("age", serde_json::json!(25));
 
 let result = engine.evaluate(
-    "{{ if $execution.age >= 18 then \"adult\" else \"minor\" }}",
+    "if $execution.age >= 18 then \"adult\" else \"minor\"",
     &context
 )?;
 // "adult"
@@ -176,7 +177,7 @@ let result = engine.evaluate(
 ```rust
 context.set_input(Value::from(vec![1, 2, 3, 4, 5]));
 
-let result = engine.evaluate("{{ $input | sort() | reverse() | first() }}", &context)?;
+let result = engine.evaluate("$input | sort() | reverse() | first()", &context)?;
 // 5
 ```
 
@@ -194,9 +195,9 @@ let template = Template::new(r#"<!DOCTYPE html>
 </body>
 </html>"#).unwrap();
 
-context.set_input(Value::text("alice"));
-context.set_execution_var("title", Value::text("Dashboard"));
-context.set_execution_var("message_count", Value::integer(5));
+context.set_input(Value::String("alice".to_string()));
+context.set_execution_var("title", Value::String("Dashboard".to_string()));
+context.set_execution_var("message_count", serde_json::json!(5));
 
 let html = template.render(&engine, &context)?;
 ```
@@ -271,7 +272,7 @@ let dynamic_json = r#"{
 // Резолвинг (одинаково для обоих случаев)
 let timeout = config.timeout.resolve_as_integer(&engine, &context)?;
 let url = config.url.resolve_as_string(&engine, &context)?;
-let enabled = config.enabled.resolve_as_boolean(&engine, &context)?;
+let enabled = config.enabled.resolve_as_bool(&engine, &context)?;
 ```
 
 ### MaybeTemplate - для текстовых шаблонов
@@ -317,26 +318,26 @@ let template2 = engine.parse_template("Hello {{ $input }}!").unwrap();
 
 ```rust
 // Текущее время
-let result = engine.evaluate("{{ now() }}", &context)?;
+let result = engine.evaluate("now()", &context)?;
 
 // Форматирование
 let result = engine.evaluate(
-    "{{ now() | format_date(\"YYYY-MM-DD HH:mm:ss\") }}",
+    "now() | format_date(\"YYYY-MM-DD HH:mm:ss\")",
     &context
 )?;
 
 // Добавить 7 дней
 let result = engine.evaluate(
-    "{{ now() | date_add(7, \"days\") | format_date(\"YYYY-MM-DD\") }}",
+    "now() | date_add(7, \"days\") | format_date(\"YYYY-MM-DD\")",
     &context
 )?;
 
 // Разница между датами
-context.set_execution_var("end", Value::integer(1704067200));
-context.set_execution_var("start", Value::integer(1704067200));
+context.set_execution_var("end", serde_json::json!(1704067200));
+context.set_execution_var("start", serde_json::json!(1704067200));
 
 let result = engine.evaluate(
-    "{{ date_diff($execution.end, $execution.start, \"days\") }}",
+    "date_diff($execution.end, $execution.start, \"days\")",
     &context
 )?;
 ```
@@ -344,23 +345,8 @@ let result = engine.evaluate(
 ## 🎯 Запуск примеров
 
 ```bash
-# Базовое использование
-cargo run --example basic_usage
-
-# Работа с workflow данными
-cargo run --example workflow_data
-
-# MaybeExpression
-cargo run --example maybe_expression
-
-# Работа с датами
-cargo run --example datetime_usage
-
 # Рендеринг шаблонов
 cargo run --example template_rendering
-
-# Продвинутые шаблоны
-cargo run --example template_advanced
 
 # MaybeExpression vs MaybeTemplate
 cargo run --example maybe_vs_template
@@ -378,37 +364,36 @@ cargo test -p nebula-expression
 # Только unit тесты
 cargo test -p nebula-expression --lib
 
-# Интеграционные тесты
-cargo test -p nebula-expression --test integration_test
-
-# Тесты для дат
-cargo test -p nebula-expression --test datetime_test
+# Doc-тесты
+cargo test -p nebula-expression --doc
 ```
 
-Всего: **113 тестов** ✅
+Актуальный набор тестов проверяется командой выше.
 
 ## 🏗️ Архитектура
 
 ```
 nebula-expression/
 ├── src/
-│   ├── core/           # Ядро (AST, токены, ошибки)
-│   ├── lexer/          # Лексический анализатор
-│   ├── parser/         # Парсер выражений
-│   ├── eval/           # Вычислитель AST
-│   ├── builtins/       # Встроенные функции
-│   ├── context/        # Контекст выполнения
+│   ├── ast.rs          # AST выражений
+│   ├── token.rs        # Токены и приоритеты операторов
+│   ├── lexer.rs        # Лексический анализатор
+│   ├── parser.rs       # Парсер выражений
+│   ├── eval.rs         # Вычислитель AST
+│   ├── builtins.rs     # Встроенные функции
+│   ├── context.rs      # Контекст выполнения
 │   ├── template.rs     # Система шаблонов
 │   ├── engine.rs       # Главный движок
 │   ├── maybe.rs        # MaybeExpression/MaybeTemplate
 │   └── error_formatter.rs  # Форматирование ошибок
-├── examples/           # 8 примеров
-└── tests/             # Интеграционные тесты
+├── examples/           # Примеры использования
+└── tests/              # Бенчмарк-обертки и ручные сценарии
 ```
 
 ## 🔗 Интеграция с экосистемой Nebula
 
-- **nebula-value** - система типов
+- **serde_json::Value** - тип значений выражений
+- **nebula-core** - базовые типы платформы
 - **nebula-memory** - кеширование
 - **nebula-log** - логирование
 - **nebula-parameter** - параметры с MaybeExpression

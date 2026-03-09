@@ -1,9 +1,16 @@
-# RFC 0001 V2 Universality Playground
+# Exploratory Playground: V2 Universality
 
-Status: Draft
-Purpose: Verify universality of Parameter API v2 with Rust-grade DX: typed, explicit, and safe.
+**Type:** Exploratory Playground
+**Status:** Draft
+**Created:** 2026-03-08
+**Updated:** 2026-03-08
+**Canonical RFC:** RFC 0001 (`0001-parameter-schema-v2.md`)
+**Purpose:** Verify universality of Parameter API v2 with Rust-grade DX: typed, explicit, and safe.
 
 This revision removes stringly configuration from the playground and proposes a cleaner model.
+
+This document is intentionally exploratory. The `Schema { nodes: ... }` model
+below is not the canonical wire format; production API shape follows RFC 0001.
 
 ## 1. Rust-First Design Rules
 

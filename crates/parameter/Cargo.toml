@@ -15,7 +15,9 @@ documentation.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+regex = { workspace = true }
 nebula-validator = { path = "../validator" }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

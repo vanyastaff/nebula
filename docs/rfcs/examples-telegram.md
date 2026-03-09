@@ -1,8 +1,15 @@
 # Telegram Bot — Node Form Examples (Parameter Schema v2)
 
+**Type:** Informational Examples  
+**Status:** Draft  
+**Depends on:** RFC 0001  
+
 Real-world examples using the **v2 parameter schema** to model a Telegram Bot node.
 Based on Telegram Bot API methods: `sendMessage`, `sendPhoto`, `sendDocument`,
 `sendLocation`, `sendContact`, `editMessageText`.
+
+These examples are non-normative and are intended to stress-test the schema
+design, not define the canonical contract.
 
 These examples validate the schema design against a complex, widely-used API
 with resource/operation patterns, conditional fields, and nested structures

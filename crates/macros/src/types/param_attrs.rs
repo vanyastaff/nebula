@@ -4,7 +4,7 @@
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{Ident, Lit, Result, Type};
+use syn::{Ident, Result};
 
 use crate::support::attrs;
 
@@ -62,138 +62,27 @@ impl ParameterAttrs {
     }
 
     /// Generate the parameter definition expression.
-    pub fn param_def_expr(&self, field_type: &Type) -> Result<TokenStream2> {
+    pub fn param_def_expr(&self) -> Result<TokenStream2> {
         let key = &self.key;
         let name = &self.name;
         let description = &self.description;
         let required = self.required;
-        let default = self.default.as_ref();
-
-        let kind = infer_kind(field_type, self.secret);
-        let (init_expr, default_setter) = match kind {
-            ParamKind::Secret => (
-                quote!(::nebula_parameter::types::SecretParameter::new(#key, #name)),
-                default_text_setter(default),
-            ),
-            ParamKind::Checkbox => (
-                quote!(::nebula_parameter::types::CheckboxParameter::new(#key, #name)),
-                default_checkbox_setter(default),
-            ),
-            ParamKind::Number => (
-                quote!(::nebula_parameter::types::NumberParameter::new(#key, #name)),
-                default_number_setter(default),
-            ),
-            ParamKind::Text => (
-                quote!(::nebula_parameter::types::TextParameter::new(#key, #name)),
-                default_text_setter(default),
-            ),
-        };
+        let secret = self.secret;
 
         let description_setter = description
             .as_ref()
-            .map(|value| quote!(param.metadata.description = Some(#value.to_string());))
+            .map(|value| quote!(.with_description(#value)))
             .unwrap_or_default();
 
-        let enum_wrap = match kind {
-            ParamKind::Secret => quote!(::nebula_parameter::def::ParameterDef::Secret(param)),
-            ParamKind::Checkbox => quote!(::nebula_parameter::def::ParameterDef::Checkbox(param)),
-            ParamKind::Number => quote!(::nebula_parameter::def::ParameterDef::Number(param)),
-            ParamKind::Text => quote!(::nebula_parameter::def::ParameterDef::Text(param)),
-        };
+        let required_setter = if required { quote!(.required()) } else { quote!() };
+        let secret_setter = if secret { quote!(.secret()) } else { quote!() };
 
-        Ok(quote! {{
-            let mut param = #init_expr;
-            #description_setter
-            param.metadata.required = #required;
-            #default_setter
-            #enum_wrap
-        }})
-    }
-}
-
-fn default_text_setter(default: Option<&attrs::AttrValue>) -> TokenStream2 {
-    match default {
-        Some(attrs::AttrValue::Lit(Lit::Str(value))) => {
-            quote!(param.default = Some(#value.to_string());)
-        }
-        _ => quote! {},
-    }
-}
-
-fn default_number_setter(default: Option<&attrs::AttrValue>) -> TokenStream2 {
-    match default {
-        Some(attrs::AttrValue::Lit(Lit::Int(value))) => {
-            quote!(param.default = Some((#value) as f64);)
-        }
-        Some(attrs::AttrValue::Lit(Lit::Float(value))) => {
-            quote!(param.default = Some(#value);)
-        }
-        _ => quote! {},
-    }
-}
-
-fn default_checkbox_setter(default: Option<&attrs::AttrValue>) -> TokenStream2 {
-    match default {
-        Some(attrs::AttrValue::Lit(Lit::Bool(value))) => {
-            quote!(param.default = Some(#value);)
-        }
-        _ => quote! {},
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-enum ParamKind {
-    Text,
-    Number,
-    Checkbox,
-    Secret,
-}
-
-fn infer_kind(ty: &Type, secret: bool) -> ParamKind {
-    if secret {
-        return ParamKind::Secret;
-    }
-
-    let base = unwrap_option(ty);
-    let checkbox = is_type(base, &["bool"]);
-    let number = is_type(
-        base,
-        &[
-            "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize",
-            "f32", "f64",
-        ],
-    );
-
-    if checkbox {
-        ParamKind::Checkbox
-    } else if number {
-        ParamKind::Number
-    } else {
-        ParamKind::Text
-    }
-}
-
-fn unwrap_option(ty: &Type) -> &Type {
-    if let Type::Path(type_path) = ty
-        && let Some(segment) = type_path.path.segments.last()
-        && segment.ident == "Option"
-        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
-    {
-        return inner;
-    }
-    ty
-}
-
-fn is_type(ty: &Type, names: &[&str]) -> bool {
-    match ty {
-        Type::Path(path) => path
-            .path
-            .segments
-            .last()
-            .map(|segment| names.iter().any(|name| segment.ident == *name))
-            .unwrap_or(false),
-        Type::Reference(reference) => is_type(&reference.elem, names),
-        _ => false,
+        Ok(quote! {
+            ::nebula_parameter::schema::Field::text(#key)
+                .with_label(#name)
+                #description_setter
+                #required_setter
+                #secret_setter
+        })
     }
 }

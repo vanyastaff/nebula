@@ -1,15 +1,19 @@
-# RFC 0001: Parameter API v2 — Type-Safe Schema Architecture
+# Working Paper: Parameter API v2 — Type-Safe Schema Architecture
 
+**Type:** Working Paper  
 **Status:** Draft  
 **Created:** 2026-03-07  
+**Updated:** 2026-03-08  
 **Authors:** AI Code Review (Claude 4.6 + GPT 5.4 + GPT 5.3 Codex synthesis)  
+**Canonical RFC:** RFC 0001 (`0001-parameter-schema-v2.md`)  
 **Target:** `nebula-parameter` v0.x → v1.0  
 
 ---
 
 ## Summary
 
-This RFC proposes a breaking architectural redesign of `nebula-parameter` to achieve:
+This working paper explores a breaking architectural redesign of
+`nebula-parameter` to achieve:
 - Clean separation of schema definition, runtime values, validation execution, and UI metadata
 - Type-safe numeric semantics (integer/decimal split, no silent `f64` coercion)
 - No subtype field in schema surface (pattern-rule shortcuts only)
@@ -18,7 +22,52 @@ This RFC proposes a breaking architectural redesign of `nebula-parameter` to ach
 - Credential-safe value handling (redaction and secret references)
 - Legacy JSON wire-format compatibility through explicit adapters
 
-**Core principle:** Schema is the source of truth; `ParameterDef` becomes a legacy compatibility layer.
+**Core principle:** Schema core is the source of truth for the internal model;
+`ParameterDef` remains a boundary compatibility layer.
+
+## Status In The RFC Set
+
+This document is non-normative for the public JSON shape.
+
+Use it to reason about internal Rust layering, validation architecture, and
+migration boundaries. If it conflicts with RFC 0001, RFC 0001 wins for the
+wire contract.
+
+## Implementation Bridge To RFC 0001
+
+Use this working paper as the internal implementation guide behind RFC 0001,
+not as a competing public contract.
+
+Recommended realization order:
+1. Implement richer internal schema/value/validation types as described here.
+2. Emit the canonical HTTP schema defined by RFC 0001 at API boundaries.
+3. Use adapters only in one-time migration/import tooling.
+4. For dynamic providers, follow the shared versioned envelope standardized in
+    RFC 0002 and consumed by RFC 0004.
+
+For v1, any internal type that cannot be represented in the RFC 0001 wire
+contract must stay internal.
+
+## Naming Decision
+
+The crate remains `nebula-parameter` in v1.
+
+Naming split:
+- `parameter`: domain boundary, crate/package naming, runtime payload concepts,
+    and migration concepts
+- `field`: canonical schema-definition unit in the v2 authoring model
+
+Recommended public module layout:
+
+```rust
+nebula_parameter::schema::{Schema, Field, UiElement, Group, Rule, Condition}
+nebula_parameter::runtime::{ParameterValues, ValidatedValues}
+nebula_parameter::providers::{OptionProvider, DynamicRecordProvider}
+nebula_parameter::migration::{import_v1_json}
+```
+
+Internal implementation may still use richer types such as `FieldDef`, but the
+public v2 authoring surface should prefer `Field` to match RFC 0001.
 
 ---
 
@@ -75,8 +124,8 @@ This RFC proposes a breaking architectural redesign of `nebula-parameter` to ach
 │     UiHints, DisplayRules, LocalizedText        │
 └─────────────────────────────────────────────────┘
 
-         Legacy ParameterDef ←→ Schema Core
-              (adapter layer)
+    Boundary compatibility: Legacy ParameterDef ←→ Schema Core
+                                (adapter layer)
 ```
 
 ---
@@ -462,20 +511,10 @@ impl ExtractValue for u16 {
 
 ---
 
-### 5. Legacy Compatibility
+### 5. One-Time Migration Input
 
 ```rust
-/// Legacy parameter definition (wire format only).
-#[deprecated(since = "0.9.0", note = "Use Schema/FieldDef instead")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ParameterDef {
-    Text(TextParameter),
-    Number(NumberParameter),
-    // ... existing variants
-}
-
-/// Conversion with warnings.
+/// Migration warnings returned by v1 -> v2 import.
 #[derive(Debug, Clone)]
 pub struct ConversionWarning {
     pub field: String,
@@ -490,32 +529,16 @@ pub enum WarningKind {
     UnsupportedFeature,
 }
 
-impl TryFrom<ParameterDef> for FieldDef {
-    type Error = ConversionError;
-
-    fn try_from(legacy: ParameterDef) -> Result<Self, Self::Error> {
-        // Lossless conversion where possible, error on incompatible constructs
-    }
-}
-
-impl From<FieldDef> for (ParameterDef, Vec<ConversionWarning>) {
-    fn from(def: FieldDef) -> (ParameterDef, Vec<ConversionWarning>) {
-        // Best-effort conversion with warnings for deprecated subtype shortcuts, etc.
-    }
-}
-
-/// Compatibility API.
-pub mod compat {
-    pub fn from_legacy_json(json: &str) -> Result<(Schema, Vec<ConversionWarning>), ParseError>;
-    pub fn to_legacy_json(schema: &Schema) -> Result<(String, Vec<ConversionWarning>), SerializeError>;
+/// Import-only API used during migration.
+pub mod migration {
+    pub fn import_v1_json(json: &str) -> Result<(Schema, Vec<ConversionWarning>), ParseError>;
 }
 ```
 
 **Key Changes:**
-- `ParameterDef` becomes `#[deprecated]` wire format
-- Explicit conversion with `ConversionWarning` tracking
+- Explicit import with `ConversionWarning` tracking
 - No silent `unwrap_or_default()` fallback
-- Compatibility module for migration
+- No runtime `legacy` module in v1 public API
 
 ---
 
@@ -681,6 +704,24 @@ pub struct OptionRequest {
     pub values: ParameterValues,
 }
 
+/// Shared provider response envelope used across dynamic option and
+/// field-schema providers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicProviderEnvelope<T> {
+    pub response_version: u16,
+    pub kind: DynamicResponseKind,
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+    pub schema_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DynamicResponseKind {
+    Options,
+    Fields,
+}
+
 /// Dynamic option provider interface.
 #[async_trait::async_trait]
 pub trait OptionProvider: Send + Sync {
@@ -690,7 +731,18 @@ pub trait OptionProvider: Send + Sync {
         &self,
         request: &OptionRequest,
         query: Option<&OptionQuery>,
-    ) -> Result<OptionPage, OptionProviderError>;
+    ) -> Result<DynamicProviderEnvelope<SelectOption>, OptionProviderError>;
+}
+
+/// Dynamic field-schema provider interface used by `Field::dynamic_record`.
+#[async_trait::async_trait]
+pub trait DynamicRecordProvider: Send + Sync {
+    fn key(&self) -> &str;
+
+    async fn resolve_fields(
+        &self,
+        request: &OptionRequest,
+    ) -> Result<DynamicProviderEnvelope<DynamicFieldSpec>, OptionProviderError>;
 }
 ```
 
@@ -698,7 +750,9 @@ pub trait OptionProvider: Send + Sync {
 - Select-like fields can use static or provider-backed options
 - Providers are schema-keyed for plugin/extension interoperability
 - Cache behavior is explicit and policy-driven
-- `OptionProvider` is the runtime executor for declared loading strategies
+- `OptionProvider` and `DynamicRecordProvider` share one response envelope
+- v1 keeps separate object-safe provider traits to avoid associated-type
+  complexity at plugin boundaries
 
 ---
 
@@ -729,14 +783,6 @@ pub enum OptionLoadStrategy {
 pub struct OptionQuery {
     pub filter: Option<String>,
     pub pagination_token: Option<String>,
-}
-
-/// Provider response with paging metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OptionPage {
-    pub options: Vec<SelectOption>,
-    pub pagination_token: Option<String>,
-    pub has_more: bool,
 }
 
 /// Resource locator mode (n8n-compatible mental model).
@@ -797,20 +843,21 @@ pub struct SlowLoadNotice {
 - `allow_arbitrary_values` bypasses membership checks only; type, shape, and security validation still apply
 - `resolvable_field` allows deferred resolution during credential setup/runtime hydration
 - `ResourceLocatorValue` provides stable wire format for `id/url/list` mode switching
-- `OptionLoadStrategy` declares invocation semantics; `OptionProvider` performs resolution
+- `OptionLoadStrategy` declares invocation semantics; providers resolve through
+    the shared versioned envelope
+- `depends_on` values are part of provider cache keys and invalidation scope
 
 ---
 
 ## Migration Strategy
 
-### Phase 1: Foundation (v0.9.0, non-breaking)
+### Phase 1: Cutover Preparation (v0.9.x)
 
 **Timeline:** 30 days
 
 **Goals:**
-- Introduce new core types alongside existing API
-- Add deprecation warnings
-- Provide parallel path for new adopters
+- Finalize v2 surface and migration importer
+- Remove dependency on legacy constructors in active codepaths
 
 **Changes:**
 1. Add `schema_core` module:
@@ -822,74 +869,37 @@ pub struct SlowLoadNotice {
 4. Add `security` module:
     - `SecretRef`, `SecurityPolicy`, `SecretExposurePolicy`
 5. Add `ValidatedValues` wrapper
-6. Implement `TryFrom<ParameterDef> for FieldDef`
+6. Implement import-only `migration::import_v1_json`
 7. Add `Schema::compile()` method
-8. Add `#[deprecated]` attributes to existing number and legacy subtype shortcut APIs
+8. Remove new usage of legacy subtype shortcut APIs in first-party schemas
 9. Update docs with migration guide
-10. Add n8n-compatible dynamic contracts:
-    - `OptionLoadStrategy`, `OptionQuery`, `OptionPage`, `ResourceLocatorValue`, `DynamicUiPolicy`
+10. Add shared dynamic-provider contracts:
+    - `DynamicProviderEnvelope`, `DynamicResponseKind`, `OptionLoadStrategy`, `OptionQuery`, `ResourceLocatorValue`, `DynamicUiPolicy`
 11. Add missing schema primitives to make RFC type-complete:
     - `ConstraintRule`, `UiHints`, `SelectOption`, `FieldDef::default`
 
-**Compatibility:**
-- All existing APIs remain functional
-- New APIs are opt-in
-- Feature flag `legacy-v1` enables old behavior without warnings
-
----
-
-### Phase 2: Dual Run (v0.10.0, minor breaking)
+### Phase 2: Clean Cut Release (v1.0.0, breaking)
 
 **Timeline:** 30 days
 
 **Goals:**
-- Switch default to new API
-- Validate correctness via parallel execution
-- Collect metrics on conversion warnings
+- Ship only canonical v2 runtime API
+- Keep migration importer as tooling entrypoint
 
 **Changes:**
-1. Typed builders produce `FieldDef` by default
-2. Legacy `ParameterDef` constructors behind `legacy` module
-3. CI validates both paths produce equivalent validation results
-4. Log `ConversionWarning` in production with telemetry
-5. Numeric extractors use typed paths (no automatic `f64` coercion)
-6. No subtype fields in canonical schema (strict mode rejects legacy subtype payloads)
-7. Enable unified expression runtime for both validation and visibility
-8. Add dynamic option provider adapter and cache policy
-9. Move dynamic provider execution to async contract (`OptionProvider::resolve`)
-10. Enforce credential-safe redaction in logs and API responses
-11. Add resource-locator mode switching and list-search paging support
-
-**Compatibility:**
-- Legacy constructors still available via `nebula_parameter::legacy::`
-- Automatic migration lint: `cargo fix --lib --allow-dirty`
-- Feature flag `strict-validation` enables new error policies
-
----
-
-### Phase 3: Major Release (v1.0.0, breaking)
-
-**Timeline:** 30 days
-
-**Goals:**
-- Remove deprecated APIs
-- Finalize stable contracts
-- Lock wire format
-
-**Changes:**
-1. Remove `ParameterDef` constructors (keep only as serde shape)
+1. Remove `ParameterDef` and `ParameterCollection` from the public runtime API
 2. Remove `unwrap_or_default()` fallback paths
 3. Make `ValidationPolicy::Reject` default for unknown keys
-4. Remove `#[deprecated]` shims
+4. Remove deprecated subtype shortcuts from public constructors
 5. Stabilize `Schema` serde representation
 6. Publish crate-level SemVer policy
 7. Stabilize expression and security contracts (`Expression`, `ValueSource`, `SecurityPolicy`)
-8. Stabilize dynamic loading contracts (`OptionLoadStrategy`, `ResourceLocatorValue`)
-9. Keep `ParameterDef` in `compat::legacy` as serde-facing legacy shape
+8. Stabilize dynamic loading contracts (`DynamicProviderEnvelope`, `OptionLoadStrategy`, `ResourceLocatorValue`)
+9. Keep migration importer as an offline/tooling surface only
 
-**Compatibility:**
-- `nebula-parameter-legacy` compatibility crate (separate package)
+**Migration Tooling:**
 - Automated migration tool: `nebula-parameter-migrate`
+- Import-only API for existing JSON snapshots
 - Stable 1.0 API with SemVer guarantees
 
 ---
@@ -903,7 +913,7 @@ pub struct SlowLoadNotice {
 - [ ] Mode validation checks active variant fields
 - [ ] Expression behavior is consistent across validation and UI conditions
 - [ ] Credential fields do not leak secrets via errors, logs, or telemetry
-- [ ] Dynamic option providers do not change deterministic validation outcomes
+- [ ] Dynamic providers do not change deterministic validation outcomes
 - [ ] `depends_on` invalidation reloads only affected dynamic fields
 - [ ] Resource locator mode switches (`id/url/list`) preserve semantic value integrity
 
@@ -912,15 +922,15 @@ pub struct SlowLoadNotice {
 - [ ] Path access without full clone for nested values
 - [ ] Regex compilation cached in `ValidationPlan`
 - [ ] Visibility/expression recomputation is incremental based on rule dependencies
-- [ ] Option provider caching reduces repeated lookups under identical context
+- [ ] Provider caching reduces repeated lookups under identical context
 - [ ] List-search pagination handles large catalogs without blocking UI render
 
 ### Compatibility
-- [ ] Full round-trip: `ParameterDef → FieldDef → ParameterDef` (with warnings)
-- [ ] Legacy JSON deserializes without data loss
+- [ ] v1 JSON imports into canonical schema with explicit warnings and no silent coercion
 - [ ] Migration tool handles 100% of existing schemas
 - [ ] Existing action/credential schemas can opt into expression policies without rewrites
-- [ ] n8n-style dynamic option patterns map to `OptionLoadStrategy` without ad-hoc adapters
+- [ ] n8n-style dynamic option patterns map to `OptionLoadStrategy` and the
+    shared versioned provider envelope without ad-hoc adapters
 
 ### Developer Experience
 - [ ] Typed extractors for common Rust types (i64, u16, String, Vec<T>, etc.)
@@ -1041,6 +1051,8 @@ provides compiled plans/inputs (ordered fields, dependency graph, precompiled re
 Owns runtime parsing/evaluation for expression-backed values (`ValueSource::Expression`) and delegated
 custom expression rules. `ExpressionRule` in this RFC remains declarative schema data.
 Evaluation is policy-gated by `ExpressionPolicy` declared in schema/security settings.
+It must not be used for base form `Condition` evaluation, which stays a small
+deterministic evaluator shared with the frontend.
 4. `nebula-action`:
 Consumes compiled parameter contracts for node/action configuration and runtime parameter resolution.
 5. `nebula-credential`:
@@ -1112,8 +1124,8 @@ Dependency-based invalidation and paginated list-search correctness.
 `id`/`url`/`list` mode switching preserves semantic identity.
 5. Security:
 No secret leakage via serialization, error messages, logs, or telemetry.
-6. Compatibility:
-Legacy-to-v2 conversion with explicit warnings and documented caveats.
+6. Migration:
+One-time v1 JSON import with explicit warnings and documented caveats.
 
 ### Non-Goals for v1
 

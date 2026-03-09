@@ -43,8 +43,8 @@ pub struct StubApiKeyState {
 impl StaticProtocol for StubApiKeyProtocol {
     type State = StubApiKeyState;
 
-    fn parameters() -> collection::ParameterCollection {
-        collection::ParameterCollection::new()
+    fn parameters() -> schema::Schema {
+        schema::Schema::new()
     }
 
     fn build_state(

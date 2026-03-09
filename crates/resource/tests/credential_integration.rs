@@ -17,7 +17,7 @@ use nebula_credential::protocols::HeaderAuthState;
 use nebula_credential::{
     CredentialResource, CredentialRotationEvent, CredentialType, RotationStrategy,
 };
-use nebula_parameter::collection::ParameterCollection;
+use nebula_parameter::schema::Schema;
 use nebula_resource::context::Context;
 use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::PoolConfig;
@@ -48,7 +48,7 @@ impl CredentialType for TestCred {
             .key("test_header")
             .name("Test")
             .description("Test")
-            .properties(ParameterCollection::new())
+            .properties(Schema::new())
             .build()
             .unwrap()
     }

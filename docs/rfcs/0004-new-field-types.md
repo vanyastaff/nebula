@@ -1,7 +1,11 @@
 # RFC 0004 — New Field Types: DynamicRecord and Predicate
 
+**Type:** Standards Track RFC  
 **Status:** Draft  
 **Created:** 2026-03-08  
+**Updated:** 2026-03-08  
+**Depends on:** RFC 0001, RFC 0002  
+**Supersedes:** None  
 **Target:** `nebula-parameter` v1.x
 
 ---
@@ -26,6 +30,14 @@ Decision in this RFC:
 
 - `Predicate`: adopt as a first-class type.
 - `DynamicRecord`: adopt with strict provider-contract constraints.
+
+## Dependency Gate
+
+This RFC builds on RFC 0001's canonical schema shape and RFC 0002's provider
+contract work.
+
+`DynamicRecord` rollout does not start until RFC 0002 defines a versioned
+dynamic-provider response contract that downstream providers can implement.
 
 ---
 
@@ -90,18 +102,13 @@ pub enum DynamicRecordMode {
 
 ### Provider Contract
 
+`DynamicRecord` uses the same versioned dynamic-provider envelope defined by
+RFC 0002, with `kind = fields`.
+
 The provider returns `DynamicRecordPage`:
 
 ```rust
-pub struct DynamicRecordPage {
-    /// Dynamic field specs to render.
-    /// This is intentionally NOT the full `Field` enum.
-    pub fields: Vec<DynamicFieldSpec>,
-    /// Pagination cursor (None = all fields returned).
-    pub next_cursor: Option<String>,
-    /// Provider schema snapshot/version for deterministic persistence.
-    pub schema_version: Option<String>,
-}
+pub type DynamicRecordPage = DynamicProviderEnvelope<DynamicFieldSpec>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -134,9 +141,15 @@ pub enum DynamicFieldSpec {
 }
 ```
 
-The provider has the same interface as `OptionProvider` but resolves `DynamicRecordPage`
-instead of `OptionPage`. Registered under the same provider registry, differentiated
-by return type at the call site.
+Contract requirements:
+- `response_version` starts at `1`
+- the logical response kind is `fields`
+- `items` contains `DynamicFieldSpec` entries in canonical field order
+- `depends_on` inputs are part of the provider cache key
+- `schema_version` must change when the upstream schema shape changes
+
+The provider shares the same registry namespace as dynamic option providers, but
+callers must validate both `response_version` and response `kind`.
 
 Constraints for maintainability:
 
@@ -447,9 +460,13 @@ Determinism and complexity limits:
 
 No breaking changes. Both types are additive to the `Field` enum.
 
-`OptionProvider` and `DynamicRecordProvider` share the same registration
-mechanism — differentiated by the type they resolve. Consider a unified
-`Provider` trait with associated response type, or two separate trait objects.
+`OptionProvider` and `DynamicRecordProvider` share one registry namespace and
+one response envelope, but remain separate object-safe traits in v1.
+
+Decision:
+- keep separate traits for dynamic dispatch simplicity across plugin boundaries
+- share request context, cache key derivation, and envelope validation logic
+- do not introduce a unified associated-type provider trait in v1
 
 ---
 
@@ -503,9 +520,11 @@ Field::predicate("price_filter")
 2. Implement `evaluate(expr, data)` in `nebula-core`.
 3. Implement IF and Filter core nodes using `Predicate`.
 4. Implement Switch core node using `List<Object { Predicate(allow_groups:false), branch_target }>`.
-5. Add `Field::DynamicRecord` variant and `DynamicRecordProvider` trait.
-6. Implement `sheets.columns` canonical provider as first reference implementation.
-7. Ship `DynamicRecord` behind a feature flag (`dynamic-record`) until at least
+5. Adopt the RFC 0002 versioned provider envelope for `kind = fields`.
+6. Add `Field::DynamicRecord` variant and `DynamicRecordProvider` trait.
+7. Add shared provider-registry validation for response kind/version mismatches.
+8. Implement `sheets.columns` canonical provider as first reference implementation.
+9. Ship `DynamicRecord` behind a feature flag (`dynamic-record`) until at least
   two reference providers prove compatibility (`sheets.columns`, `airtable.fields`).
-8. Document provider contract for community node authors.
+10. Document provider contract for community node authors.
 

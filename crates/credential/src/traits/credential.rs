@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 
-use nebula_parameter::collection::ParameterCollection;
+use nebula_parameter::schema::Schema;
 use nebula_parameter::values::ParameterValues;
 
 use crate::core::{
@@ -133,7 +133,7 @@ pub trait StaticProtocol: Send + Sync + 'static {
     /// Parameters this protocol contributes.
     ///
     /// Merged first (before own params) by the macro.
-    fn parameters() -> ParameterCollection
+    fn parameters() -> Schema
     where
         Self: Sized;
 
@@ -176,7 +176,7 @@ pub trait FlowProtocol: Send + Sync + 'static {
     type State: CredentialState;
 
     /// Parameters shown to user in UI (client_id, client_secret, etc.)
-    fn parameters() -> ParameterCollection
+    fn parameters() -> Schema
     where
         Self: Sized;
 
@@ -260,7 +260,7 @@ mod tests {
                 .key("test_api_key")
                 .name("Test API Key")
                 .description("Test API key credential")
-                .properties(nebula_parameter::collection::ParameterCollection::new())
+                .properties(nebula_parameter::schema::Schema::new())
                 .build()
                 .unwrap()
         }
@@ -287,7 +287,7 @@ mod tests {
                 .key("test_db_cred")
                 .name("Test DB Cred")
                 .description("Test database credential")
-                .properties(nebula_parameter::collection::ParameterCollection::new())
+                .properties(nebula_parameter::schema::Schema::new())
                 .build()
                 .unwrap()
         }

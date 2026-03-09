@@ -157,7 +157,7 @@ pub mod core {
         pub icon: Option<String>,
         pub icon_url: Option<String>,
         pub documentation_url: Option<String>,
-        pub properties: crate::collection::ParameterCollection,
+        pub properties: crate::schema::Schema,
     }
 
     pub struct CredentialContext;
@@ -189,7 +189,7 @@ pub trait CredentialType: Send + Sync + 'static {
 pub trait StaticProtocol: Send + Sync + 'static {
     type State: Send + Sync + Clone + 'static;
 
-    fn parameters() -> crate::collection::ParameterCollection
+    fn parameters() -> crate::schema::Schema
     where
         Self: Sized;
 
@@ -213,7 +213,7 @@ pub trait FlowProtocol: Send + Sync + 'static {
     type Config: Send + Sync + 'static;
     type State: Send + Sync + Clone + 'static;
 
-    fn parameters() -> crate::collection::ParameterCollection
+    fn parameters() -> crate::schema::Schema
     where
         Self: Sized;
 
@@ -333,8 +333,8 @@ pub mod protocols {
         type Config = OAuth2Config;
         type State = OAuth2State;
 
-        fn parameters() -> crate::collection::ParameterCollection {
-            crate::collection::ParameterCollection::new()
+        fn parameters() -> crate::schema::Schema {
+            crate::schema::Schema::new()
         }
 
         async fn initialize(
@@ -383,8 +383,8 @@ pub mod protocols {
         type Config = LdapConfig;
         type State = LdapState;
 
-        fn parameters() -> crate::collection::ParameterCollection {
-            crate::collection::ParameterCollection::new()
+        fn parameters() -> crate::schema::Schema {
+            crate::schema::Schema::new()
         }
 
         async fn initialize(
@@ -424,98 +424,72 @@ pub mod values {
     }
 }
 
-pub mod collection {
+pub mod schema {
     #[derive(Clone, Default)]
-    pub struct ParameterCollection {
-        pub(crate) items: Vec<crate::def::ParameterDef>,
+    pub struct Schema {
+        pub fields: Vec<Field>,
     }
 
-    impl ParameterCollection {
+    impl Schema {
         pub fn new() -> Self {
             Self::default()
         }
 
-        pub fn with(mut self, item: crate::def::ParameterDef) -> Self {
-            self.items.push(item);
+        pub fn field(mut self, f: Field) -> Self {
+            self.fields.push(f);
+            self
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct Field {
+        pub id: String,
+        pub label: String,
+        pub description: Option<String>,
+        pub required: bool,
+        pub secret: bool,
+    }
+
+    impl Field {
+        pub fn text(id: &str) -> Self {
+            Self {
+                id: id.to_string(),
+                label: id.to_string(),
+                description: None,
+                required: false,
+                secret: false,
+            }
+        }
+
+        pub fn with_label(mut self, label: &str) -> Self {
+            self.label = label.to_string();
+            self
+        }
+
+        pub fn with_description(mut self, desc: &str) -> Self {
+            self.description = Some(desc.to_string());
+            self
+        }
+
+        pub fn required(mut self) -> Self {
+            self.required = true;
+            self
+        }
+
+        pub fn secret(mut self) -> Self {
+            self.secret = true;
             self
         }
     }
 }
 
-pub mod def {
-    #[derive(Clone)]
-    pub enum ParameterDef {
-        Text(crate::types::TextParameter),
-        Number(crate::types::NumberParameter),
-        Checkbox(crate::types::CheckboxParameter),
-        Secret(crate::types::SecretParameter),
-    }
-}
-
-pub mod types {
+pub mod collection {
     #[derive(Clone, Default)]
-    pub struct Metadata {
-        pub description: Option<String>,
-        pub required: bool,
-    }
+    pub struct ParameterCollection;
 
-    #[derive(Clone)]
-    pub struct TextParameter {
-        pub metadata: Metadata,
-        pub default: Option<String>,
-    }
-
-    #[derive(Clone)]
-    pub struct NumberParameter {
-        pub metadata: Metadata,
-        pub default: Option<f64>,
-    }
-
-    #[derive(Clone)]
-    pub struct CheckboxParameter {
-        pub metadata: Metadata,
-        pub default: Option<bool>,
-    }
-
-    #[derive(Clone)]
-    pub struct SecretParameter {
-        pub metadata: Metadata,
-        pub default: Option<String>,
-    }
-
-    impl TextParameter {
-        pub fn new(_key: &str, _name: &str) -> Self {
-            Self {
-                metadata: Metadata::default(),
-                default: None,
-            }
-        }
-    }
-
-    impl NumberParameter {
-        pub fn new(_key: &str, _name: &str) -> Self {
-            Self {
-                metadata: Metadata::default(),
-                default: None,
-            }
-        }
-    }
-
-    impl CheckboxParameter {
-        pub fn new(_key: &str, _name: &str) -> Self {
-            Self {
-                metadata: Metadata::default(),
-                default: None,
-            }
-        }
-    }
-
-    impl SecretParameter {
-        pub fn new(_key: &str, _name: &str) -> Self {
-            Self {
-                metadata: Metadata::default(),
-                default: None,
-            }
+    impl ParameterCollection {
+        pub fn new() -> Self {
+            Self
         }
     }
 }

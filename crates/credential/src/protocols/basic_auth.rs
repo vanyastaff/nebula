@@ -3,10 +3,7 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 
-use nebula_parameter::collection::ParameterCollection;
-use nebula_parameter::def::ParameterDef;
-use nebula_parameter::typed::{Plain, Text};
-use nebula_parameter::types::SecretParameter;
+use nebula_parameter::schema::{Field, Schema};
 use nebula_parameter::values::ParameterValues;
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
@@ -42,18 +39,10 @@ pub struct BasicAuthProtocol;
 impl StaticProtocol for BasicAuthProtocol {
     type State = BasicAuthState;
 
-    fn parameters() -> ParameterCollection {
-        let username = Text::<Plain>::builder("username")
-            .label("Username")
-            .required()
-            .build();
-
-        let mut password = SecretParameter::new("password", "Password");
-        password.metadata.required = true;
-
-        ParameterCollection::new()
-            .with(ParameterDef::from(username))
-            .with(ParameterDef::Secret(password))
+    fn parameters() -> Schema {
+        Schema::new()
+            .field(Field::text("username").with_label("Username").required())
+            .field(Field::text("password").with_label("Password").required().secret())
     }
 
     fn build_state(values: &ParameterValues) -> Result<Self::State, CredentialError> {

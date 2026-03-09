@@ -1,6 +1,11 @@
-# RFC 0002 - Parameter Core Extensions
+# RFC 0002: Parameter Core Extensions
 
-Status: Draft
+**Type:** Standards Track RFC
+**Status:** Draft
+**Created:** 2026-03-08
+**Updated:** 2026-03-08
+**Depends on:** RFC 0001
+**Supersedes:** None
 
 ## Summary
 
@@ -9,6 +14,47 @@ in nebula (used by credentials, actions, and other schema-driven UIs).
 
 Design goal: keep nebula v2 JSON-first model intact and add missing
 parameter-level semantics without introducing node/runtime behavior.
+
+## Normative Scope
+
+This RFC extends RFC 0001 and does not redefine the base schema shape.
+
+Provider-driven additions in this RFC are normative once they follow the
+versioned dynamic-provider response contract defined below. RFC 0004 depends on
+that contract.
+
+## Versioned Dynamic Provider Contract
+
+This RFC resolves that open point: dynamic providers in the parameter system use
+a versioned response envelope.
+
+Required envelope fields:
+- `response_version`: version of the provider payload contract
+- `kind`: logical response kind such as `options` or `fields`
+- `schema_version`: optional upstream snapshot/version for deterministic caching
+- `next_cursor`: optional pagination cursor
+
+Provider inputs referenced by `depends_on` are part of the provider cache key
+and must be available to the provider invocation.
+
+Reference shape:
+
+```rust
+pub struct DynamicProviderEnvelope<T> {
+    pub response_version: u16,
+    pub kind: DynamicResponseKind,
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+    pub schema_version: Option<String>,
+}
+
+pub enum DynamicResponseKind {
+    Options,
+    Fields,
+}
+```
+
+For RFC 0002 presets, `kind` must be `Options`.
 
 ## Relation to paramdef routing.rs
 
@@ -32,7 +78,8 @@ Current v2 schema is expressive but misses several form-level capabilities:
 2. `switch` and `router` case uniqueness requires custom ad-hoc validation.
 3. Expression fields are represented as generic `text + expression`.
 4. Repeated core fragments (branch target, retry policy, timeout) are duplicated.
-5. Dynamic provider contracts are underspecified.
+5. Dynamic provider contracts need one canonical versioned envelope for all
+    provider-backed fields.
 
 ## Proposed Additions
 
@@ -144,10 +191,13 @@ Recommended field shape:
 }
 ```
 
-Provider response contract (logical):
+Provider response contract:
+- `response_version`: starts at `1`
+- `kind`: `options`
 - item `value`: stable channel key (e.g. `orders.approved`)
 - item `label`: display name
 - optional `description`: human-readable hint
+- optional `schema_version`: snapshot of the current source catalog
 
 Behavior:
 - if provider is unavailable, keep previously selected value but mark field invalid on save.
@@ -172,10 +222,13 @@ Recommended field shape:
 }
 ```
 
-Provider response contract (logical):
+Provider response contract:
+- `response_version`: starts at `1`
+- `kind`: `options`
 - item `value`: stable branch key/edge id
 - item `label`: branch display name (e.g. `priority`, `default`, `on_error`)
 - optional `description`: route hint
+- optional `schema_version`: workflow graph snapshot/version
 
 Behavior:
 - if a previously selected value disappears from provider output, the value remains
@@ -244,15 +297,14 @@ New error codes:
 1. Should `branch_target` allow manual text fallback when providers are unavailable?
 2. Should `unique_by` support deep paths (`config.key`) only, or array wildcards later?
 3. Should expression presets enforce runtime type checks strictly or best-effort?
-4. Should dynamic providers support standard scoped filtering via `depends_on`?
-5. Should we define a strict provider response schema versioning strategy?
+4. Should `depends_on` values always be required before invoking a provider, or
+    should providers be allowed to return partial results?
 
 ## Rollout Plan
 
-1. Implement `branch_target` preset using dynamic provider contract.
-2. Implement `Rule::unique_by` for list/object validation.
-3. Add expression preset builder shortcuts.
-4. Define and implement canonical dynamic provider contracts.
-5. Add contract tests for provider payload shape.
-6. Add `core_fields` helper module (including `signal_channel` and `branch_target`).
-7. Migrate core action schemas to presets incrementally.
+1. Implement the versioned dynamic provider envelope and contract tests.
+2. Implement `branch_target` preset using the shared provider contract.
+3. Implement `Rule::unique_by` for list/object validation.
+4. Add expression preset builder shortcuts.
+5. Add `core_fields` helper module (including `signal_channel` and `branch_target`).
+6. Migrate core action schemas to presets incrementally.

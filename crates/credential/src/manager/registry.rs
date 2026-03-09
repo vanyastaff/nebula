@@ -32,7 +32,7 @@ pub(crate) enum InitResult {
     },
 }
 
-use nebula_parameter::collection::ParameterCollection;
+use nebula_parameter::schema::Schema;
 
 use crate::protocols::{
     ApiKeyProtocol, ApiKeyState, BasicAuthProtocol, BasicAuthState, OAuth2Config, OAuth2Protocol,
@@ -282,7 +282,7 @@ pub struct ProtocolSchema {
     pub type_id: String,
     pub display_name: String,
     pub description: String,
-    pub params: ParameterCollection,
+    pub params: Schema,
     pub capabilities: Vec<String>,
 }
 

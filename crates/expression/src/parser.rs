@@ -224,25 +224,22 @@ impl<'a> Parser<'a> {
 
     /// Parse primary expression with depth tracking
     fn parse_primary_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
-        match &self.current_token().kind.clone() {
+        match self.current_token().kind {
             // Literals
             TokenKind::Integer(n) => {
-                let n = *n;
                 self.advance();
                 Ok(Expr::Literal(Value::Number(n.into())))
             }
             TokenKind::Float(n) => {
-                let n = *n;
                 self.advance();
                 Ok(Expr::Literal(serde_json::json!(n)))
             }
             TokenKind::String(s) => {
-                let s: Arc<str> = Arc::from(*s);
+                let s: Arc<str> = Arc::from(s);
                 self.advance();
                 Ok(Expr::Literal(Value::String(s.as_ref().to_string())))
             }
             TokenKind::Boolean(b) => {
-                let b = *b;
                 self.advance();
                 Ok(Expr::Literal(Value::Bool(b)))
             }
@@ -253,14 +250,14 @@ impl<'a> Parser<'a> {
 
             // Variables
             TokenKind::Variable(name) => {
-                let name = Arc::from(*name);
+                let name = Arc::from(name);
                 self.advance();
                 Ok(Expr::Variable(name))
             }
 
             // Identifiers (could be function calls)
             TokenKind::Identifier(name) => {
-                let name = Arc::from(*name);
+                let name = Arc::from(name);
                 self.advance();
                 if self.current_token().kind == TokenKind::LeftParen {
                     // Function call

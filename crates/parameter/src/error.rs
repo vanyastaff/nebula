@@ -36,6 +36,15 @@ pub enum ParameterError {
     #[error("validation failed for `{key}`: {reason}")]
     ValidationError { key: String, reason: String },
 
+    /// A declarative validation rule failed with structured validator details.
+    #[error("validation failed for `{key}` [{code}]: {reason}")]
+    ValidationIssue {
+        key: String,
+        code: String,
+        reason: String,
+        params: Vec<(String, String)>,
+    },
+
     /// Failed to deserialize a parameter value.
     #[error("deserialization failed for `{key}`: {error}")]
     DeserializationError { key: String, error: String },
@@ -57,6 +66,7 @@ impl ParameterError {
             Self::InvalidValue { .. } => "value",
             Self::MissingValue { .. } => "value",
             Self::ValidationError { .. } => "validation",
+            Self::ValidationIssue { .. } => "validation",
             Self::DeserializationError { .. } => "serialization",
             Self::SerializationError { .. } => "serialization",
         }
@@ -73,6 +83,7 @@ impl ParameterError {
             Self::InvalidValue { .. } => "PARAM_INVALID_VALUE",
             Self::MissingValue { .. } => "PARAM_MISSING_VALUE",
             Self::ValidationError { .. } => "PARAM_VALIDATION",
+            Self::ValidationIssue { .. } => "PARAM_VALIDATION_ISSUE",
             Self::DeserializationError { .. } => "PARAM_DESER",
             Self::SerializationError { .. } => "PARAM_SER",
         }
@@ -85,6 +96,24 @@ impl ParameterError {
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         false
+    }
+
+    /// Returns structured validation code when available.
+    #[must_use]
+    pub fn validation_code(&self) -> Option<&str> {
+        match self {
+            Self::ValidationIssue { code, .. } => Some(code.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Returns structured validation params when available.
+    #[must_use]
+    pub fn validation_params(&self) -> Option<&[(String, String)]> {
+        match self {
+            Self::ValidationIssue { params, .. } => Some(params.as_slice()),
+            _ => None,
+        }
     }
 }
 
@@ -147,6 +176,17 @@ mod tests {
             "validation failed for `url`: not a valid URL"
         );
 
+        let err = ParameterError::ValidationIssue {
+            key: "email".into(),
+            code: "invalid_format".into(),
+            reason: "Invalid format".into(),
+            params: vec![("expected".into(), "email".into())],
+        };
+        assert_eq!(
+            err.to_string(),
+            "validation failed for `email` [invalid_format]: Invalid format"
+        );
+
         let err = ParameterError::DeserializationError {
             key: "config".into(),
             error: "expected object".into(),
@@ -201,6 +241,15 @@ mod tests {
                 "validation",
             ),
             (
+                ParameterError::ValidationIssue {
+                    key: String::new(),
+                    code: String::new(),
+                    reason: String::new(),
+                    params: Vec::new(),
+                },
+                "validation",
+            ),
+            (
                 ParameterError::DeserializationError {
                     key: String::new(),
                     error: String::new(),
@@ -243,6 +292,12 @@ mod tests {
                 key: String::new(),
                 reason: String::new(),
             },
+            ParameterError::ValidationIssue {
+                key: String::new(),
+                code: String::new(),
+                reason: String::new(),
+                params: Vec::new(),
+            },
             ParameterError::DeserializationError {
                 key: String::new(),
                 error: String::new(),
@@ -283,5 +338,28 @@ mod tests {
         for err in &errors {
             assert!(!err.is_retryable(), "should not be retryable: {:?}", err);
         }
+    }
+
+    #[test]
+    fn validation_issue_helpers() {
+        let err = ParameterError::ValidationIssue {
+            key: "username".into(),
+            code: "min_length".into(),
+            reason: "min_length: Must be at least 5 characters".into(),
+            params: vec![("min".into(), "5".into())],
+        };
+
+        assert_eq!(err.validation_code(), Some("min_length"));
+        assert_eq!(
+            err.validation_params(),
+            Some(&[("min".into(), "5".into())][..])
+        );
+
+        let plain = ParameterError::InvalidValue {
+            key: "username".into(),
+            reason: "bad value".into(),
+        };
+        assert_eq!(plain.validation_code(), None);
+        assert_eq!(plain.validation_params(), None);
     }
 }

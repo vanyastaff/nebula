@@ -199,7 +199,7 @@ mod tests {
                     .key("test_header")
                     .name("Test")
                     .description("Test")
-                    .properties(nebula_parameter::collection::ParameterCollection::new())
+                    .properties(nebula_parameter::schema::Schema::new())
                     .build()
                     .unwrap()
             }
@@ -262,7 +262,7 @@ mod tests {
                     .key("test_db")
                     .name("Test DB")
                     .description("Test")
-                    .properties(nebula_parameter::collection::ParameterCollection::new())
+                    .properties(nebula_parameter::schema::Schema::new())
                     .build()
                     .unwrap()
             }

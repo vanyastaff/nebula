@@ -161,7 +161,7 @@ mod new_tests {
     use super::*;
 
     use async_trait::async_trait;
-    use nebula_parameter::collection::ParameterCollection;
+    use nebula_parameter::schema::Schema;
 
     use crate::core::CredentialDescription;
     use crate::core::result::InitializeResult;
@@ -181,7 +181,7 @@ mod new_tests {
                 .key("oauth2_github")
                 .name("GitHub OAuth2 (test)")
                 .description("Test credential type for CredentialRef")
-                .properties(ParameterCollection::new())
+                .properties(Schema::new())
                 .build()
                 .unwrap()
         }

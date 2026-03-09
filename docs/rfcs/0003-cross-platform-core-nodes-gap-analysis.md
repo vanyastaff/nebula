@@ -1,6 +1,11 @@
-# RFC 0003 - Cross-Platform Form Parameter Gap Analysis
+# RFC 0003: Cross-Platform Form Parameter Gap Analysis
 
-Status: Draft
+**Type:** Informational RFC
+**Status:** Draft
+**Created:** 2026-03-08
+**Updated:** 2026-03-08
+**Depends on:** None
+**Supersedes:** None
 
 ## Scope
 

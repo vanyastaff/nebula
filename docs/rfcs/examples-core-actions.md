@@ -1,8 +1,15 @@
 # Core Actions - Field Schema Examples (Parameter Schema v2)
 
+**Type:** Informational Examples  
+**Status:** Draft  
+**Depends on:** RFC 0001, RFC 0002  
+
 Examples of core workflow actions built with the v2 parameter schema.
 Goal: validate control-flow UX (`if`, `switch`, `router`, etc.) and reveal
 what may still be missing in the core schema.
+
+These examples are non-normative. The governing contracts live in RFC 0001 and
+RFC 0002.
 
 This document follows the nebula atomic action model:
 one action = one schema = one operation.
