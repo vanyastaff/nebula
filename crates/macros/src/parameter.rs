@@ -43,7 +43,7 @@ fn expand(input: syn::DeriveInput) -> syn::Result<TokenStream> {
         impl #impl_generics #struct_name #ty_generics #where_clause {
             /// Returns the parameter schema describing all fields.
             pub fn parameters() -> ::nebula_parameter::schema::Schema {
-                use ::nebula_parameter::schema::{Field, Schema};
+                use ::nebula_parameter::{Field, Schema};
 
                 Schema::new()
                     #(.field(#param_defs))*

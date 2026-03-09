@@ -1,4 +1,5 @@
-use super::{Condition, Rule};
+use crate::conditions::Condition;
+use crate::rules::Rule;
 
 /// Shared field metadata.
 ///

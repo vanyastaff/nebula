@@ -7,7 +7,7 @@ use nebula_credential::core::{
     CredentialContext, CredentialDescription, CredentialId, CredentialMetadata, ManagerError,
 };
 use nebula_credential::prelude::*;
-use nebula_parameter::schema::{Field, Schema};
+use nebula_parameter::{Field, Schema};
 use nebula_parameter::values::ParameterValues;
 use serde_json::json;
 use std::sync::Arc;

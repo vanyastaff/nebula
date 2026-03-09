@@ -12,7 +12,7 @@ pub use config::{LdapConfig, TlsMode};
 
 use serde::{Deserialize, Serialize};
 
-use nebula_parameter::schema::{Field, Schema};
+use nebula_parameter::{Field, Schema};
 use nebula_parameter::values::ParameterValues;
 
 use crate::core::result::InitializeResult;

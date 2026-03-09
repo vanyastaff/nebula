@@ -4,7 +4,7 @@
 //! that can be used for type registry and documentation.
 
 use nebula_credential::core::CredentialDescription;
-use nebula_parameter::schema::{Field, Schema};
+use nebula_parameter::{Field, Schema};
 
 fn main() {
     // Example 1: GitHub OAuth2 credential type

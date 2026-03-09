@@ -111,4 +111,4 @@ pub use validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
 };
 
-pub use nebula_parameter::schema::{Field, Schema};
+pub use nebula_parameter::{Field, Schema};

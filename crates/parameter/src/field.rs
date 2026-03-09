@@ -1,7 +1,16 @@
-use super::{
-    Condition, DynamicRecordMode, FieldMetadata, ModeVariant, OptionSource, PredicateOp, Rule,
-    UnknownFieldPolicy,
-};
+use crate::conditions::Condition;
+use crate::metadata::FieldMetadata;
+use crate::option::OptionSource;
+use crate::rules::Rule;
+use crate::spec::{DynamicRecordMode, ModeVariant, PredicateOp, UnknownFieldPolicy};
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_depth() -> u8 {
+    3
+}
 
 /// Canonical schema field.
 ///
@@ -164,10 +173,10 @@ pub enum Field {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         operators: Option<Vec<PredicateOp>>,
         /// Allow rule groups (nested AND/OR logic).
-        #[serde(default = "super::default_true")]
+        #[serde(default = "crate::field::default_true")]
         allow_groups: bool,
         /// Maximum nesting depth for predicate groups.
-        #[serde(default = "super::default_depth")]
+        #[serde(default = "crate::field::default_depth")]
         max_depth: u8,
     },
     /// Escape-hatch variant for types not yet promoted to first-class fields.

@@ -4,6 +4,8 @@ extern crate self as nebula_parameter;
 extern crate self as nebula_plugin;
 extern crate self as nebula_resource;
 
+pub use schema::{Field, Schema};
+
 pub mod metadata {
     #[derive(Clone)]
     pub struct ActionMetadata;

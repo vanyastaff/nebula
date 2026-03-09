@@ -32,6 +32,10 @@ pub enum ParameterError {
     #[error("missing value for required parameter `{key}`")]
     MissingValue { key: String },
 
+    /// Input contains a field that is not defined by the schema.
+    #[error("unknown field `{key}`")]
+    UnknownField { key: String },
+
     /// A declarative validation rule failed.
     #[error("validation failed for `{key}`: {reason}")]
     ValidationError { key: String, reason: String },
@@ -65,6 +69,7 @@ impl ParameterError {
             Self::InvalidType { .. } => "type",
             Self::InvalidValue { .. } => "value",
             Self::MissingValue { .. } => "value",
+            Self::UnknownField { .. } => "value",
             Self::ValidationError { .. } => "validation",
             Self::ValidationIssue { .. } => "validation",
             Self::DeserializationError { .. } => "serialization",
@@ -82,6 +87,7 @@ impl ParameterError {
             Self::InvalidType { .. } => "PARAM_INVALID_TYPE",
             Self::InvalidValue { .. } => "PARAM_INVALID_VALUE",
             Self::MissingValue { .. } => "PARAM_MISSING_VALUE",
+            Self::UnknownField { .. } => "PARAM_UNKNOWN_FIELD",
             Self::ValidationError { .. } => "PARAM_VALIDATION",
             Self::ValidationIssue { .. } => "PARAM_VALIDATION_ISSUE",
             Self::DeserializationError { .. } => "PARAM_DESER",
@@ -167,6 +173,11 @@ mod tests {
             "missing value for required parameter `name`"
         );
 
+        let err = ParameterError::UnknownField {
+            key: "unexpected".into(),
+        };
+        assert_eq!(err.to_string(), "unknown field `unexpected`");
+
         let err = ParameterError::ValidationError {
             key: "url".into(),
             reason: "not a valid URL".into(),
@@ -233,6 +244,7 @@ mod tests {
                 "value",
             ),
             (ParameterError::MissingValue { key: String::new() }, "value"),
+            (ParameterError::UnknownField { key: String::new() }, "value"),
             (
                 ParameterError::ValidationError {
                     key: String::new(),

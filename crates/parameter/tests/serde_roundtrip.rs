@@ -1,6 +1,6 @@
 //! Serialization round-trip tests for the v2 Schema / Field types.
 
-use nebula_parameter::schema::{Field, Rule, Schema};
+use nebula_parameter::{Field, Rule, Schema};
 
 #[test]
 fn schema_json_roundtrip() {
