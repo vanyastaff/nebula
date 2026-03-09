@@ -85,7 +85,7 @@ This is Blender's most influential innovation. The distinction:
 # Python API
 bpy.props.FloatProperty(
     name="Radius",
-    semantic_kind='DISTANCE',
+    subtype='DISTANCE',
     unit='LENGTH',
     soft_min=0.001,   # slider range
     soft_max=100.0,   #
@@ -99,27 +99,27 @@ bpy.props.FloatProperty(
 
 The design rationale: `soft` bounds encode UX intent ("this is the _normal_ range"), `hard` bounds encode domain invariants ("this value _cannot physically_ be negative"). The UI never shows the hard bounds — they exist purely for validation.
 
-### Semantic kind + Unit System
+### Subtype + Unit System
 
-Semantic kinds encode **semantic meaning** beyond the base type:
+Subtypes encode **semantic meaning** beyond the base type:
 
 ```python
 # Same underlying float, very different UI widget + behavior
-FloatProperty(semantic_kind='NONE')        # plain number field
-FloatProperty(semantic_kind='DISTANCE')    # unit-aware, converts m/cm/inch
-FloatProperty(semantic_kind='ANGLE')       # stores radians, displays degrees
-FloatProperty(semantic_kind='FACTOR')      # always 0..1, shown as percentage
-FloatProperty(semantic_kind='PIXEL')       # integer-like, no decimals
-FloatProperty(semantic_kind='UNSIGNED')    # non-negative enforcement in UI
-FloatProperty(semantic_kind='DIRECTION')   # normalized automatically
-FloatProperty(semantic_kind='COLOR')       # color picker widget
-FloatProperty(semantic_kind='COLOR_GAMMA') # same + gamma correction display
+FloatProperty(subtype='NONE')        # plain number field
+FloatProperty(subtype='DISTANCE')    # unit-aware, converts m/cm/inch
+FloatProperty(subtype='ANGLE')       # stores radians, displays degrees
+FloatProperty(subtype='FACTOR')      # always 0..1, shown as percentage
+FloatProperty(subtype='PIXEL')       # integer-like, no decimals
+FloatProperty(subtype='UNSIGNED')    # non-negative enforcement in UI
+FloatProperty(subtype='DIRECTION')   # normalized automatically
+FloatProperty(subtype='COLOR')       # color picker widget
+FloatProperty(subtype='COLOR_GAMMA') # same + gamma correction display
 ```
 
-Unit system is **orthogonal** to semantic kind:
+Unit system is **orthogonal** to subtype:
 
 ```python
-FloatProperty(semantic_kind='DISTANCE', unit='LENGTH')
+FloatProperty(subtype='DISTANCE', unit='LENGTH')
 # unit='LENGTH' → respects scene unit scale (metric/imperial)
 # unit='NONE'   → raw value, no conversion
 # unit='TIME'   → shows as frames or seconds depending on FPS setting
@@ -1322,7 +1322,7 @@ Constraint
 └── Semantic constraints
     ├── Format (email, URL, ISO date, MIME type)
     ├── Unit (length, angle, time — for unit conversion)
-    └── Semantic kind (color, direction, distance — for widget selection)
+    └── Subtype (color, direction, distance — for widget selection)
 ```
 
 ---
@@ -1508,12 +1508,12 @@ impl NumberConstraints {
 }
 ```
 
-### Semantic Kind as a UI Dispatch Key
+### Subtype as a UI Dispatch Key
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum FloatSemanticKind {
+pub enum FloatSubtype {
     Plain,          // number input
     Distance,       // unit-aware, LENGTH
     Angle,          // stored radians, displayed degrees  
@@ -1523,7 +1523,7 @@ pub enum FloatSemanticKind {
     Percentage,     // 0..100 display
 }
 
-// The semantic kind drives:
+// The subtype drives:
 // 1. Widget selection in the frontend
 // 2. Unit conversion (if any)
 // 3. Default soft_min/soft_max if not specified
@@ -1601,4 +1601,5 @@ pub enum DefaultValue {
 ---
 
 *End of reference document.*
+
 

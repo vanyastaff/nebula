@@ -299,7 +299,7 @@ Build-time validation rules for container specs:
 
 ## 2.2 Secret, Select, and Layout Ideas Adopted from paramdef
 
-1. `secret` is treated as a semantic subtype and policy bundle, not as a standalone data shape.
+1. `secret` is treated as a policy bundle, not as a standalone data shape.
 2. Sensitive defaults should be forbidden by schema compile checks unless explicitly opted in for tests.
 3. `Select` keeps two independent axes: selection mode (`single|multiple`) and source (`static|dynamic`).
 4. `SelectOption` supports optional `description`, `icon`, `group` as typed fields.
@@ -382,8 +382,8 @@ Build-time validation rules for secret/select/layout:
 | boolean | `Field(ValueSpec::Boolean)` | direct |
 | button | `Ui(UiNode::ActionButton)` | no fake field value |
 | collection | `Field(ValueSpec::Object)` | typed nested fields |
-| color | `Field(ValueSpec::Text + subtype color_hex)` | validated pattern |
-| dateTime | `Field(ValueSpec::Text + subtype datetime_iso8601)` | validated format |
+| color | `Field(ValueSpec::Text + Rule::Pattern("^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"))` | validated pattern |
+| dateTime | `Field(ValueSpec::Text + Rule::Pattern("^\\d{4}-\\d{2}-\\d{2}T"))` | validated format |
 | fixedCollection | `Field(ValueSpec::List<Object>)` | typed repeated objects |
 | hidden | `Field.presentation.visibility = Hidden` | explicit policy |
 | icon | `Field(ValueSpec::Object/IconValue)` | no free-form blob |

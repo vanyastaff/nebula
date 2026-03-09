@@ -15,14 +15,14 @@ This reference documents how major platforms implement parameter/property system
 ### Blender RNA (Python/C)
 
 **Key Innovations:**
-- Semantic kind + Unit pattern (semantic meaning + measurement)
+- Subtype + Unit pattern (semantic meaning + measurement)
 - Soft/Hard min/max (UI hints vs validation enforcement)
 - Poll functions for conditional visibility
 
 ```python
 bpy.props.FloatProperty(
     name="Distance",
-    semantic_kind='DISTANCE',     # Semantic meaning
+    subtype='DISTANCE',     # Semantic meaning
     unit='LENGTH',          # Measurement system
     soft_min=0.0,           # Slider starts at 0
     soft_max=10.0,          # Slider ends at 10
@@ -32,7 +32,7 @@ bpy.props.FloatProperty(
 )
 ```
 
-**paramdef Adoption:** Semantic kind + Unit pattern, Soft/Hard constraints
+**paramdef Adoption:** Subtype + Unit pattern, Soft/Hard constraints
 
 ---
 
@@ -409,7 +409,7 @@ RED.nodes.registerType('my-node', {
 
 | Pattern | Systems | paramdef |
 |---------|---------|----------|
-| Semantic-kind semantics | Blender, Unreal, Houdini | ✅ Semantic kinds |
+| Subtype semantics | Blender, Unreal, Houdini | ✅ Subtypes |
 | Unit conversion | Blender, Unreal | ✅ Units |
 | Soft/Hard limits | Blender, Houdini | ✅ Soft/Hard |
 | Expression support | Airflow, n8n, Houdini | ✅ Expression flag |
@@ -464,7 +464,7 @@ Type safety achieved through builders and typed getters, not stringly-typed acce
 
 paramdef combines patterns from 18 different systems into a cohesive API:
 
-- Blender's semantic kind + Unit
+- Blender's Subtype + Unit
 - Qt's Reset + Notifications
 - WPF's Coercion (Transformers)
 - n8n's Display Conditions
@@ -480,7 +480,7 @@ paramdef combines patterns from 18 different systems into a cohesive API:
 |---------|---------|--------|-------|-------|----|----|-----|---------|------|---------|------------|
 | Type Safety | - | ~ | ~ | - | ~ | ✓ | - | - | - | - | **✓** |
 | Compile-Time | - | ~ | - | - | ~ | ~ | - | - | - | - | **✓** |
-| SemanticKind+Unit | ✓ | ✓ | - | - | - | - | - | - | - | ~ | **✓** |
+| Subtype+Unit | ✓ | ✓ | - | - | - | - | - | - | - | ~ | **✓** |
 | Soft/Hard | ✓ | ✓ | - | - | - | ~ | - | - | - | ✓ | **✓** |
 | Transformers | - | - | - | - | - | ✓ | - | - | - | - | **✓** |
 | Reset | - | - | - | - | ✓ | - | - | - | - | ✓ | **✓** |
@@ -500,7 +500,7 @@ paramdef combines patterns from 18 different systems into a cohesive API:
 ## Recommendations from Industry
 
 ### For Form Builders
-1. Use semantic kind to encode semantic meaning
+1. Use Subtype to encode semantic meaning
 2. Provide soft limits for better UX
 3. Support conditional visibility
 4. Include reset functionality
@@ -522,4 +522,5 @@ paramdef combines patterns from 18 different systems into a cohesive API:
 2. Use type-safe property access
 3. Implement change notifications
 4. Support serialization control
+
 

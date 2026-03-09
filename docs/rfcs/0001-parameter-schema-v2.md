@@ -1633,9 +1633,10 @@ let schema = Schema::builder()
 ### What's removed
 
 - **ExpirableParameter** — TTL/caching is a runtime concern, not a form schema concept.
-- **Generic semantic wrappers** — removed from schema surface.
-  Frontend behavior must come from `type`, `rules`, `expression`, and provider-based
-  selects only, so HTML and native clients stay consistent.
+- **Subtype wrappers** — removed from schema surface.
+  In Nebula, subtype-like behavior is modeled as explicit validation rules
+  (for example `Rule::Pattern` with predefined regex shortcuts), while UI behavior
+  still comes from `type`, `rules`, `expression`, and provider-based selects.
 - **IntBits/NumberKind** — replaced by `integer: bool`. The schema tells the frontend
   "this is an integer" or "this is a decimal". Rust-side range enforcement handles precision.
 - **SecurityPolicy/RedactionTargets/PersistPolicy** — replaced by `secret: bool`.

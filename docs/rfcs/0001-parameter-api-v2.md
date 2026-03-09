@@ -12,7 +12,7 @@
 This RFC proposes a breaking architectural redesign of `nebula-parameter` to achieve:
 - Clean separation of schema definition, runtime values, validation execution, and UI metadata
 - Type-safe numeric semantics (integer/decimal split, no silent `f64` coercion)
-- Lossless subtype preservation (no `unwrap_or_default` fallback)
+- No subtype field in schema surface (pattern-rule shortcuts only)
 - Policy-driven validation with deterministic error reporting
 - Unified expression model for validation and conditional UI behavior
 - Credential-safe value handling (redaction and secret references)
@@ -28,7 +28,7 @@ This RFC proposes a breaking architectural redesign of `nebula-parameter` to ach
 
 1. **Semantic Loss in Typed → Legacy Conversion**
    - `Number::<Port>::new()` stores `u16`, but converts to `f64` in `ParameterDef::Number`
-   - Unknown subtypes silently degrade: `from_name(...).unwrap_or_default()`
+   - Legacy subtype shortcuts silently degrade: `from_name(...).unwrap_or_default()`
    - Loss of precision for large integers and decimals
 
 2. **Validation Model Gaps**
@@ -125,17 +125,13 @@ pub struct FieldDef {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ValueSpec {
     Text {
-        subtype: SubtypeRef<TextSubtype>,
         multiline: bool,
         sensitive: bool,
     },
     Number {
-        subtype: SubtypeRef<NumberSubtype>,
         kind: NumberKind,
     },
-    Boolean {
-        subtype: SubtypeRef<BooleanSubtype>,
-    },
+    Boolean,
     Select {
         options: Vec<SelectOption>,
         option_source: OptionSource,
@@ -173,13 +169,9 @@ pub enum IntBits {
     U8, U16, U32, U64,
 }
 
-/// Subtype reference: known enum or custom string.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum SubtypeRef<T> {
-    Known(T),
-    Custom(String),
-}
+/// Nebula does not model subtype as a first-class schema field.
+/// Semantic checks are represented explicitly in `Constraints.rules`
+/// (for example `Rule::Pattern` with predefined regex shortcuts).
 
 /// Validation constraints (domain-agnostic).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -246,7 +238,7 @@ pub enum OptionSource {
 - `FieldId` is explicit newtype (not raw `String`)
 - `ValueSpec` is pure type definition (no validation, no default)
 - `NumberKind` explicitly models integer vs decimal
-- `SubtypeRef` preserves custom subtypes (no silent fallback)
+- No dedicated subtype field in schema; semantic checks are explicit rules
 - `ModeVariant` includes nested fields for proper validation
 - `IndexMap` preserves deterministic variant traversal order
 - `OptionSource` enables static and dynamic option providers
@@ -493,7 +485,7 @@ pub struct ConversionWarning {
 
 #[derive(Debug, Clone, Copy)]
 pub enum WarningKind {
-    UnknownSubtype,
+    DeprecatedSubtypeShortcut,
     PrecisionLoss,
     UnsupportedFeature,
 }
@@ -508,7 +500,7 @@ impl TryFrom<ParameterDef> for FieldDef {
 
 impl From<FieldDef> for (ParameterDef, Vec<ConversionWarning>) {
     fn from(def: FieldDef) -> (ParameterDef, Vec<ConversionWarning>) {
-        // Best-effort conversion with warnings for custom subtypes, etc.
+        // Best-effort conversion with warnings for deprecated subtype shortcuts, etc.
     }
 }
 
@@ -822,7 +814,7 @@ pub struct SlowLoadNotice {
 
 **Changes:**
 1. Add `schema_core` module:
-    - `FieldId`, `FieldDef`, `ValueSpec`, `SubtypeRef`, `NumberKind`, `OptionSource`
+    - `FieldId`, `FieldDef`, `ValueSpec`, `NumberKind`, `OptionSource`
 2. Add `validation` module:
    - `ValidationPlan`, `ValidationPolicy`, `ParameterError`, `ValuePath`
 3. Add `expression` module:
@@ -832,7 +824,7 @@ pub struct SlowLoadNotice {
 5. Add `ValidatedValues` wrapper
 6. Implement `TryFrom<ParameterDef> for FieldDef`
 7. Add `Schema::compile()` method
-8. Add `#[deprecated]` attributes to existing number/subtype APIs
+8. Add `#[deprecated]` attributes to existing number and legacy subtype shortcut APIs
 9. Update docs with migration guide
 10. Add n8n-compatible dynamic contracts:
     - `OptionLoadStrategy`, `OptionQuery`, `OptionPage`, `ResourceLocatorValue`, `DynamicUiPolicy`
@@ -861,7 +853,7 @@ pub struct SlowLoadNotice {
 3. CI validates both paths produce equivalent validation results
 4. Log `ConversionWarning` in production with telemetry
 5. Numeric extractors use typed paths (no automatic `f64` coercion)
-6. Subtype preservation enforced (fail on unknown subtype in strict mode)
+6. No subtype fields in canonical schema (strict mode rejects legacy subtype payloads)
 7. Enable unified expression runtime for both validation and visibility
 8. Add dynamic option provider adapter and cache policy
 9. Move dynamic provider execution to async contract (`OptionProvider::resolve`)
@@ -905,7 +897,7 @@ pub struct SlowLoadNotice {
 ## Acceptance Criteria
 
 ### Correctness
-- [ ] Zero silent subtype downgrades in conversion
+- [ ] Zero silent subtype-shortcut downgrades in conversion
 - [ ] Deterministic validation error order (stable between runs)
 - [ ] No precision loss for integer-only domains (ports, timestamps, indices)
 - [ ] Mode validation checks active variant fields
@@ -952,7 +944,7 @@ pub struct SlowLoadNotice {
 ### 3. Use `f64` for All Numerics
 **Rejected:** Silent precision loss for integers and decimals is a correctness bug.
 
-### 4. Silent Subtype Coercion
+### 4. Legacy Subtype Shortcut Coercion
 **Rejected:** Data loss in plugin/extension scenarios is unacceptable for production systems.
 
 ---
@@ -961,7 +953,7 @@ pub struct SlowLoadNotice {
 
 - **Schema Linting:** `Schema::lint()` detects duplicate keys, unreachable fields, circular dependencies
 - **Derive Macros:** `#[derive(ParameterSchema)]` for struct → schema generation
-- **Plugin Registry:** `SubtypeRegistry`, `ValidatorPlugin`, `OptionProvider` with versioned contracts
+- **Plugin Registry:** `ValidatorPresetRegistry`, `ValidatorPlugin`, `OptionProvider` with versioned contracts
 - **Expression Language:** Safe subset for `Custom` validation rules with static analysis and cost limits
 - **Async Validation:** Support for remote option providers and async validators
 - **Credential Vault Integrations:** Native secret providers with rotation and lease semantics
@@ -981,23 +973,21 @@ pub struct SlowLoadNotice {
 ### Before (v0.8.x)
 ```rust
 use nebula_parameter::types::NumberParameter;
-use nebula_parameter::subtype::NumberSubtype;
+use nebula_parameter::schema::Rule;
 
 let port = NumberParameter::new("port", "Port")
-    .subtype(NumberSubtype::Port)
+    .rule(Rule::pattern("^([1-9][0-9]{0,4})$", "Must be a valid TCP port"))
     .default_value(8080.0)
     .range(1.0, 65535.0);
 ```
 
 ### After (v1.0)
 ```rust
-use nebula_parameter::schema::{FieldDef, ValueSpec, NumberKind, IntBits, SubtypeRef};
-use nebula_parameter::subtype::std_subtypes::Port;
+use nebula_parameter::schema::{FieldDef, ValueSpec, NumberKind, IntBits};
 
 let port = FieldDef::builder(FieldId::new("port"))
     .label("Port")
     .value_spec(ValueSpec::Number {
-        subtype: SubtypeRef::Known(Port),
         kind: NumberKind::Integer {
             bits: IntBits::U16,
             signed: false,
@@ -1091,7 +1081,7 @@ Order is fixed to avoid ambiguous behavior between UI, expressions, and hard val
 
 | Industry Pattern | Source System | Nebula Contract |
 |---|---|---|
-| Subtype + Unit semantics | Blender RNA | `SubtypeRef<T>` + unit-aware numeric metadata |
+| Validation shortcut semantics | Blender RNA inspiration | explicit `Rule::Pattern` + unit-aware numeric metadata |
 | Soft/Hard numeric limits | Blender RNA, Houdini | UI hints (`soft_*`) separated from enforced constraints (`hard_*`) |
 | Conditional field visibility | n8n, Houdini, Unreal | Unified `ExpressionRule`/`Expression` for `visible_if` and `required_if` |
 | Resource/operation dynamic loading | n8n | `OptionLoadStrategy`, `depends_on`, `OptionQuery`, `OptionPage` |
@@ -1138,3 +1128,4 @@ Legacy-to-v2 conversion with explicit warnings and documented caveats.
 3. Approval decision
 4. Implementation tracking issue
 5. Phased rollout per migration strategy
+

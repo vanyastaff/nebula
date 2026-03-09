@@ -191,7 +191,7 @@ JSON-based custom markup.
               "type": "text",
               "label": "URL",
               "placeholder": "https://example.com",
-              "format": "url",
+              "rules": [{ "rule": "pattern", "pattern": "^https?://", "message": "Must be a valid URL" }],
               "visible_when": { "op": "eq", "field": "action_type", "value": "url" },
               "required_when": { "op": "eq", "field": "action_type", "value": "url" }
             },
@@ -370,7 +370,7 @@ Demonstrates: `Mode` field for photo source selection (upload/URL/file_id),
             "type": "text",
             "label": "Photo URL",
             "placeholder": "https://example.com/photo.jpg",
-            "format": "url"
+            "rules": [{ "rule": "pattern", "pattern": "^https?://", "message": "Must be a valid URL" }]
           }
         },
         {
@@ -678,7 +678,7 @@ List (rows)
           "id": "url",
           "type": "text",
           "label": "URL",
-          "format": "url",
+          "rules": [{ "rule": "pattern", "pattern": "^https?://", "message": "Must be a valid URL" }],
           "visible_when": { "op": "eq", "field": "action_type", "value": "url" },
           "required_when": { "op": "eq", "field": "action_type", "value": "url" }
         },
@@ -702,7 +702,7 @@ List (rows)
           "id": "login_url_value",
           "type": "text",
           "label": "Login URL",
-          "format": "url",
+          "rules": [{ "rule": "pattern", "pattern": "^https?://", "message": "Must be a valid URL" }],
           "description": "HTTPS URL for automatic user authorization",
           "visible_when": { "op": "eq", "field": "action_type", "value": "login_url" },
           "required_when": { "op": "eq", "field": "action_type", "value": "login_url" }
@@ -1021,7 +1021,7 @@ here it switches the reply markup between none, inline keyboard, and reply keybo
                     "id": "url",
                     "type": "text",
                     "label": "URL",
-                    "format": "url",
+                    "rules": [{ "rule": "pattern", "pattern": "^https?://", "message": "Must be a valid URL" }],
                     "visible_when": { "op": "eq", "field": "action_type", "value": "url" },
                     "required_when": { "op": "eq", "field": "action_type", "value": "url" }
                   },
@@ -1253,7 +1253,7 @@ let send_message = Schema::builder()
                                     .build(),
                                 Field::text("url")
                                     .label("URL")
-                                    .format("url")
+                                    .rule(Rule::pattern("^https?://", "Must be a valid URL"))
                                     .visible_when(Condition::eq("action_type", "url"))
                                     .required_when(Condition::eq("action_type", "url"))
                                     .build(),
@@ -1372,7 +1372,7 @@ let send_message = Schema::builder()
    through `.value`: `reply_markup.value.0.1.text`.
 
 6. **File type for uploads**: `sendPhoto` and `sendDocument` use the `File` field
-   type with `accept` and `max_size`, replacing the previous text-with-format workaround.
+   type with `accept` and `max_size`, replacing the previous text-with-pattern-rule workaround.
 
 7. **Expression flag**: Fields like `chat_id` and `text` set `expression: true`,
    enabling `{{ $json.chatId }}` template interpolation in the frontend editor.
@@ -1381,4 +1381,5 @@ let send_message = Schema::builder()
    (`action_type`) instead of full paths (`inline_keyboard._row._btn.action_type`),
    keeping schemas readable and scope-safe.
    The schema is general enough for any API.
+
 
