@@ -20,10 +20,10 @@ pub struct ModeVariant {
     pub content: Box<crate::field::Field>,
 }
 
-/// Controls when the dynamic record editor is rendered.
+/// Controls when the dynamic fields editor is rendered.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DynamicRecordMode {
+pub enum DynamicFieldsMode {
     /// Show all provider fields.
     #[default]
     All,
@@ -107,20 +107,20 @@ pub enum FieldSpec {
     },
 }
 
-/// Top-level predicate expression emitted by a [`crate::field::Field::Filter`] editor.
+/// Top-level filter expression emitted by a [`crate::field::Field::Filter`] editor.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum PredicateExpr {
+pub enum FilterExpr {
     /// A single field-operator-value assertion.
-    Rule(PredicateRule),
+    Rule(FilterRule),
     /// A logical group combining multiple expressions.
-    Group(PredicateGroup),
+    Group(FilterGroup),
 }
 
-/// Logical combinator for a [`PredicateGroup`].
+/// Logical combinator for a [`FilterGroup`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PredicateCombinator {
+pub enum FilterCombinator {
     /// All children must pass.
     #[default]
     And,
@@ -128,31 +128,31 @@ pub enum PredicateCombinator {
     Or,
 }
 
-/// A logical group of predicate expressions.
+/// A logical group of filter expressions.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PredicateGroup {
+pub struct FilterGroup {
     /// How child expressions are combined.
-    pub combinator: PredicateCombinator,
+    pub combinator: FilterCombinator,
     /// Child expressions.
-    pub children: Vec<PredicateExpr>,
+    pub children: Vec<FilterExpr>,
 }
 
-/// A single predicate assertion.
+/// A single filter assertion.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PredicateRule {
+pub struct FilterRule {
     /// Field id the assertion applies to.
     pub field: String,
     /// Comparison operator.
-    pub op: PredicateOp,
+    pub op: FilterOp,
     /// Operand value (absent for unary operators like `is_set`/`is_empty`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<serde_json::Value>,
 }
 
-/// Comparison operator for a [`PredicateRule`].
+/// Comparison operator for a [`FilterRule`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PredicateOp {
+pub enum FilterOp {
     /// Equal.
     Eq,
     /// Not equal.

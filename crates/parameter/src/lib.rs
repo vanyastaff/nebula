@@ -73,8 +73,8 @@ pub use rules::Rule;
 pub use runtime::{FieldValue, ModeValueRef, ParameterValues, ValidatedValues};
 pub use schema::{Group, Schema, Severity, UiElement};
 pub use spec::{
-    DynamicRecordMode, FieldSpec, ModeVariant, PredicateCombinator, PredicateExpr, PredicateGroup,
-    PredicateOp, PredicateRule, UnknownFieldPolicy,
+    DynamicFieldsMode, FieldSpec, FilterCombinator, FilterExpr, FilterGroup, FilterOp, FilterRule,
+    ModeVariant, UnknownFieldPolicy,
 };
 
 /// Common imports for working with parameters.
@@ -93,7 +93,7 @@ pub mod prelude {
     pub use crate::runtime::{FieldValue, ModeValueRef, ParameterValues, ValidatedValues};
     pub use crate::schema::{Group, Schema, Severity, UiElement};
     pub use crate::spec::{
-        DynamicRecordMode, FieldSpec, ModeVariant, PredicateCombinator, PredicateExpr,
-        PredicateGroup, PredicateOp, PredicateRule, UnknownFieldPolicy,
+        DynamicFieldsMode, FieldSpec, FilterCombinator, FilterExpr, FilterGroup, FilterOp,
+        FilterRule, ModeVariant, UnknownFieldPolicy,
     };
 }

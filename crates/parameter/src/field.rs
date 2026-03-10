@@ -3,7 +3,7 @@ use crate::loader::{OptionLoader, RecordLoader};
 use crate::metadata::FieldMetadata;
 use crate::option::OptionSource;
 use crate::rules::Rule;
-use crate::spec::{DynamicRecordMode, FieldSpec, ModeVariant, PredicateOp, UnknownFieldPolicy};
+use crate::spec::{DynamicFieldsMode, FieldSpec, FilterOp, ModeVariant, UnknownFieldPolicy};
 
 fn default_true() -> bool {
     true
@@ -162,7 +162,7 @@ pub enum Field {
         depends_on: Vec<String>,
         /// How many provider fields are shown initially.
         #[serde(default)]
-        mode: DynamicRecordMode,
+        mode: DynamicFieldsMode,
         /// Policy for unknown fields returned by the provider.
         #[serde(default)]
         unknown_field_policy: UnknownFieldPolicy,
@@ -179,7 +179,7 @@ pub enum Field {
         meta: FieldMetadata,
         /// Restrict available operators; `None` means allow all.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        operators: Option<Vec<PredicateOp>>,
+        operators: Option<Vec<FilterOp>>,
         /// Allow rule groups (nested AND/OR logic).
         #[serde(default = "crate::field::default_true")]
         allow_groups: bool,
@@ -253,7 +253,7 @@ impl Field {
             meta: FieldMetadata::new(id),
             provider: provider.into(),
             depends_on: Vec::new(),
-            mode: DynamicRecordMode::default(),
+            mode: DynamicFieldsMode::default(),
             unknown_field_policy: UnknownFieldPolicy::default(),
             loader: None,
         }

@@ -185,7 +185,7 @@ mod tests {
     use crate::metadata::FieldMetadata;
     use crate::option::{OptionSource, SelectOption};
     use crate::rules::Rule;
-    use crate::spec::{DynamicRecordMode, ModeVariant, UnknownFieldPolicy};
+    use crate::spec::{DynamicFieldsMode, ModeVariant, UnknownFieldPolicy};
     use crate::values::ParameterValues;
 
     #[test]
@@ -216,7 +216,7 @@ mod tests {
             },
             provider: "sheets.columns".to_owned(),
             depends_on: vec!["sheet_id".to_owned()],
-            mode: DynamicRecordMode::RequiredOnly,
+            mode: DynamicFieldsMode::RequiredOnly,
             unknown_field_policy: UnknownFieldPolicy::WarnKeep,
             loader: None,
         };
