@@ -27,57 +27,60 @@
 #![warn(missing_docs)]
 
 // ── Public modules ───────────────────────────────────────────────────────────
+/// Declarative conditions for field visibility and required logic.
+pub mod conditions;
 /// Error types for parameter operations.
 pub mod error;
-/// Runtime parameter value container and typed accessors.
-pub mod values;
+/// Canonical v2 schema field variants.
+pub mod field;
+/// Schema lint diagnostics.
+pub mod lint;
+/// Inline loader types for select and dynamic-record fields.
+pub mod loader;
+/// Shared field metadata.
+pub mod metadata;
+/// Default and mode normalization helpers.
+pub mod normalize;
 /// Option models shared by select-like fields.
 pub mod option;
+/// Validation profile selection.
+pub mod profile;
 /// Dynamic provider contracts and registry.
 pub mod providers;
+/// Validation output report.
+pub mod report;
+/// Declarative validation rules.
+pub mod rules;
 /// Runtime wrappers around validated parameter values.
 pub mod runtime;
 /// Canonical v2 schema model: [`Schema`], [`UiElement`], [`Severity`], [`Group`].
 pub mod schema;
-/// Canonical v2 schema field variants.
-pub mod field;
-/// Shared field metadata.
-pub mod metadata;
-/// Declarative validation rules.
-pub mod rules;
-/// Declarative conditions for field visibility and required logic.
-pub mod conditions;
 /// Supporting spec types: [`ModeVariant`], [`FieldSpec`], [`PredicateExpr`], etc.
 pub mod spec;
 /// Static validation engine.
 pub mod validate;
-/// Default and mode normalization helpers.
-pub mod normalize;
-/// Validation output report.
-pub mod report;
-/// Validation profile selection.
-pub mod profile;
-/// Schema lint diagnostics.
-pub mod lint;
+/// Runtime parameter value container and typed accessors.
+pub mod values;
 
 // ── Top-level re-exports ─────────────────────────────────────────────────────
 pub use conditions::Condition;
 pub use error::ParameterError;
 pub use field::Field;
+pub use loader::{LoaderCtx, OptionLoader, RecordLoader};
 pub use metadata::FieldMetadata;
 pub use option::{OptionSource, SelectOption};
 pub use profile::ValidationProfile;
 pub use providers::{
     DynamicProviderEnvelope, DynamicRecordProvider, DynamicResponseKind, OptionProvider,
-    ProviderError, ProviderRegistry, ProviderRequest,
+    ProviderError, ProviderRegistry,
 };
 pub use report::ValidationReport;
 pub use rules::Rule;
 pub use runtime::{ModeValueRef, ParameterValue, ParameterValues, ValidatedValues};
 pub use schema::{Group, Schema, Severity, UiElement};
 pub use spec::{
-    DynamicFieldSpec, DynamicRecordMode, FieldSpec, ModeVariant, PredicateCombinator, PredicateExpr,
-    PredicateGroup, PredicateOp, PredicateRule, UnknownFieldPolicy,
+    DynamicFieldSpec, DynamicRecordMode, FieldSpec, ModeVariant, PredicateCombinator,
+    PredicateExpr, PredicateGroup, PredicateOp, PredicateRule, UnknownFieldPolicy,
 };
 
 /// Common imports for working with parameters.
@@ -87,12 +90,13 @@ pub mod prelude {
     pub use crate::conditions::Condition;
     pub use crate::error::ParameterError;
     pub use crate::field::Field;
+    pub use crate::loader::{LoaderCtx, OptionLoader, RecordLoader};
     pub use crate::metadata::FieldMetadata;
     pub use crate::option::{OptionSource, SelectOption};
     pub use crate::profile::ValidationProfile;
     pub use crate::providers::{
         DynamicProviderEnvelope, DynamicRecordProvider, DynamicResponseKind, OptionProvider,
-        ProviderError, ProviderRegistry, ProviderRequest,
+        ProviderError, ProviderRegistry,
     };
     pub use crate::report::ValidationReport;
     pub use crate::rules::Rule;
@@ -103,4 +107,3 @@ pub mod prelude {
         PredicateExpr, PredicateGroup, PredicateOp, PredicateRule, UnknownFieldPolicy,
     };
 }
-

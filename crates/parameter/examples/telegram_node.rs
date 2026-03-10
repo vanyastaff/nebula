@@ -32,6 +32,7 @@ fn resource_field() -> Field {
         multiple: false,
         allow_custom: false,
         searchable: false,
+        loader: None,
     }
 }
 
@@ -57,6 +58,7 @@ fn operation_field() -> Field {
         multiple: false,
         allow_custom: false,
         searchable: true,
+        loader: None,
     }
 }
 
@@ -77,27 +79,26 @@ fn send_message_schema() -> Schema {
                 .with_description("Text of the message (1–4096 characters)")
                 .required(),
         )
-        .field(
-            Field::Select {
-                meta: {
-                    let mut m = FieldMetadata::new("parse_mode");
-                    m.set_label("Parse Mode");
-                    m.set_description("Mode for parsing entities in the message text");
-                    m.default = Some(json!("HTML"));
-                    m
-                },
-                source: OptionSource::Static {
-                    options: vec![
-                        SelectOption::new(json!("HTML"), "HTML"),
-                        SelectOption::new(json!("Markdown"), "Markdown"),
-                        SelectOption::new(json!("MarkdownV2"), "MarkdownV2"),
-                    ],
-                },
-                multiple: false,
-                allow_custom: false,
-                searchable: false,
+        .field(Field::Select {
+            meta: {
+                let mut m = FieldMetadata::new("parse_mode");
+                m.set_label("Parse Mode");
+                m.set_description("Mode for parsing entities in the message text");
+                m.default = Some(json!("HTML"));
+                m
             },
-        )
+            source: OptionSource::Static {
+                options: vec![
+                    SelectOption::new(json!("HTML"), "HTML"),
+                    SelectOption::new(json!("Markdown"), "Markdown"),
+                    SelectOption::new(json!("MarkdownV2"), "MarkdownV2"),
+                ],
+            },
+            multiple: false,
+            allow_custom: false,
+            searchable: false,
+            loader: None,
+        })
         .field(
             Field::boolean("disable_notification")
                 .with_label("Disable Notification")
@@ -119,11 +120,7 @@ fn send_contact_schema() -> Schema {
     Schema::new()
         .field(resource_field())
         .field(operation_field())
-        .field(
-            Field::text("chat_id")
-                .with_label("Chat ID")
-                .required(),
-        )
+        .field(Field::text("chat_id").with_label("Chat ID").required())
         .field(
             Field::text("phone_number")
                 .with_label("Phone Number")
@@ -174,7 +171,9 @@ fn keyboard_mode_field() -> Field {
             ModeVariant {
                 key: "reply".to_owned(),
                 label: "Reply Keyboard".to_owned(),
-                description: Some("Custom reply keyboard replaces the standard keyboard".to_owned()),
+                description: Some(
+                    "Custom reply keyboard replaces the standard keyboard".to_owned(),
+                ),
                 content: Box::new(
                     Field::text("reply_keyboard_json")
                         .with_label("Reply Keyboard JSON")
@@ -188,10 +187,7 @@ fn keyboard_mode_field() -> Field {
 
 fn main() {
     let schema = send_message_schema();
-    println!(
-        "sendMessage schema ({} fields):",
-        schema.fields.len()
-    );
+    println!("sendMessage schema ({} fields):", schema.fields.len());
     for field in &schema.fields {
         println!("  - {} ({})", field.meta().id, field.meta().label);
     }

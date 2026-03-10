@@ -15,68 +15,68 @@ use serde_json::json;
 
 /// `If` — evaluates a predicate and routes to `true` or `false` branch.
 fn if_schema() -> Schema {
-    Schema::new()
-        .field(
-            // Condition is a mode: expression (raw string) or a structured builder
-            Field::Mode {
-                meta: {
-                    let mut m = FieldMetadata::new("condition");
-                    m.set_label("Condition");
-                    m.required = true;
-                    m
-                },
-                variants: vec![
-                    ModeVariant {
-                        key: "expression".to_owned(),
-                        label: "Expression".to_owned(),
-                        description: Some("Evaluate a raw expression string".to_owned()),
-                        content: Box::new(
-                            Field::text("expr")
-                                .with_label("Expression")
-                                .with_placeholder("{{ $input.value > 0 }}")
-                                .required(),
-                        ),
-                    },
-                    ModeVariant {
-                        key: "compare".to_owned(),
-                        label: "Compare Values".to_owned(),
-                        description: Some("Compare two values with an operator".to_owned()),
-                        content: Box::new(Field::Object {
-                            meta: FieldMetadata::new("compare"),
-                            fields: vec![
-                                Field::text("left").with_label("Left Value").required(),
-                                Field::Select {
-                                    meta: {
-                                        let mut m = FieldMetadata::new("operator");
-                                        m.set_label("Operator");
-                                        m.required = true;
-                                        m.default = Some(json!("eq"));
-                                        m
-                                    },
-                                    source: OptionSource::Static {
-                                        options: vec![
-                                            SelectOption::new(json!("eq"), "equals (=)"),
-                                            SelectOption::new(json!("ne"), "not equals (≠)"),
-                                            SelectOption::new(json!("gt"), "greater than (>)"),
-                                            SelectOption::new(json!("lt"), "less than (<)"),
-                                            SelectOption::new(json!("gte"), "≥"),
-                                            SelectOption::new(json!("lte"), "≤"),
-                                            SelectOption::new(json!("contains"), "contains"),
-                                            SelectOption::new(json!("matches"), "matches regex"),
-                                        ],
-                                    },
-                                    multiple: false,
-                                    allow_custom: false,
-                                    searchable: false,
-                                },
-                                Field::text("right").with_label("Right Value").required(),
-                            ],
-                        }),
-                    },
-                ],
-                default_variant: Some("expression".to_owned()),
+    Schema::new().field(
+        // Condition is a mode: expression (raw string) or a structured builder
+        Field::Mode {
+            meta: {
+                let mut m = FieldMetadata::new("condition");
+                m.set_label("Condition");
+                m.required = true;
+                m
             },
-        )
+            variants: vec![
+                ModeVariant {
+                    key: "expression".to_owned(),
+                    label: "Expression".to_owned(),
+                    description: Some("Evaluate a raw expression string".to_owned()),
+                    content: Box::new(
+                        Field::text("expr")
+                            .with_label("Expression")
+                            .with_placeholder("{{ $input.value > 0 }}")
+                            .required(),
+                    ),
+                },
+                ModeVariant {
+                    key: "compare".to_owned(),
+                    label: "Compare Values".to_owned(),
+                    description: Some("Compare two values with an operator".to_owned()),
+                    content: Box::new(Field::Object {
+                        meta: FieldMetadata::new("compare"),
+                        fields: vec![
+                            Field::text("left").with_label("Left Value").required(),
+                            Field::Select {
+                                meta: {
+                                    let mut m = FieldMetadata::new("operator");
+                                    m.set_label("Operator");
+                                    m.required = true;
+                                    m.default = Some(json!("eq"));
+                                    m
+                                },
+                                source: OptionSource::Static {
+                                    options: vec![
+                                        SelectOption::new(json!("eq"), "equals (=)"),
+                                        SelectOption::new(json!("ne"), "not equals (≠)"),
+                                        SelectOption::new(json!("gt"), "greater than (>)"),
+                                        SelectOption::new(json!("lt"), "less than (<)"),
+                                        SelectOption::new(json!("gte"), "≥"),
+                                        SelectOption::new(json!("lte"), "≤"),
+                                        SelectOption::new(json!("contains"), "contains"),
+                                        SelectOption::new(json!("matches"), "matches regex"),
+                                    ],
+                                },
+                                multiple: false,
+                                allow_custom: false,
+                                searchable: false,
+                                loader: None,
+                            },
+                            Field::text("right").with_label("Right Value").required(),
+                        ],
+                    }),
+                },
+            ],
+            default_variant: Some("expression".to_owned()),
+        },
+    )
 }
 
 // ── Switch action ────────────────────────────────────────────────────────────
@@ -163,63 +163,63 @@ fn for_each_schema() -> Schema {
 
 /// `Wait` — pauses execution for a fixed duration or until a timestamp.
 fn wait_schema() -> Schema {
-    Schema::new()
-        .field(Field::Mode {
-            meta: {
-                let mut m = FieldMetadata::new("wait_mode");
-                m.set_label("Wait Until");
-                m.required = true;
-                m
-            },
-            variants: vec![
-                ModeVariant {
-                    key: "duration".to_owned(),
-                    label: "Fixed Duration".to_owned(),
-                    description: None,
-                    content: Box::new(Field::Object {
-                        meta: FieldMetadata::new("duration"),
-                        fields: vec![
-                            Field::integer("amount")
-                                .with_label("Amount")
-                                .with_default(json!(1))
-                                .required(),
-                            Field::Select {
-                                meta: {
-                                    let mut m = FieldMetadata::new("unit");
-                                    m.set_label("Unit");
-                                    m.default = Some(json!("seconds"));
-                                    m
-                                },
-                                source: OptionSource::Static {
-                                    options: vec![
-                                        SelectOption::new(json!("milliseconds"), "Milliseconds"),
-                                        SelectOption::new(json!("seconds"), "Seconds"),
-                                        SelectOption::new(json!("minutes"), "Minutes"),
-                                        SelectOption::new(json!("hours"), "Hours"),
-                                        SelectOption::new(json!("days"), "Days"),
-                                    ],
-                                },
-                                multiple: false,
-                                allow_custom: false,
-                                searchable: false,
-                            },
-                        ],
-                    }),
-                },
-                ModeVariant {
-                    key: "timestamp".to_owned(),
-                    label: "Until Timestamp".to_owned(),
-                    description: None,
-                    content: Box::new(
-                        Field::text("timestamp")
-                            .with_label("Timestamp")
-                            .with_description("ISO 8601 datetime or expression")
+    Schema::new().field(Field::Mode {
+        meta: {
+            let mut m = FieldMetadata::new("wait_mode");
+            m.set_label("Wait Until");
+            m.required = true;
+            m
+        },
+        variants: vec![
+            ModeVariant {
+                key: "duration".to_owned(),
+                label: "Fixed Duration".to_owned(),
+                description: None,
+                content: Box::new(Field::Object {
+                    meta: FieldMetadata::new("duration"),
+                    fields: vec![
+                        Field::integer("amount")
+                            .with_label("Amount")
+                            .with_default(json!(1))
                             .required(),
-                    ),
-                },
-            ],
-            default_variant: Some("duration".to_owned()),
-        })
+                        Field::Select {
+                            meta: {
+                                let mut m = FieldMetadata::new("unit");
+                                m.set_label("Unit");
+                                m.default = Some(json!("seconds"));
+                                m
+                            },
+                            source: OptionSource::Static {
+                                options: vec![
+                                    SelectOption::new(json!("milliseconds"), "Milliseconds"),
+                                    SelectOption::new(json!("seconds"), "Seconds"),
+                                    SelectOption::new(json!("minutes"), "Minutes"),
+                                    SelectOption::new(json!("hours"), "Hours"),
+                                    SelectOption::new(json!("days"), "Days"),
+                                ],
+                            },
+                            multiple: false,
+                            allow_custom: false,
+                            searchable: false,
+                            loader: None,
+                        },
+                    ],
+                }),
+            },
+            ModeVariant {
+                key: "timestamp".to_owned(),
+                label: "Until Timestamp".to_owned(),
+                description: None,
+                content: Box::new(
+                    Field::text("timestamp")
+                        .with_label("Timestamp")
+                        .with_description("ISO 8601 datetime or expression")
+                        .required(),
+                ),
+            },
+        ],
+        default_variant: Some("duration".to_owned()),
+    })
 }
 
 fn main() {

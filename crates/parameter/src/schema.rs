@@ -20,7 +20,6 @@ use crate::profile::ValidationProfile;
 use crate::report::ValidationReport;
 use crate::values::ParameterValues;
 
-
 /// Complete parameter schema for v2 authoring.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Schema {
@@ -235,6 +234,7 @@ mod tests {
             depends_on: vec!["sheet_id".to_owned()],
             mode: DynamicRecordMode::RequiredOnly,
             unknown_field_policy: UnknownFieldPolicy::WarnKeep,
+            loader: None,
         };
 
         let value = serde_json::to_value(&field).expect("field should serialize");
@@ -275,6 +275,7 @@ mod tests {
             multiple: false,
             allow_custom: false,
             searchable: false,
+            loader: None,
         };
         let schema = Schema::new().field(field);
 

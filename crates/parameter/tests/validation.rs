@@ -128,11 +128,12 @@ fn required_when_condition_false_and_value_absent_passes() {
 
 #[test]
 fn min_length_rule_rejects_short_value() {
-    let schema = Schema::new().field(
-        Field::text("username")
-            .with_label("Username")
-            .with_rule(Rule::MinLength { min: 5, message: None }),
-    );
+    let schema = Schema::new().field(Field::text("username").with_label("Username").with_rule(
+        Rule::MinLength {
+            min: 5,
+            message: None,
+        },
+    ));
     let values = make_values(&[("username", json!("ab"))]);
 
     assert!(schema.validate(&values).is_err());
@@ -140,11 +141,12 @@ fn min_length_rule_rejects_short_value() {
 
 #[test]
 fn min_length_rule_accepts_long_enough_value() {
-    let schema = Schema::new().field(
-        Field::text("username")
-            .with_label("Username")
-            .with_rule(Rule::MinLength { min: 3, message: None }),
-    );
+    let schema = Schema::new().field(Field::text("username").with_label("Username").with_rule(
+        Rule::MinLength {
+            min: 3,
+            message: None,
+        },
+    ));
     let values = make_values(&[("username", json!("alice"))]);
 
     assert!(schema.validate(&values).is_ok());
@@ -152,11 +154,12 @@ fn min_length_rule_accepts_long_enough_value() {
 
 #[test]
 fn max_length_rule_rejects_too_long_value() {
-    let schema = Schema::new().field(
-        Field::text("code")
-            .with_label("Code")
-            .with_rule(Rule::MaxLength { max: 4, message: None }),
-    );
+    let schema = Schema::new().field(Field::text("code").with_label("Code").with_rule(
+        Rule::MaxLength {
+            max: 4,
+            message: None,
+        },
+    ));
     let values = make_values(&[("code", json!("TOOLONG"))]);
 
     assert!(schema.validate(&values).is_err());
@@ -164,14 +167,12 @@ fn max_length_rule_rejects_too_long_value() {
 
 #[test]
 fn pattern_rule_rejects_non_matching_value() {
-    let schema = Schema::new().field(
-        Field::text("slug")
-            .with_label("Slug")
-            .with_rule(Rule::Pattern {
-                pattern: r"^[a-z0-9\-]+$".to_owned(),
-                message: Some("only lowercase letters, digits and hyphens".to_owned()),
-            }),
-    );
+    let schema = Schema::new().field(Field::text("slug").with_label("Slug").with_rule(
+        Rule::Pattern {
+            pattern: r"^[a-z0-9\-]+$".to_owned(),
+            message: Some("only lowercase letters, digits and hyphens".to_owned()),
+        },
+    ));
     let values = make_values(&[("slug", json!("Hello World!"))]);
 
     assert!(schema.validate(&values).is_err());
@@ -179,14 +180,12 @@ fn pattern_rule_rejects_non_matching_value() {
 
 #[test]
 fn pattern_rule_accepts_matching_value() {
-    let schema = Schema::new().field(
-        Field::text("slug")
-            .with_label("Slug")
-            .with_rule(Rule::Pattern {
-                pattern: r"^[a-z0-9\-]+$".to_owned(),
-                message: None,
-            }),
-    );
+    let schema = Schema::new().field(Field::text("slug").with_label("Slug").with_rule(
+        Rule::Pattern {
+            pattern: r"^[a-z0-9\-]+$".to_owned(),
+            message: None,
+        },
+    ));
     let values = make_values(&[("slug", json!("my-cool-slug"))]);
 
     assert!(schema.validate(&values).is_ok());
@@ -194,14 +193,12 @@ fn pattern_rule_accepts_matching_value() {
 
 #[test]
 fn one_of_rule_rejects_unlisted_value() {
-    let schema = Schema::new().field(
-        Field::text("env")
-            .with_label("Environment")
-            .with_rule(Rule::OneOf {
-                values: vec![json!("dev"), json!("staging"), json!("prod")],
-                message: None,
-            }),
-    );
+    let schema = Schema::new().field(Field::text("env").with_label("Environment").with_rule(
+        Rule::OneOf {
+            values: vec![json!("dev"), json!("staging"), json!("prod")],
+            message: None,
+        },
+    ));
     let values = make_values(&[("env", json!("local"))]);
 
     assert!(schema.validate(&values).is_err());
@@ -209,14 +206,12 @@ fn one_of_rule_rejects_unlisted_value() {
 
 #[test]
 fn one_of_rule_accepts_listed_value() {
-    let schema = Schema::new().field(
-        Field::text("env")
-            .with_label("Environment")
-            .with_rule(Rule::OneOf {
-                values: vec![json!("dev"), json!("staging"), json!("prod")],
-                message: None,
-            }),
-    );
+    let schema = Schema::new().field(Field::text("env").with_label("Environment").with_rule(
+        Rule::OneOf {
+            values: vec![json!("dev"), json!("staging"), json!("prod")],
+            message: None,
+        },
+    ));
     let values = make_values(&[("env", json!("prod"))]);
 
     assert!(schema.validate(&values).is_ok());
@@ -241,6 +236,7 @@ fn static_select_rejects_value_not_in_options() {
         multiple: false,
         allow_custom: false,
         searchable: false,
+        loader: None,
     });
     let values = make_values(&[("method", json!("PATCH"))]);
 
@@ -261,6 +257,7 @@ fn static_select_allow_custom_accepts_any_value() {
         multiple: false,
         allow_custom: true,
         searchable: false,
+        loader: None,
     });
     let values = make_values(&[("tag", json!("custom-tag"))]);
 

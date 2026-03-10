@@ -1,8 +1,9 @@
 use crate::conditions::Condition;
+use crate::loader::{OptionLoader, RecordLoader};
 use crate::metadata::FieldMetadata;
 use crate::option::OptionSource;
 use crate::rules::Rule;
-use crate::spec::{DynamicRecordMode, ModeVariant, PredicateOp, UnknownFieldPolicy};
+use crate::spec::{DynamicRecordMode, FieldSpec, ModeVariant, PredicateOp, UnknownFieldPolicy};
 
 fn default_true() -> bool {
     true
@@ -66,6 +67,12 @@ pub enum Field {
         /// Display a search filter in the option picker.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         searchable: bool,
+        /// Inline option loader; skipped during serialization.
+        ///
+        /// When set, the engine calls this function instead of (or before)
+        /// consulting a global [`crate::providers::ProviderRegistry`].
+        #[serde(skip)]
+        loader: Option<OptionLoader>,
     },
     /// Nested object field containing ordered sub-fields.
     Object {
@@ -164,6 +171,12 @@ pub enum Field {
         /// Policy for unknown fields returned by the provider.
         #[serde(default)]
         unknown_field_policy: UnknownFieldPolicy,
+        /// Inline record loader; skipped during serialization.
+        ///
+        /// When set, the engine calls this function to resolve [`FieldSpec`]s
+        /// instead of (or before) consulting a global provider registry.
+        #[serde(skip)]
+        loader: Option<RecordLoader>,
     },
     /// Visual condition-builder field that emits a [`PredicateExpr`].
     Predicate {
@@ -244,6 +257,20 @@ impl Field {
             multiple: false,
             allow_custom: false,
             searchable: false,
+            loader: None,
+        }
+    }
+
+    /// Creates a dynamic-record field backed by the given provider key.
+    #[must_use]
+    pub fn dynamic_record(id: impl Into<String>, provider: impl Into<String>) -> Self {
+        Self::DynamicRecord {
+            meta: FieldMetadata::new(id),
+            provider: provider.into(),
+            depends_on: Vec::new(),
+            mode: DynamicRecordMode::default(),
+            unknown_field_policy: UnknownFieldPolicy::default(),
+            loader: None,
         }
     }
 
@@ -371,6 +398,43 @@ impl Field {
     #[must_use]
     pub fn disabled_when(mut self, condition: Condition) -> Self {
         self.meta_mut().set_disabled_when(condition);
+        self
+    }
+
+    // -- Loader setters ------------------------------------------------------
+
+    /// Attaches an inline option loader to a [`Field::Select`] variant.
+    ///
+    /// Panics if called on a non-`Select` variant.
+    #[must_use]
+    pub fn with_option_loader(
+        mut self,
+        f: impl Fn(&crate::loader::LoaderCtx) -> Vec<crate::option::SelectOption>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        if let Self::Select { loader, .. } = &mut self {
+            *loader = Some(OptionLoader::new(f));
+        } else {
+            panic!("with_option_loader called on a non-Select Field variant");
+        }
+        self
+    }
+
+    /// Attaches an inline record loader to a [`Field::DynamicRecord`] variant.
+    ///
+    /// Panics if called on a non-`DynamicRecord` variant.
+    #[must_use]
+    pub fn with_record_loader(
+        mut self,
+        f: impl Fn(&crate::loader::LoaderCtx) -> Vec<FieldSpec> + Send + Sync + 'static,
+    ) -> Self {
+        if let Self::DynamicRecord { loader, .. } = &mut self {
+            *loader = Some(RecordLoader::new(f));
+        } else {
+            panic!("with_record_loader called on a non-DynamicRecord Field variant");
+        }
         self
     }
 }

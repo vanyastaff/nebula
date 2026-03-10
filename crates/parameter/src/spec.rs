@@ -1,5 +1,6 @@
 //! Supporting spec types used by schema fields and providers.
 
+use crate::loader::OptionLoader;
 use crate::metadata::FieldMetadata;
 use crate::option::OptionSource;
 
@@ -103,6 +104,9 @@ pub enum FieldSpec {
         /// Display a search filter in the option picker.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         searchable: bool,
+        /// Inline option loader; skipped during serialization.
+        #[serde(skip)]
+        loader: Option<OptionLoader>,
     },
 }
 

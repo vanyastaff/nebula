@@ -9,10 +9,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use nebula_parameter::loader::LoaderCtx;
 use nebula_parameter::option::SelectOption;
 use nebula_parameter::providers::{
     DynamicProviderEnvelope, DynamicResponseKind, OptionProvider, ProviderError, ProviderRegistry,
-    ProviderRequest,
 };
 use nebula_parameter::values::ParameterValues;
 
@@ -51,7 +51,7 @@ impl JsonPlaceholderUserProvider {
 impl OptionProvider for JsonPlaceholderUserProvider {
     async fn resolve(
         &self,
-        request: &ProviderRequest,
+        request: &LoaderCtx,
     ) -> Result<DynamicProviderEnvelope<SelectOption>, ProviderError> {
         let users: Vec<User> = self
             .client
@@ -88,7 +88,10 @@ impl OptionProvider for JsonPlaceholderUserProvider {
             })
             .collect();
 
-        Ok(DynamicProviderEnvelope::new(DynamicResponseKind::Options, options))
+        Ok(DynamicProviderEnvelope::new(
+            DynamicResponseKind::Options,
+            options,
+        ))
     }
 }
 
@@ -106,11 +109,12 @@ async fn main() {
         .expect("provider key is valid");
 
     // Full list.
-    let request = ProviderRequest {
+    let request = LoaderCtx {
         field_id: "assigned_user".to_owned(),
         values: ParameterValues::new(),
         filter: None,
         cursor: None,
+        credential: None,
     };
 
     let envelope = registry
@@ -129,11 +133,12 @@ async fn main() {
     }
 
     // Filtered list.
-    let filtered_request = ProviderRequest {
+    let filtered_request = LoaderCtx {
         field_id: "assigned_user".to_owned(),
         values: ParameterValues::new(),
         filter: Some("le".to_owned()),
         cursor: None,
+        credential: None,
     };
 
     let filtered = registry
@@ -141,7 +146,10 @@ async fn main() {
         .await
         .expect("filtered resolution should succeed");
 
-    println!("\n=== Filtered by \"le\" ({} results) ===", filtered.items.len());
+    println!(
+        "\n=== Filtered by \"le\" ({} results) ===",
+        filtered.items.len()
+    );
     for opt in &filtered.items {
         println!(
             "  id={:<3}  {}  <{}>",

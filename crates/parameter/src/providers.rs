@@ -1,12 +1,30 @@
-//! Dynamic provider contracts for v2 parameter schemas.
+//! Global async provider registry — the coarse-grained tier of the two-tier
+//! option/record loading system.
+//!
+//! ## Two-tier loading
+//!
+//! 1. **Inline loader** ([`crate::loader`]) — a sync `Fn` closure attached
+//!    directly to a [`crate::field::Field::Select`] or
+//!    [`crate::field::Field::DynamicRecord`] variant.  Fast, no allocations,
+//!    WASM-compatible.  Takes [`crate::loader::LoaderCtx`] which includes a
+//!    resolved credential.
+//!
+//! 2. **Registry provider** (this module) — an object-safe async trait
+//!    registered by key in a [`ProviderRegistry`].  Suited for providers that
+//!    require async I/O (HTTP, database) and are shared across multiple fields.
+//!    Also receives [`crate::loader::LoaderCtx`] so credentials can be
+//!    forwarded when available.
+//!
+//! The engine checks the inline loader first; only on a miss does it fall back
+//! to the registry.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::loader::LoaderCtx;
 use crate::option::SelectOption;
-use crate::runtime::ParameterValues;
 use crate::spec::FieldSpec;
 
 /// Canonical dynamic-provider response version supported by v2.
@@ -53,21 +71,6 @@ pub enum DynamicResponseKind {
     Fields,
 }
 
-/// Shared request context for provider resolution.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ProviderRequest {
-    /// Requesting field id.
-    pub field_id: String,
-    /// Current runtime values.
-    pub values: ParameterValues,
-    /// Optional search filter.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub filter: Option<String>,
-    /// Optional pagination cursor.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
-}
-
 /// Provider contract error.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -82,7 +85,9 @@ pub enum ProviderError {
     #[error("provider not found: {key}")]
     NotFound { key: String },
     /// Provider returned an unexpected response kind.
-    #[error("provider `{key}` returned unexpected response kind: expected {expected:?}, got {actual:?}")]
+    #[error(
+        "provider `{key}` returned unexpected response kind: expected {expected:?}, got {actual:?}"
+    )]
     KindMismatch {
         key: String,
         expected: DynamicResponseKind,
@@ -103,22 +108,27 @@ pub enum ProviderError {
 }
 
 /// Object-safe dynamic option provider.
+///
+/// Suited for HTTP/database-backed lookups shared across many fields.
+/// For lightweight inline loaders, prefer [`crate::loader::OptionLoader`].
 #[async_trait]
 pub trait OptionProvider: Send + Sync {
-    /// Resolves select options.
+    /// Resolves select options for the given context.
     async fn resolve(
         &self,
-        request: &ProviderRequest,
+        ctx: &LoaderCtx,
     ) -> Result<DynamicProviderEnvelope<SelectOption>, ProviderError>;
 }
 
-/// Object-safe dynamic field provider used by `DynamicRecord` fields.
+/// Object-safe dynamic field provider used by [`crate::field::Field::DynamicRecord`] fields.
+///
+/// For lightweight inline loaders, prefer [`crate::loader::RecordLoader`].
 #[async_trait]
 pub trait DynamicRecordProvider: Send + Sync {
-    /// Resolves dynamic field definitions.
+    /// Resolves dynamic field definitions for the given context.
     async fn resolve_fields(
         &self,
-        request: &ProviderRequest,
+        ctx: &LoaderCtx,
     ) -> Result<DynamicProviderEnvelope<FieldSpec>, ProviderError>;
 }
 
@@ -276,14 +286,14 @@ impl ProviderRegistry {
     pub async fn resolve_options(
         &self,
         key: &str,
-        request: &ProviderRequest,
+        ctx: &LoaderCtx,
     ) -> Result<DynamicProviderEnvelope<SelectOption>, ProviderError> {
         let provider = self
             .option_provider(key)
             .ok_or_else(|| ProviderError::NotFound {
                 key: key.to_owned(),
             })?;
-        let envelope = provider.resolve(request).await?;
+        let envelope = provider.resolve(ctx).await?;
         validate_envelope(key, &envelope, DynamicResponseKind::Options)?;
         Ok(envelope)
     }
@@ -296,14 +306,14 @@ impl ProviderRegistry {
     pub async fn resolve_fields(
         &self,
         key: &str,
-        request: &ProviderRequest,
+        ctx: &LoaderCtx,
     ) -> Result<DynamicProviderEnvelope<FieldSpec>, ProviderError> {
         let provider =
             self.dynamic_record_provider(key)
                 .ok_or_else(|| ProviderError::NotFound {
                     key: key.to_owned(),
                 })?;
-        let envelope = provider.resolve_fields(request).await?;
+        let envelope = provider.resolve_fields(ctx).await?;
         validate_envelope(key, &envelope, DynamicResponseKind::Fields)?;
         Ok(envelope)
     }
@@ -382,7 +392,7 @@ mod tests {
     impl OptionProvider for NoopOptionProvider {
         async fn resolve(
             &self,
-            _request: &ProviderRequest,
+            _ctx: &LoaderCtx,
         ) -> Result<DynamicProviderEnvelope<SelectOption>, ProviderError> {
             Ok(DynamicProviderEnvelope::new(
                 DynamicResponseKind::Options,
@@ -397,12 +407,22 @@ mod tests {
     impl DynamicRecordProvider for NoopDynamicProvider {
         async fn resolve_fields(
             &self,
-            _request: &ProviderRequest,
+            _ctx: &LoaderCtx,
         ) -> Result<DynamicProviderEnvelope<FieldSpec>, ProviderError> {
             Ok(DynamicProviderEnvelope::new(
                 DynamicResponseKind::Fields,
                 Vec::new(),
             ))
+        }
+    }
+
+    fn make_ctx() -> LoaderCtx {
+        LoaderCtx {
+            field_id: "test".to_owned(),
+            values: crate::runtime::ParameterValues::new(),
+            filter: None,
+            cursor: None,
+            credential: None,
         }
     }
 
