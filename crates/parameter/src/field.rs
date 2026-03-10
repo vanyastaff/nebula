@@ -187,16 +187,6 @@ pub enum Field {
         #[serde(default = "crate::field::default_depth")]
         max_depth: u8,
     },
-    /// Escape-hatch variant for types not yet promoted to first-class fields.
-    Custom {
-        #[serde(flatten)]
-        meta: FieldMetadata,
-        /// Stable custom field type key.
-        kind: String,
-        /// Type-specific configuration.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        config: Option<serde_json::Value>,
-    },
 }
 
 impl Field {
@@ -290,8 +280,7 @@ impl Field {
             | Self::Time { meta, .. }
             | Self::File { meta, .. }
             | Self::DynamicRecord { meta, .. }
-            | Self::Predicate { meta, .. }
-            | Self::Custom { meta, .. } => meta,
+            | Self::Predicate { meta, .. } => meta,
         }
     }
 
@@ -314,8 +303,7 @@ impl Field {
             | Self::Time { meta, .. }
             | Self::File { meta, .. }
             | Self::DynamicRecord { meta, .. }
-            | Self::Predicate { meta, .. }
-            | Self::Custom { meta, .. } => meta,
+            | Self::Predicate { meta, .. } => meta,
         }
     }
 
