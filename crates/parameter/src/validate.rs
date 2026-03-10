@@ -1,7 +1,7 @@
 //! Static validation engine for parameter schemas.
 //!
 //! This module provides pure functions that validate a slice of [`Field`]s
-//! against a [`ParameterValues`] map. No expression context is required —
+//! against a [`FieldValues`] map. No expression context is required —
 //! deferred rules ([`Rule::is_deferred`]) are skipped and left for runtime.
 
 use nebula_validator::foundation::{Validate, ValidationError};
@@ -17,7 +17,7 @@ use crate::option::OptionSource;
 use crate::profile::ValidationProfile;
 use crate::report::ValidationReport;
 use crate::rules::Rule;
-use crate::values::ParameterValues;
+use crate::values::FieldValues;
 
 /// Validates `fields` against `values` using strict defaults.
 ///
@@ -26,10 +26,7 @@ use crate::values::ParameterValues;
 /// # Errors
 ///
 /// Returns a non-empty [`Vec`] of [`ParameterError`] when any field fails.
-pub fn validate_fields(
-    fields: &[Field],
-    values: &ParameterValues,
-) -> Result<(), Vec<ParameterError>> {
+pub fn validate_fields(fields: &[Field], values: &FieldValues) -> Result<(), Vec<ParameterError>> {
     let report = validate_with_profile(fields, values, ValidationProfile::Strict);
     if report.errors.is_empty() {
         Ok(())
@@ -44,7 +41,7 @@ pub fn validate_fields(
 #[must_use]
 pub fn validate_with_profile(
     fields: &[Field],
-    values: &ParameterValues,
+    values: &FieldValues,
     profile: ValidationProfile,
 ) -> ValidationReport {
     let mut errors = Vec::new();
@@ -74,7 +71,7 @@ pub fn validate_with_profile(
 fn validate_field(
     field: &Field,
     value: Option<&serde_json::Value>,
-    root_values: &ParameterValues,
+    root_values: &FieldValues,
     path: &str,
     errors: &mut Vec<ParameterError>,
 ) {
@@ -116,7 +113,7 @@ fn validate_field(
 fn validate_field_value(
     field: &Field,
     value: &serde_json::Value,
-    root_values: &ParameterValues,
+    root_values: &FieldValues,
     path: &str,
     errors: &mut Vec<ParameterError>,
 ) {

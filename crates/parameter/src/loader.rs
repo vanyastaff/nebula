@@ -12,7 +12,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::option::SelectOption;
-use crate::runtime::ParameterValues;
+use crate::runtime::FieldValues;
 use crate::spec::FieldSpec;
 
 /// Boxed future returned by loader closures.
@@ -26,7 +26,7 @@ pub struct LoaderCtx {
     /// The id of the field requesting a load.
     pub field_id: String,
     /// Current parameter values at the time of the request.
-    pub values: ParameterValues,
+    pub values: FieldValues,
     /// Optional text filter entered by the user (for searchable selects).
     pub filter: Option<String>,
     /// Pagination cursor returned from a previous load.

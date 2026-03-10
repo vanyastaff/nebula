@@ -3,7 +3,7 @@
 use nebula_validator::foundation::Validate;
 use nebula_validator::validators::matches_regex;
 
-use crate::values::ParameterValues;
+use crate::values::FieldValues;
 
 /// Deterministic condition evaluated against a live value map.
 ///
@@ -114,7 +114,7 @@ pub enum Condition {
 
 /// Evaluate a declarative [`Condition`] against runtime values.
 #[must_use]
-pub fn evaluate_condition(condition: &Condition, values: &ParameterValues) -> bool {
+pub fn evaluate_condition(condition: &Condition, values: &FieldValues) -> bool {
     match condition {
         Condition::Eq { field, value } => values.get(field).is_some_and(|v| v == value),
         Condition::Ne { field, value } => values.get(field).is_none_or(|v| v != value),

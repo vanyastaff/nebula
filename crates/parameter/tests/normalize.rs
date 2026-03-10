@@ -6,8 +6,8 @@
 use nebula_parameter::{Field, FieldMetadata, ModeVariant, Schema};
 use serde_json::json;
 
-fn make_values(pairs: &[(&str, serde_json::Value)]) -> nebula_parameter::ParameterValues {
-    let mut v = nebula_parameter::ParameterValues::new();
+fn make_values(pairs: &[(&str, serde_json::Value)]) -> nebula_parameter::FieldValues {
+    let mut v = nebula_parameter::FieldValues::new();
     for (k, val) in pairs {
         v.set(*k, val.clone());
     }

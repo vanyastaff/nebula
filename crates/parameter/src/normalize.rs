@@ -1,17 +1,17 @@
 //! Default and mode normalization helpers.
 //!
 //! Applies schema defaults and mode default-variant backfilling to a
-//! [`ParameterValues`] map without mutating user-supplied values.
+//! [`FieldValues`] map without mutating user-supplied values.
 
 use crate::field::Field;
-use crate::values::ParameterValues;
+use crate::values::FieldValues;
 
 /// Applies schema defaults to `values` for each field in `fields`.
 ///
 /// Existing user-provided values are preserved. Missing fields are
 /// materialized from `default` metadata and mode default variants.
 #[must_use]
-pub fn normalize_fields(fields: &[Field], values: &ParameterValues) -> ParameterValues {
+pub fn normalize_fields(fields: &[Field], values: &FieldValues) -> FieldValues {
     let mut normalized = values.clone();
 
     for field in fields {

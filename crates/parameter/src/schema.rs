@@ -18,7 +18,7 @@ use crate::conditions::Condition;
 use crate::field::Field;
 use crate::profile::ValidationProfile;
 use crate::report::ValidationReport;
-use crate::values::ParameterValues;
+use crate::values::FieldValues;
 
 /// Complete parameter schema for v2 authoring.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -96,10 +96,7 @@ impl Schema {
     /// Returns a non-empty list of [`crate::error::ParameterError`] on failure.
     ///
     /// [`validate_with_profile`]: Schema::validate_with_profile
-    pub fn validate(
-        &self,
-        values: &ParameterValues,
-    ) -> Result<(), Vec<crate::error::ParameterError>> {
+    pub fn validate(&self, values: &FieldValues) -> Result<(), Vec<crate::error::ParameterError>> {
         crate::validate::validate_fields(&self.fields, values)
     }
 
@@ -109,7 +106,7 @@ impl Schema {
     #[must_use]
     pub fn validate_with_profile(
         &self,
-        values: &ParameterValues,
+        values: &FieldValues,
         profile: ValidationProfile,
     ) -> ValidationReport {
         crate::validate::validate_with_profile(&self.fields, values, profile)
@@ -120,7 +117,7 @@ impl Schema {
     /// Existing user-provided values are preserved. Missing fields are
     /// materialized from `default` metadata and mode default variants.
     #[must_use]
-    pub fn normalize_values(&self, values: &ParameterValues) -> ParameterValues {
+    pub fn normalize_values(&self, values: &FieldValues) -> FieldValues {
         crate::normalize::normalize_fields(&self.fields, values)
     }
 }
@@ -186,7 +183,7 @@ mod tests {
     use crate::option::{OptionSource, SelectOption};
     use crate::rules::Rule;
     use crate::spec::{DynamicFieldsMode, ModeVariant, UnknownFieldPolicy};
-    use crate::values::ParameterValues;
+    use crate::values::FieldValues;
 
     #[test]
     fn file_serializes_max_size_key() {
@@ -234,7 +231,7 @@ mod tests {
             },
         ));
 
-        let mut values = ParameterValues::new();
+        let mut values = FieldValues::new();
         values.set("auth", json!("bearer"));
 
         let result = schema.validate(&values);
@@ -262,7 +259,7 @@ mod tests {
         };
         let schema = Schema::new().field(field);
 
-        let mut values = ParameterValues::new();
+        let mut values = FieldValues::new();
         values.set("method", json!("PATCH"));
 
         let result = schema.validate(&values);
@@ -278,7 +275,7 @@ mod tests {
             },
         ));
 
-        let mut values = ParameterValues::new();
+        let mut values = FieldValues::new();
         values.set("username", json!("abc"));
 
         let result = schema
@@ -298,7 +295,7 @@ mod tests {
     #[test]
     fn validate_reports_unknown_top_level_field() {
         let schema = Schema::new().field(Field::text("known").with_label("Known"));
-        let mut values = ParameterValues::new();
+        let mut values = FieldValues::new();
         values.set("known", json!("ok"));
         values.set("unexpected", json!(true));
 
@@ -324,7 +321,7 @@ mod tests {
             fields: vec![Field::text("token").with_label("Token")],
         });
 
-        let mut values = ParameterValues::new();
+        let mut values = FieldValues::new();
         values.set(
             "auth",
             json!({
@@ -351,7 +348,7 @@ mod tests {
                 .with_label("Region")
                 .with_default(json!("us-east-1")),
         );
-        let values = ParameterValues::new();
+        let values = FieldValues::new();
 
         let normalized = schema.normalize_values(&values);
         assert_eq!(normalized.get("region"), Some(&json!("us-east-1")));
@@ -374,7 +371,7 @@ mod tests {
             default_variant: Some("none".to_owned()),
         });
 
-        let values = ParameterValues::new();
+        let values = FieldValues::new();
         let normalized = schema.normalize_values(&values);
         assert_eq!(normalized.get("auth"), Some(&json!({ "mode": "none" })));
     }

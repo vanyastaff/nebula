@@ -9,7 +9,7 @@
 //!     .field(Field::text("api_key").with_label("API Key").required().secret())
 //!     .field(Field::integer("timeout_ms").with_label("Timeout (ms)"));
 //!
-//! let mut values = ParameterValues::new();
+//! let mut values = FieldValues::new();
 //! values.set("api_key", "secret123456".into());
 //! values.set("timeout_ms", 30_000.into());
 //!
@@ -20,7 +20,7 @@
 //!
 //! - [`Schema`] — Canonical v2 parameter schema
 //! - [`Field`] — Canonical v2 schema field (all 16 variants)
-//! - [`ParameterValues`] — Runtime key-value map with typed accessors
+//! - [`FieldValues`] — Runtime key-value map with typed accessors
 //! - [`loader::OptionLoader`] / [`loader::RecordLoader`] — Inline async loaders
 
 #![forbid(unsafe_code)]
@@ -70,7 +70,7 @@ pub use option::{OptionSource, SelectOption};
 pub use profile::ValidationProfile;
 pub use report::ValidationReport;
 pub use rules::Rule;
-pub use runtime::{FieldValue, ModeValueRef, ParameterValues, ValidatedValues};
+pub use runtime::{FieldValue, FieldValues, ModeValueRef, ValidatedValues};
 pub use schema::{Group, Schema, Severity, UiElement};
 pub use spec::{
     DynamicFieldsMode, FieldSpec, FilterCombinator, FilterExpr, FilterGroup, FilterOp, FilterRule,
@@ -90,7 +90,7 @@ pub mod prelude {
     pub use crate::profile::ValidationProfile;
     pub use crate::report::ValidationReport;
     pub use crate::rules::Rule;
-    pub use crate::runtime::{FieldValue, ModeValueRef, ParameterValues, ValidatedValues};
+    pub use crate::runtime::{FieldValue, FieldValues, ModeValueRef, ValidatedValues};
     pub use crate::schema::{Group, Schema, Severity, UiElement};
     pub use crate::spec::{
         DynamicFieldsMode, FieldSpec, FilterCombinator, FilterExpr, FilterGroup, FilterOp,

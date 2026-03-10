@@ -77,7 +77,7 @@ pub struct ModeValueRef<'a> {
     pub value: Option<&'a serde_json::Value>,
 }
 
-/// Trait for numeric types supported by [`ParameterValues::get_number`].
+/// Trait for numeric types supported by [`FieldValues::get_number`].
 pub trait Numeric:
     Copy + PartialOrd + Debug + Send + Sync + Serialize + DeserializeOwned + 'static
 {
@@ -113,12 +113,12 @@ impl Numeric for u16 {
 
 /// A set of parameter values, keyed by parameter key.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ParameterValues {
+pub struct FieldValues {
     #[serde(flatten)]
     values: HashMap<String, serde_json::Value>,
 }
 
-impl ParameterValues {
+impl FieldValues {
     /// Create an empty value set.
     #[must_use]
     pub fn new() -> Self {
@@ -293,20 +293,20 @@ impl ParameterValues {
 
     /// Create a snapshot of the current values for later restore.
     #[must_use]
-    pub fn snapshot(&self) -> ParameterSnapshot {
-        ParameterSnapshot {
+    pub fn snapshot(&self) -> FieldValuesSnapshot {
+        FieldValuesSnapshot {
             values: self.values.clone(),
         }
     }
 
     /// Restore values from a previously taken snapshot.
-    pub fn restore(&mut self, snapshot: &ParameterSnapshot) {
+    pub fn restore(&mut self, snapshot: &FieldValuesSnapshot) {
         self.values = snapshot.values.clone();
     }
 
     /// Compute the difference between this value set and another.
     #[must_use]
-    pub fn diff(&self, other: &Self) -> ParameterDiff {
+    pub fn diff(&self, other: &Self) -> FieldValuesDiff {
         let mut added = Vec::new();
         let mut removed = Vec::new();
         let mut changed = Vec::new();
@@ -329,7 +329,7 @@ impl ParameterValues {
         removed.sort();
         changed.sort();
 
-        ParameterDiff {
+        FieldValuesDiff {
             added,
             removed,
             changed,
@@ -337,7 +337,7 @@ impl ParameterValues {
     }
 }
 
-impl FromIterator<(String, serde_json::Value)> for ParameterValues {
+impl FromIterator<(String, serde_json::Value)> for FieldValues {
     fn from_iter<I: IntoIterator<Item = (String, serde_json::Value)>>(iter: I) -> Self {
         Self {
             values: iter.into_iter().collect(),
@@ -345,7 +345,7 @@ impl FromIterator<(String, serde_json::Value)> for ParameterValues {
     }
 }
 
-impl Index<&str> for ParameterValues {
+impl Index<&str> for FieldValues {
     type Output = serde_json::Value;
 
     fn index(&self, key: &str) -> &Self::Output {
@@ -355,13 +355,13 @@ impl Index<&str> for ParameterValues {
 
 /// A frozen copy of parameter values for snapshot/restore.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ParameterSnapshot {
+pub struct FieldValuesSnapshot {
     values: HashMap<String, serde_json::Value>,
 }
 
 /// Describes the differences between two parameter value sets.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParameterDiff {
+pub struct FieldValuesDiff {
     /// Keys present in `other` but not in `self`.
     pub added: Vec<String>,
     /// Keys present in `self` but not in `other`.
@@ -377,14 +377,14 @@ mod tests {
 
     #[test]
     fn new_is_empty() {
-        let vals = ParameterValues::new();
+        let vals = FieldValues::new();
         assert!(vals.is_empty());
         assert_eq!(vals.len(), 0);
     }
 
     #[test]
     fn set_and_get() {
-        let mut vals = ParameterValues::new();
+        let mut vals = FieldValues::new();
         vals.set("host", json!("localhost"));
         vals.set("port", json!(8080));
 
@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn remove() {
-        let mut vals = ParameterValues::new();
+        let mut vals = FieldValues::new();
         vals.set("key", json!("value"));
 
         let removed = vals.remove("key");
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn contains() {
-        let mut vals = ParameterValues::new();
+        let mut vals = FieldValues::new();
         vals.set("host", json!("localhost"));
 
         assert!(vals.contains("host"));
@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn keys_iterator() {
-        let mut vals = ParameterValues::new();
+        let mut vals = FieldValues::new();
         vals.set("a", json!(1));
         vals.set("b", json!(2));
 
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn convenience_getters() {
-        let mut vals = ParameterValues::new();
+        let mut vals = FieldValues::new();
         vals.set("name", json!("Alice"));
         vals.set("age", json!(30));
         vals.set("active", json!(true));
@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn get_number_preserves_integer_types() {
-        let mut vals = ParameterValues::new();
+        let mut vals = FieldValues::new();
         vals.set("port", serde_json::json!(8080));
         vals.set("ratio", serde_json::json!(0.5));
 
@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn snapshot_and_restore() {
-        let mut vals = ParameterValues::new();
+        let mut vals = FieldValues::new();
         vals.set("x", json!(1));
         vals.set("y", json!(2));
 
@@ -475,12 +475,12 @@ mod tests {
 
     #[test]
     fn diff_detects_changes() {
-        let mut a = ParameterValues::new();
+        let mut a = FieldValues::new();
         a.set("x", json!(1));
         a.set("y", json!(2));
         a.set("z", json!(3));
 
-        let mut b = ParameterValues::new();
+        let mut b = FieldValues::new();
         b.set("x", json!(1)); // same
         b.set("y", json!(99)); // changed
         b.set("w", json!(4)); // added
@@ -493,8 +493,8 @@ mod tests {
 
     #[test]
     fn diff_empty_sets() {
-        let a = ParameterValues::new();
-        let b = ParameterValues::new();
+        let a = FieldValues::new();
+        let b = FieldValues::new();
         let diff = a.diff(&b);
         assert!(diff.added.is_empty());
         assert!(diff.removed.is_empty());
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn from_iterator() {
-        let vals: ParameterValues = vec![("a".to_owned(), json!(1)), ("b".to_owned(), json!(2))]
+        let vals: FieldValues = vec![("a".to_owned(), json!(1)), ("b".to_owned(), json!(2))]
             .into_iter()
             .collect();
 
@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn index_access() {
-        let mut vals = ParameterValues::new();
+        let mut vals = FieldValues::new();
         vals.set("key", json!("value"));
         assert_eq!(vals["key"], json!("value"));
     }
@@ -521,24 +521,24 @@ mod tests {
     #[test]
     #[should_panic]
     fn index_missing_key_panics() {
-        let vals = ParameterValues::new();
+        let vals = FieldValues::new();
         let _ = &vals["missing"];
     }
 
     #[test]
     fn serde_round_trip() {
-        let mut vals = ParameterValues::new();
+        let mut vals = FieldValues::new();
         vals.set("host", json!("localhost"));
         vals.set("port", json!(8080));
 
         let json_str = serde_json::to_string(&vals).unwrap();
-        let deserialized: ParameterValues = serde_json::from_str(&json_str).unwrap();
+        let deserialized: FieldValues = serde_json::from_str(&json_str).unwrap();
         assert_eq!(vals, deserialized);
     }
 
     #[test]
     fn serde_flat_structure() {
-        let mut vals = ParameterValues::new();
+        let mut vals = FieldValues::new();
         vals.set("name", json!("test"));
 
         let json_str = serde_json::to_string(&vals).unwrap();
@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn typed_value_expression_roundtrip() {
-        let mut vals = ParameterValues::new();
+        let mut vals = FieldValues::new();
         vals.set_expression("timeout", "inputs.retries * 1000");
 
         assert_eq!(
@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     fn typed_value_mode_roundtrip() {
-        let mut vals = ParameterValues::new();
+        let mut vals = FieldValues::new();
         vals.set_mode("auth", "bearer", Some(json!({ "token": "abc" })));
 
         let mode = vals.get_mode("auth").expect("mode value expected");
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn typed_value_literal_classification() {
-        let mut vals = ParameterValues::new();
+        let mut vals = FieldValues::new();
         vals.set("port", json!(8080));
 
         assert_eq!(

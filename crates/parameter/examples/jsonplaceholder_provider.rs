@@ -13,7 +13,7 @@
 use nebula_parameter::field::Field;
 use nebula_parameter::loader::LoaderCtx;
 use nebula_parameter::option::SelectOption;
-use nebula_parameter::runtime::ParameterValues;
+use nebula_parameter::runtime::FieldValues;
 
 // -- API shape ----------------------------------------------------------------
 
@@ -67,7 +67,7 @@ async fn main() {
     // Full list.
     let ctx = LoaderCtx {
         field_id: "assigned_user".to_owned(),
-        values: ParameterValues::new(),
+        values: FieldValues::new(),
         filter: None,
         cursor: None,
         credential: None,
@@ -88,7 +88,7 @@ async fn main() {
     // Filtered list -- only names/usernames containing "le".
     let ctx_filtered = LoaderCtx {
         field_id: "assigned_user".to_owned(),
-        values: ParameterValues::new(),
+        values: FieldValues::new(),
         filter: Some("le".to_owned()),
         cursor: None,
         credential: None,
