@@ -145,11 +145,7 @@ pub enum Field {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         accept: Option<String>,
         /// Maximum upload size in bytes.
-        #[serde(
-            default,
-            skip_serializing_if = "Option::is_none",
-            alias = "max_size_bytes"
-        )]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         max_size: Option<u64>,
         /// Allow selecting multiple files.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -165,7 +161,7 @@ pub enum Field {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         depends_on: Vec<String>,
         /// How many provider fields are shown initially.
-        #[serde(default, alias = "display")]
+        #[serde(default)]
         mode: DynamicRecordMode,
         /// Policy for unknown fields returned by the provider.
         #[serde(default)]

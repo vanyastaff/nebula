@@ -70,11 +70,11 @@ pub use option::{OptionSource, SelectOption};
 pub use profile::ValidationProfile;
 pub use report::ValidationReport;
 pub use rules::Rule;
-pub use runtime::{ModeValueRef, FieldValue, ParameterValues, ValidatedValues};
+pub use runtime::{FieldValue, ModeValueRef, ParameterValues, ValidatedValues};
 pub use schema::{Group, Schema, Severity, UiElement};
 pub use spec::{
-    DynamicFieldSpec, DynamicRecordMode, FieldSpec, ModeVariant, PredicateCombinator,
-    PredicateExpr, PredicateGroup, PredicateOp, PredicateRule, UnknownFieldPolicy,
+    DynamicRecordMode, FieldSpec, ModeVariant, PredicateCombinator, PredicateExpr, PredicateGroup,
+    PredicateOp, PredicateRule, UnknownFieldPolicy,
 };
 
 /// Common imports for working with parameters.
@@ -90,10 +90,10 @@ pub mod prelude {
     pub use crate::profile::ValidationProfile;
     pub use crate::report::ValidationReport;
     pub use crate::rules::Rule;
-    pub use crate::runtime::{ModeValueRef, FieldValue, ParameterValues, ValidatedValues};
+    pub use crate::runtime::{FieldValue, ModeValueRef, ParameterValues, ValidatedValues};
     pub use crate::schema::{Group, Schema, Severity, UiElement};
     pub use crate::spec::{
-        DynamicFieldSpec, DynamicRecordMode, FieldSpec, ModeVariant, PredicateCombinator,
-        PredicateExpr, PredicateGroup, PredicateOp, PredicateRule, UnknownFieldPolicy,
+        DynamicRecordMode, FieldSpec, ModeVariant, PredicateCombinator, PredicateExpr,
+        PredicateGroup, PredicateOp, PredicateRule, UnknownFieldPolicy,
     };
 }

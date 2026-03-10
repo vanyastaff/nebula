@@ -28,7 +28,6 @@ pub enum DynamicRecordMode {
     #[default]
     All,
     /// Show only required provider fields initially.
-    #[serde(alias = "always", alias = "on_load", alias = "on_expand")]
     RequiredOnly,
 }
 
@@ -38,10 +37,8 @@ pub enum DynamicRecordMode {
 pub enum UnknownFieldPolicy {
     /// Keep unknown values and surface a warning.
     #[default]
-    #[serde(alias = "preserve")]
     WarnKeep,
     /// Drop unknown values from storage.
-    #[serde(alias = "drop")]
     Strip,
     /// Fail validation when unknown values are present.
     Error,
@@ -109,9 +106,6 @@ pub enum FieldSpec {
         loader: Option<OptionLoader>,
     },
 }
-
-/// Backward-compatible alias for [`FieldSpec`].
-pub type DynamicFieldSpec = FieldSpec;
 
 /// Top-level predicate expression emitted by a [`crate::field::Field::Predicate`] editor.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

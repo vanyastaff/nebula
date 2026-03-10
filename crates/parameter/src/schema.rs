@@ -207,22 +207,6 @@ mod tests {
     }
 
     #[test]
-    fn file_accepts_legacy_max_size_bytes_on_input() {
-        let input = json!({
-            "type": "file",
-            "id": "attachment",
-            "label": "Attachment",
-            "max_size_bytes": 2048
-        });
-
-        let field: Field = serde_json::from_value(input).expect("legacy payload should parse");
-        match field {
-            Field::File { max_size, .. } => assert_eq!(max_size, Some(2_048)),
-            other => panic!("expected file field, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn dynamic_record_serializes_mode_key() {
         let field = Field::DynamicRecord {
             meta: FieldMetadata {
@@ -239,7 +223,6 @@ mod tests {
 
         let value = serde_json::to_value(&field).expect("field should serialize");
         assert_eq!(value.get("mode"), Some(&json!("required_only")));
-        assert!(value.get("display").is_none());
     }
 
     #[test]

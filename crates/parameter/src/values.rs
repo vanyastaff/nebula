@@ -558,9 +558,7 @@ mod tests {
         );
         assert_eq!(
             vals.get_typed("timeout"),
-            Some(FieldValue::Expression(
-                "inputs.retries * 1000".to_owned()
-            ))
+            Some(FieldValue::Expression("inputs.retries * 1000".to_owned()))
         );
     }
 

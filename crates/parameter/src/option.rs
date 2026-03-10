@@ -3,17 +3,10 @@ use serde::{Deserialize, Serialize};
 /// A single option in a select or multi-select parameter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectOption {
-    /// Legacy machine-readable identifier kept for migration compatibility.
-    ///
-    /// Canonical v2 wire shape does not emit this field.
-    #[serde(default, skip_serializing)]
-    pub key: String,
-
     /// The value produced when this option is selected.
     pub value: serde_json::Value,
 
     /// Human-readable display label.
-    #[serde(rename = "label", alias = "name")]
     pub label: String,
 
     /// Optional tooltip or help text.
@@ -26,29 +19,12 @@ pub struct SelectOption {
 }
 
 impl SelectOption {
-    /// Creates a new enabled option with canonical v2 fields.
+    /// Creates a new enabled option.
     #[must_use]
     pub fn new(value: serde_json::Value, label: impl Into<String>) -> Self {
         Self {
             value,
             label: label.into(),
-            key: String::new(),
-            description: None,
-            disabled: false,
-        }
-    }
-
-    /// Creates an option from legacy `key` + `name` + `value` shape.
-    #[must_use]
-    pub fn with_key(
-        key: impl Into<String>,
-        name: impl Into<String>,
-        value: serde_json::Value,
-    ) -> Self {
-        Self {
-            key: key.into(),
-            value,
-            label: name.into(),
             description: None,
             disabled: false,
         }
@@ -65,16 +41,12 @@ pub enum OptionSource {
     /// Options loaded at runtime by a named provider.
     Dynamic {
         /// Provider key resolved by runtime registry.
-        #[serde(alias = "loader_key")]
         provider: String,
         /// Re-resolve options when these sibling fields change.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         depends_on: Vec<String>,
     },
 }
-
-/// Backward-compatible alias for the canonical [`OptionSource`] type.
-pub type OptionsSource = OptionSource;
 
 #[cfg(test)]
 mod tests {
@@ -83,7 +55,6 @@ mod tests {
     #[test]
     fn new_option() {
         let opt = SelectOption::new(serde_json::json!("us-east-1"), "US East");
-        assert!(opt.key.is_empty());
         assert_eq!(opt.label, "US East");
         assert_eq!(opt.value, serde_json::json!("us-east-1"));
         assert!(opt.description.is_none());
@@ -91,26 +62,18 @@ mod tests {
     }
 
     #[test]
-    fn legacy_constructor_keeps_key() {
-        let opt = SelectOption::with_key("us_east", "US East", serde_json::json!("us-east-1"));
-        assert_eq!(opt.key, "us_east");
-        assert_eq!(opt.label, "US East");
-    }
-
-    #[test]
     fn option_equality() {
-        let a = SelectOption::with_key("a", "A", serde_json::json!(1));
-        let b = SelectOption::with_key("a", "A", serde_json::json!(1));
+        let a = SelectOption::new(serde_json::json!(1), "A");
+        let b = SelectOption::new(serde_json::json!(1), "A");
         assert_eq!(a, b);
 
-        let c = SelectOption::with_key("a", "A", serde_json::json!(2));
+        let c = SelectOption::new(serde_json::json!(2), "A");
         assert_ne!(a, c);
     }
 
     #[test]
     fn serde_option_round_trip() {
         let opt = SelectOption {
-            key: "json".into(),
             value: serde_json::json!("application/json"),
             label: "JSON".into(),
             description: Some("JSON format".into()),
@@ -123,13 +86,11 @@ mod tests {
         assert_eq!(deserialized.label, opt.label);
         assert_eq!(deserialized.description, opt.description);
         assert_eq!(deserialized.disabled, opt.disabled);
-        assert!(deserialized.key.is_empty());
     }
 
     #[test]
     fn disabled_option() {
         let opt = SelectOption {
-            key: "beta".into(),
             value: serde_json::json!("beta"),
             label: "Beta Feature".into(),
             description: Some("Not yet available".into()),
@@ -184,32 +145,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_name_and_loader_key_still_deserialize() {
-        let option_json = serde_json::json!({
-            "key": "legacy",
-            "name": "Legacy",
-            "value": "legacy"
-        });
-        let option: SelectOption = serde_json::from_value(option_json).unwrap();
-        assert_eq!(option.label, "Legacy");
-        assert_eq!(option.value, serde_json::json!("legacy"));
-
-        let source_json = serde_json::json!({
-            "source": "dynamic",
-            "loader_key": "load_legacy"
-        });
-        let source: OptionSource = serde_json::from_value(source_json).unwrap();
-        match source {
-            OptionSource::Dynamic { provider, .. } => assert_eq!(provider, "load_legacy"),
-            _ => panic!("expected dynamic source"),
-        }
-    }
-
-    #[test]
     fn optional_fields_omitted_from_json() {
         let opt = SelectOption::new(serde_json::json!(1), "K");
         let json = serde_json::to_string(&opt).unwrap();
         assert!(!json.contains("description"));
-        assert!(!json.contains("key"));
     }
 }
