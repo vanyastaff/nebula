@@ -1,469 +1,309 @@
 # nebula-validator
 
-Production-ready validation framework for the Nebula workflow engine with advanced combinators and compositional design.
+Composable, type-safe validation framework for the Nebula workflow engine.
 
-> Canonical contract and compatibility rules are documented in `docs/crates/validator/API.md`,
-> `docs/crates/validator/DECISIONS.md`, and `docs/crates/validator/MIGRATION.md`.
-> This README is an overview and may lag behind the full contract spec.
+> Canonical contract and compatibility rules are documented in
+> `docs/crates/validator/API.md`, `docs/crates/validator/DECISIONS.md`,
+> and `docs/crates/validator/MIGRATION.md`.
 
 ## Features
 
-- **Comprehensive Validators**: 60+ built-in validators for strings, numbers, collections, and network data
-- **Compositional Design**: Chain validators with `and()`, `or()`, `not()` combinators
-- **Type-Safe**: Generic validators with strong typing
-- **Zero-Cost Abstractions**: Compiled validators with minimal runtime overhead
-- **Extensible**: Easy to create custom validators
-- **Advanced Combinators**: Field validation, nested structures, conditional logic, caching
+- **Composable** — chain validators with `.and()`, `.or()`, `.not()` extension methods
+- **Type-safe** — generic `Validate<T>` trait with strong typing and zero-cost combinators
+- **Proof tokens** — `Validated<T>` wrapper certifies a value passed validation at the type level
+- **Structured errors** — 80-byte `ValidationError` with `Cow`-based code/message, RFC 6901 field paths, nested children
+- **43 stable error codes** — machine-readable registry (`error_registry_v1.json`) with additive-only minor-release policy
+- **Dynamic bridge** — validate `serde_json::Value` through `AsValidatable` trait conversions
+- **Extensible** — `validator!` macro for zero-boilerplate custom validators, or implement `Validate<T>` manually
 
 ## Quick Start
 
 ```rust
-use nebula_validator::foundation::ValidateExt;
-use nebula_validator::validators::{alphanumeric, max_length, min_length};
+use nebula_validator::prelude::*;
 
-fn main() {
-    let validator = min_length(5).and(max_length(20)).and(alphanumeric());
+// Compose validators left-to-right
+let username = min_length(3).and(max_length(20)).and(alphanumeric());
+assert!(username.validate("alice123").is_ok());
+assert!(username.validate("ab").is_err()); // min_length error
 
-    match validator.validate("hello") {
-        Ok(_) => println!("Valid!"),
-        Err(e) => println!("Error: {}", e),
-    }
-}
+// Proof tokens: validate once, carry proof through the system
+let name: Validated<String> = min_length(3).validate_into("alice".to_string()).unwrap();
+println!("Validated: {}", name.as_ref());
+
+// Extension method style
+"hello".validate_with(&min_length(3)).unwrap();
 ```
 
-## Validator Categories
+## Validators
 
-### String Validators
+### String — Length
 
-#### Length
+| Factory | Error Code | Description |
+|---------|-----------|-------------|
+| `min_length(n)` | `min_length` | Minimum character count |
+| `max_length(n)` | `max_length` | Maximum character count |
+| `exact_length(n)` | `exact_length` | Exact character count |
+| `length_range(min, max)` | `length_range` | Character count in inclusive range |
+| `not_empty()` | `not_empty` | Must not be empty |
 
-| Validator | Description |
-|-----------|-------------|
-| `min_length(n)` | Minimum string length |
-| `max_length(n)` | Maximum string length |
-| `exact_length(n)` | Exact string length |
-| `length_range(min, max)` | Length in range |
-| `not_empty()` | String not empty |
+Byte-length variants: `min_length_bytes`, `max_length_bytes`, `exact_length_bytes`, `length_range_bytes`.
 
-#### Pattern
+### String — Pattern
 
-| Validator | Description |
-|-----------|-------------|
-| `contains(s)` | Contains substring |
-| `starts_with(s)` | Starts with prefix |
-| `ends_with(s)` | Ends with suffix |
-| `matches_regex(pattern)` | Matches regex |
-| `alphanumeric()` | Alphanumeric characters |
-| `alphabetic()` | Alphabetic characters only |
-| `ascii()` | ASCII characters only |
-| `lowercase()` | Lowercase characters only |
-| `uppercase()` | Uppercase characters only |
+| Factory | Error Code | Description |
+|---------|-----------|-------------|
+| `contains(s)` | `contains` | Contains substring |
+| `starts_with(s)` | `starts_with` | Starts with prefix |
+| `ends_with(s)` | `ends_with` | Ends with suffix |
+| `alphanumeric()` | `alphanumeric` | Only `[a-zA-Z0-9]` |
+| `alphabetic()` | `alphabetic` | Only letters |
+| `numeric()` | `numeric` | Only digits |
+| `lowercase()` | `lowercase` | All lowercase |
+| `uppercase()` | `uppercase` | All uppercase |
 
-#### Content
+### String — Content
 
-| Validator | Description |
-|-----------|-------------|
-| `Email` | Valid email address |
-| `Url` | Valid URL |
+| Factory | Error Code | Description |
+|---------|-----------|-------------|
+| `email()` | `invalid_format` | Valid email address |
+| `url()` | `invalid_format` | Valid URL |
+| `matches_regex(pattern)` | `invalid_format` | Matches regex pattern |
 
-#### Format Validators (Builder Pattern)
+### Numeric — Range
 
-| Validator | Description | Key Methods |
-|-----------|-------------|-------------|
-| `Uuid::new()` | UUID validation | `.version(n)`, `.lowercase_only()`, `.allow_braces()` |
-| `DateTime::new()` | DateTime (ISO 8601) | `.require_time()`, `.require_timezone()` |
-| `Json::new()` | JSON validation | `.objects_only()`, `.max_depth(n)` |
-| `Slug::new()` | URL slug | `.min_length(n)`, `.max_length(n)` |
-| `Hex::new()` | Hexadecimal | `.require_prefix()`, `.lowercase_only()` |
-| `Base64::new()` | Base64 | `.url_safe()`, `.require_padding()` |
-| `Phone::new()` | Phone number | `.country("US")`, `.require_country_code()` |
-| `CreditCard::new()` | Credit card | `.only_visa()`, `.only_mastercard()` |
-| `Iban::new()` | IBAN | `.allow_spaces()` |
-| `SemVer::new()` | Semantic version | `.require_patch()`, `.allow_prerelease()` |
-| `Password::new()` | Password strength | `.min_length(n)`, `.require_uppercase()`, `.require_digit()` |
+| Factory | Error Code | Description |
+|---------|-----------|-------------|
+| `min(n)` | `min` | Value ≥ bound |
+| `max(n)` | `max` | Value ≤ bound |
+| `in_range(min, max)` | `out_of_range` | Value in inclusive range |
+| `greater_than(n)` | `greater_than` | Value > bound |
+| `less_than(n)` | `less_than` | Value < bound |
+| `exclusive_range(min, max)` | `exclusive_range` | Value in exclusive range |
 
-### Numeric Validators
+### Collection — Size
 
-#### Range
+| Factory | Error Code | Description |
+|---------|-----------|-------------|
+| `min_size::<T>(n)` | `min_size` | Minimum element count |
+| `max_size::<T>(n)` | `max_size` | Maximum element count |
+| `exact_size::<T>(n)` | `exact_size` | Exact element count |
+| `size_range::<T>(min, max)` | `size_range` | Element count in range |
+| `not_empty_collection::<T>()` | `not_empty` | Must not be empty |
 
-| Validator | Description |
-|-----------|-------------|
-| `min(n)` | Minimum value (>=) |
-| `max(n)` | Maximum value (<=) |
-| `in_range(min, max)` | Value in range (inclusive) |
-| `greater_than(n)` | Strictly greater (>) |
-| `less_than(n)` | Strictly less (<) |
-| `exclusive_range(min, max)` | Value in range (exclusive) |
+### Boolean
 
-#### Properties
+| Factory | Error Code | Description |
+|---------|-----------|-------------|
+| `is_true()` | `is_true` | Must be `true` |
+| `is_false()` | `is_false` | Must be `false` |
 
-| Validator | Description |
-|-----------|-------------|
-| `positive()` | Must be > 0 |
-| `negative()` | Must be < 0 |
-| `non_zero()` | Must not be 0 |
-| `even()` | Must be even |
-| `odd()` | Must be odd |
-| `power_of_two()` | Must be power of 2 |
+### Nullable
 
-#### Divisibility
+| Factory | Error Code | Description |
+|---------|-----------|-------------|
+| `required()` | `required` | `Option` must be `Some` |
+| `not_null()` | `required` | Alias for `required` |
 
-| Validator | Description |
-|-----------|-------------|
-| `divisible_by(n)` | Divisible by n |
-| `multiple_of(n)` | Alias for divisible_by |
+### Network
 
-#### Float
+| Factory | Error Code | Description |
+|---------|-----------|-------------|
+| `ipv4()` | `ipv4` | Valid IPv4 address |
+| `ipv6()` | `ipv6` | Valid IPv6 address |
+| `ip_addr()` | `ip_addr` | Valid IPv4 or IPv6 |
+| `hostname()` | `hostname` | Valid hostname (RFC 1123) |
 
-| Validator | Description |
-|-----------|-------------|
-| `finite()` | Not NaN or infinity |
-| `not_nan()` | Not NaN (infinity allowed) |
-| `decimal_places(n)` | Max decimal places |
+### Temporal
 
-#### Percentage
-
-| Validator | Description |
-|-----------|-------------|
-| `percentage()` | Value in 0.0..1.0 |
-| `percentage_100()` | Value in 0..100 |
-
-### Collection Validators
-
-#### Size
-
-| Validator | Description |
-|-----------|-------------|
-| `min_size(n)` | Minimum collection size |
-| `max_size(n)` | Maximum collection size |
-| `exact_size(n)` | Exact collection size |
-| `size_range(min, max)` | Size in range |
-| `not_empty_collection()` | Collection not empty |
-
-#### Elements
-
-| Validator | Description |
-|-----------|-------------|
-| `all(validator)` | All elements must pass |
-| `any(validator)` | At least one must pass |
-| `none(validator)` | No element must pass |
-| `count(validator, n)` | Exactly n elements pass |
-| `at_least_count(validator, n)` | At least n elements pass |
-| `at_most_count(validator, n)` | At most n elements pass |
-| `first(validator)` | First element must pass |
-| `last(validator)` | Last element must pass |
-| `nth(validator, n)` | Nth element must pass |
-| `unique()` | All elements unique |
-| `contains_element(v)` | Contains specific element |
-| `contains_all(vec)` | Contains all elements |
-| `contains_any(vec)` | Contains at least one |
-| `sorted()` | Sorted ascending |
-| `sorted_descending()` | Sorted descending |
-
-#### Structure
-
-| Validator | Description |
-|-----------|-------------|
-| `has_key(k)` | Map has key |
-
-### Network Validators
-
-| Validator | Description | Key Methods |
-|-----------|-------------|-------------|
-| `IpAddress::new()` | IP address | `.v4_only()`, `.v6_only()`, `.private_only()` |
-| `Port::new()` | Port number | `.well_known_only()`, `.registered_only()` |
-| `MacAddress::new()` | MAC address | `.colon_only()`, `.hyphen_only()` |
-
-### Logical Validators
-
-| Validator | Description |
-|-----------|-------------|
-| `required()` | Value must not be None |
-| `not_null()` | Value must not be None |
-| `is_true()` | Boolean must be true |
-| `is_false()` | Boolean must be false |
+| Factory | Error Code | Description |
+|---------|-----------|-------------|
+| `date()` | `date` | ISO 8601 date (`YYYY-MM-DD`) |
+| `time()` | `time` | Time (`HH:MM:SS[.sss]`) |
+| `date_time()` | `datetime` | RFC 3339 datetime |
+| `uuid()` | `uuid` | UUID format |
 
 ## Combinators
 
-### Basic Combinators
+### Extension Methods
+
+Every `Validate<T>` impl gets these via `ValidateExt`:
 
 ```rust
-use nebula_validator::combinators::*;
+use nebula_validator::prelude::*;
 
-// AND - all must pass
-let v = and(min_length(3), max_length(20));
-
-// OR - at least one must pass
-let v = or(contains("@"), contains("."));
-
-// NOT - must fail
-let v = not(contains("admin"));
-
-// Optional - validate Option<T>
-let v = optional(min_length(5));
+let v = min_length(3)
+    .and(max_length(20))     // AND — both must pass
+    .or(contains("admin"))   // OR — at least one must pass
+    .not();                  // NOT — must fail
 ```
 
-### Advanced Combinators
+### Factory Functions
 
-| Combinator | Description |
-|-----------|-------------|
-| `and_all(vec)` | All validators must pass |
-| `or_any(vec)` | At least one must pass |
-| `when(condition, validator)` | Conditional validation |
-| `unless(validator, condition)` | Skip when condition true |
-| `each(validator)` | Validate each element |
-| `each_fail_fast(validator)` | Stop on first error |
-| `with_message(validator, msg)` | Custom error message |
-| `with_code(validator, code)` | Custom error code |
-| `lazy(|| validator)` | Deferred initialization |
-| `cached(validator)` | Cache validation results |
-| `field(name, extractor, validator)` | Field-specific validation |
+| Factory | Error Code | Description |
+|---------|-----------|-------------|
+| `and(a, b)` | *(delegates)* | Both must pass |
+| `and_all(vec)` / `all_of(vec)` | *(delegates)* | All must pass |
+| `or(a, b)` | `or_failed` | At least one must pass |
+| `or_any(vec)` / `any_of(vec)` | `or_any_failed` | At least one must pass |
+| `not(v)` | `not_failed` | Inner must fail |
+| `each(v)` | `each_failed` | Validate each element |
+| `each_fail_fast(v)` | `each_failed` | Stop on first element error |
+| `optional(v)` | *(delegates)* | Skip `None`, validate `Some` |
+| `when(cond, v)` | *(delegates)* | Conditional validation |
+| `unless(v, cond)` | *(delegates)* | Skip when condition true |
+| `with_message(v, msg)` | *(delegates)* | Override error message |
+| `with_code(v, code)` | *(delegates)* | Override error code |
+| `lazy(\|\| v)` | *(delegates)* | Deferred initialization |
+| `cached(v)` | *(delegates)* | Cache validation results |
 
-### Combinator Examples
+### JSON Field Validation
 
-```rust
-use nebula_validator::combinators::*;
-
-// Validate each element
-let v = each(positive());
-v.validate(&[1, 2, 3]); // Ok
-
-// Conditional validation
-let v = when(|s: &str| s.len() > 5, contains("@"));
-
-// Skip validation for admins
-let v = unless(min_length(10), |s: &str| s.starts_with("admin:"));
-
-// Custom error message
-let v = with_message(min_length(8), "Password too short");
-```
-
-## Usage Examples
-
-### Username Validation
+Validate fields inside `serde_json::Value` with RFC 6901 JSON Pointer paths:
 
 ```rust
-use nebula_validator::validators::string::*;
-use nebula_validator::combinators::and;
-use nebula_validator::core::Validator;
+use nebula_validator::prelude::*;
+use serde_json::json;
 
-let username = and(
-    min_length(3),
-    and(max_length(20), alphanumeric())
-);
+let v = json_field::<_, str>("/user/name", min_length(3));
+assert!(v.validate(&json!({"user": {"name": "alice"}})).is_ok());
 
-assert!(username.validate("alice123").is_ok());
-assert!(username.validate("ab").is_err());
-```
+// Missing required path → "path_not_found" error with field "/user/name"
+assert!(v.validate(&json!({"user": {}})).is_err());
 
-### Password Validation
-
-```rust
-use nebula_validator::validators::string::Password;
-use nebula_validator::core::Validator;
-
-let password = Password::new()
-    .min_length(8)
-    .require_uppercase()
-    .require_lowercase()
-    .require_digit()
-    .require_special();
-
-assert!(password.validate("SecureP@ss1").is_ok());
-```
-
-### Numeric Validation
-
-```rust
-use nebula_validator::validators::numeric::*;
-use nebula_validator::combinators::and;
-
-// Age: positive integer 0-120
-let age = and(positive(), in_range(0, 120));
-
-// Price: positive with max 2 decimal places
-let price = and(positive(), decimal_places(2));
-
-// Port: well-known ports only
-let port = and(min(1), max(1023));
-```
-
-### Collection Validation
-
-```rust
-use nebula_validator::validators::collection::*;
-use nebula_validator::validators::numeric::positive;
-use nebula_validator::combinators::and;
-
-// Tags: 1-10 unique strings
-let tags = and(size_range(1, 10), unique());
-
-// Scores: all positive, sorted
-let scores = and(all(positive()), sorted());
-
-// Require at least 2 passing grades
-let grades = at_least_count(|&g| g >= 60, 2);
-```
-
-### UUID Validation
-
-```rust
-use nebula_validator::validators::string::Uuid;
-use nebula_validator::core::Validator;
-
-let uuid = Uuid::new()
-    .version(4)
-    .lowercase_only();
-
-assert!(uuid.validate("550e8400-e29b-41d4-a716-446655440000").is_ok());
-```
-
-### Credit Card Validation
-
-```rust
-use nebula_validator::validators::string::CreditCard;
-use nebula_validator::core::Validator;
-
-let card = CreditCard::new()
-    .only_visa()
-    .allow_spaces();
-
-assert!(card.validate("4111 1111 1111 1111").is_ok());
+// Optional field — missing/null is OK
+let v = json_field_optional::<_, str>("/email", email());
+assert!(v.validate(&json!({"name": "alice"})).is_ok());
 ```
 
 ## Custom Validators
 
-Implement the `Validator` trait:
+### Using the `validator!` Macro
 
 ```rust
-use nebula_validator::core::{Validator, ValidationError, ValidatorMetadata};
+use nebula_validator::prelude::*;
 
-struct DivisibleBy {
-    divisor: i32,
-}
+validator!(EvenNumber, i32, "even", "must be even", |input| input % 2 == 0);
 
-impl Validator for DivisibleBy {
-    type Input = i32;
+assert!(EvenNumber.validate(&4).is_ok());
+assert!(EvenNumber.validate(&3).is_err());
+```
 
+### Manual Implementation
+
+```rust
+use nebula_validator::foundation::{Validate, ValidationError};
+
+struct DivisibleBy(i32);
+
+impl Validate<i32> for DivisibleBy {
     fn validate(&self, input: &i32) -> Result<(), ValidationError> {
-        if input % self.divisor == 0 {
+        if input % self.0 == 0 {
             Ok(())
         } else {
             Err(ValidationError::new(
-                "divisible",
-                format!("Must be divisible by {}", self.divisor)
+                "divisible_by",
+                format!("must be divisible by {}", self.0),
             ))
         }
     }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("DivisibleBy")
-    }
 }
+```
+
+## Error Model
+
+`ValidationError` is an 80-byte struct with `Cow<'static, str>` fields for zero-alloc
+on static strings:
+
+```rust
+use nebula_validator::foundation::ValidationError;
+
+let err = ValidationError::new("min_length", "must be at least 3 characters")
+    .with_field("user.name")       // auto-converts to RFC 6901: /user/name
+    .with_param("min", "3")
+    .with_severity(ErrorSeverity::Error)
+    .with_help("usernames must be 3-20 alphanumeric characters");
+
+// Nested errors for combinator trees
+let parent = ValidationError::new("or_failed", "all alternatives failed")
+    .with_nested_error(err);
+
+// Serialize to JSON envelope
+let json = parent.to_json_value();
+```
+
+## Proof Tokens
+
+`Validated<T>` is a newtype wrapper that proves a value has been validated:
+
+```rust
+use nebula_validator::prelude::*;
+
+fn process_username(name: Validated<String>) {
+    // Type guarantees validation was performed
+    println!("Processing: {}", name.as_ref());
+}
+
+let v = min_length(3).and(max_length(20)).and(alphanumeric());
+let name: Validated<String> = v.validate_into("alice".to_string()).unwrap();
+process_username(name);
 ```
 
 ## Architecture
 
 ```
-nebula-validator/
-├── core/                  # Core traits and types
-│   ├── traits.rs          # Validator trait
-│   ├── error.rs           # ValidationError
-│   ├── context.rs         # ValidationContext
-│   ├── metadata.rs        # ValidatorMetadata
-│   └── refined.rs         # Refined types
+src/
+├── lib.rs              # Crate root, lints, re-exports
+├── prelude.rs          # Single-import convenience module
+├── error.rs            # ValidatorError (crate-level thiserror type)
+├── proof.rs            # Validated<T> proof token
+├── macros.rs           # validator! macro
+├── foundation/
+│   ├── traits.rs       # Validate<T>, ValidateExt<T>
+│   ├── error.rs        # ValidationError, ValidationErrors, codes
+│   ├── combinators.rs  # And, Or, Not, When trait-level types
+│   ├── validatable.rs  # AsValidatable dynamic bridge
+│   └── any.rs          # AnyValidator (type-erased)
 ├── validators/
-│   ├── string/            # String validators
-│   │   ├── length.rs      # Length validators
-│   │   ├── pattern.rs     # Pattern validators
-│   │   ├── content.rs     # Email, URL
-│   │   ├── uuid.rs        # UUID
-│   │   ├── datetime.rs    # DateTime
-│   │   ├── json.rs        # JSON
-│   │   ├── phone.rs       # Phone
-│   │   ├── credit_card.rs # Credit card
-│   │   ├── iban.rs        # IBAN
-│   │   ├── password.rs    # Password
-│   │   └── ...
-│   ├── numeric/           # Numeric validators
-│   │   ├── range.rs       # Range validators
-│   │   ├── properties.rs  # Properties (positive, even, etc.)
-│   │   ├── divisibility.rs# Divisibility
-│   │   ├── float.rs       # Float-specific
-│   │   └── percentage.rs  # Percentage
-│   ├── collection/        # Collection validators
-│   │   ├── size.rs        # Size validators
-│   │   ├── elements.rs    # Element validators
-│   │   └── structure.rs   # Structure validators
-│   ├── network/           # Network validators
-│   │   ├── ip_address.rs  # IP address
-│   │   ├── port.rs        # Port
-│   │   └── mac_address.rs # MAC address
-│   ├── logical/           # Logical validators
-│   └── value/             # Value type validators
-└── combinators/           # Combinators
-    ├── and.rs             # AND combinator
-    ├── or.rs              # OR combinator
-    ├── not.rs             # NOT combinator
-    ├── optional.rs        # Optional validation
-    ├── when.rs            # Conditional (when)
-    ├── unless.rs          # Conditional (unless)
-    ├── each.rs            # Collection iteration
-    ├── message.rs         # Custom messages
-    ├── lazy.rs            # Lazy initialization
-    ├── cached.rs          # Caching
-    ├── field.rs           # Field validation
-    ├── nested.rs          # Nested validation
-    ├── map.rs             # Value transformation
-    └── optimizer.rs       # Validator optimization
+│   ├── boolean.rs      # IsTrue, IsFalse
+│   ├── content.rs      # Email, Url, MatchesRegex
+│   ├── length.rs       # MinLength, MaxLength, ExactLength, etc.
+│   ├── network.rs      # Ipv4, Ipv6, IpAddr, Hostname
+│   ├── nullable.rs     # Required, NotNull
+│   ├── pattern.rs      # Contains, StartsWith, Alphanumeric, etc.
+│   ├── range.rs        # Min, Max, InRange, GreaterThan, etc.
+│   ├── size.rs         # MinSize, MaxSize, ExactSize, etc.
+│   └── temporal.rs     # Date, Time, DateTime, Uuid
+└── combinators/
+    ├── and.rs          # And, AndAll
+    ├── or.rs           # Or, OrAny
+    ├── not.rs          # Not
+    ├── each.rs         # Each (collection iteration)
+    ├── optional.rs     # Optional
+    ├── when.rs / unless.rs  # Conditional
+    ├── json_field.rs   # JSON Pointer field extraction
+    ├── field.rs        # Struct field validation
+    ├── nested.rs       # Nested/collection validation
+    ├── message.rs      # WithCode, WithMessage
+    ├── lazy.rs         # Lazy initialization
+    ├── cached.rs       # Memoized validation
+    └── factories.rs    # all_of, any_of convenience
 ```
 
-## Best Practices
+## Contract & Compatibility
 
-### 1. Order Validators by Cost
+Error codes and serialization envelopes follow a **minor-additive** contract:
 
-```rust
-// Cheap checks first
-let v = and(
-    min_length(5),              // O(1)
-    matches_regex(r"...").unwrap()  // O(n)
-);
-```
-
-### 2. Use Builders for Complex Validation
-
-```rust
-let password = Password::new()
-    .min_length(12)
-    .require_uppercase()
-    .require_digit()
-    .require_special()
-    .no_common_passwords();
-```
-
-### 3. Reuse Validators
-
-```rust
-let email = email();
-let strong_password = Password::new().min_length(12).require_special();
-
-// Use across application
-validate_user(&email, &strong_password);
-```
-
-### 4. Use Custom Messages for UX
-
-```rust
-let v = with_message(
-    min_length(8),
-    "Password must be at least 8 characters"
-);
-```
+- **43 stable error codes** tracked in `tests/fixtures/compat/error_registry_v1.json`
+- Field paths use **RFC 6901 JSON Pointer** format
+- Contract tests in `tests/contract/` enforce code stability, envelope shape, and governance policy
+- Deprecation and migration rules in `docs/crates/validator/MIGRATION.md`
 
 ## Testing
 
 ```bash
-cargo test -p nebula-validator
+cargo test -p nebula-validator              # all tests (438+)
+cargo test -p nebula-validator contract     # contract & governance tests
+cargo clippy -p nebula-validator -- -D warnings
 ```
 
 ## License
