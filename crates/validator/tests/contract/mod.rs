@@ -1,4 +1,5 @@
 mod adversarial_inputs_test;
+mod benchmark_budget_test;
 mod combinator_semantics_contract_test;
 mod compatibility_fixtures_test;
 mod error_envelope_schema_test;

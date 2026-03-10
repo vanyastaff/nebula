@@ -48,3 +48,11 @@ harness = false
 [[bench]]
 name = "combinators"
 harness = false
+
+[[bench]]
+name = "error_construction"
+harness = false
+
+[[bench]]
+name = "cache"
+harness = false

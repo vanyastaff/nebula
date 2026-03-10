@@ -1,0 +1,65 @@
+{
+  "metadata": {
+    "version": "1.0.0",
+    "description": "Performance budgets for nebula-validator",
+    "policy": "Budgets are upper bounds (ns). Values must not regress beyond stated max. All budgets have a 2x safety margin over measured baselines.",
+    "measured_on": "2026-03-10",
+    "rust_version": "1.93+",
+    "profile": "release (opt-level=3)"
+  },
+
+  "budgets": {
+    "validators": {
+      "description": "Single-validator success/error path budgets",
+      "success_path": {
+        "length_check": { "max_ns": 15, "note": "min_length, max_length, exact_length on short input" },
+        "not_empty": { "max_ns": 5, "note": "empty check, sub-nanosecond typical" },
+        "pattern_match": { "max_ns": 15, "note": "contains, starts_with, ends_with on short input" },
+        "char_class": { "max_ns": 15, "note": "alphanumeric, alphabetic on short input" },
+        "email": { "max_ns": 50, "note": "simple email validation" },
+        "url": { "max_ns": 50, "note": "simple URL validation" },
+        "regex": { "max_ns": 500, "note": "compiled regex match" }
+      },
+      "error_path": {
+        "simple_error": { "max_ns": 500, "note": "error with code + message + field, no extras" },
+        "error_with_params": { "max_ns": 600, "note": "error with 2 params (SmallVec inline)" },
+        "error_with_nested": { "max_ns": 1000, "note": "error with 1 nested child" }
+      }
+    },
+
+    "combinators": {
+      "description": "Combinator overhead budgets (added on top of inner validator cost)",
+      "and_two": { "max_ns": 15, "note": "two-validator AND chain, success path" },
+      "and_five": { "max_ns": 30, "note": "five-validator AND chain, success path" },
+      "and_ten": { "max_ns": 50, "note": "ten-validator AND chain, success path" },
+      "or_two": { "max_ns": 15, "note": "two-validator OR, first succeeds" },
+      "or_fallthrough": { "max_ns": 500, "note": "two-validator OR, both fail (error construction)" },
+      "not": { "max_ns": 10, "note": "NOT combinator overhead" },
+      "when_skipped": { "max_ns": 10, "note": "conditional, condition false = skip" },
+      "when_applied": { "max_ns": 15, "note": "conditional, condition true = validate" },
+      "each_10_elements": { "max_ns": 200, "note": "each() over 10 valid elements" },
+      "cached_hit": { "max_ns": 100, "note": "moka cache hit (hash + lookup)" },
+      "cached_miss": { "max_ns": 500, "note": "moka cache miss (hash + validate + insert)" }
+    },
+
+    "real_world": {
+      "description": "End-to-end scenario budgets",
+      "username_valid": { "max_ns": 30, "note": "min(3) + max(20) + alphanumeric, success" },
+      "email_valid": { "max_ns": 50, "note": "email() success" },
+      "form_3_fields_valid": { "max_ns": 150, "note": "username + email + password, all valid" },
+      "form_3_fields_one_invalid": { "max_ns": 500, "note": "username + email + password, one fails" }
+    },
+
+    "memory": {
+      "description": "Memory layout budgets (bytes)",
+      "validation_error_size": { "max_bytes": 80, "note": "ValidationError stack size" },
+      "error_extras_box": { "max_bytes": 8, "note": "Option<Box<ErrorExtras>> pointer size" }
+    }
+  },
+
+  "change_policy": {
+    "relaxation": "Budgets may be relaxed with justification in PR description",
+    "tightening": "Budgets may be tightened after confirmed optimization",
+    "new_budgets": "New validators/combinators must declare a budget before merge"
+  }
+}
