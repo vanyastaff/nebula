@@ -86,7 +86,7 @@ impl std::fmt::Debug for OptionLoader {
 // ── RecordLoader ─────────────────────────────────────────────────────────────
 
 /// Async inline loader that resolves [`FieldSpec`]s for a
-/// [`crate::field::Field::DynamicRecord`] field.
+/// [`crate::field::Field::DynamicFields`] field.
 ///
 /// Like [`OptionLoader`], two [`RecordLoader`]s always compare equal.
 pub struct RecordLoader(Arc<dyn Fn(LoaderCtx) -> LoaderFuture<Vec<FieldSpec>> + Send + Sync>);

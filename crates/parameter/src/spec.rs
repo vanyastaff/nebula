@@ -47,7 +47,7 @@ pub enum UnknownFieldPolicy {
 /// Simplified field subset that [`crate::providers::DynamicRecordProvider`]s may return.
 ///
 /// Providers must not introduce nested [`crate::field::Field::Mode`] or
-/// [`crate::field::Field::DynamicRecord`] variants.
+/// [`crate::field::Field::DynamicFields`] variants.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FieldSpec {
@@ -107,7 +107,7 @@ pub enum FieldSpec {
     },
 }
 
-/// Top-level predicate expression emitted by a [`crate::field::Field::Predicate`] editor.
+/// Top-level predicate expression emitted by a [`crate::field::Field::Filter`] editor.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PredicateExpr {

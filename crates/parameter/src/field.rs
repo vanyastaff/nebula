@@ -151,8 +151,8 @@ pub enum Field {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         multiple: bool,
     },
-    /// Runtime-defined record whose fields are resolved by a named provider.
-    DynamicRecord {
+    /// Field set whose sub-fields are resolved at runtime by a provider or inline loader.
+    DynamicFields {
         #[serde(flatten)]
         meta: FieldMetadata,
         /// Provider key registered in the runtime registry.
@@ -174,7 +174,7 @@ pub enum Field {
         loader: Option<RecordLoader>,
     },
     /// Visual condition-builder field that emits a [`PredicateExpr`].
-    Predicate {
+    Filter {
         #[serde(flatten)]
         meta: FieldMetadata,
         /// Restrict available operators; `None` means allow all.
@@ -246,10 +246,10 @@ impl Field {
         }
     }
 
-    /// Creates a dynamic-record field backed by the given provider key.
+    /// Creates a dynamic-fields field backed by the given provider key.
     #[must_use]
-    pub fn dynamic_record(id: impl Into<String>, provider: impl Into<String>) -> Self {
-        Self::DynamicRecord {
+    pub fn dynamic_fields(id: impl Into<String>, provider: impl Into<String>) -> Self {
+        Self::DynamicFields {
             meta: FieldMetadata::new(id),
             provider: provider.into(),
             depends_on: Vec::new(),
@@ -279,8 +279,8 @@ impl Field {
             | Self::DateTime { meta, .. }
             | Self::Time { meta, .. }
             | Self::File { meta, .. }
-            | Self::DynamicRecord { meta, .. }
-            | Self::Predicate { meta, .. } => meta,
+            | Self::DynamicFields { meta, .. }
+            | Self::Filter { meta, .. } => meta,
         }
     }
 
@@ -302,8 +302,8 @@ impl Field {
             | Self::DateTime { meta, .. }
             | Self::Time { meta, .. }
             | Self::File { meta, .. }
-            | Self::DynamicRecord { meta, .. }
-            | Self::Predicate { meta, .. } => meta,
+            | Self::DynamicFields { meta, .. }
+            | Self::Filter { meta, .. } => meta,
         }
     }
 
@@ -406,22 +406,22 @@ impl Field {
         self
     }
 
-    /// Attaches an async inline record loader to a [`Field::DynamicRecord`] variant.
+    /// Attaches an async inline record loader to a [`Field::DynamicFields`] variant.
     ///
     /// The closure receives a [`crate::loader::LoaderCtx`] by value and must
     /// return a future that resolves to a `Vec<FieldSpec>`.
     ///
-    /// Panics if called on a non-`DynamicRecord` variant.
+    /// Panics if called on a non-`DynamicFields` variant.
     #[must_use]
     pub fn with_record_loader<F, Fut>(mut self, f: F) -> Self
     where
         F: Fn(crate::loader::LoaderCtx) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Vec<FieldSpec>> + Send + 'static,
     {
-        if let Self::DynamicRecord { loader, .. } = &mut self {
+        if let Self::DynamicFields { loader, .. } = &mut self {
             *loader = Some(RecordLoader::new(f));
         } else {
-            panic!("with_record_loader called on a non-DynamicRecord Field variant");
+            panic!("with_record_loader called on a non-DynamicFields Field variant");
         }
         self
     }
@@ -442,10 +442,10 @@ impl Field {
 
     /// Returns a reference to the attached [`RecordLoader`], if any.
     ///
-    /// Returns `Some` only when `self` is a [`Field::DynamicRecord`] variant
+    /// Returns `Some` only when `self` is a [`Field::DynamicFields`] variant
     /// with a loader attached.
     pub fn record_loader(&self) -> Option<&RecordLoader> {
-        if let Self::DynamicRecord { loader, .. } = self {
+        if let Self::DynamicFields { loader, .. } = self {
             loader.as_ref()
         } else {
             None

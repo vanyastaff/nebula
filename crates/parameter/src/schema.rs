@@ -207,8 +207,8 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_record_serializes_mode_key() {
-        let field = Field::DynamicRecord {
+    fn dynamic_fields_serializes_mode_key() {
+        let field = Field::DynamicFields {
             meta: FieldMetadata {
                 id: "row_data".to_owned(),
                 label: "Row Data".to_owned(),

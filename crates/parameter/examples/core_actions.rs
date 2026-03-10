@@ -1,6 +1,6 @@
 //! Core control-flow actions — parameter schema example.
 //!
-//! Demonstrates `Mode` fields (discriminated unions), `Predicate` fields,
+//! Demonstrates `Mode` fields (discriminated unions), `Filter` fields,
 //! and `required_when` / `visible_when` conditions for workflow control nodes:
 //! `If`, `Switch`, `ForEach`, and `Wait`.
 //!
