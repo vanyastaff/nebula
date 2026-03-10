@@ -2,7 +2,7 @@
 
 use crate::handlers;
 use crate::state::AppState;
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 
 /// Health routes
 pub fn router() -> Router<AppState> {
@@ -10,4 +10,3 @@ pub fn router() -> Router<AppState> {
         .route("/health", get(handlers::health_check))
         .route("/ready", get(handlers::readiness_check))
 }
-

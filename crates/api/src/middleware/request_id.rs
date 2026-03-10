@@ -2,11 +2,14 @@
 //!
 //! Adds unique request ID to each request for tracing.
 
-use axum::{extract::Request, response::{Response, IntoResponse}};
+use axum::{
+    extract::Request,
+    response::{IntoResponse, Response},
+};
+use futures::future::BoxFuture;
 use std::task::{Context, Poll};
 use tower::{Layer, Service};
 use uuid::Uuid;
-use futures::future::BoxFuture;
 
 /// Request ID header name
 pub const X_REQUEST_ID: &str = "x-request-id";
@@ -54,10 +57,12 @@ where
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         // Insert into extensions for handlers
-        request.extensions_mut().insert(RequestId(request_id.clone()));
+        request
+            .extensions_mut()
+            .insert(RequestId(request_id.clone()));
 
         let future = self.inner.call(request);
-        
+
         // Add request ID to response headers
         Box::pin(async move {
             let mut response = future.await?.into_response();
@@ -72,4 +77,3 @@ where
 /// Request ID extension
 #[derive(Debug, Clone)]
 pub struct RequestId(pub String);
-

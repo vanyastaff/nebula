@@ -249,7 +249,10 @@ pub fn built_in_string_validator_flags() -> Vec<(&'static str, TokenStream2)> {
         ("ipv4", quote!(::nebula_validator::validators::ipv4())),
         ("ipv6", quote!(::nebula_validator::validators::ipv6())),
         ("ip_addr", quote!(::nebula_validator::validators::ip_addr())),
-        ("hostname", quote!(::nebula_validator::validators::hostname())),
+        (
+            "hostname",
+            quote!(::nebula_validator::validators::hostname()),
+        ),
         ("uuid", quote!(::nebula_validator::validators::uuid())),
         ("date", quote!(::nebula_validator::validators::date())),
         (

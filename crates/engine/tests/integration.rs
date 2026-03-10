@@ -22,8 +22,8 @@ use nebula_metrics::naming::{
     NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
 };
 use nebula_runtime::registry::ActionRegistry;
-use nebula_runtime::{ActionRuntime, DataPassingPolicy};
 use nebula_runtime::{ActionExecutor, InProcessSandbox};
+use nebula_runtime::{ActionRuntime, DataPassingPolicy};
 use nebula_telemetry::event::EventBus;
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_telemetry::{NoopTelemetry, TelemetryService};

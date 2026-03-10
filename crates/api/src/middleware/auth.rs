@@ -4,7 +4,7 @@
 
 use axum::{
     extract::Request,
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     middleware::Next,
     response::Response,
 };
@@ -28,4 +28,3 @@ pub async fn auth_middleware(request: Request, next: Next) -> Result<Response, S
 
 /// Auth middleware struct для использования с Tower
 pub struct AuthMiddleware;
-

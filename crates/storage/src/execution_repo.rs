@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use nebula_core::ExecutionId;
-use tokio::sync::RwLock;
 use thiserror::Error;
+use tokio::sync::RwLock;
 
 /// Errors returned by execution repository operations.
 #[derive(Debug, Error)]
@@ -119,7 +119,10 @@ pub trait ExecutionRepo: Send + Sync {
     ) -> Result<bool, ExecutionRepoError>;
 
     /// Returns full journal entries for an execution.
-    async fn get_journal(&self, id: ExecutionId) -> Result<Vec<serde_json::Value>, ExecutionRepoError>;
+    async fn get_journal(
+        &self,
+        id: ExecutionId,
+    ) -> Result<Vec<serde_json::Value>, ExecutionRepoError>;
 
     /// Appends a single journal entry for an execution.
     async fn append_journal(
@@ -151,7 +154,11 @@ pub trait ExecutionRepo: Send + Sync {
     /// Releases lease if currently owned by `holder`.
     ///
     /// Returns `Ok(true)` when released, `Ok(false)` otherwise.
-    async fn release_lease(&self, id: ExecutionId, holder: &str) -> Result<bool, ExecutionRepoError>;
+    async fn release_lease(
+        &self,
+        id: ExecutionId,
+        holder: &str,
+    ) -> Result<bool, ExecutionRepoError>;
 }
 
 /// In-memory execution repository for tests and single-process/health-only mode.
@@ -195,7 +202,10 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         Ok(true)
     }
 
-    async fn get_journal(&self, id: ExecutionId) -> Result<Vec<serde_json::Value>, ExecutionRepoError> {
+    async fn get_journal(
+        &self,
+        id: ExecutionId,
+    ) -> Result<Vec<serde_json::Value>, ExecutionRepoError> {
         let journal = self.journal.read().await;
         Ok(journal.get(&id).cloned().unwrap_or_default())
     }
@@ -234,7 +244,11 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         Ok(leases.get(&id).map(|h| h.as_str()) == Some(holder))
     }
 
-    async fn release_lease(&self, id: ExecutionId, holder: &str) -> Result<bool, ExecutionRepoError> {
+    async fn release_lease(
+        &self,
+        id: ExecutionId,
+        holder: &str,
+    ) -> Result<bool, ExecutionRepoError> {
         let mut leases = self.leases.write().await;
         let ok = leases.get(&id).map(|h| h.as_str()) == Some(holder);
         if ok {

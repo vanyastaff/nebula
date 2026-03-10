@@ -6,12 +6,12 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::sandbox::SandboxRunner;
 use nebula_action::ActionContext;
 use nebula_action::result::ActionResult;
 use nebula_metrics::naming::{
     NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,
 };
-use crate::sandbox::SandboxRunner;
 use nebula_telemetry::TelemetryService;
 use nebula_telemetry::event::{EventBus, ExecutionEvent};
 use nebula_telemetry::metrics::MetricsRegistry;
@@ -228,12 +228,12 @@ fn primary_output(result: &ActionResult<serde_json::Value>) -> Option<&serde_jso
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::{ActionExecutor, InProcessSandbox};
     use nebula_action::InternalHandler;
     use nebula_action::error::ActionError;
     use nebula_action::metadata::ActionMetadata;
     use nebula_action::{ActionContext, TriggerContext};
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
-    use crate::sandbox::{ActionExecutor, InProcessSandbox};
 
     struct EchoHandler {
         meta: ActionMetadata,

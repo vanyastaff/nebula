@@ -27,5 +27,5 @@ pub use error::RuntimeError;
 pub use queue::{MemoryQueue, QueueError, TaskQueue};
 pub use registry::ActionRegistry;
 pub use runtime::ActionRuntime;
-pub use sandbox::{ActionExecutor, InProcessSandbox, SandboxedContext, SandboxRunner};
+pub use sandbox::{ActionExecutor, InProcessSandbox, SandboxRunner, SandboxedContext};
 pub use stream_backpressure::{BoundedStreamBuffer, PushOutcome};

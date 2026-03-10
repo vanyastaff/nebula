@@ -2,12 +2,12 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, LitStr, parse_macro_input};
 
-use crate::support::{attrs, diag};
 use crate::support::validation_codegen::{
     built_in_string_validator_flags, generate_cmp_check, generate_len_check,
     generate_regex_validator_check, generate_str_validator_check, is_option_type, parse_number_lit,
     parse_usize, value_token,
 };
+use crate::support::{attrs, diag};
 
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -198,20 +198,14 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
         for (flag, expr) in built_in_string_validator_flags() {
             if validate_attrs.has_flag(flag) {
                 checks.push(generate_str_validator_check(
-                    field_name,
-                    &field_key,
-                    is_option,
-                    expr,
+                    field_name, &field_key, is_option, expr,
                 ));
             }
         }
 
         if let Some(pattern) = validate_attrs.get_string("regex") {
             checks.push(generate_regex_validator_check(
-                field_name,
-                &field_key,
-                is_option,
-                &pattern,
+                field_name, &field_key, is_option, &pattern,
             ));
         }
     }
@@ -664,4 +658,3 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
 
     Ok(expanded.into())
 }
-

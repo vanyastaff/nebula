@@ -628,11 +628,18 @@ impl ResilienceManager {
 
         // Execute with retry if configured
         let result = if let Some(ref retry_config) = policy.retry {
-            self.execute_with_retry(context, operation, retry_config, policy.timeout, cancellation)
-                .await
+            self.execute_with_retry(
+                context,
+                operation,
+                retry_config,
+                policy.timeout,
+                cancellation,
+            )
+            .await
         } else {
             // Single execution with optional timeout
-            self.execute_single(operation, policy.timeout, cancellation).await
+            self.execute_single(operation, policy.timeout, cancellation)
+                .await
         };
 
         // Update circuit breaker based on result

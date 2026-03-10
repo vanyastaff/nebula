@@ -3,7 +3,10 @@
 //! This module provides functionality for capturing, storing, and comparing
 //! memory state snapshots for debugging and analysis purposes.
 
-use std::{collections::{HashMap, HashSet}, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 
 use super::memory_stats::MemoryMetrics;
 use crate::error::{MemoryError, MemoryResult};

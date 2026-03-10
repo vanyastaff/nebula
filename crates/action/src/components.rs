@@ -166,7 +166,6 @@ impl ActionComponents {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use nebula_core::ResourceKey;
     use nebula_credential::CredentialRef;
     use nebula_credential::core::reference::ErasedCredentialRef;
@@ -185,7 +184,6 @@ mod tests {
     struct AnotherCredential;
     struct AnotherResource;
 
-    #[async_trait]
     impl CredentialType for TestCredential {
         type Input = ();
         type State = nebula_credential::protocols::ApiKeyState;
@@ -208,7 +206,6 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl CredentialType for AnotherCredential {
         type Input = ();
         type State = nebula_credential::protocols::ApiKeyState;

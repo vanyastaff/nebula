@@ -2,15 +2,14 @@
 //!
 //! Сборка Router с middleware (Production-Grade).
 
-use crate::{config::ApiConfig, routes, state::AppState, middleware::security_headers::security_headers_middleware};
+use crate::{
+    config::ApiConfig, middleware::security_headers::security_headers_middleware, routes,
+    state::AppState,
+};
 use axum::{Router, response::Response};
 use std::time::Duration;
 use tower::ServiceBuilder;
-use tower_http::{
-    compression::CompressionLayer,
-    cors::CorsLayer,
-    trace::TraceLayer,
-};
+use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 
 /// Build the main application router with middleware
 pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
@@ -30,7 +29,7 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
         .layer(build_cors_layer(config));
 
     // Apply middleware to routes
-    // For high-load layers that can fail (timeout, load_shed), 
+    // For high-load layers that can fail (timeout, load_shed),
     // we use HandleErrorLayer to map errors to proper API responses.
     routes
         .layer(middleware)
@@ -44,7 +43,7 @@ async fn request_id_middleware(
     mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    use crate::middleware::request_id::{X_REQUEST_ID, RequestId};
+    use crate::middleware::request_id::{RequestId, X_REQUEST_ID};
     use uuid::Uuid;
 
     let request_id = request
@@ -54,10 +53,12 @@ async fn request_id_middleware(
         .map(|s| s.to_string())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    request.extensions_mut().insert(RequestId(request_id.clone()));
+    request
+        .extensions_mut()
+        .insert(RequestId(request_id.clone()));
 
     let mut response = next.run(request).await;
-    
+
     if let Ok(value) = request_id.parse() {
         response.headers_mut().insert(X_REQUEST_ID, value);
     }
@@ -67,8 +68,8 @@ async fn request_id_middleware(
 
 /// Build CORS layer from config
 fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
-    use axum::http::{HeaderValue, Method, header};
     use crate::middleware::request_id::X_REQUEST_ID;
+    use axum::http::{HeaderValue, Method, header};
 
     let mut cors = CorsLayer::new();
 
@@ -85,23 +86,21 @@ fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
     }
 
     cors.allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PUT,
-            Method::DELETE,
-            Method::PATCH,
-            Method::OPTIONS,
-        ])
-        .allow_headers([
-            header::CONTENT_TYPE,
-            header::AUTHORIZATION,
-            header::ACCEPT,
-            header::HeaderName::from_static(X_REQUEST_ID),
-        ])
-        .expose_headers([
-            header::HeaderName::from_static(X_REQUEST_ID),
-        ])
-        .max_age(Duration::from_secs(3600))
+        Method::GET,
+        Method::POST,
+        Method::PUT,
+        Method::DELETE,
+        Method::PATCH,
+        Method::OPTIONS,
+    ])
+    .allow_headers([
+        header::CONTENT_TYPE,
+        header::AUTHORIZATION,
+        header::ACCEPT,
+        header::HeaderName::from_static(X_REQUEST_ID),
+    ])
+    .expose_headers([header::HeaderName::from_static(X_REQUEST_ID)])
+    .max_age(Duration::from_secs(3600))
 }
 
 /// Build router with graceful shutdown signal
@@ -145,4 +144,3 @@ async fn shutdown_signal() {
 
     tracing::info!("Shutdown signal received, starting graceful shutdown");
 }
-

@@ -74,7 +74,11 @@ impl ParameterAttrs {
             .map(|value| quote!(.with_description(#value)))
             .unwrap_or_default();
 
-        let required_setter = if required { quote!(.required()) } else { quote!() };
+        let required_setter = if required {
+            quote!(.required())
+        } else {
+            quote!()
+        };
         let secret_setter = if secret { quote!(.secret()) } else { quote!() };
 
         Ok(quote! {

@@ -1,6 +1,6 @@
 //! Integration tests for Nebula API
 
-use nebula_api::{app, ApiConfig, AppState};
+use nebula_api::{ApiConfig, AppState, app};
 use nebula_config::ConfigBuilder;
 use nebula_storage::{InMemoryExecutionRepo, InMemoryWorkflowRepo};
 use std::sync::Arc;
@@ -52,4 +52,3 @@ async fn test_workflow_list_empty() {
 async fn test_error_format_rfc9457() {
     // TODO: Test that errors return RFC 9457 Problem Details format
 }
-

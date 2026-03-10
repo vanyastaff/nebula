@@ -2,13 +2,15 @@
 
 use crate::{
     errors::{ApiError, ApiResult},
-    models::{CreateWorkflowRequest, ListWorkflowsResponse, UpdateWorkflowRequest, WorkflowResponse},
+    models::{
+        CreateWorkflowRequest, ListWorkflowsResponse, UpdateWorkflowRequest, WorkflowResponse,
+    },
     state::AppState,
 };
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
 
 /// List workflows
@@ -66,4 +68,3 @@ pub async fn delete_workflow(
     // TODO: Implement via workflow_repo.delete()
     Err(ApiError::NotFound(format!("Workflow {} not found", id)))
 }
-

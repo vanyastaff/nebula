@@ -24,7 +24,7 @@ members = [
     "crates/webhook",
     "crates/workflow",
     "crates/macros",
-    "crates/sdk",
+    "crates/sdk", "crates/auth",
 ]
 exclude = [
     "crates/*/fuzz",

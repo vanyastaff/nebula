@@ -10,4 +10,3 @@ pub mod security_headers;
 pub use auth::AuthMiddleware;
 pub use request_id::RequestIdLayer;
 pub use security_headers::security_headers_middleware;
-

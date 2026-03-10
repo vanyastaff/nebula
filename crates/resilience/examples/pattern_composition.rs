@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     })
                     .await
-                        .map_err(|failure| failure.error)
+                    .map_err(|failure| failure.error)
             })
             .await;
 

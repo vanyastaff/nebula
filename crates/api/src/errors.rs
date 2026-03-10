@@ -4,9 +4,9 @@
 //! Единая обработка ошибок для всего API.
 
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use nebula_validator::foundation::{ValidationError, ValidationErrors};
 use serde::{Deserialize, Serialize};
@@ -18,21 +18,21 @@ pub struct ProblemDetails {
     /// URI reference identifying the problem type
     #[serde(rename = "type")]
     pub type_uri: String,
-    
+
     /// Short human-readable summary
     pub title: String,
-    
+
     /// HTTP status code
     pub status: u16,
-    
+
     /// Human-readable explanation specific to this occurrence
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    
+
     /// URI reference identifying the specific occurrence
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance: Option<String>,
-    
+
     /// Additional extension members
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<serde_json::Value>,
@@ -66,19 +66,19 @@ impl ProblemDetails {
             errors: None,
         }
     }
-    
+
     /// Add detail message
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
         self
     }
-    
+
     /// Add instance URI
     pub fn with_instance(mut self, instance: impl Into<String>) -> Self {
         self.instance = Some(instance.into());
         self
     }
-    
+
     /// Add extension data
     pub fn with_extensions(mut self, extensions: serde_json::Value) -> Self {
         self.extensions = Some(extensions);
@@ -103,43 +103,43 @@ pub enum ApiError {
         /// Field-level validation details with code and JSON pointer.
         errors: Vec<ValidationFieldError>,
     },
-    
+
     /// Authentication error (401)
     #[error("Authentication failed: {0}")]
     Unauthorized(String),
-    
+
     /// Authorization error (403)
     #[error("Forbidden: {0}")]
     Forbidden(String),
-    
+
     /// Not found (404)
     #[error("Not found: {0}")]
     NotFound(String),
-    
+
     /// Conflict (409)
     #[error("Conflict: {0}")]
     Conflict(String),
-    
+
     /// Rate limit exceeded (429)
     #[error("Rate limit exceeded")]
     RateLimitExceeded,
-    
+
     /// Internal server error (500)
     #[error("Internal server error: {0}")]
     Internal(String),
-    
+
     /// Service unavailable (503)
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
-    
+
     /// Storage error
     #[error("Storage error: {0}")]
     Storage(#[from] nebula_storage::StorageError),
-    
+
     /// Workflow repository error
     #[error("Workflow repository error: {0}")]
     WorkflowRepo(#[from] nebula_storage::WorkflowRepoError),
-    
+
     /// Execution repository error
     #[error("Execution repository error: {0}")]
     ExecutionRepo(#[from] nebula_storage::ExecutionRepoError),
@@ -296,7 +296,7 @@ impl ApiError {
                         StatusCode::INTERNAL_SERVER_ERROR,
                     ),
                 )
-            },
+            }
             ApiError::ServiceUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 ProblemDetails::new(
@@ -316,7 +316,7 @@ impl ApiError {
                         StatusCode::INTERNAL_SERVER_ERROR,
                     ),
                 )
-            },
+            }
             ApiError::WorkflowRepo(err) => {
                 tracing::error!("Workflow repository error: {}", err);
                 (
@@ -327,7 +327,7 @@ impl ApiError {
                         StatusCode::INTERNAL_SERVER_ERROR,
                     ),
                 )
-            },
+            }
             ApiError::ExecutionRepo(err) => {
                 tracing::error!("Execution repository error: {}", err);
                 (
@@ -338,7 +338,7 @@ impl ApiError {
                         StatusCode::INTERNAL_SERVER_ERROR,
                     ),
                 )
-            },
+            }
         }
     }
 }
@@ -346,14 +346,14 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, problem) = self.to_problem_details();
-        
+
         // Log error
         tracing::error!(
             error = ?self,
             status = status.as_u16(),
             "API error occurred"
         );
-        
+
         // RFC 9457: Content-Type MUST be application/problem+json
         let mut response = (status, Json(problem)).into_response();
         response.headers_mut().insert(
@@ -388,9 +388,10 @@ mod tests {
 
     #[test]
     fn nested_validation_error_conversion_keeps_nested_entries() {
-        let err = ValidationError::new("object_invalid", "Object validation failed").with_nested(
-            vec![ValidationError::new("required", "Field is required").with_pointer("/email")],
-        );
+        let err =
+            ValidationError::new("object_invalid", "Object validation failed").with_nested(vec![
+                ValidationError::new("required", "Field is required").with_pointer("/email"),
+            ]);
 
         let api_error = ApiError::from(err);
         let (status, problem) = api_error.to_problem_details();
@@ -398,7 +399,10 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let errors = problem.errors.expect("validation errors must be present");
         assert!(errors.iter().any(|e| e.code == "object_invalid"));
-        assert!(errors.iter().any(|e| e.code == "required" && e.pointer == "/email"));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == "required" && e.pointer == "/email")
+        );
     }
 }
-

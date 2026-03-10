@@ -22,8 +22,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{
-    core::CancellationContext,
     ResilienceError, ResilienceResult,
+    core::CancellationContext,
     manager::RetryableOperation,
     patterns::{bulkhead::Bulkhead, circuit_breaker::CircuitBreaker, timeout::timeout},
     policy::RetryPolicyConfig,
@@ -173,13 +173,13 @@ impl<T: Send + 'static> ResilienceLayer<T> for TimeoutLayer {
             self.duration,
             next.execute_with_cancellation(operation, cancellation),
         )
-            .await
-            .unwrap_or_else(|_| {
-                Err(ResilienceError::Timeout {
-                    duration: self.duration,
-                    context: Some("Layer timeout".to_string()),
-                })
+        .await
+        .unwrap_or_else(|_| {
+            Err(ResilienceError::Timeout {
+                duration: self.duration,
+                context: Some("Layer timeout".to_string()),
             })
+        })
     }
 
     fn name(&self) -> &'static str {
@@ -215,7 +215,9 @@ impl<T: Send + 'static> ResilienceLayer<T> for RetryLayer {
                 return Err(cancelled_error(ctx));
             }
 
-            let result = next.execute_with_cancellation(operation, cancellation).await;
+            let result = next
+                .execute_with_cancellation(operation, cancellation)
+                .await;
 
             match result {
                 Ok(value) => return Ok(value),
@@ -312,7 +314,8 @@ impl<T: Send + 'static> ResilienceLayer<T> for BulkheadLayer {
         cancellation: Option<&CancellationContext>,
     ) -> ResilienceResult<T> {
         let _permit = self.bulkhead.acquire().await?;
-        next.execute_with_cancellation(operation, cancellation).await
+        next.execute_with_cancellation(operation, cancellation)
+            .await
     }
 
     fn name(&self) -> &'static str {

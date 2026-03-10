@@ -7,10 +7,10 @@ use serde::{Deserialize, Serialize};
 pub struct HealthResponse {
     /// Service status
     pub status: String,
-    
+
     /// Version
     pub version: String,
-    
+
     /// Timestamp
     pub timestamp: i64,
 }
@@ -20,7 +20,7 @@ pub struct HealthResponse {
 pub struct ReadinessResponse {
     /// Ready status
     pub ready: bool,
-    
+
     /// Dependencies status
     pub dependencies: DependenciesStatus,
 }
@@ -30,9 +30,8 @@ pub struct ReadinessResponse {
 pub struct DependenciesStatus {
     /// Database status
     pub database: bool,
-    
+
     /// Cache status (if applicable)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache: Option<bool>,
 }
-

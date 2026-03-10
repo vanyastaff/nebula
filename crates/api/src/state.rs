@@ -12,13 +12,12 @@ use std::sync::Arc;
 pub struct AppState {
     /// Configuration
     pub config: Arc<Config>,
-    
+
     /// Workflow Repository (port/trait)
     pub workflow_repo: Arc<dyn WorkflowRepo>,
-    
+
     /// Execution Repository (port/trait)
     pub execution_repo: Arc<dyn ExecutionRepo>,
-    
     // TODO: Добавить другие порты по мере необходимости:
     // pub task_queue: Arc<dyn TaskQueue>,
     // pub credential_store: Arc<dyn CredentialStore>,
@@ -38,5 +37,3 @@ impl AppState {
         }
     }
 }
-
-

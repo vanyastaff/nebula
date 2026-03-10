@@ -10,7 +10,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use nebula_core::{CredentialId, CredentialKey, ResourceKey};
 use nebula_credential::prelude::{CredentialManager, MockStorageProvider};
 use nebula_credential::protocols::HeaderAuthState;
@@ -35,7 +34,6 @@ use std::sync::Arc;
 
 struct TestCred;
 
-#[async_trait]
 impl CredentialType for TestCred {
     type Input = ();
     type State = HeaderAuthState;

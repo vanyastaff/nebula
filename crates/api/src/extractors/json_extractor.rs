@@ -4,8 +4,8 @@
 
 use crate::errors::ApiError;
 use axum::{
-    extract::{FromRequest, Request},
     Json,
+    extract::{FromRequest, Request},
 };
 use nebula_validator::foundation::Validate as NebulaValidate;
 use serde::de::DeserializeOwned;
@@ -30,5 +30,3 @@ where
         Ok(ValidatedJson(value))
     }
 }
-
-

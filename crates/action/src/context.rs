@@ -17,7 +17,7 @@ use crate::capability::{
     default_resource_accessor, default_trigger_scheduler,
 };
 use crate::error::ActionError;
-use nebula_credential::core::SecretString;
+use nebula_credential::core::CredentialSnapshot;
 
 /// Base trait for action execution contexts.
 ///
@@ -122,8 +122,8 @@ impl ActionContext {
         self.resources.exists(key).await
     }
 
-    /// Retrieve a credential secret by id through the configured accessor.
-    pub async fn credential(&self, id: &str) -> Result<SecretString, ActionError> {
+    /// Retrieve a credential snapshot by id through the configured accessor.
+    pub async fn credential(&self, id: &str) -> Result<CredentialSnapshot, ActionError> {
         self.credentials.get(id).await
     }
 
@@ -230,8 +230,8 @@ impl TriggerContext {
         self.emitter.emit(input).await
     }
 
-    /// Retrieve a credential secret by id through the configured accessor.
-    pub async fn credential(&self, id: &str) -> Result<SecretString, ActionError> {
+    /// Retrieve a credential snapshot by id through the configured accessor.
+    pub async fn credential(&self, id: &str) -> Result<CredentialSnapshot, ActionError> {
         self.credentials.get(id).await
     }
 
@@ -261,7 +261,8 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use nebula_credential::core::SecretString;
+    use nebula_credential::core::CredentialMetadata;
+    use nebula_credential::core::CredentialSnapshot;
 
     use crate::capability::{ActionLogLevel, ActionLogger, ExecutionEmitter, TriggerScheduler};
 
@@ -333,8 +334,12 @@ mod tests {
 
     #[async_trait]
     impl CredentialAccessor for TestCredentialAccessor {
-        async fn get(&self, _id: &str) -> Result<SecretString, ActionError> {
-            Ok(SecretString::new("token"))
+        async fn get(&self, _id: &str) -> Result<CredentialSnapshot, ActionError> {
+            Ok(CredentialSnapshot {
+                kind: "api_key".to_string(),
+                state: serde_json::json!({"token": "test-token"}),
+                metadata: CredentialMetadata::new(),
+            })
         }
 
         async fn has(&self, _id: &str) -> bool {

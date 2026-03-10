@@ -3738,6 +3738,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-auth"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "nebula-core",
+ "nebula-parameter",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio-test",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
 name = "nebula-config"
 version = "0.1.0"
 dependencies = [
@@ -3789,6 +3805,7 @@ dependencies = [
  "domain-key",
  "fs2",
  "futures",
+ "hkdf",
  "humantime-serde",
  "k8s-openapi",
  "kube",

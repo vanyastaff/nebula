@@ -6,9 +6,9 @@ use crate::{
     state::AppState,
 };
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
 
 /// List executions for a workflow
@@ -57,4 +57,3 @@ pub async fn cancel_execution(
     // TODO: Implement via execution_repo.cancel()
     Err(ApiError::NotFound(format!("Execution {} not found", id)))
 }
-

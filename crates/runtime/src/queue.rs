@@ -2,13 +2,13 @@
 //!
 //! Used to distribute work to workers; at-least-once delivery with ack/nack.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use thiserror::Error;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 use std::collections::HashMap;
 
@@ -106,9 +106,9 @@ impl TaskQueue for MemoryQueue {
             id: id.clone(),
             payload,
         };
-        self.sender.try_send(item).map_err(|e| {
-            QueueError::Internal(format!("queue full or closed: {e}"))
-        })?;
+        self.sender
+            .try_send(item)
+            .map_err(|e| QueueError::Internal(format!("queue full or closed: {e}")))?;
         self.queued_count.fetch_add(1, Ordering::Relaxed);
         Ok(id)
     }
@@ -144,9 +144,9 @@ impl TaskQueue for MemoryQueue {
         let item = self.in_flight.lock().await.remove(task_id);
         match item {
             Some(item) => {
-                self.sender.try_send(item).map_err(|e| {
-                    QueueError::Internal(format!("requeue failed: {e}"))
-                })?;
+                self.sender
+                    .try_send(item)
+                    .map_err(|e| QueueError::Internal(format!("requeue failed: {e}")))?;
                 self.queued_count.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use nebula_core::id::ExecutionId;
-use nebula_credential::core::SecretString;
+use nebula_credential::core::CredentialSnapshot;
 
 use crate::ActionError;
 
@@ -29,8 +29,8 @@ pub trait ResourceAccessor: Send + Sync {
 /// Object-safe credential accessor injected into [`crate::ActionContext`].
 #[async_trait]
 pub trait CredentialAccessor: Send + Sync {
-    /// Retrieve credential secret by id.
-    async fn get(&self, id: &str) -> Result<SecretString, ActionError>;
+    /// Retrieve a credential snapshot by id.
+    async fn get(&self, id: &str) -> Result<CredentialSnapshot, ActionError>;
 
     /// Check whether a credential exists for the given id.
     async fn has(&self, id: &str) -> bool;
@@ -128,7 +128,7 @@ pub struct NoopCredentialAccessor;
 
 #[async_trait]
 impl CredentialAccessor for NoopCredentialAccessor {
-    async fn get(&self, _id: &str) -> Result<SecretString, ActionError> {
+    async fn get(&self, _id: &str) -> Result<CredentialSnapshot, ActionError> {
         Err(ActionError::fatal(
             "credential capability is not configured in ActionContext",
         ))

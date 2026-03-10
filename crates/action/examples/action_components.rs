@@ -1,6 +1,5 @@
 //! Example demonstrating ActionComponents for declaring action dependencies.
 
-use async_trait::async_trait;
 use nebula_action::ActionComponents;
 use nebula_core::ResourceKey;
 use nebula_credential::CredentialRef;
@@ -17,7 +16,6 @@ use nebula_resource::resource::Resource;
 struct GithubToken;
 struct SlackWebhook;
 
-#[async_trait]
 impl CredentialType for GithubToken {
     type Input = ();
     type State = nebula_credential::protocols::ApiKeyState;
@@ -39,7 +37,6 @@ impl CredentialType for GithubToken {
     }
 }
 
-#[async_trait]
 impl CredentialType for SlackWebhook {
     type Input = ();
     type State = nebula_credential::protocols::ApiKeyState;
