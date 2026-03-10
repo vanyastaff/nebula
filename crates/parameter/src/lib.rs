@@ -21,7 +21,7 @@
 //! - [`Schema`] — Canonical v2 parameter schema
 //! - [`Field`] — Canonical v2 schema field (all 16 variants)
 //! - [`ParameterValues`] — Runtime key-value map with typed accessors
-//! - [`providers::ProviderRegistry`] — Dynamic provider registry
+//! - [`loader::OptionLoader`] / [`loader::RecordLoader`] — Inline async loaders
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -45,8 +45,6 @@ pub mod normalize;
 pub mod option;
 /// Validation profile selection.
 pub mod profile;
-/// Dynamic provider contracts and registry.
-pub mod providers;
 /// Validation output report.
 pub mod report;
 /// Declarative validation rules.
@@ -70,10 +68,6 @@ pub use loader::{LoaderCtx, OptionLoader, RecordLoader};
 pub use metadata::FieldMetadata;
 pub use option::{OptionSource, SelectOption};
 pub use profile::ValidationProfile;
-pub use providers::{
-    DynamicProviderEnvelope, DynamicRecordProvider, DynamicResponseKind, OptionProvider,
-    ProviderError, ProviderRegistry,
-};
 pub use report::ValidationReport;
 pub use rules::Rule;
 pub use runtime::{ModeValueRef, ParameterValue, ParameterValues, ValidatedValues};
@@ -94,10 +88,6 @@ pub mod prelude {
     pub use crate::metadata::FieldMetadata;
     pub use crate::option::{OptionSource, SelectOption};
     pub use crate::profile::ValidationProfile;
-    pub use crate::providers::{
-        DynamicProviderEnvelope, DynamicRecordProvider, DynamicResponseKind, OptionProvider,
-        ProviderError, ProviderRegistry,
-    };
     pub use crate::report::ValidationReport;
     pub use crate::rules::Rule;
     pub use crate::runtime::{ModeValueRef, ParameterValue, ParameterValues, ValidatedValues};

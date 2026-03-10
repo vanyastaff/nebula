@@ -173,9 +173,7 @@ fn validate_field_value(
             allow_custom,
             ..
         } => {
-            if !allow_custom
-                && let OptionSource::Static { options } = source
-            {
+            if !allow_custom && let OptionSource::Static { options } = source {
                 if *multiple {
                     let Some(items) = value.as_array() else {
                         errors.push(ParameterError::InvalidType {
@@ -428,8 +426,7 @@ fn apply_rules(
             }
             Rule::MinItems { min, message } => {
                 if let Some(items) = value.as_array()
-                    && let Err(err) =
-                        min_size::<serde_json::Value>(*min).validate(items.as_slice())
+                    && let Err(err) = min_size::<serde_json::Value>(*min).validate(items.as_slice())
                 {
                     errors.push(make_rule_issue(
                         path,
@@ -441,8 +438,7 @@ fn apply_rules(
             }
             Rule::MaxItems { max, message } => {
                 if let Some(items) = value.as_array()
-                    && let Err(err) =
-                        max_size::<serde_json::Value>(*max).validate(items.as_slice())
+                    && let Err(err) = max_size::<serde_json::Value>(*max).validate(items.as_slice())
                 {
                     errors.push(make_rule_issue(
                         path,

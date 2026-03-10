@@ -69,8 +69,7 @@ pub enum Field {
         searchable: bool,
         /// Inline option loader; skipped during serialization.
         ///
-        /// When set, the engine calls this function instead of (or before)
-        /// consulting a global [`crate::providers::ProviderRegistry`].
+        /// When set, the engine calls this async loader to resolve options.
         #[serde(skip)]
         loader: Option<OptionLoader>,
     },
@@ -403,17 +402,18 @@ impl Field {
 
     // -- Loader setters ------------------------------------------------------
 
-    /// Attaches an inline option loader to a [`Field::Select`] variant.
+    /// Attaches an async inline option loader to a [`Field::Select`] variant.
+    ///
+    /// The closure receives a [`crate::loader::LoaderCtx`] by value and must
+    /// return a future that resolves to a `Vec<SelectOption>`.
     ///
     /// Panics if called on a non-`Select` variant.
     #[must_use]
-    pub fn with_option_loader(
-        mut self,
-        f: impl Fn(&crate::loader::LoaderCtx) -> Vec<crate::option::SelectOption>
-        + Send
-        + Sync
-        + 'static,
-    ) -> Self {
+    pub fn with_option_loader<F, Fut>(mut self, f: F) -> Self
+    where
+        F: Fn(crate::loader::LoaderCtx) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Vec<crate::option::SelectOption>> + Send + 'static,
+    {
         if let Self::Select { loader, .. } = &mut self {
             *loader = Some(OptionLoader::new(f));
         } else {
@@ -422,19 +422,49 @@ impl Field {
         self
     }
 
-    /// Attaches an inline record loader to a [`Field::DynamicRecord`] variant.
+    /// Attaches an async inline record loader to a [`Field::DynamicRecord`] variant.
+    ///
+    /// The closure receives a [`crate::loader::LoaderCtx`] by value and must
+    /// return a future that resolves to a `Vec<FieldSpec>`.
     ///
     /// Panics if called on a non-`DynamicRecord` variant.
     #[must_use]
-    pub fn with_record_loader(
-        mut self,
-        f: impl Fn(&crate::loader::LoaderCtx) -> Vec<FieldSpec> + Send + Sync + 'static,
-    ) -> Self {
+    pub fn with_record_loader<F, Fut>(mut self, f: F) -> Self
+    where
+        F: Fn(crate::loader::LoaderCtx) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Vec<FieldSpec>> + Send + 'static,
+    {
         if let Self::DynamicRecord { loader, .. } = &mut self {
             *loader = Some(RecordLoader::new(f));
         } else {
             panic!("with_record_loader called on a non-DynamicRecord Field variant");
         }
         self
+    }
+
+    // -- Loader accessors ----------------------------------------------------
+
+    /// Returns a reference to the attached [`OptionLoader`], if any.
+    ///
+    /// Returns `Some` only when `self` is a [`Field::Select`] variant with a
+    /// loader attached.
+    pub fn option_loader(&self) -> Option<&OptionLoader> {
+        if let Self::Select { loader, .. } = self {
+            loader.as_ref()
+        } else {
+            None
+        }
+    }
+
+    /// Returns a reference to the attached [`RecordLoader`], if any.
+    ///
+    /// Returns `Some` only when `self` is a [`Field::DynamicRecord`] variant
+    /// with a loader attached.
+    pub fn record_loader(&self) -> Option<&RecordLoader> {
+        if let Self::DynamicRecord { loader, .. } = self {
+            loader.as_ref()
+        } else {
+            None
+        }
     }
 }

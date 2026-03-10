@@ -43,11 +43,7 @@ pub fn lint_schema(schema: &Schema) -> Vec<LintDiagnostic> {
     diagnostics
 }
 
-fn lint_field(
-    field: &Field,
-    seen_ids: &mut Vec<String>,
-    diagnostics: &mut Vec<LintDiagnostic>,
-) {
+fn lint_field(field: &Field, seen_ids: &mut Vec<String>, diagnostics: &mut Vec<LintDiagnostic>) {
     let id = &field.meta().id;
 
     // Duplicate id check.
@@ -117,9 +113,7 @@ fn lint_rules(path: &str, rules: &[Rule], diagnostics: &mut Vec<LintDiagnostic>)
         diagnostics.push(LintDiagnostic {
             path: path.to_owned(),
             level: LintLevel::Error,
-            message: format!(
-                "contradictory rules: min_length ({min}) > max_length ({max})"
-            ),
+            message: format!("contradictory rules: min_length ({min}) > max_length ({max})"),
         });
     }
 
@@ -144,9 +138,7 @@ fn lint_rules(path: &str, rules: &[Rule], diagnostics: &mut Vec<LintDiagnostic>)
         diagnostics.push(LintDiagnostic {
             path: path.to_owned(),
             level: LintLevel::Error,
-            message: format!(
-                "contradictory rules: min_items ({min}) > max_items ({max})"
-            ),
+            message: format!("contradictory rules: min_items ({min}) > max_items ({max})"),
         });
     }
 }
@@ -164,9 +156,11 @@ mod tests {
             .field(Field::text("name").with_label("Name Dup"));
 
         let diagnostics = lint_schema(&schema);
-        assert!(diagnostics
-            .iter()
-            .any(|d| d.level == LintLevel::Error && d.message.contains("duplicate")));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.level == LintLevel::Error && d.message.contains("duplicate"))
+        );
     }
 
     #[test]
@@ -175,14 +169,22 @@ mod tests {
 
         let field = Field::text("title")
             .with_label("Title")
-            .with_rule(Rule::MinLength { min: 10, message: None })
-            .with_rule(Rule::MaxLength { max: 5, message: None });
+            .with_rule(Rule::MinLength {
+                min: 10,
+                message: None,
+            })
+            .with_rule(Rule::MaxLength {
+                max: 5,
+                message: None,
+            });
 
         let schema = Schema::new().field(field);
         let diagnostics = lint_schema(&schema);
-        assert!(diagnostics
-            .iter()
-            .any(|d| d.level == LintLevel::Error && d.message.contains("min_length")));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.level == LintLevel::Error && d.message.contains("min_length"))
+        );
     }
 
     #[test]

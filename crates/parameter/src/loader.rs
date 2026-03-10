@@ -1,17 +1,22 @@
 //! Dynamic loader types for select and dynamic-record fields.
 //!
-//! A loader is a plain function attached directly to the field that produced it.
+//! A loader is an async function attached directly to the field that produced it.
 //! The engine resolves credentials and injects them via [`LoaderCtx`], then
 //! calls the loader to populate options or field specs at runtime.
 //!
 //! Loaders are **not serialized** — they live only on the in-process
 //! [`crate::field::Field`] value returned by `action.metadata()`.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::option::SelectOption;
 use crate::runtime::ParameterValues;
 use crate::spec::FieldSpec;
+
+/// Boxed future returned by loader closures.
+pub type LoaderFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 // ── LoaderCtx ────────────────────────────────────────────────────────────────
 
@@ -35,22 +40,27 @@ pub struct LoaderCtx {
 
 // ── OptionLoader ─────────────────────────────────────────────────────────────
 
-/// Inline loader that resolves [`SelectOption`]s for a [`crate::field::Field::Select`]
-/// or [`FieldSpec::Select`] field with [`crate::option::OptionSource::Dynamic`].
+/// Async inline loader that resolves [`SelectOption`]s for a
+/// [`crate::field::Field::Select`] or [`FieldSpec::Select`] field with a
+/// [`crate::option::OptionSource::Dynamic`] source.
 ///
 /// Two [`OptionLoader`]s always compare equal (`PartialEq` returns `true`),
 /// so adding a loader does not affect schema equality checks.
-pub struct OptionLoader(pub Arc<dyn Fn(&LoaderCtx) -> Vec<SelectOption> + Send + Sync>);
+pub struct OptionLoader(Arc<dyn Fn(LoaderCtx) -> LoaderFuture<Vec<SelectOption>> + Send + Sync>);
 
 impl OptionLoader {
-    /// Wraps a closure as an [`OptionLoader`].
-    pub fn new(f: impl Fn(&LoaderCtx) -> Vec<SelectOption> + Send + Sync + 'static) -> Self {
-        Self(Arc::new(f))
+    /// Wraps an async closure as an [`OptionLoader`].
+    pub fn new<F, Fut>(f: F) -> Self
+    where
+        F: Fn(LoaderCtx) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Vec<SelectOption>> + Send + 'static,
+    {
+        Self(Arc::new(move |ctx| Box::pin(f(ctx))))
     }
 
     /// Invokes the loader with the given context.
-    pub fn call(&self, ctx: &LoaderCtx) -> Vec<SelectOption> {
-        (self.0)(ctx)
+    pub async fn call(&self, ctx: LoaderCtx) -> Vec<SelectOption> {
+        (self.0)(ctx).await
     }
 }
 
@@ -69,27 +79,31 @@ impl PartialEq for OptionLoader {
 
 impl std::fmt::Debug for OptionLoader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("OptionLoader(<fn>)")
+        f.write_str("OptionLoader(<async fn>)")
     }
 }
 
 // ── RecordLoader ─────────────────────────────────────────────────────────────
 
-/// Inline loader that resolves [`FieldSpec`]s for a
+/// Async inline loader that resolves [`FieldSpec`]s for a
 /// [`crate::field::Field::DynamicRecord`] field.
 ///
 /// Like [`OptionLoader`], two [`RecordLoader`]s always compare equal.
-pub struct RecordLoader(pub Arc<dyn Fn(&LoaderCtx) -> Vec<FieldSpec> + Send + Sync>);
+pub struct RecordLoader(Arc<dyn Fn(LoaderCtx) -> LoaderFuture<Vec<FieldSpec>> + Send + Sync>);
 
 impl RecordLoader {
-    /// Wraps a closure as a [`RecordLoader`].
-    pub fn new(f: impl Fn(&LoaderCtx) -> Vec<FieldSpec> + Send + Sync + 'static) -> Self {
-        Self(Arc::new(f))
+    /// Wraps an async closure as a [`RecordLoader`].
+    pub fn new<F, Fut>(f: F) -> Self
+    where
+        F: Fn(LoaderCtx) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Vec<FieldSpec>> + Send + 'static,
+    {
+        Self(Arc::new(move |ctx| Box::pin(f(ctx))))
     }
 
     /// Invokes the loader with the given context.
-    pub fn call(&self, ctx: &LoaderCtx) -> Vec<FieldSpec> {
-        (self.0)(ctx)
+    pub async fn call(&self, ctx: LoaderCtx) -> Vec<FieldSpec> {
+        (self.0)(ctx).await
     }
 }
 
@@ -108,6 +122,6 @@ impl PartialEq for RecordLoader {
 
 impl std::fmt::Debug for RecordLoader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("RecordLoader(<fn>)")
+        f.write_str("RecordLoader(<async fn>)")
     }
 }

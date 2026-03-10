@@ -51,9 +51,21 @@ fn field_without_default_remains_absent() {
 #[test]
 fn multiple_defaults_all_applied() {
     let schema = Schema::new()
-        .field(Field::text("host").with_label("Host").with_default(json!("localhost")))
-        .field(Field::integer("port").with_label("Port").with_default(json!(5432)))
-        .field(Field::boolean("ssl").with_label("SSL").with_default(json!(false)));
+        .field(
+            Field::text("host")
+                .with_label("Host")
+                .with_default(json!("localhost")),
+        )
+        .field(
+            Field::integer("port")
+                .with_label("Port")
+                .with_default(json!(5432)),
+        )
+        .field(
+            Field::boolean("ssl")
+                .with_label("SSL")
+                .with_default(json!(false)),
+        );
 
     let normalized = schema.normalize_values(&make_values(&[]));
 
@@ -65,8 +77,16 @@ fn multiple_defaults_all_applied() {
 #[test]
 fn partial_values_only_missing_fields_get_defaults() {
     let schema = Schema::new()
-        .field(Field::text("host").with_label("Host").with_default(json!("localhost")))
-        .field(Field::integer("port").with_label("Port").with_default(json!(5432)));
+        .field(
+            Field::text("host")
+                .with_label("Host")
+                .with_default(json!("localhost")),
+        )
+        .field(
+            Field::integer("port")
+                .with_label("Port")
+                .with_default(json!(5432)),
+        );
 
     // user already provided host
     let normalized = schema.normalize_values(&make_values(&[("host", json!("db.example.com"))]));
@@ -99,7 +119,9 @@ fn mode_default_variant_key_is_injected_when_absent() {
     });
 
     let normalized = schema.normalize_values(&make_values(&[]));
-    let auth = normalized.get("auth").expect("auth field should be present");
+    let auth = normalized
+        .get("auth")
+        .expect("auth field should be present");
     assert_eq!(auth.get("mode").and_then(|v| v.as_str()), Some("none"));
 }
 

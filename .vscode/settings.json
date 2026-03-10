@@ -1,0 +1,20 @@
+{
+    "chat.mcp.serverSampling": {
+        "nebula/.vscode/mcp.json: sequential-thinking": {
+            "allowedModels": [
+                "copilotcli/claude-sonnet-4.6",
+                "copilot/gpt-5.3-codex",
+                "copilotcli/claude-opus-4.5",
+                "copilot/claude-opus-4.5",
+                "copilotcli/claude-opus-4.6",
+                "claude-code/claude-opus-4.6",
+                "copilotcli/claude-opus-4.6-fast",
+                "claude-code/claude-opus-4.6-fast",
+                "copilot/claude-opus-4.6-fast",
+                "copilotcli/claude-sonnet-4.5",
+                "claude-code/claude-sonnet-4.5",
+                "copilot/claude-sonnet-4.5"
+            ]
+        }
+    }
+}

@@ -3,7 +3,7 @@
 //! Covers: clean schemas, duplicate field ids, contradictory rules,
 //! nested field lint, empty ids.
 
-use nebula_parameter::lint::{lint_schema, LintLevel};
+use nebula_parameter::lint::{LintLevel, lint_schema};
 use nebula_parameter::{Field, FieldMetadata, Rule, Schema};
 
 // ── Clean schemas ────────────────────────────────────────────────────────────
@@ -33,7 +33,9 @@ fn duplicate_top_level_id_is_error() {
 
     let diags = lint_schema(&schema);
     assert!(
-        diags.iter().any(|d| d.level == LintLevel::Error && d.path == "name"),
+        diags
+            .iter()
+            .any(|d| d.level == LintLevel::Error && d.path == "name"),
         "expected duplicate-id error for 'name', got: {diags:?}"
     );
 }
@@ -50,7 +52,11 @@ fn three_fields_two_duplicates_reports_two_errors() {
         .iter()
         .filter(|d| d.level == LintLevel::Error && d.path == "x")
         .collect();
-    assert_eq!(dup_errors.len(), 2, "second and third occurrence should both be errors");
+    assert_eq!(
+        dup_errors.len(),
+        2,
+        "second and third occurrence should both be errors"
+    );
 }
 
 // ── Empty ids ────────────────────────────────────────────────────────────────
@@ -80,13 +86,21 @@ fn contradictory_min_max_length_is_error() {
     let schema = Schema::new().field(
         Field::text("slug")
             .with_label("Slug")
-            .with_rule(Rule::MinLength { min: 10, message: None })
-            .with_rule(Rule::MaxLength { max: 5, message: None }),
+            .with_rule(Rule::MinLength {
+                min: 10,
+                message: None,
+            })
+            .with_rule(Rule::MaxLength {
+                max: 5,
+                message: None,
+            }),
     );
 
     let diags = lint_schema(&schema);
     assert!(
-        diags.iter().any(|d| d.level == LintLevel::Error && d.path.starts_with("slug")),
+        diags
+            .iter()
+            .any(|d| d.level == LintLevel::Error && d.path.starts_with("slug")),
         "expected contradictory min/max length error, got: {diags:?}"
     );
 }
@@ -96,8 +110,14 @@ fn equal_min_max_length_is_not_contradictory() {
     let schema = Schema::new().field(
         Field::text("pin")
             .with_label("PIN")
-            .with_rule(Rule::MinLength { min: 4, message: None })
-            .with_rule(Rule::MaxLength { max: 4, message: None }),
+            .with_rule(Rule::MinLength {
+                min: 4,
+                message: None,
+            })
+            .with_rule(Rule::MaxLength {
+                max: 4,
+                message: None,
+            }),
     );
 
     let diags = lint_schema(&schema);
@@ -116,13 +136,21 @@ fn contradictory_min_max_items_is_error() {
     let schema = Schema::new().field(
         Field::text("tags")
             .with_label("Tags")
-            .with_rule(Rule::MinItems { min: 5, message: None })
-            .with_rule(Rule::MaxItems { max: 2, message: None }),
+            .with_rule(Rule::MinItems {
+                min: 5,
+                message: None,
+            })
+            .with_rule(Rule::MaxItems {
+                max: 2,
+                message: None,
+            }),
     );
 
     let diags = lint_schema(&schema);
     assert!(
-        diags.iter().any(|d| d.level == LintLevel::Error && d.path.starts_with("tags")),
+        diags
+            .iter()
+            .any(|d| d.level == LintLevel::Error && d.path.starts_with("tags")),
         "expected contradictory min/max items error, got: {diags:?}"
     );
 }
@@ -137,7 +165,10 @@ fn only_problematic_fields_are_flagged() {
         .field(Field::text("dup").with_label("Dup B")); // duplicate
 
     let diags = lint_schema(&schema);
-    assert!(diags.iter().all(|d| d.path == "dup"), "only 'dup' should be flagged");
+    assert!(
+        diags.iter().all(|d| d.path == "dup"),
+        "only 'dup' should be flagged"
+    );
     assert!(
         !diags.iter().any(|d| d.path == "ok_field"),
         "ok_field should be clean"

@@ -144,21 +144,16 @@ pub fn evaluate_condition(condition: &Condition, values: &ParameterValues) -> bo
                     _ => false,
                 }
         }),
-        Condition::Contains { field, value } => {
-            values.get(field).is_some_and(|v| match v {
-                serde_json::Value::String(s) => {
-                    value.as_str().is_some_and(|needle| s.contains(needle))
-                }
-                serde_json::Value::Array(items) => items.contains(value),
-                _ => false,
-            })
-        }
+        Condition::Contains { field, value } => values.get(field).is_some_and(|v| match v {
+            serde_json::Value::String(s) => value.as_str().is_some_and(|needle| s.contains(needle)),
+            serde_json::Value::Array(items) => items.contains(value),
+            _ => false,
+        }),
         Condition::Matches { field, pattern } => values
             .get(field)
             .and_then(serde_json::Value::as_str)
             .is_some_and(|string| {
-                matches_regex(pattern)
-                    .is_ok_and(|validator| validator.validate(string).is_ok())
+                matches_regex(pattern).is_ok_and(|validator| validator.validate(string).is_ok())
             }),
         Condition::In {
             field,
