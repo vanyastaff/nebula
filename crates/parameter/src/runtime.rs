@@ -1,7 +1,7 @@
 //! Runtime-facing types for v2 parameter handling.
 
 pub use crate::error::ParameterError;
-pub use crate::values::{ModeValueRef, ParameterValue, ParameterValues};
+pub use crate::values::{ModeValueRef, FieldValue, ParameterValues};
 
 /// Schema-bound validated values view.
 #[derive(Debug, Clone)]

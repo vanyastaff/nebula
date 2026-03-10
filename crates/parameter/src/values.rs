@@ -10,7 +10,7 @@ pub const EXPRESSION_KEY: &str = "$expr";
 
 /// Typed runtime value model used on top of the JSON wire format.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParameterValue {
+pub enum FieldValue {
     /// Plain JSON literal.
     Literal(serde_json::Value),
     /// Expression-backed value encoded as `{ "$expr": "..." }`.
@@ -24,7 +24,7 @@ pub enum ParameterValue {
     },
 }
 
-impl ParameterValue {
+impl FieldValue {
     /// Parses a typed value from JSON runtime data.
     #[must_use]
     pub fn from_json(value: &serde_json::Value) -> Self {
@@ -137,13 +137,13 @@ impl ParameterValues {
     }
 
     /// Set a typed runtime value for a parameter key.
-    pub fn set_typed(&mut self, key: impl Into<String>, value: ParameterValue) {
+    pub fn set_typed(&mut self, key: impl Into<String>, value: FieldValue) {
         self.values.insert(key.into(), value.into_json());
     }
 
     /// Set an expression-backed value.
     pub fn set_expression(&mut self, key: impl Into<String>, expression: impl Into<String>) {
-        self.set_typed(key, ParameterValue::Expression(expression.into()));
+        self.set_typed(key, FieldValue::Expression(expression.into()));
     }
 
     /// Set a mode selection value.
@@ -155,7 +155,7 @@ impl ParameterValues {
     ) {
         self.set_typed(
             key,
-            ParameterValue::Mode {
+            FieldValue::Mode {
                 mode: mode.into(),
                 value,
             },
@@ -198,8 +198,8 @@ impl ParameterValues {
 
     /// Get a value classified into the typed runtime model.
     #[must_use]
-    pub fn get_typed(&self, key: &str) -> Option<ParameterValue> {
-        self.values.get(key).map(ParameterValue::from_json)
+    pub fn get_typed(&self, key: &str) -> Option<FieldValue> {
+        self.values.get(key).map(FieldValue::from_json)
     }
 
     /// Get an expression body if the value is expression-backed.
@@ -558,7 +558,7 @@ mod tests {
         );
         assert_eq!(
             vals.get_typed("timeout"),
-            Some(ParameterValue::Expression(
+            Some(FieldValue::Expression(
                 "inputs.retries * 1000".to_owned()
             ))
         );
@@ -574,7 +574,7 @@ mod tests {
         assert_eq!(mode.value, Some(&json!({ "token": "abc" })));
         assert_eq!(
             vals.get_typed("auth"),
-            Some(ParameterValue::Mode {
+            Some(FieldValue::Mode {
                 mode: "bearer".to_owned(),
                 value: Some(json!({ "token": "abc" })),
             })
@@ -588,7 +588,7 @@ mod tests {
 
         assert_eq!(
             vals.get_typed("port"),
-            Some(ParameterValue::Literal(json!(8080)))
+            Some(FieldValue::Literal(json!(8080)))
         );
     }
 }
