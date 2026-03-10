@@ -54,16 +54,16 @@
 
 ---
 
-## Phase 4: Ecosystem and DX
+## Phase 4: Ecosystem and DX ✅
 
 **Goal**: Expand usability for downstream consumers and plugin authors.
 
-- [ ] VAL-T018 [P] Document advanced validation patterns for workflow/plugin/sdk consumers
-- [ ] VAL-T019 [P] Evaluate optional schema/policy layer and document findings
-- [ ] VAL-T020 Write macro debugging and authoring guidance for derive validators (→ T018)
-- [ ] VAL-T021 Define stable core vs optional extension boundary and document (→ T018, T019)
+- [x] VAL-T018 [P] Document advanced validation patterns for workflow/plugin/sdk consumers (`PATTERNS.md` — 13 recipes)
+- [x] VAL-T019 [P] Evaluate optional schema/policy layer and document findings (`SCHEMA_EVALUATION.md` — recommend defer)
+- [x] VAL-T020 Write macro debugging and authoring guidance for derive validators (`MACROS.md` — 7 sections)
+- [x] VAL-T021 Define stable core vs optional extension boundary and document (`BOUNDARIES.md` — 3 tiers)
 
-**Checkpoint**: Clear stable core vs optional extension boundaries documented; advanced patterns available.
+**Checkpoint**: Clear stable core vs optional extension boundaries documented; advanced patterns available. ✅
 
 ---
 
@@ -74,7 +74,7 @@
 
 ## Verification (after all phases)
 
-- [ ] `cargo check -p nebula-validator --all-features`
-- [ ] `cargo test -p nebula-validator`
-- [ ] `cargo clippy -p nebula-validator -- -D warnings`
-- [ ] `cargo doc --no-deps -p nebula-validator`
+- [x] `cargo check -p nebula-validator --all-features`
+- [x] `cargo test -p nebula-validator` — 451 tests passing
+- [x] `cargo clippy -p nebula-validator -- -D warnings` — clean
+- [x] `cargo doc --no-deps -p nebula-validator`

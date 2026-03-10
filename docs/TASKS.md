@@ -30,7 +30,7 @@ These are the highest-impact tasks across the entire project right now:
 | [nebula-execution](crates/execution/TASKS.md) | Phase 2 | Phase 1 ✅ | [Tasks](crates/execution/TASKS.md) |
 | [nebula-telemetry](crates/telemetry/TASKS.md) | Phase 2 | Phase 1 ✅ | [Tasks](crates/telemetry/TASKS.md) |
 | [nebula-expression](crates/expression/TASKS.md) | Phase 3 | Phases 1–2 ✅ | [Tasks](crates/expression/TASKS.md) |
-| [nebula-validator](crates/validator/TASKS.md) | Phase 3 | Phases 1–3 ✅ | [Tasks](crates/validator/TASKS.md) |
+| [nebula-validator](crates/validator/TASKS.md) | Complete | Phases 1–4 ✅ | [Tasks](crates/validator/TASKS.md) |
 | [nebula-storage](crates/storage/TASKS.md) | Phase 1 | 🔄 In Progress | [Tasks](crates/storage/TASKS.md) |
 | [nebula-metrics](crates/metrics/TASKS.md) | Phase 4 | Phases 1–3 ✅ | [Tasks](crates/metrics/TASKS.md) |
 | [nebula-workflow](crates/workflow/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/workflow/TASKS.md) |

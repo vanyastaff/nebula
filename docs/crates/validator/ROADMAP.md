@@ -3,12 +3,12 @@
 ## Status Snapshot
 
 - completed:
-  - Phase 1 baseline docs/contracts are in place.
-  - config integration category compatibility baseline is pinned via fixtures.
-- in progress:
-  - Phase 2 governance automation (registry/process hardening).
+  - Phase 1 baseline docs/contracts.
+  - Phase 2 governance automation (error registry, compatibility fixtures, migration policy).
+  - Phase 3 performance hardening (benchmark budgets, bench profiles, threshold policy, cache/error benchmarks).
+  - Phase 4 ecosystem and DX (patterns, schema evaluation, macro guide, stability boundaries).
 - next focus:
-  - enforce machine-readable compatibility checks in CI without slowing local dev loop.
+  - all 4 phases complete. Crate is in maintenance mode — no new phases planned.
 
 ## Phase 1: Contract and Docs Baseline (Completed)
 
@@ -22,7 +22,7 @@
   - docs accepted as single source of truth for current API
   - no stale naming mismatch in public docs
 
-## Phase 2: Compatibility and Governance (In Progress)
+## Phase 2: Compatibility and Governance (Complete)
 
 - deliverables:
   - machine-readable error code/category registry
@@ -35,7 +35,7 @@
   - backward compatibility CI checks in place
   - migration-map checks running for release candidates
 
-## Phase 3: Performance and Capacity Hardening (Planned)
+## Phase 3: Performance and Capacity Hardening (Complete)
 
 - deliverables:
   - benchmark budgets for common validator/combinator chains
@@ -46,16 +46,17 @@
 - exit criteria:
   - benchmark thresholds enforced in CI
 
-## Phase 4: Ecosystem and DX (Planned)
+## Phase 4: Ecosystem and DX (Complete)
 
 - deliverables:
-  - advanced patterns for workflow/plugin/sdk consumers
-  - optional schema/policy layer evaluation
-  - macro debugging and authoring guidance
+  - advanced patterns for workflow/plugin/sdk consumers (`PATTERNS.md`)
+  - optional schema/policy layer evaluation (`SCHEMA_EVALUATION.md` — defer)
+  - macro debugging and authoring guidance (`MACROS.md`)
+  - stable core vs extension boundary (`BOUNDARIES.md`)
 - risks:
   - over-expansion of API surface
 - exit criteria:
-  - clear stable core vs optional extension boundaries
+  - clear stable core vs optional extension boundaries ✅
 
 ## Execution Plan (Next 2 Iterations)
 
