@@ -22,6 +22,19 @@ pub fn load_contract_fixture() -> Vec<FixtureCase> {
     serde_json::from_str(raw).expect("compat fixture JSON must be valid")
 }
 
+pub fn load_named_fixture(name: &str) -> Vec<FixtureCase> {
+    let raw = match name {
+        "boolean" => include_str!("../fixtures/compat/boolean_contract_v1.json"),
+        "pattern" => include_str!("../fixtures/compat/pattern_contract_v1.json"),
+        "network" => include_str!("../fixtures/compat/network_contract_v1.json"),
+        "temporal" => include_str!("../fixtures/compat/temporal_contract_v1.json"),
+        "length" => include_str!("../fixtures/compat/length_contract_v1.json"),
+        "field_path" => include_str!("../fixtures/compat/field_path_contract_v1.json"),
+        other => panic!("unknown fixture: {other}"),
+    };
+    serde_json::from_str(raw).unwrap_or_else(|e| panic!("{name} fixture JSON invalid: {e}"))
+}
+
 pub fn assert_error_contract(
     error: &ValidationError,
     expected_code: Option<&str>,

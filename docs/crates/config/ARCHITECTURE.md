@@ -20,9 +20,8 @@
 | `core/error` | `core/error.rs` | `ConfigError` (15 variants, `#[non_exhaustive]`); `ErrorCategory`; `ContractErrorCategory`; `From` impls |
 | `core/result` | `core/result.rs` | `ConfigResult<T>`; `ConfigResultExt`; `ConfigResultAggregator`; `try_sources` |
 | `loaders/` | `loaders/*.rs` | `FileLoader` (JSON/TOML/YAML/INI/HCL/Properties/env); `EnvLoader`; `CompositeLoader` |
-| `validators/` | `validators/*.rs` | `NoOpValidator`, `FunctionValidator`, `SchemaValidator`, `CompositeValidator` |
 | `watchers/` | `watchers/*.rs` | `FileWatcher` (notify); `PollingWatcher`; `NoOpWatcher`; `ConfigWatchEvent`/`ConfigWatchEventType` |
-| `builders` | `lib.rs` | Convenience factory fns: `from_file`, `from_env`, `standard_app_config`, `with_hot_reload`, `with_schema_validation` |
+| `builders` | `lib.rs` | Convenience factory fns: `from_file`, `from_env`, `standard_app_config`, `with_hot_reload` |
 | `utils` | `lib.rs` | `check_config_file`, `merge_json_values`, `parse_config_string` |
 
 ### Data/Control Flow

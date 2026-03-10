@@ -1,51 +1,270 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "artifact": "validator_error_registry",
   "error_codes": [
     {
       "code": "required",
       "meaning": "missing required value",
-      "stability": "minor_additive"
+      "stability": "stable",
+      "source": "foundation::codes + validators::nullable"
     },
     {
       "code": "min_length",
       "meaning": "string shorter than minimum bound",
-      "stability": "minor_additive"
+      "stability": "stable",
+      "source": "foundation::codes + validators::length::MinLength"
     },
     {
       "code": "max_length",
       "meaning": "string longer than maximum bound",
-      "stability": "minor_additive"
+      "stability": "stable",
+      "source": "foundation::codes + validators::length::MaxLength"
     },
     {
       "code": "invalid_format",
       "meaning": "pattern/content format failure",
-      "stability": "minor_additive"
+      "stability": "stable",
+      "source": "foundation::codes + validators::content"
     },
     {
       "code": "type_mismatch",
       "meaning": "dynamic bridge type conversion mismatch",
-      "stability": "minor_additive"
+      "stability": "stable",
+      "source": "foundation::codes + combinators::json_field"
     },
     {
       "code": "out_of_range",
       "meaning": "numeric range failure",
-      "stability": "minor_additive"
+      "stability": "stable",
+      "source": "foundation::codes + validators::range::InRange"
     },
     {
       "code": "exact_length",
       "meaning": "string length not equal to fixed bound",
-      "stability": "minor_additive"
+      "stability": "stable",
+      "source": "foundation::codes + validators::length::ExactLength"
     },
     {
       "code": "length_range",
       "meaning": "string length outside inclusive range",
-      "stability": "minor_additive"
+      "stability": "stable",
+      "source": "foundation::codes + validators::length::LengthRange"
     },
     {
       "code": "custom",
       "meaning": "user-defined validation error",
-      "stability": "minor_additive"
+      "stability": "stable",
+      "source": "foundation::codes"
+    },
+    {
+      "code": "not_empty",
+      "meaning": "string or collection is empty",
+      "stability": "stable",
+      "source": "validators::length::NotEmpty + validators::size::NotEmptyCollection"
+    },
+    {
+      "code": "invalid_range",
+      "meaning": "invalid constructor arguments (e.g. min > max)",
+      "stability": "stable",
+      "source": "validators::length::LengthRange"
+    },
+    {
+      "code": "is_true",
+      "meaning": "boolean value is not true",
+      "stability": "stable",
+      "source": "validators::boolean::IsTrue"
+    },
+    {
+      "code": "is_false",
+      "meaning": "boolean value is not false",
+      "stability": "stable",
+      "source": "validators::boolean::IsFalse"
+    },
+    {
+      "code": "contains",
+      "meaning": "string does not contain required substring",
+      "stability": "stable",
+      "source": "validators::pattern::Contains"
+    },
+    {
+      "code": "starts_with",
+      "meaning": "string does not start with required prefix",
+      "stability": "stable",
+      "source": "validators::pattern::StartsWith"
+    },
+    {
+      "code": "ends_with",
+      "meaning": "string does not end with required suffix",
+      "stability": "stable",
+      "source": "validators::pattern::EndsWith"
+    },
+    {
+      "code": "alphanumeric",
+      "meaning": "string contains non-alphanumeric characters",
+      "stability": "stable",
+      "source": "validators::pattern::Alphanumeric"
+    },
+    {
+      "code": "alphabetic",
+      "meaning": "string contains non-alphabetic characters",
+      "stability": "stable",
+      "source": "validators::pattern::Alphabetic"
+    },
+    {
+      "code": "numeric",
+      "meaning": "string contains non-numeric characters",
+      "stability": "stable",
+      "source": "validators::pattern::Numeric"
+    },
+    {
+      "code": "lowercase",
+      "meaning": "string contains uppercase characters",
+      "stability": "stable",
+      "source": "validators::pattern::Lowercase"
+    },
+    {
+      "code": "uppercase",
+      "meaning": "string contains lowercase characters",
+      "stability": "stable",
+      "source": "validators::pattern::Uppercase"
+    },
+    {
+      "code": "min",
+      "meaning": "numeric value is less than minimum",
+      "stability": "stable",
+      "source": "validators::range::Min"
+    },
+    {
+      "code": "max",
+      "meaning": "numeric value exceeds maximum",
+      "stability": "stable",
+      "source": "validators::range::Max"
+    },
+    {
+      "code": "greater_than",
+      "meaning": "value not strictly greater than bound",
+      "stability": "stable",
+      "source": "validators::range::GreaterThan"
+    },
+    {
+      "code": "less_than",
+      "meaning": "value not strictly less than bound",
+      "stability": "stable",
+      "source": "validators::range::LessThan"
+    },
+    {
+      "code": "exclusive_range",
+      "meaning": "value outside exclusive range",
+      "stability": "stable",
+      "source": "validators::range::ExclusiveRange"
+    },
+    {
+      "code": "min_size",
+      "meaning": "collection has fewer than minimum elements",
+      "stability": "stable",
+      "source": "validators::size::MinSize"
+    },
+    {
+      "code": "max_size",
+      "meaning": "collection has more than maximum elements",
+      "stability": "stable",
+      "source": "validators::size::MaxSize"
+    },
+    {
+      "code": "exact_size",
+      "meaning": "collection does not have exact element count",
+      "stability": "stable",
+      "source": "validators::size::ExactSize"
+    },
+    {
+      "code": "size_range",
+      "meaning": "collection size outside range",
+      "stability": "stable",
+      "source": "validators::size::SizeRange"
+    },
+    {
+      "code": "ipv4",
+      "meaning": "invalid IPv4 address format",
+      "stability": "stable",
+      "source": "validators::network::Ipv4"
+    },
+    {
+      "code": "ipv6",
+      "meaning": "invalid IPv6 address format",
+      "stability": "stable",
+      "source": "validators::network::Ipv6"
+    },
+    {
+      "code": "ip_addr",
+      "meaning": "invalid IP address (neither v4 nor v6)",
+      "stability": "stable",
+      "source": "validators::network::IpAddr"
+    },
+    {
+      "code": "hostname",
+      "meaning": "invalid hostname per RFC 1123",
+      "stability": "stable",
+      "source": "validators::network::Hostname"
+    },
+    {
+      "code": "date",
+      "meaning": "invalid date format (not YYYY-MM-DD or invalid values)",
+      "stability": "stable",
+      "source": "validators::temporal::Date"
+    },
+    {
+      "code": "time",
+      "meaning": "invalid time format (not HH:MM:SS[.sss])",
+      "stability": "stable",
+      "source": "validators::temporal::Time"
+    },
+    {
+      "code": "datetime",
+      "meaning": "invalid RFC 3339 datetime format",
+      "stability": "stable",
+      "source": "validators::temporal::DateTime"
+    },
+    {
+      "code": "uuid",
+      "meaning": "invalid UUID format",
+      "stability": "stable",
+      "source": "validators::temporal::Uuid"
+    },
+    {
+      "code": "or_failed",
+      "meaning": "both left and right validators in OR combinator failed",
+      "stability": "stable",
+      "source": "combinators::or::Or"
+    },
+    {
+      "code": "or_any_failed",
+      "meaning": "all validators in OR-any collection failed",
+      "stability": "stable",
+      "source": "combinators::or::OrAny"
+    },
+    {
+      "code": "not_failed",
+      "meaning": "NOT combinator: inner validator unexpectedly passed",
+      "stability": "stable",
+      "source": "combinators::not::Not"
+    },
+    {
+      "code": "each_failed",
+      "meaning": "one or more elements in collection failed validation",
+      "stability": "stable",
+      "source": "combinators::each::Each"
+    },
+    {
+      "code": "path_not_found",
+      "meaning": "required JSON pointer path does not exist",
+      "stability": "stable",
+      "source": "combinators::json_field::JsonField"
+    },
+    {
+      "code": "validation_errors",
+      "meaning": "aggregated validation error wrapper",
+      "stability": "stable",
+      "source": "foundation::ValidationErrors::into_single_error"
     }
   ],
   "categories": [

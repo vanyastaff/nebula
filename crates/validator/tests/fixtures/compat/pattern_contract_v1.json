@@ -1,0 +1,98 @@
+[
+  {
+    "id": "pattern-alphanumeric-pass",
+    "scenario": "alphanumeric string passes",
+    "input": "hello123",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "pattern-alphanumeric-fail",
+    "scenario": "string with underscore fails alphanumeric",
+    "input": "hello_world",
+    "expected": { "pass": false, "error_code": "alphanumeric", "field_path": null }
+  },
+  {
+    "id": "pattern-alphabetic-pass",
+    "scenario": "letters-only string passes",
+    "input": "hello",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "pattern-alphabetic-fail",
+    "scenario": "string with digits fails alphabetic",
+    "input": "hello123",
+    "expected": { "pass": false, "error_code": "alphabetic", "field_path": null }
+  },
+  {
+    "id": "pattern-numeric-pass",
+    "scenario": "digits-only string passes",
+    "input": "12345",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "pattern-numeric-fail",
+    "scenario": "string with letters fails numeric",
+    "input": "123abc",
+    "expected": { "pass": false, "error_code": "numeric", "field_path": null }
+  },
+  {
+    "id": "pattern-lowercase-pass",
+    "scenario": "lowercase string passes",
+    "input": "hello",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "pattern-lowercase-fail",
+    "scenario": "mixed case string fails lowercase",
+    "input": "Hello",
+    "expected": { "pass": false, "error_code": "lowercase", "field_path": null }
+  },
+  {
+    "id": "pattern-uppercase-pass",
+    "scenario": "uppercase string passes",
+    "input": "HELLO",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "pattern-uppercase-fail",
+    "scenario": "mixed case string fails uppercase",
+    "input": "Hello",
+    "expected": { "pass": false, "error_code": "uppercase", "field_path": null }
+  },
+  {
+    "id": "pattern-contains-pass",
+    "scenario": "string containing needle passes",
+    "input": "hello world",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "pattern-contains-fail",
+    "scenario": "string without needle fails",
+    "input": "goodbye",
+    "expected": { "pass": false, "error_code": "contains", "field_path": null }
+  },
+  {
+    "id": "pattern-starts-with-pass",
+    "scenario": "string starting with prefix passes",
+    "input": "hello world",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "pattern-starts-with-fail",
+    "scenario": "string not starting with prefix fails",
+    "input": "world hello",
+    "expected": { "pass": false, "error_code": "starts_with", "field_path": null }
+  },
+  {
+    "id": "pattern-ends-with-pass",
+    "scenario": "string ending with suffix passes",
+    "input": "hello world",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "pattern-ends-with-fail",
+    "scenario": "string not ending with suffix fails",
+    "input": "hello",
+    "expected": { "pass": false, "error_code": "ends_with", "field_path": null }
+  }
+]

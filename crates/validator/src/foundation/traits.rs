@@ -43,6 +43,13 @@ use crate::foundation::ValidationError;
 use crate::foundation::validatable::AsValidatable;
 use std::borrow::Borrow;
 
+// Re-use canonical combinator types from the combinators module.
+// This avoids duplicate And/Or/Not/When definitions.
+use crate::combinators::and::And;
+use crate::combinators::not::Not;
+use crate::combinators::or::Or;
+use crate::combinators::when::When;
+
 // ============================================================================
 // CORE VALIDATOR TRAIT
 // ============================================================================
@@ -120,6 +127,41 @@ pub trait Validate<T: ?Sized> {
     {
         let converted = input.as_validatable()?;
         self.validate(converted.borrow())
+    }
+
+    /// Validates an owned value and wraps it in a [`Validated`](crate::proof::Validated)
+    /// proof token on success.
+    ///
+    /// This is the primary way to enter the "validated world": once you hold
+    /// a `Validated<V>`, downstream code can trust the value without
+    /// re-checking it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValidatorError::ValidationFailed`](crate::error::ValidatorError::ValidationFailed)
+    /// if the value does not pass validation.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nebula_validator::foundation::Validate;
+    /// use nebula_validator::proof::Validated;
+    /// use nebula_validator::validators::min_length;
+    ///
+    /// let v = min_length(3);
+    /// let name: Validated<String> = v.validate_into("alice".to_string()).unwrap();
+    /// assert_eq!(name.as_ref(), "alice");
+    /// ```
+    fn validate_into<V>(
+        &self,
+        value: V,
+    ) -> crate::error::ValidatorResult<crate::proof::Validated<V>>
+    where
+        V: Borrow<T>,
+        Self: Sized,
+    {
+        self.validate(value.borrow())?;
+        Ok(crate::proof::Validated::new_unchecked(value))
     }
 }
 
@@ -226,112 +268,6 @@ pub trait ValidateExt<T: ?Sized>: Validate<T> + Sized {
 
 /// Blanket implementation - all validators get combinator methods.
 impl<T: ?Sized, V: Validate<T>> ValidateExt<T> for V {}
-
-// ============================================================================
-// COMBINATOR TYPES
-// ============================================================================
-
-/// AND combinator - both validators must pass.
-#[derive(Debug, Clone, Copy)]
-pub struct And<L, R> {
-    left: L,
-    right: R,
-}
-
-impl<L, R> And<L, R> {
-    pub const fn new(left: L, right: R) -> Self {
-        Self { left, right }
-    }
-}
-
-impl<T: ?Sized, L: Validate<T>, R: Validate<T>> Validate<T> for And<L, R> {
-    #[inline]
-    fn validate(&self, input: &T) -> Result<(), ValidationError> {
-        self.left.validate(input)?;
-        self.right.validate(input)
-    }
-}
-
-/// OR combinator - at least one validator must pass.
-#[derive(Debug, Clone, Copy)]
-pub struct Or<L, R> {
-    left: L,
-    right: R,
-}
-
-impl<L, R> Or<L, R> {
-    pub const fn new(left: L, right: R) -> Self {
-        Self { left, right }
-    }
-}
-
-impl<T: ?Sized, L: Validate<T>, R: Validate<T>> Validate<T> for Or<L, R> {
-    fn validate(&self, input: &T) -> Result<(), ValidationError> {
-        match self.left.validate(input) {
-            Ok(()) => Ok(()),
-            Err(left_err) => match self.right.validate(input) {
-                Ok(()) => Ok(()),
-                Err(right_err) => Err(ValidationError::new(
-                    "or_failed",
-                    "All alternatives failed validation",
-                )
-                .with_nested_error(left_err)
-                .with_nested_error(right_err)),
-            },
-        }
-    }
-}
-
-/// NOT combinator - inverts validation result.
-#[derive(Debug, Clone, Copy)]
-pub struct Not<V> {
-    inner: V,
-}
-
-impl<V> Not<V> {
-    pub const fn new(inner: V) -> Self {
-        Self { inner }
-    }
-}
-
-impl<T: ?Sized, V: Validate<T>> Validate<T> for Not<V> {
-    fn validate(&self, input: &T) -> Result<(), ValidationError> {
-        match self.inner.validate(input) {
-            Ok(()) => Err(ValidationError::new(
-                "not_failed",
-                "Validation unexpectedly passed",
-            )),
-            Err(_) => Ok(()),
-        }
-    }
-}
-
-/// Conditional validator - only runs when condition is true.
-#[derive(Debug, Clone, Copy)]
-pub struct When<V, C> {
-    validator: V,
-    condition: C,
-}
-
-impl<V, C> When<V, C> {
-    pub const fn new(validator: V, condition: C) -> Self {
-        Self {
-            validator,
-            condition,
-        }
-    }
-}
-
-impl<T: ?Sized, V: Validate<T>, C: Fn(&T) -> bool> Validate<T> for When<V, C> {
-    #[inline]
-    fn validate(&self, input: &T) -> Result<(), ValidationError> {
-        if (self.condition)(input) {
-            self.validator.validate(input)
-        } else {
-            Ok(())
-        }
-    }
-}
 
 // ============================================================================
 // TESTS

@@ -1,7 +1,7 @@
 //! Configuration builder
 
-use super::config::merge_json;
 use super::config::ConfigRuntimeOptions;
+use super::config::merge_json;
 use super::{Config, ConfigError, ConfigResult, ConfigSource};
 use crate::loaders::CompositeLoader;
 #[cfg(feature = "env")]
@@ -372,12 +372,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_with_validator() {
-        use crate::validators::FunctionValidator;
+        struct ClosureValidator<F>(F);
+        #[async_trait::async_trait]
+        impl<F: Fn(&serde_json::Value) -> ConfigResult<()> + Send + Sync> ConfigValidator
+            for ClosureValidator<F>
+        {
+            async fn validate(&self, data: &serde_json::Value) -> ConfigResult<()> {
+                (self.0)(data)
+            }
+        }
 
         // Valid config passes
         let config = ConfigBuilder::new()
             .with_defaults_json(json!({"name": "app"}))
-            .with_validator(Arc::new(FunctionValidator::new(|data| {
+            .with_validator(Arc::new(ClosureValidator(|data: &serde_json::Value| {
                 if data.get("name").is_none() {
                     Err(ConfigError::validation("name required"))
                 } else {
@@ -391,7 +399,7 @@ mod tests {
         // Invalid config fails build
         let result = ConfigBuilder::new()
             .with_defaults_json(json!({"port": 8080}))
-            .with_validator(Arc::new(FunctionValidator::new(|data| {
+            .with_validator(Arc::new(ClosureValidator(|data: &serde_json::Value| {
                 if data.get("name").is_none() {
                     Err(ConfigError::validation("name required"))
                 } else {
@@ -427,7 +435,10 @@ mod tests {
                     if call == 0 {
                         Ok(json!({"ok": true}))
                     } else {
-                        Err(ConfigError::source_error("simulated reload failure", source.name()))
+                        Err(ConfigError::source_error(
+                            "simulated reload failure",
+                            source.name(),
+                        ))
                     }
                 }
                 _ => Err(ConfigError::source_error("unsupported", source.name())),

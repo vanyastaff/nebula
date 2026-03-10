@@ -56,8 +56,16 @@ pub mod validatable;
 pub use any::AnyValidator;
 pub use context::{ContextualValidator, ValidationContext, ValidationContextBuilder};
 pub use error::{ErrorSeverity, ValidationError, ValidationErrors};
-pub use traits::{And, Not, Or, Validatable, Validate, ValidateExt, When};
+pub use traits::{Validatable, Validate, ValidateExt};
 pub use validatable::AsValidatable;
+
+// Re-export combinator types that are part of the foundation API.
+// Canonical definitions live in `crate::combinators`; these re-exports
+// keep the public surface stable.
+pub use crate::combinators::and::And;
+pub use crate::combinators::not::Not;
+pub use crate::combinators::or::Or;
+pub use crate::combinators::when::When;
 
 // ============================================================================
 // PRELUDE

@@ -601,7 +601,6 @@ mod tests {
 }
 
 #[cfg(test)]
-
 mod serde_json_tests {
     use super::*;
     use crate::foundation::Validate;
@@ -640,7 +639,7 @@ mod serde_json_tests {
 
     #[test]
     fn value_float_as_i64_fails() {
-        assert!(AsValidatable::<i64>::as_validatable(&json!(3.14)).is_err());
+        assert!(AsValidatable::<i64>::as_validatable(&json!(2.78)).is_err());
     }
 
     #[test]
@@ -652,8 +651,8 @@ mod serde_json_tests {
 
     #[test]
     fn value_float_as_f64() {
-        let result = AsValidatable::<f64>::as_validatable(&json!(3.14)).unwrap();
-        assert!((result.borrow() - 3.14).abs() < f64::EPSILON);
+        let result = AsValidatable::<f64>::as_validatable(&json!(2.78)).unwrap();
+        assert!((result.borrow() - 2.78).abs() < f64::EPSILON);
     }
 
     #[test]

@@ -1,0 +1,50 @@
+[
+  {
+    "id": "temporal-date-pass",
+    "scenario": "valid ISO date",
+    "input": "2025-06-15",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "temporal-date-fail",
+    "scenario": "invalid date format",
+    "input": "15/06/2025",
+    "expected": { "pass": false, "error_code": "date", "field_path": null }
+  },
+  {
+    "id": "temporal-time-pass",
+    "scenario": "valid time",
+    "input": "14:30:00",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "temporal-time-fail",
+    "scenario": "invalid time format",
+    "input": "25:00:00",
+    "expected": { "pass": false, "error_code": "time", "field_path": null }
+  },
+  {
+    "id": "temporal-datetime-pass",
+    "scenario": "valid RFC 3339 datetime",
+    "input": "2025-06-15T14:30:00Z",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "temporal-datetime-fail",
+    "scenario": "invalid datetime format",
+    "input": "2025-13-45T99:99:99",
+    "expected": { "pass": false, "error_code": "datetime", "field_path": null }
+  },
+  {
+    "id": "temporal-uuid-pass",
+    "scenario": "valid UUID v4",
+    "input": "550e8400-e29b-41d4-a716-446655440000",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "temporal-uuid-fail",
+    "scenario": "invalid UUID",
+    "input": "not-a-uuid",
+    "expected": { "pass": false, "error_code": "uuid", "field_path": null }
+  }
+]

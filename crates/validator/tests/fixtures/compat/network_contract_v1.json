@@ -1,0 +1,56 @@
+[
+  {
+    "id": "network-ipv4-pass",
+    "scenario": "valid IPv4 address",
+    "input": "192.168.1.1",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "network-ipv4-fail",
+    "scenario": "invalid IPv4 address",
+    "input": "999.999.999.999",
+    "expected": { "pass": false, "error_code": "ipv4", "field_path": null }
+  },
+  {
+    "id": "network-ipv6-pass",
+    "scenario": "valid IPv6 address",
+    "input": "::1",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "network-ipv6-fail",
+    "scenario": "invalid IPv6 address",
+    "input": "not-an-ipv6",
+    "expected": { "pass": false, "error_code": "ipv6", "field_path": null }
+  },
+  {
+    "id": "network-hostname-pass",
+    "scenario": "valid hostname",
+    "input": "example.com",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "network-hostname-fail",
+    "scenario": "hostname with invalid chars",
+    "input": "exam ple.com",
+    "expected": { "pass": false, "error_code": "hostname", "field_path": null }
+  },
+  {
+    "id": "network-ipaddr-pass-v4",
+    "scenario": "valid IP address (v4)",
+    "input": "10.0.0.1",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "network-ipaddr-pass-v6",
+    "scenario": "valid IP address (v6)",
+    "input": "fe80::1",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "network-ipaddr-fail",
+    "scenario": "invalid IP address",
+    "input": "not-an-ip",
+    "expected": { "pass": false, "error_code": "ip_addr", "field_path": null }
+  }
+]

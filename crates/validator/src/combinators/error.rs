@@ -40,8 +40,10 @@ pub enum CombinatorError<E: std::error::Error + Clone + 'static = ValidationErro
     /// Contains errors from left and right validators.
     #[error("All validators failed. Left: {left}; Right: {right}")]
     OrAllFailed {
+        /// Error from the left validator.
         #[source]
         left: Box<E>,
+        /// Error from the right validator.
         right: Box<E>,
     },
 
@@ -66,7 +68,9 @@ pub enum CombinatorError<E: std::error::Error + Clone + 'static = ValidationErro
         None => format!("Validation failed for field: {}", error),
     })]
     FieldFailed {
+        /// Name of the field that failed validation.
         field_name: Option<String>,
+        /// The validation error.
         #[source]
         error: Box<E>,
     },
@@ -95,7 +99,12 @@ pub enum CombinatorError<E: std::error::Error + Clone + 'static = ValidationErro
     ///
     /// For cases not covered by other variants.
     #[error("[{code}] {message}")]
-    Custom { code: String, message: String },
+    Custom {
+        /// Error code.
+        code: String,
+        /// Human-readable error message.
+        message: String,
+    },
 }
 
 // ============================================================================

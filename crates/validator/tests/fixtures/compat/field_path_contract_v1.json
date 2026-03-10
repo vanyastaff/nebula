@@ -1,0 +1,32 @@
+[
+  {
+    "id": "field-nested-pass",
+    "scenario": "valid string at nested JSON path",
+    "input": { "user": { "name": "alice" } },
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "field-nested-fail",
+    "scenario": "too-short string at nested JSON path",
+    "input": { "user": { "name": "ab" } },
+    "expected": { "pass": false, "error_code": "min_length", "field_path": "/user/name" }
+  },
+  {
+    "id": "field-missing-required",
+    "scenario": "required path not found",
+    "input": { "user": {} },
+    "expected": { "pass": false, "error_code": "path_not_found", "field_path": "/user/name" }
+  },
+  {
+    "id": "field-root-pass",
+    "scenario": "valid string at top-level path",
+    "input": { "email": "test@example.com" },
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "field-root-fail",
+    "scenario": "empty string at top-level path",
+    "input": { "email": "" },
+    "expected": { "pass": false, "error_code": "not_empty", "field_path": "/email" }
+  }
+]

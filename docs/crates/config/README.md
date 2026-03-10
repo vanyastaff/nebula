@@ -7,9 +7,9 @@ Unified configuration system for Nebula services and runtime components.
 - **In scope:**
   - **core:** `Config`, `ConfigBuilder`, `ConfigSource`, `ConfigFormat`, `SourceMetadata`, `ConfigError`, `ConfigResult`, `ConfigLoader`, `ConfigValidator`, `ConfigWatcher`, `Configurable`, `Validatable`, `AsyncConfigurable`; merge order, path traversal (dot + array index), reload semantics.
   - **loaders:** `FileLoader`, `EnvLoader`, `CompositeLoader` (JSON/TOML/YAML/INI/Properties; env with optional prefix).
-  - **validators:** `NoOpValidator`, `SchemaValidator`, `CompositeValidator`, `FunctionValidator`; blanket `ConfigValidator` for `Validate<Value>` (nebula-validator bridge).
+  - **validators:** blanket `ConfigValidator` for `Validate<Value>` (nebula-validator bridge).
   - **watchers:** `FileWatcher`, `PollingWatcher`, `NoOpWatcher`; `ConfigWatchEvent` / `ConfigWatchEventType`; hot-reload and optional auto-reload loop.
-  - **builders / utils:** `from_file`, `from_env`, `standard_app_config`, `with_hot_reload`, `with_schema_validation`; `check_config_file`, `merge_json_values`, `parse_config_string`.
+  - **builders / utils:** `from_file`, `from_env`, `standard_app_config`, `with_hot_reload`; `check_config_file`, `merge_json_values`, `parse_config_string`.
 - **Out of scope:** Business-domain config semantics of each crate; orchestration/retry policies (owned by runtime/resilience).
 
 ## Current State

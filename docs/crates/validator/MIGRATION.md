@@ -1,5 +1,8 @@
 # Migration
 
+> **Migration authority** for all error‑code and field‑path contract changes.
+> Referenced by `error_registry_v1.json` → `change_policy.migration_authority`.
+
 ## Versioning Policy
 
 - compatibility promise:
@@ -8,6 +11,36 @@
   - major releases may change semantics with explicit migration steps.
 - deprecation window:
   - at least one minor release before removal of deprecated APIs (unless security-critical).
+
+## Error Code Stability
+
+Each error code in `error_registry_v1.json` has a stability level:
+
+| Stability | Meaning |
+|-----------|---------|
+| `stable` | Will not change meaning or be removed in minor releases. |
+| `deprecated` | Scheduled for removal in the next major release. |
+
+### Deprecation Process
+
+1. **Mark** — add `#[deprecated(since = "x.y.z", note = "...")]` to the item.
+2. **Registry** — set `"stability": "deprecated"` in `error_registry_v1.json`.
+3. **Document** — add an entry to the Breaking Change Mapping table below.
+4. **Grace period** — the deprecated item remains for at least one major release cycle.
+5. **Remove** — in the next major release, remove the item and record it in the table.
+
+## Field‑Path Contract
+
+All field paths follow **RFC 6901 JSON Pointer** format:
+
+- Root: empty string
+- Nested: `/parent/child`
+- Array: `/items/0`
+- Special chars: `~0` for `~`, `~1` for `/`
+
+Dot‑notation inputs (e.g. `user.email`) are converted to JSON Pointer (`/user/email`)
+by `ValidationError::with_field()`. The field‑path format for a given
+validator/combinator combination is part of the minor‑release contract.
 
 ## Breaking Changes
 

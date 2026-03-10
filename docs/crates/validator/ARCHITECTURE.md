@@ -10,11 +10,13 @@
 ### Module Map
 
 - `foundation/`
-  - `traits.rs` — `Validate<T>`, `ValidateExt<T>`, `Validatable`, inline combinators (`And`, `Or`, `Not`, `When`)
-  - `error.rs` — `ValidationError` (80 bytes, `Cow`-based), `ValidationErrors`, `ErrorSeverity`, `codes` constants, sensitive-param redaction
+  - `traits.rs` — `Validate<T>` (with `validate_into` for proof tokens), `ValidateExt<T>`, `Validatable`
+  - `error.rs` — `ValidationError` (80 bytes, `Cow`-based), `ValidationErrors`, `ErrorSeverity` (`#[non_exhaustive]`), `codes` constants, sensitive-param redaction
   - `any.rs` — `AnyValidator<T>` (type erasure via internal `ErasedValidator` trait)
   - `validatable.rs` — blanket `Validatable` impl, `AsValidatable<T>` bridge for JSON
   - `category.rs`, `context.rs` — internal category/context helpers
+- `error.rs` — `ValidatorError` (crate-level operational error via `thiserror`, `#[non_exhaustive]`), `ValidatorResult<T>` alias
+- `proof.rs` — `Validated<T>` proof token (zero-cost wrapper certifying validation passed)
 - `validators/`
   - `length.rs` — `NotEmpty`, `MinLength`, `MaxLength`, `ExactLength`, `LengthRange` + `LengthMode` (Chars/Bytes)
   - `pattern.rs` — `Contains`, `StartsWith`, `EndsWith`, `Alphanumeric`, `Alphabetic`, `Numeric`, `Lowercase`, `Uppercase`
@@ -44,6 +46,8 @@
 ```
 user input ──► typed validator chain ──► Result<(), ValidationError>
                       │
+                      ├──► validate_into() ──► Result<Validated<T>, ValidatorError>
+                      │                              (proof token: certified valid)
                       ▼
                 ValidateExt combinators (.and / .or / .not / .when)
                       │

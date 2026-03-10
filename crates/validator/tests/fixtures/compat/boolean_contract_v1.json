@@ -1,0 +1,26 @@
+[
+  {
+    "id": "bool-true-pass",
+    "scenario": "true value passes is_true",
+    "input": true,
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "bool-true-fail",
+    "scenario": "false value fails is_true",
+    "input": false,
+    "expected": { "pass": false, "error_code": "is_true", "field_path": null }
+  },
+  {
+    "id": "bool-false-pass",
+    "scenario": "false value passes is_false",
+    "input": false,
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "bool-false-fail",
+    "scenario": "true value fails is_false",
+    "input": true,
+    "expected": { "pass": false, "error_code": "is_false", "field_path": null }
+  }
+]

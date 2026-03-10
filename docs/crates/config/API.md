@@ -430,12 +430,7 @@ Same as `Configurable` but async (`async fn configure`, `async fn reset_config`)
 
 ### Validators
 
-| Type | Description |
-|------|-------------|
-| `NoOpValidator` | Always passes; useful as placeholder |
-| `FunctionValidator` | Wraps a `fn(&Value) -> ConfigResult<()>` closure |
-| `SchemaValidator` | Validates against a JSON schema (`serde_json::Value`); `schema()` returns it |
-| `CompositeValidator` | Runs multiple validators; fails on first failure |
+Validation is handled via the `ConfigValidator` trait. Any `T: Validate<Value> + Send + Sync` (from `nebula-validator`) automatically implements `ConfigValidator` through the blanket impl in `core::traits`.
 
 ### Watchers
 
@@ -573,7 +568,6 @@ use std::sync::Arc;
 let cfg = ConfigBuilder::new()
     .with_defaults_json(serde_json::json!({ "server": { "port": 3000 }}))
     .with_source(ConfigSource::File("config.toml".into()))
-    .with_validator(Arc::new(SchemaValidator::new(serde_json::json!({ "type": "object" }))))
     .with_hot_reload(true)
     .build()
     .await?;

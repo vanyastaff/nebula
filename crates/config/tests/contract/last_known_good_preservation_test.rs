@@ -1,12 +1,23 @@
 use super::helpers::write_temp_file;
-use nebula_config::{ConfigBuilder, ConfigError, ConfigSource, FunctionValidator};
+use nebula_config::core::ConfigValidator;
+use nebula_config::{ConfigBuilder, ConfigError, ConfigSource};
 use std::sync::Arc;
+
+struct ClosureValidator<F>(F);
+#[async_trait::async_trait]
+impl<F: Fn(&serde_json::Value) -> nebula_config::ConfigResult<()> + Send + Sync> ConfigValidator
+    for ClosureValidator<F>
+{
+    async fn validate(&self, data: &serde_json::Value) -> nebula_config::ConfigResult<()> {
+        (self.0)(data)
+    }
+}
 
 #[tokio::test]
 async fn failed_reload_keeps_last_known_good_snapshot() {
     let path = write_temp_file("lkg", "toml", "[app]\nversion = \"1.0.0\"\nport = 8080\n");
 
-    let validator = FunctionValidator::new(|value| {
+    let validator = ClosureValidator(|value: &serde_json::Value| {
         let valid = value
             .get("app")
             .and_then(|app| app.get("port"))

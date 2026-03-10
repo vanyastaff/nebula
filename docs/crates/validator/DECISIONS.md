@@ -261,3 +261,95 @@ Migration impact:
 
 Validation plan:
 - macro crate tests + cross-crate regression runs.
+
+## D011: Proof token system (`Validated<T>`)
+
+Status: Adopt
+
+Context:
+- validated data could silently flow through the system without any compile-time
+  guarantee that it had passed validation, creating trust boundary bugs.
+
+Decision:
+- introduce `Validated<T>` proof token: a zero-cost newtype wrapper that can only
+  be constructed through validated code paths (`Validate::validate_into`,
+  `Validated::new`). Read access via `Deref`/`AsRef`/`Borrow`; ownership recovery
+  via `into_inner()`. `Serialize` is derived; `Deserialize` is intentionally omitted
+  to force re-validation on deserialization boundaries.
+
+Alternatives considered:
+- phantom-marker trait bounds (too invasive across call sites).
+- convention-only "validated" naming (no compile-time enforcement).
+
+Trade-offs:
+- adds a wrapper type to call sites that need the guarantee; zero runtime cost.
+
+Consequences:
+- trust boundaries become visible in the type system.
+- downstream crates can require `Validated<T>` in function signatures.
+
+Migration impact:
+- none; purely additive. Existing code using `validate()` directly is unaffected.
+
+Validation plan:
+- unit tests in `proof.rs` covering construction, deref, map, serialize, and combined validators.
+
+## D012: Crate-level operational error type (`ValidatorError`)
+
+Status: Adopt
+
+Context:
+- the crate had no dedicated operational error type; `ValidationError` served double
+  duty for both validation failures and configuration errors.
+
+Decision:
+- introduce `ValidatorError` (via `thiserror`, `#[non_exhaustive]`) with variants:
+  `InvalidConfig` (configuration errors) and `ValidationFailed` (wraps `ValidationError`).
+- define `ValidatorResult<T> = Result<T, ValidatorError>` alias.
+
+Alternatives considered:
+- continue using `ValidationError` for everything.
+
+Trade-offs:
+- cleaner separation of concerns; one more error type to learn.
+
+Consequences:
+- `validate_into` and `Validated::new` return `ValidatorResult` instead of
+  `Result<_, ValidationError>`, giving callers richer error context.
+
+Migration impact:
+- none; purely additive. Existing `validate()` still returns `Result<(), ValidationError>`.
+
+Validation plan:
+- compile-time checks + integration with proof token tests.
+
+## D013: Combinator type deduplication
+
+Status: Adopt
+
+Context:
+- `And`, `Or`, `Not`, `When` were defined in both `foundation/traits.rs` (inline)
+  and `combinators/*.rs` (dedicated modules), creating two distinct types with the
+  same name. `ValidateExt::and()` returned `foundation::And` while the free function
+  `and()` returned `combinators::And`.
+
+Decision:
+- remove duplicate definitions from `foundation/traits.rs`.
+- `ValidateExt` methods now import and return types from `combinators/`.
+- canonical definitions live exclusively in `combinators/and.rs`, `or.rs`, `not.rs`, `when.rs`.
+
+Alternatives considered:
+- keep both and add `From` conversions (unnecessary complexity).
+
+Trade-offs:
+- minor internal refactor; no public API change since both were re-exported under the same name.
+
+Consequences:
+- single source of truth for each combinator type.
+- simpler module dependency graph.
+
+Migration impact:
+- none for external consumers; types resolve to the same names.
+
+Validation plan:
+- all 293+ existing tests pass without modification.

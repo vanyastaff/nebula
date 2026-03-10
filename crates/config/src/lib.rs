@@ -51,7 +51,6 @@ pub mod core;
 
 // Implementation modules
 pub mod loaders;
-pub mod validators;
 pub mod watchers;
 
 // Re-export main types from core for explicit imports (e.g. `use nebula_config::Config`)
@@ -66,11 +65,9 @@ pub use core::{
 };
 
 // Re-export concrete implementations
+pub use loaders::{CompositeLoader, FileLoader};
 #[cfg(feature = "env")]
 pub use loaders::{EnvLoader, EnvParseMode};
-pub use loaders::{CompositeLoader, FileLoader};
-
-pub use validators::{CompositeValidator, FunctionValidator, NoOpValidator, SchemaValidator};
 
 pub use watchers::{
     ConfigWatchEvent, ConfigWatchEventType, FileWatcher, NoOpWatcher, PollingWatcher,
@@ -97,12 +94,9 @@ pub mod prelude {
     };
 
     // Common loaders
+    pub use crate::loaders::{CompositeLoader, FileLoader};
     #[cfg(feature = "env")]
     pub use crate::loaders::{EnvLoader, EnvParseMode};
-    pub use crate::loaders::{CompositeLoader, FileLoader};
-
-    // Common validators
-    pub use crate::validators::{NoOpValidator, SchemaValidator};
 
     // Common watchers
     pub use crate::watchers::{
@@ -116,7 +110,6 @@ pub mod builders {
     #[cfg(feature = "env")]
     use crate::loaders::EnvLoader;
     use crate::loaders::FileLoader;
-    use crate::validators::SchemaValidator;
     use crate::watchers::FileWatcher;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -166,16 +159,6 @@ pub mod builders {
             .with_hot_reload(true)
     }
 
-    /// Create a configuration with schema validation
-    pub fn with_schema_validation(
-        config_file: impl Into<PathBuf>,
-        schema: serde_json::Value,
-    ) -> ConfigBuilder {
-        ConfigBuilder::new()
-            .with_source(ConfigSource::File(config_file.into()))
-            .with_loader(Arc::new(FileLoader::new()))
-            .with_validator(Arc::new(SchemaValidator::new(schema)))
-    }
 }
 
 /// Utilities for working with configuration

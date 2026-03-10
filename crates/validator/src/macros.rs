@@ -469,6 +469,7 @@ macro_rules! validator {
     ) => {
         $($meta)*
         #[derive(Debug, Clone, $($ed,)*)]
+        #[allow(missing_docs)]
         $vis struct $name $($gu)* {
             $($all_fields)+
         }
@@ -488,6 +489,7 @@ macro_rules! validator {
         [] [$($ei:tt)+]
     ) => {
         impl $($gd)* $name $($gu)* {
+            /// Creates a new instance.
             #[must_use] #[inline]
             pub fn new() -> Self {
                 Self { $($ei)+ }
@@ -501,6 +503,7 @@ macro_rules! validator {
         [$(pub $field:ident: $fty:ty,)+] [$($ei:tt)*]
     ) => {
         impl $($gd)* $name $($gu)* {
+            /// Creates a new instance.
             #[must_use] #[inline]
             pub fn new($($field: $fty),+) -> Self {
                 Self { $($field,)+ $($ei)* }
@@ -515,6 +518,7 @@ macro_rules! validator {
     ) => {
         #[allow(clippy::new_without_default)]
         impl $($gd)* $name $($gu)* {
+            /// Creates a new instance.
             #[must_use] #[inline]
             pub fn new($($args)*) -> Self $body
         }
@@ -526,6 +530,7 @@ macro_rules! validator {
         [$($args:tt)*] $ety:ty $body:block
     ) => {
         impl $($gd)* $name $($gu)* {
+            /// Creates a new instance, returning an error if configuration is invalid.
             #[inline]
             pub fn new($($args)*) -> ::std::result::Result<Self, $ety> $body
         }
@@ -565,6 +570,7 @@ macro_rules! validator {
         [unit] $vis:vis $name:ident [] []
         $factory:ident [] []
     ) => {
+        /// Creates a new validator instance.
         #[must_use] #[inline]
         $vis const fn $factory() -> $name { $name }
     };
@@ -574,6 +580,7 @@ macro_rules! validator {
         [$_kind:tt] $vis:vis $name:ident [$($gd:tt)+] [$($gu:tt)+]
         $factory:ident [] []
     ) => {
+        /// Creates a new validator instance.
         #[must_use] #[inline]
         $vis fn $factory $($gd)+() -> $name $($gu)+ {
             $name::new()
@@ -585,6 +592,7 @@ macro_rules! validator {
         [fields] $vis:vis $name:ident [] []
         $factory:ident [] []
     ) => {
+        /// Creates a new validator instance.
         #[must_use] #[inline]
         $vis fn $factory() -> $name {
             $name::new()
@@ -596,6 +604,7 @@ macro_rules! validator {
         [$_kind:tt] $vis:vis $name:ident [$($gd:tt)*] [$($gu:tt)*]
         $factory:ident [$($args:tt)+] [$($passthrough:tt)+]
     ) => {
+        /// Creates a new validator instance.
         #[must_use] #[inline]
         $vis fn $factory $($gd)*($($args)+) -> $name $($gu)* {
             $name::new($($passthrough)+)
@@ -607,6 +616,7 @@ macro_rules! validator {
         $vis:vis $name:ident [$($gd:tt)*] [$($gu:tt)*]
         $factory:ident [$($args:tt)*] [$($passthrough:tt)*] $efty:ty
     ) => {
+        /// Creates a new validator instance, returning an error if configuration is invalid.
         #[inline]
         $vis fn $factory $($gd)*($($args)*) -> ::std::result::Result<$name $($gu)*, $efty> {
             $name::new($($passthrough)*)

@@ -141,7 +141,7 @@ fn numeric_f64_validation() {
     use nebula_validator::validators::{in_range, min};
 
     let v = min::<f64>(0.0);
-    assert!(v.validate_any(&json!(3.14)).is_ok());
+    assert!(v.validate_any(&json!(2.78)).is_ok());
     assert!(v.validate_any(&json!(-0.5)).is_err());
 
     // integers widen to f64

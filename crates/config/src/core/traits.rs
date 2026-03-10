@@ -53,17 +53,17 @@ fn map_validation_error(err: ValidationError) -> ConfigError {
         message.push_str(&(total_errors - 1).to_string());
     }
 
-    let field = err.field_pointer().map(std::borrow::Cow::into_owned).or_else(|| {
-        err.flatten()
-            .into_iter()
-            .skip(1)
-            .find_map(|nested| nested.field_pointer().map(std::borrow::Cow::into_owned))
-    });
+    let field = err
+        .field_pointer()
+        .map(std::borrow::Cow::into_owned)
+        .or_else(|| {
+            err.flatten()
+                .into_iter()
+                .skip(1)
+                .find_map(|nested| nested.field_pointer().map(std::borrow::Cow::into_owned))
+        });
 
-    ConfigError::validation_error(
-        message,
-        field,
-    )
+    ConfigError::validation_error(message, field)
 }
 
 #[async_trait]

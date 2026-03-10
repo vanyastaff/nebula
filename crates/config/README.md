@@ -16,7 +16,7 @@ Current format policy is intentionally strict:
 - TOML + ENV source composition with predictable precedence
 - Typed reads via `serde` (`config.get::<T>(...)`)
 - Defaults + runtime overrides (`set_value`, `set_typed`, `merge`)
-- Validator integration (`SchemaValidator`, `FunctionValidator`, custom `ConfigValidator`)
+- Validation via `ConfigValidator` trait (with `nebula-validator` bridge)
 - File watcher and interval-based reload options
 - Strict/permissive environment value parsing
 
@@ -157,21 +157,17 @@ Schema validation (JSON schema represented as `serde_json::Value`):
 use nebula_config::prelude::*;
 use std::sync::Arc;
 
-let schema = r#"{
-    "type": "object",
-    "properties": {
-        "server": {
-            "type": "object",
-            "properties": {
-                "port": { "type": "integer" }
-      }
-    }
-  }
-}"#;
+Any type implementing `nebula_validator::Validate<Value>` automatically satisfies `ConfigValidator`
+via the blanket impl in `core::traits`.
 
+```rust
+use nebula_config::{ConfigBuilder, ConfigSource, ConfigValidator};
+use std::sync::Arc;
+
+// Any nebula_validator::Validate<Value> impl works as ConfigValidator
 let config = ConfigBuilder::new()
     .with_source(ConfigSource::File("config.toml".into()))
-    .with_validator(Arc::new(SchemaValidator::from_json(schema)?))
+    .with_validator(Arc::new(my_validator))
     .build()
     .await?;
 ```

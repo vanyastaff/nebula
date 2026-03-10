@@ -6,7 +6,8 @@ Stability tiers:
 
 - **Stable:** `foundation::Validate<T>`, `foundation::ValidateExt<T>`, `foundation::Validatable`,
   `foundation::ValidationError`, `foundation::ValidationErrors`, `foundation::AnyValidator<T>`,
-  `foundation::ErrorSeverity`, all built-in validators from `validators::*`,
+  `foundation::ErrorSeverity`, `proof::Validated<T>`, `error::ValidatorError`,
+  all built-in validators from `validators::*`,
   core combinators from `combinators::*`, `validator!` / `compose!` / `any_of!` macros.
 - **Experimental:** advanced combinator internals (`MultiField`, `NestedValidate`,
   `CollectionNested`); treat as non-contract.
@@ -27,12 +28,20 @@ pub trait Validate<T: ?Sized> {
     fn validate_any<U>(&self, input: &U) -> Result<(), ValidationError>
     where
         U: AsValidatable<T>;
+
+    // Validate and wrap in a proof token
+    fn validate_into<V>(&self, value: V) -> ValidatorResult<Validated<V>>
+    where
+        V: Borrow<T>,
+        Self: Sized;
 }
 ```
 
 - Blanket implementation is provided for all types implementing `Validate<T>`.
 - `validate_any` lets string validators be called with `&serde_json::Value`
   when `Value: AsValidatable<str>`.
+- `validate_into` validates the value and wraps it in a `Validated<V>` proof token,
+  returning `Err(ValidatorError::ValidationFailed(..))` on failure.
 
 ### `ValidateExt<T>` — combinator builder
 
@@ -181,6 +190,56 @@ let validators: Vec<AnyValidator<str>> = vec![
     AnyValidator::new(email()),
 ];
 ```
+
+---
+
+## `Validated<T>` — proof token
+
+```rust
+pub struct Validated<T> { /* private */ }
+```
+
+Zero-cost wrapper certifying the inner value passed validation. Cannot be constructed
+without going through a validated code path.
+
+### Construction
+
+| Method | Signature | Notes |
+|--------|-----------|-------|
+| `Validated::new` | `fn new<V, U: ?Sized>(value: T, validator: &V) -> ValidatorResult<Self>` | `V: Validate<U>`, `T: Borrow<U>` |
+| `validate_into` | `fn validate_into<V>(&self, value: V) -> ValidatorResult<Validated<V>>` | on `Validate<T>` trait |
+| `new_unchecked` | `fn new_unchecked(value: T) -> Self` | escape hatch, use sparingly |
+
+### Access
+
+| Method | Returns | Notes |
+|--------|---------|-------|
+| `inner()` | `&T` | reference access |
+| `into_inner()` | `T` | consumes wrapper |
+| `Deref` / `AsRef` / `Borrow` | `&T` | transparent access |
+| `map(f)` | `Validated<U>` | transform inner value |
+
+### Traits
+
+Implements: `Clone`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`,
+`Debug`, `Display`, `Serialize` (transparent). `Deserialize` is intentionally
+omitted — deserialized data must be re-validated.
+
+---
+
+## `ValidatorError` — crate-level error
+
+```rust
+#[non_exhaustive]
+pub enum ValidatorError {
+    InvalidConfig { message: Cow<'static, str> },
+    ValidationFailed(#[from] ValidationError),
+}
+pub type ValidatorResult<T> = Result<T, ValidatorError>;
+```
+
+Operational error type separating configuration errors from validation failures.
+Used by `validate_into` and `Validated::new`.
 
 ---
 
@@ -529,6 +588,7 @@ let v = any_of![exact_length(5), exact_length(10)];
 
 - Foundation: `Validate`, `ValidateExt`, `Validatable`, `ValidationError`, `ValidationErrors`,
   `AnyValidator`, `ErrorSeverity`, `And`, `Or`, `Not`, `When`, `AsValidatable`
+- Proof tokens: `Validated`, `ValidatorError`
 - All validators: `validators::*` (glob)
 - Key combinators: `and`, `or`, `not`, `cached`, `json_field`, `json_field_optional`, `Cached`, `JsonField`
 

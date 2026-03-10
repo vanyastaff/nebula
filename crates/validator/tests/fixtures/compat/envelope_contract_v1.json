@@ -1,0 +1,52 @@
+[
+  {
+    "id": "envelope-simple",
+    "scenario": "simple error with code and message",
+    "envelope": {
+      "code": "min_length",
+      "message": "Must be at least 3 characters"
+    },
+    "required_keys": ["code", "message"]
+  },
+  {
+    "id": "envelope-with-field",
+    "scenario": "error with field path",
+    "envelope": {
+      "code": "min_length",
+      "message": "Must be at least 3 characters",
+      "field": "/user/name"
+    },
+    "required_keys": ["code", "message", "field"]
+  },
+  {
+    "id": "envelope-with-params",
+    "scenario": "error with parameters",
+    "envelope": {
+      "code": "min_length",
+      "message": "Must be at least 3 characters",
+      "params": {
+        "min": "3"
+      }
+    },
+    "required_keys": ["code", "message", "params"]
+  },
+  {
+    "id": "envelope-with-nested",
+    "scenario": "error with nested child errors",
+    "envelope": {
+      "code": "or_failed",
+      "message": "All alternatives failed",
+      "nested": [
+        {
+          "code": "min_length",
+          "message": "Too short"
+        },
+        {
+          "code": "alphanumeric",
+          "message": "Must be alphanumeric"
+        }
+      ]
+    },
+    "required_keys": ["code", "message", "nested"]
+  }
+]

@@ -1,6 +1,17 @@
 use super::helpers::write_temp_file;
-use nebula_config::{ConfigBuilder, ConfigError, ConfigSource, FunctionValidator};
+use nebula_config::core::ConfigValidator;
+use nebula_config::{ConfigBuilder, ConfigError, ConfigSource};
 use std::sync::Arc;
+
+struct ClosureValidator<F>(F);
+#[async_trait::async_trait]
+impl<F: Fn(&serde_json::Value) -> nebula_config::ConfigResult<()> + Send + Sync> ConfigValidator
+    for ClosureValidator<F>
+{
+    async fn validate(&self, data: &serde_json::Value) -> nebula_config::ConfigResult<()> {
+        (self.0)(data)
+    }
+}
 
 #[tokio::test]
 async fn activation_is_atomic_on_reload() {
@@ -10,7 +21,7 @@ async fn activation_is_atomic_on_reload() {
         "[service]\nhost = \"127.0.0.1\"\nport = 8080\n",
     );
 
-    let validator = FunctionValidator::new(|value| {
+    let validator = ClosureValidator(|value: &serde_json::Value| {
         let host_ok = value
             .get("service")
             .and_then(|service| service.get("host"))

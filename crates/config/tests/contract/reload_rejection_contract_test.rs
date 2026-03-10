@@ -1,12 +1,23 @@
 use super::helpers::write_temp_file;
-use nebula_config::{ConfigBuilder, ConfigError, FunctionValidator};
+use nebula_config::core::ConfigValidator;
+use nebula_config::{ConfigBuilder, ConfigError};
 use std::sync::Arc;
+
+struct ClosureValidator<F>(F);
+#[async_trait::async_trait]
+impl<F: Fn(&serde_json::Value) -> nebula_config::ConfigResult<()> + Send + Sync> ConfigValidator
+    for ClosureValidator<F>
+{
+    async fn validate(&self, data: &serde_json::Value) -> nebula_config::ConfigResult<()> {
+        (self.0)(data)
+    }
+}
 
 #[tokio::test]
 async fn invalid_reload_candidate_is_rejected() {
     let path = write_temp_file("reload_reject", "toml", "[feature]\nenabled = true\n");
 
-    let validator = FunctionValidator::new(|value| {
+    let validator = ClosureValidator(|value: &serde_json::Value| {
         let enabled = value
             .get("feature")
             .and_then(|f| f.get("enabled"))
@@ -26,8 +37,7 @@ async fn invalid_reload_candidate_is_rejected() {
         .await
         .expect("initial valid config should build");
 
-    std::fs::write(&path, "[feature]\nenabled = false\n")
-        .expect("should overwrite fixture file");
+    std::fs::write(&path, "[feature]\nenabled = false\n").expect("should overwrite fixture file");
 
     let reload_error = config.reload().await.expect_err("reload must be rejected");
     assert_eq!(

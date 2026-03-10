@@ -1,0 +1,68 @@
+[
+  {
+    "id": "length-not-empty-pass",
+    "scenario": "non-empty string passes not_empty",
+    "input": "hello",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "length-not-empty-fail",
+    "scenario": "empty string fails not_empty",
+    "input": "",
+    "expected": { "pass": false, "error_code": "not_empty", "field_path": null }
+  },
+  {
+    "id": "length-min-pass",
+    "scenario": "string meets minimum length",
+    "input": "abc",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "length-min-fail",
+    "scenario": "string below minimum length",
+    "input": "ab",
+    "expected": { "pass": false, "error_code": "min_length", "field_path": null }
+  },
+  {
+    "id": "length-max-pass",
+    "scenario": "string within maximum length",
+    "input": "hello",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "length-max-fail",
+    "scenario": "string exceeds maximum length",
+    "input": "hello world",
+    "expected": { "pass": false, "error_code": "max_length", "field_path": null }
+  },
+  {
+    "id": "length-exact-pass",
+    "scenario": "string has exact required length",
+    "input": "abcde",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "length-exact-fail",
+    "scenario": "string does not have exact required length",
+    "input": "abcdef",
+    "expected": { "pass": false, "error_code": "exact_length", "field_path": null }
+  },
+  {
+    "id": "length-range-pass",
+    "scenario": "string length within range",
+    "input": "abcde",
+    "expected": { "pass": true, "error_code": null, "field_path": null }
+  },
+  {
+    "id": "length-range-fail-short",
+    "scenario": "string too short for range",
+    "input": "ab",
+    "expected": { "pass": false, "error_code": "length_range", "field_path": null }
+  },
+  {
+    "id": "length-range-fail-long",
+    "scenario": "string too long for range",
+    "input": "abcdefghijk",
+    "expected": { "pass": false, "error_code": "length_range", "field_path": null }
+  }
+]
