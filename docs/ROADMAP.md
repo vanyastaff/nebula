@@ -139,7 +139,7 @@ Each crate’s ROADMAP holds phased deliverables, risks, exit criteria, and read
 | storage | [docs/crates/storage/ROADMAP.md](crates/storage/ROADMAP.md) |
 | system | [docs/crates/system/ROADMAP.md](crates/system/ROADMAP.md) |
 | telemetry | [docs/crates/telemetry/ROADMAP.md](crates/telemetry/ROADMAP.md) |
-| validator | [docs/crates/validator/ROADMAP.md](crates/validator/ROADMAP.md) |
+| validator | [crates/validator/docs/ROADMAP.md](../crates/validator/docs/ROADMAP.md) |
 | worker | [docs/crates/worker/ROADMAP.md](crates/worker/ROADMAP.md) |
 | workflow | [docs/crates/workflow/ROADMAP.md](crates/workflow/ROADMAP.md) |
 | tenant | [docs/crates/tenant/ROADMAP.md](crates/tenant/ROADMAP.md) |

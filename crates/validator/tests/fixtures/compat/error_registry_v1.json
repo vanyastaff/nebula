@@ -313,6 +313,6 @@
   "change_policy": {
     "minor_rule": "additive_only",
     "major_rule": "semantic_change_or_removal_requires_migration_mapping",
-    "migration_authority": "docs/crates/validator/MIGRATION.md"
+    "migration_authority": "crates/validator/docs/MIGRATION.md"
   }
 }

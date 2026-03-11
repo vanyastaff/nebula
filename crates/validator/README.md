@@ -3,8 +3,8 @@
 Composable, type-safe validation framework for the Nebula workflow engine.
 
 > Canonical contract and compatibility rules are documented in
-> `docs/crates/validator/API.md`, `docs/crates/validator/DECISIONS.md`,
-> and `docs/crates/validator/MIGRATION.md`.
+> `crates/validator/docs/API.md`, `crates/validator/docs/DECISIONS.md`,
+> and `crates/validator/docs/MIGRATION.md`.
 
 ## Features
 
@@ -296,7 +296,7 @@ Error codes and serialization envelopes follow a **minor-additive** contract:
 - **43 stable error codes** tracked in `tests/fixtures/compat/error_registry_v1.json`
 - Field paths use **RFC 6901 JSON Pointer** format
 - Contract tests in `tests/contract/` enforce code stability, envelope shape, and governance policy
-- Deprecation and migration rules in `docs/crates/validator/MIGRATION.md`
+- Deprecation and migration rules in `crates/validator/docs/MIGRATION.md`
 
 ## Testing
 

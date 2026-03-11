@@ -50,7 +50,7 @@ commit history using the configuration in [`.github/release.yml`](.github/releas
 - `docs/` with per-crate documentation
 - `CONTRIBUTING.md` with development setup, branch naming, and commit conventions
 - `SECURITY.md` with responsible disclosure policy
-- `docs/crates/validator`: synchronized `API`, `DECISIONS`, `MIGRATION`, and crate `README` for validator v2 contract.
+- `crates/validator/docs`: synchronized `API`, `DECISIONS`, `MIGRATION`, and crate `README` for validator v2 contract.
 
 ---
 

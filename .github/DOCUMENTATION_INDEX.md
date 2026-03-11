@@ -96,7 +96,7 @@ Located in `docs/crates/`:
 - **[storage](../docs/crates/storage/)** — Storage abstraction
 - **[system](../docs/crates/system/)** — System utilities
 - **[telemetry](../docs/crates/telemetry/)** — Telemetry and observability
-- **[validator](../docs/crates/validator/)** — Validation framework
+- **[validator](../crates/validator/docs/)** — Validation framework
 - **[webhook](../docs/crates/webhook/)** — Webhook handling
 - **[workflow](../docs/crates/workflow/)** — Workflow definition
 

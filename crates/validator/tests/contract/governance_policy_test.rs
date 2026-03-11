@@ -41,7 +41,7 @@ fn load_error_registry() -> ErrorRegistry {
 
 #[test]
 fn decisions_document_declares_additive_minor_policy() {
-    let decisions = include_str!("../../../../docs/crates/validator/DECISIONS.md");
+    let decisions = include_str!("../../docs/DECISIONS.md");
     assert!(
         decisions.contains("minor releases"),
         "DECISIONS must mention minor release policy"
@@ -54,7 +54,7 @@ fn decisions_document_declares_additive_minor_policy() {
 
 #[test]
 fn api_document_declares_major_break_conditions() {
-    let api = include_str!("../../../../docs/crates/validator/API.md");
+    let api = include_str!("../../docs/API.md");
     assert!(api.contains("major bump required"));
     assert!(api.contains("error code"));
     assert!(api.contains("field-path"));
@@ -72,7 +72,7 @@ fn registry_has_required_metadata_and_policy() {
     );
     assert_eq!(
         registry.change_policy.migration_authority,
-        "docs/crates/validator/MIGRATION.md"
+        "crates/validator/docs/MIGRATION.md"
     );
 }
 
@@ -186,9 +186,9 @@ fn registry_has_no_duplicate_codes_or_categories() {
 
 #[test]
 fn docs_reference_canonical_registry_artifact() {
-    let api = include_str!("../../../../docs/crates/validator/API.md");
-    let decisions = include_str!("../../../../docs/crates/validator/DECISIONS.md");
-    let strategy = include_str!("../../../../docs/crates/validator/TEST_STRATEGY.md");
+    let api = include_str!("../../docs/API.md");
+    let decisions = include_str!("../../docs/DECISIONS.md");
+    let strategy = include_str!("../../docs/TEST_STRATEGY.md");
 
     assert!(api.contains("error_registry_v1.json"));
     assert!(decisions.contains("error_registry_v1.json"));
@@ -214,7 +214,7 @@ fn registry_stability_values_are_valid() {
 #[test]
 fn registry_change_policy_references_migration_doc() {
     let registry = load_error_registry();
-    let migration = include_str!("../../../../docs/crates/validator/MIGRATION.md");
+    let migration = include_str!("../../docs/MIGRATION.md");
 
     assert!(
         !registry.change_policy.migration_authority.is_empty(),
