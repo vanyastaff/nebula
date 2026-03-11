@@ -134,6 +134,14 @@ impl AttrArgs {
         })
     }
 
+    /// Get raw values from a list attribute like `each(email, min_length = 3)`.
+    pub fn get_list_values(&self, key: &str) -> Option<&[AttrValue]> {
+        self.items.iter().find_map(|item| match item {
+            AttrItem::List { key: k, values } if k == key => Some(values.as_slice()),
+            _ => None,
+        })
+    }
+
     /// Get type from attribute, returning None when value is a string literal.
     /// Use for credential/resource where `key = "string"` should be ignored.
     pub fn get_type_skip_string(&self, key: &str) -> Result<Option<Type>> {
@@ -289,6 +297,15 @@ struct AttrValueParser(AttrValue);
 
 impl Parse for AttrValueParser {
     fn parse(input: ParseStream) -> Result<Self> {
+        if input.peek(Ident) {
+            let fork = input.fork();
+            let _: Ident = fork.parse()?;
+            if fork.peek(Token![=]) {
+                let assign: syn::ExprAssign = input.parse()?;
+                return Ok(Self(AttrValue::Tokens(quote::quote!(#assign))));
+            }
+        }
+
         if input.peek(Lit) {
             return Ok(Self(AttrValue::Lit(input.parse()?)));
         }

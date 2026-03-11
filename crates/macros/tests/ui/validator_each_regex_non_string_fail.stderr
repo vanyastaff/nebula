@@ -1,0 +1,5 @@
+error: `each(regex = ...)` requires `Vec<String>` or `Option<Vec<String>>`
+ --> tests/ui/validator_each_regex_non_string_fail.rs:6:10
+  |
+6 |     ids: Vec<u64>,
+  |          ^^^^^^^^

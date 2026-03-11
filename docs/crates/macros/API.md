@@ -13,6 +13,13 @@
 - **Parameters:** #[derive(Parameters)] with #[param(...)] on fields. Generates parameter definitions for action metadata.
 - **Config/Validator:** #[derive(Config)] for env-loaded config; #[derive(Validator)] for field validation.
 
+### Validator Derive Notes
+
+- `#[derive(Validator)]` supports field rules: `required`, `min_length`, `max_length`, `exact_length`, `length_range(min = A, max = B)`, `min`, `max`, `min_size`, `max_size`, `exact_size`, `size_range(min = A, max = B)`, `not_empty_collection`, string pattern/format flags (including `not_empty`), `regex = "..."`, `contains = "..."`, `starts_with = "..."`, `ends_with = "..."`, `is_true`, `is_false`, `message = "..."`, `nested`, and `custom = path::to::fn`.
+- `each(...)` applies element-level validation to `Vec<T>` and `Option<Vec<T>>`.
+- Supported `each(...)` forms include `each(email)`, `each(url)`, `each(regex = "...")`, `each(contains = "...")`, `each(starts_with = "...")`, `each(ends_with = "...")`, `each(exact_length = N)`, `each(not_empty)`, `each(min = 1, max = 10)`, `each(nested)`, and `each(custom = path::to::fn)`.
+- Compile-time validation rejects `each(...)` on non-collection fields and rejects string-only element rules on non-`String` collections.
+
 ## Minimal Example
 
 See crate lib.rs and rustdoc. Example: #[derive(Action)] #[action(key="http.request", name="HTTP Request", description="...")] pub struct HttpRequestAction;

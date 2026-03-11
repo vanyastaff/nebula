@@ -1,0 +1,5 @@
+error: `is_true` requires `bool` or `Option<bool>` fields
+ --> tests/ui/validator_is_true_non_bool_fail.rs:6:13
+  |
+6 |     status: String,
+  |             ^^^^^^

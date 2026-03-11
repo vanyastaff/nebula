@@ -51,10 +51,21 @@ fn test_parameters_derive() {
 fn test_validator_derive() {
     let t = trybuild::TestCases::new();
     t.pass("tests/ui/validator_pass.rs");
+    t.pass("tests/ui/validator_each_pass.rs");
 }
 
 #[test]
 fn test_validator_derive_fail() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/validator_fail.rs");
+    t.compile_fail("tests/ui/validator_contains_non_string_fail.rs");
+    t.compile_fail("tests/ui/validator_is_true_non_bool_fail.rs");
+    t.compile_fail("tests/ui/validator_min_size_non_collection_fail.rs");
+    t.compile_fail("tests/ui/validator_size_range_non_collection_fail.rs");
+    t.compile_fail("tests/ui/validator_length_range_non_string_fail.rs");
+    t.compile_fail("tests/ui/validator_each_non_collection_fail.rs");
+    t.compile_fail("tests/ui/validator_each_non_string_fail.rs");
+    t.compile_fail("tests/ui/validator_each_contains_non_string_fail.rs");
+    t.compile_fail("tests/ui/validator_each_regex_non_string_fail.rs");
+    t.compile_fail("tests/ui/validator_each_invalid_entry_fail.rs");
 }

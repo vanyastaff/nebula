@@ -1,0 +1,5 @@
+error: `each(...)` is supported for `Vec<T>` and `Option<Vec<T>>` fields
+ --> tests/ui/validator_each_non_collection_fail.rs:6:12
+  |
+6 |     email: String,
+  |            ^^^^^^

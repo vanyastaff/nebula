@@ -101,6 +101,38 @@ pub fn generate_len_check(
     }
 }
 
+pub fn generate_exact_len_check(
+    field_name: &syn::Ident,
+    field_key: &str,
+    is_option: bool,
+    expected: usize,
+) -> TokenStream2 {
+    let error = quote! {
+        ::nebula_validator::foundation::ValidationError::exact_length(
+            #field_key,
+            #expected,
+            value.len(),
+        )
+    };
+
+    if is_option {
+        quote! {
+            if let Some(value) = input.#field_name.as_ref() {
+                if value.len() != #expected {
+                    errors.add(#error);
+                }
+            }
+        }
+    } else {
+        quote! {
+            let value = &input.#field_name;
+            if value.len() != #expected {
+                errors.add(#error);
+            }
+        }
+    }
+}
+
 pub fn generate_cmp_check(
     field_name: &syn::Ident,
     field_key: &str,
@@ -244,6 +276,12 @@ pub fn generate_regex_validator_check(
 
 pub fn built_in_string_validator_flags() -> Vec<(&'static str, TokenStream2)> {
     vec![
+        ("not_empty", quote!(::nebula_validator::validators::not_empty())),
+        ("alphanumeric", quote!(::nebula_validator::validators::alphanumeric())),
+        ("alphabetic", quote!(::nebula_validator::validators::alphabetic())),
+        ("numeric", quote!(::nebula_validator::validators::numeric())),
+        ("lowercase", quote!(::nebula_validator::validators::lowercase())),
+        ("uppercase", quote!(::nebula_validator::validators::uppercase())),
         ("email", quote!(::nebula_validator::validators::email())),
         ("url", quote!(::nebula_validator::validators::url())),
         ("ipv4", quote!(::nebula_validator::validators::ipv4())),
@@ -260,6 +298,14 @@ pub fn built_in_string_validator_flags() -> Vec<(&'static str, TokenStream2)> {
             quote!(::nebula_validator::validators::date_time()),
         ),
         ("time", quote!(::nebula_validator::validators::time())),
+    ]
+}
+
+pub fn built_in_string_validator_factories() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("contains", "contains"),
+        ("starts_with", "starts_with"),
+        ("ends_with", "ends_with"),
     ]
 }
 

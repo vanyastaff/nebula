@@ -1,0 +1,5 @@
+error: `each(contains = ...)` requires `Vec<String>` or `Option<Vec<String>>`
+ --> tests/ui/validator_each_contains_non_string_fail.rs:6:13
+  |
+6 |     values: Vec<u32>,
+  |             ^^^^^^^^

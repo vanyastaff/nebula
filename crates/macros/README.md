@@ -192,6 +192,9 @@ pub struct UserInput {
 
     #[validate(min = 18, max = 120)]
     age: u8,
+
+    #[validate(each(email))]
+    contacts: Vec<String>,
 }
 ```
 
@@ -204,8 +207,34 @@ pub struct UserInput {
 - `required` - Requires `Option<T>` to be `Some`
 - `min_length = N` - Requires `len() >= N`
 - `max_length = N` - Requires `len() <= N`
+- `exact_length = N` - Requires `len() == N`
+- `length_range(min = A, max = B)` - Requires `A <= len() <= B`
 - `min = N` - Requires numeric value `>= N`
 - `max = N` - Requires numeric value `<= N`
+- `min_size = N`, `max_size = N`, `exact_size = N` - Collection size validators for `Vec<T>` / `Option<Vec<T>>`
+- `not_empty_collection` - Requires non-empty `Vec<T>` / `Option<Vec<T>>`
+- `size_range(min = A, max = B)` - Collection size must satisfy `A <= len() <= B`
+- `not_empty` - String must not be empty
+- `alphanumeric`, `alphabetic`, `numeric`, `lowercase`, `uppercase` - String pattern validators
+- `email`, `url`, `ipv4`, `ipv6`, `ip_addr`, `hostname`, `uuid`, `date`, `date_time`, `time` - String format validators
+- `regex = "..."` - Requires string to match regex
+- `contains = "..."`, `starts_with = "..."`, `ends_with = "..."` - String substring/prefix/suffix validators
+- `is_true`, `is_false` - Boolean validators for `bool` / `Option<bool>` fields
+- `message = "..."` - Overrides generated error message for this field
+- `nested` - Validates nested value via `SelfValidating::check()`
+- `custom = path::to::fn` - Calls custom validator with signature `fn(&T) -> Result<(), ValidationError>`
+- `each(...)` - Applies validators to each element of `Vec<T>` or `Option<Vec<T>>`
+
+`each(...)` supports:
+
+- String element rules such as `each(email)`, `each(url)`, `each(regex = "...")` on `Vec<String>` / `Option<Vec<String>>`
+- String element substring/prefix/suffix rules such as `each(contains = "-")`, `each(starts_with = "ab")`, `each(ends_with = "c")`
+- Length and numeric comparisons such as `each(exact_length = 3)`, `each(min = 1, max = 10)`
+- String non-empty rule via `each(not_empty)`
+- Nested validation via `each(nested)`
+- Custom element checks via `each(custom = path::to::fn)`
+
+`each(...)` is rejected at compile time for non-collection fields, and string-specific rules are rejected for non-`String` element types.
 
 ### Config
 

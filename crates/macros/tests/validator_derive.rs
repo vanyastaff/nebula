@@ -664,6 +664,9 @@ fn empty_strings_rejected() {
 
 #[derive(Validator, Clone)]
 struct BoundaryLengths {
+    #[validate(exact_length = 5)]
+    fixed: String,
+
     #[validate(min_length = 5)]
     exactly_min: String,
 
@@ -677,6 +680,7 @@ struct BoundaryLengths {
 #[test]
 fn boundary_lengths_exact_valid() {
     let b = BoundaryLengths {
+        fixed: "12345".into(),         // exactly 5
         exactly_min: "12345".into(),      // exactly 5
         exactly_max: "1234567890".into(), // exactly 10
         exact_length: "abc".into(),       // exactly 3
@@ -687,6 +691,7 @@ fn boundary_lengths_exact_valid() {
 #[test]
 fn boundary_lengths_one_below_min() {
     let b = BoundaryLengths {
+        fixed: "12345".into(),
         exactly_min: "1234".into(), // 4, below min of 5
         exactly_max: "1234567890".into(),
         exact_length: "abc".into(),
@@ -697,6 +702,7 @@ fn boundary_lengths_one_below_min() {
 #[test]
 fn boundary_lengths_one_above_max() {
     let b = BoundaryLengths {
+        fixed: "12345".into(),
         exactly_min: "12345".into(),
         exactly_max: "12345678901".into(), // 11, above max of 10
         exact_length: "abc".into(),
@@ -707,6 +713,7 @@ fn boundary_lengths_one_above_max() {
 #[test]
 fn boundary_lengths_exact_wrong() {
     let b = BoundaryLengths {
+        fixed: "1234".into(),
         exactly_min: "12345".into(),
         exactly_max: "1234567890".into(),
         exact_length: "ab".into(), // 2, should be exactly 3
@@ -736,6 +743,178 @@ fn unicode_multibyte_counts_bytes() {
         text: "\u{65E5}".into(), // "日" - 3 bytes, below 4
     };
     assert!(u.validate_fields().is_err());
+}
+
+// ============================================================================
+// PHASE C EXTENSIONS: pattern/boolean/exact_length
+// ============================================================================
+
+#[derive(Validator, Clone)]
+struct PatternFlagsConfig {
+    #[validate(contains = "@")]
+    mention: String,
+
+    #[validate(starts_with = "https://")]
+    secure_url: String,
+
+    #[validate(ends_with = ".com")]
+    domain: String,
+
+    #[validate(alphanumeric)]
+    slug: String,
+
+    #[validate(alphabetic)]
+    letters_only: String,
+
+    #[validate(numeric)]
+    digits_only: String,
+
+    #[validate(lowercase)]
+    lower: String,
+
+    #[validate(uppercase)]
+    upper: String,
+}
+
+#[test]
+fn pattern_flags_valid() {
+    let value = PatternFlagsConfig {
+        mention: "hello@team".into(),
+        secure_url: "https://example.com".into(),
+        domain: "example.com".into(),
+        slug: "alpha123".into(),
+        letters_only: "Alphabetic".into(),
+        digits_only: "123456".into(),
+        lower: "hello".into(),
+        upper: "HELLO".into(),
+    };
+    assert!(value.validate_fields().is_ok());
+}
+
+#[test]
+fn pattern_flags_invalid() {
+    let value = PatternFlagsConfig {
+        mention: "hello-team".into(),
+        secure_url: "http://example.com".into(),
+        domain: "example.org".into(),
+        slug: "alpha_123".into(),
+        letters_only: "abc123".into(),
+        digits_only: "12a456".into(),
+        lower: "Hello".into(),
+        upper: "Hello".into(),
+    };
+    let errors = value.validate_fields().unwrap_err();
+    assert!(errors.len() >= 8);
+}
+
+#[derive(Validator, Clone)]
+struct BooleanFlagsConfig {
+    #[validate(is_true)]
+    accepted: bool,
+
+    #[validate(is_false)]
+    disabled: bool,
+
+    #[validate(is_true)]
+    optional_enabled: Option<bool>,
+}
+
+#[test]
+fn boolean_flags_valid() {
+    let value = BooleanFlagsConfig {
+        accepted: true,
+        disabled: false,
+        optional_enabled: Some(true),
+    };
+    assert!(value.validate_fields().is_ok());
+}
+
+#[test]
+fn boolean_flags_invalid() {
+    let value = BooleanFlagsConfig {
+        accepted: false,
+        disabled: true,
+        optional_enabled: Some(false),
+    };
+    let errors = value.validate_fields().unwrap_err();
+    assert_eq!(errors.len(), 3);
+}
+
+#[derive(Validator, Clone)]
+struct CollectionSizeConfig {
+    #[validate(min_size = 1, max_size = 3)]
+    tags: Vec<String>,
+
+    #[validate(exact_size = 2)]
+    ports: Vec<u16>,
+
+    #[validate(not_empty_collection)]
+    members: Option<Vec<String>>,
+
+    #[validate(size_range(min = 2, max = 4))]
+    replicas: Vec<u8>,
+}
+
+#[test]
+fn collection_size_valid() {
+    let value = CollectionSizeConfig {
+        tags: vec!["prod".into(), "api".into()],
+        ports: vec![80, 443],
+        members: Some(vec!["alice".into()]),
+        replicas: vec![1, 2, 3],
+    };
+    assert!(value.validate_fields().is_ok());
+}
+
+#[test]
+fn collection_size_invalid() {
+    let value = CollectionSizeConfig {
+        tags: vec![],
+        ports: vec![80],
+        members: Some(vec![]),
+        replicas: vec![1],
+    };
+    let errors = value.validate_fields().unwrap_err();
+    assert_eq!(errors.len(), 4);
+}
+
+#[test]
+fn collection_size_option_none_skipped() {
+    let value = CollectionSizeConfig {
+        tags: vec!["prod".into()],
+        ports: vec![80, 443],
+        members: None,
+        replicas: vec![1, 2],
+    };
+    assert!(value.validate_fields().is_ok());
+}
+
+#[derive(Validator, Clone)]
+struct LengthRangeConfig {
+    #[validate(length_range(min = 3, max = 5), not_empty)]
+    code: String,
+
+    #[validate(length_range(min = 2, max = 4))]
+    alias: Option<String>,
+}
+
+#[test]
+fn length_range_valid() {
+    let value = LengthRangeConfig {
+        code: "abcd".into(),
+        alias: Some("xy".into()),
+    };
+    assert!(value.validate_fields().is_ok());
+}
+
+#[test]
+fn length_range_invalid() {
+    let value = LengthRangeConfig {
+        code: "".into(),
+        alias: Some("toolong".into()),
+    };
+    let errors = value.validate_fields().unwrap_err();
+    assert!(errors.len() >= 2);
 }
 
 // ============================================================================
@@ -956,4 +1135,344 @@ fn regex_patterns_choice_invalid() {
         choice: "unknown".into(), // not in allowed values
     };
     assert!(r.validate_fields().is_err());
+}
+
+// ============================================================================
+// PHASE A EXTENSIONS: nested/custom/message/SelfValidating
+// ============================================================================
+
+fn must_be_even(value: &u32) -> Result<(), nebula_validator::foundation::ValidationError> {
+    if value % 2 == 0 {
+        Ok(())
+    } else {
+        Err(nebula_validator::foundation::ValidationError::new(
+            "custom_even",
+            "value must be even",
+        ))
+    }
+}
+
+#[derive(Validator, Clone)]
+struct ChildConfig {
+    #[validate(min_length = 3)]
+    name: String,
+}
+
+#[derive(Validator, Clone)]
+struct ParentConfig {
+    #[validate(nested)]
+    child: ChildConfig,
+
+    #[validate(custom = "must_be_even")]
+    count: u32,
+}
+
+#[derive(Validator, Clone)]
+struct ParentConfigPathCustom {
+    #[validate(custom = must_be_even)]
+    count: u32,
+}
+
+#[derive(Validator, Clone)]
+struct OptionalNestedConfig {
+    #[validate(nested)]
+    child: Option<ChildConfig>,
+}
+
+#[derive(Validator, Clone)]
+struct MessageOverrideConfig {
+    #[validate(email, message = "Email has invalid format")]
+    email: String,
+}
+
+#[test]
+fn nested_validation_valid() {
+    let value = ParentConfig {
+        child: ChildConfig {
+            name: "good".to_string(),
+        },
+        count: 8,
+    };
+
+    assert!(value.validate_fields().is_ok());
+}
+
+#[test]
+fn nested_validation_invalid() {
+    let value = ParentConfig {
+        child: ChildConfig {
+            name: "x".to_string(),
+        },
+        count: 8,
+    };
+
+    let err = value.validate_fields().unwrap_err();
+    assert!(err.has_errors());
+    let first = &err.errors()[0];
+    assert_eq!(first.field_pointer().as_deref(), Some("/child"));
+}
+
+#[test]
+fn custom_validation_invalid() {
+    let value = ParentConfig {
+        child: ChildConfig {
+            name: "valid".to_string(),
+        },
+        count: 3,
+    };
+
+    let err = value.validate_fields().unwrap_err();
+    assert!(err.errors().iter().any(
+        |e| e.code.as_ref() == "custom_even" && e.field_pointer().as_deref() == Some("/count")
+    ));
+}
+
+#[test]
+fn custom_validation_invalid_with_path_syntax() {
+    let value = ParentConfigPathCustom { count: 3 };
+    let err = value.validate_fields().unwrap_err();
+    assert!(
+        err.errors()
+            .iter()
+            .any(|e| e.code.as_ref() == "custom_even")
+    );
+}
+
+#[test]
+fn optional_nested_none_is_skipped() {
+    let value = OptionalNestedConfig { child: None };
+    assert!(value.validate_fields().is_ok());
+}
+
+#[test]
+fn message_override_is_applied() {
+    let value = MessageOverrideConfig {
+        email: "not-an-email".to_string(),
+    };
+
+    let err = value.validate_fields().unwrap_err();
+    assert_eq!(err.errors()[0].message.as_ref(), "Email has invalid format");
+}
+
+#[test]
+fn derive_generates_selfvalidating_impl() {
+    let value = ChildConfig {
+        name: "ok".to_string(),
+    };
+
+    let check_result = nebula_validator::combinators::SelfValidating::check(&value);
+    assert!(check_result.is_err());
+
+    let valid_value = ChildConfig {
+        name: "okay".to_string(),
+    };
+    assert!(nebula_validator::combinators::SelfValidating::check(&valid_value).is_ok());
+}
+
+// ============================================================================
+// PHASE B EXTENSIONS: each(...)
+// ============================================================================
+
+#[derive(Validator, Clone)]
+struct EachStringConfig {
+    #[validate(each(email))]
+    emails: Vec<String>,
+}
+
+#[derive(Validator, Clone)]
+struct EachNumericConfig {
+    #[validate(each(min = 1, max = 10))]
+    values: Vec<i32>,
+}
+
+#[derive(Validator, Clone)]
+struct EachOptionalConfig {
+    #[validate(each(url))]
+    webhooks: Option<Vec<String>>,
+}
+
+#[derive(Validator, Clone)]
+struct EachNestedItem {
+    #[validate(min_length = 3)]
+    name: String,
+}
+
+#[derive(Validator, Clone)]
+struct EachNestedConfig {
+    #[validate(each(nested))]
+    items: Vec<EachNestedItem>,
+}
+
+#[derive(Validator, Clone)]
+struct EachCustomConfig {
+    #[validate(each(custom = must_be_even))]
+    counts: Vec<u32>,
+}
+
+#[test]
+fn each_string_valid() {
+    let value = EachStringConfig {
+        emails: vec!["a@example.com".to_string(), "b@example.com".to_string()],
+    };
+    assert!(value.validate_fields().is_ok());
+}
+
+#[test]
+fn each_string_invalid_has_indexed_field() {
+    let value = EachStringConfig {
+        emails: vec!["a@example.com".to_string(), "invalid".to_string()],
+    };
+
+    let err = value.validate_fields().unwrap_err();
+    assert!(
+        err.errors()
+            .iter()
+            .any(|e| e.field_pointer().as_deref() == Some("/emails/1"))
+    );
+}
+
+#[test]
+fn each_numeric_valid() {
+    let value = EachNumericConfig {
+        values: vec![1, 5, 10],
+    };
+    assert!(value.validate_fields().is_ok());
+}
+
+#[test]
+fn each_numeric_invalid() {
+    let value = EachNumericConfig {
+        values: vec![1, 0, 11],
+    };
+    let err = value.validate_fields().unwrap_err();
+    assert!(err.errors().len() >= 2);
+    assert!(
+        err.errors()
+            .iter()
+            .any(|e| e.field_pointer().as_deref() == Some("/values/1"))
+    );
+    assert!(
+        err.errors()
+            .iter()
+            .any(|e| e.field_pointer().as_deref() == Some("/values/2"))
+    );
+}
+
+#[test]
+fn each_optional_none_is_skipped() {
+    let value = EachOptionalConfig { webhooks: None };
+    assert!(value.validate_fields().is_ok());
+}
+
+#[test]
+fn each_optional_some_invalid() {
+    let value = EachOptionalConfig {
+        webhooks: Some(vec![
+            "https://ok.example.com".to_string(),
+            "not-url".to_string(),
+        ]),
+    };
+
+    let err = value.validate_fields().unwrap_err();
+    assert!(
+        err.errors()
+            .iter()
+            .any(|e| e.field_pointer().as_deref() == Some("/webhooks/1"))
+    );
+}
+
+#[test]
+fn each_nested_invalid() {
+    let value = EachNestedConfig {
+        items: vec![
+            EachNestedItem {
+                name: "good".to_string(),
+            },
+            EachNestedItem {
+                name: "x".to_string(),
+            },
+        ],
+    };
+
+    let err = value.validate_fields().unwrap_err();
+    assert!(
+        err.errors()
+            .iter()
+            .any(|e| e.field_pointer().as_deref() == Some("/items/1"))
+    );
+}
+
+#[test]
+fn each_custom_invalid() {
+    let value = EachCustomConfig {
+        counts: vec![2, 3, 4],
+    };
+
+    let err = value.validate_fields().unwrap_err();
+    assert!(
+        err.errors().iter().any(|e| e.code.as_ref() == "custom_even"
+            && e.field_pointer().as_deref() == Some("/counts/1"))
+    );
+}
+
+#[derive(Validator, Clone)]
+struct EachAdvancedStringRules {
+    #[validate(each(exact_length = 3))]
+    short_codes: Vec<String>,
+
+    #[validate(each(contains = "-"))]
+    dashed: Vec<String>,
+
+    #[validate(each(starts_with = "ab", ends_with = "c"))]
+    prefixed_and_suffixed: Vec<String>,
+
+    #[validate(each(not_empty))]
+    non_empty: Vec<String>,
+}
+
+#[test]
+fn each_advanced_string_rules_valid() {
+    let input = EachAdvancedStringRules {
+        short_codes: vec!["abc".into(), "xyz".into()],
+        dashed: vec!["a-b".into(), "one-two".into()],
+        prefixed_and_suffixed: vec!["abc".into(), "abzzc".into()],
+        non_empty: vec!["x".into()],
+    };
+    assert!(input.validate_fields().is_ok());
+}
+
+#[test]
+fn each_advanced_string_rules_invalid() {
+    let input = EachAdvancedStringRules {
+        short_codes: vec!["ab".into()],
+        dashed: vec!["ab".into()],
+        prefixed_and_suffixed: vec!["zzc".into(), "abzz".into()],
+        non_empty: vec!["".into()],
+    };
+    let err = input.validate_fields().unwrap_err();
+    assert!(
+        err.errors()
+            .iter()
+            .any(|e| e.field_pointer().as_deref() == Some("/short_codes/0"))
+    );
+    assert!(
+        err.errors()
+            .iter()
+            .any(|e| e.field_pointer().as_deref() == Some("/dashed/0"))
+    );
+    assert!(
+        err.errors()
+            .iter()
+            .any(|e| e.field_pointer().as_deref() == Some("/prefixed_and_suffixed/0"))
+    );
+    assert!(
+        err.errors()
+            .iter()
+            .any(|e| e.field_pointer().as_deref() == Some("/prefixed_and_suffixed/1"))
+    );
+    assert!(
+        err.errors()
+            .iter()
+            .any(|e| e.field_pointer().as_deref() == Some("/non_empty/0"))
+    );
 }

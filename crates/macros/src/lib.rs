@@ -244,10 +244,23 @@ pub fn derive_parameters(input: TokenStream) -> TokenStream {
 /// - `required` - `Option<T>` must be `Some`
 /// - `min_length = N` - string `len()` must be at least `N`
 /// - `max_length = N` - string `len()` must be at most `N`
+/// - `exact_length = N` - string `len()` must be exactly `N`
+/// - `length_range(min = A, max = B)` - string `len()` must be within range `[A, B]`
 /// - `min = N` - numeric value must be `>= N`
 /// - `max = N` - numeric value must be `<= N`
+/// - `min_size = N` - collection length must be at least `N` (`Vec<T>` / `Option<Vec<T>>`)
+/// - `max_size = N` - collection length must be at most `N` (`Vec<T>` / `Option<Vec<T>>`)
+/// - `exact_size = N` - collection length must be exactly `N` (`Vec<T>` / `Option<Vec<T>>`)
+/// - `not_empty_collection` - collection must not be empty (`Vec<T>` / `Option<Vec<T>>`)
+/// - `size_range(min = A, max = B)` - collection length must be within range `[A, B]`
 ///
 /// ## Format flags (operate on `String` / `Option<String>` fields)
+/// - `not_empty` - string must not be empty
+/// - `alphanumeric` - letters and digits only
+/// - `alphabetic` - letters only
+/// - `numeric` - digits only
+/// - `lowercase` - alphabetic characters must be lowercase
+/// - `uppercase` - alphabetic characters must be uppercase
 /// - `email` - valid email address
 /// - `url` - valid HTTP/HTTPS URL
 /// - `ipv4` - valid IPv4 address
@@ -261,6 +274,22 @@ pub fn derive_parameters(input: TokenStream) -> TokenStream {
 ///
 /// ## Pattern
 /// - `regex = "pattern"` - string must match the given regex
+/// - `contains = "..."` - string must contain substring
+/// - `starts_with = "..."` - string must start with prefix
+/// - `ends_with = "..."` - string must end with suffix
+/// - `message = "..."` - override message for this field's validation errors
+/// - `is_true` - boolean field must be `true`
+/// - `is_false` - boolean field must be `false`
+///
+/// ## Advanced
+/// - `nested` - validates nested fields via `SelfValidating::check()`
+/// - `custom = path::to::fn` or `custom = "path::to::fn"` - custom validator fn
+///   with signature `fn(&T) -> Result<(), ValidationError>`
+/// - `each(...)` - applies rules to each element of `Vec<T>` / `Option<Vec<T>>`
+///   (supports the same flags and key-value entries as field rules where applicable, including
+///   `exact_length`, `contains`, `starts_with`, `ends_with`, and `not_empty` for string elements)
+///
+/// The macro also generates `SelfValidating` for the struct automatically.
 ///
 /// # Example
 ///
@@ -282,6 +311,9 @@ pub fn derive_parameters(input: TokenStream) -> TokenStream {
 ///
 ///     #[validate(regex = r"^v\d+$")]
 ///     version: String,
+///
+///     #[validate(custom = "crate::must_be_even")]
+///     retries: u32,
 /// }
 /// ```
 #[proc_macro_derive(Validator, attributes(validator, validate))]
