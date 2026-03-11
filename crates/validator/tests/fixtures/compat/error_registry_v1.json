@@ -255,6 +255,12 @@
       "source": "combinators::each::Each"
     },
     {
+      "code": "collection_nested_failed",
+      "meaning": "one or more elements in a nested collection failed validation",
+      "stability": "stable",
+      "source": "combinators::nested::CollectionNested"
+    },
+    {
       "code": "path_not_found",
       "meaning": "required JSON pointer path does not exist",
       "stability": "stable",

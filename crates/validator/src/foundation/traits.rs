@@ -2,7 +2,7 @@
 //!
 //! This module provides the fundamental traits for type-safe validation:
 //!
-//! - [`Validate<T>`] - Core trait for validators, generic over input type
+//! - [`Validate`] - Core trait for validators, generic over input type
 //! - [`Validatable`] - Extension trait enabling `value.validate(&validator)` syntax
 //!
 //! # Design Philosophy

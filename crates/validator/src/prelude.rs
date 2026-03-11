@@ -25,8 +25,8 @@
 // ============================================================================
 
 pub use crate::foundation::{
-    And, AnyValidator, AsValidatable, ErrorSeverity, Not, Or, Validatable, Validate, ValidateExt,
-    ValidationError, ValidationErrors, When,
+    And, AnyValidator, AsValidatable, ErrorSeverity, FieldPath, Not, Or, Validatable, Validate,
+    ValidateExt, ValidationError, ValidationErrors, ValidationMode, When,
 };
 
 // ============================================================================
@@ -53,5 +53,7 @@ pub use crate::validators::*;
 // ============================================================================
 
 pub use crate::combinators::{
-    Cached, JsonField, and, cached, json_field, json_field_optional, not, or,
+    AllOf, AnyOf, Cached, CollectionNested, Each, Field, JsonField, MultiField, NestedValidate,
+    OptionalNested, SelfValidating, all_of, and, any_of, cached, collection_nested, each, field,
+    json_field, json_field_optional, named_field, nested_validator, not, optional_nested, or,
 };

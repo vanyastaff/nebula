@@ -158,7 +158,6 @@ pub mod builders {
             })))
             .with_hot_reload(true)
     }
-
 }
 
 /// Utilities for working with configuration

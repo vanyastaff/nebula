@@ -2,10 +2,10 @@
 //!
 //! This module provides the fundamental building blocks for type-safe validation:
 //!
-//! - [`Validate<T>`] - Core trait for validators, generic over input type
-//! - [`Validatable`] - Extension trait enabling `value.validate(&validator)` syntax
-//! - [`ValidateExt<T>`] - Combinator methods (`.and()`, `.or()`, `.not()`)
-//! - [`ValidationError`] - Structured validation errors
+//! - [`Validate`](crate::foundation::traits::Validate) - Core trait for validators, generic over input type
+//! - [`Validatable`](crate::foundation::traits::Validatable) - Extension trait enabling `value.validate(&validator)` syntax
+//! - [`ValidateExt`](crate::foundation::traits::ValidateExt) - Combinator methods (`.and()`, `.or()`, `.not()`)
+//! - [`ValidationError`](crate::foundation::error::ValidationError) - Structured validation errors
 //!
 //! # Two Ways to Validate
 //!
@@ -49,13 +49,15 @@
 pub mod any;
 pub mod context;
 pub mod error;
+pub mod field_path;
 pub mod traits;
 pub mod validatable;
 
 // Re-export core types
 pub use any::AnyValidator;
 pub use context::{ContextualValidator, ValidationContext, ValidationContextBuilder};
-pub use error::{ErrorSeverity, ValidationError, ValidationErrors};
+pub use error::{ErrorSeverity, ValidationError, ValidationErrors, ValidationMode};
+pub use field_path::FieldPath;
 pub use traits::{Validatable, Validate, ValidateExt};
 pub use validatable::AsValidatable;
 

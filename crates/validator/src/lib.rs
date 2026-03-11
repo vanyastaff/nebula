@@ -25,7 +25,7 @@
 //! | [`Validated<T>`](proof::Validated) | Proof token certifying a value passed validation |
 //! | [`ValidationError`](foundation::ValidationError) | Structured error (80 bytes, `Cow`-based) |
 //! | [`AnyValidator<T>`](foundation::AnyValidator) | Type-erased validator for dynamic dispatch |
-//! | [`ValidatorError`](error::ValidatorError) | Crate-level operational error type |
+//! | [`ValidatorError`] | Crate-level operational error type |
 //!
 //! ## Creating Validators
 //!

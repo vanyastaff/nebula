@@ -5,11 +5,11 @@
 //!
 //! # Categories
 //!
-//! - **String** ([`length`], [`pattern`], [`content`]): length bounds, character patterns,
+//! - **String** ([`length`](crate::validators::length), [`pattern`](crate::validators::pattern), [`content`](crate::validators::content)): length bounds, character patterns,
 //!   email/URL/regex matching
-//! - **Numeric** ([`range`]): min, max, in_range, greater_than, less_than
-//! - **Collection** ([`size`]): size bounds for `Vec`, slices, etc.
-//! - **Logical** ([`boolean`], [`nullable`]): boolean checks, required/not-null
+//! - **Numeric** ([`range`](crate::validators::range)): min, max, in_range, greater_than, less_than
+//! - **Collection** ([`size`](crate::validators::size)): size bounds for `Vec`, slices, etc.
+//! - **Logical** ([`boolean`](crate::validators::boolean), [`nullable`](crate::validators::nullable)): boolean checks, required/not-null
 //!
 //! # Examples
 //!

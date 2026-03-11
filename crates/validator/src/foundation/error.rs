@@ -38,6 +38,59 @@ pub mod codes {
 }
 
 // ============================================================================
+// VALIDATION MODE
+// ============================================================================
+
+/// Controls error accumulation behavior in composite validators.
+///
+/// Determines whether a validator stops on the first error or collects
+/// all errors before returning.
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_validator::foundation::ValidationMode;
+///
+/// // Default: collect all errors
+/// assert_eq!(ValidationMode::default(), ValidationMode::CollectAll);
+///
+/// // Fail fast: stop on first error
+/// let mode = ValidationMode::FailFast;
+/// assert!(mode.is_fail_fast());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum ValidationMode {
+    /// Stop on the first validation error (short-circuit).
+    ///
+    /// Use when you only need to know whether validation passed,
+    /// or when performance is critical and you don't need all errors.
+    FailFast,
+
+    /// Collect all validation errors before returning (default).
+    ///
+    /// Use when you want to report all problems at once (e.g., form validation).
+    #[default]
+    CollectAll,
+}
+
+impl ValidationMode {
+    /// Returns `true` if this mode stops on the first error.
+    #[inline]
+    #[must_use]
+    pub fn is_fail_fast(self) -> bool {
+        matches!(self, Self::FailFast)
+    }
+
+    /// Returns `true` if this mode collects all errors.
+    #[inline]
+    #[must_use]
+    pub fn is_collect_all(self) -> bool {
+        matches!(self, Self::CollectAll)
+    }
+}
+
+// ============================================================================
 // ERROR EXTRAS (Boxed for rare fields)
 // ============================================================================
 
@@ -188,6 +241,17 @@ impl ValidationError {
         if let Some(pointer) = to_json_pointer(field.as_ref()) {
             self.field = Some(Cow::Owned(pointer));
         }
+        self
+    }
+
+    /// Sets the field path from a typed [`FieldPath`](super::field_path::FieldPath).
+    ///
+    /// This is the preferred way to set field paths when you have a
+    /// pre-validated `FieldPath`.
+    #[must_use = "builder methods must be chained or built"]
+    #[inline]
+    pub fn with_field_path(mut self, path: super::field_path::FieldPath) -> Self {
+        self.field = Some(path.into_inner());
         self
     }
 
@@ -550,7 +614,7 @@ fn redact_if_sensitive(key: &str, value: Cow<'static, str>) -> Cow<'static, str>
     }
 }
 
-fn normalize_pointer(pointer: &str) -> Option<String> {
+pub(crate) fn normalize_pointer(pointer: &str) -> Option<String> {
     let pointer = pointer.trim();
     if pointer.is_empty() || pointer == "#" {
         return None;
@@ -567,7 +631,7 @@ fn normalize_pointer(pointer: &str) -> Option<String> {
     None
 }
 
-fn to_json_pointer(path: &str) -> Option<String> {
+pub(crate) fn to_json_pointer(path: &str) -> Option<String> {
     let path = path.trim();
     if path.is_empty() {
         return None;
@@ -698,6 +762,12 @@ impl ValidationErrors {
     #[inline]
     pub fn errors(&self) -> &[ValidationError] {
         &self.errors
+    }
+
+    /// Returns a mutable reference to the last error, if any.
+    #[inline]
+    pub fn last_mut(&mut self) -> Option<&mut ValidationError> {
+        self.errors.last_mut()
     }
 
     /// Converts to a single error with nested errors.

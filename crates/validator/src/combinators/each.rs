@@ -1,6 +1,6 @@
 //! EACH combinator - validates each element of a collection
 
-use crate::foundation::{Validate, ValidationError};
+use crate::foundation::{Validate, ValidationError, ValidationMode};
 
 // ============================================================================
 // EACH COMBINATOR
@@ -30,7 +30,7 @@ use crate::foundation::{Validate, ValidationError};
 #[derive(Debug, Clone, Copy)]
 pub struct Each<V> {
     inner: V,
-    fail_fast: bool,
+    mode: ValidationMode,
 }
 
 impl<V> Each<V> {
@@ -40,7 +40,7 @@ impl<V> Each<V> {
     pub fn new(inner: V) -> Self {
         Self {
             inner,
-            fail_fast: false,
+            mode: ValidationMode::CollectAll,
         }
     }
 
@@ -48,15 +48,32 @@ impl<V> Each<V> {
     pub fn fail_fast(inner: V) -> Self {
         Self {
             inner,
-            fail_fast: true,
+            mode: ValidationMode::FailFast,
         }
     }
 
     /// Sets whether to stop on first error.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_fail_fast(mut self, fail_fast: bool) -> Self {
-        self.fail_fast = fail_fast;
+        self.mode = if fail_fast {
+            ValidationMode::FailFast
+        } else {
+            ValidationMode::CollectAll
+        };
         self
+    }
+
+    /// Sets the validation mode (fail-fast or collect-all).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_mode(mut self, mode: ValidationMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Returns the current validation mode.
+    #[must_use]
+    pub fn mode(&self) -> ValidationMode {
+        self.mode
     }
 
     /// Returns a reference to the inner validator.
@@ -79,7 +96,7 @@ where
 
         for (index, element) in input.iter().enumerate() {
             if let Err(e) = self.inner.validate(element) {
-                if self.fail_fast {
+                if self.mode.is_fail_fast() {
                     return Err(ValidationError::new(
                         "each_failed",
                         format!("Element at index {} failed: {}", index, e.message),

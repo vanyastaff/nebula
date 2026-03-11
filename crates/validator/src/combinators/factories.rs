@@ -23,7 +23,7 @@
 //! ]);
 //! ```
 
-use crate::foundation::{Validate, ValidationError, ValidationErrors};
+use crate::foundation::{Validate, ValidationError, ValidationErrors, ValidationMode};
 
 // ============================================================================
 // ALL OF (AND semantics)
@@ -54,15 +54,18 @@ where
 {
     AllOf {
         validators: validators.into_iter().collect(),
+        mode: ValidationMode::default(),
     }
 }
 
 /// A validator that requires all inner validators to pass.
 ///
-/// Created by [`all_of()`].
+/// Created by [`all_of()`]. Supports both fail-fast and collect-all modes
+/// via [`with_mode()`](AllOf::with_mode).
 #[derive(Debug, Clone)]
 pub struct AllOf<V> {
     validators: Vec<V>,
+    mode: ValidationMode,
 }
 
 impl<V> AllOf<V> {
@@ -83,6 +86,19 @@ impl<V> AllOf<V> {
     pub fn is_empty(&self) -> bool {
         self.validators.is_empty()
     }
+
+    /// Sets the validation mode (fail-fast or collect-all).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_mode(mut self, mode: ValidationMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Returns the current validation mode.
+    #[must_use]
+    pub fn mode(&self) -> ValidationMode {
+        self.mode
+    }
 }
 
 impl<T: ?Sized, V> Validate<T> for AllOf<V>
@@ -94,6 +110,9 @@ where
 
         for validator in &self.validators {
             if let Err(e) = validator.validate(input) {
+                if self.mode.is_fail_fast() {
+                    return Err(e);
+                }
                 errors.add(e);
             }
         }

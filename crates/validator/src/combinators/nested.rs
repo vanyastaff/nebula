@@ -20,7 +20,7 @@
 //! assert!(validator.validate(&my_struct_instance).is_ok());
 //! ```
 
-use crate::foundation::{Validate, ValidationError};
+use crate::foundation::{Validate, ValidationError, ValidationMode};
 use std::marker::PhantomData;
 
 // ============================================================================
@@ -81,7 +81,7 @@ where
 }
 
 // ============================================================================
-// VALIDATABLE TRAIT
+// SELF-VALIDATING TRAIT
 // ============================================================================
 
 /// Trait for types that can validate themselves.
@@ -92,8 +92,8 @@ where
 /// # Examples
 ///
 /// ```rust,ignore
-/// impl Validatable for User {
-///     fn validate(&self) -> Result<(), ValidationError> {
+/// impl SelfValidating for User {
+///     fn check(&self) -> Result<(), ValidationError> {
 ///         if self.name.is_empty() {
 ///             return Err(ValidationError::new("name", "Name is required"));
 ///         }
@@ -101,20 +101,20 @@ where
 ///     }
 /// }
 /// ```
-pub trait Validatable {
-    /// Validates the instance.
-    fn validate(&self) -> Result<(), ValidationError>;
+pub trait SelfValidating {
+    /// Validates the instance and returns an error if invalid.
+    fn check(&self) -> Result<(), ValidationError>;
 }
 
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 
-/// Creates a nested validator for types that implement [`Validatable`].
+/// Creates a nested validator for types that implement [`SelfValidating`].
 ///
 /// # Type Parameters
 ///
-/// * `T` - A type implementing [`Validatable`]
+/// * `T` - A type implementing [`SelfValidating`]
 ///
 /// # Examples
 ///
@@ -128,9 +128,9 @@ pub trait Validatable {
 #[must_use]
 pub fn nested_validator<T>() -> NestedValidate<T, impl Fn(&T) -> Result<(), ValidationError>>
 where
-    T: Validatable,
+    T: SelfValidating,
 {
-    NestedValidate::new(|input: &T| input.validate())
+    NestedValidate::new(|input: &T| input.check())
 }
 
 /// Creates a nested validator with a custom validation function.
@@ -203,11 +203,11 @@ where
     }
 }
 
-/// Creates an optional nested validator for types that implement [`Validatable`].
+/// Creates an optional nested validator for types that implement [`SelfValidating`].
 ///
 /// # Type Parameters
 ///
-/// * `T` - A type implementing [`Validatable`]
+/// * `T` - A type implementing [`SelfValidating`]
 ///
 /// # Examples
 ///
@@ -222,9 +222,9 @@ where
 #[must_use]
 pub fn optional_nested<T>() -> OptionalNested<T, impl Fn(&T) -> Result<(), ValidationError>>
 where
-    T: Validatable,
+    T: SelfValidating,
 {
-    OptionalNested::new(|input: &T| input.validate())
+    OptionalNested::new(|input: &T| input.check())
 }
 
 // ============================================================================
@@ -233,9 +233,8 @@ where
 
 /// Validates each element in a collection of nested structs.
 ///
-/// Iterates through a slice and validates each element using the
-/// nested validator. Returns an error containing the index of the
-/// first failing element.
+/// Supports both fail-fast and collect-all modes via
+/// [`with_mode()`](CollectionNested::with_mode).
 ///
 /// # Type Parameters
 ///
@@ -244,6 +243,7 @@ where
 #[derive(Debug, Clone)]
 pub struct CollectionNested<T, F> {
     validator: NestedValidate<T, F>,
+    mode: ValidationMode,
 }
 
 impl<T, F> CollectionNested<T, F> {
@@ -255,7 +255,21 @@ impl<T, F> CollectionNested<T, F> {
     pub fn new(validate_fn: F) -> Self {
         Self {
             validator: NestedValidate::new(validate_fn),
+            mode: ValidationMode::default(),
         }
+    }
+
+    /// Sets the validation mode (fail-fast or collect-all).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_mode(mut self, mode: ValidationMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Returns the current validation mode.
+    #[must_use]
+    pub fn mode(&self) -> ValidationMode {
+        self.mode
     }
 }
 
@@ -264,23 +278,42 @@ where
     F: Fn(&T) -> Result<(), ValidationError>,
 {
     fn validate(&self, input: &[T]) -> Result<(), ValidationError> {
+        let mut errors: Vec<ValidationError> = Vec::new();
+
         for (index, item) in input.iter().enumerate() {
-            self.validator.validate(item).map_err(|e| {
-                ValidationError::new(
+            if let Err(e) = self.validator.validate(item) {
+                let indexed_error = ValidationError::new(
                     e.code.clone(),
                     format!("Element {} validation failed: {}", index, e.message),
-                )
-            })?;
+                );
+                if self.mode.is_fail_fast() {
+                    return Err(indexed_error);
+                }
+                errors.push(indexed_error);
+            }
         }
-        Ok(())
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(ValidationError::new(
+                "collection_nested_failed",
+                format!(
+                    "{} of {} elements failed validation",
+                    errors.len(),
+                    input.len()
+                ),
+            )
+            .with_nested(errors))
+        }
     }
 }
 
-/// Creates a collection nested validator for types that implement [`Validatable`].
+/// Creates a collection nested validator for types that implement [`SelfValidating`].
 ///
 /// # Type Parameters
 ///
-/// * `T` - A type implementing [`Validatable`]
+/// * `T` - A type implementing [`SelfValidating`]
 ///
 /// # Examples
 ///
@@ -295,9 +328,9 @@ where
 #[must_use]
 pub fn collection_nested<T>() -> CollectionNested<T, impl Fn(&T) -> Result<(), ValidationError>>
 where
-    T: Validatable,
+    T: SelfValidating,
 {
-    CollectionNested::new(|input: &T| input.validate())
+    CollectionNested::new(|input: &T| input.check())
 }
 
 // ============================================================================
@@ -314,8 +347,8 @@ mod tests {
         age: u32,
     }
 
-    impl Validatable for TestUser {
-        fn validate(&self) -> Result<(), ValidationError> {
+    impl SelfValidating for TestUser {
+        fn check(&self) -> Result<(), ValidationError> {
             if self.name.is_empty() {
                 return Err(ValidationError::new("name_required", "Name is required"));
             }
@@ -434,7 +467,12 @@ mod tests {
         let validator = collection_nested::<TestUser>();
         let result = validator.validate(&users);
         assert!(result.is_err());
-        assert!(result.unwrap_err().message.contains("Element 1"));
+        let err = result.unwrap_err();
+        assert_eq!(err.code.as_ref(), "collection_nested_failed");
+        assert!(err.message.contains("1 of 2"));
+        let nested = err.nested();
+        assert_eq!(nested.len(), 1);
+        assert!(nested[0].message.contains("Element 1"));
     }
 
     #[test]

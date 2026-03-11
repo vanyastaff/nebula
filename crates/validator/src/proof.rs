@@ -9,7 +9,7 @@
 //! - The inner value has **no public field** — it can only be constructed through
 //!   [`Validate::validate_into`](crate::foundation::Validate::validate_into) or
 //!   [`Validated::new`].
-//! - Read access via [`Deref`], [`AsRef`], [`Borrow`], and [`inner()`](Validated::inner).
+//! - Read access via [`Deref`](std::ops::Deref), [`AsRef`], [`Borrow`](std::borrow::Borrow), and [`inner()`](Validated::inner).
 //! - Ownership recovery via [`into_inner()`](Validated::into_inner).
 //! - `Serialize` is derived so validated values can be persisted.
 //!   `Deserialize` is intentionally **not** derived — deserialized data must

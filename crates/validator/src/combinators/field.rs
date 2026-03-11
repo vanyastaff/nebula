@@ -4,7 +4,7 @@
 //! without requiring derive macros.
 
 use crate::combinators::error::CombinatorError;
-use crate::foundation::{Validate, ValidationError};
+use crate::foundation::{Validate, ValidationError, ValidationMode};
 use std::borrow::Cow;
 use std::marker::PhantomData;
 
@@ -271,8 +271,12 @@ impl<U: ?Sized, V: Validate<U>> FieldValidateExt<U> for V {}
 // ============================================================================
 
 /// Validates multiple fields of a struct.
+///
+/// Supports both fail-fast and collect-all modes via
+/// [`with_mode()`](MultiField::with_mode).
 pub struct MultiField<T> {
     validators: Vec<Box<dyn Fn(&T) -> Result<(), ValidationError> + Send + Sync>>,
+    mode: ValidationMode,
 }
 
 impl<T> MultiField<T> {
@@ -281,7 +285,21 @@ impl<T> MultiField<T> {
     pub fn new() -> Self {
         Self {
             validators: Vec::new(),
+            mode: ValidationMode::default(),
         }
+    }
+
+    /// Sets the validation mode (fail-fast or collect-all).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_mode(mut self, mode: ValidationMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Returns the current validation mode.
+    #[must_use]
+    pub fn mode(&self) -> ValidationMode {
+        self.mode
     }
 
     /// Adds a field validator.
@@ -324,6 +342,9 @@ impl<T> Validate<T> for MultiField<T> {
 
         for validator in &self.validators {
             if let Err(err) = validator(input) {
+                if self.mode.is_fail_fast() {
+                    return Err(err);
+                }
                 errors.push(err);
             }
         }

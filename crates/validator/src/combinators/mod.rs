@@ -102,7 +102,7 @@ pub use json_field::{JsonField, json_field, json_field_optional};
 pub use lazy::{Lazy, lazy};
 pub use message::{WithCode, WithMessage, with_code, with_message};
 pub use nested::{
-    CollectionNested, NestedValidate, OptionalNested, Validatable, collection_nested,
+    CollectionNested, NestedValidate, OptionalNested, SelfValidating, collection_nested,
     custom_nested, nested_validator, optional_nested,
 };
 pub use not::{Not, not};
