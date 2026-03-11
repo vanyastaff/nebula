@@ -42,7 +42,7 @@ pub use crate::proof::Validated;
 pub use crate::error::ValidatorError;
 
 // ============================================================================
-// DSL: Declarative rules and engine
+// RULES: Declarative rule system and engine
 // ============================================================================
 
 pub use crate::context::FieldValueProvider;

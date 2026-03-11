@@ -2,6 +2,13 @@
 //!
 //! A composable, type-safe validation framework for the Nebula workflow engine.
 //!
+//! This crate provides two complementary validation approaches:
+//!
+//! - **Programmatic validators** — composable Rust types using the [`Validate`](foundation::Validate)
+//!   trait with `.and()`, `.or()`, `.not()` combinators.
+//! - **Declarative rules** — a unified [`Rule`] enum that can be serialized to/from JSON
+//!   and evaluated at runtime for value validation, context predicates, and logical combinators.
+//!
 //! ## Quick Start
 //!
 //! ```rust,ignore
@@ -25,7 +32,47 @@
 //! | [`Validated<T>`](proof::Validated) | Proof token certifying a value passed validation |
 //! | [`ValidationError`](foundation::ValidationError) | Structured error (80 bytes, `Cow`-based) |
 //! | [`AnyValidator<T>`](foundation::AnyValidator) | Type-erased validator for dynamic dispatch |
+//! | [`Rule`] | Unified declarative rule (value, predicate, combinator) |
+//! | [`FieldValueProvider`] | Trait for reading sibling field values in predicates |
+//! | [`ExecutionMode`] | Controls which rule categories run (`StaticOnly`, `Deferred`, `Full`) |
 //! | [`ValidatorError`] | Crate-level operational error type |
+//!
+//! ## Declarative Rules
+//!
+//! The [`Rule`] enum is the single source of truth for declarative validation.
+//! Rules are JSON-serializable and cover four categories:
+//!
+//! ```rust
+//! use nebula_validator::{Rule, ExecutionMode, validate_rules, FieldValueProvider};
+//! use serde_json::json;
+//! use std::collections::HashMap;
+//!
+//! // Value validation — checks a single JSON value
+//! let rule = Rule::MinLength { min: 3, message: None };
+//! assert!(rule.validate_value(&json!("alice")).is_ok());
+//!
+//! // Context predicate — checks a sibling field
+//! let rule = Rule::Eq { field: "status".into(), value: json!("active") };
+//! let mut ctx = HashMap::new();
+//! ctx.insert("status".to_owned(), json!("active"));
+//! assert!(rule.evaluate(&ctx));
+//!
+//! // Logical combinator — compose rules
+//! let rule = Rule::All {
+//!     rules: vec![
+//!         Rule::MinLength { min: 3, message: None },
+//!         Rule::MaxLength { max: 20, message: None },
+//!     ],
+//! };
+//! assert!(rule.validate_value(&json!("hello")).is_ok());
+//!
+//! // Engine — batch-validate with execution mode
+//! let rules = vec![
+//!     Rule::MinLength { min: 3, message: None },
+//!     Rule::Pattern { pattern: "^[a-z]+$".into(), message: None },
+//! ];
+//! assert!(validate_rules(&json!("alice"), &rules, ExecutionMode::StaticOnly).is_ok());
+//! ```
 //!
 //! ## Creating Validators
 //!
@@ -44,6 +91,19 @@
 //! - **Nullable**: [`Required`](validators::Required)
 //! - **Network**: [`Ipv4`](validators::Ipv4), [`Hostname`](validators::Hostname)
 //! - **Temporal**: [`DateTime`](validators::DateTime), [`Uuid`](validators::Uuid)
+//!
+//! ## Module Overview
+//!
+//! | Module | Contents |
+//! |--------|----------|
+//! | [`foundation`] | Core traits, errors, type-erased validators |
+//! | [`validators`] | Built-in validator implementations |
+//! | [`combinators`] | Composition types (`.and()`, `.or()`, [`.not()`](combinators::not())) |
+//! | [`rule`] | Unified [`Rule`] enum for declarative validation |
+//! | [`context`] | [`FieldValueProvider`] trait for context predicates |
+//! | [`engine`] | [`validate_rules`] batch evaluation with [`ExecutionMode`] |
+//! | [`proof`] | [`Validated<T>`](proof::Validated) proof tokens |
+//! | [`error`] | Crate-level [`ValidatorError`] |
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

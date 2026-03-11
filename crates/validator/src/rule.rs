@@ -4,28 +4,55 @@
 //! context-predicate evaluation. Adding a new rule means adding one
 //! enum variant and one match arm — everything else works automatically.
 //!
-//! # Rule categories
+//! Rules are serializable to/from JSON via `serde` using `#[serde(tag = "rule")]`
+//! internally-tagged representation. For example:
 //!
-//! | Category | Examples | Method |
-//! |---|---|---|
-//! | Value validation | `MinLength`, `Max`, `Pattern` | [`Rule::validate_value`] |
-//! | Context predicate | `Eq`, `Set`, `IsTrue` | [`Rule::evaluate`] |
-//! | Deferred | `Custom`, `UniqueBy` | skipped at schema time |
-//! | Logical combinator | `All`, `Any`, `Not` | both methods |
+//! ```json
+//! {"rule": "min_length", "min": 3}
+//! {"rule": "eq", "field": "status", "value": "active"}
+//! {"rule": "all", "rules": [{"rule": "min_length", "min": 3}, {"rule": "max_length", "max": 20}]}
+//! ```
+//!
+//! # Rule Categories
+//!
+//! | Category | Variants | Method | Classification |
+//! |---|---|---|---|
+//! | Value validation | `MinLength`, `MaxLength`, `Pattern`, `Min`, `Max`, `OneOf`, `MinItems`, `MaxItems` | [`Rule::validate_value`] | [`Rule::is_value_rule`] |
+//! | Context predicate | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `IsTrue`, `IsFalse`, `Set`, `Empty`, `Contains`, `Matches`, `In` | [`Rule::evaluate`] | [`Rule::is_predicate`] |
+//! | Deferred | `Custom`, `UniqueBy` | skipped at schema time | [`Rule::is_deferred`] |
+//! | Logical combinator | `All`, `Any`, `Not` | both methods | — |
+//!
+//! # Type Safety
+//!
+//! Value rules silently pass when the JSON type doesn't match (e.g. `MinLength`
+//! on a number returns `Ok`). This allows rules to be applied broadly without
+//! requiring callers to pre-filter by type.
+//!
+//! Predicate rules return `Ok(())` from [`Rule::validate_value`] (they are not
+//! value checks), and value rules return `true` from [`Rule::evaluate`] (they
+//! are not predicates). This makes both methods safe to call on any rule variant.
 //!
 //! # Examples
+//!
+//! ## Value Validation
 //!
 //! ```rust
 //! use nebula_validator::Rule;
 //! use serde_json::json;
 //!
-//! // Value validation
 //! let rule = Rule::MinLength { min: 3, message: None };
 //! assert!(rule.validate_value(&json!("alice")).is_ok());
 //! assert!(rule.validate_value(&json!("ab")).is_err());
 //!
-//! // Context predicate
-//! use nebula_validator::FieldValueProvider;
+//! // Non-matching types pass silently
+//! assert!(rule.validate_value(&json!(42)).is_ok());
+//! ```
+//!
+//! ## Context Predicates
+//!
+//! ```rust
+//! use nebula_validator::{Rule, FieldValueProvider};
+//! use serde_json::json;
 //! use std::collections::HashMap;
 //!
 //! let rule = Rule::Eq {
@@ -33,8 +60,38 @@
 //!     value: json!("active"),
 //! };
 //! let mut values = HashMap::new();
-//! values.insert("status".into(), json!("active"));
+//! values.insert("status".to_owned(), json!("active"));
 //! assert!(rule.evaluate(&values));
+//! ```
+//!
+//! ## Logical Combinators
+//!
+//! ```rust
+//! use nebula_validator::Rule;
+//! use serde_json::json;
+//!
+//! let rule = Rule::All {
+//!     rules: vec![
+//!         Rule::MinLength { min: 3, message: None },
+//!         Rule::MaxLength { max: 20, message: None },
+//!     ],
+//! };
+//! assert!(rule.validate_value(&json!("hello")).is_ok());
+//! assert!(rule.validate_value(&json!("ab")).is_err());
+//! ```
+//!
+//! ## Serde Roundtrip
+//!
+//! ```rust
+//! use nebula_validator::Rule;
+//! use serde_json::json;
+//!
+//! let rule = Rule::MinLength { min: 5, message: Some("too short".into()) };
+//! let json = serde_json::to_value(&rule).unwrap();
+//! assert_eq!(json, json!({"rule": "min_length", "min": 5, "message": "too short"}));
+//!
+//! let back: Rule = serde_json::from_value(json).unwrap();
+//! assert_eq!(back, rule);
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -48,6 +105,9 @@ use crate::context::FieldValueProvider;
 ///
 /// Covers value validation, context predicates, deferred runtime checks,
 /// and logical combinators. One enum, one source of truth.
+///
+/// See the [module-level documentation](self) for categories, examples,
+/// and serialization format.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "rule", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -320,6 +380,18 @@ impl Rule {
     /// Only meaningful for value-validation rules. Predicate rules
     /// return `Ok(())` (use [`evaluate`](Self::evaluate) instead).
     /// Deferred rules return `Ok(())` (skipped at static time).
+    ///
+    /// # Type Coercion
+    ///
+    /// When the JSON value type doesn't match the rule's expected type
+    /// (e.g. `MinLength` on a number), validation passes silently (`Ok(())`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValidationError`] when the value violates the rule.
+    /// The error's `code` field identifies the rule (e.g. `"min_length"`,
+    /// `"pattern"`, `"one_of"`). Custom `message` overrides the default
+    /// if provided in the rule.
     pub fn validate_value(&self, value: &serde_json::Value) -> Result<(), ValidationError> {
         match self {
             // ── Value rules ─────────────────────────────────────────
@@ -462,6 +534,16 @@ impl Rule {
     /// Only meaningful for context-predicate rules and logical combinators.
     /// Value-validation rules return `true` (vacuously — use
     /// [`validate_value`](Self::validate_value) instead).
+    ///
+    /// # Missing Fields
+    ///
+    /// Behavior when the target field is absent:
+    /// - `Eq` → `false` (can't equal anything)
+    /// - `Ne` → `true` (absent ≠ any value)
+    /// - `Gt`, `Gte`, `Lt`, `Lte` → `false` (no number to compare)
+    /// - `IsTrue`, `IsFalse` → `false` (no boolean)
+    /// - `Set` → `false`, `Empty` → `true`
+    /// - `Contains`, `Matches`, `In` → `false`
     #[must_use]
     pub fn evaluate(&self, values: &impl FieldValueProvider) -> bool {
         match self {
@@ -775,12 +857,54 @@ mod tests {
     }
 
     #[test]
+    fn gte_predicate() {
+        let rule = Rule::Gte {
+            field: "age".into(),
+            value: serde_json::Number::from(18),
+        };
+        assert!(rule.evaluate(&values(&[("age", json!(20))])));
+        assert!(rule.evaluate(&values(&[("age", json!(18))])));
+        assert!(!rule.evaluate(&values(&[("age", json!(17))])));
+    }
+
+    #[test]
+    fn lt_predicate() {
+        let rule = Rule::Lt {
+            field: "count".into(),
+            value: serde_json::Number::from(10),
+        };
+        assert!(rule.evaluate(&values(&[("count", json!(5))])));
+        assert!(!rule.evaluate(&values(&[("count", json!(10))])));
+        assert!(!rule.evaluate(&values(&[("count", json!(15))])));
+    }
+
+    #[test]
+    fn lte_predicate() {
+        let rule = Rule::Lte {
+            field: "count".into(),
+            value: serde_json::Number::from(10),
+        };
+        assert!(rule.evaluate(&values(&[("count", json!(5))])));
+        assert!(rule.evaluate(&values(&[("count", json!(10))])));
+        assert!(!rule.evaluate(&values(&[("count", json!(11))])));
+    }
+
+    #[test]
     fn is_true_predicate() {
         let rule = Rule::IsTrue {
             field: "enabled".into(),
         };
         assert!(rule.evaluate(&values(&[("enabled", json!(true))])));
         assert!(!rule.evaluate(&values(&[("enabled", json!(false))])));
+    }
+
+    #[test]
+    fn is_false_predicate() {
+        let rule = Rule::IsFalse {
+            field: "disabled".into(),
+        };
+        assert!(rule.evaluate(&values(&[("disabled", json!(false))])));
+        assert!(!rule.evaluate(&values(&[("disabled", json!(true))])));
     }
 
     #[test]
@@ -1013,5 +1137,916 @@ mod tests {
             }
             .is_deferred()
         );
+    }
+
+    // ── Missing field edge cases ────────────────────────────────────────
+
+    #[test]
+    fn eq_missing_field_is_false() {
+        let rule = Rule::Eq {
+            field: "x".into(),
+            value: json!(1),
+        };
+        assert!(!rule.evaluate(&values(&[])));
+    }
+
+    #[test]
+    fn ne_missing_field_is_true() {
+        let rule = Rule::Ne {
+            field: "x".into(),
+            value: json!(1),
+        };
+        // Missing field can't equal value, so Ne is true.
+        assert!(rule.evaluate(&values(&[])));
+    }
+
+    #[test]
+    fn gt_missing_field_is_false() {
+        let rule = Rule::Gt {
+            field: "x".into(),
+            value: serde_json::Number::from(0),
+        };
+        assert!(!rule.evaluate(&values(&[])));
+    }
+
+    #[test]
+    fn gt_non_numeric_field_is_false() {
+        let rule = Rule::Gt {
+            field: "x".into(),
+            value: serde_json::Number::from(0),
+        };
+        assert!(!rule.evaluate(&values(&[("x", json!("text"))])));
+    }
+
+    #[test]
+    fn gte_missing_field_is_false() {
+        let rule = Rule::Gte {
+            field: "x".into(),
+            value: serde_json::Number::from(0),
+        };
+        assert!(!rule.evaluate(&values(&[])));
+    }
+
+    #[test]
+    fn lt_missing_field_is_false() {
+        let rule = Rule::Lt {
+            field: "x".into(),
+            value: serde_json::Number::from(0),
+        };
+        assert!(!rule.evaluate(&values(&[])));
+    }
+
+    #[test]
+    fn lte_missing_field_is_false() {
+        let rule = Rule::Lte {
+            field: "x".into(),
+            value: serde_json::Number::from(0),
+        };
+        assert!(!rule.evaluate(&values(&[])));
+    }
+
+    #[test]
+    fn is_true_missing_field_is_false() {
+        let rule = Rule::IsTrue {
+            field: "x".into(),
+        };
+        assert!(!rule.evaluate(&values(&[])));
+    }
+
+    #[test]
+    fn is_true_non_bool_is_false() {
+        let rule = Rule::IsTrue {
+            field: "x".into(),
+        };
+        assert!(!rule.evaluate(&values(&[("x", json!(1))])));
+    }
+
+    #[test]
+    fn is_false_missing_field_is_false() {
+        let rule = Rule::IsFalse {
+            field: "x".into(),
+        };
+        assert!(!rule.evaluate(&values(&[])));
+    }
+
+    #[test]
+    fn is_false_non_bool_is_false() {
+        let rule = Rule::IsFalse {
+            field: "x".into(),
+        };
+        assert!(!rule.evaluate(&values(&[("x", json!(0))])));
+    }
+
+    #[test]
+    fn set_with_number_is_true() {
+        let rule = Rule::Set {
+            field: "x".into(),
+        };
+        assert!(rule.evaluate(&values(&[("x", json!(0))])));
+    }
+
+    #[test]
+    fn set_with_empty_array_is_false() {
+        let rule = Rule::Set {
+            field: "x".into(),
+        };
+        assert!(!rule.evaluate(&values(&[("x", json!([]))])));
+    }
+
+    #[test]
+    fn empty_with_empty_array_is_true() {
+        let rule = Rule::Empty {
+            field: "x".into(),
+        };
+        assert!(rule.evaluate(&values(&[("x", json!([]))])));
+    }
+
+    #[test]
+    fn empty_with_non_empty_array_is_false() {
+        let rule = Rule::Empty {
+            field: "x".into(),
+        };
+        assert!(!rule.evaluate(&values(&[("x", json!([1]))])));
+    }
+
+    #[test]
+    fn empty_with_number_is_false() {
+        let rule = Rule::Empty {
+            field: "x".into(),
+        };
+        assert!(!rule.evaluate(&values(&[("x", json!(0))])));
+    }
+
+    #[test]
+    fn contains_non_string_non_array_is_false() {
+        let rule = Rule::Contains {
+            field: "x".into(),
+            value: json!(1),
+        };
+        assert!(!rule.evaluate(&values(&[("x", json!(42))])));
+    }
+
+    #[test]
+    fn contains_missing_field_is_false() {
+        let rule = Rule::Contains {
+            field: "x".into(),
+            value: json!("a"),
+        };
+        assert!(!rule.evaluate(&values(&[])));
+    }
+
+    #[test]
+    fn matches_missing_field_is_false() {
+        let rule = Rule::Matches {
+            field: "x".into(),
+            pattern: ".*".into(),
+        };
+        assert!(!rule.evaluate(&values(&[])));
+    }
+
+    #[test]
+    fn matches_invalid_regex_is_false() {
+        let rule = Rule::Matches {
+            field: "x".into(),
+            pattern: "[invalid".into(),
+        };
+        assert!(!rule.evaluate(&values(&[("x", json!("anything"))])));
+    }
+
+    #[test]
+    fn in_missing_field_is_false() {
+        let rule = Rule::In {
+            field: "x".into(),
+            values: vec![json!(1), json!(2)],
+        };
+        assert!(!rule.evaluate(&values(&[])));
+    }
+
+    // ── Numeric predicate with floats ───────────────────────────────────
+
+    #[test]
+    fn gt_float_comparison() {
+        let rule = Rule::Gt {
+            field: "val".into(),
+            value: serde_json::Number::from_f64(3.14).unwrap(),
+        };
+        assert!(rule.evaluate(&values(&[("val", json!(3.15))])));
+        assert!(!rule.evaluate(&values(&[("val", json!(3.14))])));
+        assert!(!rule.evaluate(&values(&[("val", json!(3.13))])));
+    }
+
+    // ── Value rules return true in evaluate ─────────────────────────────
+
+    #[test]
+    fn value_rule_evaluate_returns_true() {
+        let rule = Rule::MinLength {
+            min: 100,
+            message: None,
+        };
+        // Value rules are vacuously true when used as predicates.
+        assert!(rule.evaluate(&values(&[])));
+    }
+
+    #[test]
+    fn deferred_rule_evaluate_returns_true() {
+        let rule = Rule::Custom {
+            expression: "false".into(),
+            message: None,
+        };
+        assert!(rule.evaluate(&values(&[])));
+    }
+
+    // ── Predicates return Ok in validate_value ──────────────────────────
+
+    #[test]
+    fn predicate_validate_value_returns_ok() {
+        let rule = Rule::Eq {
+            field: "x".into(),
+            value: json!(1),
+        };
+        assert!(rule.validate_value(&json!("anything")).is_ok());
+    }
+
+    // ── Value validation edge cases ─────────────────────────────────────
+
+    #[test]
+    fn pattern_invalid_regex_returns_error() {
+        let rule = Rule::Pattern {
+            pattern: "[invalid".into(),
+            message: None,
+        };
+        let err = rule.validate_value(&json!("test")).unwrap_err();
+        assert_eq!(err.code.as_ref(), "invalid_pattern");
+    }
+
+    #[test]
+    fn min_float_boundary() {
+        let rule = Rule::Min {
+            min: serde_json::Number::from_f64(3.14).unwrap(),
+            message: None,
+        };
+        assert!(rule.validate_value(&json!(3.14)).is_ok());
+        assert!(rule.validate_value(&json!(3.15)).is_ok());
+        assert!(rule.validate_value(&json!(3.13)).is_err());
+    }
+
+    #[test]
+    fn max_float_boundary() {
+        let rule = Rule::Max {
+            max: serde_json::Number::from_f64(9.99).unwrap(),
+            message: None,
+        };
+        assert!(rule.validate_value(&json!(9.99)).is_ok());
+        assert!(rule.validate_value(&json!(9.98)).is_ok());
+        assert!(rule.validate_value(&json!(10.0)).is_err());
+    }
+
+    #[test]
+    fn min_on_non_number_is_ok() {
+        let rule = Rule::Min {
+            min: serde_json::Number::from(5),
+            message: None,
+        };
+        assert!(rule.validate_value(&json!("text")).is_ok());
+    }
+
+    #[test]
+    fn max_on_non_number_is_ok() {
+        let rule = Rule::Max {
+            max: serde_json::Number::from(5),
+            message: None,
+        };
+        assert!(rule.validate_value(&json!(null)).is_ok());
+    }
+
+    #[test]
+    fn one_of_with_mixed_types() {
+        let rule = Rule::OneOf {
+            values: vec![json!(1), json!("yes"), json!(true)],
+            message: None,
+        };
+        assert!(rule.validate_value(&json!(1)).is_ok());
+        assert!(rule.validate_value(&json!("yes")).is_ok());
+        assert!(rule.validate_value(&json!(true)).is_ok());
+        assert!(rule.validate_value(&json!(false)).is_err());
+    }
+
+    #[test]
+    fn one_of_custom_message() {
+        let rule = Rule::OneOf {
+            values: vec![json!("a")],
+            message: Some("pick something valid".into()),
+        };
+        let err = rule.validate_value(&json!("z")).unwrap_err();
+        assert_eq!(err.message.as_ref(), "pick something valid");
+    }
+
+    #[test]
+    fn min_items_on_non_array_is_ok() {
+        let rule = Rule::MinItems {
+            min: 5,
+            message: None,
+        };
+        assert!(rule.validate_value(&json!("not an array")).is_ok());
+    }
+
+    #[test]
+    fn max_items_on_non_array_is_ok() {
+        let rule = Rule::MaxItems {
+            max: 1,
+            message: None,
+        };
+        assert!(rule.validate_value(&json!(42)).is_ok());
+    }
+
+    #[test]
+    fn min_length_on_null_is_ok() {
+        let rule = Rule::MinLength {
+            min: 3,
+            message: None,
+        };
+        assert!(rule.validate_value(&json!(null)).is_ok());
+    }
+
+    #[test]
+    fn max_length_custom_message() {
+        let rule = Rule::MaxLength {
+            max: 3,
+            message: Some("way too long".into()),
+        };
+        let err = rule.validate_value(&json!("hello")).unwrap_err();
+        assert_eq!(err.message.as_ref(), "way too long");
+    }
+
+    #[test]
+    fn pattern_custom_message() {
+        let rule = Rule::Pattern {
+            pattern: "^[0-9]+$".into(),
+            message: Some("digits only!".into()),
+        };
+        let err = rule.validate_value(&json!("abc")).unwrap_err();
+        assert_eq!(err.message.as_ref(), "digits only!");
+    }
+
+    #[test]
+    fn min_items_exact_boundary() {
+        let rule = Rule::MinItems {
+            min: 2,
+            message: None,
+        };
+        assert!(rule.validate_value(&json!([1, 2])).is_ok());
+        assert!(rule.validate_value(&json!([1])).is_err());
+    }
+
+    #[test]
+    fn max_items_exact_boundary() {
+        let rule = Rule::MaxItems {
+            max: 2,
+            message: None,
+        };
+        assert!(rule.validate_value(&json!([1, 2])).is_ok());
+        assert!(rule.validate_value(&json!([1, 2, 3])).is_err());
+    }
+
+    #[test]
+    fn validate_null_value_passes_all_value_rules() {
+        let rules = vec![
+            Rule::MinLength {
+                min: 1,
+                message: None,
+            },
+            Rule::MaxLength {
+                max: 1,
+                message: None,
+            },
+            Rule::Pattern {
+                pattern: "^x$".into(),
+                message: None,
+            },
+            Rule::Min {
+                min: serde_json::Number::from(1),
+                message: None,
+            },
+            Rule::Max {
+                max: serde_json::Number::from(1),
+                message: None,
+            },
+            Rule::MinItems {
+                min: 1,
+                message: None,
+            },
+            Rule::MaxItems {
+                max: 1,
+                message: None,
+            },
+        ];
+        for rule in &rules {
+            assert!(
+                rule.validate_value(&json!(null)).is_ok(),
+                "rule {:?} should pass on null",
+                rule
+            );
+        }
+    }
+
+    // ── Combinator edge cases ───────────────────────────────────────────
+
+    #[test]
+    fn all_empty_rules_passes() {
+        let rule = Rule::All { rules: vec![] };
+        assert!(rule.validate_value(&json!("anything")).is_ok());
+    }
+
+    #[test]
+    fn any_empty_rules_passes() {
+        let rule = Rule::Any { rules: vec![] };
+        assert!(rule.validate_value(&json!("anything")).is_ok());
+    }
+
+    #[test]
+    fn all_with_single_failing_rule() {
+        let rule = Rule::All {
+            rules: vec![
+                Rule::MinLength {
+                    min: 1,
+                    message: None,
+                },
+                Rule::MaxLength {
+                    max: 3,
+                    message: None,
+                },
+                Rule::Pattern {
+                    pattern: "^[0-9]+$".into(),
+                    message: None,
+                },
+            ],
+        };
+        // "ab" passes MinLength and MaxLength but fails Pattern
+        assert!(rule.validate_value(&json!("ab")).is_err());
+    }
+
+    #[test]
+    fn any_first_passes() {
+        let rule = Rule::Any {
+            rules: vec![
+                Rule::MinLength {
+                    min: 1,
+                    message: None,
+                },
+                Rule::MinLength {
+                    min: 100,
+                    message: None,
+                },
+            ],
+        };
+        assert!(rule.validate_value(&json!("hello")).is_ok());
+    }
+
+    #[test]
+    fn any_last_passes() {
+        let rule = Rule::Any {
+            rules: vec![
+                Rule::MinLength {
+                    min: 100,
+                    message: None,
+                },
+                Rule::MinLength {
+                    min: 1,
+                    message: None,
+                },
+            ],
+        };
+        assert!(rule.validate_value(&json!("hello")).is_ok());
+    }
+
+    #[test]
+    fn nested_combinators() {
+        // All(Any(MinLength(10), MaxLength(3)), Pattern(^[a-z]+$))
+        let rule = Rule::All {
+            rules: vec![
+                Rule::Any {
+                    rules: vec![
+                        Rule::MinLength {
+                            min: 10,
+                            message: None,
+                        },
+                        Rule::MaxLength {
+                            max: 3,
+                            message: None,
+                        },
+                    ],
+                },
+                Rule::Pattern {
+                    pattern: "^[a-z]+$".into(),
+                    message: None,
+                },
+            ],
+        };
+        // "ab" → Any(MinLength(10) fails, MaxLength(3) passes) → ok; Pattern passes → ok
+        assert!(rule.validate_value(&json!("ab")).is_ok());
+        // "AB" → Any passes, but Pattern fails
+        assert!(rule.validate_value(&json!("AB")).is_err());
+        // "abcde" → Any(MinLength fails, MaxLength fails) → fails
+        assert!(rule.validate_value(&json!("abcde")).is_err());
+    }
+
+    #[test]
+    fn not_with_not_double_negation() {
+        let rule = Rule::Not {
+            inner: Box::new(Rule::Not {
+                inner: Box::new(Rule::MinLength {
+                    min: 3,
+                    message: None,
+                }),
+            }),
+        };
+        // Double negation: Not(Not(MinLength(3))) == MinLength(3)
+        assert!(rule.validate_value(&json!("hello")).is_ok());
+        assert!(rule.validate_value(&json!("ab")).is_err());
+    }
+
+    #[test]
+    fn all_evaluate_with_predicates() {
+        let rule = Rule::All {
+            rules: vec![
+                Rule::Eq {
+                    field: "a".into(),
+                    value: json!(1),
+                },
+                Rule::Set {
+                    field: "b".into(),
+                },
+            ],
+        };
+        assert!(rule.evaluate(&values(&[("a", json!(1)), ("b", json!("x"))])));
+        assert!(!rule.evaluate(&values(&[("a", json!(1))])));
+        assert!(!rule.evaluate(&values(&[("b", json!("x"))])));
+    }
+
+    #[test]
+    fn any_evaluate_with_predicates() {
+        let rule = Rule::Any {
+            rules: vec![
+                Rule::Eq {
+                    field: "a".into(),
+                    value: json!(1),
+                },
+                Rule::Set {
+                    field: "b".into(),
+                },
+            ],
+        };
+        assert!(rule.evaluate(&values(&[("a", json!(1))])));
+        assert!(rule.evaluate(&values(&[("b", json!("x"))])));
+        assert!(!rule.evaluate(&values(&[])));
+    }
+
+    // ── Serde all predicate variants ────────────────────────────────────
+
+    #[test]
+    fn serde_roundtrip_gt() {
+        let rule = Rule::Gt {
+            field: "x".into(),
+            value: serde_json::Number::from(5),
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "gt");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_roundtrip_gte() {
+        let rule = Rule::Gte {
+            field: "x".into(),
+            value: serde_json::Number::from(5),
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "gte");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_roundtrip_lt() {
+        let rule = Rule::Lt {
+            field: "x".into(),
+            value: serde_json::Number::from(5),
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "lt");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_roundtrip_lte() {
+        let rule = Rule::Lte {
+            field: "x".into(),
+            value: serde_json::Number::from(5),
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "lte");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_roundtrip_is_true() {
+        let rule = Rule::IsTrue {
+            field: "x".into(),
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "is_true");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_roundtrip_is_false() {
+        let rule = Rule::IsFalse {
+            field: "x".into(),
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "is_false");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_roundtrip_set() {
+        let rule = Rule::Set {
+            field: "x".into(),
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "set");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_roundtrip_empty() {
+        let rule = Rule::Empty {
+            field: "x".into(),
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "empty");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_roundtrip_contains() {
+        let rule = Rule::Contains {
+            field: "tags".into(),
+            value: json!("rust"),
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "contains");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_roundtrip_matches() {
+        let rule = Rule::Matches {
+            field: "email".into(),
+            pattern: r"^[^@]+@[^@]+$".into(),
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "matches");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_roundtrip_in() {
+        let rule = Rule::In {
+            field: "role".into(),
+            values: vec![json!("admin"), json!("editor")],
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "in");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_roundtrip_ne() {
+        let rule = Rule::Ne {
+            field: "status".into(),
+            value: json!("deleted"),
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "ne");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_roundtrip_not() {
+        let rule = Rule::Not {
+            inner: Box::new(Rule::Eq {
+                field: "x".into(),
+                value: json!(1),
+            }),
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "not");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_roundtrip_any() {
+        let rule = Rule::Any {
+            rules: vec![
+                Rule::Eq {
+                    field: "a".into(),
+                    value: json!(1),
+                },
+                Rule::IsTrue {
+                    field: "b".into(),
+                },
+            ],
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "any");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_roundtrip_unique_by() {
+        let rule = Rule::UniqueBy {
+            key: "id".into(),
+            message: Some("must be unique".into()),
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "unique_by");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_roundtrip_custom() {
+        let rule = Rule::Custom {
+            expression: "len(items) > 0".into(),
+            message: None,
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["rule"], "custom");
+        let back: Rule = serde_json::from_value(json).unwrap();
+        assert_eq!(back, rule);
+    }
+
+    #[test]
+    fn serde_deserialize_from_json_string() {
+        let json_str = r#"{"rule":"min_length","min":5}"#;
+        let rule: Rule = serde_json::from_str(json_str).unwrap();
+        assert_eq!(
+            rule,
+            Rule::MinLength {
+                min: 5,
+                message: None
+            }
+        );
+    }
+
+    #[test]
+    fn serde_deserialize_nested_combinator() {
+        let json_str = r#"{
+            "rule": "all",
+            "rules": [
+                {"rule": "min_length", "min": 3},
+                {"rule": "not", "inner": {"rule": "eq", "field": "x", "value": 1}}
+            ]
+        }"#;
+        let rule: Rule = serde_json::from_str(json_str).unwrap();
+        match rule {
+            Rule::All { rules } => assert_eq!(rules.len(), 2),
+            other => panic!("expected All, got {other:?}"),
+        }
+    }
+
+    // ── Classification completeness ─────────────────────────────────────
+
+    #[test]
+    fn all_combinators_are_neither_value_nor_predicate_nor_deferred() {
+        let combinators = vec![
+            Rule::All { rules: vec![] },
+            Rule::Any { rules: vec![] },
+            Rule::Not {
+                inner: Box::new(Rule::IsTrue {
+                    field: "x".into(),
+                }),
+            },
+        ];
+        for c in &combinators {
+            assert!(!c.is_value_rule(), "{c:?} should not be value_rule");
+            assert!(!c.is_predicate(), "{c:?} should not be predicate");
+            assert!(!c.is_deferred(), "{c:?} should not be deferred");
+        }
+    }
+
+    #[test]
+    fn all_value_rules_are_not_predicates() {
+        let value_rules = vec![
+            Rule::Pattern {
+                pattern: "x".into(),
+                message: None,
+            },
+            Rule::MinLength {
+                min: 1,
+                message: None,
+            },
+            Rule::MaxLength {
+                max: 1,
+                message: None,
+            },
+            Rule::Min {
+                min: serde_json::Number::from(1),
+                message: None,
+            },
+            Rule::Max {
+                max: serde_json::Number::from(1),
+                message: None,
+            },
+            Rule::OneOf {
+                values: vec![],
+                message: None,
+            },
+            Rule::MinItems {
+                min: 1,
+                message: None,
+            },
+            Rule::MaxItems {
+                max: 1,
+                message: None,
+            },
+        ];
+        for r in &value_rules {
+            assert!(r.is_value_rule(), "{r:?} should be value_rule");
+            assert!(!r.is_predicate(), "{r:?} should not be predicate");
+        }
+    }
+
+    #[test]
+    fn all_predicates_are_not_value_rules() {
+        let predicates = vec![
+            Rule::Eq {
+                field: "x".into(),
+                value: json!(1),
+            },
+            Rule::Ne {
+                field: "x".into(),
+                value: json!(1),
+            },
+            Rule::Gt {
+                field: "x".into(),
+                value: serde_json::Number::from(1),
+            },
+            Rule::Gte {
+                field: "x".into(),
+                value: serde_json::Number::from(1),
+            },
+            Rule::Lt {
+                field: "x".into(),
+                value: serde_json::Number::from(1),
+            },
+            Rule::Lte {
+                field: "x".into(),
+                value: serde_json::Number::from(1),
+            },
+            Rule::IsTrue {
+                field: "x".into(),
+            },
+            Rule::IsFalse {
+                field: "x".into(),
+            },
+            Rule::Set {
+                field: "x".into(),
+            },
+            Rule::Empty {
+                field: "x".into(),
+            },
+            Rule::Contains {
+                field: "x".into(),
+                value: json!(1),
+            },
+            Rule::Matches {
+                field: "x".into(),
+                pattern: "x".into(),
+            },
+            Rule::In {
+                field: "x".into(),
+                values: vec![],
+            },
+        ];
+        for r in &predicates {
+            assert!(r.is_predicate(), "{r:?} should be predicate");
+            assert!(!r.is_value_rule(), "{r:?} should not be value_rule");
+            assert!(!r.is_deferred(), "{r:?} should not be deferred");
+        }
     }
 }
