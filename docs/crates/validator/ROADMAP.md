@@ -7,8 +7,9 @@
   - Phase 2 governance automation (error registry, compatibility fixtures, migration policy).
   - Phase 3 performance hardening (benchmark budgets, bench profiles, threshold policy, cache/error benchmarks).
   - Phase 4 ecosystem and DX (patterns, schema evaluation, macro guide, stability boundaries).
+  - Phase 5 stabilization and integration (ValidationMode, FieldPath, SelfValidating, prelude expansion).
 - next focus:
-  - all 4 phases complete. Crate is in maintenance mode — no new phases planned.
+  - Phase 6 (planned): attribute macros, schema bridge, async validation.
 
 ## Phase 1: Contract and Docs Baseline (Completed)
 
@@ -57,6 +58,30 @@
   - over-expansion of API surface
 - exit criteria:
   - clear stable core vs optional extension boundaries ✅
+
+## Phase 5: Stabilization and Integration (Complete)
+
+- deliverables:
+  - `ValidationMode` enum (FailFast / CollectAll) for AllOf, MultiField, Each, CollectionNested
+  - `SelfValidating` trait (renamed from nested `Validatable`) with `check()` method
+  - `FieldPath` type — validated RFC 6901 JSON Pointer with segment access and composition
+  - `with_field_path(FieldPath)` builder on `ValidationError`
+  - expanded prelude with all combinator types and factory functions
+  - `collection_nested_failed` error code in registry
+- risks:
+  - `SelfValidating` rename is breaking for nested `Validatable` consumers
+- exit criteria:
+  - all combinators support configurable ValidationMode ✅
+  - FieldPath provides typed path operations ✅
+  - 479+ tests passing, clippy clean, 0 doc warnings ✅
+
+## Phase 6: Ecosystem Expansion (Planned)
+
+- deliverables:
+  - `#[validate(...)]` attribute macro for derive-style validation (P005)
+  - schema bridge: JSON Schema ↔ validator conversion (P004)
+  - async validation support
+  - cross-crate integration tests (nebula-config, nebula-workflow)
 
 ## Execution Plan (Next 2 Iterations)
 

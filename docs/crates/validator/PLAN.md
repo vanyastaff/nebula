@@ -4,7 +4,7 @@
 
 ## Summary
 
-nebula-validator provides an input validation framework for the Nebula workflow engine, built around composable validator combinators. Phase 1 contract/docs baseline is complete; current focus is Phase 2 governance automation with machine-readable compatibility checks and migration enforcement.
+nebula-validator provides an input validation framework for the Nebula workflow engine, built around composable validator combinators. Phases 1–4 are complete. Phase 5 (Stabilization & Integration) is in progress, adding `ValidationMode`, typed `FieldPath`, and stabilizing experimental APIs.
 
 ## Technical Context
 
@@ -18,9 +18,10 @@ nebula-validator provides an input validation framework for the Nebula workflow 
 | Phase | Status | Notes |
 |-------|--------|-------|
 | Phase 1: Contract and Docs Baseline | ✅ Done | Full template-aligned docs, canonical API examples, compatibility policy draft |
-| Phase 2: Compatibility and Governance | 🔄 In Progress | Registry, compatibility tests, deprecation enforcement |
-| Phase 3: Performance and Capacity Hardening | ⬜ Planned | Benchmarks, cache strategy, allocation profiling |
-| Phase 4: Ecosystem and DX | ⬜ Planned | Advanced patterns, schema/policy layer, macro guidance |
+| Phase 2: Compatibility and Governance | ✅ Done | Registry, compatibility tests, deprecation enforcement |
+| Phase 3: Performance and Capacity Hardening | ✅ Done | Benchmarks, cache strategy, allocation profiling |
+| Phase 4: Ecosystem and DX | ✅ Done | Advanced patterns, schema/policy layer, macro guidance |
+| Phase 5: Stabilization and Integration | ✅ Done | ValidationMode, FieldPath, SelfValidating, prelude expansion |
 
 ## Phase Details
 
@@ -86,6 +87,36 @@ nebula-validator provides an input validation framework for the Nebula workflow 
 
 **Risks**:
 - Over-expansion of API surface
+
+### Phase 5: Stabilization and Integration (Completed)
+
+**Goal**: Consolidate experimental APIs, add missing cross-cutting features, and expand the prelude.
+
+**Deliverables**:
+- `ValidationMode` enum (FailFast / CollectAll) integrated into AllOf, MultiField, Each, CollectionNested
+- Renamed `Validatable` → `SelfValidating` (trait for self-validating types, method `check()`)
+- `FieldPath` type — validated, zero-overhead RFC 6901 JSON Pointer wrapper with segment access, composition, and parsing
+- `with_field_path(FieldPath)` builder on `ValidationError`
+- Expanded prelude with AllOf, AnyOf, Each, Field, MultiField, NestedValidate, OptionalNested, CollectionNested, SelfValidating, FieldPath, ValidationMode
+- `collection_nested_failed` error code registered
+
+**Exit Criteria**:
+- All combinators support configurable ValidationMode
+- FieldPath provides typed path construction, segment iteration, and composition
+- Prelude is comprehensive enough for most use cases
+- 479+ tests passing, clippy clean, 0 doc warnings
+
+**Risks**:
+- SelfValidating rename is a breaking change for consumers using the old `Validatable` (nested) trait
+
+## Future Phases
+
+### Phase 6: Ecosystem Expansion (Planned)
+
+- P005: `#[validate(...)]` attribute macro for derive-style validation
+- P004: Schema bridge (JSON Schema ↔ validator conversion)
+- Async validation support
+- Cross-crate integration tests with nebula-config, nebula-workflow
 
 ## Dependencies
 

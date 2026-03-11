@@ -67,14 +67,30 @@
 
 ---
 
+## Phase 5: Stabilization and Integration ✅
+
+**Goal**: Consolidate experimental APIs, add cross-cutting features, expand prelude.
+
+- [x] VAL-T022 [P] Add `ValidationMode` enum (FailFast/CollectAll) to foundation
+- [x] VAL-T023 [P] Integrate `ValidationMode` into AllOf, MultiField, Each, CollectionNested
+- [x] VAL-T024 Rename nested `Validatable` → `SelfValidating` with `check()` method
+- [x] VAL-T025 [P] Create `FieldPath` type — validated RFC 6901 wrapper with segment access and composition
+- [x] VAL-T026 Add `with_field_path(FieldPath)` builder on `ValidationError`
+- [x] VAL-T027 [P] Expand prelude with all combinator types, factory functions, ValidationMode, FieldPath
+- [x] VAL-T028 Register `collection_nested_failed` error code in registry
+
+**Checkpoint**: All combinators configurable; typed field paths available; 479+ tests green. ✅
+
+---
+
 ## Dependencies & Execution Order
 
-- Phase 1 → Phase 2 → Phase 3 → Phase 4
+- Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
 - [P] tasks within a phase can run in parallel
 
 ## Verification (after all phases)
 
 - [x] `cargo check -p nebula-validator --all-features`
-- [x] `cargo test -p nebula-validator` — 451 tests passing
+- [x] `cargo test -p nebula-validator` — 479 tests passing
 - [x] `cargo clippy -p nebula-validator -- -D warnings` — clean
 - [x] `cargo doc --no-deps -p nebula-validator`

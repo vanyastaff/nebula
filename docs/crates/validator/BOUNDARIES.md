@@ -67,11 +67,18 @@ candidates.
 | `foundation` | `ValidationError` | Fields: `code`, `message`, `field` frozen. 80-byte layout enforced by CI |
 | `foundation` | `ValidationErrors` | `.push()`, `.into_result()`, `.is_empty()` frozen |
 | `foundation` | `ErrorSeverity` | Enum variants frozen (`#[non_exhaustive]` allows additions) |
+| `foundation` | `ValidationMode` | `FailFast` / `CollectAll` variants frozen (`#[non_exhaustive]`) |
+| `foundation` | `FieldPath` | Typed RFC 6901 JSON Pointer — `.parse()`, `.segments()`, `.push()`, `.append()` frozen |
 | `foundation` | `AnyValidator<T>` | `.into_any()` conversion frozen |
 | `proof` | `Validated<T>` | `.into_inner()`, `.as_ref()`, construction via `validate_into()` only |
 | `error` | `ValidatorError` | Enum variants frozen (`#[non_exhaustive]`) |
 | `validators::*` | All 60+ validators | Error codes frozen (enforced by `error_registry_v1.json`) |
 | `combinators::*` | Core 12 types | Composition semantics frozen (laws tested) |
+| `combinators::field` | `MultiField`, `Field` | Stabilized — `with_mode()` for ValidationMode support |
+| `combinators::nested` | `NestedValidate`, `OptionalNested`, `CollectionNested` | Stabilized — `with_mode()` for ValidationMode support |
+| `combinators::nested` | `SelfValidating` | Trait for self-validating types — `check()` method frozen |
+| `combinators::each` | `Each` | `with_mode()` for ValidationMode support |
+| `combinators::factories` | `AllOf` | `with_mode()` for ValidationMode support |
 | macros | `validator!`, `compose!`, `any_of!` | All 5 variants stable |
 
 **Consumer contract**: if you depend on items from this tier, your code will not
@@ -84,10 +91,7 @@ Items in this tier may change without migration docs. They are behind the
 
 | Module | Items | Status |
 |--------|-------|--------|
-| `combinators::nested` | `NestedValidate` | Experimental — API may change |
-| `combinators::nested` | `OptionalNested` | Experimental |
-| `combinators::nested` | `CollectionNested` | Experimental |
-| `combinators::field` | `MultiField` | Experimental — error collection strategy may evolve |
+| (none currently) | — | All previously experimental items promoted to Tier 1 in Phase 5 |
 
 **Consumer contract**: use these at your own risk. Pin to exact versions if
 depending on their API. Report bugs to help stabilize.
