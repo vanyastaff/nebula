@@ -13,5 +13,5 @@ pub type Condition = Rule;
 /// Evaluate a [`Rule`] predicate against runtime field values.
 #[must_use]
 pub fn evaluate_condition(condition: &Rule, values: &FieldValues) -> bool {
-    condition.evaluate(values)
+    condition.evaluate(values.as_map())
 }

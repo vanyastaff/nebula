@@ -51,16 +51,14 @@
 //! ## Context Predicates
 //!
 //! ```rust
-//! use nebula_validator::{Rule, FieldValueProvider};
+//! use nebula_validator::Rule;
 //! use serde_json::json;
-//! use std::collections::HashMap;
 //!
 //! let rule = Rule::Eq {
 //!     field: "status".into(),
 //!     value: json!("active"),
 //! };
-//! let mut values = HashMap::new();
-//! values.insert("status".to_owned(), json!("active"));
+//! let values = json!({ "status": "active" });
 //! assert!(rule.evaluate(&values));
 //! ```
 //!
@@ -98,8 +96,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::foundation::{Validate, ValidationError};
 use crate::validators::{matches_regex, max, max_length, max_size, min, min_length, min_size};
-
-use crate::context::FieldValueProvider;
 
 /// Unified declarative rule.
 ///
@@ -545,22 +541,22 @@ impl Rule {
     /// - `Set` → `false`, `Empty` → `true`
     /// - `Contains`, `Matches`, `In` → `false`
     #[must_use]
-    pub fn evaluate(&self, values: &impl FieldValueProvider) -> bool {
+    pub fn evaluate(&self, values: &std::collections::HashMap<String, serde_json::Value>) -> bool {
         match self {
             // ── Context predicates ──────────────────────────────────
-            Self::Eq { field, value } => values.get_field(field).is_some_and(|v| v == value),
-            Self::Ne { field, value } => values.get_field(field).is_none_or(|v| v != value),
-            Self::Gt { field, value } => cmp_number(values.get_field(field), value, |a, b| a > b),
-            Self::Gte { field, value } => cmp_number(values.get_field(field), value, |a, b| a >= b),
-            Self::Lt { field, value } => cmp_number(values.get_field(field), value, |a, b| a < b),
-            Self::Lte { field, value } => cmp_number(values.get_field(field), value, |a, b| a <= b),
+            Self::Eq { field, value } => values.get(field).is_some_and(|v| v == value),
+            Self::Ne { field, value } => values.get(field).is_none_or(|v| v != value),
+            Self::Gt { field, value } => cmp_number(values.get(field), value, |a, b| a > b),
+            Self::Gte { field, value } => cmp_number(values.get(field), value, |a, b| a >= b),
+            Self::Lt { field, value } => cmp_number(values.get(field), value, |a, b| a < b),
+            Self::Lte { field, value } => cmp_number(values.get(field), value, |a, b| a <= b),
             Self::IsTrue { field } => {
-                values.get_field(field).and_then(serde_json::Value::as_bool) == Some(true)
+                values.get(field).and_then(serde_json::Value::as_bool) == Some(true)
             }
             Self::IsFalse { field } => {
-                values.get_field(field).and_then(serde_json::Value::as_bool) == Some(false)
+                values.get(field).and_then(serde_json::Value::as_bool) == Some(false)
             }
-            Self::Set { field } => values.get_field(field).is_some_and(|v| {
+            Self::Set { field } => values.get(field).is_some_and(|v| {
                 !v.is_null()
                     && match v {
                         serde_json::Value::String(s) => !s.is_empty(),
@@ -568,7 +564,7 @@ impl Rule {
                         _ => true,
                     }
             }),
-            Self::Empty { field } => values.get_field(field).is_none_or(|v| {
+            Self::Empty { field } => values.get(field).is_none_or(|v| {
                 v.is_null()
                     || match v {
                         serde_json::Value::String(s) => s.is_empty(),
@@ -576,7 +572,7 @@ impl Rule {
                         _ => false,
                     }
             }),
-            Self::Contains { field, value } => values.get_field(field).is_some_and(|v| match v {
+            Self::Contains { field, value } => values.get(field).is_some_and(|v| match v {
                 serde_json::Value::String(s) => {
                     value.as_str().is_some_and(|needle| s.contains(needle))
                 }
@@ -584,7 +580,7 @@ impl Rule {
                 _ => false,
             }),
             Self::Matches { field, pattern } => values
-                .get_field(field)
+                .get(field)
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|string| {
                     matches_regex(pattern).is_ok_and(|validator| validator.validate(string).is_ok())
@@ -592,9 +588,7 @@ impl Rule {
             Self::In {
                 field,
                 values: candidates,
-            } => values
-                .get_field(field)
-                .is_some_and(|current| candidates.contains(current)),
+            } => values.get(field).is_some_and(|current| candidates.contains(current)),
 
             // ── Logical combinators ─────────────────────────────────
             Self::All { rules } => rules.iter().all(|r| r.evaluate(values)),

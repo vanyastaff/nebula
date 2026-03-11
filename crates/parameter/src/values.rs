@@ -335,6 +335,12 @@ impl FieldValues {
             changed,
         }
     }
+
+    /// Borrow the underlying JSON object map.
+    #[must_use]
+    pub fn as_map(&self) -> &HashMap<String, serde_json::Value> {
+        &self.values
+    }
 }
 
 impl FromIterator<(String, serde_json::Value)> for FieldValues {
@@ -357,12 +363,6 @@ impl Index<&str> for FieldValues {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldValuesSnapshot {
     values: HashMap<String, serde_json::Value>,
-}
-
-impl nebula_validator::context::FieldValueProvider for FieldValues {
-    fn get_field(&self, key: &str) -> Option<&serde_json::Value> {
-        self.get(key)
-    }
 }
 
 /// Describes the differences between two parameter value sets.

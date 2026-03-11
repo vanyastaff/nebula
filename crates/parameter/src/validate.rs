@@ -77,7 +77,7 @@ fn validate_field(
     let hidden = meta
         .visible_when
         .as_ref()
-        .is_some_and(|cond| !cond.evaluate(root_values));
+        .is_some_and(|cond| !cond.evaluate(root_values.as_map()));
 
     // Hidden fields are skipped unless they already have an explicit value.
     if hidden && value.is_none() {
@@ -88,7 +88,7 @@ fn validate_field(
         || meta
             .required_when
             .as_ref()
-            .is_some_and(|cond| cond.evaluate(root_values));
+            .is_some_and(|cond| cond.evaluate(root_values.as_map()));
 
     if required_now && value.is_none_or(serde_json::Value::is_null) {
         errors.push(ParameterError::MissingValue {

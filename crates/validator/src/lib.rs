@@ -33,7 +33,6 @@
 //! | [`ValidationError`](foundation::ValidationError) | Structured error (80 bytes, `Cow`-based) |
 //! | [`AnyValidator<T>`](foundation::AnyValidator) | Type-erased validator for dynamic dispatch |
 //! | [`Rule`] | Unified declarative rule (value, predicate, combinator) |
-//! | [`FieldValueProvider`] | Trait for reading sibling field values in predicates |
 //! | [`ExecutionMode`] | Controls which rule categories run (`StaticOnly`, `Deferred`, `Full`) |
 //! | [`ValidatorError`] | Crate-level operational error type |
 //!
@@ -43,9 +42,8 @@
 //! Rules are JSON-serializable and cover four categories:
 //!
 //! ```rust
-//! use nebula_validator::{Rule, ExecutionMode, validate_rules, FieldValueProvider};
+//! use nebula_validator::{Rule, ExecutionMode, validate_rules};
 //! use serde_json::json;
-//! use std::collections::HashMap;
 //!
 //! // Value validation — checks a single JSON value
 //! let rule = Rule::MinLength { min: 3, message: None };
@@ -53,8 +51,7 @@
 //!
 //! // Context predicate — checks a sibling field
 //! let rule = Rule::Eq { field: "status".into(), value: json!("active") };
-//! let mut ctx = HashMap::new();
-//! ctx.insert("status".to_owned(), json!("active"));
+//! let ctx = json!({ "status": "active" });
 //! assert!(rule.evaluate(&ctx));
 //!
 //! // Logical combinator — compose rules
@@ -100,7 +97,6 @@
 //! | [`validators`] | Built-in validator implementations |
 //! | [`combinators`] | Composition types (`.and()`, `.or()`, [`.not()`](combinators::not())) |
 //! | [`rule`] | Unified [`Rule`] enum for declarative validation |
-//! | [`context`] | [`FieldValueProvider`] trait for context predicates |
 //! | [`engine`] | [`validate_rules`] batch evaluation with [`ExecutionMode`] |
 //! | [`proof`] | [`Validated<T>`](proof::Validated) proof tokens |
 //! | [`error`] | Crate-level [`ValidatorError`] |
@@ -117,8 +113,6 @@
 // ── Public modules ──────────────────────────────────────────────────────────
 /// Combinator types for composing validators.
 pub mod combinators;
-/// Field value provider trait for context-aware evaluation.
-pub mod context;
 /// Validation engine for declarative rules.
 pub mod engine;
 /// Crate-level operational error type.
@@ -138,7 +132,6 @@ pub mod validators;
 mod macros;
 
 // ── Re-exports ───────────────────────────────────────────────────────────────
-pub use context::FieldValueProvider;
 pub use engine::{ExecutionMode, validate_rules};
 pub use error::ValidatorError;
 pub use proof::Validated;

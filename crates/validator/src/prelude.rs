@@ -45,7 +45,6 @@ pub use crate::error::ValidatorError;
 // RULES: Declarative rule system and engine
 // ============================================================================
 
-pub use crate::context::FieldValueProvider;
 pub use crate::engine::{ExecutionMode, validate_rules};
 pub use crate::rule::Rule;
 
