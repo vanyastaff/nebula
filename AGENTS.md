@@ -242,3 +242,81 @@ cargo doc --no-deps --workspace
 
 CI additionally runs Miri (`miri.yml`) for UB checks and `cargo deny check` for supply-chain
 auditing. Benchmark regression thresholds are validated against Criterion JSON output.
+
+---
+
+## AI Project Map
+
+This section is setup-time context for AI agents and references `.ai-factory/DESCRIPTION.md`
+and `.ai-factory/ARCHITECTURE.md` for deeper details.
+
+### Project Overview
+
+Nebula is a Rust-based workflow automation engine built as a layered Cargo workspace with
+plugin-oriented extensibility and multiple interfaces (REST/WebSocket + Tauri desktop).
+
+### Tech Stack
+
+- **Language:** Rust (workspace, edition 2024)
+- **Framework:** Axum + Tokio
+- **Database:** PostgreSQL (migration-driven)
+- **Desktop Frontend:** Tauri v2 + React + TypeScript (Vite)
+
+### Project Structure
+
+```text
+nebula/
+├── crates/                  # Workspace crates (core, business, runtime, API, etc.)
+├── apps/                    # App surfaces (desktop Tauri app, web placeholder)
+├── deploy/                  # Docker/Kubernetes deployment stacks
+├── docs/                    # Technical docs, RFCs, roadmap material
+├── migrations/              # PostgreSQL schema migrations
+├── scripts/                 # Benchmark and utility scripts
+├── vision/                  # Architecture/decision/status references
+├── .ai-factory/             # AI Factory context artifacts
+│   ├── DESCRIPTION.md
+│   └── ARCHITECTURE.md
+└── AGENTS.md                # Agent guidance + project map
+```
+
+### Key Entry Points
+
+| File | Purpose |
+|------|---------|
+| `Cargo.toml` | Workspace definition and shared dependencies |
+| `crates/api/` | HTTP/WebSocket API layer (Axum) |
+| `crates/engine/` | DAG scheduling/orchestration logic |
+| `crates/runtime/` | Runtime execution and trigger lifecycle |
+| `apps/desktop/package.json` | Desktop frontend scripts and Tauri integration |
+| `.mcp.json` | Project MCP server configuration |
+
+### Documentation
+
+| Document | Path | Description |
+|----------|------|-------------|
+| README | `README.md` | Project landing page |
+| Getting Started | `docs/getting-started.md` | Installation, onboarding, first run |
+| Architecture | `docs/ARCHITECTURE.md` | Layering, crate map, data flow |
+| Project Status | `docs/PROJECT_STATUS.md` | Current implementation status |
+| Roadmap | `docs/ROADMAP.md` | Phases, priorities, dependencies |
+| Tasks | `docs/TASKS.md` | Cross-crate execution backlog |
+| Contributing | `docs/contributing.md` | Contribution standards and setup |
+| Workflow | `docs/workflow.md` | Branching, commits, PR process |
+| Issues | `docs/issues.md` | Issue templates and triage |
+| Labels | `docs/labels.md` | Label taxonomy and conventions |
+| Project Board | `docs/project-board.md` | Board workflow and policies |
+
+### AI Context Files
+
+| File | Purpose |
+|------|---------|
+| `AGENTS.md` | Agent instructions + setup-time project map |
+| `.ai-factory/DESCRIPTION.md` | Project specification and detected stack |
+| `.ai-factory/ARCHITECTURE.md` | Architecture pattern and dependency rules |
+| `CLAUDE.md` | Working memory, ADRs, and active constraints |
+
+### Agent Rules
+
+- Never combine shell commands with `&&`, `||`, or `;` when executing workflow steps.
+- Keep dependency changes aligned with the one-way layer architecture.
+- Prefer eventbus-based decoupling for cross-crate signals.

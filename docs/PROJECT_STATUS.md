@@ -1,3 +1,5 @@
+[← Previous Page](ARCHITECTURE.md) · [Back to README](../README.md) · [Next Page →](ROADMAP.md)
+
 # Project Status
 
 **Last updated:** 2026-03-01
@@ -71,3 +73,9 @@
 | `cargo doc --no-deps` | ✅ |
 | `cargo audit` | ✅ |
 | Miri (unsafe checks) | ✅ |
+
+## See Also
+
+- [Architecture](ARCHITECTURE.md) - Layered workspace structure
+- [Roadmap](ROADMAP.md) - Planned phase progression
+- [Tasks](TASKS.md) - Active cross-crate priorities

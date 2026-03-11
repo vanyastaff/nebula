@@ -1,3 +1,5 @@
+[← Previous Page](getting-started.md) · [Back to README](../README.md) · [Next Page →](PROJECT_STATUS.md)
+
 # Architecture
 
 Nebula is a modular workflow engine built on Rust 1.93+. The workspace contains **26 crates**
@@ -180,3 +182,9 @@ tokio::select! {
 | Shared mutable state | `RwLock` |
 
 **Default timeouts:** HTTP 10 s · Database 5 s · General 30 s
+
+## See Also
+
+- [Project Status](PROJECT_STATUS.md) - Current crate delivery status
+- [Roadmap](ROADMAP.md) - Phase priorities and milestones
+- [Getting Started](getting-started.md) - Setup and onboarding

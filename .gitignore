@@ -291,6 +291,7 @@ docker-compose.override.yml
 
 # Agent/IDE config and data
 .claude/
+.agent/
 .agents/
 .cursor/
 .codex/

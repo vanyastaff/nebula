@@ -88,7 +88,10 @@ fn regex_and_conditional_validation() {
     // Validate URL only when the field is non-empty.
     let website_rule = url().when(|value: &str| !value.is_empty());
     for value in ["", "https://nebula.dev", "not-url"] {
-        println!("website '{value}': {}", status(&website_rule.validate(value)));
+        println!(
+            "website '{value}': {}",
+            status(&website_rule.validate(value))
+        );
     }
 }
 
@@ -163,8 +166,14 @@ fn profile_payload_validation() {
         "website": "not-url"
     });
 
-    println!("valid profile: {}", status(&profile_validator.validate(&ok)));
-    println!("invalid profile: {}", status(&profile_validator.validate(&bad)));
+    println!(
+        "valid profile: {}",
+        status(&profile_validator.validate(&ok))
+    );
+    println!(
+        "invalid profile: {}",
+        status(&profile_validator.validate(&bad))
+    );
 }
 
 fn collect_all_errors_demo() {
@@ -208,9 +217,5 @@ fn validation_error_details() {
 }
 
 fn status<T>(result: &Result<T, ValidationError>) -> &'static str {
-    if result.is_ok() {
-        "ok"
-    } else {
-        "error"
-    }
+    if result.is_ok() { "ok" } else { "error" }
 }

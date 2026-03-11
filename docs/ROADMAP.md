@@ -1,6 +1,8 @@
+[← Previous Page](PROJECT_STATUS.md) · [Back to README](../README.md) · [Next Page →](TASKS.md)
+
 # Roadmap
 
-High-level phase plan for Nebula. **Crate-level detail** lives in each crate’s ROADMAP under `docs/crates/<crate>/ROADMAP.md` — see [Crate-level roadmaps](#crate-level-roadmaps) below. ROADMAPs follow [SPEC.md](SPEC.md): phases, risks, exit criteria, and metrics of readiness.
+High-level phase plan for Nebula. **Crate-level detail** lives in each crate’s ROADMAP under `docs/crates/<crate>/ROADMAP.md` — see [Crate-level roadmaps](#crate-level-roadmaps) below.
 
 **Current focus:** Phase 2 (Execution Engine) and credential–resource integration. See [Recommended next tasks](#recommended-next-tasks).
 
@@ -8,15 +10,15 @@ High-level phase plan for Nebula. **Crate-level detail** lives in each crate’s
 
 ## Recommended next tasks
 
-Based on `docs/plans/`, `PROJECT_STATUS.md`, and crate ROADMAPs, the most concrete next steps:
+Based on current priorities in `PROJECT_STATUS.md` and crate ROADMAPs, the most concrete next steps:
 
 | Priority | Task | Source | Notes |
 |----------|------|--------|--------|
-| **1** | **Credential–Resource integration** | [2026-03-03-credential-resource-integration.md](plans/2026-03-03-credential-resource-integration.md) | Typed `CredentialRef<C>`, `RotationStrategy`, `HasResourceComponents`, rotation subscription. Replaces broken `TypeId`-based refs and `credentials.rs` pull model. |
+| **1** | **Credential–Resource integration** | [credential/ROADMAP.md](crates/credential/ROADMAP.md) | Typed `CredentialRef<C>`, `RotationStrategy`, `HasResourceComponents`, rotation subscription. Replaces broken `TypeId`-based refs and `credentials.rs` pull model. |
 | **2** | **Credential Phase 1 exit** | [credential/ROADMAP.md](crates/credential/ROADMAP.md) | Contract consolidation: ARCHITECTURE/API/INTERACTIONS aligned with code, stable API surface, scope enforcement documented and tested. |
 | **3** | **Storage Postgres backend** | [storage/ROADMAP.md](crates/storage/ROADMAP.md) | `PostgresStorage`, KV table, sqlx pool, feature `postgres`. Required for execution state and credential Postgres provider ([POSTGRES_STORAGE_SPEC](crates/credential/POSTGRES_STORAGE_SPEC.md)). |
 | **4** | **Runtime Phase 1** | [runtime/ROADMAP.md](crates/runtime/ROADMAP.md) | Isolation level routing, SandboxRunner, SpillToBlob, `max_total_execution_bytes`. |
-| **5** | **Desktop foundation** | [2026-03-01-desktop-architecture.md](plans/2026-03-01-desktop-architecture.md), [apps/desktop/ROADMAP.md](apps/desktop/ROADMAP.md) | Tauri typed IPC (tauri-specta), AppError, service layer, Zustand, TanStack Query. |
+| **5** | **Desktop foundation** | [desktop/ROADMAP.md](crates/desktop/ROADMAP.md) | Tauri typed IPC (tauri-specta), AppError, service layer, Zustand, TanStack Query. |
 
 **Phase 2 acceptance criteria** (from main roadmap): single-node workflow end-to-end, multi-node DAG resolution, execution state in PostgreSQL, cancellation and timeout working.
 
@@ -33,12 +35,12 @@ Based on `docs/plans/`, `PROJECT_STATUS.md`, and crate ROADMAPs, the most concre
 | `nebula-execution` — execution state types | Done | [execution/ROADMAP.md](crates/execution/ROADMAP.md) |
 | `nebula-memory` — in-memory state and caching | Done | [memory/ROADMAP.md](crates/memory/ROADMAP.md) |
 | `nebula-expression` — expression evaluation | Done | [expression/ROADMAP.md](crates/expression/ROADMAP.md) |
-| `nebula-parameter` — parameter schema | Done | [parameter/ROADMAP.md](crates/parameter/ROADMAP.md) |
-| `nebula-validator` — validation combinators | Done | [validator/ROADMAP.md](crates/validator/ROADMAP.md) |
+| `nebula-parameter` — parameter schema | Done | [parameter/EVOLUTION_PLAN.md](crates/parameter/EVOLUTION_PLAN.md) |
+| `nebula-validator` — validation combinators | Done | [validator docs roadmap](../crates/validator/docs/ROADMAP.md) |
 | `nebula-config` — configuration, hot-reload | Done | [config/ROADMAP.md](crates/config/ROADMAP.md) |
 | `nebula-log` — structured logging | Done | — |
 | `nebula-system` — platform utilities | Done | [system/ROADMAP.md](crates/system/ROADMAP.md) |
-| `nebula-resilience` — circuit breaker, retry | Done | [resilience/ROADMAP.md](crates/resilience/ROADMAP.md) |
+| `nebula-resilience` — circuit breaker, retry | Done | [resilience/PLAN.md](crates/resilience/PLAN.md) |
 | `nebula-storage` — storage abstraction | Done | [storage/ROADMAP.md](crates/storage/ROADMAP.md) |
 | `nebula-macros` — procedural macros | Done | [macros/ROADMAP.md](crates/macros/ROADMAP.md) |
 
@@ -77,7 +79,7 @@ Based on `docs/plans/`, `PROJECT_STATUS.md`, and crate ROADMAPs, the most concre
 | `nebula-webhook` — inbound webhooks | In progress | — |
 | First-party plugins (GitHub, Telegram) | Planned | — |
 
-**Note:** Credential crate has a long-horizon roadmap (Contract consolidation → Rotation reliability → Provider hardening → Production infra → Security → Performance → Protocols → Toolchain). Current priority: Phase 1 exit + credential–resource integration ([plan](plans/2026-03-03-credential-resource-integration.md)).
+**Note:** Credential crate has a long-horizon roadmap (Contract consolidation → Rotation reliability → Provider hardening → Production infra → Security → Performance → Protocols → Toolchain). Current priority: Phase 1 exit + credential–resource integration.
 
 ---
 
@@ -102,11 +104,11 @@ Based on `docs/plans/`, `PROJECT_STATUS.md`, and crate ROADMAPs, the most concre
 | Component | Status | Crate ROADMAP |
 |-----------|--------|----------------|
 | `nebula-api` — REST + WebSocket server | In progress | [api/ROADMAP.md](crates/api/ROADMAP.md) |
-| **Desktop app (Tauri)** — `apps/desktop` | In progress | [apps/desktop/ROADMAP.md](apps/desktop/ROADMAP.md) |
+| **Desktop app (Tauri)** — `apps/desktop` | In progress | [desktop/ROADMAP.md](crates/desktop/ROADMAP.md) |
 | `nebula-telemetry` — metrics and tracing | In progress | [telemetry/ROADMAP.md](crates/telemetry/ROADMAP.md), [metrics/ROADMAP.md](crates/metrics/ROADMAP.md) |
 | Kubernetes / Docker deployment | Planned | — |
 
-**Desktop:** The desktop client is the **Tauri app in `apps/desktop`** (React + TypeScript frontend, Rust backend). Not `nebula-app` (egui). Phases aligned with backend; foundation (typed IPC, services, stores) has a detailed [implementation plan](plans/2026-03-01-desktop-architecture.md).
+**Desktop:** The desktop client is the **Tauri app in `apps/desktop`** (React + TypeScript frontend, Rust backend). Not `nebula-app` (egui). Phases aligned with backend and tracked in the desktop roadmap and tasks files.
 
 ---
 
@@ -129,7 +131,7 @@ Each crate’s ROADMAP holds phased deliverables, risks, exit criteria, and read
 | memory | [docs/crates/memory/ROADMAP.md](crates/memory/ROADMAP.md) |
 | macros | [docs/crates/macros/ROADMAP.md](crates/macros/ROADMAP.md) |
 | metrics | [docs/crates/metrics/ROADMAP.md](crates/metrics/ROADMAP.md) |
-| parameter | [docs/crates/parameter/ROADMAP.md](crates/parameter/ROADMAP.md) |
+| parameter | [docs/crates/parameter/EVOLUTION_PLAN.md](crates/parameter/EVOLUTION_PLAN.md) |
 | plugin | [docs/crates/plugin/ROADMAP.md](crates/plugin/ROADMAP.md) |
 | resource | [docs/crates/resource/ROADMAP.md](crates/resource/ROADMAP.md) |
 | resilience | [crates/resilience/docs/README.md](../crates/resilience/docs/README.md) |
@@ -145,11 +147,17 @@ Each crate’s ROADMAP holds phased deliverables, risks, exit criteria, and read
 | tenant | [docs/crates/tenant/ROADMAP.md](crates/tenant/ROADMAP.md) |
 | cluster | [docs/crates/cluster/ROADMAP.md](crates/cluster/ROADMAP.md) |
 | locale | [docs/crates/locale/ROADMAP.md](crates/locale/ROADMAP.md) |
-| **Desktop app** | [docs/apps/desktop/ROADMAP.md](apps/desktop/ROADMAP.md) |
+| **Desktop app** | [docs/crates/desktop/ROADMAP.md](crates/desktop/ROADMAP.md) |
 
-Crates without a ROADMAP yet (log, webhook): add per [SPEC.md](SPEC.md) when the crate doc set is created.
+Crates without a roadmap file yet (log, webhook) should add one when the crate doc set is created.
 
-Implementation plans (task-level) live in `docs/plans/`, e.g. credential–resource integration and desktop architecture.
+Implementation plans can be tracked in dedicated roadmap/task files as they are introduced.
+
+## See Also
+
+- [Project Status](PROJECT_STATUS.md) - Snapshot of current crate delivery
+- [Tasks](TASKS.md) - Ordered execution backlog
+- [Architecture](ARCHITECTURE.md) - Layer and dependency model
 
 ---
 

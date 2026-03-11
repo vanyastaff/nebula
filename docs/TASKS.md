@@ -1,3 +1,5 @@
+[← Previous Page](ROADMAP.md) · [Back to README](../README.md) · [Next Page →](contributing.md)
+
 # Nebula — Master Task List
 
 Orchestration file for sequential progress across all crates. Each crate has its own `TASKS.md` with detailed tasks. Use this file to navigate the project, track current priorities, and find the next thing to work on.
@@ -30,14 +32,14 @@ These are the highest-impact tasks across the entire project right now:
 | [nebula-execution](crates/execution/TASKS.md) | Phase 2 | Phase 1 ✅ | [Tasks](crates/execution/TASKS.md) |
 | [nebula-telemetry](crates/telemetry/TASKS.md) | Phase 2 | Phase 1 ✅ | [Tasks](crates/telemetry/TASKS.md) |
 | [nebula-expression](crates/expression/TASKS.md) | Phase 3 | Phases 1–2 ✅ | [Tasks](crates/expression/TASKS.md) |
-| [nebula-validator](crates/validator/TASKS.md) | Complete | Phases 1–4 ✅ | [Tasks](crates/validator/TASKS.md) |
+| [nebula-validator](../crates/validator/docs/ROADMAP.md) | Complete | Phases 1–4 ✅ | [Roadmap](../crates/validator/docs/ROADMAP.md) |
 | [nebula-storage](crates/storage/TASKS.md) | Phase 1 | 🔄 In Progress | [Tasks](crates/storage/TASKS.md) |
 | [nebula-metrics](crates/metrics/TASKS.md) | Phase 4 | Phases 1–3 ✅ | [Tasks](crates/metrics/TASKS.md) |
 | [nebula-workflow](crates/workflow/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/workflow/TASKS.md) |
 | [nebula-memory](crates/memory/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/memory/TASKS.md) |
-| [nebula-parameter](crates/parameter/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/parameter/TASKS.md) |
+| [nebula-parameter](crates/parameter/EVOLUTION_PLAN.md) | Phase 1 | ⬜ Planned | [Plan](crates/parameter/EVOLUTION_PLAN.md) |
 | [nebula-system](crates/system/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/system/TASKS.md) |
-| [nebula-resilience](crates/resilience/Task.md) | Phase 9 (Integration) | 🔄 In Progress | [Tasks](crates/resilience/Task.md) |
+| [nebula-resilience](crates/resilience/TASKS.md) | Phase 9 (Integration) | 🔄 In Progress | [Tasks](crates/resilience/TASKS.md) |
 | [nebula-macros](crates/macros/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/macros/TASKS.md) |
 
 **Recommended order for remaining Group 1 work**:
@@ -118,7 +120,7 @@ These are the highest-impact tasks across the entire project right now:
 | Crate | Current Phase | Status | Tasks |
 |-------|--------------|--------|-------|
 | [nebula-api](crates/api/TASKS.md) | Phase 1 | 🔄 In Progress | [Tasks](crates/api/TASKS.md) |
-| [Desktop App](apps/desktop/TASKS.md) | Phase 1 | 🔄 In Progress | [Tasks](apps/desktop/TASKS.md) |
+| [Desktop App](crates/desktop/TASKS.md) | Phase 1 | 🔄 In Progress | [Tasks](crates/desktop/TASKS.md) |
 
 **Recommended order**:
 - `nebula-api` Phase 1 (workflow + execution REST) can proceed in parallel with Group 2
@@ -197,3 +199,9 @@ nebula-core
 | 🔄 In Progress | Actively being worked |
 | ⬜ Planned | Not started |
 | `[P]` | Can run in parallel with other [P] tasks in same phase |
+
+## See Also
+
+- [Roadmap](ROADMAP.md) - Milestones and dependency order
+- [Project Status](PROJECT_STATUS.md) - Current progress snapshot
+- [Contributing](contributing.md) - Contribution and review process
