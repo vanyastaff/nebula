@@ -359,6 +359,12 @@ pub struct FieldValuesSnapshot {
     values: HashMap<String, serde_json::Value>,
 }
 
+impl nebula_validator::context::FieldValueProvider for FieldValues {
+    fn get_field(&self, key: &str) -> Option<&serde_json::Value> {
+        self.get(key)
+    }
+}
+
 /// Describes the differences between two parameter value sets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldValuesDiff {

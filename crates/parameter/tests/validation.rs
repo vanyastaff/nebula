@@ -5,7 +5,7 @@
 //! and the ValidationReport.
 
 use nebula_parameter::{
-    Condition, Field, FieldMetadata, OptionSource, Rule, Schema, SelectOption, ValidationProfile,
+    Field, FieldMetadata, OptionSource, Rule, Schema, SelectOption, ValidationProfile,
 };
 use serde_json::json;
 
@@ -95,7 +95,7 @@ fn required_when_condition_true_and_value_absent_is_error() {
         .field(
             Field::text("token")
                 .with_label("Token")
-                .required_when(Condition::Eq {
+                .required_when(Rule::Eq {
                     field: "auth_mode".to_owned(),
                     value: json!("bearer"),
                 }),
@@ -113,7 +113,7 @@ fn required_when_condition_false_and_value_absent_passes() {
         .field(
             Field::text("token")
                 .with_label("Token")
-                .required_when(Condition::Eq {
+                .required_when(Rule::Eq {
                     field: "auth_mode".to_owned(),
                     value: json!("bearer"),
                 }),

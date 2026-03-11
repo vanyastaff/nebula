@@ -6,11 +6,9 @@
 
 use nebula_validator::foundation::{Validate, ValidationError};
 use nebula_validator::validators::{
-    matches_regex, max as validator_max, max_length, max_size, min as validator_min, min_length,
-    min_size,
+    max as validator_max, max_size, min as validator_min, min_size,
 };
 
-use crate::conditions::evaluate_condition;
 use crate::error::ParameterError;
 use crate::field::Field;
 use crate::option::OptionSource;
@@ -79,7 +77,7 @@ fn validate_field(
     let hidden = meta
         .visible_when
         .as_ref()
-        .is_some_and(|cond| !evaluate_condition(cond, root_values));
+        .is_some_and(|cond| !cond.evaluate(root_values));
 
     // Hidden fields are skipped unless they already have an explicit value.
     if hidden && value.is_none() {
@@ -90,7 +88,7 @@ fn validate_field(
         || meta
             .required_when
             .as_ref()
-            .is_some_and(|cond| evaluate_condition(cond, root_values));
+            .is_some_and(|cond| cond.evaluate(root_values));
 
     if required_now && value.is_none_or(serde_json::Value::is_null) {
         errors.push(ParameterError::MissingValue {
@@ -334,130 +332,18 @@ fn apply_rules(
     errors: &mut Vec<ParameterError>,
 ) {
     for rule in rules {
-        if rule.is_deferred() {
-            // Deferred rules require runtime expression context — skip at schema time.
+        if rule.is_deferred() || rule.is_predicate() {
             continue;
         }
-        match rule {
-            Rule::MinLength { min, message } => {
-                if let Some(string) = value.as_str()
-                    && let Err(err) = min_length(*min).validate(string)
-                {
-                    errors.push(make_rule_issue(
-                        path,
-                        message.clone(),
-                        Some(err),
-                        format!("must be at least {min} characters"),
-                    ));
-                }
-            }
-            Rule::MaxLength { max, message } => {
-                if let Some(string) = value.as_str()
-                    && let Err(err) = max_length(*max).validate(string)
-                {
-                    errors.push(make_rule_issue(
-                        path,
-                        message.clone(),
-                        Some(err),
-                        format!("must be at most {max} characters"),
-                    ));
-                }
-            }
-            Rule::Pattern { pattern, message } => {
-                if let Some(string) = value.as_str() {
-                    match matches_regex(pattern) {
-                        Ok(validator) => {
-                            if let Err(err) = validator.validate(string) {
-                                errors.push(make_rule_issue(
-                                    path,
-                                    message.clone(),
-                                    Some(err),
-                                    "does not match required pattern".to_owned(),
-                                ));
-                            }
-                        }
-                        Err(err) => {
-                            errors.push(make_rule_issue(
-                                path,
-                                None,
-                                None,
-                                format!("invalid regex pattern: {err}"),
-                            ));
-                        }
-                    }
-                }
-            }
-            Rule::Min { min, message } => {
-                if let (Some(current), Some(bound)) = (value.as_f64(), min.as_f64())
-                    && let Err(err) = validator_min(bound).validate(&current)
-                {
-                    errors.push(make_rule_issue(
-                        path,
-                        message.clone(),
-                        Some(err),
-                        format!("must be >= {bound}"),
-                    ));
-                }
-            }
-            Rule::Max { max, message } => {
-                if let (Some(current), Some(bound)) = (value.as_f64(), max.as_f64())
-                    && let Err(err) = validator_max(bound).validate(&current)
-                {
-                    errors.push(make_rule_issue(
-                        path,
-                        message.clone(),
-                        Some(err),
-                        format!("must be <= {bound}"),
-                    ));
-                }
-            }
-            Rule::OneOf { values, message } => {
-                if !values.contains(value) {
-                    errors.push(make_rule_issue(
-                        path,
-                        message.clone(),
-                        None,
-                        "must be one of the allowed values".to_owned(),
-                    ));
-                }
-            }
-            Rule::MinItems { min, message } => {
-                if let Some(items) = value.as_array()
-                    && let Err(err) = min_size::<serde_json::Value>(*min).validate(items.as_slice())
-                {
-                    errors.push(make_rule_issue(
-                        path,
-                        message.clone(),
-                        Some(err),
-                        format!("must contain at least {min} items"),
-                    ));
-                }
-            }
-            Rule::MaxItems { max, message } => {
-                if let Some(items) = value.as_array()
-                    && let Err(err) = max_size::<serde_json::Value>(*max).validate(items.as_slice())
-                {
-                    errors.push(make_rule_issue(
-                        path,
-                        message.clone(),
-                        Some(err),
-                        format!("must contain at most {max} items"),
-                    ));
-                }
-            }
-            // Deferred variants are handled by the `is_deferred()` guard above.
-            Rule::UniqueBy { .. } | Rule::Custom { .. } => {}
+        if let Err(err) = rule.validate_value(value) {
+            errors.push(make_validation_issue(
+                path,
+                Some(err),
+                None,
+                "validation failed".to_owned(),
+            ));
         }
     }
-}
-
-fn make_rule_issue(
-    path: &str,
-    message: Option<String>,
-    validation_error: Option<ValidationError>,
-    default_reason: String,
-) -> ParameterError {
-    make_validation_issue(path, validation_error, message, default_reason)
 }
 
 fn make_validation_issue(

@@ -3805,7 +3805,6 @@ dependencies = [
  "domain-key",
  "fs2",
  "futures",
- "hkdf",
  "humantime-serde",
  "k8s-openapi",
  "kube",

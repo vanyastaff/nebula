@@ -57,6 +57,10 @@
 // ── Public modules ──────────────────────────────────────────────────────────
 /// Combinator types for composing validators.
 pub mod combinators;
+/// Field value provider trait for context-aware evaluation.
+pub mod context;
+/// Validation engine for declarative rules.
+pub mod engine;
 /// Crate-level operational error type.
 pub mod error;
 /// Core traits, errors, and type-erased validators.
@@ -65,6 +69,8 @@ pub mod foundation;
 pub mod prelude;
 /// Proof tokens that certify a value has been validated.
 pub mod proof;
+/// Unified declarative rule enum.
+pub mod rule;
 /// Built-in validators for common scenarios.
 pub mod validators;
 
@@ -72,5 +78,8 @@ pub mod validators;
 mod macros;
 
 // ── Re-exports ───────────────────────────────────────────────────────────────
+pub use context::FieldValueProvider;
+pub use engine::{ExecutionMode, validate_rules};
 pub use error::ValidatorError;
 pub use proof::Validated;
+pub use rule::Rule;

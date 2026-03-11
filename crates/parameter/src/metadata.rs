@@ -1,4 +1,3 @@
-use crate::conditions::Condition;
 use crate::rules::Rule;
 
 /// Shared field metadata.
@@ -36,13 +35,13 @@ pub struct FieldMetadata {
     pub rules: Vec<Rule>,
     /// Show this field only when the condition is true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub visible_when: Option<Condition>,
+    pub visible_when: Option<Rule>,
     /// Require this field only when the condition is true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub required_when: Option<Condition>,
+    pub required_when: Option<Rule>,
     /// Disable this field when the condition is true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disabled_when: Option<Condition>,
+    pub disabled_when: Option<Rule>,
 }
 
 impl FieldMetadata {
@@ -96,17 +95,17 @@ impl FieldMetadata {
     }
 
     /// Sets visibility condition.
-    pub fn set_visible_when(&mut self, condition: Condition) {
-        self.visible_when = Some(condition);
+    pub fn set_visible_when(&mut self, rule: Rule) {
+        self.visible_when = Some(rule);
     }
 
     /// Sets conditional-required rule.
-    pub fn set_required_when(&mut self, condition: Condition) {
-        self.required_when = Some(condition);
+    pub fn set_required_when(&mut self, rule: Rule) {
+        self.required_when = Some(rule);
     }
 
     /// Sets disabled/read-only condition.
-    pub fn set_disabled_when(&mut self, condition: Condition) {
-        self.disabled_when = Some(condition);
+    pub fn set_disabled_when(&mut self, rule: Rule) {
+        self.disabled_when = Some(rule);
     }
 }

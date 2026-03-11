@@ -1,4 +1,3 @@
-use crate::conditions::Condition;
 use crate::loader::{OptionLoader, RecordLoader};
 use crate::metadata::FieldMetadata;
 use crate::option::OptionSource;
@@ -365,22 +364,22 @@ impl Field {
 
     /// Sets field visibility condition.
     #[must_use]
-    pub fn visible_when(mut self, condition: Condition) -> Self {
-        self.meta_mut().set_visible_when(condition);
+    pub fn visible_when(mut self, rule: Rule) -> Self {
+        self.meta_mut().set_visible_when(rule);
         self
     }
 
     /// Sets conditional-required rule.
     #[must_use]
-    pub fn required_when(mut self, condition: Condition) -> Self {
-        self.meta_mut().set_required_when(condition);
+    pub fn required_when(mut self, rule: Rule) -> Self {
+        self.meta_mut().set_required_when(rule);
         self
     }
 
     /// Sets disabled/read-only condition.
     #[must_use]
-    pub fn disabled_when(mut self, condition: Condition) -> Self {
-        self.meta_mut().set_disabled_when(condition);
+    pub fn disabled_when(mut self, rule: Rule) -> Self {
+        self.meta_mut().set_disabled_when(rule);
         self
     }
 

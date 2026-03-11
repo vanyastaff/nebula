@@ -14,10 +14,10 @@
 //! Call [`Schema::normalize_values`] to backfill defaults and mode variants
 //! before presenting values to a user or persisting them.
 
-use crate::conditions::Condition;
 use crate::field::Field;
 use crate::profile::ValidationProfile;
 use crate::report::ValidationReport;
+use crate::rules::Rule;
 use crate::values::FieldValues;
 
 /// Complete parameter schema for v2 authoring.
@@ -134,7 +134,7 @@ pub enum UiElement {
         text: String,
         /// Show only when the condition is true.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        visible_when: Option<Condition>,
+        visible_when: Option<Rule>,
     },
     /// Runtime-driven action button.
     Button {
@@ -144,7 +144,7 @@ pub enum UiElement {
         action: String,
         /// Enable only when the condition is true.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        enabled_when: Option<Condition>,
+        enabled_when: Option<Rule>,
     },
 }
 
@@ -177,7 +177,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::conditions::Condition;
     use crate::field::Field;
     use crate::metadata::FieldMetadata;
     use crate::option::{OptionSource, SelectOption};
@@ -225,7 +224,7 @@ mod tests {
     #[test]
     fn validate_reports_required_when_condition_holds() {
         let schema = Schema::new().field(Field::text("token").with_label("Token").required_when(
-            Condition::Eq {
+            Rule::Eq {
                 field: "auth".to_owned(),
                 value: json!("bearer"),
             },
