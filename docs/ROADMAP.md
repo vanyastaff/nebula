@@ -197,3 +197,9 @@ Use this checklist in PRs that claim phase progress:
 - **GraphQL** — not planned; REST + WebSocket cover our use cases.
 - **nebula-value** — removed; `serde_json::Value` is used everywhere.
 - **nebula-app (egui)** — superseded by the Tauri desktop app at `apps/desktop`.
+
+## See Also
+
+- [Project Status](PROJECT_STATUS.md) — current crate delivery status
+- [Tasks](TASKS.md) — active cross-crate priorities
+- [Architecture](ARCHITECTURE.md) — workspace layering and dependency rules
