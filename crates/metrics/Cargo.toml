@@ -32,3 +32,4 @@ optional = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 pretty_assertions = { workspace = true }
+tracing = { workspace = true }

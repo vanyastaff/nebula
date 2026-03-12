@@ -3870,6 +3870,8 @@ dependencies = [
  "criterion",
  "pretty_assertions",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4000,6 +4002,7 @@ dependencies = [
  "pretty_assertions",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

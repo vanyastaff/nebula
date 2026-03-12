@@ -108,3 +108,59 @@ pub const LEGACY_ACTIONS_FAILED_TOTAL: &str = "actions_failed_total";
 
 /// Legacy: use [`NEBULA_ACTION_DURATION_SECONDS`].
 pub const LEGACY_ACTION_DURATION_SECONDS: &str = "action_duration_seconds";
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use nebula_telemetry::metrics::MetricsRegistry;
+
+    use super::{
+        NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
+        NEBULA_RESOURCE_CLEANUP_TOTAL, NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
+        NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
+        NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
+        NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
+        NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
+        NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
+    };
+
+    const RESOURCE_METRIC_NAMES: [&str; 14] = [
+        NEBULA_RESOURCE_CREATE_TOTAL,
+        NEBULA_RESOURCE_ACQUIRE_TOTAL,
+        NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
+        NEBULA_RESOURCE_RELEASE_TOTAL,
+        NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
+        NEBULA_RESOURCE_CLEANUP_TOTAL,
+        NEBULA_RESOURCE_ERROR_TOTAL,
+        NEBULA_RESOURCE_HEALTH_STATE,
+        NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL,
+        NEBULA_RESOURCE_POOL_WAITERS,
+        NEBULA_RESOURCE_QUARANTINE_TOTAL,
+        NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL,
+        NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
+    ];
+
+    #[test]
+    fn resource_constants_are_accessible_unique_and_registry_safe() {
+        let registry = MetricsRegistry::new();
+        let mut unique = HashSet::new();
+
+        for metric_name in RESOURCE_METRIC_NAMES {
+            tracing::debug!("testing constant: {}", metric_name);
+            assert!(!metric_name.is_empty());
+            assert!(metric_name.starts_with("nebula_resource_"));
+            assert!(metric_name.chars().all(|ch| {
+                ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'
+            }));
+            assert!(unique.insert(metric_name));
+
+            let counter = registry.counter(metric_name);
+            counter.inc();
+            assert_eq!(counter.get(), 1);
+        }
+
+        assert_eq!(unique.len(), 14);
+    }
+}
