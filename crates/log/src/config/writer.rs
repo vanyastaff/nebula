@@ -21,7 +21,16 @@ pub enum WriterConfig {
         /// Rolling policy for log rotation
         #[serde(default)]
         rolling: Option<Rolling>,
-        /// Whether to use non-blocking writer
+        /// Whether to use a non-blocking (async) writer.
+        ///
+        /// When `true` (the default), log writes are buffered in a
+        /// dedicated background thread via `tracing_appender::non_blocking`,
+        /// so the calling thread is never blocked by I/O. This is the
+        /// recommended setting for production workloads.
+        ///
+        /// When `false`, writes happen synchronously on the calling
+        /// thread. This guarantees no log loss on crash but introduces
+        /// I/O latency in hot paths.
         #[serde(default = "default_non_blocking")]
         non_blocking: bool,
     },
@@ -120,4 +129,42 @@ impl Default for DisplayConfig {
 #[allow(dead_code)]
 fn default_non_blocking() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_non_blocking_is_true() {
+        assert!(default_non_blocking());
+    }
+
+    #[cfg(feature = "file")]
+    #[test]
+    fn file_writer_defaults_to_non_blocking() {
+        let json = r#"{"type": "file", "path": "/tmp/app.log"}"#;
+        let config: WriterConfig = serde_json::from_str(json).unwrap();
+        match config {
+            WriterConfig::File { non_blocking, .. } => assert!(non_blocking),
+            _ => panic!("expected File variant"),
+        }
+    }
+
+    #[cfg(feature = "file")]
+    #[test]
+    fn file_writer_explicit_non_blocking_false() {
+        let json = r#"{"type": "file", "path": "/tmp/app.log", "non_blocking": false}"#;
+        let config: WriterConfig = serde_json::from_str(json).unwrap();
+        match config {
+            WriterConfig::File { non_blocking, .. } => assert!(!non_blocking),
+            _ => panic!("expected File variant"),
+        }
+    }
+
+    #[test]
+    fn default_writer_is_stderr() {
+        let config = WriterConfig::default();
+        assert!(matches!(config, WriterConfig::Stderr));
+    }
 }

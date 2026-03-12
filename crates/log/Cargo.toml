@@ -12,7 +12,7 @@ repository.workspace = true
 # Internal dependencies
 
 # Async runtime (optional)
-tokio = { workspace = true, features = ["time", "sync", "rt"], optional = true }
+tokio = { workspace = true, features = ["time", "sync", "rt", "fs", "io-util"], optional = true }
 
 # Core tracing
 tracing = { workspace = true }
