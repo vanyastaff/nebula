@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use nebula_parameter::{Field, Schema};
 use nebula_parameter::values::ParameterValues;
+use nebula_parameter::{Field, Schema};
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
 use crate::traits::StaticProtocol;
@@ -36,12 +36,30 @@ impl StaticProtocol for DatabaseProtocol {
 
     fn parameters() -> Schema {
         Schema::new()
-            .field(Field::text("host").with_label("Host").with_placeholder("localhost").required())
-            .field(Field::text("port").with_label("Port").with_placeholder("5432"))
+            .field(
+                Field::text("host")
+                    .with_label("Host")
+                    .with_placeholder("localhost")
+                    .required(),
+            )
+            .field(
+                Field::text("port")
+                    .with_label("Port")
+                    .with_placeholder("5432"),
+            )
             .field(Field::text("database").with_label("Database").required())
             .field(Field::text("username").with_label("Username").required())
-            .field(Field::text("password").with_label("Password").required().secret())
-            .field(Field::text("ssl_mode").with_label("SSL Mode").with_placeholder("disable"))
+            .field(
+                Field::text("password")
+                    .with_label("Password")
+                    .required()
+                    .secret(),
+            )
+            .field(
+                Field::text("ssl_mode")
+                    .with_label("SSL Mode")
+                    .with_placeholder("disable"),
+            )
     }
 
     fn build_state(values: &ParameterValues) -> Result<Self::State, CredentialError> {

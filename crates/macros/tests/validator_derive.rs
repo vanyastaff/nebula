@@ -680,7 +680,7 @@ struct BoundaryLengths {
 #[test]
 fn boundary_lengths_exact_valid() {
     let b = BoundaryLengths {
-        fixed: "12345".into(),         // exactly 5
+        fixed: "12345".into(),            // exactly 5
         exactly_min: "12345".into(),      // exactly 5
         exactly_max: "1234567890".into(), // exactly 10
         exact_length: "abc".into(),       // exactly 3

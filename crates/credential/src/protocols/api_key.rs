@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use nebula_parameter::{Field, Schema};
 use nebula_parameter::values::ParameterValues;
+use nebula_parameter::{Field, Schema};
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
 use crate::traits::StaticProtocol;

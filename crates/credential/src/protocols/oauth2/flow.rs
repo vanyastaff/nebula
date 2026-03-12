@@ -9,8 +9,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
 use serde_json::Value;
 
-use nebula_parameter::{Field, Schema};
 use nebula_parameter::values::ParameterValues;
+use nebula_parameter::{Field, Schema};
 
 use crate::core::result::{
     DisplayData, InitializeResult, InteractionRequest, PartialState, UserInput,

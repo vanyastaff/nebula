@@ -12,8 +12,8 @@ pub use config::{LdapConfig, TlsMode};
 
 use serde::{Deserialize, Serialize};
 
-use nebula_parameter::{Field, Schema};
 use nebula_parameter::values::ParameterValues;
+use nebula_parameter::{Field, Schema};
 
 use crate::core::result::InitializeResult;
 use crate::core::{CredentialContext, CredentialError, CredentialState, ValidationError};
@@ -57,14 +57,23 @@ impl FlowProtocol for LdapProtocol {
                     .with_placeholder("ldap.example.com")
                     .required(),
             )
-            .field(Field::text("port").with_label("Port").with_placeholder("389"))
+            .field(
+                Field::text("port")
+                    .with_label("Port")
+                    .with_placeholder("389"),
+            )
             .field(
                 Field::text("bind_dn")
                     .with_label("Bind DN")
                     .with_placeholder("cn=admin,dc=example,dc=com")
                     .required(),
             )
-            .field(Field::text("bind_password").with_label("Bind Password").required().secret())
+            .field(
+                Field::text("bind_password")
+                    .with_label("Bind Password")
+                    .required()
+                    .secret(),
+            )
     }
 
     async fn initialize(

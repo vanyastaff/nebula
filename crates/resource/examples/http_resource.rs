@@ -112,6 +112,7 @@ impl HttpResourceInstance {
                 size_bytes: None,
             }),
             metadata,
+            trace_context: None,
         });
     }
 

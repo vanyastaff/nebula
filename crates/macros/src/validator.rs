@@ -234,10 +234,7 @@ fn parse_min_max_list(
         let parsed = match value {
             attrs::AttrValue::Lit(syn::Lit::Int(int)) => {
                 int.base10_parse::<usize>().map_err(|_| {
-                    diag::error_spanned(
-                        &int,
-                        format!("`{key}` bounds must be positive integers"),
-                    )
+                    diag::error_spanned(&int, format!("`{key}` bounds must be positive integers"))
                 })?
             }
             other => {
@@ -741,9 +738,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                 if !field_is_string {
                     return Err(syn::Error::new_spanned(
                         &field.ty,
-                        format!(
-                            "`{flag}` requires `String` or `Option<String>` fields"
-                        ),
+                        format!("`{flag}` requires `String` or `Option<String>` fields"),
                     ));
                 }
 
@@ -770,9 +765,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                 if !field_is_string {
                     return Err(syn::Error::new_spanned(
                         &field.ty,
-                        format!(
-                            "`{key} = ...` requires `String` or `Option<String>` fields"
-                        ),
+                        format!("`{key} = ...` requires `String` or `Option<String>` fields"),
                     ));
                 }
 
@@ -782,12 +775,8 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                     "ends_with" => quote!(::nebula_validator::validators::ends_with(#arg)),
                     _ => unreachable!("unsupported string validator factory"),
                 };
-                let check = generate_str_validator_check(
-                    field_name,
-                    &field_key,
-                    is_option,
-                    validator_expr,
-                );
+                let check =
+                    generate_str_validator_check(field_name, &field_key, is_option, validator_expr);
                 if let Some(message) = &field_message {
                     field_checks.push(quote! {
                         let before = errors.len();

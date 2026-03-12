@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use nebula_parameter::{Field, Schema};
 use nebula_parameter::values::ParameterValues;
+use nebula_parameter::{Field, Schema};
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
 use crate::traits::StaticProtocol;
@@ -38,7 +38,12 @@ impl StaticProtocol for HeaderAuthProtocol {
                     .with_placeholder("X-Auth-Token")
                     .required(),
             )
-            .field(Field::text("header_value").with_label("Header Value").required().secret())
+            .field(
+                Field::text("header_value")
+                    .with_label("Header Value")
+                    .required()
+                    .secret(),
+            )
     }
 
     fn build_state(values: &ParameterValues) -> Result<Self::State, CredentialError> {
