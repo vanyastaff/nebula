@@ -13,8 +13,9 @@ documentation.workspace = true
 publish = false
 
 [features]
-default = ["toml", "env"]
+default = ["toml", "yaml", "env"]
 toml = ["dep:toml"]
+yaml = ["dep:serde_yaml"]
 env = []
 
 [dependencies]
@@ -29,6 +30,7 @@ thiserror = { workspace = true }
 
 # Format parsers
 toml = { version = "1.0", optional = true }
+serde_yaml = { version = "0.9", optional = true }
 
 # Notifications
 notify = { version = "8.2.0" }
@@ -45,3 +47,7 @@ dashmap = { workspace = true }
 # Internal crates
 nebula-log = { path = "../log" }
 nebula-validator = { path = "../validator" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

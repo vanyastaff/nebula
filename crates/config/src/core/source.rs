@@ -272,6 +272,16 @@ impl ConfigFormat {
                     ConfigFormat::Unknown(ext.to_string())
                 }
             }
+            "yaml" | "yml" => {
+                #[cfg(feature = "yaml")]
+                {
+                    ConfigFormat::Yaml
+                }
+                #[cfg(not(feature = "yaml"))]
+                {
+                    ConfigFormat::Unknown(ext.to_string())
+                }
+            }
             _ => ConfigFormat::Unknown(ext.to_string()),
         }
     }
@@ -363,6 +373,11 @@ mod tests {
             ConfigFormat::from_extension("json"),
             ConfigFormat::Unknown(_)
         ));
+        #[cfg(feature = "yaml")]
+        assert_eq!(ConfigFormat::from_extension("yml"), ConfigFormat::Yaml);
+        #[cfg(feature = "yaml")]
+        assert_eq!(ConfigFormat::from_extension("yaml"), ConfigFormat::Yaml);
+        #[cfg(not(feature = "yaml"))]
         assert!(matches!(
             ConfigFormat::from_extension("yml"),
             ConfigFormat::Unknown(_)

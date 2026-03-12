@@ -80,6 +80,19 @@ pub(crate) fn parse_content(
                 Err(ConfigError::format_not_supported("toml"))
             }
         }
+        ConfigFormat::Yaml => {
+            #[cfg(feature = "yaml")]
+            {
+                nebula_log::debug!("parsing config file as YAML: {}", path.display());
+                serde_yaml::from_str::<serde_json::Value>(content)
+                    .map_err(|e| ConfigError::parse_error(path, format!("YAML parse error: {}", e)))
+            }
+            #[cfg(not(feature = "yaml"))]
+            {
+                let _ = content;
+                Err(ConfigError::format_not_supported("yaml"))
+            }
+        }
         _ => Err(ConfigError::format_not_supported(format.to_string())),
     }
 }
@@ -225,5 +238,53 @@ impl FileLoader {
         }
 
         Ok(serde_json::Value::Object(result))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn parse_simple_yaml() {
+        let yaml = "key: value\nnested:\n  inner: 42\n";
+        let result = parse_content(yaml, ConfigFormat::Yaml, Path::new("test.yaml")).unwrap();
+        assert_eq!(result["key"], "value");
+        assert_eq!(result["nested"]["inner"], 42);
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn parse_yaml_arrays() {
+        let yaml = "items:\n  - one\n  - two\n  - three\n";
+        let result = parse_content(yaml, ConfigFormat::Yaml, Path::new("test.yaml")).unwrap();
+        let items = result["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0], "one");
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn parse_yaml_anchors_and_aliases() {
+        let yaml = "defaults: &defaults\n  timeout: 30\nother:\n  ref_val: *defaults\n";
+        let result = parse_content(yaml, ConfigFormat::Yaml, Path::new("test.yaml")).unwrap();
+        assert_eq!(result["defaults"]["timeout"], 30);
+        assert_eq!(result["other"]["ref_val"]["timeout"], 30);
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn parse_malformed_yaml_returns_error() {
+        let yaml = "key: value\n  bad indent: here\n";
+        let result = parse_content(yaml, ConfigFormat::Yaml, Path::new("test.yaml"));
+        assert!(result.is_err());
+    }
+
+    #[cfg(not(feature = "yaml"))]
+    #[test]
+    fn yaml_disabled_returns_format_not_supported() {
+        let result = parse_content("key: value", ConfigFormat::Yaml, Path::new("test.yaml"));
+        assert!(result.is_err());
     }
 }

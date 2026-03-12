@@ -128,6 +128,15 @@ pub enum ConfigError {
         /// Error message describing the decryption failure
         message: String,
     },
+
+    /// Environment variable interpolation error
+    #[error("Environment variable interpolation failed: {message}")]
+    InterpolationError {
+        /// Error message describing the interpolation failure
+        message: String,
+        /// The variable key that failed to resolve, if applicable
+        key: Option<String>,
+    },
 }
 
 impl ConfigError {
@@ -244,6 +253,14 @@ impl ConfigError {
         }
     }
 
+    /// Create an interpolation error
+    pub fn interpolation_error(message: impl Into<String>, key: Option<String>) -> Self {
+        Self::InterpolationError {
+            message: message.into(),
+            key,
+        }
+    }
+
     /// Check if error is recoverable
     pub fn is_recoverable(&self) -> bool {
         matches!(
@@ -282,6 +299,7 @@ impl ConfigError {
             ConfigError::EncryptionError { .. } | ConfigError::DecryptionError { .. } => {
                 ErrorCategory::Security
             }
+            ConfigError::InterpolationError { .. } => ErrorCategory::Operation,
         }
     }
 
@@ -298,6 +316,7 @@ impl ConfigError {
             | ConfigError::ReloadError { .. }
             | ConfigError::EncryptionError { .. }
             | ConfigError::DecryptionError { .. } => ContractErrorCategory::SourceLoadFailed,
+            ConfigError::InterpolationError { .. } => ContractErrorCategory::SourceLoadFailed,
             ConfigError::MergeError { .. } => ContractErrorCategory::MergeFailed,
             ConfigError::ValidationError { .. } => ContractErrorCategory::ValidationFailed,
             ConfigError::PathError { .. } => ContractErrorCategory::MissingPath,
