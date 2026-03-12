@@ -9,6 +9,8 @@
 //! - **[`naming`]** — standard `nebula_*` metric name constants
 //! - **[`TelemetryAdapter`]** — adapter over `nebula-telemetry::MetricsRegistry` that records
 //!   using those names
+//! - **[`snapshot`]** — Prometheus text-format export with `# HELP`, `# TYPE` metadata
+//!   and per-bucket histogram output
 //!
 //! In-memory primitives (Counter, Gauge, Histogram) remain in `nebula-telemetry`; this crate
 //! adds naming convention, a thin adapter, and Prometheus text export.
