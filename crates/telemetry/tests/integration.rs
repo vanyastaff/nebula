@@ -22,19 +22,23 @@ async fn events_received_in_emit_order() {
     bus.emit(ExecutionEvent::Started {
         execution_id: "e1".into(),
         workflow_id: "w1".into(),
+        trace_context: None,
     });
     bus.emit(ExecutionEvent::NodeStarted {
         execution_id: "e1".into(),
         node_id: "n1".into(),
+        trace_context: None,
     });
     bus.emit(ExecutionEvent::NodeCompleted {
         execution_id: "e1".into(),
         node_id: "n1".into(),
         duration: Duration::from_millis(10),
+        trace_context: None,
     });
     bus.emit(ExecutionEvent::Completed {
         execution_id: "e1".into(),
         duration: Duration::from_secs(1),
+        trace_context: None,
     });
 
     let first = sub.recv().await.expect("first");
@@ -56,10 +60,12 @@ async fn scoped_subscription_receives_only_matching_execution() {
     let _ = bus.emit(ExecutionEvent::NodeStarted {
         execution_id: "e-other".into(),
         node_id: "n-other".into(),
+        trace_context: None,
     });
     let _ = bus.emit(ExecutionEvent::NodeStarted {
         execution_id: "e-target".into(),
         node_id: "n-target".into(),
+        trace_context: None,
     });
 
     let event = sub
@@ -70,7 +76,8 @@ async fn scoped_subscription_receives_only_matching_execution() {
         event,
         ExecutionEvent::NodeStarted {
             execution_id,
-            node_id
+            node_id,
+            ..
         } if execution_id == "e-target" && node_id == "n-target"
     ));
 }
@@ -86,6 +93,7 @@ fn noop_telemetry_arc_provides_same_bus_and_metrics() {
     telemetry.event_bus().emit(ExecutionEvent::Started {
         execution_id: "e1".into(),
         workflow_id: "w1".into(),
+        trace_context: None,
     });
     telemetry.metrics().counter("nebula_test_counter").inc();
 
@@ -109,6 +117,7 @@ fn emit_10k_events_no_panic() {
         bus.emit(ExecutionEvent::NodeStarted {
             execution_id: "e1".into(),
             node_id: format!("n{i}"),
+            trace_context: None,
         });
     }
     assert_eq!(bus.total_emitted(), 10_000);
@@ -140,19 +149,23 @@ fn noop_telemetry_full_flow_no_panic() {
     bus.emit(ExecutionEvent::Started {
         execution_id: "exec".into(),
         workflow_id: "wf".into(),
+        trace_context: None,
     });
     bus.emit(ExecutionEvent::NodeStarted {
         execution_id: "exec".into(),
         node_id: "n1".into(),
+        trace_context: None,
     });
     bus.emit(ExecutionEvent::NodeCompleted {
         execution_id: "exec".into(),
         node_id: "n1".into(),
         duration: Duration::from_millis(5),
+        trace_context: None,
     });
     bus.emit(ExecutionEvent::Completed {
         execution_id: "exec".into(),
         duration: Duration::from_secs(1),
+        trace_context: None,
     });
 
     metrics.counter("nebula_executions_total").inc();
