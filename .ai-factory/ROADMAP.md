@@ -17,15 +17,15 @@
 
 ### Tier 2 — Core Feature Gaps (Required for Real-World Deployment)
 
-- [ ] **Config: YAML Loader** — Implement `ConfigFormat::Yaml` parser (currently returns error); add `serde_yaml` dependency behind `yaml` feature flag; add tests including nested structures, anchors, and edge cases
-- [ ] **Config: Environment Variable Interpolation** — Support `${VAR}` and `${VAR:-default}` syntax in config values for all formats (TOML, JSON, YAML); add interpolation pass after parsing, before type conversion
-- [ ] **Telemetry: Real TelemetryService Implementation** — Create `ProductionTelemetry` struct wrapping `EventBus` + `MetricsRegistry` + configurable `Recorder`; support builder pattern for selecting backends; wire shutdown signal for graceful flush
-- [ ] **Telemetry: Buffered Recorder** — Implement `BufferedRecorder` with channel-based buffering (`tokio::sync::mpsc`); background flush task; configurable buffer size and flush interval; graceful drain on shutdown
-- [ ] **Telemetry: Trace Context Propagation** — Add `TraceId`, `SpanId`, `ParentSpanId` fields to `ExecutionEvent` and `CallRecord`; implement W3C TraceContext (`traceparent` header) generation and parsing; enable cross-service correlation
-- [ ] **Metrics: Full Prometheus Export** — Extend `snapshot()` to include all domains (Resource: 13 metrics, EventBus: 4 metrics) dynamically from the registry instead of hardcoded arrays; add per-bucket histogram rendering with configurable bucket boundaries
-- [ ] **Metrics: Prometheus as Default Feature** — Move `prometheus` from optional to default feature; remove dead `metrics`/`metrics-exporter-prometheus` dependencies if not actually used in code
-- [ ] **Log: Dynamic Log Level Reconfiguration** — Support runtime log level changes without restart via `reload::Handle`; expose API to change level per-module; integrate with `nebula-config` hot-reload watcher
-- [ ] **Log: Async File Writer** — Add non-blocking file writer backend using `tracing-appender::non_blocking` to prevent Tokio runtime thread blocking on I/O; add configuration option to select sync vs async mode
+- [x] **Config: YAML Loader** — Implement `ConfigFormat::Yaml` parser (currently returns error); add `serde_yaml` dependency behind `yaml` feature flag; add tests including nested structures, anchors, and edge cases
+- [x] **Config: Environment Variable Interpolation** — Support `${VAR}` and `${VAR:-default}` syntax in config values for all formats (TOML, JSON, YAML); add interpolation pass after parsing, before type conversion
+- [x] **Telemetry: Real TelemetryService Implementation** — Create `ProductionTelemetry` struct wrapping `EventBus` + `MetricsRegistry` + configurable `Recorder`; support builder pattern for selecting backends; wire shutdown signal for graceful flush
+- [x] **Telemetry: Buffered Recorder** — Implement `BufferedRecorder` with channel-based buffering (`tokio::sync::mpsc`); background flush task; configurable buffer size and flush interval; graceful drain on shutdown
+- [x] **Telemetry: Trace Context Propagation** — Add `TraceId`, `SpanId`, `ParentSpanId` fields to `ExecutionEvent` and `CallRecord`; implement W3C TraceContext (`traceparent` header) generation and parsing; enable cross-service correlation
+- [x] **Metrics: Full Prometheus Export** — Extend `snapshot()` to include all domains (Resource: 13 metrics, EventBus: 4 metrics) dynamically from the registry instead of hardcoded arrays; add per-bucket histogram rendering with configurable bucket boundaries
+- [x] **Metrics: Prometheus as Default Feature** — Move `prometheus` from optional to default feature; remove dead `metrics`/`metrics-exporter-prometheus` dependencies if not actually used in code
+- [x] **Log: Dynamic Log Level Reconfiguration** — Support runtime log level changes without restart via `reload::Handle`; expose API to change level per-module; integrate with `nebula-config` hot-reload watcher
+- [x] **Log: Async File Writer** — Add non-blocking file writer backend using `tracing-appender::non_blocking` to prevent Tokio runtime thread blocking on I/O; add configuration option to select sync vs async mode
 
 ### Tier 3 — Quality & Coverage (Tests, Docs, Benchmarks)
 
@@ -76,6 +76,10 @@
 | EventBus: Lock poisoning recovery — 8 `.expect()` calls replaced with `unwrap_or_else` + `tracing::warn` | 2026-03-12 |
 | Telemetry: Histogram bounded bucket storage — Vec replaced with Prometheus-style atomic buckets, `percentile()` added | 2026-03-12 |
 | EventBus, Telemetry, Metrics: Prelude modules added | 2026-03-12 |
+| Config: YAML loader (`serde_yaml` behind `yaml` feature), env var interpolation `${VAR}`/`${VAR:-default}`, integration tests | 2026-03-12 |
+| Telemetry: `ProductionTelemetry` service + `BufferedRecorder` (mpsc-backed), W3C `TraceContext` propagation in all `ExecutionEvent` variants | 2026-03-12 |
+| Metrics: Full Prometheus text-format export — `# HELP`/`# TYPE` metadata, per-bucket `_bucket{le=...}` lines, `_count`/`_sum`; removed unused dev-dependencies | 2026-03-12 |
+| Log: `ReloadHandle` exposed on `LoggerGuard`, `WatcherGuard`/`watch_config()` for polling-based config file watching (behind `async` feature), `WriterConfig::non_blocking` documented | 2026-03-12 |
 
 ---
 
