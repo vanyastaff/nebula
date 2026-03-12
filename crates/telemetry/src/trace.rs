@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 use nebula_core::ResourceKey;
 
+use crate::context::TraceContext;
+
 // ---------------------------------------------------------------------------
 // DropReason
 // ---------------------------------------------------------------------------
@@ -74,6 +76,8 @@ pub struct CallRecord {
     pub response: Option<CallPayload>,
     /// Extra key-value (e.g. `status_code`, `chat_id`, `row_count`).
     pub metadata: HashMap<String, String>,
+    /// Optional trace context for correlating this call with a distributed trace.
+    pub trace_context: Option<TraceContext>,
 }
 
 /// Success or error outcome of a call.

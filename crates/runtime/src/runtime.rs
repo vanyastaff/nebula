@@ -112,6 +112,7 @@ impl ActionRuntime {
         self.event_bus.emit(ExecutionEvent::NodeStarted {
             execution_id: execution_id.clone(),
             node_id: node_id.clone(),
+            trace_context: None,
         });
 
         let started = Instant::now();
@@ -141,6 +142,7 @@ impl ActionRuntime {
                     execution_id,
                     node_id,
                     duration: elapsed,
+                    trace_context: None,
                 });
 
                 Ok(action_result)
@@ -151,6 +153,7 @@ impl ActionRuntime {
                     execution_id,
                     node_id,
                     error: action_err.to_string(),
+                    trace_context: None,
                 });
                 Err(RuntimeError::ActionError(action_err))
             }
@@ -184,6 +187,7 @@ impl ActionRuntime {
             execution_id: execution_id.to_owned(),
             node_id: node_id.to_owned(),
             error: format!("data limit exceeded: {actual} > {limit}"),
+            trace_context: None,
         });
 
         match self.data_policy.large_data_strategy {

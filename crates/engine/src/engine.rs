@@ -153,6 +153,7 @@ impl WorkflowEngine {
         self.event_bus.emit(ExecutionEvent::Started {
             execution_id: execution_id.to_string(),
             workflow_id: workflow.id.to_string(),
+            trace_context: None,
         });
         self.metrics
             .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
@@ -467,6 +468,7 @@ impl WorkflowEngine {
                 self.event_bus.emit(ExecutionEvent::Completed {
                     execution_id: execution_id.to_string(),
                     duration: elapsed,
+                    trace_context: None,
                 });
                 self.metrics
                     .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
@@ -480,6 +482,7 @@ impl WorkflowEngine {
                 self.event_bus.emit(ExecutionEvent::Failed {
                     execution_id: execution_id.to_string(),
                     error: error_msg,
+                    trace_context: None,
                 });
                 self.metrics
                     .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
@@ -488,6 +491,7 @@ impl WorkflowEngine {
             ExecutionStatus::Cancelled => {
                 self.event_bus.emit(ExecutionEvent::Cancelled {
                     execution_id: execution_id.to_string(),
+                    trace_context: None,
                 });
             }
             _ => {}
