@@ -16,6 +16,8 @@
 pub mod adapter;
 pub mod export;
 pub mod naming;
+/// Convenience re-exports.
+pub mod prelude;
 
 pub use adapter::TelemetryAdapter;
 pub use export::prometheus::{PrometheusExporter, content_type, snapshot};

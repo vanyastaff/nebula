@@ -51,6 +51,8 @@ mod filter;
 mod filtered_subscriber;
 mod outcome;
 mod policy;
+/// Convenience re-exports.
+pub mod prelude;
 mod registry;
 mod scope;
 mod stats;

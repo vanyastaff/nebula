@@ -22,6 +22,8 @@
 
 pub mod event;
 pub mod metrics;
+/// Convenience re-exports.
+pub mod prelude;
 pub mod service;
 pub mod trace;
 
