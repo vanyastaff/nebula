@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Arc, RwLock};
 
+use tracing::warn;
+
 use crate::BackPressurePolicy;
 use crate::EventBus;
 
@@ -58,7 +60,10 @@ where
         if let Some(existing) = self
             .buses
             .read()
-            .expect("eventbus registry read lock poisoned")
+            .unwrap_or_else(|poisoned| {
+                warn!("eventbus registry read lock was poisoned, recovering");
+                poisoned.into_inner()
+            })
             .get(&key)
             .cloned()
         {
@@ -68,7 +73,10 @@ where
         let mut guard = self
             .buses
             .write()
-            .expect("eventbus registry write lock poisoned");
+            .unwrap_or_else(|poisoned| {
+                warn!("eventbus registry write lock was poisoned, recovering");
+                poisoned.into_inner()
+            });
         guard
             .entry(key)
             .or_insert_with(|| {
@@ -82,7 +90,10 @@ where
     pub fn get(&self, key: &K) -> Option<Arc<EventBus<E>>> {
         self.buses
             .read()
-            .expect("eventbus registry read lock poisoned")
+            .unwrap_or_else(|poisoned| {
+                warn!("eventbus registry read lock was poisoned, recovering");
+                poisoned.into_inner()
+            })
             .get(key)
             .cloned()
     }
@@ -91,7 +102,10 @@ where
     pub fn remove(&self, key: &K) -> Option<Arc<EventBus<E>>> {
         self.buses
             .write()
-            .expect("eventbus registry write lock poisoned")
+            .unwrap_or_else(|poisoned| {
+                warn!("eventbus registry write lock was poisoned, recovering");
+                poisoned.into_inner()
+            })
             .remove(key)
     }
 
@@ -100,7 +114,10 @@ where
     pub fn len(&self) -> usize {
         self.buses
             .read()
-            .expect("eventbus registry read lock poisoned")
+            .unwrap_or_else(|poisoned| {
+                warn!("eventbus registry read lock was poisoned, recovering");
+                poisoned.into_inner()
+            })
             .len()
     }
 
@@ -114,7 +131,10 @@ where
     pub fn clear(&self) {
         self.buses
             .write()
-            .expect("eventbus registry write lock poisoned")
+            .unwrap_or_else(|poisoned| {
+                warn!("eventbus registry write lock was poisoned, recovering");
+                poisoned.into_inner()
+            })
             .clear();
     }
 
@@ -125,7 +145,10 @@ where
         let mut guard = self
             .buses
             .write()
-            .expect("eventbus registry write lock poisoned");
+            .unwrap_or_else(|poisoned| {
+                warn!("eventbus registry write lock was poisoned, recovering");
+                poisoned.into_inner()
+            });
         let before = guard.len();
         guard.retain(|_, bus| bus.has_subscribers());
         before.saturating_sub(guard.len())
@@ -137,7 +160,10 @@ where
         let guard = self
             .buses
             .read()
-            .expect("eventbus registry read lock poisoned");
+            .unwrap_or_else(|poisoned| {
+                warn!("eventbus registry read lock was poisoned, recovering");
+                poisoned.into_inner()
+            });
 
         let mut snapshot = EventBusRegistryStats {
             bus_count: guard.len(),
@@ -227,5 +253,55 @@ mod tests {
         assert_eq!(stats.sent_count, 2);
         assert_eq!(stats.dropped_count, 1);
         assert_eq!(stats.subscriber_count, 1);
+    }
+
+    #[test]
+    fn poisoned_lock_recovery_does_not_panic() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc as StdArc;
+
+        // To poison the internal RwLock we need a panic to occur while a
+        // guard is held. `get_or_create` acquires a write guard and then
+        // calls `HashMap::entry(key)` which hashes the key. A custom type
+        // that panics during hashing (controlled by a flag) lets us poison
+        // the lock through the public API.
+
+        static SHOULD_PANIC: AtomicBool = AtomicBool::new(false);
+
+        #[derive(Debug, Clone, Eq, PartialEq)]
+        struct PoisonKey(String);
+
+        impl std::hash::Hash for PoisonKey {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                if SHOULD_PANIC.load(Ordering::Relaxed) {
+                    panic!("intentional panic to poison lock");
+                }
+                self.0.hash(state);
+            }
+        }
+
+        let registry = StdArc::new(EventBusRegistry::<PoisonKey, Event>::new(16));
+
+        // Insert a valid entry first.
+        registry.get_or_create(PoisonKey("safe".into()));
+        assert_eq!(registry.len(), 1);
+
+        // Enable the panic flag so the next hash call panics inside the lock.
+        SHOULD_PANIC.store(true, Ordering::Relaxed);
+        let r = StdArc::clone(&registry);
+        let handle = std::thread::spawn(move || {
+            // This will acquire write lock → call HashMap::entry → hash → panic.
+            r.get_or_create(PoisonKey("boom".into()));
+        });
+        assert!(handle.join().is_err());
+
+        // Disable the panic flag so recovery operations can hash normally.
+        SHOULD_PANIC.store(false, Ordering::Relaxed);
+
+        // After poisoning, all operations must recover without panicking.
+        assert!(registry.len() >= 1);
+        let _ = registry.stats();
+        registry.clear();
+        assert!(registry.is_empty());
     }
 }

@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
+use tracing::warn;
+
 /// An incrementing counter.
 #[derive(Debug, Clone)]
 pub struct Counter {
@@ -111,7 +113,10 @@ impl Histogram {
     pub fn observe(&self, value: f64) {
         self.observations
             .write()
-            .expect("histogram lock poisoned")
+            .unwrap_or_else(|poisoned| {
+                warn!("histogram lock was poisoned, recovering");
+                poisoned.into_inner()
+            })
             .push(value);
     }
 
@@ -120,7 +125,10 @@ impl Histogram {
     pub fn count(&self) -> usize {
         self.observations
             .read()
-            .expect("histogram lock poisoned")
+            .unwrap_or_else(|poisoned| {
+                warn!("histogram lock was poisoned, recovering");
+                poisoned.into_inner()
+            })
             .len()
     }
 
@@ -129,7 +137,10 @@ impl Histogram {
     pub fn sum(&self) -> f64 {
         self.observations
             .read()
-            .expect("histogram lock poisoned")
+            .unwrap_or_else(|poisoned| {
+                warn!("histogram lock was poisoned, recovering");
+                poisoned.into_inner()
+            })
             .iter()
             .sum()
     }
@@ -180,19 +191,28 @@ impl MetricsRegistry {
 
     /// Get or create a counter by name.
     pub fn counter(&self, name: &str) -> Counter {
-        let mut map = self.counters.write().expect("counter lock poisoned");
+        let mut map = self.counters.write().unwrap_or_else(|poisoned| {
+            warn!("counter registry lock was poisoned, recovering");
+            poisoned.into_inner()
+        });
         map.entry(name.to_owned()).or_default().clone()
     }
 
     /// Get or create a gauge by name.
     pub fn gauge(&self, name: &str) -> Gauge {
-        let mut map = self.gauges.write().expect("gauge lock poisoned");
+        let mut map = self.gauges.write().unwrap_or_else(|poisoned| {
+            warn!("gauge registry lock was poisoned, recovering");
+            poisoned.into_inner()
+        });
         map.entry(name.to_owned()).or_default().clone()
     }
 
     /// Get or create a histogram by name.
     pub fn histogram(&self, name: &str) -> Histogram {
-        let mut map = self.histograms.write().expect("histogram lock poisoned");
+        let mut map = self.histograms.write().unwrap_or_else(|poisoned| {
+            warn!("histogram registry lock was poisoned, recovering");
+            poisoned.into_inner()
+        });
         map.entry(name.to_owned()).or_default().clone()
     }
 }
@@ -279,5 +299,51 @@ mod tests {
         c1.inc();
         assert_eq!(c1.get(), 1);
         assert_eq!(c2.get(), 0);
+    }
+
+    #[test]
+    fn histogram_recovers_from_poisoned_lock() {
+        let h = Histogram::new();
+        h.observe(1.0);
+
+        // Poison the RwLock by panicking while holding a write guard.
+        let h2 = h.clone();
+        let handle = std::thread::spawn(move || {
+            let _guard = h2.observations.write().unwrap();
+            panic!("intentional panic to poison histogram lock");
+        });
+        assert!(handle.join().is_err());
+
+        // After poisoning, operations must recover.
+        h.observe(2.0);
+        assert!(h.count() >= 1);
+        assert!(h.sum() >= 1.0);
+    }
+
+    #[test]
+    fn registry_recovers_from_poisoned_lock() {
+        let reg = MetricsRegistry::new();
+        reg.counter("before");
+
+        // Poison the counters lock.
+        let inner = reg.counters.clone();
+        let handle = std::thread::spawn(move || {
+            let _guard = inner.write().unwrap();
+            panic!("intentional panic to poison registry lock");
+        });
+        assert!(handle.join().is_err());
+
+        // After poisoning, counter/gauge/histogram creation must recover.
+        let c = reg.counter("after");
+        c.inc();
+        assert_eq!(c.get(), 1);
+
+        let g = reg.gauge("g");
+        g.set(42);
+        assert_eq!(g.get(), 42);
+
+        let h = reg.histogram("h");
+        h.observe(1.0);
+        assert_eq!(h.count(), 1);
     }
 }
