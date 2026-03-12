@@ -3,6 +3,13 @@
 //! This crate provides a flexible and extensible configuration management system
 //! with support for multiple sources, formats, validation, and hot-reloading.
 //!
+//! ## Features
+//!
+//! - Multiple config formats: **TOML**, **JSON**, and **YAML** (behind `yaml` feature)
+//! - **Environment variable interpolation** via `${VAR}` / `${VAR:-default}` syntax
+//! - Hot-reload and multi-source merging
+//! - Typed access and validation
+//!
 //! # Example
 //!
 //! ```rust,no_run
@@ -50,6 +57,7 @@
 pub mod core;
 
 // Implementation modules
+pub mod interpolation;
 pub mod loaders;
 pub mod watchers;
 
@@ -253,6 +261,7 @@ mod tests {
 
         let sample = "a = 1";
         assert!(parse_config_string(sample, ConfigFormat::Json).is_err());
+        #[cfg(not(feature = "yaml"))]
         assert!(parse_config_string(sample, ConfigFormat::Yaml).is_err());
         assert!(parse_config_string(sample, ConfigFormat::Ini).is_err());
         assert!(parse_config_string(sample, ConfigFormat::Properties).is_err());
