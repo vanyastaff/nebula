@@ -10,6 +10,7 @@
 //! - [`ExecutionEvent`] — execution lifecycle events
 //! - [`TelemetryService`] trait — pluggable telemetry backend
 //! - [`NoopTelemetry`] — no-op implementation for testing/MVP
+//! - [`prelude`] — convenience re-exports for common types
 //!
 //! Events are **projections**, not the source of truth; the execution store
 //! remains the single source of truth.

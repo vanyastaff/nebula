@@ -5,11 +5,11 @@
 //! ```
 
 // ── Events ──────────────────────────────────────────────────────────────────
-pub use crate::event::{EventBus, EventSubscriber, ExecutionEvent, ScopedSubscriber};
 pub use crate::EventFilter;
 pub use crate::PublishOutcome;
 pub use crate::ScopedEvent;
 pub use crate::SubscriptionScope;
+pub use crate::event::{EventBus, EventSubscriber, ExecutionEvent, ScopedSubscriber};
 
 // ── Metrics ─────────────────────────────────────────────────────────────────
 pub use crate::metrics::{Counter, Gauge, Histogram, MetricsRegistry, NoopMetricsRegistry};

@@ -36,6 +36,7 @@
 //! - [`EventBusRegistry`] - multi-bus isolation by key (e.g. per-tenant buses).
 //! - [`SubscriptionScope`] and [`ScopedEvent`] - scope metadata for targeted subscriptions.
 //! - [`EventFilter`] and [`FilteredSubscriber`] - predicate-based event selection.
+//! - [`prelude`] - convenience re-exports for common use.
 //!
 //! # Contract
 //!

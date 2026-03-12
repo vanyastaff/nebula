@@ -3870,6 +3870,7 @@ dependencies = [
  "criterion",
  "pretty_assertions",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

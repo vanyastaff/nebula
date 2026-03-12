@@ -70,13 +70,10 @@ where
             return existing;
         }
 
-        let mut guard = self
-            .buses
-            .write()
-            .unwrap_or_else(|poisoned| {
-                warn!("eventbus registry write lock was poisoned, recovering");
-                poisoned.into_inner()
-            });
+        let mut guard = self.buses.write().unwrap_or_else(|poisoned| {
+            warn!("eventbus registry write lock was poisoned, recovering");
+            poisoned.into_inner()
+        });
         guard
             .entry(key)
             .or_insert_with(|| {
@@ -142,13 +139,10 @@ where
     ///
     /// Returns number of removed buses.
     pub fn prune_without_subscribers(&self) -> usize {
-        let mut guard = self
-            .buses
-            .write()
-            .unwrap_or_else(|poisoned| {
-                warn!("eventbus registry write lock was poisoned, recovering");
-                poisoned.into_inner()
-            });
+        let mut guard = self.buses.write().unwrap_or_else(|poisoned| {
+            warn!("eventbus registry write lock was poisoned, recovering");
+            poisoned.into_inner()
+        });
         let before = guard.len();
         guard.retain(|_, bus| bus.has_subscribers());
         before.saturating_sub(guard.len())
@@ -157,13 +151,10 @@ where
     /// Aggregated snapshot across all buses.
     #[must_use]
     pub fn stats(&self) -> EventBusRegistryStats {
-        let guard = self
-            .buses
-            .read()
-            .unwrap_or_else(|poisoned| {
-                warn!("eventbus registry read lock was poisoned, recovering");
-                poisoned.into_inner()
-            });
+        let guard = self.buses.read().unwrap_or_else(|poisoned| {
+            warn!("eventbus registry read lock was poisoned, recovering");
+            poisoned.into_inner()
+        });
 
         let mut snapshot = EventBusRegistryStats {
             bus_count: guard.len(),
@@ -257,8 +248,8 @@ mod tests {
 
     #[test]
     fn poisoned_lock_recovery_does_not_panic() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         // To poison the internal RwLock we need a panic to occur while a
         // guard is held. `get_or_create` acquires a write guard and then

@@ -92,7 +92,9 @@ impl Default for Gauge {
 }
 
 /// Default Prometheus histogram bucket boundaries.
-const DEFAULT_BUCKETS: &[f64] = &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0];
+const DEFAULT_BUCKETS: &[f64] = &[
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
 
 /// A histogram that records observations into fixed buckets.
 ///
@@ -142,7 +144,10 @@ impl Histogram {
     /// or is not sorted in ascending order.
     #[must_use]
     pub fn with_buckets(boundaries: Vec<f64>) -> Self {
-        assert!(!boundaries.is_empty(), "histogram boundaries must not be empty");
+        assert!(
+            !boundaries.is_empty(),
+            "histogram boundaries must not be empty"
+        );
         assert!(
             boundaries.iter().all(|&b| b > 0.0 && b.is_finite()),
             "histogram boundaries must be positive and finite",
@@ -170,7 +175,11 @@ impl Histogram {
         // Find the first bucket whose upper bound is >= value.
         let idx = self
             .boundaries
-            .binary_search_by(|bound| bound.partial_cmp(&value).unwrap_or(std::cmp::Ordering::Less))
+            .binary_search_by(|bound| {
+                bound
+                    .partial_cmp(&value)
+                    .unwrap_or(std::cmp::Ordering::Less)
+            })
             .unwrap_or_else(|insert_pos| insert_pos);
 
         self.counts[idx].fetch_add(1, Ordering::Relaxed);
