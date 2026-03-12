@@ -32,20 +32,10 @@ Key-value storage abstraction for Nebula: pluggable backends (memory, Postgres, 
 
 ## Document Map
 
-- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [API.md](./API.md)
-- [INTERACTIONS.md](./INTERACTIONS.md)
-- [DECISIONS.md](./DECISIONS.md)
 - [ROADMAP.md](./ROADMAP.md)
-- [PROPOSALS.md](./PROPOSALS.md)
-- [SECURITY.md](./SECURITY.md)
-- [RELIABILITY.md](./RELIABILITY.md)
-- [TEST_STRATEGY.md](./TEST_STRATEGY.md)
 - [MIGRATION.md](./MIGRATION.md)
 - [DESIGN_LIST_TX_CACHE.md](./DESIGN_LIST_TX_CACHE.md) — design for list/prefix, transactions, caching
 
-## Archive
 
-Legacy material:
-- [`_archive/`](./_archive/)

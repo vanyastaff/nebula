@@ -2,7 +2,7 @@
 
 SQL migrations for Nebula's PostgreSQL database, managed by [sqlx](https://github.com/launchbadge/sqlx).
 
-For full conventions, troubleshooting, and contribution guidelines, see [docs/database-migrations.md](../docs/database-migrations.md).
+For contribution guidelines, see [docs/contributing.md](../docs/contributing.md).
 
 ## Quick Start
 

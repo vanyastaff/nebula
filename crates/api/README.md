@@ -156,7 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 См. также:
 - [REST API AXUM Guide](./docs/REST_API_AXUM_GUIDE.md) — полный гайд по production REST API
 - [Architecture](./docs/architecture.md) — архитектура API
-- [Nebula Architecture](../../../docs/ARCHITECTURE.md) — общая архитектура системы
+- [Nebula Architecture](../../docs/ARCHITECTURE.md) — общая архитектура системы
 
 ## 🧪 Тестирование
 

@@ -1,6 +1,6 @@
 # Roadmap
 
-Phased path to a stable, production-ready developer toolkit for action and plugin authors. Aligned with [CONSTITUTION.md](./CONSTITUTION.md): SDK is a facade; prelude and re-exports are versioned; no orchestration in SDK.
+Phased path to a stable, production-ready developer toolkit for action and plugin authors. SDK is a facade; prelude and re-exports are versioned; no orchestration in SDK.
 
 ## Phase 1: Contract and Prelude Stability
 

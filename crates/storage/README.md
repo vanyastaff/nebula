@@ -1,6 +1,6 @@
 # nebula-storage
 
-Абстракция над системами хранения данных (Infrastructure Layer). Соответствует [nebula-architecture-final](../../docs/nebula-architecture-final.md) и [nebula-crates-dependencies](../../docs/nebula-crates-dependencies.md).
+Абстракция над системами хранения данных (Infrastructure Layer).
 
 ## Trait Storage
 
@@ -51,4 +51,4 @@ async fn main() -> Result<(), nebula_storage::StorageError> {
 ## Зависимости по документации
 
 - `nebula-core`
-- `async-trait`, `sqlx` (postgres), `redis`, `aws-sdk-s3` — см. [nebula-crates-dependencies](../../docs/nebula-crates-dependencies.md#nebula-storage).
+- `async-trait`, `sqlx` (postgres), `redis`, `aws-sdk-s3`

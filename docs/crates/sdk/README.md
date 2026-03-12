@@ -154,16 +154,8 @@ nebula-sdk = { version = "0.1", default-features = false }
 
 ## Document map
 
-- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — problem, current/target architecture
 - [API.md](./API.md) — public surface, prelude, compatibility
-- [INTERACTIONS.md](./INTERACTIONS.md) — ecosystem, upstream/downstream, contract matrix
-- [DECISIONS.md](./DECISIONS.md) — D-001 to D-003 (prelude, optional features, no orchestration)
 - [ROADMAP.md](./ROADMAP.md) — phases, risks, exit criteria
-- [PROPOSALS.md](./PROPOSALS.md) — prelude stability, compatibility tests, codegen
-- [SECURITY.md](./SECURITY.md) — threat model, test mocks
-- [RELIABILITY.md](./RELIABILITY.md) — compatibility, version matrix
-- [TEST_STRATEGY.md](./TEST_STRATEGY.md) — pyramid, invariants, contract tests
 - [MIGRATION.md](./MIGRATION.md) — versioning, breaking changes
-- [_archive/README.md](./_archive/README.md) — legacy doc preservation
 

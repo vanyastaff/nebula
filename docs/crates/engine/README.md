@@ -18,18 +18,9 @@ Workflow execution orchestrator for Nebula. Loads workflow definitions, builds e
 
 ## Document Map
 
-- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — problem, current/target architecture
 - [API.md](./API.md) — public surface, execute_workflow, ExecutionResult, compatibility
-- [INTERACTIONS.md](./INTERACTIONS.md) — ecosystem, upstream/downstream, contract matrix
-- [DECISIONS.md](./DECISIONS.md) — D-001 to D-003 (runtime dependency, context, events)
 - [ROADMAP.md](./ROADMAP.md) — phases, risks, exit criteria
-- [PROPOSALS.md](./PROPOSALS.md) — P-001 trigger lifecycle, P-002 backpressure
-- [SECURITY.md](./SECURITY.md) — threat model, execution budget, abuse cases
-- [RELIABILITY.md](./RELIABILITY.md) — SLO, failure modes, operational runbook
-- [TEST_STRATEGY.md](./TEST_STRATEGY.md) — pyramid, invariants, scenario matrix
 - [MIGRATION.md](./MIGRATION.md) — versioning, breaking changes, rollout/rollback
 
-## Archive
 
-Legacy material: [\_archive/](./_archive/)

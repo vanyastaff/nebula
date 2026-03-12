@@ -22,7 +22,7 @@ This document defines the **target** for Nebula metrics: unified export and a st
 
 ### Non-goals
 
-- In-memory primitives remain in `nebula-telemetry` (see [DECISIONS.md](./DECISIONS.md)).
+- In-memory primitives remain in `nebula-telemetry`.
 - Domain crates may keep internal metric types; export is via adapters or standard `metrics` crate recorder, not by moving all logic into one crate.
 
 ---

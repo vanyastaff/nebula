@@ -139,7 +139,7 @@ Use `labels.json` file with a GitHub app or manually.
 
 ## Label Reference
 
-See [LABELS.md](../LABELS.md) for complete label definitions and usage.
+See the GitHub repository labels page for complete label definitions.
 
 ### Quick Reference
 
@@ -208,15 +208,12 @@ If you can't use GitHub CLI, you can create labels manually:
 
 1. Go to https://github.com/vanyastaff/nebula/labels
 2. Click "New label"
-3. Use the label definitions from [LABELS.md](../LABELS.md)
+3. Use the label definitions from the GitHub labels page
 
 ---
 
 ## See Also
 
-- [LABELS.md](../LABELS.md) — Complete label system documentation
-- [PROJECT_BOARD.md](../PROJECT_BOARD.md) — Setting up GitHub Projects
-- [ISSUES.md](../ISSUES.md) — Issue guidelines
 - [.github/PROJECT_SETUP.md](../.github/PROJECT_SETUP.md) — Step-by-step project setup
 
 ---

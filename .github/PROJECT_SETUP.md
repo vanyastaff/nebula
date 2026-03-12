@@ -254,10 +254,8 @@ jobs:
 
 ## See Also
 
-- [PROJECT_BOARD.md](../PROJECT_BOARD.md) — Usage guide
-- [LABELS.md](../LABELS.md) — Label definitions
-- [WORKFLOW.md](../WORKFLOW.md) — Development workflow
-- [ISSUES.md](../ISSUES.md) — Issue guidelines
+- [docs/workflow.md](../docs/workflow.md) — Development workflow
+- [docs/contributing.md](../docs/contributing.md) — Contribution standards
 
 ---
 

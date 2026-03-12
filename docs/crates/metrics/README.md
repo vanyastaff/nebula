@@ -34,21 +34,11 @@ Phase 1 is **complete** when: (1) this doc set is complete, (2) current state an
 
 ## Document Map
 
-- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [API.md](./API.md)
-- [INTERACTIONS.md](./INTERACTIONS.md)
-- [DECISIONS.md](./DECISIONS.md)
 - [ROADMAP.md](./ROADMAP.md)
-- [PROPOSALS.md](./PROPOSALS.md)
 - [CURRENT_STATE.md](./CURRENT_STATE.md) — current state: telemetry, log, domain crates
 - [TARGET.md](./TARGET.md) — target: unified export, naming convention
-- [SECURITY.md](./SECURITY.md)
-- [RELIABILITY.md](./RELIABILITY.md)
-- [TEST_STRATEGY.md](./TEST_STRATEGY.md)
 - [MIGRATION.md](./MIGRATION.md)
 
-## Archive
 
-Legacy material:
-- [`_archive/`](./_archive/)

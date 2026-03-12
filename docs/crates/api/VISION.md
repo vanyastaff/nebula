@@ -1,7 +1,7 @@
 # nebula-api Architecture Vision
 
-> **Purpose**: Target architecture and structural principles for a production-grade, scalable API layer. Complements [CONSTITUTION.md](./CONSTITUTION.md) (principles, non-negotiables) with concrete layout and evolution path.  
-> **Aligned with**: [REST_API_AXUM_GUIDE.md](../../REST_API_AXUM_GUIDE.md), [ARCHITECTURE.md](./ARCHITECTURE.md), [INTERACTIONS.md](./INTERACTIONS.md), [remove-ports-and-drivers](../../plans/remove-ports-and-drivers.md).
+> **Purpose**: Target architecture and structural principles for a production-grade, scalable API layer. Complements [ARCHITECTURE.md](./ARCHITECTURE.md) with concrete layout and evolution path.  
+> **Aligned with**: [ARCHITECTURE.md](./ARCHITECTURE.md), [API.md](./API.md), [ROADMAP.md](./ROADMAP.md).
 
 ---
 
@@ -141,7 +141,7 @@ Execution runs in **workers**, not in the request path. This keeps API latency l
 
 **App binary** (or test harness) builds `ApiPorts` with concrete repos and passes them into `ApiState::with_ports(ports)` or `app_with_ports(ports)`.
 
-This aligns with [remove-ports-and-drivers](../../plans/remove-ports-and-drivers.md): contracts in nebula-storage (and runtime); API and app only use those contracts.
+This aligns with the current layering direction: contracts in nebula-storage (and runtime); API and app only use those contracts.
 
 ---
 

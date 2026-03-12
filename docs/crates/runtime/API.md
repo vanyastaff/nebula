@@ -2,7 +2,7 @@
 
 ## Context type
 
-The execution context passed to `execute_action` is currently **NodeContext** (from nebula-action, deprecated there). The target is **ActionContext** (or TriggerContext for triggers) and `&impl Context`; see [INTERACTIONS.md](./INTERACTIONS.md#context-contract-current-vs-target) and CONSTITUTION P-001.
+The execution context passed to `execute_action` is currently **NodeContext** (from nebula-action, deprecated there). The target is **ActionContext** (or TriggerContext for triggers) and `&impl Context`.
 
 ## Public Surface
 

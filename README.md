@@ -42,17 +42,18 @@ trigger (webhook/cron/event)
 |-------|-------------|
 | [Getting Started](docs/getting-started.md) | Installation, onboarding, first run |
 | [Architecture](docs/ARCHITECTURE.md) | Layering, crate map, data flow |
+| [API Reference](docs/api.md) | Routes, auth, request flow |
+| [Configuration](docs/configuration.md) | Environment variables and defaults |
+| [Deployment](docs/deployment.md) | Local infra and runtime startup |
 | [Project Status](docs/PROJECT_STATUS.md) | Current implementation status |
 | [Roadmap](docs/ROADMAP.md) | Phases, priorities, dependencies |
 | [Tasks](docs/TASKS.md) | Cross-crate execution backlog |
 | [Contributing](docs/contributing.md) | Contribution standards and setup |
 | [Workflow](docs/workflow.md) | Branching, commits, PR process |
-| [Issues](docs/issues.md) | Issue templates and triage |
-| [Labels](docs/labels.md) | Label taxonomy and conventions |
-| [Project Board](docs/project-board.md) | Board workflow and policies |
 
 ## Additional References
 
+- [docs/crates/README.md](docs/crates/README.md)
 - [vision/README.md](vision/README.md)
 - [vision/ARCHITECTURE.md](vision/ARCHITECTURE.md)
 - [vision/CRATES.md](vision/CRATES.md)

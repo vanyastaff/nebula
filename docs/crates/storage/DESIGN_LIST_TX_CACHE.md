@@ -1,10 +1,10 @@
 # Design: List/prefix, transactions, and caching
 
-This document summarizes the intended design for list/prefix scan, transactional operations, and caching in `nebula-storage` and their use by credential (and other) consumers. Implementation is phased; see [ROADMAP.md](./ROADMAP.md) and [PROPOSALS.md](./PROPOSALS.md).
+This document summarizes the intended design for list/prefix scan, transactional operations, and caching in `nebula-storage` and their use by credential (and other) consumers. Implementation is phased; see [ROADMAP.md](./ROADMAP.md).
 
 ## List / prefix scan
 
-- **Trait:** Add optional `ListableStorage` extension trait (see [PROPOSALS.md P001](./PROPOSALS.md)) with `list_prefix(&self, prefix: &str) -> Result<Vec<Self::Key>, StorageError>`.
+- **Trait:** Add optional `ListableStorage` extension trait with `list_prefix(&self, prefix: &str) -> Result<Vec<Self::Key>, StorageError>`.
 - **Backends:** Memory: filter in-memory keys by prefix; Postgres: `SELECT key FROM storage_kv WHERE key LIKE $1` (parameterized); Redis: `SCAN` with pattern; S3: `list_objects_v2` with prefix.
 - **Credential use:** `PostgresStorageProvider::list` can call `list_prefix("cred:")` and parse UUIDs from keys to return `Vec<CredentialId>`. Until `ListableStorage` exists, the provider returns an empty list.
 - **Pagination:** For large key spaces, add optional `list_prefix_paginated(prefix, limit, cursor)` returning `(Vec<Key>, Option<Cursor>)` in a later phase.

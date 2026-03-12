@@ -2,7 +2,7 @@
 
 ## Crate boundaries
 
-Runtime sits between **nebula-engine** (orchestration) and **nebula-action** / **nebula-plugin** (handler contract). Execution state and plan live in **nebula-execution**; runtime does not depend on execution. See [INTERACTIONS.md](./INTERACTIONS.md#crate-boundaries).
+Runtime sits between **nebula-engine** (orchestration) and **nebula-action** / **nebula-plugin** (handler contract). Execution state and plan live in **nebula-execution**; runtime does not depend on execution.
 
 ## Problem Statement
 

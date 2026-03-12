@@ -42,23 +42,13 @@ Execution state machine, journals, idempotency, and planning for the Nebula work
 
 ## Document Map
 
-- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [API.md](./API.md)
-- [INTERACTIONS.md](./INTERACTIONS.md)
-- [DECISIONS.md](./DECISIONS.md)
 - [ROADMAP.md](./ROADMAP.md)
-- [PROPOSALS.md](./PROPOSALS.md)
-- [SECURITY.md](./SECURITY.md)
-- [RELIABILITY.md](./RELIABILITY.md)
-- [TEST_STRATEGY.md](./TEST_STRATEGY.md)
 - [MIGRATION.md](./MIGRATION.md)
 
 ## Design & research (in crate)
 
 - [Execution View & Tracing](../../../crates/execution/docs/Execution-View-Tracing.md) — industry research for execution visibility and tracing (Inngest, Temporal, n8n, etc.).
 
-## Archive
 
-Legacy material:
-- [`_archive/`](./_archive/)

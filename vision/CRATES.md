@@ -29,7 +29,6 @@ For inter-crate dependencies (who depends on what) see **[DEPENDENCIES.md](./DEP
 | [`nebula-expression`](#nebula-expression) | Cross-cutting | Expression language for dynamic values (n8n-compatible syntax) |
 | [`nebula-credential`](#nebula-credential) | Domain | Credential lifecycle: OAuth2, API keys, JWT, SAML, mTLS, rotation |
 | [`nebula-resource`](#nebula-resource) | Domain | Resource lifecycle management: pooling, health, scoping, metrics |
-| [`nebula-resource-postgres`](#nebula-resource-postgres) | Adapter | Reference Postgres driver adapter for `nebula-resource` |
 | [`nebula-action`](#nebula-action) | Domain | Action contract: traits, types, I/O model — not the executor |
 | [`nebula-execution`](#nebula-execution) | Domain | Execution state machine, journals, idempotency, plan |
 | [`nebula-plugin`](#nebula-plugin) | Domain | Plugin registry and packaging unit (e.g. "Slack", "HTTP Request") |
@@ -45,6 +44,7 @@ For inter-crate dependencies (who depends on what) see **[DEPENDENCIES.md](./DEP
 
 | Crate | Layer | One-line purpose | Priority |
 |-------|-------|-----------------|----------|
+| [`nebula-resource-postgres`](#nebula-resource-postgres-planned) | Adapter | Reference PostgreSQL resource adapter for `nebula-resource` | P1 |
 | [`nebula-sandbox`](#nebula-sandbox-planned) | Execution | Action isolation contract: capability enforcement, WASM/process backends | P1 |
 | [`nebula-worker`](#nebula-worker-planned) | Execution | Distributed worker: task state machine, heartbeats, graceful drain | P1 |
 | [`nebula-idempotency`](#nebula-idempotency-planned) | Cross-cutting | Deduplication, retry-safety, exactly-once execution | P1 |
@@ -503,28 +503,7 @@ Lifecycle management for shared, reusable I/O resources: database connection poo
 
 #### What does NOT belong here
 
-Credential acquisition (that is `nebula-credential`), action execution logic, or domain-specific resource implementations (e.g. Postgres lives in `nebula-resource-postgres`).
-
----
-
-### `nebula-resource-postgres`
-
-**Layer:** Adapter  
-**Crate name:** `nebula-resource-postgres`
-
-#### Purpose
-
-Reference implementation showing how to package a database driver as a `nebula-resource` adapter. Provides a `PostgresResource` and `PostgresHandle` that integrate with the resource pool lifecycle.
-
-#### Responsibilities
-
-- **`PostgresResource`** — implements the `Resource` trait for PostgreSQL connections
-- **`PostgresHandle`** — lightweight runtime instance (connection/pool handle)
-- Demonstrates the adapter pattern for any future database driver crates
-
-#### What does NOT belong here
-
-Generic resource pooling logic (that is `nebula-resource`) or SQL query generation (that belongs in the application layer or a dedicated query crate).
+Credential acquisition (that is `nebula-credential`), action execution logic, or domain-specific resource implementations (e.g. a future `nebula-resource-postgres`).
 
 ---
 
@@ -695,7 +674,7 @@ Thin HTTP server exposing Nebula's functionality over REST (and eventually WebSo
 
 #### Current state
 
-`nebula-api` depends on `storage` and `config` but **not yet on `nebula-engine`**. The endpoint for triggering workflow executions is a Phase 2 task. See [ROADMAP.md](./ROADMAP.md).
+`nebula-api` depends on `storage` and `config` but **not yet on `nebula-engine`**. The endpoint for triggering workflow executions is a Phase 2 task. See [ROADMAP.md](../docs/ROADMAP.md).
 
 #### What does NOT belong here
 

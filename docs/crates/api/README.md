@@ -15,7 +15,7 @@ Unified HTTP server for Nebula: API + webhook on one port.
 
 - **Out of scope (for now):**
   - Workflow/execution REST endpoints (planned Phase 2)
-  - Credential REST endpoints (planned Phase 4; see [API.md](./API.md) and [INTERACTIONS.md](./INTERACTIONS.md) — storage backend chosen at app composition, e.g. Postgres via [credential MIGRATION](../credential/MIGRATION.md))
+  - Credential REST endpoints (planned Phase 4; see [API.md](./API.md) — storage backend chosen at app composition, e.g. Postgres via [credential MIGRATION](../credential/MIGRATION.md))
   - Authentication, rate limiting (planned)
   - WebSocket (planned)
   - OpenAPI spec (planned)
@@ -34,20 +34,8 @@ Unified HTTP server for Nebula: API + webhook on one port.
 
 ## Document Map
 
-- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [VISION.md](./VISION.md) — target architecture, module layout, ports, enqueue-and-return
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [API.md](./API.md)
-- [INTERACTIONS.md](./INTERACTIONS.md)
-- [DECISIONS.md](./DECISIONS.md)
 - [ROADMAP.md](./ROADMAP.md)
-- [PROPOSALS.md](./PROPOSALS.md)
-- [SECURITY.md](./SECURITY.md)
-- [RELIABILITY.md](./RELIABILITY.md)
-- [TEST_STRATEGY.md](./TEST_STRATEGY.md)
 - [MIGRATION.md](./MIGRATION.md)
-
-## Archive
-
-Legacy material:
-- [`_archive/`](./_archive/)

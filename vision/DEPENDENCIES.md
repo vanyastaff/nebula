@@ -26,7 +26,6 @@ Generated from the actual source — updated whenever a `Cargo.toml` changes.
 | `nebula-expression` | `core` · `log` · `memory` |
 | `nebula-credential` | `core` · `log` · `parameter` · `eventbus` · `storage` *(optional feat)* |
 | `nebula-resource` | `core` · `credential` · `eventbus` · `metrics` · `telemetry` · `parameter` |
-| `nebula-resource-postgres` | `core` · `resource` |
 | `nebula-action` | `core` · `credential` · `parameter` · `resource` |
 | `nebula-execution` | `core` · `workflow` · `action` |
 | `nebula-plugin` | `core` · `action` · `credential` · `resource` |
@@ -60,8 +59,7 @@ Useful for understanding blast radius — if you change crate X, these crates ma
 | `nebula-resilience` | *(none yet — consumed by application-level code)* |
 | `nebula-expression` | `engine` |
 | `nebula-credential` | `action` · `plugin` · `resource` · `sdk` |
-| `nebula-resource` | `action` · `plugin` · `engine` · `resource-postgres` · `webhook` · `sdk` *(via action)* |
-| `nebula-resource-postgres` | *(none — leaf adapter)* |
+| `nebula-resource` | `action` · `plugin` · `engine` · `webhook` · `sdk` *(via action)* |
 | `nebula-action` | `execution` · `engine` · `plugin` · `runtime` · `sdk` |
 | `nebula-execution` | `engine` |
 | `nebula-plugin` | `engine` · `runtime` · `sdk` |
@@ -135,10 +133,6 @@ graph TD
     resource --> metrics
     resource --> telemetry
     resource --> parameter
-
-    resource_pg["nebula-resource-postgres"]
-    resource_pg --> core
-    resource_pg --> resource
 
     %% Layer 5 — action
     action["nebula-action"]
@@ -268,7 +262,6 @@ These crates have **zero** nebula-* dependencies. They are safe to import anywhe
 | Crate | Depends on |
 |-------|-----------|
 | `nebula-resource` | `core` · `credential` · `eventbus` · `metrics` · `telemetry` · `parameter` |
-| `nebula-resource-postgres` | `core` · `resource` |
 
 ### Layer 5 — Action Contract
 
@@ -319,9 +312,9 @@ These crates have **zero** nebula-* dependencies. They are safe to import anywhe
 
 `nebula-telemetry` is used by `metrics`, `resource`, `runtime`, and `engine` — changes to its public API have a wide blast radius. Same for `nebula-eventbus` (`credential`, `resource`, `telemetry`).
 
-### 4. `nebula-resource-postgres` and `nebula-webhook` are leaves
+### 4. `nebula-webhook` is a leaf
 
-They depend on other crates but nothing depends on them. They can be added/removed without touching any other workspace member.
+It depends on other crates but nothing depends on it. It can be added/removed without touching any other workspace member.
 
 ### 5. Clean acyclic dependency order
 
@@ -332,7 +325,7 @@ core → log → system → eventbus → validator
   → storage → workflow → memory → telemetry → config
     → parameter → macros → metrics → resilience → expression
       → credential
-        → resource → resource-postgres
+        → resource
           → action
             → execution → plugin
               → runtime

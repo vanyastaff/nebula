@@ -18,8 +18,7 @@ Nebula is a modular workflow engine built on Rust 1.93+. The workspace contains 
 │                    engine · runtime                           │
 ├──────────────────────────────────────────────────────────────┤
 │                  Business Logic Layer                         │
-│          action · resource · resource-postgres                │
-│              credential · plugin                              │
+│            action · resource · credential · plugin            │
 ├──────────────────────────────────────────────────────────────┤
 │                      Core Layer                               │
 │     core · workflow · execution · memory · expression         │
@@ -61,7 +60,6 @@ Nebula is a modular workflow engine built on Rust 1.93+. The workspace contains 
 |-------|---------|----------------|
 | `crates/action` | `nebula-action` | `Action` trait, execution context, output/error/port contracts |
 | `crates/resource` | `nebula-resource` | Resource lifecycle, scopes, health checks, connection pooling |
-| `crates/resource-postgres` | `nebula-resource-postgres` | Reference PostgreSQL resource adapter |
 | `crates/credential` | `nebula-credential` | Encrypted credential storage (AES-256-GCM), rotation engine |
 | `crates/plugin` | `nebula-plugin` | Plugin discovery and dynamic loading |
 
@@ -222,6 +220,7 @@ These concepts are documented and planned but do not yet exist as workspace memb
 
 | Concept | Likely crate | Phase |
 |---------|-------------|-------|
+| PostgreSQL resource adapter | `nebula-resource-postgres` | Phase 2 |
 | Sandbox isolation (WASM/process) | `nebula-sandbox` | Phase 2+ |
 | Distributed worker pool | `nebula-worker` | Phase 3 |
 | Idempotency keys | `nebula-idempotency` | Phase 3 |

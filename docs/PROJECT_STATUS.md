@@ -1,8 +1,8 @@
-[← Previous Page](ARCHITECTURE.md) · [Back to README](../README.md) · [Next Page →](ROADMAP.md)
+[← Previous Page](deployment.md) · [Back to README](../README.md) · [Next Page →](ROADMAP.md)
 
 # Project Status
 
-**Last updated:** 2026-03-01
+**Last updated:** 2026-03-11
 **Overall:** 🟡 Alpha — core crates implemented, execution engine in active development
 
 ## Component Status
@@ -29,7 +29,7 @@
 | `nebula-resilience` | ✅ Done | Circuit breaker, retry, rate-limiting |
 | `nebula-storage` | ✅ Done | KV storage abstraction |
 | `nebula-macros` | ✅ Done | `#[node]`, `#[action]` proc-macros |
-| `nebula-eventbus` | 🔄 In progress | Pub/sub event bus (planned abstraction) |
+| `nebula-eventbus` | 🔄 In progress | Pub/sub event bus, scoped subscriptions |
 | `nebula-metrics` | 🔄 In progress | Metrics collection and export |
 | `nebula-telemetry` | 🔄 In progress | Distributed tracing, observability |
 
@@ -47,6 +47,7 @@
 | Crate | Status | Notes |
 |-------|--------|-------|
 | `nebula-credential` | 🔄 In progress | Encrypted credential storage (AES-256-GCM) |
+| `nebula-auth` | 🔄 RFC phase | Authentication and authorization contracts |
 | `nebula-plugin` | 🔄 In progress | Plugin discovery and loading |
 | `nebula-webhook` | 🔄 In progress | Inbound webhook ingestion |
 

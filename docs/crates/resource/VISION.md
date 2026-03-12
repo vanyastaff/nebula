@@ -551,7 +551,7 @@ impl AuthStrategy {
 
 ### 3.5 Per-call enrichment (Tier 2) and InterceptorChain
 
-Optional per-call data is recorded via [`Recorder::record_call`](crate::trace::Recorder::record_call) with a [`CallRecord`] (operation, duration, status, request/response). The engine injects a `Recorder` into `Context`; stdlib resources (e.g. HTTP) call it when `recorder.is_enrichment_enabled()`. There is no generic `InterceptorChain` in the core; each Instance type may implement its own hooks or use the shared Recorder.
+Optional per-call data is recorded via `Recorder::record_call` with a `CallRecord` (operation, duration, status, request/response). The engine injects a `Recorder` into `Context`; stdlib resources (e.g. HTTP) call it when `recorder.is_enrichment_enabled()`. There is no generic `InterceptorChain` in the core; each Instance type may implement its own hooks or use the shared Recorder.
 
 The following is an alternative (historical) pattern; Tier 2 uses Recorder instead.
 

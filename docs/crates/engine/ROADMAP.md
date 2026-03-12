@@ -1,6 +1,6 @@
 # Roadmap
 
-Phased path to production-ready workflow execution orchestration. Aligned with [CONSTITUTION.md](./CONSTITUTION.md): engine owns lifecycle, state is durable, events are fire-and-forget.
+Phased path to production-ready workflow execution orchestration. Engine owns lifecycle, state is durable, events are fire-and-forget.
 
 ## Phase 1: Contract and State Integration
 

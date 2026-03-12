@@ -46,7 +46,7 @@ Closes #
 - [ ] Tests pass locally (`cargo test`)
 - [ ] Clippy passes (`cargo clippy -- -D warnings`)
 - [ ] Code is formatted (`cargo fmt`)
-- [ ] Commit messages follow conventions (see [WORKFLOW.md](../WORKFLOW.md#commit-conventions))
+- [ ] Commit messages follow conventions (see [docs/workflow.md](../docs/workflow.md))
 - [ ] No breaking changes (or breaking changes are discussed below)
 - [ ] Documentation updated (if needed)
 - [ ] Related issues linked

@@ -1,4 +1,4 @@
-[← Previous Page](getting-started.md) · [Back to README](../README.md) · [Next Page →](PROJECT_STATUS.md)
+[← Previous Page](getting-started.md) · [Back to README](../README.md) · [Next Page →](api.md)
 
 # Architecture
 
@@ -58,6 +58,7 @@ Cross-cutting crates (`config`, `log`, `resilience`) may be imported at any laye
 | `crates/resource` | `nebula-resource` | Resource lifecycle, scopes, health, pooling |
 | `crates/credential` | `nebula-credential` | Encrypted credential storage (AES-256-GCM), rotation engine |
 | `crates/plugin` | `nebula-plugin` | Plugin discovery and dynamic loading |
+| `crates/auth` | `nebula-auth` | Authentication and authorization contracts (RFC phase) |
 
 #### Credential–Resource Integration
 
@@ -84,7 +85,9 @@ Cross-cutting crates (`config`, `log`, `resilience`) may be imported at any laye
 | `crates/log` | `nebula-log` | Structured logging, tracing spans |
 | `crates/system` | `nebula-system` | Cross-platform utilities, memory pressure detection |
 | `crates/resilience` | `nebula-resilience` | Circuit breaker, retry policies, rate limiting |
-| `crates/telemetry` | `nebula-telemetry` | Metrics, distributed tracing |
+| `crates/eventbus` | `nebula-eventbus` | Pub/sub event bus for cross-crate notifications |
+| `crates/metrics` | `nebula-metrics` | Metrics collection and export |
+| `crates/telemetry` | `nebula-telemetry` | Distributed tracing and observability |
 
 ### Infrastructure Layer
 
@@ -106,13 +109,6 @@ Cross-cutting crates (`config`, `log`, `resilience`) may be imported at any laye
 |-----|---------|----------------|
 | `crates/sdk` | `nebula-sdk` | All-in-one developer SDK and testing utilities |
 | `crates/macros` | `nebula-macros` | Procedural macros: `#[node]`, `#[action]` |
-
-### First-Party Plugins
-
-| Dir | Package | Notes |
-|-----|---------|-------|
-| `plugins/github` | `nebula-plugin-github` | GitHub integration |
-| `plugins/telegram` | `nebula-plugin-telegram` | Telegram integration |
 
 ## Data Flow
 

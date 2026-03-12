@@ -18,19 +18,9 @@ See crate rustdoc and [API.md](./API.md) for attributes and examples.
 
 ## Document Map
 
-- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — problem, current/target architecture
 - [API.md](./API.md) — public surface, attributes, compatibility
-- [INTERACTIONS.md](./INTERACTIONS.md) — ecosystem, action/plugin/credential/resource contract
-- [DECISIONS.md](./DECISIONS.md) — no unsafe, single crate, attribute versioning
 - [ROADMAP.md](./ROADMAP.md) — phases, risks, exit criteria
-- [PROPOSALS.md](./PROPOSALS.md) — expansion debugging, diagnostics
-- [SECURITY.md](./SECURITY.md) — threat model, no unsafe
-- [RELIABILITY.md](./RELIABILITY.md) — compile-time only, no runtime
-- [TEST_STRATEGY.md](./TEST_STRATEGY.md) — pyramid, contract tests
 - [MIGRATION.md](./MIGRATION.md) — versioning, breaking attributes/output
-- [_archive/README.md](./_archive/README.md) — legacy doc preservation
 
-## Archive
 
-Legacy material: [\_archive/](./_archive/) and parent directory (archive-*.md, from-archive/, from-core-full/).

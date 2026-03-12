@@ -1,6 +1,6 @@
 # Roadmap
 
-Phased path to production-ready workflow definition and DAG model. Aligned with [CONSTITUTION.md](./CONSTITUTION.md) and platform role (engine/API/UI share same schema).
+Phased path to production-ready workflow definition and DAG model. Platform role: engine/API/UI share the same schema.
 
 ## Phase 1: Contract and Schema Baseline
 

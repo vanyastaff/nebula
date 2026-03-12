@@ -1,7 +1,11 @@
+[Back to README](../../README.md)
+
 # Crate Map
 
 Quick reference for all crates in the Nebula workspace. See
 [ARCHITECTURE.md](../ARCHITECTURE.md) for layer diagrams and dependency rules.
+
+This index focuses on active workspace crates and their primary documentation entry points.
 
 ## Directory → Package mapping
 
@@ -23,6 +27,7 @@ Quick reference for all crates in the Nebula workspace. See
 | `crates/eventbus` | `nebula-eventbus` | Cross-cutting | Pub/sub event bus |
 | `crates/metrics` | `nebula-metrics` | Cross-cutting | Metrics collection and export |
 | `crates/action` | `nebula-action` | Business | Action trait, execution context |
+| `crates/auth` | `nebula-auth` | Business | Authentication and authorization contracts |
 | `crates/resource` | `nebula-resource` | Business | Resource lifecycle and pooling |
 | `crates/credential` | `nebula-credential` | Business | Encrypted credential storage |
 | `crates/plugin` | `nebula-plugin` | Business | Plugin discovery and loading |
@@ -52,29 +57,36 @@ nebula-log ◄── everything (no business logic)
 
 | Crate | Docs |
 |-------|------|
-| `nebula-core` | [core.md](./core.md), [core/README.md](./core/README.md) |
+| `nebula-core` | [core/README.md](./core/README.md), [core/API.md](./core/API.md) |
 | `nebula-workflow` | [workflow/README.md](./workflow/README.md) |
 | `nebula-execution` | [execution/README.md](./execution/README.md) |
 | `nebula-memory` | [memory/README.md](./memory/README.md) |
 | `nebula-expression` | [expression/README.md](./expression/README.md) |
-| `nebula-parameter` | [parameter/README.md](./parameter/README.md) |
-| `nebula-validator` | [validator/README.md](./validator/README.md) |
+| `nebula-parameter` | [parameter/EVOLUTION_PLAN.md](./parameter/EVOLUTION_PLAN.md) |
+| `nebula-validator` | [crates/validator/docs/API.md](../../crates/validator/docs/API.md) (in-tree) |
 | `nebula-storage` | [storage/README.md](./storage/README.md) |
 | `nebula-config` | [config/README.md](./config/README.md) |
 | `nebula-log` | [crates/log/docs/README.md](../../crates/log/docs/README.md) (in-tree) |
 | `nebula-system` | [system/README.md](./system/README.md) |
-| `nebula-resilience` | [resilience/README.md](./resilience/README.md) |
+| `nebula-resilience` | [resilience/PLAN.md](./resilience/PLAN.md) |
 | `nebula-telemetry` | [telemetry/README.md](./telemetry/README.md) |
 | `nebula-eventbus` | [eventbus/README.md](./eventbus/README.md) |
 | `nebula-metrics` | [metrics/README.md](./metrics/README.md) |
 | `nebula-action` | [action/README.md](./action/README.md) |
+| `nebula-auth` | [crates/auth/rfcs](../../crates/auth/rfcs) (in-tree) |
 | `nebula-resource` | [resource/README.md](./resource/README.md) |
-| `nebula-credential` | [credential.md](./credential.md), [credential/README.md](./credential/README.md) |
-| `nebula-plugin` | (see crate docs) |
+| `nebula-credential` | [credential/README.md](./credential/README.md), [credential/API.md](./credential/API.md) |
+| `nebula-plugin` | [plugin/README.md](./plugin/README.md) |
 | `nebula-engine` | [engine/README.md](./engine/README.md) |
 | `nebula-runtime` | [runtime/README.md](./runtime/README.md) |
 | `nebula-sdk` | [sdk/README.md](./sdk/README.md) |
-| `nebula-macros` | (see crate docs) |
+| `nebula-macros` | [macros/README.md](./macros/README.md) |
 | `nebula-api` | [api/README.md](./api/README.md) |
-| `nebula-webhook` | (see crate docs) |
+| `nebula-webhook` | [crates/webhook/README.md](../../crates/webhook/README.md) (in-tree) |
+
+## See Also
+
+- [Architecture](../ARCHITECTURE.md) - Workspace layering and dependency rules
+- [Roadmap](../ROADMAP.md) - Cross-crate delivery phases and priorities
+- [Tasks](../TASKS.md) - Ordered execution backlog
 

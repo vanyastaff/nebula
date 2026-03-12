@@ -378,16 +378,7 @@ cargo bench -p nebula-memory
 
 ## Examples
 
-See [`examples/`](examples/) directory for complete examples:
-
-**New in v0.2.0:**
-- [`error_handling.rs`](examples/error_handling.rs) - ⭐ Graceful degradation and recovery strategies
-- [`integration_patterns.rs`](examples/integration_patterns.rs) - ⭐ Real-world patterns (web, compiler, database)
-- [`macro_showcase.rs`](examples/macro_showcase.rs) - ⭐ Complete macro DSL demonstration
-
-**Classic examples:**
-- [`allocator_comparison.rs`](examples/allocator_comparison.rs) - When to use each allocator
-- [`advanced_patterns.rs`](examples/advanced_patterns.rs) - Sophisticated usage patterns
+See the test modules in `src/` for usage patterns — each allocator includes inline examples.
 
 Run examples:
 
@@ -428,13 +419,8 @@ All allocators are carefully tested for memory safety:
 - ✅ Comprehensive unsafe code documentation
 - ✅ **No Stacked Borrows violations** - UB-free (**New in v0.2.0**)
 
-See [SAFETY.md](docs/SAFETY.md) for detailed safety guarantees and [CHANGELOG.md](CHANGELOG.md) for migration guide.
-
 ## Documentation
 
-- [API Documentation](https://docs.rs/nebula-memory) - Full API reference
-- [Safety Guarantees](docs/SAFETY.md) - Memory safety documentation
-- [Miri Limitations](docs/MIRI_LIMITATIONS.md) - Known limitations
 - [Benchmark Guide](benches/README.md) - Performance benchmarking
 
 ## Feature Flags
@@ -458,7 +444,7 @@ Rust 1.70.0 or later.
 
 ## Contributing
 
-Contributions welcome! Please read [CONTRIBUTING.md](../../CONTRIBUTING.md) first.
+Contributions welcome! Please read [docs/contributing.md](../../docs/contributing.md) first.
 
 ### Development
 
@@ -478,7 +464,7 @@ cargo clippy -p nebula-memory -- -D warnings
 
 ## License
 
-Licensed under MIT OR Apache-2.0. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
+Licensed under MIT OR Apache-2.0. See [LICENSE](../../LICENSE).
 
 ## Credits
 

@@ -36,21 +36,11 @@ Those belong to runtime/engine/sandbox/resource/credential crates.
 
 ## Docs map
 
-- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](./ARCHITECTURE.md): current + target architecture
 - [API.md](./API.md): stable API and authoring patterns
 - [EXAMPLES.md](./EXAMPLES.md): end-to-end examples
-- [INTERACTIONS.md](./INTERACTIONS.md): crate-to-crate integration contracts
-- [DECISIONS.md](./DECISIONS.md): accepted architectural decisions
 - [ROADMAP.md](./ROADMAP.md): phased path to hardened production state
-- [PROPOSALS.md](./PROPOSALS.md): candidate breaking and non-breaking extensions
-- [SECURITY.md](./SECURITY.md): threat model and controls
-- [RELIABILITY.md](./RELIABILITY.md): SLO and failure handling model
-- [TEST_STRATEGY.md](./TEST_STRATEGY.md): contract and integration test plan
 - [COMPATIBILITY.md](./COMPATIBILITY.md): schema-stable types and contract tests
 - [MIGRATION.md](./MIGRATION.md): compatibility and rollout/rollback guide
 
-## Archive
 
-Legacy drafts and imported notes are preserved in:
-- [`_archive/`](./_archive/)

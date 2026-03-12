@@ -11,7 +11,7 @@ Action execution orchestration for the Nebula workflow engine.
 | **nebula-runtime** (this crate) | Action execution: registry lookup, run via sandbox, data limits, telemetry; one node at a time. |
 | **nebula-engine** | DAG orchestration: builds state/plan, applies transitions, persists; calls runtime to run nodes. |
 
-Context: `execute_action` currently takes **NodeContext** (deprecated in action); target is **ActionContext** / `&impl Context`. See [INTERACTIONS.md](./INTERACTIONS.md#context-contract-current-vs-target).
+Context: `execute_action` currently takes **NodeContext** (deprecated in action); target is **ActionContext** / `&impl Context`.
 
 ## Scope
 
@@ -41,19 +41,7 @@ Context: `execute_action` currently takes **NodeContext** (deprecated in action)
 
 ## Document Map
 
-- [CONSTITUTION.md](./CONSTITUTION.md) — platform role, principles, production vision
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [API.md](./API.md)
-- [INTERACTIONS.md](./INTERACTIONS.md)
-- [DECISIONS.md](./DECISIONS.md)
 - [ROADMAP.md](./ROADMAP.md)
-- [PROPOSALS.md](./PROPOSALS.md)
-- [SECURITY.md](./SECURITY.md)
-- [RELIABILITY.md](./RELIABILITY.md)
-- [TEST_STRATEGY.md](./TEST_STRATEGY.md)
 - [MIGRATION.md](./MIGRATION.md)
-
-## Archive
-
-Legacy material:
-- [`_archive/`](./_archive/)

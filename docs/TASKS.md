@@ -43,7 +43,7 @@ These are the highest-impact tasks across the entire project right now:
 | [nebula-macros](crates/macros/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/macros/TASKS.md) |
 
 **Recommended order for remaining Group 1 work**:
-1. `nebula-storage` Phase 1 (Postgres) — blocks engine and idempotency
+1. `nebula-storage` Phase 1 (Postgres) — blocks engine integration
 2. `nebula-expression` Phase 3 (cache tuning) — independent
 3. `nebula-validator` Phase 2 (compatibility/governance) — independent
 4. `nebula-metrics` Phase 4 (OTLP) — independent, wire `/metrics` in api
@@ -64,16 +64,13 @@ These are the highest-impact tasks across the entire project right now:
 | [nebula-resource](crates/resource/TASKS.md) | Phase 1 | 🔄 In Progress | [Tasks](crates/resource/TASKS.md) |
 | [nebula-engine](crates/engine/TASKS.md) | Phase 1 | ⬜ Waiting on storage | [Tasks](crates/engine/TASKS.md) |
 | [nebula-runtime](crates/runtime/TASKS.md) | Phase 1 | 🔄 In Progress | [Tasks](crates/runtime/TASKS.md) |
-| [nebula-worker](crates/worker/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/worker/TASKS.md) |
-| [nebula-sandbox](crates/sandbox/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/sandbox/TASKS.md) |
 
 **Recommended order**:
 1. `nebula-action` Phase 2 — finish context model + capability modules
 2. `nebula-resource` Phase 1 — contract docs + scope invariants
 3. `nebula-runtime` Phase 1 — isolation routing + SpillToBlob (parallel with resource)
 4. `nebula-engine` Phase 1 — wire to storage (needs STG Phase 1 done)
-5. `nebula-sandbox` Phase 1 — contract + capability model
-6. `nebula-worker` Phase 1 — queue lease contract
+5. Runtime stabilization and execution hardening after engine wiring
 
 **Group 2 acceptance criteria** (from main ROADMAP):
 - [ ] Single-node workflow executes end-to-end
@@ -120,7 +117,7 @@ These are the highest-impact tasks across the entire project right now:
 | Crate | Current Phase | Status | Tasks |
 |-------|--------------|--------|-------|
 | [nebula-api](crates/api/TASKS.md) | Phase 1 | 🔄 In Progress | [Tasks](crates/api/TASKS.md) |
-| [Desktop App](crates/desktop/TASKS.md) | Phase 1 | 🔄 In Progress | [Tasks](crates/desktop/TASKS.md) |
+| [Desktop App](../apps/desktop/README.md) | Phase 1 | 🔄 In Progress | [App Docs](../apps/desktop/README.md) |
 
 **Recommended order**:
 - `nebula-api` Phase 1 (workflow + execution REST) can proceed in parallel with Group 2
@@ -128,24 +125,19 @@ These are the highest-impact tasks across the entire project right now:
 
 ---
 
-## Group 6: Future Crates ⬜
+## Group 6: Expansion Tracks ⬜
 
-*Status: Planned for later phases. Not yet in main project phases.*
+*Status: Planned for later phases after core execution and API milestones.*
 
 | Crate | Current Phase | Status | Tasks |
 |-------|--------------|--------|-------|
 | [nebula-eventbus](crates/eventbus/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/eventbus/TASKS.md) |
-| [nebula-idempotency](crates/idempotency/TASKS.md) | Phase 1 | 🔄 Docs in progress | [Tasks](crates/idempotency/TASKS.md) |
-| [nebula-tenant](crates/tenant/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/tenant/TASKS.md) |
-| [nebula-cluster](crates/cluster/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/cluster/TASKS.md) |
-| [nebula-locale](crates/locale/TASKS.md) | Phase 1 | ⬜ Planned | [Tasks](crates/locale/TASKS.md) |
+| [nebula-auth](../crates/auth/rfcs) | RFC phase | 🔄 In Progress | [RFCs](../crates/auth/rfcs) |
 
 **Recommended order**:
 1. `nebula-eventbus` Phase 1 — consolidate telemetry/resource EventBus (can start soon)
-2. `nebula-idempotency` Phase 2 — persistent storage (needs storage Phase 1)
-3. `nebula-tenant` Phase 1 — after API and engine have stable request context
-4. `nebula-cluster` Phase 1 — after runtime Phase 3 (multi-runtime coordination)
-5. `nebula-locale` Phase 1 — after API Phase 1 (localized error responses)
+2. `nebula-auth` stabilization — converge RFCs into implementation milestones
+3. Expand event-driven integrations after core API/runtime milestones
 
 ---
 
@@ -154,7 +146,7 @@ These are the highest-impact tasks across the entire project right now:
 ### Right now (next 2–4 weeks)
 
 1. **Finish `nebula-storage` Phase 1** (STG tasks) — unblocks engine
-2. **Complete `nebula-action` Phase 2** (ACT tasks) — unblocks runtime, sandbox, credential
+2. **Complete `nebula-action` Phase 2** (ACT tasks) — unblocks runtime and credential integration
 3. **Complete `nebula-resource` Phase 1** (RSC tasks) — credential–resource integration
 4. **Complete `nebula-runtime` Phase 1** (RTM tasks) — isolation routing
 5. **Start Desktop Phase 1** (DSK tasks T004–T017) — typed IPC independent of backend
@@ -163,7 +155,7 @@ These are the highest-impact tasks across the entire project right now:
 
 6. **Start `nebula-engine` Phase 1** (ENG tasks) — wire state to Postgres
 7. **Continue `nebula-credential` Phase 1** (CRD tasks) — contract consolidation
-8. **Start `nebula-sandbox` Phase 1** (SBX tasks) — capability model
+8. **Continue runtime hardening** (timeouts, cancellation, memory pressure)
 
 ### After Group 2 acceptance criteria are met
 
@@ -180,9 +172,9 @@ These are the highest-impact tasks across the entire project right now:
 nebula-core
   └─ nebula-storage ─────────────────→ nebula-engine
   └─ nebula-execution                       ↑
-  └─ nebula-action ──────────────→ nebula-runtime → nebula-sandbox
+  └─ nebula-action ──────────────→ nebula-runtime
   └─ nebula-resource ──────────────╯         ↓
-  └─ nebula-credential (uses action/resource) nebula-worker
+  └─ nebula-credential (uses action/resource)
   └─ nebula-plugin (uses action/credential)
   └─ nebula-sdk (re-exports all above)
   └─ nebula-api (uses engine/runtime/plugin/credential)

@@ -357,7 +357,7 @@ RotationScheduler detects policy trigger
 - Context + scope used for tenant isolation on every operation
 - Secret value handling centralized in `SecretString` and `EncryptedData`
 - Unsafe code forbidden at crate root
-- See [SECURITY.md](SECURITY.md) for full threat model and crypto specifications
+- See crate-level security requirements in this architecture and API documentation.
 
 ## Operational Properties
 

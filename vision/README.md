@@ -13,10 +13,7 @@ Nebula is a modular, open-source workflow automation engine written in Rust — 
 | **[ARCHITECTURE.md](./ARCHITECTURE.md)** | Crate layers, dependency rules, data flow, async conventions |
 | **[CRATES.md](./CRATES.md)** | Purpose and responsibility of every crate in the workspace |
 | **[DEPENDENCIES.md](./DEPENDENCIES.md)** | Full inter-crate dependency map, Mermaid graph, blast-radius table |
-| **[STATUS.md](./STATUS.md)** | Current completion state per crate and area |
-| **[ROADMAP.md](./ROADMAP.md)** | Phased plan: what's done, what's next, exit criteria |
 | **[DECISIONS.md](./DECISIONS.md)** | Architectural decision records (why Rust, why serde_json::Value, etc.) |
-| **[CONTRIBUTING.md](./CONTRIBUTING.md)** | Engineering conventions, workflow, quality checklist |
 
 ---
 
@@ -42,7 +39,7 @@ Nebula runs it reliably:
 ### Core Properties
 
 - **Type-safe**: Rust's compiler catches wrong-ID bugs, missing credentials, invalid state transitions.
-- **Modular**: 26 focused crates with one-way dependencies. Add a new action without touching the engine.
+- **Modular**: 25 focused crates with one-way dependencies. Add a new action without touching the engine.
 - **Async-first**: Built on Tokio. Concurrent node fan-out, bounded work queues, cooperative cancellation.
 - **Storage-agnostic**: In-memory for tests; PostgreSQL for production. Same API.
 - **Extensible**: First-party plugins (GitHub, Telegram) and third-party via `nebula-plugin`.
@@ -61,7 +58,7 @@ Blocked on: PostgreSQL storage backend (storage Phase 1).
 **Phase 3–5 — ⬜ Planned**
 Credential system hardening, plugin ecosystem, SDK, Desktop app completion.
 
-See [STATUS.md](./STATUS.md) for per-crate detail.
+See [docs/PROJECT_STATUS.md](../docs/PROJECT_STATUS.md) for per-crate detail.
 
 ---
 
@@ -69,7 +66,7 @@ See [STATUS.md](./STATUS.md) for per-crate detail.
 
 ```
 nebula/
-├── crates/                 # Rust library crates (26 members)
+├── crates/                 # Rust library crates (25 members)
 │   ├── core/               # IDs, scope, shared traits
 │   ├── workflow/           # Workflow definition + graph model
 │   ├── execution/          # Execution state machine
@@ -79,13 +76,13 @@ nebula/
 │   ├── storage/            # KV storage abstraction
 │   ├── credential/         # Encrypted secrets + rotation
 │   ├── resource/           # Resource lifecycle + pooling
-│   ├── resource-postgres/  # PostgreSQL resource adapter
+│   ├── auth/               # Authentication and authorization (RFC phase)
 │   ├── api/                # REST + WebSocket server (axum)
 │   └── ...                 # See ARCHITECTURE.md for full list
 ├── apps/
 │   ├── desktop/            # Tauri app (React + TypeScript + Rust)
 │   └── web/                # Web frontend
-├── docs/                   # Per-crate detailed documentation (755 files)
+├── docs/                   # Per-crate detailed documentation
 ├── vision/                 # ← You are here: project-level navigation
 ├── migrations/             # SQL database migrations
 └── deploy/                 # Deployment configuration
@@ -101,12 +98,12 @@ nebula/
 
 **I want to see what depends on what** → [DEPENDENCIES.md](./DEPENDENCIES.md)
 
-**I want to know what to work on next** → [ROADMAP.md](./ROADMAP.md) → "Recommended next tasks"
+**I want to know what to work on next** → [docs/ROADMAP.md](../docs/ROADMAP.md) → "Recommended next tasks"
 
-**I want to know if a crate is ready to use** → [STATUS.md](./STATUS.md)
+**I want to know if a crate is ready to use** → [docs/PROJECT_STATUS.md](../docs/PROJECT_STATUS.md)
 
 **I want to understand a design decision** → [DECISIONS.md](./DECISIONS.md)
 
-**I want to contribute** → [CONTRIBUTING.md](./CONTRIBUTING.md)
+**I want to contribute** → [docs/contributing.md](../docs/contributing.md)
 
 **I want deep crate-level detail** → `docs/crates/<crate>/` (README, ARCHITECTURE, API, TASKS)
