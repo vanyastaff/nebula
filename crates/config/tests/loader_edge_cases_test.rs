@@ -64,7 +64,11 @@ async fn array_of_tables_loads_all_entries() {
         .await
         .expect("should deserialise entries array");
 
-    assert_eq!(entries.len(), 50, "all 50 [[entries]] blocks must be preserved");
+    assert_eq!(
+        entries.len(),
+        50,
+        "all 50 [[entries]] blocks must be preserved"
+    );
 
     // Spot-check first and last element
     assert_eq!(entries[0]["id"], serde_json::json!(0));
@@ -98,7 +102,10 @@ async fn unicode_key_and_value_roundtrip() {
         .expect("should retrieve a Unicode key");
     assert_eq!(latte, "latté");
 
-    let crab: String = config.get("crab").await.expect("should retrieve emoji value");
+    let crab: String = config
+        .get("crab")
+        .await
+        .expect("should retrieve emoji value");
     assert_eq!(crab, "🦀");
 
     let _ = std::fs::remove_file(&path);

@@ -27,7 +27,10 @@ async fn stop_watching_returns_ok() {
         .expect("start_watching should succeed");
 
     let result = watcher.stop_watching().await;
-    assert!(result.is_ok(), "stop_watching must return Ok on an active watcher");
+    assert!(
+        result.is_ok(),
+        "stop_watching must return Ok on an active watcher"
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -49,7 +52,10 @@ async fn is_watching_false_after_stop() {
     assert!(watcher.is_watching(), "should be watching after start");
 
     watcher.stop_watching().await.expect("stop should succeed");
-    assert!(!watcher.is_watching(), "is_watching must be false after stop");
+    assert!(
+        !watcher.is_watching(),
+        "is_watching must be false after stop"
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -120,5 +126,8 @@ async fn stop_when_not_watching_is_ok() {
 
     let watcher = FileWatcher::new(|_| {});
     let result = watcher.stop_watching().await;
-    assert!(result.is_ok(), "stop_watching on idle FileWatcher must return Ok");
+    assert!(
+        result.is_ok(),
+        "stop_watching on idle FileWatcher must return Ok"
+    );
 }

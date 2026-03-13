@@ -37,10 +37,7 @@ struct RecordingHook {
 impl ObservabilityHook for RecordingHook {
     fn on_event(&self, event: &dyn ObservabilityEvent) {
         tracing::debug!(event_name = event.name(), "RecordingHook received event");
-        self.events
-            .lock()
-            .unwrap()
-            .push(event.name().to_string());
+        self.events.lock().unwrap().push(event.name().to_string());
     }
 
     fn initialize(&self) {
@@ -118,12 +115,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let received = captured.lock().unwrap().clone();
     tracing::info!(events = ?received, "all events captured by telemetry hook");
 
-    assert!(received.contains(&"operation_started".to_string()), "missing start");
+    assert!(
+        received.contains(&"operation_started".to_string()),
+        "missing start"
+    );
     assert!(
         received.contains(&"operation_completed".to_string()),
         "missing complete"
     );
-    assert!(received.contains(&"operation_failed".to_string()), "missing failure");
+    assert!(
+        received.contains(&"operation_failed".to_string()),
+        "missing failure"
+    );
 
     tracing::info!(
         "example complete — {} events forwarded to RecordingHook",

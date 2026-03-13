@@ -37,8 +37,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // `OTEL_EXPORTER_OTLP_ENDPOINT` is the standard variable used by all
     // OTLP-compatible tooling.  Set it to "disabled" to skip OTLP init.
-    let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
-        .unwrap_or_else(|_| "disabled".to_string());
+    let otlp_endpoint =
+        std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_else(|_| "disabled".to_string());
 
     tracing::debug!(
         endpoint = %otlp_endpoint,

@@ -42,7 +42,10 @@ async fn already_watching_returns_err() {
     let second = watcher.start_watching(&[source]).await;
     assert!(second.is_err(), "second start_watching must return Err");
 
-    watcher.stop_watching().await.expect("stop should succeed after double-start test");
+    watcher
+        .stop_watching()
+        .await
+        .expect("stop should succeed after double-start test");
     let _ = std::fs::remove_file(&path);
 }
 
@@ -55,7 +58,10 @@ async fn stop_when_not_watching_is_ok() {
 
     let watcher = make_watcher(Arc::new(Mutex::new(Vec::new())));
     let result = watcher.stop_watching().await;
-    assert!(result.is_ok(), "stop_watching on an idle watcher must return Ok");
+    assert!(
+        result.is_ok(),
+        "stop_watching on an idle watcher must return Ok"
+    );
 }
 
 /// `is_watching` must reflect the actual watching state at each lifecycle step.
@@ -69,7 +75,10 @@ async fn is_watching_lifecycle() {
 
     let watcher = make_watcher(Arc::new(Mutex::new(Vec::new())));
 
-    assert!(!watcher.is_watching(), "should not be watching before start");
+    assert!(
+        !watcher.is_watching(),
+        "should not be watching before start"
+    );
 
     watcher
         .start_watching(&[source])
@@ -77,7 +86,10 @@ async fn is_watching_lifecycle() {
         .expect("start_watching should succeed");
     assert!(watcher.is_watching(), "should be watching after start");
 
-    watcher.stop_watching().await.expect("stop_watching should succeed");
+    watcher
+        .stop_watching()
+        .await
+        .expect("stop_watching should succeed");
     assert!(!watcher.is_watching(), "should not be watching after stop");
 
     let _ = std::fs::remove_file(&path);
@@ -118,7 +130,9 @@ async fn detects_file_modification() {
     let received = events.lock().unwrap();
     tracing::debug!(?received, "events received after modification");
     assert!(
-        received.iter().any(|e| *e == ConfigWatchEventType::Modified),
+        received
+            .iter()
+            .any(|e| *e == ConfigWatchEventType::Modified),
         "expected at least one Modified event; got: {received:?}"
     );
 

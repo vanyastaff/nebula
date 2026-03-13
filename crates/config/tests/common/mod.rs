@@ -15,8 +15,7 @@ pub fn write_temp_file(stem: &str, extension: &str, contents: &str) -> PathBuf {
         .expect("clock should be monotonic")
         .as_nanos();
     let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let file_name =
-        format!("nebula_config_edge_{stem}_{timestamp}_{counter}.{extension}");
+    let file_name = format!("nebula_config_edge_{stem}_{timestamp}_{counter}.{extension}");
     let path = std::env::temp_dir().join(file_name);
     std::fs::write(&path, contents).expect("should write temporary fixture file");
     path
