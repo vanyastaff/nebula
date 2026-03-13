@@ -439,7 +439,7 @@ documented telemetry examples to `nebula-log`.
 
 ---
 
-#### Task 8 — Config Loader Edge Case Tests
+#### [x] Task 8 — Config Loader Edge Case Tests
 
 **Delivers:** Additional test coverage in `crates/config/tests/` and targeted watcher tests
 
