@@ -34,6 +34,11 @@ services:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - nebula_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
     networks:
       - nebula_net

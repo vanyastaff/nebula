@@ -13,3 +13,17 @@ deploy/.env
 # Generated docs/bench artifacts
 **/criterion
 
+# Documentation and non-code assets
+docs/
+vision/
+specs/
+scripts/
+resources/
+.agents/
+
+# App surfaces (frontend/desktop not needed for server build)
+apps/
+
+# Deploy configs and scripts
+deploy/
+
