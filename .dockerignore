@@ -1,29 +1,62 @@
+# Version control
 .git
+.gitignore
+.gitattributes
 .github
+
+# Build artifacts
 target
 **/target
+**/criterion
+
+# Logs
 **/*.log
+
+# IDE and editor
 .idea
 .vscode
+.editorconfig
 
-# Local env/config secrets
+# Environment and secrets (inject at runtime)
 .env
+.env.*
+.envrc
 deploy/.env
 
-# Generated docs/bench artifacts
-**/criterion
+# AI tools and agents (not needed in production image)
+.ai-factory/
+.agents/
+.agent/
+.claude/
+.cursor/
+.codex/
+.claudeignore
+.cursorrules
+.aider*
+CLAUDE.md
+AGENTS.md
+skills-lock.json
+
+# Dev-only tooling config
+commitlint.config.cjs
+Taskfile.yml
+clippy.toml
+deny.toml
 
 # Documentation and non-code assets
 docs/
 vision/
 specs/
-scripts/
-resources/
-.agents/
+README.md
+CHANGELOG.md
+LICENSE
 
-# App surfaces (frontend/desktop not needed for server build)
+# Scripts (not needed in image)
+scripts/
+
+# App surfaces (frontend/desktop not needed for server image)
 apps/
 
-# Deploy configs and scripts
+# Deploy configs (applied externally)
 deploy/
 

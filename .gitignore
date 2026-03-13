@@ -292,7 +292,6 @@ docker-compose.override.yml
 # Agent/IDE config and data
 .claude/
 .agent/
-.agents/
 .cursor/
 .codex/
 .junie/
@@ -300,6 +299,11 @@ docker-compose.override.yml
 .claudeignore
 .cursorrules
 .aider*
+
+# AI Factory built-in skills (managed by ai-factory, regenerated from skills-lock.json)
+# Custom project skills (e.g. nebula-layer-dependency-guard) are intentionally tracked.
+.agents/skills/aif/
+.agents/skills/aif-*/
 
 # Project docs for AI
 CLAUDE.md
