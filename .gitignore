@@ -220,6 +220,7 @@ book/
 .env.local
 .env.*.local
 .envrc
+deploy/.env
 
 # Secrets and credentials
 *.key

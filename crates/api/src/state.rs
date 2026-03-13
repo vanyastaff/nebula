@@ -13,6 +13,10 @@ pub struct AppState {
     /// Configuration
     pub config: Arc<Config>,
 
+    /// JWT secret used to validate Bearer tokens.
+    /// Must be at least 32 bytes of random entropy in production.
+    pub jwt_secret: Arc<str>,
+
     /// Workflow Repository (port/trait)
     pub workflow_repo: Arc<dyn WorkflowRepo>,
 
@@ -24,14 +28,18 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Create new AppState with provided dependencies
+    /// Create new AppState with provided dependencies.
+    ///
+    /// `jwt_secret` must be at least 32 bytes long in production.
     pub fn new(
         config: Config,
         workflow_repo: Arc<dyn WorkflowRepo>,
         execution_repo: Arc<dyn ExecutionRepo>,
+        jwt_secret: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             config: Arc::new(config),
+            jwt_secret: jwt_secret.into(),
             workflow_repo,
             execution_repo,
         }

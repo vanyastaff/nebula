@@ -106,6 +106,9 @@ reqwest = { version = "0.13", features = ["json"], default-features = false }
 axum = { version = "0.8", features = ["json"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip"] }
 
+# JSON Web Tokens
+jsonwebtoken = "9"
+
 # Random number generation
 rand = "0.10"
 
