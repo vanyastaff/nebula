@@ -1,0 +1,306 @@
+# https://taskfile.dev
+version: '3'
+
+output: prefixed
+
+dotenv:
+  - 'deploy/.env'
+  - 'deploy/.env.example'
+
+vars:
+  CARGO_FLAGS: '--workspace'
+  COMPOSE_LOCAL: 'deploy/docker/docker-compose.yml'
+  COMPOSE_SELFHOSTED: 'deploy/docker/docker-compose.selfhosted.yml'
+  COMPOSE_OBSERVABILITY: 'deploy/docker/docker-compose.observability.yml'
+  DOCKERFILE: 'deploy/docker/Dockerfile.api'
+  IMAGE_NAME: 'nebula-api'
+  IMAGE_TAG:
+    sh: git describe --tags --always --dirty 2>{{if eq OS "windows"}}nul{{else}}/dev/null{{end}} || echo dev
+  DESKTOP_DIR: 'apps/desktop'
+
+# ── Help ──────────────────────────────────────────────────────────────────────
+
+tasks:
+  default:
+    desc: List all available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  # ── Build ──────────────────────────────────────────────────────────────────
+
+  build:
+    desc: Build all workspace crates (debug)
+    cmds:
+      - cargo build {{.CARGO_FLAGS}}
+
+  build:release:
+    desc: Build all workspace crates (release)
+    cmds:
+      - cargo build {{.CARGO_FLAGS}} --release
+
+  build:api:
+    desc: Build the API server binary (release)
+    cmds:
+      - cargo build -p nebula-api --bin unified_server --release
+
+  check:
+    desc: Type-check all crates and targets without codegen
+    cmds:
+      - cargo check {{.CARGO_FLAGS}} --all-targets
+
+  doc:
+    desc: Build documentation for all workspace crates
+    cmds:
+      - cargo doc --no-deps {{.CARGO_FLAGS}}
+
+  doc:open:
+    desc: Build and open documentation in browser
+    cmds:
+      - cargo doc --no-deps {{.CARGO_FLAGS}} --open
+
+  # ── Quality ───────────────────────────────────────────────────────────────
+
+  fmt:
+    desc: Format all code in place
+    cmds:
+      - cargo fmt
+
+  fmt:check:
+    desc: Check formatting without modifying files (CI)
+    cmds:
+      - cargo fmt --all -- --check
+
+  clippy:
+    desc: Run Clippy linter (warnings treated as errors)
+    cmds:
+      - cargo clippy {{.CARGO_FLAGS}} -- -D warnings
+
+  clippy:fix:
+    desc: Run Clippy and apply automatic fixes
+    cmds:
+      - cargo clippy {{.CARGO_FLAGS}} --fix --allow-staged
+
+  deny:
+    desc: Run cargo-deny supply-chain and license audit
+    cmds:
+      - cargo deny check
+
+  # ── Test ──────────────────────────────────────────────────────────────────
+
+  test:
+    desc: Run all workspace tests
+    cmds:
+      - cargo test {{.CARGO_FLAGS}}
+
+  test:verbose:
+    desc: Run all workspace tests with stdout output
+    cmds:
+      - cargo test {{.CARGO_FLAGS}} -- --nocapture
+
+  test:features:
+    desc: Run all workspace tests with all feature flags
+    cmds:
+      - cargo test {{.CARGO_FLAGS}} --all-features
+
+  test:crate:
+    desc: "Run tests for a single crate (usage: task test:crate CRATE=nebula-action)"
+    requires:
+      vars: [CRATE]
+    cmds:
+      - cargo test -p {{.CRATE}}
+
+  test:crate:features:
+    desc: "Run tests for a single crate with all features (usage: task test:crate:features CRATE=nebula-action)"
+    requires:
+      vars: [CRATE]
+    cmds:
+      - cargo test -p {{.CRATE}} --all-features
+
+  # ── Benchmarks ────────────────────────────────────────────────────────────
+
+  bench:
+    desc: Run all benchmarks
+    cmds:
+      - cargo bench {{.CARGO_FLAGS}}
+
+  bench:crate:
+    desc: "Run benchmarks for a single crate (usage: task bench:crate CRATE=nebula-log)"
+    requires:
+      vars: [CRATE]
+    cmds:
+      - cargo bench -p {{.CRATE}}
+
+  bench:log:
+    desc: Run nebula-log hot-path benchmarks (validates CI thresholds)
+    cmds:
+      - cargo bench -p nebula-log --bench log_hot_path
+
+  bench:validator:
+    desc: Run nebula-validator benchmarks
+    cmds:
+      - cargo bench -p nebula-validator
+
+  bench:resilience:
+    desc: Run nebula-resilience benchmarks
+    cmds:
+      - cargo bench -p nebula-resilience
+
+  # ── Database ──────────────────────────────────────────────────────────────
+
+  db:up:
+    desc: Start local Postgres (+ optional Redis with --cache profile)
+    cmds:
+      - docker compose -f {{.COMPOSE_LOCAL}} up -d
+
+  db:up:cache:
+    desc: Start local Postgres + Redis
+    cmds:
+      - docker compose -f {{.COMPOSE_LOCAL}} --profile cache up -d
+
+  db:down:
+    desc: Stop local database containers
+    cmds:
+      - docker compose -f {{.COMPOSE_LOCAL}} down
+
+  db:migrate:
+    desc: Run pending sqlx migrations (requires DATABASE_URL)
+    cmds:
+      - sqlx migrate run --source migrations
+
+  db:migrate:revert:
+    desc: Revert the last applied migration
+    cmds:
+      - sqlx migrate revert --source migrations
+
+  db:migrate:info:
+    desc: Show migration status
+    cmds:
+      - sqlx migrate info --source migrations
+
+  db:prepare:
+    desc: Generate sqlx offline query data (sqlx prepare)
+    cmds:
+      - cargo sqlx prepare --workspace
+
+  db:reset:
+    desc: Drop and recreate the database, then re-run all migrations
+    prompt: This will DROP the database. Are you sure?
+    cmds:
+      - sqlx database drop -y
+      - sqlx database create
+      - sqlx migrate run --source migrations
+
+  # ── Docker ────────────────────────────────────────────────────────────────
+
+  docker:build:
+    desc: Build the production Docker image
+    cmds:
+      - docker build
+          --file {{.DOCKERFILE}}
+          --target production
+          --tag {{.IMAGE_NAME}}:{{.IMAGE_TAG}}
+          --tag {{.IMAGE_NAME}}:latest
+          .
+
+  docker:build:dev:
+    desc: Build the development Docker image stage
+    cmds:
+      - docker build
+          --file {{.DOCKERFILE}}
+          --target development
+          --tag {{.IMAGE_NAME}}:dev
+          .
+
+  infra:up:
+    desc: Start self-hosted stack (Postgres + Redis + API)
+    cmds:
+      - docker compose -f {{.COMPOSE_SELFHOSTED}} up -d --build
+
+  infra:down:
+    desc: Stop and remove self-hosted stack containers
+    cmds:
+      - docker compose -f {{.COMPOSE_SELFHOSTED}} down
+
+  infra:logs:
+    desc: Tail logs from the self-hosted stack
+    cmds:
+      - docker compose -f {{.COMPOSE_SELFHOSTED}} logs -f
+
+  infra:ps:
+    desc: Show status of self-hosted stack services
+    cmds:
+      - docker compose -f {{.COMPOSE_SELFHOSTED}} ps
+
+  infra:shell:
+    desc: Open a shell in the running API container
+    cmds:
+      - docker compose -f {{.COMPOSE_SELFHOSTED}} exec api sh
+
+  obs:up:
+    desc: Start observability stack (Jaeger + OTEL collector)
+    cmds:
+      - docker compose -f {{.COMPOSE_OBSERVABILITY}} up -d
+
+  obs:down:
+    desc: Stop observability stack
+    cmds:
+      - docker compose -f {{.COMPOSE_OBSERVABILITY}} down
+
+  # ── Desktop (Tauri) ───────────────────────────────────────────────────────
+
+  desktop:install:
+    desc: Install frontend dependencies for the desktop app
+    dir: '{{.DESKTOP_DIR}}'
+    cmds:
+      - npm install
+
+  desktop:dev:
+    desc: Start the Tauri desktop app in development mode (local backend)
+    dir: '{{.DESKTOP_DIR}}'
+    cmds:
+      - npm run tauri:dev
+
+  desktop:build:
+    desc: Build the Tauri desktop app for distribution
+    dir: '{{.DESKTOP_DIR}}'
+    cmds:
+      - npm run tauri:build
+
+  desktop:preview:
+    desc: Preview the built frontend in browser
+    dir: '{{.DESKTOP_DIR}}'
+    cmds:
+      - npm run preview
+
+  # ── CI (aggregate) ────────────────────────────────────────────────────────
+
+  ci:
+    desc: Full CI pipeline — fmt check, clippy, check, test, doc, deny
+    cmds:
+      - task: fmt:check
+      - task: clippy
+      - task: check
+      - task: test
+      - task: doc
+      - task: deny
+
+  ci:fast:
+    desc: Fast CI check — fmt, clippy, check (no tests or docs)
+    cmds:
+      - task: fmt:check
+      - task: clippy
+      - task: check
+
+  # ── Clean ─────────────────────────────────────────────────────────────────
+
+  clean:
+    desc: Remove Cargo build artifacts
+    cmds:
+      - cargo clean
+
+  clean:docker:
+    desc: Remove stopped containers and dangling Docker images
+    cmds:
+      - docker compose -f {{.COMPOSE_SELFHOSTED}} down --volumes --remove-orphans
+      - docker image prune -f
