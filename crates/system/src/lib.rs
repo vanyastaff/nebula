@@ -23,6 +23,16 @@
 //! - `metrics`: Performance metrics collection
 //! - `serde`: Serialization support
 //!
+//! ## Platform Support Matrix
+//!
+//! | Module    | Linux | macOS | Windows | Notes                                                              |
+//! |-----------|-------|-------|---------|--------------------------------------------------------------------|
+//! | `memory`  | ✓     | ✓     | ✓       | Via `sysinfo`; `management` submodule stubs only                   |
+//! | `cpu`     | ✓     | ✓     | ✓       | Via `sysinfo`; SSE/AVX feature flags x86 only                     |
+//! | `disk`    | ✓     | ✓     | ✓       | `DiskStats` I/O counters always zero (not populated by sysinfo path) |
+//! | `network` | ✓     | ✓     | ✓       | `connections()` always returns `[]` (not yet implemented)          |
+//! | `process` | ✓     | ✓     | ✓       | `cmd`, `environ`, `thread_count`, `uid`, `gid` are always default/zeroed |
+//!
 //! ## Example
 //!
 //! ```no_run

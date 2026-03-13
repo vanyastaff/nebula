@@ -58,7 +58,7 @@ documented telemetry examples to `nebula-log`.
 
 ---
 
-#### Task 1 — EventBus Integration Test Suite
+#### [x] Task 1 — EventBus Integration Test Suite
 
 **Delivers:** `crates/eventbus/tests/integration.rs` with comprehensive integration tests
 
@@ -104,7 +104,7 @@ documented telemetry examples to `nebula-log`.
 
 ---
 
-#### Task 2 — EventBus Subscriber Documentation
+#### [x] Task 2 — EventBus Subscriber Documentation
 
 **Delivers:** Inline docs update in `src/subscriber.rs`, `src/filtered_subscriber.rs`, `src/registry.rs` + architecture note in `src/lib.rs`
 
@@ -163,7 +163,7 @@ documented telemetry examples to `nebula-log`.
 
 ---
 
-#### Task 3 — Telemetry Trace Module Tests
+#### [x] Task 3 — Telemetry Trace Module Tests
 
 **Delivers:** Unit tests covering all trace-related types in `crates/telemetry/`
 
@@ -211,7 +211,7 @@ documented telemetry examples to `nebula-log`.
 
 ---
 
-#### Task 4 — Telemetry Concurrent Stress Tests
+#### [x] Task 4 — Telemetry Concurrent Stress Tests
 
 **Delivers:** High-throughput concurrent tests in `crates/telemetry/tests/integration.rs`
 
@@ -326,7 +326,7 @@ documented telemetry examples to `nebula-log`.
 
 ---
 
-#### Task 6 — System Platform Documentation
+#### [x] Task 6 — System Platform Documentation
 
 **Delivers:** Inline docs update in all 5 feature-gated modules + updated `src/lib.rs`
 
@@ -375,7 +375,7 @@ documented telemetry examples to `nebula-log`.
 
 ---
 
-#### Task 7 — System Integration Tests
+#### [x] Task 7 — System Integration Tests
 
 **Delivers:** `crates/system/tests/integration.rs` with platform-gated tests
 

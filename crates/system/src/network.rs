@@ -1,4 +1,17 @@
 //! Network information and monitoring
+//!
+//! # Known Limitations
+//!
+//! - **`connections()`** is defined in the type system but always returns an empty `Vec` —
+//!   full implementation requires the `netstat2` crate (planned for Tier 4). There is no
+//!   current workaround in safe Rust without a platform-specific dependency.
+//! - **Rate tracking** via the `NETWORK_STATS` lazy global may not reflect accurate rates
+//!   on the first tick (before any previous snapshot exists), returning `rx_rate = 0.0`
+//!   and `tx_rate = 0.0` for newly seen interfaces.
+//! - **`ip_addresses`** is always empty (`vec![]`); populating it requires additional
+//!   platform-specific code beyond sysinfo's network API.
+//! - **`is_loopback`** detection is name-based (`"lo"` / `"lo0"`) and may miss renamed
+//!   loopback interfaces on non-standard configurations.
 
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
