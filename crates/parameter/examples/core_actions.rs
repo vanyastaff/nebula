@@ -7,7 +7,7 @@
 //! Run with: `cargo run --example core_actions -p nebula-parameter`
 
 use nebula_parameter::{
-    Condition, Field, FieldMetadata, ModeVariant, OptionSource, Rule, Schema, SelectOption,
+    Field, FieldMetadata, ModeVariant, OptionSource, Rule, Schema, SelectOption,
 };
 use serde_json::json;
 

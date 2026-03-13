@@ -151,9 +151,11 @@ mod tests {
             tracing::debug!("testing constant: {}", metric_name);
             assert!(!metric_name.is_empty());
             assert!(metric_name.starts_with("nebula_resource_"));
-            assert!(metric_name.chars().all(|ch| {
-                ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'
-            }));
+            assert!(
+                metric_name
+                    .chars()
+                    .all(|ch| { ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' })
+            );
             assert!(unique.insert(metric_name));
 
             let counter = registry.counter(metric_name);

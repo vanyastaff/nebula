@@ -88,4 +88,3 @@ fn main() {
     let json = serde_json::to_string_pretty(&github_oauth2).expect("Failed to serialize");
     println!("{json}");
 }
-

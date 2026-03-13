@@ -320,7 +320,7 @@ mod tests {
         tracing::debug!("testing call_status success variant");
         let status = CallStatus::Success;
         match status {
-            CallStatus::Success => {}, // OK
+            CallStatus::Success => {} // OK
             _ => panic!("expected Success"),
         }
     }

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 
 use nebula_parameter::schema::Schema;
-use nebula_parameter::values::ParameterValues;
+use nebula_parameter::values::FieldValues;
 
 use crate::core::{
     CredentialContext, CredentialDescription, CredentialError, CredentialState,
@@ -141,7 +141,7 @@ pub trait StaticProtocol: Send + Sync + 'static {
     ///
     /// Called by the macro-generated `initialize()` when `extends` is set.
     /// `values` contains the full flat input (protocol fields + own fields).
-    fn build_state(values: &ParameterValues) -> Result<Self::State, CredentialError>
+    fn build_state(values: &FieldValues) -> Result<Self::State, CredentialError>
     where
         Self: Sized;
 }
@@ -183,7 +183,7 @@ pub trait FlowProtocol: Send + Sync + 'static {
     /// Execute the authentication flow
     async fn initialize(
         config: &Self::Config,
-        values: &ParameterValues,
+        values: &FieldValues,
         ctx: &mut CredentialContext,
     ) -> Result<InitializeResult<Self::State>, CredentialError>
     where

@@ -256,7 +256,10 @@ mod tests {
             debug!("network interfaces: {:?}", ifaces);
 
             // At minimum the loopback interface should be present on all OSes.
-            assert!(!ifaces.is_empty(), "network interface list must not be empty");
+            assert!(
+                !ifaces.is_empty(),
+                "network interface list must not be empty"
+            );
 
             debug!("test passed: interfaces_not_empty");
         }
@@ -269,10 +272,7 @@ mod tests {
             let ifaces = network::interfaces();
             for iface in &ifaces {
                 debug!("interface: {:?}", iface);
-                assert!(
-                    !iface.name.is_empty(),
-                    "interface name must not be empty"
-                );
+                assert!(!iface.name.is_empty(), "interface name must not be empty");
             }
 
             debug!("test passed: interface_names_non_empty");

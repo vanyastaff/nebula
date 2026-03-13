@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use nebula_parameter::values::FieldValues;
 use nebula_parameter::{Field, Schema};
-use nebula_parameter::values::ParameterValues;
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
 use crate::traits::StaticProtocol;
@@ -80,7 +80,7 @@ impl StaticProtocol for ApiKeyProtocol {
             )
     }
 
-    fn build_state(values: &ParameterValues) -> Result<Self::State, CredentialError> {
+    fn build_state(values: &FieldValues) -> Result<Self::State, CredentialError> {
         let server = values
             .get_string("server")
             .ok_or_else(|| CredentialError::Validation {
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn build_state_produces_correct_state() {
-        let mut values = ParameterValues::new();
+        let mut values = FieldValues::new();
         values.set("server", json!("https://api.github.com"));
         values.set("token", json!("ghp_secret123"));
 
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn build_state_missing_server_returns_error() {
-        let mut values = ParameterValues::new();
+        let mut values = FieldValues::new();
         values.set("token", json!("ghp_secret123"));
 
         assert!(ApiKeyProtocol::build_state(&values).is_err());
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn build_state_missing_token_returns_error() {
-        let mut values = ParameterValues::new();
+        let mut values = FieldValues::new();
         values.set("server", json!("https://api.github.com"));
 
         assert!(ApiKeyProtocol::build_state(&values).is_err());

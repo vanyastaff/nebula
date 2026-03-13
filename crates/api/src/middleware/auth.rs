@@ -52,14 +52,12 @@ pub async fn auth_middleware(
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = true;
 
-    let token_data = decode::<Claims>(token, &key, &validation)
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let token_data =
+        decode::<Claims>(token, &key, &validation).map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-    request
-        .extensions_mut()
-        .insert(AuthenticatedUser {
-            user_id: token_data.claims.sub,
-        });
+    request.extensions_mut().insert(AuthenticatedUser {
+        user_id: token_data.claims.sub,
+    });
 
     Ok(next.run(request).await)
 }

@@ -36,7 +36,7 @@ async fn main() {
 async fn basic_subscribe_loop() {
     println!("Pattern 1: Basic Subscribe + Recv Loop");
 
-    let bus = EventBus::new(64);
+    let bus = Arc::new(EventBus::new(64));
 
     // Spawn emitter
     let bus_clone = bus.clone();
@@ -54,7 +54,10 @@ async fn basic_subscribe_loop() {
     // Subscribe and receive
     let mut sub = bus.subscribe();
     while let Some(event) = sub.recv().await {
-        println!("  Received: workflow_id={}, status={}", event.workflow_id, event.status);
+        println!(
+            "  Received: workflow_id={}, status={}",
+            event.workflow_id, event.status
+        );
     }
 
     println!("  ✓ All events received");
@@ -85,9 +88,12 @@ async fn filtered_subscription() {
 
     let mut count = 0;
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    
+
     while let Some(event) = filtered_sub.try_recv() {
-        println!("  Received filtered event: workflow_id={}, status={}", event.workflow_id, event.status);
+        println!(
+            "  Received filtered event: workflow_id={}, status={}",
+            event.workflow_id, event.status
+        );
         count += 1;
     }
     println!("  ✓ Received {} filtered events", count);
@@ -126,7 +132,11 @@ async fn lag_monitoring() {
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
     }
 
-    println!("  ✓ Received {} events (total lag: {})", received, sub.lagged_count());
+    println!(
+        "  ✓ Received {} events (total lag: {})",
+        received,
+        sub.lagged_count()
+    );
 }
 
 /// Pattern 4: Multi-bus registry (per-tenant isolation)
@@ -162,6 +172,9 @@ async fn multi_bus_registry() {
     }
 
     let stats = registry.stats();
-    println!("  Registry stats: {} buses, {} sent events", stats.bus_count, stats.sent_count);
+    println!(
+        "  Registry stats: {} buses, {} sent events",
+        stats.bus_count, stats.sent_count
+    );
     println!("  ✓ Multi-tenant isolation working");
 }

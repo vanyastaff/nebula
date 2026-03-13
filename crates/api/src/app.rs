@@ -3,9 +3,7 @@
 //! Сборка Router с middleware (Production-Grade).
 
 use crate::{
-    config::ApiConfig,
-    middleware::security_headers::security_headers_middleware,
-    routes,
+    config::ApiConfig, middleware::security_headers::security_headers_middleware, routes,
     state::AppState,
 };
 use axum::{Router, middleware, response::Response};
@@ -36,7 +34,6 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
         .layer(middleware::from_fn(security_headers_middleware))
         .layer(middleware::from_fn(request_id_middleware))
 }
-
 
 /// Request ID middleware
 async fn request_id_middleware(

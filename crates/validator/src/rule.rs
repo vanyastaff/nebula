@@ -588,7 +588,9 @@ impl Rule {
             Self::In {
                 field,
                 values: candidates,
-            } => values.get(field).is_some_and(|current| candidates.contains(current)),
+            } => values
+                .get(field)
+                .is_some_and(|current| candidates.contains(current)),
 
             // ── Logical combinators ─────────────────────────────────
             Self::All { rules } => rules.iter().all(|r| r.evaluate(values)),
@@ -1201,73 +1203,55 @@ mod tests {
 
     #[test]
     fn is_true_missing_field_is_false() {
-        let rule = Rule::IsTrue {
-            field: "x".into(),
-        };
+        let rule = Rule::IsTrue { field: "x".into() };
         assert!(!rule.evaluate(&values(&[])));
     }
 
     #[test]
     fn is_true_non_bool_is_false() {
-        let rule = Rule::IsTrue {
-            field: "x".into(),
-        };
+        let rule = Rule::IsTrue { field: "x".into() };
         assert!(!rule.evaluate(&values(&[("x", json!(1))])));
     }
 
     #[test]
     fn is_false_missing_field_is_false() {
-        let rule = Rule::IsFalse {
-            field: "x".into(),
-        };
+        let rule = Rule::IsFalse { field: "x".into() };
         assert!(!rule.evaluate(&values(&[])));
     }
 
     #[test]
     fn is_false_non_bool_is_false() {
-        let rule = Rule::IsFalse {
-            field: "x".into(),
-        };
+        let rule = Rule::IsFalse { field: "x".into() };
         assert!(!rule.evaluate(&values(&[("x", json!(0))])));
     }
 
     #[test]
     fn set_with_number_is_true() {
-        let rule = Rule::Set {
-            field: "x".into(),
-        };
+        let rule = Rule::Set { field: "x".into() };
         assert!(rule.evaluate(&values(&[("x", json!(0))])));
     }
 
     #[test]
     fn set_with_empty_array_is_false() {
-        let rule = Rule::Set {
-            field: "x".into(),
-        };
+        let rule = Rule::Set { field: "x".into() };
         assert!(!rule.evaluate(&values(&[("x", json!([]))])));
     }
 
     #[test]
     fn empty_with_empty_array_is_true() {
-        let rule = Rule::Empty {
-            field: "x".into(),
-        };
+        let rule = Rule::Empty { field: "x".into() };
         assert!(rule.evaluate(&values(&[("x", json!([]))])));
     }
 
     #[test]
     fn empty_with_non_empty_array_is_false() {
-        let rule = Rule::Empty {
-            field: "x".into(),
-        };
+        let rule = Rule::Empty { field: "x".into() };
         assert!(!rule.evaluate(&values(&[("x", json!([1]))])));
     }
 
     #[test]
     fn empty_with_number_is_false() {
-        let rule = Rule::Empty {
-            field: "x".into(),
-        };
+        let rule = Rule::Empty { field: "x".into() };
         assert!(!rule.evaluate(&values(&[("x", json!(0))])));
     }
 
@@ -1667,9 +1651,7 @@ mod tests {
                     field: "a".into(),
                     value: json!(1),
                 },
-                Rule::Set {
-                    field: "b".into(),
-                },
+                Rule::Set { field: "b".into() },
             ],
         };
         assert!(rule.evaluate(&values(&[("a", json!(1)), ("b", json!("x"))])));
@@ -1685,9 +1667,7 @@ mod tests {
                     field: "a".into(),
                     value: json!(1),
                 },
-                Rule::Set {
-                    field: "b".into(),
-                },
+                Rule::Set { field: "b".into() },
             ],
         };
         assert!(rule.evaluate(&values(&[("a", json!(1))])));
@@ -1747,9 +1727,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_is_true() {
-        let rule = Rule::IsTrue {
-            field: "x".into(),
-        };
+        let rule = Rule::IsTrue { field: "x".into() };
         let json = serde_json::to_value(&rule).unwrap();
         assert_eq!(json["rule"], "is_true");
         let back: Rule = serde_json::from_value(json).unwrap();
@@ -1758,9 +1736,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_is_false() {
-        let rule = Rule::IsFalse {
-            field: "x".into(),
-        };
+        let rule = Rule::IsFalse { field: "x".into() };
         let json = serde_json::to_value(&rule).unwrap();
         assert_eq!(json["rule"], "is_false");
         let back: Rule = serde_json::from_value(json).unwrap();
@@ -1769,9 +1745,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_set() {
-        let rule = Rule::Set {
-            field: "x".into(),
-        };
+        let rule = Rule::Set { field: "x".into() };
         let json = serde_json::to_value(&rule).unwrap();
         assert_eq!(json["rule"], "set");
         let back: Rule = serde_json::from_value(json).unwrap();
@@ -1780,9 +1754,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_empty() {
-        let rule = Rule::Empty {
-            field: "x".into(),
-        };
+        let rule = Rule::Empty { field: "x".into() };
         let json = serde_json::to_value(&rule).unwrap();
         assert_eq!(json["rule"], "empty");
         let back: Rule = serde_json::from_value(json).unwrap();
@@ -1859,9 +1831,7 @@ mod tests {
                     field: "a".into(),
                     value: json!(1),
                 },
-                Rule::IsTrue {
-                    field: "b".into(),
-                },
+                Rule::IsTrue { field: "b".into() },
             ],
         };
         let json = serde_json::to_value(&rule).unwrap();
@@ -1931,9 +1901,7 @@ mod tests {
             Rule::All { rules: vec![] },
             Rule::Any { rules: vec![] },
             Rule::Not {
-                inner: Box::new(Rule::IsTrue {
-                    field: "x".into(),
-                }),
+                inner: Box::new(Rule::IsTrue { field: "x".into() }),
             },
         ];
         for c in &combinators {
@@ -2012,18 +1980,10 @@ mod tests {
                 field: "x".into(),
                 value: serde_json::Number::from(1),
             },
-            Rule::IsTrue {
-                field: "x".into(),
-            },
-            Rule::IsFalse {
-                field: "x".into(),
-            },
-            Rule::Set {
-                field: "x".into(),
-            },
-            Rule::Empty {
-                field: "x".into(),
-            },
+            Rule::IsTrue { field: "x".into() },
+            Rule::IsFalse { field: "x".into() },
+            Rule::Set { field: "x".into() },
+            Rule::Empty { field: "x".into() },
             Rule::Contains {
                 field: "x".into(),
                 value: json!(1),

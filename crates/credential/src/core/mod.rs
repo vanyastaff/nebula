@@ -4,6 +4,7 @@
 // pub mod adapter;
 
 pub mod result;
+mod snapshot;
 mod state;
 
 mod context;
@@ -21,6 +22,7 @@ pub use error::{
     ValidationError,
 };
 pub use filter::CredentialFilter;
+pub use snapshot::CredentialSnapshot;
 
 pub use metadata::CredentialMetadata;
 /// Re-export for instance identification (UUID-backed, like ResourceId).

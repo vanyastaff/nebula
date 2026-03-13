@@ -190,7 +190,11 @@ fn stress_test_concurrent_metrics_high_throughput() {
                 histogram.observe((thread_id * iterations + i) as f64 / 1000.0);
                 gauge.set((num_threads - thread_id) as i64);
             }
-            tracing::debug!("stress test: thread {} completed {} ops", thread_id, iterations);
+            tracing::debug!(
+                "stress test: thread {} completed {} ops",
+                thread_id,
+                iterations
+            );
         });
         handles.push(handle);
     }
@@ -242,18 +246,17 @@ async fn stress_test_eventbus_multiple_subscribers() {
             let mut sub = bus.subscribe();
             let mut count = 0;
             loop {
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    sub.recv(),
-                )
-                .await
-                {
+                match tokio::time::timeout(std::time::Duration::from_secs(5), sub.recv()).await {
                     Ok(Some(_)) => count += 1,
                     Ok(None) => break,
                     Err(_) => break,
                 }
             }
-            tracing::debug!("stress test: subscriber {} received {} events", sub_id, count);
+            tracing::debug!(
+                "stress test: subscriber {} received {} events",
+                sub_id,
+                count
+            );
             count
         });
         subscriber_handles.push(handle);

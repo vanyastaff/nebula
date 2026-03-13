@@ -168,31 +168,34 @@ fn validate_field_value(
             allow_custom,
             ..
         } => {
-            if !allow_custom && let OptionSource::Static { options } = source {
-                if *multiple {
-                    let Some(items) = value.as_array() else {
-                        errors.push(ParameterError::InvalidType {
-                            key: path.to_owned(),
-                            expected_type: "array".to_owned(),
-                            actual_details: format!("{value:?}"),
-                        });
-                        return;
-                    };
-
-                    for (index, item) in items.iter().enumerate() {
-                        if !options.iter().any(|opt| opt.value == *item) {
-                            errors.push(ParameterError::InvalidValue {
-                                key: format!("{path}.{index}"),
-                                reason: "value is not part of static options".to_owned(),
-                            });
-                        }
-                    }
-                } else if !options.iter().any(|opt| opt.value == *value) {
-                    errors.push(ParameterError::InvalidValue {
+            if *allow_custom {
+                return;
+            }
+            let OptionSource::Static { options } = source else {
+                return;
+            };
+            if *multiple {
+                let Some(items) = value.as_array() else {
+                    errors.push(ParameterError::InvalidType {
                         key: path.to_owned(),
-                        reason: "value is not part of static options".to_owned(),
+                        expected_type: "array".to_owned(),
+                        actual_details: format!("{value:?}"),
                     });
+                    return;
+                };
+                for (index, item) in items.iter().enumerate() {
+                    if !options.iter().any(|opt| opt.value == *item) {
+                        errors.push(ParameterError::InvalidValue {
+                            key: format!("{path}.{index}"),
+                            reason: "value is not part of static options".to_owned(),
+                        });
+                    }
                 }
+            } else if !options.iter().any(|opt| opt.value == *value) {
+                errors.push(ParameterError::InvalidValue {
+                    key: path.to_owned(),
+                    reason: "value is not part of static options".to_owned(),
+                });
             }
         }
         Field::Object { fields, .. } => {

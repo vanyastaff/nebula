@@ -10,7 +10,10 @@ fn telemetry_adapter_resource_metrics_round_trip_via_generic_accessors() {
     let registry = Arc::new(MetricsRegistry::new());
     let adapter = TelemetryAdapter::new(Arc::clone(&registry));
 
-    tracing::debug!("incrementing {} via generic adapter", NEBULA_RESOURCE_CREATE_TOTAL);
+    tracing::debug!(
+        "incrementing {} via generic adapter",
+        NEBULA_RESOURCE_CREATE_TOTAL
+    );
     adapter.counter(NEBULA_RESOURCE_CREATE_TOTAL).inc();
 
     tracing::debug!(

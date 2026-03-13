@@ -19,7 +19,12 @@ async fn create_test_state() -> AppState {
         .unwrap();
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    AppState::new(config, workflow_repo, execution_repo, "test-secret-for-integration-tests")
+    AppState::new(
+        config,
+        workflow_repo,
+        execution_repo,
+        "test-secret-for-integration-tests",
+    )
 }
 
 #[tokio::test]

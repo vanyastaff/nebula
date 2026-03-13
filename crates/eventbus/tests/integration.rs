@@ -1,19 +1,16 @@
 /// Integration tests for EventBus covering multi-bus registry, concurrent scenarios,
 /// lifecycle management, back-pressure policies, and graceful shutdown.
-
 mod helpers;
 
 use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nebula_eventbus::{
-    BackPressurePolicy, EventBus, EventBusRegistry, EventFilter,
-};
+use nebula_eventbus::{BackPressurePolicy, EventBus, EventBusRegistry, EventFilter};
 use tokio::task;
 use tracing::debug;
 
-use helpers::{init_log, TestEvent};
+use helpers::{TestEvent, init_log};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 1: Multi-bus Registry Tests
@@ -24,8 +21,7 @@ async fn test_registry_get_or_create_returns_same_arc_on_concurrent_access() {
     init_log();
     debug!("starting test: registry concurrent get_or_create");
 
-    let registry: Arc<EventBusRegistry<u64, TestEvent>> =
-        Arc::new(EventBusRegistry::new(64));
+    let registry: Arc<EventBusRegistry<u64, TestEvent>> = Arc::new(EventBusRegistry::new(64));
 
     let mut handles = vec![];
     for i in 0..8 {
@@ -67,7 +63,10 @@ async fn test_registry_remove_and_immediate_get_or_create_returns_fresh_bus() {
     let _sub = bus1.subscribe();
     let outcome = bus1.emit(TestEvent { id: 1 });
     assert!(outcome.is_sent());
-    debug!("emitted event on bus1, stats: sent={}", bus1.stats().sent_count);
+    debug!(
+        "emitted event on bus1, stats: sent={}",
+        bus1.stats().sent_count
+    );
 
     // Remove the bus
     let removed = registry.remove(&key);
@@ -233,10 +232,8 @@ async fn test_drop_oldest_policy_with_slow_consumer() {
     init_log();
     debug!("starting test: DropOldest policy with slow consumer");
 
-    let bus: Arc<EventBus<TestEvent>> = Arc::new(EventBus::with_policy(
-        16,
-        BackPressurePolicy::DropOldest,
-    ));
+    let bus: Arc<EventBus<TestEvent>> =
+        Arc::new(EventBus::with_policy(16, BackPressurePolicy::DropOldest));
 
     let mut sub = bus.subscribe();
 
@@ -249,7 +246,10 @@ async fn test_drop_oldest_policy_with_slow_consumer() {
 
     // Try to receive first event - should be one of the newer ones (due to drops)
     let first_event = sub.try_recv();
-    assert!(first_event.is_some(), "subscriber should receive at least one event");
+    assert!(
+        first_event.is_some(),
+        "subscriber should receive at least one event"
+    );
 
     let lagged = sub.lagged_count();
     debug!(
@@ -264,10 +264,8 @@ async fn test_drop_newest_policy_with_slow_consumer() {
     init_log();
     debug!("starting test: DropNewest policy with buffer overflow");
 
-    let bus: Arc<EventBus<TestEvent>> = Arc::new(EventBus::with_policy(
-        16,
-        BackPressurePolicy::DropNewest,
-    ));
+    let bus: Arc<EventBus<TestEvent>> =
+        Arc::new(EventBus::with_policy(16, BackPressurePolicy::DropNewest));
 
     let mut sub = bus.subscribe();
 
@@ -384,11 +382,8 @@ async fn test_filtered_subscriber_with_zero_matches() {
     }
 
     // Try to receive - should not hang, just return None or timeout
-    let result = tokio::time::timeout(
-        tokio::time::Duration::from_millis(100),
-        filtered_sub.recv(),
-    )
-    .await;
+    let result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(100), filtered_sub.recv()).await;
 
     // Result should timeout (no matching events)
     assert!(
@@ -407,14 +402,23 @@ async fn test_subscriber_is_closed_after_bus_drop() {
     let bus: EventBus<TestEvent> = EventBus::new(64);
     let mut sub = bus.subscribe();
 
-    assert!(!sub.is_closed(), "subscriber should not be closed while bus is alive");
+    assert!(
+        !sub.is_closed(),
+        "subscriber should not be closed while bus is alive"
+    );
 
     drop(bus);
 
     // After bus is dropped, subscriber should detect closure
     let result = sub.recv().await;
-    assert!(result.is_none(), "recv should return None when bus is closed");
-    assert!(sub.is_closed(), "is_closed() should return true after bus dropped");
+    assert!(
+        result.is_none(),
+        "recv should return None when bus is closed"
+    );
+    assert!(
+        sub.is_closed(),
+        "is_closed() should return true after bus dropped"
+    );
 
     debug!("✓ test passed: is_closed() correctly detected closure");
 }
@@ -428,11 +432,8 @@ async fn test_drop_oldest_ring_buffer_behavior() {
     init_log();
     debug!("starting test: DropOldest ring-buffer behavior");
 
-    let bus: EventBus<TestEvent> = EventBus::with_policy(
-        8,
-        BackPressurePolicy::DropOldest,
-    );
-    
+    let bus: EventBus<TestEvent> = EventBus::with_policy(8, BackPressurePolicy::DropOldest);
+
     // Subscribe first so events are sent (not dropped as NoSubscribers)
     let mut sub = bus.subscribe();
 
@@ -469,10 +470,7 @@ async fn test_drop_newest_policy_preserves_oldest() {
     init_log();
     debug!("starting test: DropNewest policy preserves oldest events");
 
-    let bus: EventBus<TestEvent> = EventBus::with_policy(
-        8,
-        BackPressurePolicy::DropNewest,
-    );
+    let bus: EventBus<TestEvent> = EventBus::with_policy(8, BackPressurePolicy::DropNewest);
     let mut sub = bus.subscribe();
 
     // Emit more events than buffer
@@ -522,11 +520,8 @@ async fn test_registry_clear_existing_subscribers_continue_draining() {
         task::spawn(async move {
             let mut sub = bus_clone.subscribe();
             loop {
-                match tokio::time::timeout(
-                    tokio::time::Duration::from_millis(500),
-                    sub.recv(),
-                )
-                .await
+                match tokio::time::timeout(tokio::time::Duration::from_millis(500), sub.recv())
+                    .await
                 {
                     Ok(Some(_event)) => {
                         received_clone.fetch_add(1, Ordering::SeqCst);
@@ -570,12 +565,9 @@ async fn test_registry_clear_existing_subscribers_continue_draining() {
 
     // Drop bus to trigger subscriber shutdown
     drop(bus);
-    let timeout = tokio::time::timeout(
-        tokio::time::Duration::from_secs(3),
-        subscriber_handle,
-    )
-    .await;
-    
+    let timeout =
+        tokio::time::timeout(tokio::time::Duration::from_secs(3), subscriber_handle).await;
+
     if timeout.is_ok() {
         debug!(
             "✓ test passed: subscribers drained after registry clear (total={})",
@@ -596,7 +588,7 @@ async fn test_bus_dropped_while_subscriber_polling() {
 
     let bus = Arc::new(EventBus::<TestEvent>::new(64));
     let bus_clone = bus.clone();
-    
+
     let started = Arc::new(tokio::sync::Notify::new());
     let started_clone = started.clone();
 
@@ -616,14 +608,13 @@ async fn test_bus_dropped_while_subscriber_polling() {
     debug!("bus dropped");
 
     // Receiver should notice the channel closure within a reasonable time
-    let recv_result = tokio::time::timeout(
-        tokio::time::Duration::from_secs(3),
-        recv_handle,
-    )
-    .await;
+    let recv_result = tokio::time::timeout(tokio::time::Duration::from_secs(3), recv_handle).await;
 
     if let Ok(Ok(was_none)) = recv_result {
-        assert!(was_none, "recv().await should return None after bus dropped");
+        assert!(
+            was_none,
+            "recv().await should return None after bus dropped"
+        );
         debug!("✓ test passed: recv returned None after bus dropped");
     } else {
         // If timing is an issue, just log and pass the test as the broadcast contract

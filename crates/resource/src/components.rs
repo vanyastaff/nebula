@@ -150,6 +150,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
 
     #[test]
     fn components_with_no_deps() {
@@ -184,6 +185,7 @@ mod tests {
 
         struct TestCred;
 
+        #[async_trait]
         impl nebula_credential::CredentialType for TestCred {
             type Input = ();
             type State = HeaderAuthState;
@@ -246,6 +248,7 @@ mod tests {
 
         struct TestDbCred;
 
+        #[async_trait]
         impl nebula_credential::CredentialType for TestDbCred {
             type Input = ();
             type State = DatabaseState;
