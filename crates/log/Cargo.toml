@@ -84,6 +84,16 @@ name = "sentry_test"
 path = "examples/sentry_test.rs"
 required-features = ["sentry"]
 
+[[example]]
+name = "otlp_setup"
+path = "examples/otlp_setup.rs"
+required-features = ["telemetry"]
+
+[[example]]
+name = "sentry_setup"
+path = "examples/sentry_setup.rs"
+required-features = ["sentry"]
+
 [[bench]]
 name = "log_hot_path"
 harness = false

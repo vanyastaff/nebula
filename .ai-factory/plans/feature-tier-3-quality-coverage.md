@@ -507,7 +507,7 @@ documented telemetry examples to `nebula-log`.
 
 ---
 
-#### Task 9 — Log Telemetry Integration Examples
+#### [x] Task 9 — Log Telemetry Integration Examples
 
 **Delivers:** New examples and documentation linking `nebula-log` + `nebula-telemetry` + optional OTLP/Sentry
 
