@@ -158,7 +158,6 @@ fn clamp_usize_to_i64(value: usize) -> i64 {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::{i64, u64, usize};
 
     use nebula_eventbus::EventBusStats;
     use nebula_telemetry::metrics::MetricsRegistry;

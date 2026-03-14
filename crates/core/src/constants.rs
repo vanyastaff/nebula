@@ -220,6 +220,12 @@ pub mod limits {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::assertions_on_constants,
+    reason = "test functions document constant invariants; many functions mix const-evaluatable \
+              (integer, string) and non-const (Duration, float) assertions in the same body, \
+              making per-assertion const {{ }} conversion impractical"
+)]
 mod tests {
     use super::*;
 

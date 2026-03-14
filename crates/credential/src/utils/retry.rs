@@ -273,9 +273,7 @@ mod tests {
 
     #[test]
     fn test_validate_max_retries() {
-        let mut policy = RetryPolicy::default();
-
-        policy.max_retries = 0;
+        let mut policy = RetryPolicy { max_retries: 0, ..Default::default() };
         assert!(policy.validate().is_ok());
 
         policy.max_retries = 10;
@@ -287,9 +285,7 @@ mod tests {
 
     #[test]
     fn test_validate_base_delay() {
-        let mut policy = RetryPolicy::default();
-
-        policy.base_delay_ms = 9;
+        let mut policy = RetryPolicy { base_delay_ms: 9, ..Default::default() };
         assert!(policy.validate().is_err());
 
         policy.base_delay_ms = 10;
@@ -304,9 +300,7 @@ mod tests {
 
     #[test]
     fn test_validate_max_delay() {
-        let mut policy = RetryPolicy::default();
-
-        policy.max_delay_ms = 50; // Less than base_delay_ms (100)
+        let mut policy = RetryPolicy { max_delay_ms: 50, ..Default::default() }; // Less than base_delay_ms (100)
         assert!(policy.validate().is_err());
 
         policy.max_delay_ms = 101;
@@ -315,9 +309,7 @@ mod tests {
 
     #[test]
     fn test_validate_multiplier() {
-        let mut policy = RetryPolicy::default();
-
-        policy.multiplier = 0.9;
+        let mut policy = RetryPolicy { multiplier: 0.9, ..Default::default() };
         assert!(policy.validate().is_err());
 
         policy.multiplier = 1.0;
@@ -398,6 +390,7 @@ mod tests {
         assert_eq!(result.unwrap(), "success");
     }
 
+    #[expect(clippy::excessive_nesting, reason = "async closure inside retry_with_policy call naturally requires this depth")]
     #[tokio::test]
     async fn test_retry_with_policy_success_after_retries() {
         let policy = RetryPolicy {

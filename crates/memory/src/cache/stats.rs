@@ -349,17 +349,17 @@ mod tests {
         assert_eq!(snapshot.size_bytes, 100);
     }
 
+    #[expect(clippy::float_cmp, reason = "comparing stored float values with their literal sources")]
     #[test]
     fn test_hit_rate() {
-        let mut snapshot = CacheStats::default();
-        snapshot.hits = 80;
-        snapshot.misses = 20;
+        let snapshot = CacheStats { hits: 80, misses: 20, ..Default::default() };
 
         assert_eq!(snapshot.hit_rate(), 80.0);
         assert_eq!(snapshot.miss_rate(), 20.0);
         assert_eq!(snapshot.total_requests(), 100);
     }
 
+    #[expect(clippy::float_cmp, reason = "comparing default float value (0.0) with zero literal")]
     #[test]
     fn test_hit_rate_no_requests() {
         let snapshot = CacheStats::default();

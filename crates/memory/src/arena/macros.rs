@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_arena_alloc_macro() {
-        let arena = Arena::new(Default::default());
+        let arena = Arena::new(ArenaConfig::default());
         let (x, y, z) = arena_alloc!(arena, 42u32, "hello", vec![1, 2, 3]);
 
         assert_eq!(*x, 42);
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_try_arena_alloc_macro() {
-        let arena = Arena::new(Default::default());
+        let arena = Arena::new(ArenaConfig::default());
         let result = try_arena_alloc!(arena, 100u64, "world");
 
         assert!(result.is_ok());
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_arena_vec_macro() {
-        let arena = Arena::new(Default::default());
+        let arena = Arena::new(ArenaConfig::default());
 
         let vec1 = arena_vec![arena; 1, 2, 3, 4, 5];
         assert_eq!(&*vec1, &[1, 2, 3, 4, 5]);
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn test_arena_str_macro() {
-        let arena = Arena::new(Default::default());
+        let arena = Arena::new(ArenaConfig::default());
 
         let s1 = arena_str!(arena, "Hello, {}", "world");
         assert_eq!(s1, "Hello, world");
@@ -510,6 +510,7 @@ mod tests {
         assert_eq!(sum, 45);
     }
 
+    #[expect(clippy::float_cmp, reason = "comparing stored float value with its literal source")]
     #[test]
     fn test_arena_config_macro() {
         let config = arena_config! {
@@ -531,7 +532,7 @@ mod tests {
             y: String,
         }
 
-        let arena = Arena::new(Default::default());
+        let arena = Arena::new(ArenaConfig::default());
         let s = arena_struct!(
             arena,
             TestStruct {
@@ -546,7 +547,7 @@ mod tests {
 
     #[test]
     fn test_bench_arena_macro() {
-        let arena = Arena::new(Default::default());
+        let arena = Arena::new(ArenaConfig::default());
         let (result, duration) = bench_arena!(arena, {
             let x = arena.alloc(100).unwrap();
             let y = arena.alloc(200).unwrap();
@@ -571,7 +572,7 @@ mod tests {
 
     #[test]
     fn test_arena_alloc_or_macro() {
-        let arena = Arena::new(Default::default());
+        let arena = Arena::new(ArenaConfig::default());
 
         let x = arena_alloc_or!(arena, 42, 0);
         assert_eq!(*x, 42);
@@ -586,7 +587,7 @@ mod tests {
         impl_arena_alloc!(CustomAllocator);
 
         let allocator = CustomAllocator {
-            arena: Arena::new(Default::default()),
+            arena: Arena::new(ArenaConfig::default()),
         };
 
         let x = allocator.alloc(42).unwrap();

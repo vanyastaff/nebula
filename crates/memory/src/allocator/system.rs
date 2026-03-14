@@ -289,14 +289,14 @@ mod tests {
             let ptr = allocator.allocate(old_layout).unwrap();
 
             // Write some data
-            *ptr.as_ptr().cast::<u32>() = 0x12345678;
+            *ptr.as_ptr().cast::<u32>() = 0x1234_5678;
 
             let new_ptr = allocator
                 .reallocate(ptr.cast(), old_layout, new_layout)
                 .unwrap();
 
             // Data should be preserved
-            assert_eq!(*(new_ptr.as_ptr() as *const u32), 0x12345678);
+            assert_eq!(*(new_ptr.as_ptr() as *const u32), 0x1234_5678);
 
             allocator.deallocate(new_ptr.cast(), new_layout);
         }

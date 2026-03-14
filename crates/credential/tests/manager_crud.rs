@@ -231,7 +231,7 @@ async fn test_credential_by_type_with_registry() {
     let manager = CredentialManager::builder()
         .storage(Arc::new(storage))
         .encryption_key(key)
-        .register_type::<GithubToken>(cred_id.clone())
+        .register_type::<GithubToken>(cred_id)
         .build();
 
     // Store the credential

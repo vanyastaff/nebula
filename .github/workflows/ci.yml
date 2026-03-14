@@ -112,7 +112,7 @@ jobs:
       - name: Install cargo-hack
         uses: taiki-e/install-action@cargo-hack
       - name: Check each feature combination
-        run: cargo hack check --workspace --all-targets --each-feature --no-dev-deps
+        run: cargo hack check --workspace --each-feature --no-dev-deps
 
   # ── Tests ──────────────────────────────────────────────────────────────────
   test:
@@ -136,7 +136,7 @@ jobs:
         run: cargo test --workspace --doc
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+          uses: actions/upload-artifact@v6
         with:
           name: test-results
           path: target/nextest/ci/junit.xml

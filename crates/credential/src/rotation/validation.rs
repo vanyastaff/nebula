@@ -622,7 +622,7 @@ mod tests {
             tags: std::collections::HashMap::new(),
         };
 
-        let context = TestContext::new(cred_id.clone(), metadata)
+        let context = TestContext::new(cred_id, metadata)
             .with_timeout(Duration::from_secs(10))
             .with_retry(2);
 

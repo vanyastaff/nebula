@@ -16,7 +16,7 @@ use nebula_telemetry::{NoopRecorder, Recorder};
 /// Context for resource operations.
 ///
 /// Carries scope, identifiers, cancellation, credentials, and arbitrary metadata.
-/// Passed to [`Resource::create`](crate::Resource::create) and other lifecycle operations so
+/// Passed to [`Resource::create`] and other lifecycle operations so
 /// implementations can make scope-aware, cancellation-aware decisions.
 #[derive(Clone)]
 pub struct Context {

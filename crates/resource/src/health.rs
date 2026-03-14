@@ -784,7 +784,7 @@ impl HealthStage for PerformanceStage {
 /// The health check works by attempting a probe cycle:
 ///
 /// 1. **Create** a new instance via [`Resource::create`](crate::Resource::create).
-/// 2. **Validate** the instance via [`Resource::is_valid`](crate::Resource::is_valid).
+/// 2. **Validate** the instance via `Resource::is_valid`.
 /// 3. **Cleanup** the instance via [`Resource::cleanup`](crate::Resource::cleanup).
 ///
 /// If all steps succeed, the resource is considered healthy. This verifies

@@ -53,7 +53,7 @@ pub mod rules;
 pub mod runtime;
 /// Canonical v2 schema model: [`Schema`], [`UiElement`], [`Severity`], [`Group`].
 pub mod schema;
-/// Supporting spec types: [`ModeVariant`], [`FieldSpec`], [`PredicateExpr`], etc.
+/// Supporting spec types: [`ModeVariant`], [`FieldSpec`], `PredicateExpr`, etc.
 pub mod spec;
 /// Static validation engine.
 pub mod validate;

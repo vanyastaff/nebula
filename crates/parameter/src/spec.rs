@@ -44,7 +44,7 @@ pub enum UnknownFieldPolicy {
     Error,
 }
 
-/// Simplified field subset that [`crate::providers::DynamicRecordProvider`]s may return.
+/// Simplified field subset that dynamic record providers may return.
 ///
 /// Providers must not introduce nested [`crate::field::Field::Mode`] or
 /// [`crate::field::Field::DynamicFields`] variants.

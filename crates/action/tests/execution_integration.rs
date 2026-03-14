@@ -30,14 +30,12 @@ impl StatelessAction for EchoAction {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn execute(
+    async fn execute(
         &self,
         input: Self::Input,
         _ctx: &impl nebula_action::Context,
-    ) -> impl std::future::Future<
-        Output = Result<ActionResult<Self::Output>, nebula_action::ActionError>,
-    > + Send {
-        async move { Ok(ActionResult::success(input)) }
+    ) -> Result<ActionResult<Self::Output>, nebula_action::ActionError> {
+        Ok(ActionResult::success(input))
     }
 }
 
@@ -83,29 +81,25 @@ impl StatefulAction for CounterAction {
     type Output = u32;
     type State = u32;
 
-    fn execute(
+    async fn execute(
         &self,
         _input: Self::Input,
         state: &mut Self::State,
         _ctx: &impl nebula_action::Context,
-    ) -> impl std::future::Future<
-        Output = Result<ActionResult<Self::Output>, nebula_action::ActionError>,
-    > + Send {
+    ) -> Result<ActionResult<Self::Output>, nebula_action::ActionError> {
         let count = *state;
         *state += 1;
-        async move {
-            if count < 2 {
-                Ok(ActionResult::Continue {
-                    output: ActionOutput::Value(count),
-                    progress: Some((count + 1) as f64 / 3.0),
-                    delay: None,
-                })
-            } else {
-                Ok(ActionResult::Break {
-                    output: ActionOutput::Value(count),
-                    reason: BreakReason::Completed,
-                })
-            }
+        if count < 2 {
+            Ok(ActionResult::Continue {
+                output: ActionOutput::Value(count),
+                progress: Some((count + 1) as f64 / 3.0),
+                delay: None,
+            })
+        } else {
+            Ok(ActionResult::Break {
+                output: ActionOutput::Value(count),
+                reason: BreakReason::Completed,
+            })
         }
     }
 }
@@ -168,18 +162,18 @@ impl Action for NoOpTrigger {
 }
 
 impl TriggerAction for NoOpTrigger {
-    fn start(
+    async fn start(
         &self,
         _ctx: &TriggerContext,
-    ) -> impl std::future::Future<Output = Result<(), nebula_action::ActionError>> + Send {
-        async { Ok(()) }
+    ) -> Result<(), nebula_action::ActionError> {
+        Ok(())
     }
 
-    fn stop(
+    async fn stop(
         &self,
         _ctx: &TriggerContext,
-    ) -> impl std::future::Future<Output = Result<(), nebula_action::ActionError>> + Send {
-        async { Ok(()) }
+    ) -> Result<(), nebula_action::ActionError> {
+        Ok(())
     }
 }
 

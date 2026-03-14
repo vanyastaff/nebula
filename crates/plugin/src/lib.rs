@@ -20,7 +20,7 @@
 //!
 //! ## Dynamic Loading (feature-gated)
 //!
-//! With the `dynamic-loading` feature enabled, [`PluginLoader`] can load
+//! With the `dynamic-loading` feature enabled, `PluginLoader` can load
 //! plugins from shared libraries (`.dll` / `.so` / `.dylib`).
 
 // `deny` instead of `forbid` so the `loader` module can use `allow(unsafe_code)` for FFI.

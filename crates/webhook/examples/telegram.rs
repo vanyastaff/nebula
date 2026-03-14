@@ -176,15 +176,15 @@ impl WebhookAction for TelegramTrigger {
 
         println!("📥 Telegram update #{}", update.update_id);
 
-        if let Some(ref message) = update.message {
-            if let Some(ref text) = message.text {
-                let username = message
-                    .from
-                    .as_ref()
-                    .and_then(|u| u.username.as_deref())
-                    .unwrap_or("unknown");
-                println!("   💬 Message from @{}: {}", username, text);
-            }
+        if let Some(ref message) = update.message
+            && let Some(ref text) = message.text
+        {
+            let username = message
+                .from
+                .as_ref()
+                .and_then(|u| u.username.as_deref())
+                .unwrap_or("unknown");
+            println!("   💬 Message from @{}: {}", username, text);
         }
 
         Ok(Some(update))
@@ -290,14 +290,14 @@ async fn main() -> Result<()> {
                         println!("✅ Update processed: {}", update.update_id);
 
                         // Автоматически отвечаем на сообщения
-                        if let Some(ref message) = update.message {
-                            if let Some(ref text) = message.text {
-                                let reply = format!("✅ Получено: {}", text);
-                                if let Err(e) = trigger.send_message(message.chat.id, &reply).await {
-                                    println!("❌ Failed to send reply: {}", e);
-                                } else {
-                                    println!("📤 Sent reply to chat {}", message.chat.id);
-                                }
+                        if let Some(ref message) = update.message
+                            && let Some(ref text) = message.text
+                        {
+                            let reply = format!("✅ Получено: {}", text);
+                            if let Err(e) = trigger.send_message(message.chat.id, &reply).await {
+                                println!("❌ Failed to send reply: {}", e);
+                            } else {
+                                println!("📤 Sent reply to chat {}", message.chat.id);
                             }
                         }
                     }

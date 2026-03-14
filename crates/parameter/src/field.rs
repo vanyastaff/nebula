@@ -187,7 +187,7 @@ pub enum Field {
         #[serde(skip)]
         loader: Option<RecordLoader>,
     },
-    /// Visual condition-builder field that emits a [`PredicateExpr`].
+    /// Visual condition-builder field that emits a `PredicateExpr`.
     Filter {
         #[serde(flatten)]
         /// Shared field metadata (id, label, description, etc.).

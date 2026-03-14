@@ -292,7 +292,7 @@ impl Manager {
 
     /// Create a manager with a custom health check configuration.
     ///
-    /// **Deprecated:** prefer [`ManagerBuilder::new().health_config(c).build()`].
+    /// **Deprecated:** prefer `ManagerBuilder::new().health_config(c).build()`.
     #[must_use]
     pub fn with_health_config(config: crate::health::HealthCheckConfig) -> Self {
         ManagerBuilder::new().health_config(config).build()
@@ -300,7 +300,7 @@ impl Manager {
 
     /// Create a manager with a custom event bus.
     ///
-    /// **Deprecated:** prefer [`ManagerBuilder::new().event_bus(b).build()`].
+    /// **Deprecated:** prefer `ManagerBuilder::new().event_bus(b).build()`.
     #[must_use]
     pub fn with_event_bus(event_bus: Arc<EventBus>) -> Self {
         ManagerBuilder::new().event_bus(event_bus).build()
@@ -308,7 +308,7 @@ impl Manager {
 
     /// Create a manager with a custom quarantine configuration.
     ///
-    /// **Deprecated:** prefer [`ManagerBuilder::new().quarantine_config(c).build()`].
+    /// **Deprecated:** prefer `ManagerBuilder::new().quarantine_config(c).build()`.
     #[must_use]
     pub fn with_quarantine_config(quarantine_config: QuarantineConfig) -> Self {
         ManagerBuilder::new()
@@ -514,7 +514,7 @@ impl Manager {
     /// Start the background rotation subscription loop.
     ///
     /// Call once at application startup after all resources are registered.
-    /// Pass the subscriber from [`CredentialManager::rotation_subscriber`](nebula_credential::CredentialManager::rotation_subscriber).
+    /// Pass the subscriber from `CredentialManager::rotation_subscriber`.
     #[expect(
         clippy::excessive_nesting,
         reason = "Background listener combines map lookup, weak-upgrade filtering, and async rotation handling"
@@ -943,7 +943,7 @@ impl Manager {
     /// **Note:** [`register`](Self::register) /
     /// [`register_scoped`](Self::register_scoped) do **not** start
     /// monitoring automatically because building a
-    /// [`HealthCheckable`](crate::health::HealthCheckable) requires
+    /// [`HealthCheckable`] requires
     /// access to the resource and config (which are consumed by the
     /// pool). Use [`ResourceHealthAdapter`](crate::health::ResourceHealthAdapter)
     /// to bridge a `Resource` to `HealthCheckable`, then call this

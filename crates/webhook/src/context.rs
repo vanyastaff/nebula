@@ -26,7 +26,7 @@ pub struct TriggerCtx {
     /// Persistent state with UUIDs for both environments
     pub state: Arc<TriggerState>,
 
-    /// Base URL for the webhook server (e.g., "https://nebula.example.com")
+    /// Base URL for the webhook server (e.g., <https://nebula.example.com>)
     pub base_url: String,
 
     /// Path prefix for all webhooks (e.g., "/webhooks")

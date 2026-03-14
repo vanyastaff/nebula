@@ -10,16 +10,16 @@
 //! ## Core Types
 //!
 //! - [`Action`] — base trait providing identity and metadata
-//! - [`SimpleAction`] — zero-boilerplate action returning `Result<Output, Error>`
+//! - `SimpleAction` — zero-boilerplate action returning `Result<Output, Error>`
 //! - [`StatelessAction`] — stateless single-execution action with flow-control
 //! - [`StatefulAction`] — iterative action with persistent state (Continue/Break)
 //! - [`TriggerAction`] — workflow starter (start/stop), outside execution graph
 //! - [`ResourceAction`] — graph-level DI (configure/cleanup), scoped to downstream branch
 //! - [`StatefulAction`] — iterative action with persistent state
 //! - [`TriggerAction`] — event source that starts workflows
-//! - [`StreamingAction`] — continuous stream producer
-//! - [`TransactionalAction`] — distributed transaction participant (saga)
-//! - [`InteractiveAction`] — human-in-the-loop interaction
+//! - `StreamingAction` — continuous stream producer
+//! - `TransactionalAction` — distributed transaction participant (saga)
+//! - `InteractiveAction` — human-in-the-loop interaction
 //! - [`ActionResult`] — execution result carrying data and flow-control intent
 //! - [`ActionOutput`] — first-class output type (value, binary, reference, stream)
 //! - [`ActionError`] — error type distinguishing retryable from fatal failures

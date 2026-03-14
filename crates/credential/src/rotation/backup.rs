@@ -113,7 +113,7 @@ mod tests {
             tag: [5u8; 16],
         };
 
-        let backup = RotationBackup::create(cred_id.clone(), 1, encrypted.clone(), tx_id);
+        let backup = RotationBackup::create(cred_id, 1, encrypted.clone(), tx_id);
 
         assert_eq!(backup.credential_id, cred_id);
         assert_eq!(backup.credential_version, 1);

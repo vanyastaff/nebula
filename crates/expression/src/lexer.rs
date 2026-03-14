@@ -444,6 +444,7 @@ mod tests {
         );
     }
 
+    #[expect(clippy::approx_constant, reason = "3.14 is intentional test data, not an approximation of π")]
     #[test]
     fn test_numbers() {
         let mut lexer = Lexer::new("42 3.14 -10");
@@ -598,6 +599,10 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::approx_constant,
+        reason = "3.14 is a representative float literal in lexer test, not an approximation of π"
+    )]
     #[test]
     fn test_float_not_dot() {
         let mut lexer = Lexer::new("3.14.toString");

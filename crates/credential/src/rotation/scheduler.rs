@@ -680,9 +680,9 @@ mod tests {
         let expires3 = now + ChronoDuration::days(5);
 
         let credentials = vec![
-            (id1.clone(), created1, expires1),
-            (id2.clone(), created2, expires2),
-            (id3.clone(), created3, expires3),
+            (id1, created1, expires1),
+            (id2, created2, expires2),
+            (id3, created3, expires3),
         ];
 
         let to_rotate = monitor.check_credentials(&credentials);

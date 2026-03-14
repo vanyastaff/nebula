@@ -540,7 +540,6 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
     // Limit concurrency to 2
     let budget = ExecutionBudget {
         max_concurrent_nodes: 2,
-        ..Default::default()
     };
 
     let result = engine

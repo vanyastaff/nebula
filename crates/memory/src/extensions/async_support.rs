@@ -433,11 +433,7 @@ mod tests {
 
     #[test]
     fn test_simple_task() {
-        async fn test_future() -> u32 {
-            42
-        }
-
-        let task = SimpleTask::new("test_task", test_future());
+        let task = SimpleTask::new("test_task", async { 42u32 });
         assert_eq!(task.name(), "test_task");
 
         let result = block_on(task);

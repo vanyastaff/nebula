@@ -28,7 +28,7 @@ pub struct WebhookServerConfig {
     /// Address to bind to (e.g., "0.0.0.0:8080")
     pub bind_addr: SocketAddr,
 
-    /// Base URL for webhooks (e.g., "https://nebula.example.com")
+    /// Base URL for webhooks (e.g., <https://nebula.example.com>)
     pub base_url: String,
 
     /// Path prefix for all webhooks (e.g., "/webhooks")

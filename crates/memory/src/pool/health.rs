@@ -328,6 +328,7 @@ mod tests {
         assert_eq!(health, PoolHealth::Critical);
     }
 
+    #[expect(clippy::float_cmp, reason = "comparing stored float value with its literal source")]
     #[test]
     fn test_metrics() {
         let monitor = PoolHealthMonitor::new(HealthConfig::default(), 100);

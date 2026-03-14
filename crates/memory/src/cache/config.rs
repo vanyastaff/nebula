@@ -439,6 +439,7 @@ mod tests {
         assert!(!config.auto_cleanup);
     }
 
+    #[expect(clippy::float_cmp, reason = "comparing stored float value with its literal source")]
     #[test]
     fn test_builder_pattern() {
         let config = CacheConfig::new(500)
@@ -458,6 +459,7 @@ mod tests {
         assert!(config.auto_cleanup);
     }
 
+    #[expect(clippy::float_cmp, reason = "comparing stored float value with its literal source")]
     #[test]
     fn test_preset_configurations() {
         let high_throughput = CacheConfig::for_high_throughput(1000);
@@ -492,10 +494,12 @@ mod tests {
 
     #[test]
     fn test_metrics() {
-        let mut metrics = CacheMetrics::default();
-        metrics.hits = 80;
-        metrics.misses = 20;
-        metrics.compute_time_ns = 1_000_000_000; // 1 second total
+        let mut metrics = CacheMetrics {
+            hits: 80,
+            misses: 20,
+            compute_time_ns: 1_000_000_000, // 1 second total
+            ..Default::default()
+        };
 
         assert!((metrics.hit_rate() - 0.8).abs() < f64::EPSILON);
         assert!((metrics.miss_rate() - 0.2).abs() < f64::EPSILON);
@@ -505,11 +509,13 @@ mod tests {
         let score = metrics.efficiency_score();
         assert!(score > 70.0); // Should be a good score
 
-        let mut other = CacheMetrics::default();
-        other.hits = 40;
-        other.misses = 60;
-        other.evictions = 10;
-        other.peak_size = 150;
+        let other = CacheMetrics {
+            hits: 40,
+            misses: 60,
+            evictions: 10,
+            peak_size: 150,
+            ..Default::default()
+        };
 
         metrics.merge(&other);
         assert_eq!(metrics.hits, 120);
@@ -525,11 +531,13 @@ mod tests {
 
     #[test]
     fn test_performance_report() {
-        let mut metrics = CacheMetrics::default();
-        metrics.hits = 900;
-        metrics.misses = 100;
-        metrics.evictions = 5;
-        metrics.compute_time_ns = 500_000_000; // 500ms total
+        let metrics = CacheMetrics {
+            hits: 900,
+            misses: 100,
+            evictions: 5,
+            compute_time_ns: 500_000_000, // 500ms total
+            ..Default::default()
+        };
 
         let report = metrics.performance_report();
         assert!((report.hit_rate - 0.9).abs() < f64::EPSILON);

@@ -14,7 +14,7 @@ use super::{AllocError, AllocResult, Allocator, ThreadSafeAllocator};
 
 /// Unique identifier for registered allocators
 ///
-/// Uses `NonZeroUsize` for memory efficiency (allows Option<AllocatorId> to be same size)
+/// Uses `NonZeroUsize` for memory efficiency (allows `Option<AllocatorId>` to be same size)
 /// and provides type safety preventing accidental mixing with raw usizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AllocatorId(NonZeroUsize);

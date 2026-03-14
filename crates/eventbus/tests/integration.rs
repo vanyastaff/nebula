@@ -304,28 +304,24 @@ async fn test_subscriber_drop_while_bus_emitting() {
 
     let bus: Arc<EventBus<TestEvent>> = Arc::new(EventBus::new(64));
 
-    let subscriber_handle = {
-        let bus_clone = bus.clone();
-        task::spawn(async move {
-            let _sub = bus_clone.subscribe();
-            // Drop subscriber after brief delay
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            debug!("subscriber dropped");
-        })
-    };
+    let bus_clone_sub = bus.clone();
+    let subscriber_handle = task::spawn(async move {
+        let _sub = bus_clone_sub.subscribe();
+        // Drop subscriber after brief delay
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        debug!("subscriber dropped");
+    });
 
     // Emit events concurrently
-    let emitter_handle = {
-        let bus_clone = bus.clone();
-        task::spawn(async move {
-            for i in 0..100 {
-                let _outcome = bus_clone.emit(TestEvent { id: i as u64 });
-                if i % 20 == 0 {
-                    debug!("emitted event {}", i);
-                }
+    let bus_clone_emit = bus.clone();
+    let emitter_handle = task::spawn(async move {
+        for i in 0..100 {
+            let _outcome = bus_clone_emit.emit(TestEvent { id: i as u64 });
+            if i % 20 == 0 {
+                debug!("emitted event {}", i);
             }
-        })
-    };
+        }
+    });
 
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     let stats_before_drop = bus.stats();
@@ -504,6 +500,7 @@ async fn test_drop_newest_policy_preserves_oldest() {
 // Phase 5: Graceful Shutdown & Propagation
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[expect(clippy::excessive_nesting, reason = "drain loop inside tokio::spawn naturally requires this depth")]
 #[tokio::test]
 async fn test_registry_clear_existing_subscribers_continue_draining() {
     init_log();
@@ -515,31 +512,29 @@ async fn test_registry_clear_existing_subscribers_continue_draining() {
     // Spin up subscriber in separate task
     let received = Arc::new(AtomicU64::new(0));
     let received_clone = received.clone();
-    let subscriber_handle = {
-        let bus_clone = bus.clone();
-        task::spawn(async move {
-            let mut sub = bus_clone.subscribe();
-            loop {
-                match tokio::time::timeout(tokio::time::Duration::from_millis(500), sub.recv())
-                    .await
-                {
-                    Ok(Some(_event)) => {
-                        received_clone.fetch_add(1, Ordering::SeqCst);
-                    }
-                    Ok(None) => {
-                        debug!("subscriber: bus closed, exiting");
+    let bus_clone = bus.clone();
+    let subscriber_handle = task::spawn(async move {
+        let mut sub = bus_clone.subscribe();
+        loop {
+            match tokio::time::timeout(tokio::time::Duration::from_millis(500), sub.recv())
+                .await
+            {
+                Ok(Some(_event)) => {
+                    received_clone.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(None) => {
+                    debug!("subscriber: bus closed, exiting");
+                    break;
+                }
+                Err(_) => {
+                    debug!("subscriber: timeout waiting for events");
+                    if sub.is_closed() {
                         break;
-                    }
-                    Err(_) => {
-                        debug!("subscriber: timeout waiting for events");
-                        if sub.is_closed() {
-                            break;
-                        }
                     }
                 }
             }
-        })
-    };
+        }
+    });
 
     // Emit a few events and let subscriber process them
     for i in 0..5 {

@@ -1,6 +1,6 @@
 //! Static metadata for resource types (display name, description, icon, tags).
 //!
-//! Similar to [`nebula_action::ActionMetadata`]: used for discovery, UI labels,
+//! Similar to `nebula_action::ActionMetadata`: used for discovery, UI labels,
 //! and monitoring. Implement [`Resource::metadata`](crate::resource::Resource) to
 //! provide rich metadata; a default builds from `id()` only.
 

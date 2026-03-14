@@ -739,6 +739,7 @@ mod tests {
         assert_eq!(snapshot.deallocation_count, 1);
     }
 
+    #[expect(clippy::float_cmp, reason = "comparing stored float value with its literal source")]
     #[test]
     fn test_allocation_efficiency() {
         let mut stats = AllocatorStats::new();

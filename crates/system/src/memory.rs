@@ -169,7 +169,7 @@ pub mod management {
     ///
     /// # Errors
     ///
-    /// Returns [`NebulaError::SystemError`] if:
+    /// Returns `SystemError` if:
     /// - The operating system cannot allocate the requested memory (out of memory)
     /// - The protection flags are invalid for the platform
     /// - The allocation size is invalid
@@ -202,7 +202,7 @@ pub mod management {
     ///
     /// # Errors
     ///
-    /// Always returns [`NebulaError::SystemError`] with "not supported" message.
+    /// Always returns `SystemError` with "not supported" message.
     pub unsafe fn free(_ptr: *mut u8, _size: usize) -> SystemResult<()> {
         Err(SystemError::feature_not_supported(
             "Manual free is not supported for region allocations; use RAII handle instead",
@@ -239,7 +239,7 @@ pub mod management {
     ///
     /// # Errors
     ///
-    /// Returns [`NebulaError::SystemError`] if:
+    /// Returns `SystemError` if:
     /// - The pointer is invalid or not at a region boundary
     /// - The size doesn't match the allocation
     /// - The protection flags are invalid or violate platform security policies
@@ -293,7 +293,7 @@ pub mod management {
     ///
     /// # Errors
     ///
-    /// Returns [`NebulaError::SystemError`] if:
+    /// Returns `SystemError` if:
     /// - The pointer or size is not page-aligned
     /// - The process lacks necessary privileges
     /// - System locked memory limit exceeded
@@ -334,7 +334,7 @@ pub mod management {
     ///
     /// # Errors
     ///
-    /// Returns [`NebulaError::SystemError`] if:
+    /// Returns `SystemError` if:
     /// - The memory was not previously locked
     /// - The pointer or size is incorrect
     /// - The memory region is invalid
@@ -383,7 +383,7 @@ pub mod management {
     ///
     /// # Errors
     ///
-    /// Returns [`NebulaError::SystemError`] if:
+    /// Returns `SystemError` if:
     /// - The pointer is invalid or unmapped
     /// - The memory region cannot be queried (platform restrictions)
     /// - The OS denies access to region information

@@ -72,7 +72,7 @@ async fn already_watching_returns_err() {
 
     let watcher = FileWatcher::new(|_| {});
     watcher
-        .start_watching(&[source.clone()])
+        .start_watching(std::slice::from_ref(&source))
         .await
         .expect("first start_watching should succeed");
 

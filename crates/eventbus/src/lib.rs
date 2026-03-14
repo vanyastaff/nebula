@@ -67,7 +67,7 @@
 //!
 //! ### Closure and Drop
 //!
-//! When a [`Subscriber`](crate::Subscriber) is dropped, it automatically decrements the
+//! When a [`Subscriber`] is dropped, it automatically decrements the
 //! subscriber count. No explicit close call is required. Use [`is_closed()`](crate::Subscriber::is_closed)
 //! to check if the underlying bus has been dropped.
 //!

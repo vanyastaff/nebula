@@ -3,7 +3,7 @@
 //! # Safety
 //!
 //! This module implements a type-safe arena optimized for single-type allocations:
-//! - `TypedChunk` stores T values in Box<[`MaybeUninit`<T>]>
+//! - `TypedChunk` stores T values in `Box<[MaybeUninit<T>]>`
 //! - `NonNull` pointers to chunks managed via `RefCell`
 //! - Single-threaded access (no Sync without explicit synchronization)
 //! - Pointer dereferencing protected by `RefCell` borrow checking

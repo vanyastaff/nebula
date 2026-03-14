@@ -387,18 +387,16 @@ async fn health_threshold_breach_emits_structured_quarantine_transition_event() 
     let mut quarantined_event = None;
     for _ in 0..8 {
         let maybe_event = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await;
-        if let Ok(Some(event)) = maybe_event {
-            if let ResourceEvent::Quarantined {
-                resource_key,
-                trigger,
-                from_health,
-                to_health,
-                ..
-            } = event
-            {
-                quarantined_event = Some((resource_key, trigger, from_health, to_health));
-                break;
-            }
+        if let Ok(Some(ResourceEvent::Quarantined {
+            resource_key,
+            trigger,
+            from_health,
+            to_health,
+            ..
+        })) = maybe_event
+        {
+            quarantined_event = Some((resource_key, trigger, from_health, to_health));
+            break;
         }
     }
 

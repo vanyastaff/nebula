@@ -63,6 +63,7 @@ fn ctx() -> Context {
     Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
 }
 
+#[expect(clippy::excessive_nesting, reason = "tokio::spawn inside loop with match in shutdown stress test naturally requires this depth")]
 #[tokio::test(flavor = "multi_thread")]
 async fn manager_shutdown_phased_completes_under_inflight_load() {
     let (resource, created, cleaned) = StressResource::new();
@@ -142,6 +143,7 @@ async fn manager_shutdown_phased_completes_under_inflight_load() {
     );
 }
 
+#[expect(clippy::excessive_nesting, reason = "tokio::spawn inside loop with match in pool shutdown test naturally requires this depth")]
 #[tokio::test(flavor = "multi_thread")]
 async fn pool_shutdown_does_not_hang_with_concurrent_acquires() {
     let (resource, _created, cleaned) = StressResource::new();

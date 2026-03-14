@@ -2,7 +2,7 @@ use crate::rules::Rule;
 
 /// Shared field metadata.
 ///
-/// Flattened into each [`crate::schema::Field`] variant with `#[serde(flatten)]`.
+/// Flattened into each [`Field`](crate::field::Field) variant with `#[serde(flatten)]`.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FieldMetadata {
     /// Stable field identifier; must be unique within a schema.

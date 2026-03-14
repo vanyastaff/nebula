@@ -25,7 +25,7 @@ impl<T: Hash + Eq + Clone + Send + Sync> CacheKey for T {}
 /// # Performance characteristics:
 /// - **Reads**: Lock-free, scales linearly with CPU cores
 /// - **Writes**: Fine-grained locking per shard, minimal contention
-/// - **Memory**: Slightly higher than `RwLock`<HashMap> due to sharding overhead
+/// - **Memory**: Slightly higher than `RwLock<HashMap>` due to sharding overhead
 ///
 /// # Trade-offs:
 /// - Does not update access metadata on reads (sacrifice LRU accuracy for performance)

@@ -3,7 +3,7 @@
 //! # Safety
 //!
 //! This module provides thread-safe arena access through explicit locking:
-//! - `CrossThreadArena` uses Arc<Mutex<Arena>> for exclusive access across threads
+//! - `CrossThreadArena` uses `Arc<Mutex<Arena>>` for exclusive access across threads
 //! - `CrossThreadArenaRef` provides synchronized access to arena-allocated values
 //! - `UnsafeCell`<*mut T> requires external synchronization via Mutex guard
 //! - Send/Sync implementations require T: Send for safe cross-thread transfer

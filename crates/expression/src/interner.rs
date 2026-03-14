@@ -10,7 +10,7 @@ use std::sync::Arc;
 /// A thread-safe string interner
 ///
 /// Deduplicates strings by maintaining a single copy of each unique string.
-/// Returns Arc<str> for cheap cloning and comparison.
+/// Returns `Arc<str>` for cheap cloning and comparison.
 #[derive(Debug, Default)]
 pub struct StringInterner {
     strings: RwLock<HashSet<Arc<str>>>,

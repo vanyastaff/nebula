@@ -1303,6 +1303,10 @@ mod tests {
 
     // ── Numeric predicate with floats ───────────────────────────────────
 
+    #[expect(
+        clippy::approx_constant,
+        reason = "3.14 is a representative float literal, not an approximation of π"
+    )]
     #[test]
     fn gt_float_comparison() {
         let rule = Rule::Gt {
@@ -1358,6 +1362,10 @@ mod tests {
         assert_eq!(err.code.as_ref(), "invalid_pattern");
     }
 
+    #[expect(
+        clippy::approx_constant,
+        reason = "3.14 is a representative float literal, not an approximation of π"
+    )]
     #[test]
     fn min_float_boundary() {
         let rule = Rule::Min {

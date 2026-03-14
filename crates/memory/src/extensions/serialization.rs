@@ -475,8 +475,8 @@ mod tests {
         assert_eq!(serializer.format(), SerializationFormat::Json);
 
         let string_value = StringValue("Test".to_string());
-        let serialized = serializer.serialize(&string_value).unwrap();
-        let deserialized = serializer.deserialize(&serialized, "string").unwrap();
+        let bytes = serializer.serialize(&string_value).unwrap();
+        let deserialized = serializer.deserialize(&bytes, "string").unwrap();
 
         assert!(string_value.equals(deserialized.as_ref()));
     }

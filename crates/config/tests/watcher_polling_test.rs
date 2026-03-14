@@ -35,7 +35,7 @@ async fn already_watching_returns_err() {
 
     let watcher = make_watcher(Arc::new(Mutex::new(Vec::new())));
     watcher
-        .start_watching(&[source.clone()])
+        .start_watching(std::slice::from_ref(&source))
         .await
         .expect("first start_watching should succeed");
 
@@ -130,9 +130,7 @@ async fn detects_file_modification() {
     let received = events.lock().unwrap();
     tracing::debug!(?received, "events received after modification");
     assert!(
-        received
-            .iter()
-            .any(|e| *e == ConfigWatchEventType::Modified),
+        received.contains(&ConfigWatchEventType::Modified),
         "expected at least one Modified event; got: {received:?}"
     );
 
@@ -177,7 +175,7 @@ async fn detects_file_creation() {
     let received = events.lock().unwrap();
     tracing::debug!(?received, "events received after creation");
     assert!(
-        received.iter().any(|e| *e == ConfigWatchEventType::Created),
+        received.contains(&ConfigWatchEventType::Created),
         "expected at least one Created event; got: {received:?}"
     );
 

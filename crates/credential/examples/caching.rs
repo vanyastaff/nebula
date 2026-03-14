@@ -105,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Retrieve all to populate cache
     for cred_id in &stored_ids {
-        manager.retrieve(&cred_id, &context).await?;
+        manager.retrieve(cred_id, &context).await?;
     }
 
     if let Some(stats) = manager.cache_stats() {

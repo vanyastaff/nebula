@@ -6,7 +6,7 @@
 //! - `HierarchicalPooledValue` holds raw pointer to pool
 //! - `ManuallyDrop` for controlled object lifecycle
 //! - Drop returns object to correct pool (local or parent)
-//! - Arc<Mutex> ensures pool stays alive while values exist
+//! - `Arc<Mutex>` ensures pool stays alive while values exist
 //!
 //! ## Safety Contracts
 //!
@@ -308,7 +308,7 @@ impl<T: Poolable> Drop for HierarchicalPooledValue<T> {
 // - Drop on destination thread safely returns object to pool (via Arc<Mutex>)
 unsafe impl<T: Poolable + Send> Send for HierarchicalPooledValue<T> {}
 
-/// Extension trait for Arc<Mutex<`HierarchicalPool`<T>>>
+/// Extension trait for `Arc<Mutex<HierarchicalPool<T>>>`
 ///
 /// This trait provides ergonomic methods that hide the Arc<Mutex<>> complexity
 /// from users, making the API cleaner and preventing common lifetime issues.

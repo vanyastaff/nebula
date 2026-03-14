@@ -231,6 +231,7 @@ fn stress_test_concurrent_metrics_high_throughput() {
 // Stress Test: Concurrent EventBus with Multiple Subscribers
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[expect(clippy::excessive_nesting, reason = "tokio::spawn inside loop and match in stress test naturally requires this depth")]
 #[tokio::test]
 async fn stress_test_eventbus_multiple_subscribers() {
     tracing::debug!("stress test: eventbus with multiple subscribers started");
@@ -269,23 +270,23 @@ async fn stress_test_eventbus_multiple_subscribers() {
             for i in 0..events_to_emit {
                 let event = if i % 4 == 0 {
                     ExecutionEvent::Started {
-                        execution_id: format!("exec_{}", i).into(),
-                        workflow_id: format!("wf_{}", i / 10).into(),
+                        execution_id: format!("exec_{}", i),
+                        workflow_id: format!("wf_{}", i / 10),
                     }
                 } else if i % 4 == 1 {
                     ExecutionEvent::NodeStarted {
-                        execution_id: format!("exec_{}", i).into(),
-                        node_id: format!("node_{}", i % 100).into(),
+                        execution_id: format!("exec_{}", i),
+                        node_id: format!("node_{}", i % 100),
                     }
                 } else if i % 4 == 2 {
                     ExecutionEvent::NodeCompleted {
-                        execution_id: format!("exec_{}", i).into(),
-                        node_id: format!("node_{}", i % 100).into(),
+                        execution_id: format!("exec_{}", i),
+                        node_id: format!("node_{}", i % 100),
                         duration: std::time::Duration::from_millis(1),
                     }
                 } else {
                     ExecutionEvent::Completed {
-                        execution_id: format!("exec_{}", i).into(),
+                        execution_id: format!("exec_{}", i),
                         duration: std::time::Duration::from_secs(1),
                     }
                 };

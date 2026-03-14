@@ -462,6 +462,10 @@ mod tests {
         assert!(msg.contains("Argument 'count' must be an integer"));
     }
 
+    #[expect(
+        clippy::approx_constant,
+        reason = "3.14 is a representative float literal, not an approximation of π"
+    )]
     #[test]
     fn test_get_number_arg_accepts_int_and_float() {
         let args_int = vec![Value::Number(42.into())];

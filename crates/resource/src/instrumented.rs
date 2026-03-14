@@ -2,7 +2,7 @@
 //!
 //! The kernel wraps every acquired resource in [`InstrumentedGuard`]. When the
 //! guard is dropped, it records [`ResourceUsageRecord`] (resource_key, timing,
-//! drop_reason) via the context's [`Recorder`](nebula_telemetry::Recorder).
+//! drop_reason) via the context's [`Recorder`].
 
 use std::any::Any;
 use std::sync::Arc;

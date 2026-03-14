@@ -21,7 +21,7 @@
 //!
 //! ## Memory Management
 //!
-//! - Arc<Arena>: Shared ownership of arena
+//! - `Arc<Arena>`: Shared ownership of arena
 //! - `ArenaBackedVec`: Doesn't deallocate (arena manages memory)
 //! - Drop: Calls clear but doesn't free memory (arena-owned)
 
@@ -426,6 +426,7 @@ impl<A: ArenaAllocate> ArenaString<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arena::ArenaConfig;
 
     #[test]
     fn test_arena_allocator_basic() {
@@ -440,7 +441,7 @@ mod tests {
 
     #[test]
     fn test_arena_backed_vec() {
-        let arena = Arc::new(Arena::new(Default::default()));
+        let arena = Arc::new(Arena::new(ArenaConfig::default()));
         let mut vec = ArenaBackedVec::with_capacity(10, arena).unwrap();
 
         vec.push(1).unwrap();
@@ -459,7 +460,7 @@ mod tests {
 
     #[test]
     fn test_arena_backed_vec_clear() {
-        let arena = Arc::new(Arena::new(Default::default()));
+        let arena = Arc::new(Arena::new(ArenaConfig::default()));
         let mut vec = ArenaBackedVec::with_capacity(5, arena).unwrap();
 
         for i in 0..5 {
@@ -474,7 +475,7 @@ mod tests {
 
     #[test]
     fn test_arena_string() {
-        let arena = Arc::new(Arena::new(Default::default()));
+        let arena = Arc::new(Arena::new(ArenaConfig::default()));
         let string = ArenaString::from_str("Hello, Arena!", arena).unwrap();
 
         assert_eq!(string.as_str(), "Hello, Arena!");

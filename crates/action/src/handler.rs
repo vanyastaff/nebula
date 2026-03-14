@@ -155,16 +155,14 @@ mod tests {
         type Input = AddInput;
         type Output = AddOutput;
 
-        fn execute(
+        async fn execute(
             &self,
             input: Self::Input,
             _ctx: &impl Context,
-        ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send {
-            async move {
-                Ok(ActionResult::success(AddOutput {
-                    sum: input.a + input.b,
-                }))
-            }
+        ) -> Result<ActionResult<Self::Output>, ActionError> {
+            Ok(ActionResult::success(AddOutput {
+                sum: input.a + input.b,
+            }))
         }
     }
 

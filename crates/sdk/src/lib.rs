@@ -23,7 +23,7 @@
 //!
 //! - [`prelude`] - Commonly used types and traits
 //! - [`action`] - Action development utilities
-//! - [`workflow`] - Workflow building utilities
+//! - [`mod@workflow`] - Workflow building utilities
 //! - [`testing`] - Testing utilities (requires `testing` feature)
 
 #![forbid(unsafe_code)]

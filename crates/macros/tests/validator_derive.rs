@@ -1142,7 +1142,7 @@ fn regex_patterns_choice_invalid() {
 // ============================================================================
 
 fn must_be_even(value: &u32) -> Result<(), nebula_validator::foundation::ValidationError> {
-    if value % 2 == 0 {
+    if value.is_multiple_of(2) {
         Ok(())
     } else {
         Err(nebula_validator::foundation::ValidationError::new(

@@ -315,6 +315,10 @@ impl ConfigLoader for EnvLoader {
 mod tests {
     use super::*;
 
+    #[expect(
+        clippy::approx_constant,
+        reason = "3.14 is a representative float literal, not an approximation of π"
+    )]
     #[test]
     fn test_parse_env_value() {
         let loader = EnvLoader::new();

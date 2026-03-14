@@ -3,8 +3,8 @@
 //! # Safety
 //!
 //! This module implements single-threaded object pooling with RAII:
-//! - `ObjectPool` owns all pooled objects in Vec<T>
-//! - `PooledValue` uses `NonNull`<`ObjectPool`<T>> pointer to pool
+//! - `ObjectPool` owns all pooled objects in `Vec<T>`
+//! - `PooledValue` uses `NonNull<ObjectPool<T>>` pointer to pool
 //! - `ManuallyDrop` prevents automatic drop of value (manual control)
 //! - Drop implementation returns object to pool
 //!

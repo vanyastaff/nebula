@@ -459,7 +459,7 @@ mod tests {
         let blue = CredentialId::new();
         let green = CredentialId::new();
 
-        let rotation = BlueGreenRotation::new(blue.clone(), green.clone());
+        let rotation = BlueGreenRotation::new(blue, green);
 
         assert_eq!(rotation.state, BlueGreenState::Blue);
         assert_eq!(rotation.active(), &blue);
@@ -472,7 +472,7 @@ mod tests {
         let blue = CredentialId::new();
         let green = CredentialId::new();
 
-        let mut rotation = BlueGreenRotation::new(blue.clone(), green.clone());
+        let mut rotation = BlueGreenRotation::new(blue, green);
 
         // Can't transition without validation
         assert!(rotation.start_transition().is_err());
@@ -498,7 +498,7 @@ mod tests {
         let blue = CredentialId::new();
         let green = CredentialId::new();
 
-        let mut rotation = BlueGreenRotation::new(blue.clone(), green.clone());
+        let mut rotation = BlueGreenRotation::new(blue, green);
         rotation.mark_validated();
         rotation.start_transition().unwrap();
 

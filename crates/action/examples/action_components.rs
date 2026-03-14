@@ -74,12 +74,12 @@ impl Resource for PostgresDb {
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("postgres_db").unwrap())
     }
-    fn create(
+    async fn create(
         &self,
         _: &ExampleResourceConfig,
         _: &Context,
-    ) -> impl std::future::Future<Output = nebula_resource::Result<()>> + Send {
-        async { Ok(()) }
+    ) -> nebula_resource::Result<()> {
+        Ok(())
     }
 }
 
@@ -89,12 +89,12 @@ impl Resource for RedisCache {
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("redis_cache").unwrap())
     }
-    fn create(
+    async fn create(
         &self,
         _: &ExampleResourceConfig,
         _: &Context,
-    ) -> impl std::future::Future<Output = nebula_resource::Result<()>> + Send {
-        async { Ok(()) }
+    ) -> nebula_resource::Result<()> {
+        Ok(())
     }
 }
 

@@ -41,7 +41,7 @@ pub enum Expr {
         property: Arc<str>,
     },
 
-    /// Index access (array[index])
+    /// Index access (array\[index\])
     IndexAccess { object: Box<Expr>, index: Box<Expr> },
 
     // Function calls
