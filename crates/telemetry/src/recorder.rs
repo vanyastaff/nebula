@@ -402,6 +402,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "spawn block with inner loop is idiomatic here; extracting would obscure test intent"
+    )]
     async fn multiple_concurrent_producers() {
         let sink = CollectingSink::default();
         let recorder = Arc::new(BufferedRecorder::start(
@@ -415,11 +419,12 @@ mod tests {
         let mut handles = Vec::new();
         for t in 0..4 {
             let rec = Arc::clone(&recorder);
-            handles.push(tokio::spawn(async move {
+            let task = async move {
                 for i in 0..25 {
                     rec.record_usage(make_usage_record(&format!("t{t}-r{i}")));
                 }
-            }));
+            };
+            handles.push(tokio::spawn(task));
         }
 
         for h in handles {

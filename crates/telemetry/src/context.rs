@@ -250,19 +250,19 @@ mod tests {
 
     #[test]
     fn parse_valid_traceparent() {
-        let header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0bb902b7-01";
         let ctx = TraceContext::from_traceparent(header).unwrap();
         assert_eq!(
             ctx.trace_id,
             TraceId(0x4bf9_2f35_77b3_4da6_a3ce_929d_0e0e_4736)
         );
-        assert_eq!(ctx.span_id, SpanId(0x00f0_67aa_0ba9_02b7));
+        assert_eq!(ctx.span_id, SpanId(0x00f0_67aa_0bb9_02b7));
         assert!(ctx.sampled);
     }
 
     #[test]
     fn parse_unsampled_traceparent() {
-        let header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00";
+        let header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0bb902b7-00";
         let ctx = TraceContext::from_traceparent(header).unwrap();
         assert!(!ctx.sampled);
     }
@@ -275,13 +275,13 @@ mod tests {
 
     #[test]
     fn parse_invalid_traceparent_bad_trace_id() {
-        let header = "00-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ-00f067aa0ba902b7-01";
+        let header = "00-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ-00f067aa0bb902b7-01";
         assert!(TraceContext::from_traceparent(header).is_err());
     }
 
     #[test]
     fn parse_invalid_traceparent_zero_trace_id() {
-        let header = "00-00000000000000000000000000000000-00f067aa0ba902b7-01";
+        let header = "00-00000000000000000000000000000000-00f067aa0bb902b7-01";
         assert!(TraceContext::from_traceparent(header).is_err());
     }
 
@@ -294,12 +294,12 @@ mod tests {
     #[test]
     fn display_shows_traceparent_format() {
         let ctx = TraceContext::from_traceparent(
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0bb902b7-01",
         )
         .unwrap();
         assert_eq!(
             ctx.to_string(),
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0bb902b7-01"
         );
     }
 
@@ -323,13 +323,13 @@ mod tests {
 
     #[test]
     fn version_ff_is_rejected() {
-        let header = "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let header = "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0bb902b7-01";
         assert!(TraceContext::from_traceparent(header).is_err());
     }
 
     #[test]
     fn from_str_works_same_as_from_traceparent() {
-        let header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0bb902b7-01";
         let a = TraceContext::from_traceparent(header).unwrap();
         let b: TraceContext = header.parse().unwrap();
         assert_eq!(a, b);

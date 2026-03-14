@@ -300,7 +300,7 @@ mod tests {
         SHOULD_PANIC.store(false, Ordering::Relaxed);
 
         // After poisoning, all operations must recover without panicking.
-        assert!(registry.len() >= 1);
+        assert!(!registry.is_empty());
         let _ = registry.stats();
         registry.clear();
         assert!(registry.is_empty());

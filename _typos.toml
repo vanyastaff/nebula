@@ -1,5 +1,12 @@
 # https://github.com/crate-ci/typos/blob/master/docs/reference.md
 
+[default]
+# Ignore identifiers that are pure hex strings (e.g. trace/span IDs, SHA hashes).
+# These are data, not prose, so spell-checking them causes false positives.
+extend-ignore-identifiers-re = [
+    "^[0-9a-fA-F]+$",
+]
+
 [default.extend-words]
 Hashi = "Hashi"
 RTO = "RTO"
