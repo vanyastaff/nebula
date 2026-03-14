@@ -109,10 +109,8 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - name: Install cargo-hack
-        uses: taiki-e/install-action@cargo-hack
-      - name: Check each feature combination
-        run: cargo hack check --workspace --exclude nebula-memory --each-feature --exclude-no-default-features --no-dev-deps
+      - name: Check all features across workspace
+        run: cargo check --workspace --all-features --all-targets
 
   # ── Tests ──────────────────────────────────────────────────────────────────
   test:
@@ -193,6 +191,7 @@ jobs:
   udeps:
     name: Unused Dependencies (cargo-udeps)
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5

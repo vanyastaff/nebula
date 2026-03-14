@@ -98,23 +98,23 @@ impl Resource for SlowResource {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Clonable resource (for ResourceHealthAdapter)
+// Cloneable resource (for ResourceHealthAdapter)
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-struct ClonableResource;
+struct CloneableResource;
 
-impl Resource for ClonableResource {
+impl Resource for CloneableResource {
     type Config = TestConfig;
     type Instance = String;
     fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
         nebula_resource::metadata::ResourceMetadata::from_key(
-            ResourceKey::try_from("clonable").expect("valid key"),
+            ResourceKey::try_from("cloneable").expect("valid key"),
         )
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
-        Ok("clonable-instance".to_string())
+        Ok("cloneable-instance".to_string())
     }
 }
 
@@ -254,10 +254,10 @@ async fn deregister_stops_health_monitoring() {
         .build();
 
     manager
-        .register(ClonableResource, TestConfig, pool_config())
+        .register(CloneableResource, TestConfig, pool_config())
         .expect("register");
 
-    let key = ResourceKey::try_from("clonable").expect("valid resource key");
+    let key = ResourceKey::try_from("cloneable").expect("valid resource key");
 
     // Start health monitoring
     manager.start_health_monitoring(key.as_str(), AlwaysHealthy);
@@ -281,7 +281,7 @@ async fn deregister_stops_health_monitoring() {
     let all_health = manager.health_checker().get_all_health();
     let matching: Vec<_> = all_health
         .iter()
-        .filter(|r| r.resource_id == "clonable")
+        .filter(|r| r.resource_id == "cloneable")
         .collect();
     assert!(
         matching.is_empty(),
@@ -355,10 +355,10 @@ async fn start_health_monitoring_convenience() {
         .build();
 
     manager
-        .register(ClonableResource, TestConfig, pool_config())
+        .register(CloneableResource, TestConfig, pool_config())
         .expect("register");
 
-    let key = ResourceKey::try_from("clonable").expect("valid resource key");
+    let key = ResourceKey::try_from("cloneable").expect("valid resource key");
 
     // Use convenience method
     manager.start_health_monitoring(key.as_str(), AlwaysHealthy);
@@ -369,7 +369,7 @@ async fn start_health_monitoring_convenience() {
     let records = manager.health_checker().get_all_health();
     let matching: Vec<_> = records
         .iter()
-        .filter(|r| r.resource_id == "clonable")
+        .filter(|r| r.resource_id == "cloneable")
         .collect();
     assert!(
         !matching.is_empty(),
@@ -393,10 +393,10 @@ async fn start_health_monitoring_convenience() {
 
 #[tokio::test]
 async fn resource_health_adapter_probe_cycle() {
-    let adapter = ResourceHealthAdapter::new(ClonableResource, TestConfig, Scope::Global);
+    let adapter = ResourceHealthAdapter::new(CloneableResource, TestConfig, Scope::Global);
 
     let status = adapter.health_check().await.expect("health check");
-    assert!(status.is_usable(), "ClonableResource should be healthy");
+    assert!(status.is_usable(), "CloneableResource should be healthy");
     assert!(
         status.state == nebula_resource::HealthState::Healthy,
         "state should be Healthy"

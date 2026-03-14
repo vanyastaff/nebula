@@ -58,7 +58,7 @@ shutdown:
 ### Known Bottlenecks
 
 - lock contention in shared pool/cache paths under high concurrency
-- mis-sized pools or budgets causing avoidable `PoolExhausted`/`BudgetExceeded`
+- improperly sized pools or budgets causing avoidable `PoolExhausted`/`BudgetExceeded`
 
 ### Key Internal Invariants
 

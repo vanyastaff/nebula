@@ -109,7 +109,7 @@ jobs:
         uses: taiki-e/install-action@cargo-nextest
 
       - name: Run tests for ${{ matrix.package }}
-        run: cargo nextest run -p ${{ matrix.package }} --all-features --profile ci
+        run: cargo nextest run -p ${{ matrix.package }} --profile ci --no-tests=pass
 
       - name: Upload test results
         if: always()

@@ -2,6 +2,7 @@
 
 [default.extend-words]
 Hashi = "Hashi"
+RTO = "RTO"
 
 [files]
 extend-exclude = [

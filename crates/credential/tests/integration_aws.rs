@@ -305,11 +305,7 @@ async fn test_list() {
 
     // Verify all IDs are present
     for id in &ids {
-        assert!(
-            listed_ids.contains(id),
-            "Expected {} to be in list",
-            id.as_str()
-        );
+        assert!(listed_ids.contains(id), "Expected {id} to be in list");
     }
 
     // Cleanup
