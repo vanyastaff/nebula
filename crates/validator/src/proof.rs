@@ -201,7 +201,7 @@ mod tests {
     fn deref_works() {
         let v = Validated::new("hello".to_string(), &min_length(1)).unwrap();
         // Deref to &String, then auto-deref to &str
-        assert!(v.starts_with("hel"));
+        assert!(v.starts_with("hello"));
     }
 
     #[test]
