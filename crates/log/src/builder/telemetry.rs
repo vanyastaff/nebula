@@ -4,11 +4,14 @@
 ///
 /// This handles:
 /// - Sentry initialization and guard storage
-/// - log crate bridge setup (tracing_log)
+///
+/// Note: the `log` crate bridge (`tracing_log::LogTracer`) is wired up
+/// automatically by `SubscriberInitExt::try_init()` via the `tracing-log`
+/// feature of `tracing-subscriber`, so it must **not** be initialised here
+/// to avoid a double-init conflict.
 ///
 /// # Feature flags
 /// - `sentry`: Enables Sentry integration
-/// - `log-compat`: Enables log crate bridge
 pub(super) fn init_telemetry(#[allow(unused_variables)] inner: &mut super::Inner) {
     // Initialize Sentry if enabled
     #[cfg(feature = "sentry")]
@@ -16,12 +19,6 @@ pub(super) fn init_telemetry(#[allow(unused_variables)] inner: &mut super::Inner
         if let Some(guard) = crate::telemetry::sentry::init() {
             inner.sentry_guard = Some(guard);
         }
-    }
-
-    // Bridge log crate if enabled
-    #[cfg(feature = "log-compat")]
-    {
-        let _ = tracing_log::LogTracer::init();
     }
 }
 

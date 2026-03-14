@@ -58,7 +58,8 @@
 //!     field: "status".into(),
 //!     value: json!("active"),
 //! };
-//! let values = json!({ "status": "active" });
+//! let values: std::collections::HashMap<String, serde_json::Value> =
+//!     serde_json::from_value(json!({ "status": "active" })).unwrap();
 //! assert!(rule.evaluate(&values));
 //! ```
 //!

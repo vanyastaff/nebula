@@ -51,7 +51,8 @@
 //!
 //! // Context predicate — checks a sibling field
 //! let rule = Rule::Eq { field: "status".into(), value: json!("active") };
-//! let ctx = json!({ "status": "active" });
+//! let ctx: std::collections::HashMap<String, serde_json::Value> =
+//!     serde_json::from_value(json!({ "status": "active" })).unwrap();
 //! assert!(rule.evaluate(&ctx));
 //!
 //! // Logical combinator — compose rules

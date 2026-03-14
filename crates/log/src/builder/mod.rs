@@ -82,7 +82,10 @@ macro_rules! init_subscriber {
             layers.push(otel);
         }
         attach_sentry!(layers);
-        Registry::default().with(layers).init();
+        Registry::default()
+            .with(layers)
+            .try_init()
+            .map_err(|e| crate::core::LogError::Internal(e.to_string()))?;
     }};
 }
 

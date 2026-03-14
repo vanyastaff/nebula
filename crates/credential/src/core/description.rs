@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// ```
 /// use nebula_credential::core::CredentialDescription;
-/// use nebula_parameter::schema::{Field, Schema};
+/// use nebula_parameter::{Field, Schema};
 ///
 /// let properties = Schema::new()
 ///     .field(Field::text("client_id").with_label("Client ID").required())
