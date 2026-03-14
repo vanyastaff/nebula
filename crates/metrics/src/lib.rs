@@ -11,6 +11,7 @@
 //!   using those names
 //! - **[`snapshot`]** — Prometheus text-format export with `# HELP`, `# TYPE` metadata
 //!   and per-bucket histogram output
+//! - **[`prelude`]** — convenience re-exports for common types
 //!
 //! In-memory primitives (Counter, Gauge, Histogram) remain in `nebula-telemetry`; this crate
 //! adds naming convention, a thin adapter, and Prometheus text export.
@@ -18,6 +19,8 @@
 pub mod adapter;
 pub mod export;
 pub mod naming;
+/// Convenience re-exports.
+pub mod prelude;
 
 pub use adapter::TelemetryAdapter;
 pub use export::prometheus::{PrometheusExporter, content_type, snapshot};

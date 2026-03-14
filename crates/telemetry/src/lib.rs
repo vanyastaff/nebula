@@ -15,6 +15,7 @@
 //! - [`TraceContext`] — W3C trace context propagation (trace ID + span ID + sampling)
 //! - [`BufferedRecorder`] — background-buffered resource call recording with
 //!   pluggable [`RecordSink`]
+//! - [`prelude`] — convenience re-exports for common types
 //!
 //! Events are **projections**, not the source of truth; the execution store
 //! remains the single source of truth.
@@ -29,6 +30,8 @@ pub mod context;
 pub mod event;
 pub mod metrics;
 pub mod recorder;
+/// Convenience re-exports.
+pub mod prelude;
 pub mod service;
 pub mod trace;
 
@@ -44,19 +47,3 @@ pub use trace::{
     CallBody, CallPayload, CallRecord, CallStatus, DropReason, NoopRecorder, Recorder,
     ResourceUsageRecord,
 };
-
-// ── Prelude ──────────────────────────────────────────────────────────────────
-
-/// Common types for star-import (`use nebula_telemetry::prelude::*`).
-pub mod prelude {
-    pub use crate::context::{SpanId, TraceContext, TraceId};
-    pub use crate::event::{EventBus, ExecutionEvent};
-    pub use crate::metrics::{Counter, Gauge, Histogram, MetricsRegistry};
-    pub use crate::recorder::{
-        BufferedRecorder, BufferedRecorderConfig, LogSink, RecordEntry, RecordSink,
-    };
-    pub use crate::service::{
-        NoopTelemetry, ProductionTelemetry, ProductionTelemetryBuilder, TelemetryService,
-    };
-    pub use crate::trace::{CallRecord, NoopRecorder, Recorder, ResourceUsageRecord};
-}
