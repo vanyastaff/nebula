@@ -57,6 +57,9 @@
 //! - formats: `pretty`, `compact`, `json`, `logfmt`
 //! - writer backends: stderr/stdout/file, fanout with failure policy
 //! - rolling files: hourly/daily/size/size+retention
+//! - **runtime log-level reload** via [`ReloadHandle`] (set `reloadable: true`)
+//! - **config file watcher** for automatic reload (requires `async` feature)
+//! - async (non-blocking) file writers enabled by default
 //! - timing utilities and macros
 //! - observability hooks/events with typed event kinds
 //! - optional telemetry integrations: OpenTelemetry OTLP and Sentry
@@ -93,6 +96,8 @@
 //! - [`init_with`] for explicit [`Config`]
 //! - [`prelude`] for common imports
 //! - [`LoggerBuilder`] for builder-style initialization
+//! - [`ReloadHandle`] for runtime log-level changes
+//! - [`watch_config`] for automatic file-driven reload (requires `async`)
 //!
 //! ## Related API Surface
 //!
@@ -130,7 +135,9 @@ pub mod metrics;
 pub mod observability;
 
 // Public API
-pub use builder::{LoggerBuilder, LoggerGuard};
+pub use builder::{LoggerBuilder, LoggerGuard, ReloadHandle};
+#[cfg(feature = "async")]
+pub use builder::{WatcherGuard, watch_config, watch_config_with_interval};
 pub use config::{
     Config, DestinationFailurePolicy, Format, Level, ResolvedConfig, ResolvedSource, Rolling,
     WriterConfig,

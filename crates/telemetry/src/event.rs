@@ -13,6 +13,8 @@ use nebula_eventbus::ScopedEvent;
 use nebula_eventbus::SubscriptionScope;
 use serde::{Deserialize, Serialize};
 
+use crate::context::TraceContext;
+
 /// Execution lifecycle event.
 ///
 /// These events are emitted by the engine as executions progress.
@@ -25,6 +27,9 @@ pub enum ExecutionEvent {
         execution_id: String,
         /// The workflow identifier.
         workflow_id: String,
+        /// Optional W3C trace context for distributed tracing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_context: Option<TraceContext>,
     },
     /// A node within an execution has started.
     NodeStarted {
@@ -32,6 +37,9 @@ pub enum ExecutionEvent {
         execution_id: String,
         /// The node identifier.
         node_id: String,
+        /// Optional W3C trace context for distributed tracing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_context: Option<TraceContext>,
     },
     /// A node within an execution has completed.
     NodeCompleted {
@@ -41,6 +49,9 @@ pub enum ExecutionEvent {
         node_id: String,
         /// How long the node took.
         duration: Duration,
+        /// Optional W3C trace context for distributed tracing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_context: Option<TraceContext>,
     },
     /// A node within an execution has failed.
     NodeFailed {
@@ -50,6 +61,9 @@ pub enum ExecutionEvent {
         node_id: String,
         /// Error description.
         error: String,
+        /// Optional W3C trace context for distributed tracing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_context: Option<TraceContext>,
     },
     /// An execution has completed successfully.
     Completed {
@@ -57,6 +71,9 @@ pub enum ExecutionEvent {
         execution_id: String,
         /// Total execution duration.
         duration: Duration,
+        /// Optional W3C trace context for distributed tracing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_context: Option<TraceContext>,
     },
     /// An execution has failed.
     Failed {
@@ -64,12 +81,89 @@ pub enum ExecutionEvent {
         execution_id: String,
         /// Error description.
         error: String,
+        /// Optional W3C trace context for distributed tracing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_context: Option<TraceContext>,
     },
     /// An execution was cancelled.
     Cancelled {
         /// The execution identifier.
         execution_id: String,
+        /// Optional W3C trace context for distributed tracing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_context: Option<TraceContext>,
     },
+}
+
+impl ExecutionEvent {
+    /// Attach a trace context to this event, returning the updated event.
+    #[must_use]
+    pub fn with_trace(self, ctx: TraceContext) -> Self {
+        match self {
+            Self::Started {
+                execution_id,
+                workflow_id,
+                ..
+            } => Self::Started {
+                execution_id,
+                workflow_id,
+                trace_context: Some(ctx),
+            },
+            Self::NodeStarted {
+                execution_id,
+                node_id,
+                ..
+            } => Self::NodeStarted {
+                execution_id,
+                node_id,
+                trace_context: Some(ctx),
+            },
+            Self::NodeCompleted {
+                execution_id,
+                node_id,
+                duration,
+                ..
+            } => Self::NodeCompleted {
+                execution_id,
+                node_id,
+                duration,
+                trace_context: Some(ctx),
+            },
+            Self::NodeFailed {
+                execution_id,
+                node_id,
+                error,
+                ..
+            } => Self::NodeFailed {
+                execution_id,
+                node_id,
+                error,
+                trace_context: Some(ctx),
+            },
+            Self::Completed {
+                execution_id,
+                duration,
+                ..
+            } => Self::Completed {
+                execution_id,
+                duration,
+                trace_context: Some(ctx),
+            },
+            Self::Failed {
+                execution_id,
+                error,
+                ..
+            } => Self::Failed {
+                execution_id,
+                error,
+                trace_context: Some(ctx),
+            },
+            Self::Cancelled { execution_id, .. } => Self::Cancelled {
+                execution_id,
+                trace_context: Some(ctx),
+            },
+        }
+    }
 }
 
 impl ScopedEvent for ExecutionEvent {
@@ -88,7 +182,7 @@ impl ScopedEvent for ExecutionEvent {
             | Self::NodeFailed { execution_id, .. }
             | Self::Completed { execution_id, .. }
             | Self::Failed { execution_id, .. }
-            | Self::Cancelled { execution_id } => Some(execution_id),
+            | Self::Cancelled { execution_id, .. } => Some(execution_id),
         }
     }
 }
@@ -111,6 +205,7 @@ impl ScopedEvent for ExecutionEvent {
 /// bus.emit(ExecutionEvent::Started {
 ///     execution_id: "exec-1".into(),
 ///     workflow_id: "wf-1".into(),
+///     trace_context: None,
 /// });
 ///
 /// // In async context: let event = sub.recv().await;
@@ -190,6 +285,7 @@ mod tests {
         bus.emit(ExecutionEvent::Started {
             execution_id: "e1".into(),
             workflow_id: "w1".into(),
+            trace_context: None,
         });
         // With no subscribers, eventbus counts as dropped, not sent
         assert_eq!(bus.subscriber_count(), 0);
@@ -204,13 +300,15 @@ mod tests {
 
         bus.emit(ExecutionEvent::Cancelled {
             execution_id: "e1".into(),
+            trace_context: None,
         });
 
         let event = sub.try_recv().expect("should receive event");
         assert_eq!(
             event,
             ExecutionEvent::Cancelled {
-                execution_id: "e1".into()
+                execution_id: "e1".into(),
+                trace_context: None,
             }
         );
         assert_eq!(bus.total_emitted(), 1);
@@ -224,6 +322,7 @@ mod tests {
         bus.emit(ExecutionEvent::Completed {
             execution_id: "e1".into(),
             duration: Duration::from_secs(5),
+            trace_context: None,
         });
 
         let event = sub.recv().await.expect("should receive event");
@@ -231,6 +330,7 @@ mod tests {
             ExecutionEvent::Completed {
                 execution_id,
                 duration,
+                ..
             } => {
                 assert_eq!(execution_id, "e1");
                 assert_eq!(duration, Duration::from_secs(5));
@@ -248,6 +348,7 @@ mod tests {
         bus.emit(ExecutionEvent::Started {
             execution_id: "e1".into(),
             workflow_id: "w1".into(),
+            trace_context: None,
         });
 
         assert!(sub1.try_recv().is_some());
@@ -275,17 +376,21 @@ mod tests {
             ExecutionEvent::Started {
                 execution_id: "e1".into(),
                 workflow_id: "w1".into(),
+                trace_context: None,
             },
             ExecutionEvent::Completed {
                 execution_id: "e1".into(),
                 duration: Duration::from_millis(1500),
+                trace_context: None,
             },
             ExecutionEvent::Failed {
                 execution_id: "e1".into(),
                 error: "timeout".into(),
+                trace_context: None,
             },
             ExecutionEvent::Cancelled {
                 execution_id: "e1".into(),
+                trace_context: None,
             },
         ];
 
@@ -304,10 +409,12 @@ mod tests {
         let _ = bus.emit(ExecutionEvent::NodeStarted {
             execution_id: "exec-2".into(),
             node_id: "n2".into(),
+            trace_context: None,
         });
         let _ = bus.emit(ExecutionEvent::NodeStarted {
             execution_id: "exec-1".into(),
             node_id: "n1".into(),
+            trace_context: None,
         });
 
         let event = sub.recv().await.expect("should receive scoped event");
@@ -315,7 +422,8 @@ mod tests {
             event,
             ExecutionEvent::NodeStarted {
                 execution_id,
-                node_id
+                node_id,
+                ..
             } if execution_id == "exec-1" && node_id == "n1"
         ));
     }

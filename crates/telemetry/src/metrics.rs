@@ -127,11 +127,34 @@ impl Histogram {
     /// Sum of all observations.
     #[must_use]
     pub fn sum(&self) -> f64 {
-        self.observations
+        let s: f64 = self
+            .observations
             .read()
             .expect("histogram lock poisoned")
             .iter()
-            .sum()
+            .sum();
+        // Normalize negative zero to positive zero for display consistency.
+        if s == 0.0 { 0.0 } else { s }
+    }
+
+    /// Count observations that fall at or below each boundary.
+    ///
+    /// Returns a `Vec<(f64, u64)>` where each tuple is `(upper_bound, cumulative_count)`.
+    /// Boundaries are sorted ascending. Counts are cumulative (each bucket includes
+    /// all observations from previous buckets).
+    #[must_use]
+    pub fn bucket_counts(&self, boundaries: &[f64]) -> Vec<(f64, u64)> {
+        let obs = self.observations.read().expect("histogram lock poisoned");
+        let mut sorted_bounds: Vec<f64> = boundaries.to_vec();
+        sorted_bounds.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        sorted_bounds
+            .iter()
+            .map(|&bound| {
+                let count = obs.iter().filter(|&&v| v <= bound).count() as u64;
+                (bound, count)
+            })
+            .collect()
     }
 }
 

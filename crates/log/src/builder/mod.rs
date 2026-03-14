@@ -10,9 +10,13 @@ mod format;
 #[macro_use]
 mod telemetry;
 mod reload;
+#[cfg(feature = "async")]
+pub mod watcher;
 
 // Re-export public types
 pub use reload::ReloadHandle;
+#[cfg(feature = "async")]
+pub use watcher::{WatcherGuard, watch_config, watch_config_with_interval};
 
 // External dependencies
 use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt, util::SubscriberInitExt};
@@ -220,6 +224,25 @@ impl LoggerBuilder {
 }
 
 impl LoggerGuard {
+    /// Returns the reload handle if the logger was configured as reloadable.
+    ///
+    /// Returns `None` when [`Config::reloadable`] was `false` (the default).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let guard = nebula_log::init_with(Config { reloadable: true, ..Config::default() })?;
+    /// if let Some(handle) = guard.reload_handle() {
+    ///     handle.reload("info,nebula_engine=debug,hyper=warn")?;
+    /// }
+    /// ```
+    #[must_use]
+    pub fn reload_handle(&self) -> Option<&ReloadHandle> {
+        self.inner
+            .as_ref()
+            .and_then(|inner| inner.reload_handle.as_ref())
+    }
+
     #[cfg(test)]
     pub(crate) fn noop() -> Self {
         Self { inner: None }
@@ -242,5 +265,16 @@ impl Drop for LoggerGuard {
 
             // Remaining fields (file guards, sentry guard, reload handle) drop here
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn noop_guard_has_no_reload_handle() {
+        let guard = LoggerGuard::noop();
+        assert!(guard.reload_handle().is_none());
     }
 }

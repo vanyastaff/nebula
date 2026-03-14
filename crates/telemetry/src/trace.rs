@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 use nebula_core::ResourceKey;
 
+use crate::context::TraceContext;
+
 // ---------------------------------------------------------------------------
 // DropReason
 // ---------------------------------------------------------------------------
@@ -74,6 +76,8 @@ pub struct CallRecord {
     pub response: Option<CallPayload>,
     /// Extra key-value (e.g. `status_code`, `chat_id`, `row_count`).
     pub metadata: HashMap<String, String>,
+    /// Optional trace context for correlating this call with a distributed trace.
+    pub trace_context: Option<TraceContext>,
 }
 
 /// Success or error outcome of a call.
@@ -174,6 +178,7 @@ mod tests {
             request: None,
             response: None,
             metadata: HashMap::new(),
+            trace_context: None,
         };
         assert_eq!(record.operation, "test_op");
         assert!(record.request.is_none());
@@ -231,6 +236,7 @@ mod tests {
             request: None,
             response: None,
             metadata: HashMap::new(),
+            trace_context: None,
         };
         assert_eq!(record.duration, Duration::ZERO);
         assert_eq!(record.duration.as_secs(), 0);
@@ -376,6 +382,7 @@ mod tests {
             request: None,
             response: None,
             metadata: HashMap::new(),
+            trace_context: None,
         };
         // Should not panic
         recorder.record_call(record);

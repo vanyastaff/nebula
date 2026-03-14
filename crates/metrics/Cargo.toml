@@ -16,19 +16,6 @@ nebula-eventbus = { path = "../eventbus" }
 nebula-telemetry = { path = "../telemetry" }
 thiserror = { workspace = true }
 
-[features]
-default = []
-# Prometheus text format export and /metrics endpoint (Phase 3)
-prometheus = ["dep:metrics", "dep:metrics-exporter-prometheus"]
-
-[dependencies.metrics]
-workspace = true
-optional = true
-
-[dependencies.metrics-exporter-prometheus]
-workspace = true
-optional = true
-
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 pretty_assertions = { workspace = true }

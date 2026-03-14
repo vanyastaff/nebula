@@ -35,6 +35,9 @@ pub struct ConfigBuilder {
     /// Whether to fail on missing optional sources
     fail_on_missing: bool,
 
+    /// Whether to interpolate environment variable references in loaded values
+    interpolation: bool,
+
     /// Environment parsing strategy (applied for default loader construction).
     #[cfg(feature = "env")]
     env_parse_mode: EnvParseMode,
@@ -52,6 +55,7 @@ impl ConfigBuilder {
             hot_reload: false,
             auto_reload_interval: None,
             fail_on_missing: false,
+            interpolation: true,
             #[cfg(feature = "env")]
             env_parse_mode: EnvParseMode::Permissive,
         }
@@ -147,6 +151,16 @@ impl ConfigBuilder {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_env_strict_parsing(self) -> Self {
         self.with_env_parse_mode(EnvParseMode::Strict)
+    }
+
+    /// Enable or disable environment variable interpolation.
+    ///
+    /// When enabled (the default), `${VAR}` and `${VAR:-default}` references in
+    /// string values are resolved from the process environment after loading.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_interpolation(mut self, enabled: bool) -> Self {
+        self.interpolation = enabled;
+        self
     }
 
     /// Validate builder configuration
@@ -246,6 +260,12 @@ impl ConfigBuilder {
         if let Some(ref validator) = self.validator {
             nebula_log::debug!("Validating initial configuration");
             validator.validate(&merged_data).await?;
+        }
+
+        // Interpolate environment variable references
+        if self.interpolation {
+            merged_data = crate::interpolation::interpolate(&merged_data)?;
+            nebula_log::debug!("interpolation pass complete for merged config");
         }
 
         // Create configuration
