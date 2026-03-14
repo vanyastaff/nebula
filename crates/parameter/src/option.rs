@@ -36,7 +36,10 @@ impl SelectOption {
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum OptionSource {
     /// Options defined inline in the parameter schema.
-    Static { options: Vec<SelectOption> },
+    Static {
+        /// The available options.
+        options: Vec<SelectOption>,
+    },
 
     /// Options loaded at runtime by a named provider.
     Dynamic {

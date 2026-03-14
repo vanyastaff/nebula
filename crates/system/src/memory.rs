@@ -113,6 +113,16 @@ pub use crate::utils::format_bytes_usize as format_bytes;
 // Memory management functions (only with memory feature)
 #[cfg(feature = "memory")]
 /// Low-level memory management helpers backed by the `region` crate.
+///
+/// # Known Limitations
+///
+/// - **`allocate` / `free` are stub functions**: `allocate` wraps `region::alloc` but
+///   `free` **always returns `Err("not supported")`** because the `region` crate uses
+///   RAII guards for memory lifecycle management — manual deallocation is not supported.
+///   This module exists as a placeholder for future WASM memory management hooks;
+///   use standard Rust allocators (`Box`, `Vec`, etc.) for general-purpose allocation.
+/// - **`MemoryRegion`** is a data-only descriptor; it does not represent a live OS
+///   allocation handle. There is no `release()` method on this type.
 pub mod management {
     use super::{MemoryProtection, SystemError, SystemResult};
 

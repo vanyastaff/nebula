@@ -9,8 +9,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
 use serde_json::Value;
 
+use nebula_parameter::values::FieldValues;
 use nebula_parameter::{Field, Schema};
-use nebula_parameter::values::ParameterValues;
 
 use crate::core::result::{
     DisplayData, InitializeResult, InteractionRequest, PartialState, UserInput,
@@ -55,7 +55,7 @@ impl FlowProtocol for OAuth2Protocol {
 
     async fn initialize(
         config: &Self::Config,
-        values: &ParameterValues,
+        values: &FieldValues,
         _ctx: &mut CredentialContext,
     ) -> Result<InitializeResult<Self::State>, CredentialError> {
         let client_id = extract_required(values, "client_id")?;
@@ -160,10 +160,7 @@ impl FlowProtocol for OAuth2Protocol {
 // ── Private helpers ──────────────────────────────────────────────────────────
 
 /// Extract a required string parameter, returning a validation error if missing.
-fn extract_required<'a>(
-    values: &'a ParameterValues,
-    key: &str,
-) -> Result<&'a str, CredentialError> {
+fn extract_required<'a>(values: &'a FieldValues, key: &str) -> Result<&'a str, CredentialError> {
     values
         .get_string(key)
         .ok_or_else(|| CredentialError::Validation {
@@ -622,7 +619,7 @@ mod tests {
             .scopes(["read"])
             .build();
 
-        let mut values = ParameterValues::new();
+        let mut values = FieldValues::new();
         values.set("client_id", serde_json::json!("my_client"));
         values.set("client_secret", serde_json::json!("my_secret"));
 
@@ -651,7 +648,7 @@ mod tests {
             .token_url("https://example.com/token")
             .build();
 
-        let values = ParameterValues::new(); // empty
+        let values = FieldValues::new(); // empty
         let mut ctx = CredentialContext::new("test");
         let result = OAuth2Protocol::initialize(&config, &values, &mut ctx).await;
         assert!(result.is_err());

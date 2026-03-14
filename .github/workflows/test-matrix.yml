@@ -1,6 +1,9 @@
 name: Test Matrix
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -11,24 +14,32 @@ jobs:
       fail-fast: false
       matrix:
         package:
-          - nebula-core
-          - nebula-log
           - nebula-action
-          - nebula-expression
-          - nebula-credential
-          - nebula-config
-          - nebula-storage
-          - nebula-engine
-          - nebula-runtime
-          - nebula-resource
-          - nebula-memory
-          - nebula-system
-          - nebula-validator
-          - nebula-telemetry
-          - nebula-parameter
-          - nebula-workflow
           - nebula-api
-          - nebula-app
+          - nebula-auth
+          - nebula-config
+          - nebula-core
+          - nebula-credential
+          - nebula-engine
+          - nebula-eventbus
+          - nebula-execution
+          - nebula-expression
+          - nebula-log
+          - nebula-macros
+          - nebula-memory
+          - nebula-metrics
+          - nebula-parameter
+          - nebula-plugin
+          - nebula-resilience
+          - nebula-resource
+          - nebula-runtime
+          - nebula-sdk
+          - nebula-storage
+          - nebula-system
+          - nebula-telemetry
+          - nebula-validator
+          - nebula-webhook
+          - nebula-workflow
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -7,6 +7,19 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// Process information
+///
+/// # Known Limitations
+///
+/// Several fields in `ProcessInfo` are not populated due to performance or portability
+/// constraints:
+///
+/// - **`cmd: Vec::new()`** — not populated; `sysinfo` argument parsing is per-process and
+///   expensive. Enable explicitly if needed with a targeted `refresh_processes` call.
+/// - **`environ: HashMap::new()`** — skipped for security: environment variables can be
+///   large and may contain sensitive values. Add an opt-in feature flag if needed.
+/// - **`thread_count: 1`** — hardcoded; `sysinfo` 0.37 does not expose thread count
+///   portably across all platforms.
+/// - **`uid: None, gid: None`** — Unix-only fields; always `None` on Windows.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ProcessInfo {

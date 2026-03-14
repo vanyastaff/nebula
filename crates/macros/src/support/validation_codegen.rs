@@ -276,12 +276,27 @@ pub fn generate_regex_validator_check(
 
 pub fn built_in_string_validator_flags() -> Vec<(&'static str, TokenStream2)> {
     vec![
-        ("not_empty", quote!(::nebula_validator::validators::not_empty())),
-        ("alphanumeric", quote!(::nebula_validator::validators::alphanumeric())),
-        ("alphabetic", quote!(::nebula_validator::validators::alphabetic())),
+        (
+            "not_empty",
+            quote!(::nebula_validator::validators::not_empty()),
+        ),
+        (
+            "alphanumeric",
+            quote!(::nebula_validator::validators::alphanumeric()),
+        ),
+        (
+            "alphabetic",
+            quote!(::nebula_validator::validators::alphabetic()),
+        ),
         ("numeric", quote!(::nebula_validator::validators::numeric())),
-        ("lowercase", quote!(::nebula_validator::validators::lowercase())),
-        ("uppercase", quote!(::nebula_validator::validators::uppercase())),
+        (
+            "lowercase",
+            quote!(::nebula_validator::validators::lowercase()),
+        ),
+        (
+            "uppercase",
+            quote!(::nebula_validator::validators::uppercase()),
+        ),
         ("email", quote!(::nebula_validator::validators::email())),
         ("url", quote!(::nebula_validator::validators::url())),
         ("ipv4", quote!(::nebula_validator::validators::ipv4())),

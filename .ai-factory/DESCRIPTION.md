@@ -18,6 +18,10 @@ Nebula is a modular, type-safe workflow automation engine written in Rust. It mo
 - **Frontend/Desktop:** Tauri v2 + React + TypeScript (Vite)
 - **Integrations:** MCP servers, plugin-based extension system
 
+## Architecture
+See `.ai-factory/ARCHITECTURE.md` for detailed architecture guidelines.
+Pattern: Layered Modular Monolith (Cargo Workspace)
+
 ## Architecture Notes
 - Cargo workspace with layered crate architecture (core, cross-cutting, business, execution, infrastructure, API)
 - One-way dependency direction is enforced and documented

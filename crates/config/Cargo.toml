@@ -45,3 +45,8 @@ dashmap = { workspace = true }
 # Internal crates
 nebula-log = { path = "../log" }
 nebula-validator = { path = "../validator" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }

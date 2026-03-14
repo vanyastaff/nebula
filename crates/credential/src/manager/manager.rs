@@ -171,7 +171,7 @@ impl CredentialManager {
         &self,
         id: &CredentialId,
         description: &crate::core::CredentialDescription,
-        values: &nebula_parameter::values::ParameterValues,
+        values: &nebula_parameter::values::FieldValues,
         data: EncryptedData,
         metadata: CredentialMetadata,
         context: &CredentialContext,
@@ -534,7 +534,7 @@ impl CredentialManager {
     pub async fn create(
         &self,
         type_id: &str,
-        input: &nebula_parameter::values::ParameterValues,
+        input: &nebula_parameter::values::FieldValues,
         context: &CredentialContext,
     ) -> ManagerResult<crate::core::result::CreateResult> {
         use crate::core::result::CreateResult;

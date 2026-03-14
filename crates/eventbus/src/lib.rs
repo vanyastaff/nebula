@@ -10,7 +10,7 @@
 //!
 //! ## Quick Start
 //!
-//! ```rust
+//! ```no_run
 //! use nebula_eventbus::EventBus;
 //!
 //! #[derive(Clone)]
@@ -18,14 +18,68 @@
 //!     id: u64,
 //! }
 //!
-//! let bus = EventBus::<MyEvent>::new(64);
-//! let mut sub = bus.subscribe();
+//! #[tokio::main]
+//! async fn main() {
+//!     let bus = EventBus::<MyEvent>::new(64);
+//!     let mut sub = bus.subscribe();
 //!
-//! let outcome = bus.emit(MyEvent { id: 1 });
-//! assert!(outcome.is_sent());
-//! let event = sub.try_recv().expect("event must be available");
-//! assert_eq!(event.id, 1);
+//!     let outcome = bus.emit(MyEvent { id: 1 });
+//!     assert!(outcome.is_sent());
+//!     let event = sub.try_recv().expect("event must be available");
+//!     assert_eq!(event.id, 1);
+//! }
 //! ```
+//!
+//! ## Subscriber Lifecycle
+//!
+//! ### Slow Subscribers and Lag
+//!
+//! When a subscriber is slow relative to the emit rate, it may fall behind **buffer_size** events.
+//! Upon calling [`recv()`](crate::Subscriber::recv) or [`try_recv()`](crate::Subscriber::try_recv),
+//! the subscriber automatically skips lagged events and re-positions to the latest, allowing
+//! the producer to continue unblocked.
+//!
+//! **Monitoring lag:** Use [`lagged_count()`](crate::Subscriber::lagged_count) to track how many
+//! events were skipped:
+//!
+//! ```no_run
+//! use nebula_eventbus::EventBus;
+//! # #[derive(Clone)]
+//! # struct Event(u64);
+//! # #[tokio::main]
+//! # async fn main() {
+//! # let bus = EventBus::<Event>::new(10);
+//! let mut sub = bus.subscribe();
+//! // ... emit 20 events with a slow subscriber ...
+//! if let Some(_) = sub.recv().await {
+//!     if sub.lagged_count() > 0 {
+//!         println!("Fell behind by {} events", sub.lagged_count());
+//!     }
+//! }
+//! # }
+//! ```
+//!
+//! ### Buffer Overflow Recovery
+//!
+//! Subscribers do not reconnect or restart when they lag. Instead, they automatically
+//! re-position to the most recent event and continue receiving. This is transparent
+//! to the subscriber logic.
+//!
+//! ### Closure and Drop
+//!
+//! When a [`Subscriber`](crate::Subscriber) is dropped, it automatically decrements the
+//! subscriber count. No explicit close call is required. Use [`is_closed()`](crate::Subscriber::is_closed)
+//! to check if the underlying bus has been dropped.
+//!
+//! ## Architecture Note: Persistence
+//!
+//! EventBus is **in-memory only** in Phase 2. This means:
+//! - Events are not persisted to storage.
+//! - Subscribers will lose events if they run out of buffer space or disconnect.
+//! - Persistence and durability are planned for Phase 3.
+//!
+//! For reliable event delivery in production, consider implementing persistence at the
+//! application layer or waiting for Phase 3 enhancements.
 //!
 //! ## Core Types
 //!

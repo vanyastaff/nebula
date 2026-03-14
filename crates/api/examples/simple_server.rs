@@ -18,9 +18,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-
-    let state = AppState::new(config, workflow_repo, execution_repo);
     let api_config = ApiConfig::default();
+
+    let state = AppState::new(
+        config,
+        workflow_repo,
+        execution_repo,
+        api_config.jwt_secret.clone(),
+    );
     let app = app::build_app(state, &api_config);
 
     app::serve(app, api_config.bind_address).await

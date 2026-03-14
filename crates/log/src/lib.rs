@@ -141,6 +141,10 @@ pub use timing::{Timed, Timer, TimerGuard};
 // Re-export core types
 pub use core::{LogError, LogResult, LogResultExt};
 
+// Re-export telemetry config when the feature is enabled
+#[cfg(feature = "telemetry")]
+pub use config::TelemetryConfig;
+
 /// Prelude for common imports
 pub mod prelude {
     pub use crate::{

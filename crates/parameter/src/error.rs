@@ -6,56 +6,98 @@
 pub enum ParameterError {
     /// Parameter key does not meet naming rules.
     #[error("invalid key format `{key}`: {reason}")]
-    InvalidKeyFormat { key: String, reason: String },
+    InvalidKeyFormat {
+        /// The offending key string.
+        key: String,
+        /// Why the key is invalid.
+        reason: String,
+    },
 
     /// Parameter with the given key was not found.
     #[error("parameter not found: `{key}`")]
-    NotFound { key: String },
+    NotFound {
+        /// The missing key.
+        key: String,
+    },
 
     /// A parameter with the given key already exists.
     #[error("parameter already exists: `{key}`")]
-    AlreadyExists { key: String },
+    AlreadyExists {
+        /// The duplicate key.
+        key: String,
+    },
 
     /// Value type does not match the expected parameter type.
     #[error("invalid type for `{key}`: expected {expected_type}, got {actual_details}")]
     InvalidType {
+        /// The parameter key.
         key: String,
+        /// The type that was expected.
         expected_type: String,
+        /// Description of the actual value type.
         actual_details: String,
     },
 
     /// Value is present but invalid for the parameter's constraints.
     #[error("invalid value for `{key}`: {reason}")]
-    InvalidValue { key: String, reason: String },
+    InvalidValue {
+        /// The parameter key.
+        key: String,
+        /// Why the value is invalid.
+        reason: String,
+    },
 
     /// A required parameter has no value.
     #[error("missing value for required parameter `{key}`")]
-    MissingValue { key: String },
+    MissingValue {
+        /// The missing parameter key.
+        key: String,
+    },
 
     /// Input contains a field that is not defined by the schema.
     #[error("unknown field `{key}`")]
-    UnknownField { key: String },
+    UnknownField {
+        /// The unrecognised field key.
+        key: String,
+    },
 
     /// A declarative validation rule failed.
     #[error("validation failed for `{key}`: {reason}")]
-    ValidationError { key: String, reason: String },
+    ValidationError {
+        /// The parameter key that failed validation.
+        key: String,
+        /// Human-readable failure reason.
+        reason: String,
+    },
 
     /// A declarative validation rule failed with structured validator details.
     #[error("validation failed for `{key}` [{code}]: {reason}")]
     ValidationIssue {
+        /// The parameter key that failed validation.
         key: String,
+        /// Machine-readable error code.
         code: String,
+        /// Human-readable failure reason.
         reason: String,
+        /// Additional key-value context for the failure.
         params: Vec<(String, String)>,
     },
 
     /// Failed to deserialize a parameter value.
     #[error("deserialization failed for `{key}`: {error}")]
-    DeserializationError { key: String, error: String },
+    DeserializationError {
+        /// The parameter key that failed deserialization.
+        key: String,
+        /// The underlying error message.
+        error: String,
+    },
 
     /// Failed to serialize a parameter value.
     #[error("serialization failed: {error}")]
-    SerializationError { error: String },
+    SerializationError {
+        /// The underlying error message.
+        error: String,
+    },
 }
 
 impl ParameterError {

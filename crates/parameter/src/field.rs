@@ -23,6 +23,7 @@ pub enum Field {
     /// Free-form text field.
     Text {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
         /// Render as a multi-line textarea.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -31,6 +32,7 @@ pub enum Field {
     /// Numeric field.
     Number {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
         /// Restrict input to whole integers.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -48,11 +50,13 @@ pub enum Field {
     /// Boolean toggle field.
     Boolean {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
     },
     /// Select field with static or dynamic options.
     Select {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
         /// Option source (static inline list or dynamic provider).
         #[serde(flatten)]
@@ -75,6 +79,7 @@ pub enum Field {
     /// Nested object field containing ordered sub-fields.
     Object {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
         /// Ordered sub-field definitions.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -83,6 +88,7 @@ pub enum Field {
     /// Repeated field using an item template.
     List {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
         /// Template for each list item.
         item: Box<Field>,
@@ -96,6 +102,7 @@ pub enum Field {
     /// Discriminated-union field with named mode variants.
     Mode {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
         /// Available mode variants.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -107,11 +114,13 @@ pub enum Field {
     /// Hidden field: stored value with no visible editor.
     Hidden {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
     },
     /// Syntax-highlighted code editor field.
     Code {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
         /// Language hint for syntax highlighting (e.g. `"json"`, `"python"`).
         language: String,
@@ -119,26 +128,31 @@ pub enum Field {
     /// Colour picker field (emits a hex/rgb/hsl string).
     Color {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
     },
     /// Calendar date picker (emits an ISO 8601 date string).
     Date {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
     },
     /// Date-and-time picker (emits an ISO 8601 datetime string).
     DateTime {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
     },
     /// Wall-clock time picker (emits `HH:MM` or `HH:MM:SS`).
     Time {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
     },
     /// File attachment field.
     File {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
         /// MIME-type or extension filter (e.g. `"image/*"`, `".pdf"`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -153,6 +167,7 @@ pub enum Field {
     /// Field set whose sub-fields are resolved at runtime by a provider or inline loader.
     DynamicFields {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
         /// Provider key registered in the runtime registry.
         provider: String,
@@ -175,6 +190,7 @@ pub enum Field {
     /// Visual condition-builder field that emits a [`PredicateExpr`].
     Filter {
         #[serde(flatten)]
+        /// Shared field metadata (id, label, description, etc.).
         meta: FieldMetadata,
         /// Restrict available operators; `None` means allow all.
         #[serde(default, skip_serializing_if = "Option::is_none")]

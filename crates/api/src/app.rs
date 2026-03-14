@@ -6,17 +6,17 @@ use crate::{
     config::ApiConfig, middleware::security_headers::security_headers_middleware, routes,
     state::AppState,
 };
-use axum::{Router, response::Response};
+use axum::{Router, middleware, response::Response};
 use std::time::Duration;
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 
 /// Build the main application router with middleware
 pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
-    let routes = routes::create_routes();
+    let routes = routes::create_routes(state.clone(), config);
 
     // Build middleware stack (ServiceBuilder — сверху вниз)
-    let middleware = ServiceBuilder::new()
+    let middleware_stack = ServiceBuilder::new()
         // 1. Request tracing
         .layer(TraceLayer::new_for_http())
         // 2. Response compression (if enabled)
@@ -29,13 +29,10 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
         .layer(build_cors_layer(config));
 
     // Apply middleware to routes
-    // For high-load layers that can fail (timeout, load_shed),
-    // we use HandleErrorLayer to map errors to proper API responses.
     routes
-        .layer(middleware)
-        .layer(axum::middleware::from_fn(security_headers_middleware))
-        .layer(axum::middleware::from_fn(request_id_middleware))
-        .with_state(state)
+        .layer(middleware_stack)
+        .layer(middleware::from_fn(security_headers_middleware))
+        .layer(middleware::from_fn(request_id_middleware))
 }
 
 /// Request ID middleware

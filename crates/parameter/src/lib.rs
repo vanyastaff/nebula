@@ -77,9 +77,8 @@ pub use spec::{
     ModeVariant, UnknownFieldPolicy,
 };
 
-/// Common imports for working with parameters.
 pub mod prelude {
-    //! Common imports for parameter authors.
+    //! Common imports for working with parameters.
 
     pub use crate::conditions::Condition;
     pub use crate::error::ParameterError;

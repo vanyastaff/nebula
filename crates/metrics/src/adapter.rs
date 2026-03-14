@@ -158,6 +158,7 @@ fn clamp_usize_to_i64(value: usize) -> i64 {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::{i64, u64, usize};
 
     use nebula_eventbus::EventBusStats;
     use nebula_telemetry::metrics::MetricsRegistry;
@@ -196,5 +197,95 @@ mod tests {
         assert_eq!(adapter.eventbus_dropped().get(), 25);
         assert_eq!(adapter.eventbus_subscribers().get(), 3);
         assert_eq!(adapter.eventbus_drop_ratio_ppm().get(), 250_000);
+    }
+
+    #[test]
+    fn record_eventbus_stats_handles_zero_totals_and_default_values() {
+        let adapter = TelemetryAdapter::new(Arc::new(MetricsRegistry::new()));
+
+        let stats = EventBusStats {
+            sent_count: 0,
+            dropped_count: 0,
+            subscriber_count: 0,
+        };
+        tracing::debug!(
+            "record_eventbus_stats test: sent={} dropped={} ppm_expected={}",
+            stats.sent_count,
+            stats.dropped_count,
+            0
+        );
+        adapter.record_eventbus_stats(&stats);
+        assert_eq!(adapter.eventbus_sent().get(), 0);
+        assert_eq!(adapter.eventbus_dropped().get(), 0);
+        assert_eq!(adapter.eventbus_subscribers().get(), 0);
+        assert_eq!(adapter.eventbus_drop_ratio_ppm().get(), 0);
+
+        let default_stats = EventBusStats::default();
+        tracing::debug!(
+            "record_eventbus_stats test: sent={} dropped={} ppm_expected={}",
+            default_stats.sent_count,
+            default_stats.dropped_count,
+            0
+        );
+        adapter.record_eventbus_stats(&default_stats);
+        assert_eq!(adapter.eventbus_sent().get(), 0);
+        assert_eq!(adapter.eventbus_dropped().get(), 0);
+        assert_eq!(adapter.eventbus_subscribers().get(), 0);
+        assert_eq!(adapter.eventbus_drop_ratio_ppm().get(), 0);
+    }
+
+    #[test]
+    fn record_eventbus_stats_handles_full_drop_ratio_and_rounding() {
+        let adapter = TelemetryAdapter::new(Arc::new(MetricsRegistry::new()));
+
+        let full_drop = EventBusStats {
+            sent_count: 1_000_000,
+            dropped_count: 1_000_000,
+            subscriber_count: 42,
+        };
+        tracing::debug!(
+            "record_eventbus_stats test: sent={} dropped={} ppm_expected={}",
+            full_drop.sent_count,
+            full_drop.dropped_count,
+            1_000_000
+        );
+        adapter.record_eventbus_stats(&full_drop);
+        assert_eq!(adapter.eventbus_drop_ratio_ppm().get(), 500_000);
+
+        let fractional = EventBusStats {
+            sent_count: 3,
+            dropped_count: 1,
+            subscriber_count: 1,
+        };
+        tracing::debug!(
+            "record_eventbus_stats test: sent={} dropped={} ppm_expected={}",
+            fractional.sent_count,
+            fractional.dropped_count,
+            250_000
+        );
+        adapter.record_eventbus_stats(&fractional);
+        assert_eq!(adapter.eventbus_drop_ratio_ppm().get(), 250_000);
+    }
+
+    #[test]
+    fn record_eventbus_stats_clamps_large_values_to_i64_max() {
+        let adapter = TelemetryAdapter::new(Arc::new(MetricsRegistry::new()));
+
+        let stats = EventBusStats {
+            sent_count: u64::MAX,
+            dropped_count: 0,
+            subscriber_count: usize::MAX,
+        };
+        tracing::debug!(
+            "record_eventbus_stats test: sent={} dropped={} ppm_expected={}",
+            stats.sent_count,
+            stats.dropped_count,
+            0
+        );
+        adapter.record_eventbus_stats(&stats);
+
+        assert_eq!(adapter.eventbus_sent().get(), i64::MAX);
+        assert_eq!(adapter.eventbus_subscribers().get(), i64::MAX);
+        assert_eq!(adapter.eventbus_drop_ratio_ppm().get(), 0);
     }
 }

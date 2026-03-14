@@ -1,4 +1,16 @@
 //! Disk and filesystem information
+//!
+//! # Known Limitations
+//!
+//! - **`DiskStats` I/O counters** (`read_bytes`, `write_bytes`, `read_count`, `write_count`,
+//!   etc.) are always `Default::default()` (all zeros) when obtained via the `list()` path
+//!   because `sysinfo` does not expose I/O counters. Use `io_stats(device)` on Linux,
+//!   which reads directly from `/sys/block/<device>/stat`. On macOS and Windows,
+//!   `io_stats()` returns `None`.
+//! - **`detect_disk_type`** maps only `HDD` and `SSD`; `Network`, `Removable`, and
+//!   `RamDisk` variants of `sysinfo::DiskKind` all map to `DiskType::Unknown`.
+//! - **Workaround for I/O counters on Linux**: Read `/sys/block/*/stat` directly or use
+//!   `io_stats(device)` which already implements this path.
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};

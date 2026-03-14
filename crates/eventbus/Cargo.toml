@@ -18,6 +18,8 @@ tokio = { workspace = true, features = ["sync"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 pretty_assertions = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt", "ansi"] }
 
 [[bench]]
 name = "emit"
