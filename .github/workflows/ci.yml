@@ -55,6 +55,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets
 
+  feature-check:
+    name: Feature Matrix (cargo-hack)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+      - name: Check each feature combination (per crate)
+        run: cargo hack check --workspace --all-targets --each-feature --no-dev-deps
+
   test:
     name: Tests
     runs-on: ubuntu-latest
