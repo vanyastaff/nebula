@@ -164,8 +164,8 @@ let webhook_config = WebhookServerConfig {
 };
 
 let workers = vec![
-    WorkerStatus { id: "wrk-1".into(), status: "active".into(), queue_len: 2 },
-    WorkerStatus { id: "wrk-2".into(), status: "idle".into(), queue_len: 0 },
+  WorkerStatus { id: "worker-1".into(), status: "active".into(), queue_len: 2 },
+  WorkerStatus { id: "worker-2".into(), status: "idle".into(), queue_len: 0 },
 ];
 
 run(api_config, webhook_config, workers).await?;

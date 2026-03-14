@@ -108,7 +108,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
     let file_default_lit = LitStr::new(&file_default, struct_name.span());
     let dotenv_default_lit = LitStr::new(&dotenv_default, struct_name.span());
 
-    let loader_lits: Vec<LitStr> = loaders
+    let loader_literals: Vec<LitStr> = loaders
         .iter()
         .map(|loader| LitStr::new(loader, struct_name.span()))
         .collect();
@@ -569,7 +569,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
 
                 let profile = resolve_profile(profile_override, #profile_env, #profile_default_token);
                 let effective_prefix = #env_prefix_token;
-                let loaders: &[&str] = &[#(#loader_lits),*];
+                let loaders: &[&str] = &[#(#loader_literals),*];
 
                 for loader in loaders {
                     match *loader {

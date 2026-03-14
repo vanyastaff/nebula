@@ -92,9 +92,7 @@ pub fn uuid(
     _eval: &Evaluator,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
-    Err(
-        nebula_error::ExpressionError::expression_function_not_found(
-            "uuid (feature 'uuid' not enabled)",
-        ),
-    )
+    Err(ExpressionError::expression_function_not_found(
+        "uuid (feature 'uuid' not enabled)",
+    ))
 }

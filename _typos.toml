@@ -1,6 +1,7 @@
 # https://github.com/crate-ci/typos/blob/master/docs/reference.md
 
 [default.extend-words]
+Hashi = "Hashi"
 
 [files]
 extend-exclude = [

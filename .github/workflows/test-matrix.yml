@@ -117,5 +117,6 @@ jobs:
         with:
           name: test-results-${{ matrix.package }}
           path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
           retention-days: 14
 

@@ -8,6 +8,7 @@ use crate::builtins::BuiltinRegistry;
 use crate::context::EvaluationContext;
 use crate::error::{ExpressionErrorExt, ExpressionResult};
 use crate::policy::EvaluationPolicy;
+#[cfg(feature = "regex")]
 use parking_lot::Mutex;
 #[cfg(feature = "regex")]
 use regex::Regex;

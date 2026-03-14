@@ -25,7 +25,7 @@
                     │                 │ dequeue              │
                     │     ┌───────────┼───────────┐          │
                     │     ▼           ▼           ▼          │
-                    │  wrk-1       wrk-2       wrk-3  ...   │  tokio::spawn
+                    │  worker-1    worker-2    worker-3 ... │  tokio::spawn
                     │  (loop:      (loop:      (loop:       │
                     │   dequeue →   dequeue →   dequeue →   │
                     │   execute →   execute →   execute →    │
