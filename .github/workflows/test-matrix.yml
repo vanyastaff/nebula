@@ -3,8 +3,36 @@ name: Test Matrix
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "vision/**"
+      - ".ai-factory/**"
+      - ".agents/**"
+      - "LICENSE"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "vision/**"
+      - ".ai-factory/**"
+      - ".agents/**"
+      - "LICENSE"
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  RUST_BACKTRACE: short
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   select-matrix:
@@ -13,7 +41,7 @@ jobs:
     outputs:
       packages: ${{ steps.select.outputs.packages }}
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -65,18 +93,29 @@ jobs:
       matrix:
         package: ${{ fromJson(needs.select-matrix.outputs.packages) }}
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Install Rust
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo
+      - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
 
       - name: Run tests for ${{ matrix.package }}
-        run: cargo nextest run -p ${{ matrix.package }} --all-features
+        run: cargo nextest run -p ${{ matrix.package }} --all-features --profile ci
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.package }}
+          path: target/nextest/ci/junit.xml
+          retention-days: 14
 

@@ -1,0 +1,20 @@
+# nextest configuration
+# https://nexte.st/docs/configuration/
+
+[profile.default]
+# Use up to all available CPUs
+test-threads = "num-cpus"
+
+[profile.ci]
+# Retry flaky tests up to 2 times
+retries = 2
+# Treat tests running longer than 60s as slow
+slow-timeout = { period = "60s", terminate-after = 3 }
+# Status reporting
+status-level = "skip"
+final-status-level = "flaky"
+# Fail fast on first failure in CI
+fail-fast = true
+# JUnit output for CI integration (GitHub annotations, Codecov, etc.)
+[profile.ci.junit]
+path = "junit.xml"

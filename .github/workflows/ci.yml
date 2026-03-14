@@ -3,7 +3,23 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "vision/**"
+      - ".ai-factory/**"
+      - ".agents/**"
+      - "LICENSE"
+      - "CHANGELOG.md"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "vision/**"
+      - ".ai-factory/**"
+      - ".agents/**"
+      - "LICENSE"
+      - "CHANGELOG.md"
   workflow_dispatch:
 
 permissions:
@@ -11,6 +27,11 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  RUST_BACKTRACE: short
+  # Benchmark thresholds (ns)
   NEBULA_LOG_BENCH_EMIT_NO_HOOKS_MAX_NS: "20000"
   NEBULA_LOG_BENCH_EMIT_INLINE_NOOP_MAX_NS: "25000"
   NEBULA_LOG_BENCH_EMIT_BOUNDED_COUNTING_MAX_NS: "30000"
@@ -24,83 +45,180 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ── Formatting ─────────────────────────────────────────────────────────────
   fmt:
     name: Formatting
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
+  # ── Linting ────────────────────────────────────────────────────────────────
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace -- -D warnings
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: Run Clippy lints
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
+  # ── Type check ─────────────────────────────────────────────────────────────
   check:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace --all-targets
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: Run cargo check
+        run: cargo check --workspace --all-targets
 
+  # ── Feature combinations ───────────────────────────────────────────────────
   feature-check:
     name: Feature Matrix (cargo-hack)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
       - name: Install cargo-hack
         uses: taiki-e/install-action@cargo-hack
-      - name: Check each feature combination (per crate)
+      - name: Check each feature combination
         run: cargo hack check --workspace --all-targets --each-feature --no-dev-deps
 
+  # ── Tests ──────────────────────────────────────────────────────────────────
   test:
     name: Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
       - name: Run tests with nextest
-        run: cargo nextest run --workspace
+        run: cargo nextest run --workspace --profile ci
       - name: Run doctests
         run: cargo test --workspace --doc
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: target/nextest/ci/junit.xml
+          retention-days: 14
 
+  # ── MSRV ───────────────────────────────────────────────────────────────────
+  msrv:
+    name: MSRV (1.93)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Install Rust 1.93
+        uses: dtolnay/rust-toolchain@1.93
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: Run cargo check
+        run: cargo check --workspace --all-targets
+
+  # ── Documentation ──────────────────────────────────────────────────────────
   doc:
     name: Documentation
     runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --no-deps --workspace
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: Build documentation
+        run: cargo doc --no-deps --workspace
 
+  # ── Typos ──────────────────────────────────────────────────────────────────
+  typos:
+    name: Spell Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Check for typos
+        uses: crate-ci/typos@v1
+
+  # ── Unused dependencies ────────────────────────────────────────────────────
+  machete:
+    name: Unused Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Check for unused dependencies
+        uses: bnjbvr/cargo-machete@v0.7
+
+  # ── Benchmarks ─────────────────────────────────────────────────────────────
   bench:
     name: Benchmark Thresholds
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo bench -p nebula-log --bench log_hot_path
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: Run benchmarks
+        run: cargo bench -p nebula-log --bench log_hot_path
       - name: Validate benchmark thresholds
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import json, os, pathlib, sys
 
           bases = [pathlib.Path("target/criterion"), pathlib.Path("crates/log/target/criterion")]
@@ -136,13 +254,13 @@ jobs:
           print("Benchmark thresholds passed")
           PY
 
+  # ── Supply-chain audit ─────────────────────────────────────────────────────
   deny:
     name: Supply-chain audit (cargo deny)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Checkout repository
+        uses: actions/checkout@v5
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny
       - name: Run cargo deny

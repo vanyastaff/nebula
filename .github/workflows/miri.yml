@@ -12,8 +12,18 @@ on:
       - "crates/memory/**"
       - ".github/workflows/miri.yml"
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUST_BACKTRACE: short
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   miri:
@@ -29,8 +39,11 @@ jobs:
         with:
           components: miri, rust-src
 
-      - name: Setup Miri
-        run: cargo miri setup
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Run Miri tests on nebula-memory
         run: |

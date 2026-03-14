@@ -1,0 +1,13 @@
+# https://github.com/crate-ci/typos/blob/master/docs/reference.md
+
+[default.extend-words]
+
+[files]
+extend-exclude = [
+    "target/",
+    "*.lock",
+    "CHANGELOG.md",
+    "migrations/",
+    "deny.toml",
+    "skills-lock.json",
+]

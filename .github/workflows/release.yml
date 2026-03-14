@@ -13,6 +13,12 @@ on:
           - minor
           - major
 
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   release:
     name: Create Release
@@ -29,17 +35,19 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Install cargo-release
-        run: cargo install cargo-release
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-release and git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-release,git-cliff
 
       - name: Bump version with cargo-release
         run: |
           cargo release version ${{ github.event.inputs.level }} \
             --no-confirm \
             --execute
-
-      - name: Install git-cliff
-        run: cargo install git-cliff
 
       - name: Generate CHANGELOG
         run: git cliff -o CHANGELOG.md
