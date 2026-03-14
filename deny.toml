@@ -71,7 +71,7 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # output a note when they are encountered.
 ignore = [
     # Temporary ignores for known issues
-    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained but used by egui_dock. TODO: update egui_dock" },
+    { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill is pulled transitively; tracked for upstream replacement/removal" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
@@ -99,6 +99,7 @@ allow = [
     "MIT",
     "MPL-2.0",
     "OFL-1.1",
+    "OpenSSL",
     "Ubuntu-font-1.0",
     "Unicode-3.0",
     "Unicode-DFS-2016",
