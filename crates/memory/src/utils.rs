@@ -959,7 +959,10 @@ mod tests {
 
     // Test for cache_line_size is now in nebula-system
 
-    #[expect(clippy::float_cmp, reason = "comparing calculated float with known-exact result")]
+    #[expect(
+        clippy::float_cmp,
+        reason = "comparing calculated float with known-exact result"
+    )]
     #[test]
     fn test_perf_utils() {
         let (result, duration) = perf::measure_time(|| {

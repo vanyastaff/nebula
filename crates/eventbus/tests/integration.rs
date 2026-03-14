@@ -500,7 +500,10 @@ async fn test_drop_newest_policy_preserves_oldest() {
 // Phase 5: Graceful Shutdown & Propagation
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[expect(clippy::excessive_nesting, reason = "drain loop inside tokio::spawn naturally requires this depth")]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "drain loop inside tokio::spawn naturally requires this depth"
+)]
 #[tokio::test]
 async fn test_registry_clear_existing_subscribers_continue_draining() {
     init_log();
@@ -516,9 +519,7 @@ async fn test_registry_clear_existing_subscribers_continue_draining() {
     let subscriber_handle = task::spawn(async move {
         let mut sub = bus_clone.subscribe();
         loop {
-            match tokio::time::timeout(tokio::time::Duration::from_millis(500), sub.recv())
-                .await
-            {
+            match tokio::time::timeout(tokio::time::Duration::from_millis(500), sub.recv()).await {
                 Ok(Some(_event)) => {
                     received_clone.fetch_add(1, Ordering::SeqCst);
                 }

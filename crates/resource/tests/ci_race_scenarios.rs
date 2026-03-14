@@ -55,7 +55,10 @@ fn ctx() -> Context {
     Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
 }
 
-#[expect(clippy::excessive_nesting, reason = "tokio::spawn inside concurrent test naturally requires this depth")]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "tokio::spawn inside concurrent test naturally requires this depth"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_cancelled_acquires_do_not_leak_permits() {
     let (resource, _create_count) = RaceResource::new();
@@ -108,7 +111,10 @@ async fn concurrent_cancelled_acquires_do_not_leak_permits() {
     assert_eq!(guards.len(), max_size);
 }
 
-#[expect(clippy::excessive_nesting, reason = "tokio::spawn inside concurrent test naturally requires this depth")]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "tokio::spawn inside concurrent test naturally requires this depth"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_acquire_release_cycles_preserve_pool_invariants() {
     let (resource, _create_count) = RaceResource::new();

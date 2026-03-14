@@ -70,7 +70,10 @@ fn budget_fixture_has_change_policy() {
 // BUDGET VALUE VALIDATION
 // ============================================================================
 
-#[expect(clippy::excessive_nesting, reason = "recursive helper function with nested if-let chains naturally requires this depth")]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "recursive helper function with nested if-let chains naturally requires this depth"
+)]
 #[test]
 fn all_ns_budgets_are_positive_and_bounded() {
     let budgets = load_budgets();

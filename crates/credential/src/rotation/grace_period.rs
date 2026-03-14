@@ -580,8 +580,8 @@ mod tests {
         let old_id = CredentialId::new();
         let new_id = CredentialId::new();
         let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
-        let grace_period = GracePeriodState::new(old_id, 1, 2, &config)
-            .expect("Should create grace period state");
+        let grace_period =
+            GracePeriodState::new(old_id, 1, 2, &config).expect("Should create grace period state");
 
         let tracker = GracePeriodTracker::new(old_id, new_id, grace_period);
 
@@ -596,8 +596,8 @@ mod tests {
         let old_id = CredentialId::new();
         let new_id = CredentialId::new();
         let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
-        let grace_period = GracePeriodState::new(old_id, 1, 2, &config)
-            .expect("Should create grace period state");
+        let grace_period =
+            GracePeriodState::new(old_id, 1, 2, &config).expect("Should create grace period state");
 
         let mut tracker = GracePeriodTracker::new(old_id, new_id, grace_period);
 
@@ -614,8 +614,8 @@ mod tests {
         let old_id = CredentialId::new();
         let new_id = CredentialId::new();
         let config = GracePeriodConfig::new(Duration::from_secs(0)); // Immediate expiry
-        let grace_period = GracePeriodState::new(old_id, 1, 2, &config)
-            .expect("Should create grace period state");
+        let grace_period =
+            GracePeriodState::new(old_id, 1, 2, &config).expect("Should create grace period state");
 
         let tracker = GracePeriodTracker::new(old_id, new_id, grace_period);
 
@@ -628,8 +628,8 @@ mod tests {
         let old_id = CredentialId::new();
         let new_id = CredentialId::new();
         let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
-        let grace_period = GracePeriodState::new(old_id, 1, 2, &config)
-            .expect("Should create grace period state");
+        let grace_period =
+            GracePeriodState::new(old_id, 1, 2, &config).expect("Should create grace period state");
 
         let mut tracker = GracePeriodTracker::new(old_id, new_id, grace_period);
 

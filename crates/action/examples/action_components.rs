@@ -74,11 +74,7 @@ impl Resource for PostgresDb {
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("postgres_db").unwrap())
     }
-    async fn create(
-        &self,
-        _: &ExampleResourceConfig,
-        _: &Context,
-    ) -> nebula_resource::Result<()> {
+    async fn create(&self, _: &ExampleResourceConfig, _: &Context) -> nebula_resource::Result<()> {
         Ok(())
     }
 }
@@ -89,11 +85,7 @@ impl Resource for RedisCache {
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::from_key(ResourceKey::try_from("redis_cache").unwrap())
     }
-    async fn create(
-        &self,
-        _: &ExampleResourceConfig,
-        _: &Context,
-    ) -> nebula_resource::Result<()> {
+    async fn create(&self, _: &ExampleResourceConfig, _: &Context) -> nebula_resource::Result<()> {
         Ok(())
     }
 }

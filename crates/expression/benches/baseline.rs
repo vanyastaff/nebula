@@ -163,7 +163,10 @@ fn benchmark_context_operations(c: &mut Criterion) {
 // Concurrent Benchmarks
 // ================================
 
-#[expect(clippy::excessive_nesting, reason = "thread::spawn inside criterion bench closure naturally requires this depth")]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "thread::spawn inside criterion bench closure naturally requires this depth"
+)]
 fn benchmark_concurrent_access(c: &mut Criterion) {
     let mut group = c.benchmark_group("concurrent/access");
     group.throughput(Throughput::Elements(1));

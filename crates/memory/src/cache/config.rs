@@ -439,7 +439,10 @@ mod tests {
         assert!(!config.auto_cleanup);
     }
 
-    #[expect(clippy::float_cmp, reason = "comparing stored float value with its literal source")]
+    #[expect(
+        clippy::float_cmp,
+        reason = "comparing stored float value with its literal source"
+    )]
     #[test]
     fn test_builder_pattern() {
         let config = CacheConfig::new(500)
@@ -459,7 +462,10 @@ mod tests {
         assert!(config.auto_cleanup);
     }
 
-    #[expect(clippy::float_cmp, reason = "comparing stored float value with its literal source")]
+    #[expect(
+        clippy::float_cmp,
+        reason = "comparing stored float value with its literal source"
+    )]
     #[test]
     fn test_preset_configurations() {
         let high_throughput = CacheConfig::for_high_throughput(1000);

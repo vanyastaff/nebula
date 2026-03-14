@@ -231,7 +231,10 @@ fn stress_test_concurrent_metrics_high_throughput() {
 // Stress Test: Concurrent EventBus with Multiple Subscribers
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[expect(clippy::excessive_nesting, reason = "tokio::spawn inside loop and match in stress test naturally requires this depth")]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "tokio::spawn inside loop and match in stress test naturally requires this depth"
+)]
 #[tokio::test]
 async fn stress_test_eventbus_multiple_subscribers() {
     tracing::debug!("stress test: eventbus with multiple subscribers started");

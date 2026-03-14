@@ -240,11 +240,7 @@ mod tests {
         fn metadata(&self) -> ResourceMetadata {
             ResourceMetadata::from_key(ResourceKey::try_from("test_resource").unwrap())
         }
-        async fn create(
-            &self,
-            _: &TestResourceConfig,
-            _: &Context,
-        ) -> nebula_resource::Result<()> {
+        async fn create(&self, _: &TestResourceConfig, _: &Context) -> nebula_resource::Result<()> {
             Ok(())
         }
     }
@@ -255,11 +251,7 @@ mod tests {
         fn metadata(&self) -> ResourceMetadata {
             ResourceMetadata::from_key(ResourceKey::try_from("another_resource").unwrap())
         }
-        async fn create(
-            &self,
-            _: &TestResourceConfig,
-            _: &Context,
-        ) -> nebula_resource::Result<()> {
+        async fn create(&self, _: &TestResourceConfig, _: &Context) -> nebula_resource::Result<()> {
             Ok(())
         }
     }

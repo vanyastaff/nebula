@@ -484,7 +484,10 @@ mod tests {
         assert!(!is_aligned(0x1001, 8));
     }
 
-    #[expect(clippy::float_cmp, reason = "comparing stored float value with its literal source")]
+    #[expect(
+        clippy::float_cmp,
+        reason = "comparing stored float value with its literal source"
+    )]
     #[test]
     fn test_config_builder() {
         let config = ArenaConfig::new()

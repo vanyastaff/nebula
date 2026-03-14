@@ -162,17 +162,11 @@ impl Action for NoOpTrigger {
 }
 
 impl TriggerAction for NoOpTrigger {
-    async fn start(
-        &self,
-        _ctx: &TriggerContext,
-    ) -> Result<(), nebula_action::ActionError> {
+    async fn start(&self, _ctx: &TriggerContext) -> Result<(), nebula_action::ActionError> {
         Ok(())
     }
 
-    async fn stop(
-        &self,
-        _ctx: &TriggerContext,
-    ) -> Result<(), nebula_action::ActionError> {
+    async fn stop(&self, _ctx: &TriggerContext) -> Result<(), nebula_action::ActionError> {
         Ok(())
     }
 }
