@@ -50,6 +50,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+
       - name: Run tests for ${{ matrix.package }}
-        run: cargo test -p ${{ matrix.package }} --all-features
+        run: cargo nextest run -p ${{ matrix.package }} --all-features
 
