@@ -7,39 +7,63 @@ on:
   workflow_dispatch:
 
 jobs:
+  select-matrix:
+    name: Select Matrix Scope
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.select.outputs.packages }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Select packages to test
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FULL='["nebula-action","nebula-api","nebula-auth","nebula-config","nebula-core","nebula-credential","nebula-engine","nebula-eventbus","nebula-execution","nebula-expression","nebula-log","nebula-macros","nebula-memory","nebula-metrics","nebula-parameter","nebula-plugin","nebula-resilience","nebula-resource","nebula-runtime","nebula-sdk","nebula-storage","nebula-system","nebula-telemetry","nebula-validator","nebula-webhook","nebula-workflow"]'
+          SMOKE='["nebula-core","nebula-engine","nebula-runtime"]'
+
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "packages=$FULL" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          CHANGED_FILES=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" || true)
+
+          if [[ -z "$CHANGED_FILES" ]]; then
+            echo "packages=$SMOKE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mapfile -t PACKAGES < <(
+            echo "$CHANGED_FILES" \
+              | sed -n 's#^crates/\([^/]*\)/.*#nebula-\1#p' \
+              | sort -u
+          )
+
+          if [[ ${#PACKAGES[@]} -eq 0 ]]; then
+            echo "packages=$SMOKE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          JSON=$(printf '%s\n' "${PACKAGES[@]}" | jq -R . | jq -s -c .)
+          echo "packages=$JSON" >> "$GITHUB_OUTPUT"
+
   test-crates:
     name: Test ${{ matrix.package }}
+    needs: select-matrix
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name == 'pull_request' }}
+      max-parallel: 8
       matrix:
-        package:
-          - nebula-action
-          - nebula-api
-          - nebula-auth
-          - nebula-config
-          - nebula-core
-          - nebula-credential
-          - nebula-engine
-          - nebula-eventbus
-          - nebula-execution
-          - nebula-expression
-          - nebula-log
-          - nebula-macros
-          - nebula-memory
-          - nebula-metrics
-          - nebula-parameter
-          - nebula-plugin
-          - nebula-resilience
-          - nebula-resource
-          - nebula-runtime
-          - nebula-sdk
-          - nebula-storage
-          - nebula-system
-          - nebula-telemetry
-          - nebula-validator
-          - nebula-webhook
-          - nebula-workflow
+        package: ${{ fromJson(needs.select-matrix.outputs.packages) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
