@@ -29,9 +29,9 @@
 pub mod context;
 pub mod event;
 pub mod metrics;
-pub mod recorder;
 /// Convenience re-exports.
 pub mod prelude;
+pub mod recorder;
 pub mod service;
 pub mod trace;
 

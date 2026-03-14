@@ -179,8 +179,6 @@ pub struct ProductionTelemetryBuilder {
     buffer_config: Option<BufferedRecorderConfig>,
 }
 
-
-
 impl ProductionTelemetryBuilder {
     /// Set a custom event bus.
     #[must_use]

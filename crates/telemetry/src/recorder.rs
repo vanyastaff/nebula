@@ -186,7 +186,11 @@ impl Recorder for BufferedRecorder {
     }
 
     fn record_call(&self, record: CallRecord) {
-        if self.sender.try_send(RecordEntry::Call(Box::new(record))).is_err() {
+        if self
+            .sender
+            .try_send(RecordEntry::Call(Box::new(record)))
+            .is_err()
+        {
             tracing::warn!("buffered recorder channel full, dropping call record");
         }
     }
