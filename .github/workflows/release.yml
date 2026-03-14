@@ -54,7 +54,8 @@ jobs:
 
       - name: Commit changelog and version
         run: |
-          git add Cargo.toml **/Cargo.toml CHANGELOG.md
+          find . -name Cargo.toml -print0 | xargs -0 git add
+          git add CHANGELOG.md
           git commit -m "chore: release"
 
       - name: Push changes
