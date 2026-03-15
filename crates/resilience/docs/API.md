@@ -145,6 +145,31 @@ Blanket implementations provided:
 - `std::io::Error` — retryable for `Interrupted`, `WouldBlock`, `TimedOut`, `ConnectionReset`, `ConnectionAborted`
 - `std::fmt::Error` — never retryable
 
+## Gate
+
+Cooperative shutdown barrier. Protects a group of concurrent tasks from running after shutdown is initiated.
+
+```rust
+use nebula_resilience::gate::{Gate, GateClosed};
+
+let gate = Gate::new();
+
+// Worker: acquire a guard before starting work
+let _guard = gate.enter()?;  // Err(GateClosed) if gate is already closing
+
+// Owner: close gate and wait for all in-flight guards to be dropped
+gate.close().await;
+```
+
+- `Gate::new()` — creates an open gate
+- `Gate::enter() -> Result<GateGuard, GateClosed>` — non-blocking; returns a guard or `Err(GateClosed)` if the gate is closing
+- `Gate::close() -> impl Future` — marks the gate as closing; awaits until all outstanding `GateGuard`s are dropped
+- `Gate: Clone` — multiple owners can share a gate via `Arc`-backed clone
+- `GateGuard` — RAII; releases the entry slot on drop; emits `WARN` if dropped while the gate is already closing
+- `GateClosed` — `#[non_exhaustive]` error returned when `enter()` is called on a closing or closed gate
+
+Paths: `nebula_resilience::gate::{Gate, GateGuard, GateClosed}`, re-exported at crate root and in `prelude`.
+
 ## Manager and Policies
 
 ### `ResilienceManager`

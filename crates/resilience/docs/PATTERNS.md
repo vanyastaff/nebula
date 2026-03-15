@@ -253,6 +253,25 @@ Tuning rules:
 - Set hedge delay near observed tail trigger (often around `p95`).
 - Disable or reduce hedging when downstream saturation risk increases.
 
+## gate
+
+- **Use when:** a group of concurrent tasks must fully complete before shutdown proceeds.
+- **Configure:** none — `Gate` is zero-configuration.
+- **Expect:** `Err(GateClosed)` from `enter()` once `close()` has been called.
+- **Notes:** use for background maintenance tasks, request handlers, or any work that must fully drain before a resource or service is torn down.
+
+Runtime behavior:
+1. Workers call `gate.enter()` before beginning work; receive a `GateGuard`.
+2. Workers drop their `GateGuard` when work is complete.
+3. Owner calls `gate.close().await` during shutdown.
+4. `close()` blocks until all outstanding guards are dropped, then returns.
+5. Any `enter()` called after `close()` starts returns `Err(GateClosed)`.
+
+Tuning rules:
+- Acquire the guard as early as possible in a task and hold it for its full duration.
+- Do not hold guards across unrelated idle waits — release promptly to avoid stalling shutdown.
+- `Gate` is `Clone`; share a single gate across all workers that guard the same shutdown boundary.
+
 ## Quick Policy Profiles
 
 - **Strict correctness (writes):** timeout + bulkhead + circuit_breaker + retry (conservative), no fallback.
@@ -278,3 +297,4 @@ Tuning rules:
 | Traffic spikes | `rate_limiter` | `bulkhead` |
 | Read-path graceful degradation | `fallback` | `timeout`, `retry` |
 | High tail latency | `hedge` | `timeout`, `bulkhead` |
+| Graceful shutdown drain | `gate` | `timeout` (stall guard) |
