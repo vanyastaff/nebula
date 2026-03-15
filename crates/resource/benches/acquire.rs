@@ -38,7 +38,7 @@ impl Resource for BenchResource {
 }
 
 fn ctx() -> Context {
-    Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
+    Context::background(Scope::Global, WorkflowId::new(), ExecutionId::new())
 }
 
 fn pool_config(max_size: usize) -> PoolConfig {

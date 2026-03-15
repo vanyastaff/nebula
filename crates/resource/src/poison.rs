@@ -78,6 +78,24 @@ impl<T> Poison<T> {
     pub fn is_poisoned(&self) -> bool {
         matches!(self.state, PoisonState::Poisoned { .. })
     }
+
+    /// Read access without entering a critical section.
+    ///
+    /// Unlike [`check_and_arm`](Self::check_and_arm), this does **not** set the
+    /// state to `Armed`, so a panic or early return during the read cannot
+    /// accidentally poison the value. Use this for read-only observers.
+    ///
+    /// # Errors
+    /// Returns `Err` if the value has already been poisoned.
+    pub fn try_read(&self) -> Result<&T, PoisonError> {
+        match self.state {
+            PoisonState::Poisoned { at } => Err(PoisonError::Poisoned {
+                what: self.what,
+                at,
+            }),
+            _ => Ok(&self.data),
+        }
+    }
 }
 
 /// RAII guard. Dropping without calling `disarm()` poisons the value.
@@ -85,13 +103,11 @@ pub struct PoisonGuard<'a, T>(&'a mut Poison<T>);
 
 impl<T> PoisonGuard<'_, T> {
     /// Borrow protected data immutably.
-    #[must_use]
     pub fn data(&self) -> &T {
         &self.0.data
     }
 
     /// Borrow protected data mutably.
-    #[must_use]
     pub fn data_mut(&mut self) -> &mut T {
         &mut self.0.data
     }
@@ -101,7 +117,8 @@ impl<T> PoisonGuard<'_, T> {
         if matches!(self.0.state, PoisonState::Armed) {
             self.0.state = PoisonState::Clean;
         }
-        std::mem::forget(self);
+        // `self` drops here; Drop checks for Armed state, which is now
+        // Clean, so nothing happens — mem::forget is not needed.
     }
 }
 
@@ -151,6 +168,18 @@ mod tests {
         {
             let _guard = protected.check_and_arm().expect("should arm");
         }
+        assert!(protected.is_poisoned());
+    }
+
+    #[test]
+    fn reentrant_arm_poisons() {
+        let mut protected = Poison::new("state", 0_i32);
+        // The borrow checker prevents a second `check_and_arm` while the first
+        // guard is alive (safe Rust). Simulate the re-entrant scenario that can
+        // arise through unsafe aliasing (e.g. raw-pointer access in pool code)
+        // by setting the state directly — tests are in the same module.
+        protected.state = PoisonState::Armed;
+        assert!(protected.check_and_arm().is_err()); // temporary dropped here
         assert!(protected.is_poisoned());
     }
 

@@ -5,20 +5,24 @@
 /// When the guard is dropped, the on-drop callback is invoked (typically
 /// returning the instance to the pool). Use `into_inner()` to take
 /// ownership without triggering the callback.
-pub struct Guard<T> {
+///
+/// The second type parameter `F` is the concrete callback type. It defaults
+/// to `Box<dyn FnOnce(T) + Send>` so existing `Guard<T>` annotations continue
+/// to compile, but pool internals can use the concrete closure type directly
+/// to avoid a heap allocation on each acquire.
+pub struct Guard<T, F: FnOnce(T) + Send + 'static = Box<dyn FnOnce(T) + Send>> {
     resource: Option<T>,
-    on_drop: Option<Box<dyn FnOnce(T) + Send>>,
+    on_drop: Option<F>,
 }
 
-impl<T> Guard<T> {
+impl<T, F: FnOnce(T) + Send + 'static> Guard<T, F> {
     /// Create a new guard wrapping `resource` with a drop callback.
-    pub fn new<F>(resource: T, on_drop: F) -> Self
-    where
-        F: FnOnce(T) + Send + 'static,
-    {
+    ///
+    /// No heap allocation is performed; the callback is stored inline.
+    pub fn new(resource: T, on_drop: F) -> Self {
         Self {
             resource: Some(resource),
-            on_drop: Some(Box::new(on_drop)),
+            on_drop: Some(on_drop),
         }
     }
 
@@ -30,7 +34,7 @@ impl<T> Guard<T> {
     }
 }
 
-impl<T> std::ops::Deref for Guard<T> {
+impl<T, F: FnOnce(T) + Send + 'static> std::ops::Deref for Guard<T, F> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -38,13 +42,13 @@ impl<T> std::ops::Deref for Guard<T> {
     }
 }
 
-impl<T> std::ops::DerefMut for Guard<T> {
+impl<T, F: FnOnce(T) + Send + 'static> std::ops::DerefMut for Guard<T, F> {
     fn deref_mut(&mut self) -> &mut T {
         self.resource.as_mut().expect("guard used after into_inner")
     }
 }
 
-impl<T> Drop for Guard<T> {
+impl<T, F: FnOnce(T) + Send + 'static> Drop for Guard<T, F> {
     fn drop(&mut self) {
         if let (Some(resource), Some(on_drop)) = (self.resource.take(), self.on_drop.take()) {
             on_drop(resource);
@@ -52,7 +56,7 @@ impl<T> Drop for Guard<T> {
     }
 }
 
-impl<T: std::fmt::Debug> std::fmt::Debug for Guard<T> {
+impl<T: std::fmt::Debug, F: FnOnce(T) + Send + 'static> std::fmt::Debug for Guard<T, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Guard")
             .field("resource", &self.resource)

@@ -25,11 +25,11 @@ use crate::scope::Scope;
 // ---------------------------------------------------------------------------
 
 /// Concrete guard wrapping a typed `Guard`.
-pub(crate) struct TypedGuard<R: Resource> {
-    pub(crate) guard: Guard<R::Instance>,
+pub(crate) struct TypedGuard<R: Resource, F: FnOnce(R::Instance) + Send + 'static> {
+    pub(crate) guard: Guard<R::Instance, F>,
 }
 
-impl<R: Resource> AnyGuardTrait for TypedGuard<R>
+impl<R: Resource, F: FnOnce(R::Instance) + Send + 'static> AnyGuardTrait for TypedGuard<R, F>
 where
     R::Instance: Any,
 {
@@ -99,7 +99,7 @@ where
         Box::pin(async move {
             let (guard, wait_duration) = self.pool.acquire(ctx).await?;
             Ok((
-                Box::new(TypedGuard::<R> { guard }) as AnyGuard,
+                Box::new(TypedGuard::<R, _> { guard }) as AnyGuard,
                 wait_duration,
             ))
         })
