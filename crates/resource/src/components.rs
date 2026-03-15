@@ -1,6 +1,6 @@
 //! Typed dependency declaration for resources.
 //!
-//! [`ResourceComponents`] is filled in by [`HasResourceComponents::components`] and consumed
+//! [`ResourceComponents`] is built from [`ResourceDependencies`] declarations and consumed
 //! by the manager to:
 //!
 //! 1. Build the [`DependencyGraph`] for ordered startup and shutdown.
@@ -25,7 +25,7 @@ use crate::reference::ErasedResourceRef;
 /// Dependency declaration for a resource type: an optional credential and a list of
 /// sub-resource references.
 ///
-/// Built via the fluent API in [`HasResourceComponents::components`] and consumed by the
+/// Built from [`ResourceDependencies`] declarations and consumed by the
 /// manager at registration time. After registration this value is not stored — the
 /// manager extracts what it needs (credential handler, dependency edges) and discards it.
 #[derive(Debug, Clone, Default)]
@@ -59,7 +59,7 @@ impl ResourceComponents {
         C: nebula_credential::CredentialType,
     {
         let id = nebula_core::CredentialId::parse(id).expect(
-            "invalid credential id in HasResourceComponents::components() (expected UUID string)",
+            "invalid credential id in ResourceDependencies declarations (expected UUID string)",
         );
         self.credential = Some(ErasedCredentialRef {
             id,
@@ -84,7 +84,7 @@ impl ResourceComponents {
     /// [`credential`]: Self::credential
     pub fn resource<R>(mut self, key: &str) -> Self {
         let key = nebula_core::ResourceKey::new(key).expect(
-            "invalid resource key in HasResourceComponents::components() (expected literal key)",
+            "invalid resource key in ResourceDependencies declarations (expected literal key)",
         );
         self.resources.push(ErasedResourceRef { key });
         self
