@@ -40,7 +40,7 @@ impl<R: Resource> ResourceRef<R> {
 
     /// Create a type-only reference for dependency declaration (key from `Resource::declare_key`).
     ///
-    /// Use in `ActionComponents` when declaring "I need a resource of type R".
+    /// Use in `ResourceDependencies::resources()` when declaring "I need a resource of type R".
     pub fn of() -> Self
     where
         R: Resource,
@@ -58,7 +58,7 @@ impl<R: Resource> From<ResourceRef<R>> for ErasedResourceRef {
     }
 }
 
-/// Type-erased resource reference — used inside `ResourceComponents` and manager internals.
+/// Type-erased resource reference — used inside manager internals.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErasedResourceRef {
     /// Resource key in the registry.

@@ -125,7 +125,7 @@ impl Context {
     ///
     /// The handle must be `Arc<TypedPool<R>>` for the resource type `R` at the given key.
     /// Used when the manager prepares the context before `Resource::create()` for resources
-    /// that declare sub-resources via `HasResourceComponents`.
+    /// that declare sub-resources via `ResourceDependencies`.
     #[allow(dead_code)] // used in tests; full manager→create() injection wiring in progress
     pub(crate) fn inject_resource(&mut self, key: ResourceKey, handle: Arc<dyn Any + Send + Sync>) {
         self.resolved_resources
@@ -134,7 +134,7 @@ impl Context {
 
     /// Retrieve a resolved sub-resource pool handle for typed acquisition.
     ///
-    /// Returns `None` if not injected (resource not declared in `HasResourceComponents`, or not yet init).
+    /// Returns `None` if not injected (resource not declared in `ResourceDependencies`, or not yet init).
     ///
     /// # Example
     ///

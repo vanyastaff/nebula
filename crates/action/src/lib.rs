@@ -62,8 +62,6 @@ pub mod authoring;
 pub mod dependency;
 /// Capability interfaces injected into contexts (resources, credentials, logger).
 pub mod capability;
-/// Action component collection for dependency declarations.
-pub mod components;
 /// Runtime context provided to actions during execution.
 pub mod context;
 /// Error types distinguishing retryable from fatal failures.
@@ -80,8 +78,6 @@ pub mod output;
 pub mod port;
 /// Convenience re-exports for action authors.
 pub mod prelude;
-/// Type-safe reference to an action type (for plugin declarations).
-pub mod reference;
 /// Execution result types carrying data and flow-control intent.
 pub mod result;
 /// Action package validation utilities.
@@ -96,7 +92,6 @@ pub use capability::{
     ActionLogLevel, ActionLogger, CredentialAccessor, ExecutionEmitter, ResourceAccessor,
     TriggerScheduler,
 };
-pub use components::ActionComponents;
 pub use context::{ActionContext, Context, TriggerContext};
 pub use error::ActionError;
 pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
@@ -109,7 +104,6 @@ pub use output::{
     StreamOutput, StreamState, Timing, TokenUsage,
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
-pub use reference::ActionRef;
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
 pub use validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,

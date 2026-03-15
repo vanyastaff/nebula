@@ -11,7 +11,7 @@ use crate::support::attrs;
 
 /// Parsed action container attributes.
 ///
-/// Maps to [`ActionMetadata`] fields plus `ActionComponents` dependencies.
+/// Maps to [`ActionMetadata`] fields plus `ActionDependencies` dependencies.
 ///
 /// [`ActionMetadata`]: https://docs.rs/nebula-action/latest/nebula_action/struct.ActionMetadata.html
 #[derive(Debug, Clone)]
@@ -30,7 +30,7 @@ pub struct ActionAttrs {
     /// Optional parameters type (e.g. `parameters = HttpConfig`).
     pub parameters: Option<Type>,
 
-    // ── ActionComponents (credential/resource dependencies) ──────────────────
+    // ── ActionDependencies (credential/resource dependencies) ─────────────────
     /// Single credential type.
     pub credential: Option<Type>,
     /// Multiple credential types.

@@ -81,7 +81,7 @@ pub mod pool;
 pub mod quarantine;
 
 pub use any::AnyResource;
-pub use components::{ResourceComponents, TypedCredentialHandler};
+pub use components::TypedCredentialHandler;
 pub use dependency::ResourceDependencies;
 pub use context::{Context, ResourcePoolHandle};
 pub use error::{Error, ErrorCategory, FieldViolation, Result};
@@ -134,7 +134,6 @@ pub use nebula_core::{ExecutionId, PluginKey, ResourceId, ResourceKey, WorkflowI
 /// ```
 pub mod prelude {
     pub use crate::any::AnyResource;
-    pub use crate::components::ResourceComponents;
     pub use crate::dependency::ResourceDependencies;
     pub use crate::context::Context;
     pub use crate::error::{Error, ErrorCategory, Result};

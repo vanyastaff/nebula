@@ -67,9 +67,9 @@ mod validator;
 /// - `name = "..."` - Human-readable name (required)
 /// - `description = "..."` - Short description (required)
 /// - `version = "..."` - Interface version, e.g., "1.0" (default: "1.0")
-/// - `credential = Type` - Single credential type for `ActionComponents` (optional)
+/// - `credential = Type` - Single credential type for `ActionDependencies` (optional)
 /// - `credentials = [Type1, Type2]` - Multiple credential types (optional)
-/// - `resource = Type` - Single resource type for `ActionComponents` (optional)
+/// - `resource = Type` - Single resource type for `ActionDependencies` (optional)
 /// - `resources = [Type1, Type2]` - Multiple resource types (optional)
 /// - `parameters = Type` - Type with `parameters()` for `ActionMetadata` (optional)
 ///

@@ -29,11 +29,12 @@ use crate::reference::ErasedResourceRef;
 /// manager at registration time. After registration this value is not stored — the
 /// manager extracts what it needs (credential handler, dependency edges) and discards it.
 #[derive(Debug, Clone, Default)]
-pub struct ResourceComponents {
+pub(crate) struct ResourceComponents {
     credential: Option<ErasedCredentialRef>,
     resources: Vec<ErasedResourceRef>,
 }
 
+#[allow(dead_code)] // internal builder; methods wired incrementally as Phase 3 progresses
 impl ResourceComponents {
     /// Create an empty component set with no dependencies.
     pub fn new() -> Self {

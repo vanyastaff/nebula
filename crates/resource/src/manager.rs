@@ -36,6 +36,7 @@ use smallvec::SmallVec;
 
 use crate::autoscale::{AutoScalePolicy, AutoScaler};
 use crate::components::TypedCredentialHandler;
+use crate::dependency::ResourceDependencies;
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::events::{EventBus, QuarantineTrigger, ResourceEvent};
@@ -493,13 +494,12 @@ impl Manager {
         Ok(())
     }
 
-    /// Register a resource that has declared component dependencies.
+    /// Register a resource with an attached credential handler.
     ///
     /// Automatically:
-    /// 1. Registers sub-resource dependencies in the dependency graph.
-    /// 2. Creates the pool with an attached credential handler.
-    /// 3. Maps credential ID → pool for rotation dispatch.
-    pub fn register_with_components<R>(
+    /// 1. Registers sub-resource dependencies from [`ResourceDependencies::resources`].
+    /// 2. Creates the pool with the provided credential handler for rotation support.
+    pub fn register_with_handler<R>(
         &self,
         resource: R,
         config: R::Config,
@@ -507,38 +507,17 @@ impl Manager {
         handler: TypedCredentialHandler<R::Instance>,
     ) -> Result<()>
     where
-        R: Resource + crate::dependency::ResourceDependencies,
+        R: Resource + ResourceDependencies,
         R::Instance: Any + nebula_credential::CredentialResource,
     {
-        let components = {
-            use crate::components::ResourceComponents;
-            let mut c = ResourceComponents::new();
-            // Populate components from ResourceDependencies trait methods
-            if let Some(cred) = R::credential() {
-                // Build an ErasedCredentialRef from the AnyCredential; we need the key.
-                // Since we don't have a credential ID at this layer (no UUID here),
-                // we preserve the old ResourceComponents credential binding only when
-                // the caller also provides it via the legacy HasResourceComponents path.
-                // For the new ResourceDependencies path, sub-resource deps are wired
-                // via the dependency graph while the credential handler comes from the
-                // `handler` parameter directly.
-                let _ = cred; // credential key available via R::credential() if needed
-            }
-            for res in R::resources() {
-                let key_str = res.resource_key().to_string();
-                c = c.resource::<()>(&key_str);
-            }
-            c
-        };
         let meta = resource.metadata();
         let resource_key = meta.key.clone();
         let id = resource_key.to_string();
 
-        // Build dependency list from resource refs.
-        let new_deps: Vec<String> = components
-            .resource_refs()
+        // Build dependency list directly from ResourceDependencies.
+        let new_deps: Vec<String> = R::resources()
             .iter()
-            .map(|r| r.key.to_string())
+            .map(|r| r.resource_key().to_string())
             .collect();
 
         // Create pool with credential handler.
@@ -558,15 +537,19 @@ impl Manager {
         let any_pool: Arc<dyn AnyPool> = typed_pool.clone();
         let rotatable: Arc<dyn RotatablePool> = typed_pool.clone();
 
-        // Track credential → pool mapping for rotation dispatch.
-        if let Some(cred_ref) = components.credential_ref() {
+        // Wire credential key → pool mapping for rotation dispatch (key only; UUID resolved at event time).
+        if let Some(cred) = R::credential() {
             let entry = RotationEntry {
-                credential_key: cred_ref.key.clone(),
+                credential_key: nebula_core::CredentialKey::new(cred.credential_key())
+                    .unwrap_or_else(|_| {
+                        nebula_core::CredentialKey::new("unknown").expect("fallback key valid")
+                    }),
                 strategy,
                 pool: Arc::downgrade(&rotatable),
             };
+            // Use nil UUID as placeholder — real UUID is matched at rotation-event time by key.
             self.credential_pool_map
-                .entry(cred_ref.id)
+                .entry(nebula_core::CredentialId::nil())
                 .or_default()
                 .push(entry);
         }
@@ -601,7 +584,7 @@ impl Manager {
             let _ = self.enable_autoscaling(&resource_key, policy.clone());
         }
 
-        tracing::debug!(resource_id = %id, "Registered resource with components");
+        tracing::debug!(resource_id = %id, "Registered resource with credential handler");
 
         Ok(())
     }

@@ -6,13 +6,12 @@
 //! example "Slack", "HTTP Request", or "PostgreSQL". Each plugin bundles:
 //!
 //! - [`PluginMetadata`] — key, name, version, group, icon, docs URL
-//! - [`PluginComponents`] — registered actions and credential requirements
+//! - Component registration is done directly in the engine via `register_credential`, `register_resource`, `register_action`
 //!
 //! ## Core Types
 //!
 //! - [`Plugin`] — base trait every plugin implements
 //! - [`PluginMetadata`] — static descriptor with builder API
-//! - [`PluginComponents`] — runtime component collection (actions, credentials)
 //! - [`PluginType`] — enum wrapping a single plugin or a versioned set
 //! - [`PluginVersions`] — multi-version container keyed by `u32`
 //! - [`PluginRegistry`] — in-memory registry mapping [`PluginKey`] → [`PluginType`]
@@ -27,7 +26,6 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
-mod components;
 mod error;
 #[cfg(feature = "dynamic-loading")]
 mod loader;
@@ -39,7 +37,6 @@ mod versions;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
-pub use components::PluginComponents;
 pub use error::PluginError;
 #[cfg(feature = "dynamic-loading")]
 pub use loader::{PluginLoadError, PluginLoader};

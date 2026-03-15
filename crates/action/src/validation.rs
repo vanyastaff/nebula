@@ -1,8 +1,7 @@
-//! Action package validation (`metadata` + `ports` + `components`).
+//! Action package validation (`metadata` + `ports`).
 
 use std::collections::HashSet;
 
-use crate::components::ActionComponents;
 use crate::metadata::ActionMetadata;
 use crate::port::{InputPort, OutputPort};
 
@@ -45,18 +44,6 @@ pub enum ActionPackageValidationError {
         /// Dynamic port key.
         key: String,
     },
-    /// Duplicate credential dependency declaration.
-    #[error("duplicate credential dependency `{key}`")]
-    DuplicateCredentialDependency {
-        /// Credential key.
-        key: String,
-    },
-    /// Duplicate resource dependency declaration.
-    #[error("duplicate resource dependency `{key}`")]
-    DuplicateResourceDependency {
-        /// Resource key.
-        key: String,
-    },
 }
 
 /// Collection of package validation failures.
@@ -70,7 +57,6 @@ pub struct ActionPackageValidationErrors {
 /// Validate action package structure and declarations.
 pub fn validate_action_package(
     metadata: &ActionMetadata,
-    components: &ActionComponents,
 ) -> Result<(), ActionPackageValidationErrors> {
     let mut errors = Vec::new();
 
@@ -122,22 +108,6 @@ pub fn validate_action_package(
         }
     }
 
-    let mut credential_keys = HashSet::new();
-    for cred in components.credentials() {
-        let key = cred.key.as_str().to_string();
-        if !credential_keys.insert(key.clone()) {
-            errors.push(ActionPackageValidationError::DuplicateCredentialDependency { key });
-        }
-    }
-
-    let mut resource_keys = HashSet::new();
-    for res in components.resources() {
-        let key = res.key.as_str().to_string();
-        if !resource_keys.insert(key.clone()) {
-            errors.push(ActionPackageValidationError::DuplicateResourceDependency { key });
-        }
-    }
-
     if errors.is_empty() {
         Ok(())
     } else {
@@ -149,10 +119,6 @@ pub fn validate_action_package(
 mod tests {
     use super::*;
     use crate::port::{DynamicPort, SupportPort};
-    use nebula_core::ResourceKey;
-    use nebula_core::{CredentialId, CredentialKey};
-    use nebula_credential::core::reference::ErasedCredentialRef;
-    use nebula_resource::reference::ErasedResourceRef;
 
     fn valid_metadata() -> ActionMetadata {
         ActionMetadata::new("test.action", "Test", "desc")
@@ -161,8 +127,7 @@ mod tests {
     #[test]
     fn valid_package_passes() {
         let meta = valid_metadata();
-        let components = ActionComponents::new();
-        assert!(validate_action_package(&meta, &components).is_ok());
+        assert!(validate_action_package(&meta).is_ok());
     }
 
     #[test]
@@ -170,9 +135,8 @@ mod tests {
         let meta = ActionMetadata::new("test.action", "Test", "desc")
             .with_inputs(vec![InputPort::flow("in"), InputPort::flow("in")])
             .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("out")]);
-        let components = ActionComponents::new();
 
-        let err = validate_action_package(&meta, &components).unwrap_err();
+        let err = validate_action_package(&meta).unwrap_err();
         assert!(err.errors.iter().any(|e| matches!(
             e,
             ActionPackageValidationError::DuplicateInputPortKey { .. }
@@ -200,9 +164,8 @@ mod tests {
                 label_field: None,
                 include_fallback: false,
             })]);
-        let components = ActionComponents::new();
 
-        let err = validate_action_package(&meta, &components).unwrap_err();
+        let err = validate_action_package(&meta).unwrap_err();
         assert!(
             err.errors
                 .iter()
@@ -213,31 +176,5 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, ActionPackageValidationError::InvalidDynamicPort { .. }))
         );
-    }
-
-    #[test]
-    fn duplicate_dependencies_fail_validation() {
-        let cred = ErasedCredentialRef {
-            id: CredentialId::new(),
-            key: CredentialKey::new("test_credential").unwrap(),
-        };
-        let res_key = ResourceKey::new("shared_resource").unwrap();
-        let res: ErasedResourceRef = ErasedResourceRef {
-            key: res_key.clone(),
-        };
-
-        let components = ActionComponents::new()
-            .with_credentials(vec![cred.clone(), cred])
-            .with_resources(vec![res.clone(), res]);
-        let meta = valid_metadata();
-        let err = validate_action_package(&meta, &components).unwrap_err();
-        assert!(err.errors.iter().any(|e| matches!(
-            e,
-            ActionPackageValidationError::DuplicateCredentialDependency { .. }
-        )));
-        assert!(err.errors.iter().any(|e| matches!(
-            e,
-            ActionPackageValidationError::DuplicateResourceDependency { .. }
-        )));
     }
 }

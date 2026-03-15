@@ -24,8 +24,7 @@ use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
 use nebula_resource::{
-    Manager, ResourceDependencies, TypedPool,
-    components::{ResourceComponents, TypedCredentialHandler},
+    Manager, ResourceDependencies, TypedCredentialHandler, TypedPool,
 };
 use std::sync::Arc;
 
@@ -199,7 +198,7 @@ async fn get_pool_direct_handle_rotation_hotswap() {
     HOTSWAP_AUTHORIZE_COUNT.store(0, Ordering::SeqCst);
 
     let mgr = Manager::new();
-    mgr.register_with_components(
+    mgr.register_with_handler(
         HotSwapResource,
         HotSwapConfig,
         pool_config(),
@@ -269,7 +268,7 @@ async fn get_pool_direct_handle_rotation_drain() {
     DRAIN_CREATE_COUNT.store(0, Ordering::SeqCst);
 
     let mgr = Manager::new();
-    mgr.register_with_components(
+    mgr.register_with_handler(
         DrainResource,
         DrainConfig,
         pool_config(),
@@ -332,7 +331,7 @@ async fn hotswap_rotation_calls_authorize_on_idle_instances() {
         .build();
 
     let mgr = Manager::new();
-    mgr.register_with_components(
+    mgr.register_with_handler(
         HotSwapResource,
         HotSwapConfig,
         pool_config(),
@@ -408,7 +407,7 @@ async fn drain_recreate_rotation_evicts_idle_instances() {
         .build();
 
     let mgr = Manager::new();
-    mgr.register_with_components(
+    mgr.register_with_handler(
         DrainResource,
         DrainConfig,
         pool_config(),

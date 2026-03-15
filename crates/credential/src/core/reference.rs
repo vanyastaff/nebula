@@ -70,7 +70,7 @@ impl<C: CredentialType> CredentialRef<C> {
 
     /// Create a type-only reference for dependency declaration (instance id TBD at runtime).
     ///
-    /// Use in `ActionComponents` when declaring "I need a credential of type C".
+    /// Use in `ActionDependencies::credential()` when declaring "I need a credential of type C".
     /// The instance id is [`CredentialId::nil()`](nebula_core::CredentialId::nil) until resolved.
     pub fn of() -> Self {
         Self::from_id(CredentialId::nil())
@@ -85,7 +85,7 @@ impl<C: CredentialType> From<CredentialRef<C>> for ErasedCredentialRef {
     }
 }
 
-/// Type-erased credential reference — used inside `ResourceComponents` and manager internals.
+/// Type-erased credential reference — used inside manager internals.
 ///
 /// Preserves both the instance id (UUID) and the protocol key (stable, serializable).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
