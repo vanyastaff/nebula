@@ -1,4 +1,25 @@
-//! Resource scoping and visibility management
+//! Resource scoping and access-control model.
+//!
+//! [`Scope`] expresses the *containment level* at which a resource is registered or
+//! requested. The six levels form a hierarchy:
+//!
+//! ```text
+//! Global  ⊇  Tenant  ⊇  Workflow  ⊇  Execution  ⊇  Action
+//!                                                     Custom (orthogonal, level 1)
+//! ```
+//!
+//! [`Strategy`] decides whether a pool registered at scope S can serve a caller at
+//! scope C:
+//!
+//! - **`Strict`**: S must equal C exactly.
+//! - **`Hierarchical`** (default): S must *contain* C, i.e. S is broader than or
+//!   equal to C. A `Global` pool serves every caller; an `Execution`-scoped pool
+//!   only serves callers within that specific execution.
+//! - **`Fallback`**: exact match first, hierarchical if no exact match exists.
+//!
+//! Every constructor (`try_tenant`, `try_workflow_in_tenant`, …) is fallible and
+//! returns `Err` when any ID string is empty, preventing the most common
+//! misconfiguration at the call site.
 
 use std::fmt;
 

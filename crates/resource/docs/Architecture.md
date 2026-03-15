@@ -1,491 +1,316 @@
-# nebula-resource Architecture
+# nebula-resource — Architecture
 
-## Overview
+## Problem Statement
 
-`nebula-resource` provides resource lifecycle management for the Nebula workflow
-engine. It manages the creation, pooling, health checking, scoping, and cleanup
-of external resources (database connections, HTTP clients, message queues, etc.)
-used by workflow actions.
+Workflow nodes need stable, efficient access to expensive external clients —
+database connections, HTTP clients, queue producers, SDK handles.
+Recreating those clients per action invocation is prohibitively expensive.
+At the same time, multi-tenant execution must enforce isolation: tenant A's
+pool must never serve tenant B's execution context.
 
-Key design decisions:
+`nebula-resource` centralises lifecycle management, pool orchestration,
+scope enforcement, health monitoring, and observability behind a single
+manager API with no business logic leaked into callers.
 
-- **bb8-style `Resource` trait** -- a single trait defines the full lifecycle
-  (create, validate, recycle, cleanup) with associated `Config` and `Instance`
-  types. No closure factories.
-- **Type erasure at the Manager boundary** -- `Pool<R>` is fully generic, but
-  `Manager` stores pools as `Arc<dyn AnyPool>` so it can hold heterogeneous
-  resource types in one `ArcSwap<HashMap<...>>` registry optimized for read-heavy acquire paths.
-- **RAII guards with taint support** -- `Guard<T>` returns instances to the pool on drop.
-  Callers can mark a guard as tainted (`guard.taint()`) so release skips recycle and
-  proceeds to cleanup with `CleanupReason::Tainted`. The manager wraps guards as
-  `AnyGuard` / `ResourceHandle` for type-erased access.
-- **Feature-gated modules** -- the core types (`Resource`, `Guard`, `Scope`,
-  `Context`, `Lifecycle`) require no async runtime. The `tokio` feature gates
-  all pool, manager, health, events, hooks, quarantine, and autoscale modules.
-- **Cancellation everywhere** -- `Context` carries a `CancellationToken`.
-  Pool acquire, health checks, and autoscale all respect cancellation via
-  `tokio::select!`.
+---
+
+## Key Design Decisions
+
+### 1. `Resource` trait (bb8-style)
+
+A single trait defines the full lifecycle — create, validate, recycle, cleanup.
+There are no closure factories. Callers register a value implementing `Resource`
+and the pool calls its methods directly with full access to `Config` and `Context`.
+
+This allows lifecycle methods to access config fields, share state via `Arc`
+inside the resource struct, and be independently tested without a pool.
+
+### 2. Type erasure at the `Manager` boundary
+
+`Pool<R>` is fully generic over `R: Resource`. The `Manager` stores pools as
+`Arc<dyn AnyPool>` behind an `ArcSwap<HashMap<String, PoolEntry>>`. This lets
+the manager hold heterogeneous resource types in one registry that is optimised
+for read-heavy acquire paths — readers take a snapshot of the `ArcSwap` with no
+locking; writes (register, hot-reload) pay one atomic swap.
+
+### 3. RAII guards with taint support
+
+`Guard<T>` holds a checked-out instance and calls a drop-callback on release.
+Callers signal that an instance is broken by calling `guard.taint()` before
+dropping; the pool then skips recycling and routes the instance to
+`Resource::cleanup`. The internal `Poison<T>` primitive guards pool state
+across async critical sections — if a future is cancelled mid-operation,
+`Poison` marks the value unusable so a subsequent accessor sees the error
+immediately rather than observing corrupt state.
+
+### 4. Scope isolation
+
+Every pool is registered under a `Scope`. At acquire time, `Strategy` checks
+whether the caller's `Context::scope` is compatible with the pool's scope.
+`Strategy::Hierarchical` (default) allows a broader-scope pool to serve a
+narrower caller: a `Global` pool serves `Tenant`, `Workflow`, and `Execution`
+contexts. `Strategy::Strict` requires an exact scope match.
+
+### 5. `EventBus` for observability decoupling
+
+All lifecycle transitions emit a `ResourceEvent` on the crate-local `EventBus`
+(backed by `nebula-eventbus`). Upstream crates subscribe independently — no
+callback registration, no circular imports. Each subscriber gets its own
+`broadcast::Receiver`; slow subscribers are isolated by the backpressure policy
+configured on the bus and never stall the acquire path.
+
+### 6. Cancellation everywhere
+
+`Context` carries a `CancellationToken`. Pool acquire, health checks, and
+auto-scale loops all branch on cancellation via `tokio::select!`. Dropping the
+token tree propagates shutdown to every in-flight operation without explicit
+signal passing.
+
+---
 
 ## Module Map
 
 ```
 nebula-resource/src/
-|
-|-- lib.rs              Re-exports, feature gates, prelude
-|
-|-- resource.rs         Resource trait, Config trait (no async runtime needed)
-|-- lifecycle.rs        Lifecycle state machine (Created -> ... -> Terminated)
-|-- guard.rs            Guard<T> RAII wrapper with drop callback
-|-- context.rs          Context (scope, IDs, cancellation, metadata, credentials)
-|-- scope.rs            Scope enum (Global/Tenant/Workflow/Execution/Action/Custom)
-|                       Strategy enum (Strict/Hierarchical/Fallback)
-|-- error.rs            Error enum, FieldViolation, Result alias
-|
-|-- [tokio] pool.rs          Pool<R>, PoolConfig, PoolStrategy, PoolStats
-|-- [tokio] poison.rs        Poison<T> wrapper, PoisonGuard, PoisonError (panic-safe state guard)
-|-- [tokio] manager.rs       Manager, DependencyGraph, AnyGuard, ResourceHandle
-|-- [tokio] events.rs        EventBus (broadcast), ResourceEvent variants
-|-- [tokio] health.rs        HealthChecker, HealthPipeline, HealthStage trait,
-|                             HealthCheckable trait, built-in stages
-|-- [tokio] hooks.rs         HookRegistry, ResourceHook trait, AuditHook,
-|                             SlowAcquireHook
-|-- [tokio] quarantine.rs    QuarantineManager, RecoveryStrategy, backoff
-|-- [tokio] autoscale.rs     AutoScaler, AutoScalePolicy (watermark-based)
-|-- [tokio+metrics] metrics.rs  MetricsCollector (EventBus subscriber)
-|
-|-- [credentials] credentials.rs  CredentialProvider trait, SecureString
+│
+│  ── Public API ────────────────────────────────────────────────────────────
+│
+├── resource.rs         Resource + Config traits.
+│                       No runtime deps — usable without tokio.
+│
+├── lifecycle.rs        Lifecycle enum:
+│                         Created → Initializing → Ready → InUse →
+│                         Idle → Maintenance → Draining → Cleanup →
+│                         Terminated | Failed
+│                       State machine validated by can_transition_to().
+│
+├── guard.rs            Guard<T, F> — RAII acquire handle.
+│                       taint() marks instance for cleanup on drop (skips recycle).
+│                       into_inner() extracts the value without invoking the callback.
+│
+├── context.rs          Context — scope, workflow_id, execution_id, tenant_id,
+│                       cancellation token, arbitrary metadata, telemetry Recorder.
+│                       ResourcePoolHandle<R> — typed handle for direct pool
+│                       access stored inside Context by the engine.
+│
+├── scope.rs            Scope enum (Global / Tenant / Workflow / Execution /
+│                       Action / Custom).
+│                       Strategy (Strict / Hierarchical / Fallback).
+│                       hierarchy_level() and contains() power Strategy::is_compatible.
+│
+├── pool.rs             Pool<R> — bounded semaphore pool.
+│                         PoolConfig, PoolStrategy, PoolBackpressurePolicy,
+│                         AdaptiveBackpressurePolicy, PoolStats, LatencyPercentiles.
+│                       Internal: Gate/GateGuard, CounterGuard (RAII helpers).
+│
+├── manager.rs          Manager — ArcSwap registry of Arc<dyn AnyPool>.
+│                       ManagerBuilder — preferred construction path.
+│                       ShutdownConfig (drain / cleanup / terminate timeouts).
+│                       ResourceStatus, ResourcePoolStatus (observability snapshots).
+│                       Re-exports: DependencyGraph, AnyGuard, TypedResourceGuard,
+│                         AnyGuardTrait, ResourceHandle, TypedPool.
+│
+├── health.rs           HealthState, HealthStatus, HealthRecord.
+│                       HealthCheckable trait.
+│                       HealthChecker — background Tokio task per monitored instance.
+│                       HealthStage, HealthPipeline — composable multi-stage checks.
+│                       ConnectivityStage, PerformanceStage — built-in stages.
+│                       ResourceHealthAdapter — wraps Resource as a health probe.
+│
+├── quarantine.rs       QuarantineManager — isolates unhealthy resources.
+│                       QuarantineEntry, QuarantineReason, RecoveryStrategy
+│                       (exponential backoff: base_delay * multiplier^attempt,
+│                        capped at max_delay).
+│
+├── events.rs           EventBus (thin wrapper around nebula-eventbus).
+│                       ResourceEvent enum — full lifecycle event catalog.
+│                       CleanupReason, QuarantineTrigger.
+│                       Re-exports from nebula-eventbus:
+│                         BackPressurePolicy, EventFilter, EventSubscriber,
+│                         ScopedSubscriber, SubscriptionScope, PublishOutcome.
+│
+├── hooks.rs            HookRegistry — ordered pre/post callbacks for
+│                       acquire, release, create, cleanup.
+│                       ResourceHook trait. HookEvent, HookFilter, HookResult.
+│                       Built-ins: AuditHook (priority 10),
+│                                  SlowAcquireHook (priority 90).
+│
+├── autoscale.rs        AutoScalePolicy (high/low watermarks, step sizes, cooldown).
+│                       AutoScaler — Tokio task that polls utilisation and calls
+│                       caller-provided scale_up / scale_down closures.
+│
+├── metadata.rs         ResourceMetadata — display name, description, category,
+│                       icon, icon_url, tags. ResourceMetadataBuilder.
+│                       ResourceCategory (Database / Messaging / Http /
+│                       Bot / Storage / Other).
+│
+├── reference.rs        ResourceRef<R> — typed wrapper around ResourceKey.
+│                       ErasedResourceRef — type-erased version for storage.
+│                       ResourceProvider trait — typed and dynamic acquire.
+│
+├── error.rs            Error (non-exhaustive), ErrorCategory
+│                       (Retryable / Fatal / Validation), FieldViolation.
+│                       Implements nebula_resilience::Retryable.
+│
+├── poison.rs           Poison<T> — arm/disarm guard for async critical sections.
+│                       PoisonGuard — RAII disarm. PoisonError — access attempt
+│                       on a poisoned value.
+│
+├── components.rs       HasResourceComponents — declares credential and
+│                       sub-resource dependencies for a Resource type.
+│                       ResourceComponents builder. TypedCredentialHandler<I>.
+│
+├── instrumented.rs     InstrumentedGuard — wraps AnyGuard, records usage via
+│                       Recorder on drop (DropReason: Released / Panic / Detached).
+│
+├── metrics.rs          MetricsCollector — counter/histogram bridge to nebula-metrics.
+│
+│  ── Internal ──────────────────────────────────────────────────────────────
+│
+├── dependency_graph.rs DependencyGraph — directed graph for topological
+│                       startup/shutdown ordering. Cycle detection via DFS.
+│                       Re-exported publicly on Manager.
+│
+├── manager_guard.rs    AnyGuardTrait, AnyGuard, TypedResourceGuard<R>,
+│                       ResourceHandle — type-erased guard layer returned
+│                       by Manager to callers.
+│                       ReleaseHookGuard — runs after-release hooks on drop.
+│
+└── manager_pool.rs     TypedPool<R>, AnyPool (object-safe pool trait),
+                        PoolEntry, RotatablePool (credential rotation dispatch).
+                        The manager's private pool wrappers.
 ```
 
-Module dependency flow:
+---
+
+## Data Flow
+
+### Acquire path
 
 ```
-                    resource.rs
-                    lifecycle.rs
-                    guard.rs
-                    context.rs ---------> scope.rs
-                    error.rs                 |
-                        |                    |
-      +-----------------+--------------------+
-      |                 |
-      v                 v
-  pool.rs --------> events.rs
-      |                 |
-      v                 v
-  manager.rs <---- health.rs
-      |                 |
-      +-----+-----------+
-      |     |           |
-      v     v           v
-  hooks.rs  quarantine.rs  autoscale.rs
-                            |
-                            v
-                        metrics.rs (subscribes to EventBus)
+Caller
+  │  manager.acquire(&key, &ctx)
+  ▼
+Manager
+  │  1. Lock-free snapshot of ArcSwap registry
+  │  2. Look up PoolEntry by ResourceKey
+  │  3. Strategy::is_compatible(pool.scope, ctx.scope)
+  │     └─ incompatible → Error::Unavailable
+  │  4. HookRegistry::run_before(HookEvent::Acquire, ...)
+  │     └─ HookResult::Cancel → Error (from hook)
+  ▼
+Pool<R>::acquire_inner(&ctx)
+  │  5. CounterGuard increments waiter count (RAII)
+  │  6. Semaphore permit per PoolBackpressurePolicy:
+  │     ├─ FailFast    → try_acquire; error if unavailable
+  │     ├─ BoundedWait → acquire with fixed timeout
+  │     └─ Adaptive    → choose timeout from utilisation + waiter stats
+  │  7. Pop idle instance from VecDeque:
+  │     ├─ Fifo: pop_front  (oldest idle instance)
+  │     └─ Lifo: pop_back   (most recently used)
+  │  8. Call Resource::is_reusable on idle instance:
+  │     └─ false / Err → Resource::cleanup, try next idle instance
+  │  9. No idle instance → Resource::create (circuit-breaker guarded)
+  │ 10. Record acquire latency in HDR histogram
+  │ 11. EventBus::emit(Acquired { wait_duration })
+  │ 12. Wrap instance in Guard<T> with on_drop = pool release callback
+  ▼
+Manager wraps Guard in InstrumentedGuard
+  │ 13. Attach ctx.recorder() for per-call telemetry
+  ▼
+TypedResourceGuard<R> returned to caller (Deref<Target = R::Instance>)
 ```
 
-## Core Abstractions
-
-### Resource trait (`resource.rs`)
-
-```rust
-pub trait Resource: Send + Sync + 'static {
-    type Config: Config;
-    type Instance: Send + Sync + 'static;
-
-    fn metadata(&self) -> ResourceMetadata;
-    fn create(&self, config: &Self::Config, ctx: &Context) -> impl Future<Output = Result<Self::Instance>> + Send;
-    fn is_reusable(&self, instance: &Self::Instance) -> impl Future<Output = Result<bool>> + Send;
-    fn recycle(&self, instance: &mut Self::Instance) -> impl Future<Output = Result<()>> + Send;
-    fn cleanup(&self, instance: Self::Instance) -> impl Future<Output = Result<()>> + Send;
-
-    fn declare_key() -> ResourceKey
-    where
-        Self: Sized;
-}
-```
-
-No `async_trait` -- uses `impl Future` in return position (Rust 2024 RPITIT).
-Default implementations return `Ok(true)` for `is_reusable`, `Ok(())` for
-`recycle` and `cleanup`. `declare_key()` provides a stable compile-time key for
-typed manager APIs (for example `acquire_typed::<R>(&ctx)`).
-
-### Pool (`pool.rs`)
-
-`Pool<R>` manages a bounded set of `R::Instance` objects. Internally:
-
-- **`PoolInner<R>`** holds `Arc<R>`, `R::Config`, `PoolConfig`, a `Mutex<Poison<PoolState<T>>>`
-  (idle queue + stats + shutdown flag, wrapped in a panic-safe `Poison<T>` guard), a
-  `Semaphore` (limits concurrent active instances), a `Gate` (cooperative shutdown barrier
-  from `nebula-resilience`), a `CancellationToken`, an optional `EventBus`, and optional
-  `CircuitBreaker` instances for the `create` and `recycle` operations.
-- **`PoolConfig`** controls: `min_size`, `max_size`, `acquire_timeout`,
-  `idle_timeout`, `max_lifetime`, `validation_interval`, `maintenance_interval`,
-  `strategy` (FIFO or LIFO), `create_breaker` (optional `CircuitBreakerConfig` for
-  instance creation), and `recycle_breaker` (optional `CircuitBreakerConfig` for
-  instance recycling). Call `PoolConfig::with_standard_breakers()` to apply
-  production-ready defaults for both.
-- **`PoolStrategy`**: `Fifo` (even distribution, default) or `Lifo` (hot
-  working set, lets cold instances expire).
-- **`PoolStats`**: counters for acquisitions, releases, active, idle, created,
-  destroyed, plus `acquire_latency: Option<LatencyPercentiles>`
-  (`p50/p95/p99/p999/mean`).
-
-Acquire flow within the pool:
-
-0. Check the `create` circuit breaker: if it is open, return
-   `Error::CircuitBreakerOpen { operation: "create", .. }` immediately and
-   emit a `ResourceEvent::CircuitBreakerOpen` event.
-1. Acquire a semaphore permit (with `acquire_timeout`).
-2. Pop an idle entry (FIFO or LIFO per strategy).
-3. If expired -- cleanup and retry from step 2.
-4. If present -- validate via `is_reusable()`. Invalid entries are cleaned up.
-5. If no idle entries -- create a new instance via `Resource::create()`.
-6. Track `created_at` on the entry so lifetime expiration works correctly.
-7. Wrap in `Guard<R::Instance>` whose drop callback spawns `return_instance()`.
-
-Release flow (`return_instance`):
-
-1. Call `Resource::recycle()` on the instance.
-2. If recycle succeeds and pool is not shut down, push back as idle `Entry`.
-3. Otherwise call `Resource::cleanup()` and destroy.
-4. Update stats, emit Released event, return semaphore permit.
-
-Shutdown flow (`Pool::shutdown()`):
-
-1. Call `gate.close().await` -- rejects new `enter()` calls and waits for all
-   outstanding `GateGuard`s (i.e. the maintenance task) to be dropped.
-2. Close the semaphore, draining idle entries and calling `Resource::cleanup()`
-   on each.
-
-Optional background maintenance task (if `maintenance_interval` is set) runs
-`maintain()` on a timer with cancellation support. The task holds a `GateGuard`
-for its lifetime so that `Pool::shutdown()` — which calls `gate.close().await`
-before closing the semaphore — cannot complete until the maintenance loop exits.
-
-### Manager (`manager.rs`)
-
-`Manager` is the central registry. It stores:
-
-| Field            | Type                                    | Purpose                              |
-|------------------|-----------------------------------------|--------------------------------------|
-| `pools`          | `ArcSwap<HashMap<String, PoolEntry>>`   | Type-erased pools keyed by ID        |
-| `deps`           | `RwLock<DependencyGraph>`               | Initialization/shutdown ordering     |
-| `health_checker` | `Arc<HealthChecker>`                    | Background instance monitoring       |
-| `event_bus`      | `Arc<EventBus>`                         | Lifecycle event broadcasting         |
-| `quarantine`     | `QuarantineManager`                     | Unhealthy resource isolation         |
-| `health_states`  | `moka::sync::Cache<String, HealthState>`| Per-resource health cache with TTI   |
-| `hooks`          | `HookRegistry`                          | Lifecycle hooks                      |
-
-Key methods:
-
-- **`register<R>(resource, config, pool_config)`** -- creates a `Pool<R>`,
-  wraps it in `TypedPool` -> `Arc<dyn AnyPool>`, validates dependencies against
-  the graph (clone-validate-swap for atomicity), emits `Created` event.
-- **`register_scoped<R>(..., scope)`** -- same, with explicit scope.
-- **`acquire(resource_id, ctx)`** -- checks quarantine, health state, scope
-  compatibility, runs before-hooks, delegates to pool, runs after-hooks, emits
-  events.
-- **`shutdown_scope(scope)`** -- collects pools within the scope, shuts them
-  down in reverse topological order to respect dependencies.
-
-**Type erasure chain:**
+### Release path (Guard drop)
 
 ```
-Pool<R>::acquire(ctx) -> Guard<R::Instance>
-  |
-  v  (wrapped by TypedPool)
-TypedGuard<R> { guard: Guard<R::Instance> }
-  |
-  v  (boxed as)
-AnyGuard = Box<dyn AnyGuardTrait>
-  |
-  v  (wrapped for consumer API)
-ResourceHandle { guard: AnyGuard }
-  |-- get::<T>() -> Option<&T>     (downcast via Any)
-  |-- get_mut::<T>() -> Option<&mut T>
+TypedResourceGuard<R> drops
+  │
+InstrumentedGuard::drop
+  │  1. Emit CallRecord via Recorder (DropReason::Released or Panic)
+  ▼
+Guard<T>::drop (invokes on_drop callback)
+  │  if tainted:
+  │    Resource::cleanup(instance)
+  │    EventBus::emit(CleanedUp { reason: Tainted })
+  │  else:
+  │    Resource::recycle(&mut instance)  (circuit-breaker guarded)
+  │    VecDeque::push_back (Lifo) or push_front (Fifo) back to idle queue
+  │    Semaphore::add_permits(1)
+  │    EventBus::emit(Released { usage_duration })
+  ▼
+ReleaseHookGuard::drop
+  │  HookRegistry::run_after(HookEvent::Release, ..., success)
 ```
 
-### DependencyGraph (`manager.rs`)
-
-Directed graph with two adjacency lists (`dependencies` and `dependents`).
-Supports:
-
-- `add_dependency(resource, depends_on)` -- rejects cycles (DFS-based).
-- `topological_sort()` -- Kahn's algorithm for initialization order.
-- `get_init_order(resource)` -- transitive dependencies for one resource.
-- `remove_all_for(resource)` -- clean removal on re-registration.
-
-### Guard (`guard.rs`)
-
-```rust
-pub struct Guard<T, F = Box<dyn FnOnce(T, bool) + Send>> {
-    resource: Option<T>,
-    on_drop: Option<F>,
-    tainted: bool,
-}
-```
-
-Implements `Deref`, `DerefMut`, and `Drop`. The drop callback typically spawns
-an async task to return the instance to the pool. `into_inner()` consumes the
-guard without triggering the callback. `taint()` marks an instance as unusable,
-so pool release skips recycle and performs cleanup directly.
-
-### Context (`context.rs`)
-
-Flat struct carrying all per-operation context:
-
-- `scope: Scope` -- visibility scope for this operation.
-- `execution_id`, `workflow_id`, `tenant_id` -- identity.
-- `cancellation: CancellationToken` -- cooperative cancellation.
-- `metadata: HashMap<String, String>` -- arbitrary key-value pairs.
-- `credentials: Option<Arc<dyn CredentialProvider>>` -- (feature-gated).
-
-Builder pattern via `with_tenant()`, `with_metadata()`, `with_cancellation()`,
-`with_credentials()`.
-
-### Scope (`scope.rs`)
-
-Hierarchical visibility model:
+### Health and quarantine state machine
 
 ```
-Global (level 0)
-  |-- Tenant { tenant_id } (level 1)
-       |-- Workflow { workflow_id, tenant_id? } (level 2)
-            |-- Execution { execution_id, workflow_id?, tenant_id? } (level 3)
-                 |-- Action { action_id, execution_id?, workflow_id?, tenant_id? } (level 4)
-Custom { key, value } (level 5)
+HealthChecker — background Tokio task spawned per monitored instance
+  │
+  │  polls Resource::health_check() at HealthCheckConfig::default_interval
+  │  (timeout: HealthCheckConfig::check_timeout)
+  │
+  ├─ consecutive_failures < failure_threshold
+  │    └─ update HealthRecord; emit HealthChanged if state differs
+  │
+  ├─ consecutive_failures >= failure_threshold
+  │    └─ QuarantineManager::quarantine(resource_id, QuarantineReason::HealthCheckFailed)
+  │         └─ EventBus::emit(Quarantined { trigger, from_health, to_health })
+  │
+  └─ QuarantineEntry::next_recovery_at reached
+       └─ Recovery probe:
+            Resource::create → Resource::is_reusable → Resource::cleanup
+            ├─ success → QuarantineManager::release(resource_id)
+            │              EventBus::emit(QuarantineReleased { recovery_attempts })
+            └─ failure → QuarantineEntry::record_failed_recovery
+                           ├─ attempts < max → schedule next probe
+                           └─ exhausted     → log permanent failure
 ```
 
-`Scope::contains(other)` checks parent chain consistency with deny-by-default
-semantics: if the parent specifies a field but the child does not, containment
-is denied. This prevents scope leaks.
+---
 
-`Strategy` controls how scope matching works during acquire:
-
-| Strategy       | Behavior                                              |
-|----------------|-------------------------------------------------------|
-| `Strict`       | Exact scope match only                                |
-| `Hierarchical` | Resource scope must contain caller scope (default)    |
-| `Fallback`     | Exact match first, then fall back to containment      |
-
-### Lifecycle (`lifecycle.rs`)
-
-State machine enum with 10 states:
+## Dependency Graph
 
 ```
-Created -> Initializing -> Ready -> InUse -> Idle
-                             |        |       |
-                             v        v       v
-                          Draining  Ready  Maintenance
-                             |                |
-                             v                v
-                          Cleanup          Cleanup -> Terminated
-                             |
-                             v
-                          Terminated
-
-(Any state) -> Failed -> Cleanup -> Terminated
+nebula-resource
+  ├── nebula-core         ResourceKey, ResourceId, ExecutionId, WorkflowId,
+  │                       CredentialId, CredentialKey, PluginKey
+  ├── nebula-credential   CredentialType, ErasedCredentialRef, RotationStrategy
+  ├── nebula-eventbus     EventBus, BackPressurePolicy, PublishOutcome,
+  │                       EventFilter, SubscriptionScope
+  ├── nebula-metrics      counter/histogram bridge
+  ├── nebula-telemetry    Recorder, CallRecord, DropReason, ResourceUsageRecord
+  └── nebula-resilience   CircuitBreaker, CircuitBreakerConfig, Gate, Retryable
 ```
 
-`can_transition_to(target)` enforces valid transitions. `is_available()` returns
-true for `Ready` and `Idle`. `is_terminal()` returns true for `Terminated` and
-`Failed`.
+No upward dependencies. `nebula-api`, `nebula-engine`, and adapter crates
+depend on `nebula-resource`; this crate never imports them.
 
-## Cross-Cutting Concerns
+---
 
-### Events (`events.rs`)
+## Invariants
 
-`EventBus` wraps `tokio::sync::broadcast`. Fire-and-forget: no backpressure on
-emitters. Subscribers receive cloned `ResourceEvent` variants.
+1. **Semaphore permits == idle + active.**
+   `Pool` acquires one permit per checked-out instance and releases one permit
+   on Guard drop. `Poison<T>` ensures a cancelled future does not strand a permit.
 
-Event variants: `Created`, `Acquired`, `Released`, `HealthChanged`,
-`PoolExhausted`, `CleanedUp`, `Quarantined`, `QuarantineReleased`, `Error`.
+2. **Config is validated before the pool is created.**
+   `Manager::register` calls `Config::validate` and returns `Error::Validation`
+   before constructing a `Pool`.
 
-### Hooks (`hooks.rs`)
+3. **Resource key is unique per Manager.**
+   Registering the same `ResourceKey` twice returns `Error::Configuration`.
+   Hot-reload via `Manager::reload_config` is the only path to update an
+   existing pool's config.
 
-`HookRegistry` stores `Vec<Arc<dyn ResourceHook>>` sorted by priority (lower
-runs first), protected by `RwLock`.
+4. **Events are best-effort, never blocking.**
+   `EventBus::emit` is fire-and-forget. Slow subscribers are isolated by the
+   backpressure policy and never stall the acquire path.
 
-`ResourceHook` trait:
-- `before()` can return `HookResult::Cancel(Error)` to abort the operation.
-- `after()` is always called (success or failure), errors logged but never
-  propagated.
-- `filter()` controls which resources the hook applies to (`All`, `Resource(id)`,
-  `Prefix(prefix)`).
+5. **Circuit breakers are per-operation, not per-pool.**
+   Each `Pool<R>` has independent circuit breakers for `create` and `recycle`.
+   A failing `recycle` does not block new `create` calls.
 
-Built-in hooks:
-- **`AuditHook`** (priority 10) -- logs all events via `tracing::info!`.
-- **`SlowAcquireHook`** (priority 90) -- warns when acquire exceeds a duration
-  threshold. Stores timers in a `Mutex<HashMap>` keyed by resource+execution.
-
-### Health (`health.rs`)
-
-Three layers:
-
-1. **`HealthCheckable` trait** -- per-instance health check with configurable
-   interval and timeout.
-2. **`HealthChecker`** -- background monitor. Spawns a per-instance tokio task
-   that runs health checks at intervals. Tracks `HealthRecord` per instance in
-   a `DashMap`. Emits `HealthChanged` events on state transitions. Uses
-   per-instance child `CancellationToken`s for clean shutdown.
-3. **`HealthPipeline` + `HealthStage`** -- composable pipeline of stages.
-   Stages run in order; short-circuits on `Unhealthy`. Returns worst status.
-
-Built-in stages:
-- **`ConnectivityStage<F>`** -- user-provided async probe function.
-- **`PerformanceStage`** -- latency threshold checks (`warn_threshold`,
-  `fail_threshold`) with optional probe function.
-
-Health states: `Healthy`, `Degraded { reason, performance_impact }`,
-`Unhealthy { reason, recoverable }`, `Unknown`. `HealthStatus::score()` maps
-to 0.0-1.0. `is_usable()` allows Degraded up to 0.8 impact.
-
-### Quarantine (`quarantine.rs`)
-
-`QuarantineManager` isolates unhealthy resources. Thread-safe via `DashMap`.
-
-- Resources are quarantined when consecutive health failures exceed
-  `failure_threshold`.
-- Recovery attempts use exponential backoff via `RecoveryStrategy`
-  (`base_delay`, `max_delay`, `multiplier`).
-- `QuarantineEntry` tracks attempts, scheduled next retry, and exhaustion.
-- Manager's `acquire()` checks quarantine status before pool access -- returns
-  `Error::Unavailable { retryable: true }` for quarantined resources.
-
-### AutoScale (`autoscale.rs`)
-
-`AutoScaler` monitors pool utilization via watermark thresholds.
-
-- Decoupled from `Pool` via closures (`get_stats`, `scale_up`, `scale_down`).
-- Checks utilization every `evaluation_window / 2`.
-- Scales up when utilization exceeds `high_watermark` (default 0.8) for
-  `evaluation_window` (default 30s).
-- Scales down when utilization drops below `low_watermark` (default 0.2) for
-  the same window.
-- Respects a `cooldown` (default 60s) between scale operations.
-- Cancelled via `CancellationToken`.
-
-`Pool<R>` exposes `scale_up(count)` and `scale_down(count)` methods that the
-scaler callbacks can call.
-
-### Metrics (`metrics.rs`)
-
-`MetricsCollector` subscribes to the `EventBus` and translates events into
-counters, gauges, and histograms via the `metrics` crate. Gated behind the
-`metrics` feature (requires `tokio` as well). Runs as a background task until
-the event bus is dropped.
-
-## Feature Gates
-
-| Feature        | Modules Enabled                                           | Dependencies Added                        |
-|----------------|-----------------------------------------------------------|-------------------------------------------|
-| `std` (default)| --                                                        | tokio/rt, tracing/std                     |
-| `tokio` (default)| pool, manager, events, health, hooks, quarantine, autoscale | tokio                                   |
-| `serde` (default)| serde derives on config types                            | serde, serde_json                         |
-| `metrics`      | metrics.rs                                                | nebula-metrics, metrics (export in app)   |
-| `tracing`      | structured logging throughout                             | tracing, tracing-opentelemetry, opentelemetry |
-| `credentials`  | credentials.rs, Context.credentials field                 | nebula-credential                         |
-| `full`         | all of the above                                          | all of the above                          |
-
-Core types that work without any feature flags: `Resource`, `Config`, `Guard`,
-`Context`, `Scope`, `Strategy`, `Lifecycle`, `Error`.
-
-## Data Flow: Acquire/Release End to End
-
-### Acquire
-
-```
-ActionContext::resource("postgres")
-  |
-  v
-engine::Resources::acquire("postgres")   [crates/engine/src/resource.rs]
-  |-- builds Context from workflow_id, execution_id, scope, cancellation
-  |
-  v
-Manager::acquire("postgres", &ctx)       [crates/resource/src/manager.rs]
-  |-- 1. Check quarantine status          -> Error::Unavailable if quarantined
-  |-- 2. Check health_states map          -> Error::Unavailable if Unhealthy
-  |-- 3. Look up pool in ArcSwap snapshot -> Error::Unavailable if not registered
-  |-- 4. Validate scope (Hierarchical)    -> Error::Unavailable if scope mismatch
-  |-- 5. Run before-hooks                 -> hook can Cancel with Error
-  |-- 6. pool.acquire_any(ctx)            (see below)
-  |-- 7. Emit Acquired event
-  |-- 8. Run after-hooks (success=true)
-  |-- 9. Return AnyGuard
-  |
-  v
-Pool<R>::acquire(ctx)                    [crates/resource/src/pool.rs]
-  |-- tokio::select! { acquire_inner OR ctx.cancellation }
-  |-- acquire_inner:
-  |     1. Semaphore::acquire (with timeout)
-  |     2. Pop idle entry (FIFO/LIFO)
-  |     3. Skip expired (cleanup), retry
-  |     4. Validate via is_reusable(), cleanup invalid, retry
-  |     5. If no idle: Resource::create(config, ctx)
-  |     6. Wrap in Guard<R::Instance> with return callback
-  |
-  v
-Guard<R::Instance> returned to caller (via AnyGuard -> ResourceHandle)
-```
-
-### Release (Guard Drop)
-
-```
-Guard<R::Instance> dropped
-  |
-  v
-on_drop callback fires
-  |-- spawns tokio task: Pool::return_instance(pool, instance, created_at, usage_duration, tainted)
-       |
-       |-- 1. If tainted: skip recycle and go straight to cleanup
-       |-- 2. Else Resource::recycle(&mut instance)
-       |-- 3. If recycle OK and not shutdown: push Entry back to idle queue
-       |-- 4. If recycle failed, tainted, or shutdown: Resource::cleanup(instance)
-       |-- 5. Emit Released event (and CleanedUp with reason when destroyed)
-       |-- 6. Update stats (active--, idle count, releases++)
-       |-- 7. Semaphore::add_permits(1)
-```
-
-## Integration: Engine Bridge
-
-`crates/engine/src/resource.rs` defines `Resources`, a per-execution adapter
-that bridges `nebula_resource::Manager` to `nebula_action::ResourceProvider`.
-
-```
-nebula-action                    nebula-engine                   nebula-resource
-+---------------------+         +-------------------+           +------------------+
-| ResourceProvider    |<--------|  Resources        |---------->| Manager          |
-|   acquire(key)      |  impl   |   manager: Arc    |  calls    |   pools          |
-|   -> Box<dyn Any>   |         |   scope           |           |   deps           |
-+---------------------+         |   workflow_id     |           |   health_checker |
-                                |   execution_id    |           |   event_bus      |
-                                |   cancellation    |           |   quarantine     |
-                                +-------------------+           |   hooks          |
-                                                                +------------------+
-```
-
-The engine constructs a `Resources` per workflow execution with:
-- An `Arc<Manager>` shared across the engine.
-- Workflow/execution IDs and a `CancellationToken`.
-- An `Execution`-level `Scope` built from the IDs.
-
-When an action calls `ctx.resource("postgres")`:
-1. `Resources::acquire()` builds a `Context` with the execution scope and
-   cancellation token.
-2. Delegates to `Manager::acquire()` which returns an `AnyGuard`.
-3. Wraps the guard in a `ResourceHandle` and returns it as `Box<dyn Any + Send>`.
-4. The action downcasts via `ResourceHandle::get::<T>()`.
-5. When the action drops the handle, the guard drops, returning the instance to
-   the pool.
-
-## Error Handling
-
-`Error` is a comprehensive enum with 13 variants covering configuration,
-initialization, unavailability, health checks, credentials, cleanup, timeouts,
-circuit breaker, pool exhaustion, dependency failures, circular dependencies,
-state transitions, validation, and internal errors.
-
-`Error::is_retryable()` returns true for: `Unavailable { retryable: true }`,
-`Timeout`, `PoolExhausted`, `CircuitBreakerOpen`.
-
-`Error::resource_id()` returns the associated resource ID when available
-(all variants except `Configuration`, `CircularDependency`, `Validation`).
+6. **No unsafe code.**
+   The crate is compiled with `#![forbid(unsafe_code)]`.

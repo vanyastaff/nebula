@@ -116,6 +116,8 @@ impl MetricsCollector {
                 resource_key, to, ..
             } => {
                 let id = Self::resource_label(resource_key);
+                // Map health state to a numeric gauge: 1.0 = healthy, 0.5 = degraded/unknown,
+                // 0.0 = unhealthy. This lets alerting thresholds use simple numeric comparisons.
                 let score = match to {
                     crate::health::HealthState::Healthy => 1.0,
                     crate::health::HealthState::Degraded { .. } => 0.5,
@@ -169,6 +171,8 @@ impl MetricsCollector {
                 .increment(1);
             }
             ResourceEvent::ConfigReloadRejected { resource_key, .. } => {
+                // A rejected reload is an error condition — count it alongside other errors
+                // so dashboards surface it without needing a separate panel.
                 let id = Self::resource_label(resource_key);
                 metrics::counter!(NEBULA_RESOURCE_ERROR_TOTAL, "resource_id" => id).increment(1);
             }
@@ -208,18 +212,30 @@ impl MetricsCollector {
         }
     }
 
+    /// Produce a stable metric label string for a resource key.
+    ///
+    /// Labels are truncated at 64 characters (with a trailing `~` marker) to keep
+    /// cardinality manageable in time-series databases. Once
+    /// [`MAX_RESOURCE_LABEL_CARDINALITY`] distinct labels have been seen, any new
+    /// resource key maps to the sentinel `"__other"` label instead of creating a
+    /// new series. This prevents a cardinality explosion in deployments that
+    /// dynamically register many resource keys.
     fn resource_label(resource_key: &ResourceKey) -> String {
         let raw = resource_key.as_ref();
+        // Truncate long keys and mark them so they are distinguishable from the
+        // original full-length key in dashboards.
         let normalized = if raw.len() > 64 {
             format!("{}~", &raw[..63])
         } else {
             raw.to_string()
         };
 
+        // Fast path: label already registered.
         if RESOURCE_LABELS.contains(&normalized) {
             return normalized;
         }
 
+        // Guard against unbounded cardinality growth.
         if RESOURCE_LABELS.len() >= MAX_RESOURCE_LABEL_CARDINALITY {
             return "__other".to_string();
         }

@@ -1,9 +1,17 @@
-//! ResourceComponents and HasResourceComponents — typed dependency declaration for resources.
+//! Typed dependency declaration for resources.
 //!
-//! Используется менеджером ресурсов для:
-//! 1. Построения графа зависимостей (`DependencyGraph`) по ресурсам.
-//! 2. Связывания пулов с нужными credential’ами.
-//! 3. Инъекции саб‑ресурсов в `Context` перед вызовом `Resource::create()`.
+//! [`ResourceComponents`] is filled in by [`HasResourceComponents::components`] and consumed
+//! by the manager to:
+//!
+//! 1. Build the [`DependencyGraph`] for ordered startup and shutdown.
+//! 2. Attach a [`CredentialHandler`] to the pool so credential rotation events are
+//!    automatically forwarded to in-pool instances.
+//! 3. Inject sub-resource handles into [`Context`] before [`Resource::create`] is called.
+//!
+//! [`DependencyGraph`]: crate::manager::DependencyGraph
+//! [`CredentialHandler`]: crate::pool::CredentialHandler
+//! [`Context`]: crate::context::Context
+//! [`Resource::create`]: crate::resource::Resource::create
 
 use std::marker::PhantomData;
 
@@ -15,9 +23,12 @@ use crate::pool::CredentialHandler;
 use crate::reference::ErasedResourceRef;
 use crate::resource::Resource;
 
-/// Декларация зависимостей ресурса: опциональный credential и список саб‑ресурсов.
+/// Dependency declaration for a resource type: an optional credential and a list of
+/// sub-resource references.
 ///
-/// Заполняется в `HasResourceComponents::components()` и читается менеджером.
+/// Built via the fluent API in [`HasResourceComponents::components`] and consumed by the
+/// manager at registration time. After registration this value is not stored — the
+/// manager extracts what it needs (credential handler, dependency edges) and discards it.
 #[derive(Debug, Clone, Default)]
 pub struct ResourceComponents {
     credential: Option<ErasedCredentialRef>,
@@ -25,17 +36,24 @@ pub struct ResourceComponents {
 }
 
 impl ResourceComponents {
-    /// Создать пустой набор компонентов без зависимостей.
+    /// Create an empty component set with no dependencies.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Объявить credential, требуемый ресурсом.
+    /// Declare a credential required by this resource.
     ///
-    /// # Паника
+    /// `id` must be a valid UUID string matching the credential registered in
+    /// [`nebula_credential`]. The credential's type `C` determines which
+    /// [`CredentialHandler`] is attached to the pool and what rotation semantics apply.
     ///
-    /// Падает, если `id` — невалидный UUID. В `components()` обычно используются
-    /// строковые литералы с UUID, поэтому это ошибка конфигурации.
+    /// # Panics
+    ///
+    /// Panics if `id` is not a valid UUID. This is intentional — `components()` is
+    /// called once at startup from static configuration; an invalid ID is a
+    /// programming error, not a runtime condition.
+    ///
+    /// [`CredentialHandler`]: crate::pool::CredentialHandler
     pub fn credential<C>(mut self, id: &str) -> Self
     where
         C: nebula_credential::CredentialType,
@@ -50,11 +68,20 @@ impl ResourceComponents {
         self
     }
 
-    /// Объявить зависимость от другого ресурса по ключу.
+    /// Declare a dependency on another registered resource.
     ///
-    /// # Паника
+    /// The manager uses this to add an edge in the [`DependencyGraph`], ensuring the
+    /// dependency is started before this resource and shut down after it.
     ///
-    /// Падает, если `key` — невалидный `ResourceKey`.
+    /// # Panics
+    ///
+    /// Panics if `key` is not a valid [`ResourceKey`]. Like [`credential`], this is
+    /// called at startup from static configuration, so an invalid key is a
+    /// programming error.
+    ///
+    /// [`DependencyGraph`]: crate::manager::DependencyGraph
+    /// [`ResourceKey`]: nebula_core::ResourceKey
+    /// [`credential`]: Self::credential
     pub fn resource<R: Resource>(mut self, key: &str) -> Self {
         let key = nebula_core::ResourceKey::new(key).expect(
             "invalid resource key in HasResourceComponents::components() (expected literal key)",
@@ -63,12 +90,12 @@ impl ResourceComponents {
         self
     }
 
-    /// Внутренний доступ к credential (для менеджера).
+    /// Returns the declared credential reference, if any.
     pub(crate) fn credential_ref(&self) -> Option<&ErasedCredentialRef> {
         self.credential.as_ref()
     }
 
-    /// Внутренний доступ к списку ресурсных зависимостей (для менеджера).
+    /// Returns the declared sub-resource dependencies.
     pub(crate) fn resource_refs(&self) -> &[ErasedResourceRef] {
         &self.resources
     }
@@ -86,7 +113,24 @@ impl ResourceComponents {
     }
 }
 
-/// Реализуется на `Resource`‑фабрике для декларации credential’ов и саб‑ресурсов.
+/// Implemented on a [`Resource`] factory to declare its credential and sub-resource
+/// dependencies.
+///
+/// The manager calls `components()` once at registration time. Implement this trait
+/// when your resource requires a credential (for rotation support) or depends on
+/// another resource being available first (for dependency-ordered startup).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// impl HasResourceComponents for MyDbResource {
+///     fn components() -> ResourceComponents {
+///         ResourceComponents::new()
+///             .credential::<DatabaseCredential>("550e8400-e29b-41d4-a716-446655440000")
+///             .resource::<CacheResource>("cache")
+///     }
+/// }
+/// ```
 pub trait HasResourceComponents: Resource {
     /// Declares credential and sub-resource dependencies for this resource.
     ///

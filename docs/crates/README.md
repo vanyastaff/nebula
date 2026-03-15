@@ -74,7 +74,7 @@ nebula-log ◄── everything (no business logic)
 | `nebula-metrics` | [metrics/README.md](./metrics/README.md) |
 | `nebula-action` | [action/README.md](./action/README.md) |
 | `nebula-auth` | [crates/auth/rfcs](../../crates/auth/rfcs) (in-tree) |
-| `nebula-resource` | [resource/README.md](./resource/README.md) |
+| `nebula-resource` | [resource/README.md](./resource/README.md), [crates/resource/docs/Architecture.md](../../crates/resource/docs/Architecture.md) (in-tree), [crates/resource/docs/API.md](../../crates/resource/docs/API.md) (in-tree) |
 | `nebula-credential` | [credential/README.md](./credential/README.md), [credential/API.md](./credential/API.md) |
 | `nebula-plugin` | [plugin/README.md](./plugin/README.md) |
 | `nebula-engine` | [engine/README.md](./engine/README.md) |

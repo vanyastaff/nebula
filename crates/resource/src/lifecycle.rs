@@ -1,4 +1,21 @@
-//! Resource lifecycle management
+//! Resource lifecycle state machine.
+//!
+//! [`Lifecycle`] models the observable state of a single pooled resource instance.
+//! The pool and manager transition instances through these states; external code
+//! reads the state for observability but should not drive transitions directly.
+//!
+//! ## State diagram
+//!
+//! ```text
+//! Created ──► Initializing ──► Ready ◄──► Idle
+//!    │              │            │  │       │
+//!    │           Failed       InUse  │    Maintenance ──► Ready
+//!    │                         │    │       │
+//!    └──────────────────────►  │   Draining─┘
+//!                           Failed    │
+//!                              │    Cleanup ──► Terminated
+//!                              └──► Cleanup
+//! ```
 
 use std::fmt;
 
@@ -64,59 +81,77 @@ impl Lifecycle {
         };
 
         match (self, target) {
-            // From Created
+            // Created: instance exists but setup hasn't started yet.
+            // Can be discarded immediately (Terminated) without going through
+            // Initializing if it is never needed (e.g. pool shrinks on startup).
             (Created, Initializing) => true,
-            (Created, Failed) => true,
-            (Created, Terminated) => true,
+            (Created, Failed) => true,     // setup failed before init started
+            (Created, Terminated) => true, // discarded before use
 
-            // From Initializing
+            // Initializing: Resource::create is in progress.
+            // Only two outcomes: success → Ready, failure → Failed.
             (Initializing, Ready) => true,
             (Initializing, Failed) => true,
 
-            // From Ready
+            // Ready: instance passed is_reusable and is waiting in the idle queue.
+            // InUse: caller acquired the Guard.
+            // Idle: pool explicitly marks it idle after a release (implementation detail).
+            // Maintenance: background validation/recycle cycle started.
+            // Draining: shutdown or reload initiated, no new acquisitions.
             (Ready, InUse) => true,
             (Ready, Idle) => true,
             (Ready, Maintenance) => true,
             (Ready, Draining) => true,
-            (Ready, Failed) => true,
+            (Ready, Failed) => true, // health check failed while idle
 
-            // From InUse
+            // InUse: Guard is held by a caller.
+            // Ready/Idle: Guard dropped without taint — recycle succeeded.
+            // Cannot go to Maintenance or Draining directly; the pool waits
+            // for the Guard to be dropped first.
             (InUse, Ready) => true,
             (InUse, Idle) => true,
-            (InUse, Failed) => true,
+            (InUse, Failed) => true, // guard.taint() was called, or recycle failed
 
-            // From Idle
+            // Idle: in idle queue, not yet validated for reuse.
+            // Maintenance: validation (is_reusable) is running.
+            // Cleanup: idle_timeout or max_lifetime expired; evict directly.
             (Idle, InUse) => true,
-            (Idle, Ready) => true,
+            (Idle, Ready) => true,      // validated by is_reusable
             (Idle, Maintenance) => true,
-            (Idle, Draining) => true,
-            (Idle, Cleanup) => true,
-            (Idle, Failed) => true,
+            (Idle, Draining) => true,   // shutdown while idle
+            (Idle, Cleanup) => true,    // idle/lifetime timeout
+            (Idle, Failed) => true,     // health check failed while idle
 
-            // From Maintenance
+            // Maintenance: is_reusable or recycle running in the background.
+            // Returns to Ready on success, or Cleanup/Failed on error.
             (Maintenance, Ready) => true,
             (Maintenance, Failed) => true,
-            (Maintenance, Cleanup) => true,
+            (Maintenance, Cleanup) => true, // recycle failed; remove from pool
 
-            // From Draining
+            // Draining: pool is shutting down or reloading config.
+            // All in-flight acquire attempts are rejected. Waits for active
+            // Guards to drop, then moves to Cleanup.
             (Draining, Cleanup) => true,
             (Draining, Failed) => true,
 
-            // From Cleanup
+            // Cleanup: Resource::cleanup is running (socket close, buffer flush).
+            // Terminated is the normal outcome; Failed if cleanup itself errors.
             (Cleanup, Terminated) => true,
             (Cleanup, Failed) => true,
 
-            // From Failed
+            // Failed: instance is permanently unusable.
+            // Cleanup runs Resource::cleanup for best-effort resource release.
+            // Terminated skips cleanup when the resource was never fully created.
             (Failed, Cleanup) => true,
             (Failed, Terminated) => true,
 
-            // No transitions from Terminated
+            // Terminated is a sink — no further transitions are possible.
             (Terminated, _) => false,
 
-            // Self-transitions are always allowed
+            // Self-transitions are always valid (idempotent state assertions).
             (state, target) if *state == target => true,
 
-            // All other transitions are invalid
+            // Everything else is an invalid transition.
             _ => false,
         }
     }

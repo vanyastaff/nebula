@@ -1,4 +1,25 @@
-//! Resource manager — central registry, pool orchestration, and dependency ordering.
+//! Central resource manager: pool registry, dependency ordering, and graceful shutdown.
+//!
+//! [`Manager`] is the single entry point for resource lifecycle operations at runtime.
+//! It owns one [`Pool<R>`] per registered resource type, stored as `Arc<dyn AnyPool>`
+//! behind an [`ArcSwap`] for lock-free reads on the hot acquire path.
+//!
+//! ## Key responsibilities
+//!
+//! - **Registration**: validate config, create pool, record metadata, wire credential
+//!   handlers and dependency edges.
+//! - **Acquisition**: scope-check, hook dispatch, pool acquire, telemetry wrapping.
+//! - **Health and quarantine**: background [`HealthChecker`] updates per-resource
+//!   [`HealthState`]; [`QuarantineManager`] isolates failing resources.
+//! - **Shutdown**: phased drain (wait for in-flight guards) → cleanup → terminate,
+//!   respecting the topological order of the dependency graph.
+//! - **Hot-reload**: `reload_config` swaps pool config without dropping the manager.
+//!
+//! [`Pool<R>`]: crate::pool::Pool
+//! [`ArcSwap`]: arc_swap::ArcSwap
+//! [`HealthChecker`]: crate::health::HealthChecker
+//! [`HealthState`]: crate::health::HealthState
+//! [`QuarantineManager`]: crate::quarantine::QuarantineManager
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};

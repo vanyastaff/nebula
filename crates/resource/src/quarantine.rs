@@ -111,12 +111,27 @@ impl Default for RecoveryStrategy {
 }
 
 impl RecoveryStrategy {
-    /// Calculate the delay for a given attempt number (1-based).
+    /// Calculate the delay before recovery attempt `attempt` (1-based).
+    ///
+    /// Formula: `min(base_delay × multiplier^(attempt − 1), max_delay)`
+    ///
+    /// With the default values (`base = 1s`, `multiplier = 2.0`, `max = 60s`):
+    ///
+    /// | attempt | delay |
+    /// |---------|-------|
+    /// | 1       | 1s    |
+    /// | 2       | 2s    |
+    /// | 3       | 4s    |
+    /// | 4       | 8s    |
+    /// | 5+      | 60s   |
     #[must_use]
     pub fn delay_for(&self, attempt: u32) -> Duration {
+        // Subtract 1 so attempt=1 yields multiplier^0 = 1, keeping the first
+        // probe at exactly base_delay rather than base_delay * multiplier.
         let exponent = attempt.saturating_sub(1);
         let factor = self.multiplier.powi(exponent as i32);
         let delay_secs = self.base_delay.as_secs_f64() * factor;
+        // Cap to max_delay to prevent unbounded growth.
         let capped = delay_secs.min(self.max_delay.as_secs_f64());
         Duration::from_secs_f64(capped)
     }

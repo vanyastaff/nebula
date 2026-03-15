@@ -305,6 +305,8 @@ nebula/
 | Tasks | `docs/TASKS.md` | Cross-crate execution backlog |
 | Contributing | `docs/contributing.md` | Contribution standards and setup |
 | Workflow | `docs/workflow.md` | Branching, commits, PR process |
+| Resource Crate Docs | `crates/resource/docs/` | Resource API and integration guides |
+| Resource Planning Docs | `docs/crates/resource/README.md` | Resource roadmap and migration notes |
 
 ### AI Context Files
 
