@@ -448,8 +448,6 @@ impl Manager {
         let resource_key = meta.key.clone();
         let id = resource_key.as_ref().to_string();
 
-        let new_deps: Vec<String> = vec![];
-
         // Create pool first -- if this fails, nothing is modified.
         // Pass event bus and hooks so the pool can fire Create/Cleanup hooks.
         let pool = Pool::with_hooks(
@@ -460,18 +458,9 @@ impl Manager {
             Some(Arc::clone(&self.hooks)),
         )?;
 
-        // Validate all new deps on a clone before touching the real graph.
-        // This ensures the mutation is all-or-nothing.
-        {
-            let mut deps = self.deps.write();
-            let mut candidate = deps.clone();
-            candidate.remove_all_for(&id);
-            for dep in &new_deps {
-                candidate.add_dependency(&id, dep)?;
-            }
-            // Validation passed -- swap in the new graph.
-            *deps = candidate;
-        }
+        // register_scoped carries no explicit dependencies; just clear any
+        // stale edges left from a previous registration of the same key.
+        self.deps.write().remove_all_for(&id);
 
         let typed_pool: Arc<TypedPool<R>> = Arc::new(TypedPool { pool });
         let any_pool: Arc<dyn AnyPool> = typed_pool.clone();
@@ -644,7 +633,6 @@ impl Manager {
     /// Checks quarantine status, health state, and scope compatibility
     /// before delegating to the pool.
     pub async fn acquire(&self, resource_key: &ResourceKey, ctx: &Context) -> Result<AnyGuard> {
-        let _acquire_start = Instant::now();
         let id = resource_key.as_ref();
         // Check quarantine -- quarantined resources cannot be acquired.
         if self.quarantine.is_quarantined(id) {
@@ -768,12 +756,6 @@ impl Manager {
                     resource_key: resource_key.clone(),
                     error: err.to_string(),
                 });
-                if matches!(
-                    err,
-                    Error::Unavailable { .. } | Error::CircuitBreakerOpen { .. }
-                ) {
-                    return Err(err);
-                }
                 Err(err)
             }
         }
@@ -930,8 +912,9 @@ impl Manager {
         ordered.reverse();
 
         // Include any affected pools not in the dependency graph (no declared deps).
+        let ordered_set: HashSet<String> = ordered.iter().cloned().collect();
         for id in &affected_ids {
-            if !ordered.contains(id) {
+            if !ordered_set.contains(id) {
                 ordered.push(id.clone());
             }
         }
@@ -971,7 +954,7 @@ impl Manager {
         let metadata = self
             .metadata
             .get(id)
-            .map(|m| m.clone())
+            .map(|m| m.value().clone())
             .unwrap_or_else(|| ResourceMetadata::from_key(resource_key.clone()));
 
         let health = self
@@ -1242,8 +1225,9 @@ impl Manager {
         ordered.reverse();
 
         // Include any pools not in the dependency graph (no declared deps).
+        let ordered_set: HashSet<String> = ordered.iter().cloned().collect();
         for id in &registered {
-            if !ordered.contains(id) {
+            if !ordered_set.contains(id) {
                 ordered.push(id.clone());
             }
         }

@@ -21,6 +21,7 @@
 //! returns `Err` when any ID string is empty, preventing the most common
 //! misconfiguration at the call site.
 
+use std::borrow::Cow;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -376,20 +377,22 @@ impl Scope {
 
     /// Get a human-readable description of the scope
     #[must_use]
-    pub fn description(&self) -> String {
+    pub fn description(&self) -> Cow<'static, str> {
         match self {
-            Self::Global => "Global scope (shared across all workflows and tenants)".to_string(),
-            Self::Tenant { tenant_id } => format!("Tenant scope (tenant: {tenant_id})"),
+            Self::Global => "Global scope (shared across all workflows and tenants)".into(),
+            Self::Tenant { tenant_id } => {
+                format!("Tenant scope (tenant: {tenant_id})").into()
+            }
             Self::Workflow { workflow_id, .. } => {
-                format!("Workflow scope (workflow: {workflow_id})")
+                format!("Workflow scope (workflow: {workflow_id})").into()
             }
             Self::Execution { execution_id, .. } => {
-                format!("Execution scope (execution: {execution_id})")
+                format!("Execution scope (execution: {execution_id})").into()
             }
-            Self::Action { action_id, .. } => format!("Action scope (action: {action_id})"),
-            Self::Custom { key, value } => {
-                format!("Custom scope ({key}={value})")
+            Self::Action { action_id, .. } => {
+                format!("Action scope (action: {action_id})").into()
             }
+            Self::Custom { key, value } => format!("Custom scope ({key}={value})").into(),
         }
     }
 }

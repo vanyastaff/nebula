@@ -17,7 +17,7 @@ use std::marker::PhantomData;
 
 use nebula_credential::core::reference::ErasedCredentialRef;
 use nebula_credential::{CredentialResource, CredentialType, RotationStrategy};
-use serde::de::DeserializeOwned;
+use serde::de::{Deserialize, DeserializeOwned};
 
 use crate::pool::CredentialHandler;
 use crate::reference::ErasedResourceRef;
@@ -180,7 +180,7 @@ where
 {
     fn authorize(&self, instance: &mut I, state: &serde_json::Value) -> crate::error::Result<()> {
         let typed =
-            serde_json::from_value::<<I::Credential as CredentialType>::State>(state.clone())
+            <I::Credential as CredentialType>::State::deserialize(state)
                 .map_err(|e| crate::error::Error::configuration(e.to_string()))?;
         instance.authorize(&typed);
         Ok(())
