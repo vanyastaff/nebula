@@ -70,6 +70,12 @@ pub const NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL: &str = "nebula_resource_config_
 /// Counter: credential rotations applied to a resource pool.
 pub const NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL: &str =
     "nebula_resource_credential_rotated_total";
+/// Counter: circuit breaker transitioned to open state.
+pub const NEBULA_RESOURCE_CIRCUIT_BREAKER_OPENED_TOTAL: &str =
+    "nebula_resource_circuit_breaker_opened_total";
+/// Counter: circuit breaker transitioned to closed state (recovered).
+pub const NEBULA_RESOURCE_CIRCUIT_BREAKER_CLOSED_TOTAL: &str =
+    "nebula_resource_circuit_breaker_closed_total";
 
 // ---------------------------------------------------------------------------
 // EventBus (generic bus layer)

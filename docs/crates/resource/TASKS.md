@@ -9,7 +9,7 @@
 
 ---
 
-## Phase 1: Contract and Safety Baseline 🔄
+## Phase 1: Contract and Safety Baseline ✅
 
 **Goal**: Finalize cross-crate contracts; formalize error taxonomy; lock scope invariants.
 
@@ -25,7 +25,7 @@
 
 ---
 
-## Phase 2: Runtime Hardening ⬜
+## Phase 2: Runtime Hardening ✅
 
 **Goal**: Deterministic shutdown tests; health-to-quarantine observability; reload guardrails.
 
@@ -39,7 +39,7 @@
 
 ---
 
-## Phase 3: Scale and Performance ⬜
+## Phase 3: Scale and Performance ✅
 
 **Goal**: Criterion benchmarks; backpressure policy profiles; high-cardinality metrics hygiene.
 
@@ -54,7 +54,7 @@
 
 ---
 
-## Phase 4: Ecosystem and DX ⬜
+## Phase 4: Ecosystem and DX 🔄
 
 **Goal**: Adapter crate guidance; typed key migration path; integration cookbook.
 
@@ -69,14 +69,29 @@
 
 ## Dependencies & Execution Order
 
-- Phase 1 → Phase 2 → Phase 3 → Phase 4 (sequential)
+- Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
 - [P] tasks within phases can run in parallel
 - Phase 1 should coordinate with `nebula-credential` Phase 1 (credential–resource integration)
 
+---
+
+## Phase 5: Neon Hardening ✅
+
+**Goal**: Apply Neon-inspired safety primitives for correct cooperative shutdown and RAII observability.
+
+- [x] RSC-T023 Implement `Poison<T>`, `PoisonGuard`, `PoisonError` in `crates/resource/src/poison.rs`; wrap `PoolState` in `Mutex<Poison<PoolState>>`; map `PoisonError` to `Error::Internal`
+- [x] RSC-T024 Implement `Gate`/`GateGuard` cooperative shutdown barrier in `nebula-resilience::gate`; export in prelude
+- [x] RSC-T025 Wire `Gate` into `PoolInner`: maintenance task holds `GateGuard`; `shutdown()` calls `gate.close().await` before `semaphore.close()`
+- [x] RSC-T026 Replace manual `fetch_add`/`fetch_sub` pairs in `acquire_inner` with `CounterGuard` RAII wrapper
+- [x] RSC-T027 Add `NEBULA_RESOURCE_CIRCUIT_BREAKER_OPENED_TOTAL` / `NEBULA_RESOURCE_CIRCUIT_BREAKER_CLOSED_TOTAL` constants to `nebula-metrics`
+- [x] RSC-T028 Emit dedicated CB open/close counters with `{resource_id, operation}` label in `MetricsCollector`
+
+**Checkpoint**: All 6 gate unit tests + 1 doctest pass; `cargo check --workspace --all-targets` clean; hardening checklist rows show Implemented.
+
 ## Verification (after all phases)
 
-- [ ] `cargo check -p nebula-resource`
-- [ ] `cargo test -p nebula-resource`
-- [ ] `cargo clippy -p nebula-resource -- -D warnings`
+- [x] `cargo check -p nebula-resource`
+- [x] `cargo test -p nebula-resource`
+- [x] `cargo clippy -p nebula-resource -- -D warnings`
 - [ ] `cargo doc --no-deps -p nebula-resource`
 - [ ] `cargo bench -p nebula-resource`

@@ -47,6 +47,19 @@
 - exit criteria:
   - at least one reference adapter and end-to-end sample integration.
 
+## Phase 5: Neon Hardening ✅
+
+- deliverables:
+  - `Gate`/`GateGuard` cooperative shutdown barrier in `nebula-resilience::gate`; wired into `PoolInner` so maintenance task holds a `GateGuard` and `shutdown()` calls `gate.close().await` before `semaphore.close()`.
+  - `CounterGuard` RAII wrapper replacing manual `fetch_add`/`fetch_sub` pairs in `acquire_inner`.
+  - `NEBULA_RESOURCE_CIRCUIT_BREAKER_OPENED_TOTAL` / `NEBULA_RESOURCE_CIRCUIT_BREAKER_CLOSED_TOTAL` metric constants; `MetricsCollector` emits dedicated CB open/close counters with `{resource_id, operation}` label.
+- risks:
+  - none remaining — all delivered and verified.
+- exit criteria:
+  - all gate unit tests and doctest pass.
+  - `cargo check --workspace --all-targets` clean.
+  - hardening checklist rows in `ARCHITECTURE.md` updated to Implemented.
+
 ## Metrics of Readiness
 
 - correctness:

@@ -42,6 +42,7 @@ Priority sequence:
 - RSL-N008 chaos profile for resilience composition
 - RSL-N009 docs source-of-truth cleanup
 - RSL-N010 formal Phase 9 roadmap package
+- RSL-N011 ✅ **Delivered**: `Gate`/`GateGuard`/`GateClosed` cooperative shutdown barrier — exported in top-level and `prelude`; used by `nebula-resource` pool to ensure maintenance tasks drain before pool close
 
 ## Phase Details
 

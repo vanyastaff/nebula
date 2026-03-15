@@ -23,6 +23,8 @@ Lifecycle and pooling runtime for external and internal resources used by workfl
   - `Pool` handles cancellation, fairness strategy, and lifecycle transitions
   - strict scope containment prevents cross-tenant leakage by default
   - rich test suite covers races, shutdown, exhaustion, hooks, health, autoscaling
+  - `Poison<T>` arm/disarm guard prevents corrupted pool state from being reused after panics or cancelled futures
+  - `Gate`/`GateGuard` cooperative shutdown barrier ensures in-flight maintenance tasks drain cleanly before pool close
 - key risks:
   - API surface is large and some paths are feature-gated, increasing integration complexity
   - `reload_config` performs full pool swap, which can be disruptive for some resources

@@ -13,6 +13,7 @@ use nebula_core::ResourceKey;
 
 use nebula_metrics::naming::{
     NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
+    NEBULA_RESOURCE_CIRCUIT_BREAKER_CLOSED_TOTAL, NEBULA_RESOURCE_CIRCUIT_BREAKER_OPENED_TOTAL,
     NEBULA_RESOURCE_CLEANUP_TOTAL, NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
     NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
     NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
@@ -179,11 +180,31 @@ impl MetricsCollector {
                 )
                 .increment(1);
             }
-            ResourceEvent::CircuitBreakerOpen { resource_key, .. } => {
+            ResourceEvent::CircuitBreakerOpen {
+                resource_key,
+                operation,
+                ..
+            } => {
                 let id = Self::resource_label(resource_key);
-                metrics::counter!(NEBULA_RESOURCE_ERROR_TOTAL, "resource_id" => id).increment(1);
+                metrics::counter!(
+                    NEBULA_RESOURCE_CIRCUIT_BREAKER_OPENED_TOTAL,
+                    "resource_id" => id,
+                    "operation" => *operation,
+                )
+                .increment(1);
             }
-            ResourceEvent::CircuitBreakerClosed { .. } => {}
+            ResourceEvent::CircuitBreakerClosed {
+                resource_key,
+                operation,
+            } => {
+                let id = Self::resource_label(resource_key);
+                metrics::counter!(
+                    NEBULA_RESOURCE_CIRCUIT_BREAKER_CLOSED_TOTAL,
+                    "resource_id" => id,
+                    "operation" => *operation,
+                )
+                .increment(1);
+            }
         }
     }
 

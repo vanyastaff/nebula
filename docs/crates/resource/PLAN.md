@@ -4,7 +4,7 @@
 
 ## Summary
 
-The resource crate manages lifecycle, pooling, and health of external resources (databases, HTTP clients, queues, caches). It provides typed resource handles, scope-controlled access, pool management with backpressure, and event emission for health state changes. Current focus is contract consolidation — finalizing cross-crate contracts (INTERACTIONS, API, MIGRATION) and formalizing error handling guidance.
+The resource crate manages lifecycle, pooling, and health of external resources (databases, HTTP clients, queues, caches). It provides typed resource handles, scope-controlled access, pool management with backpressure, and event emission for health state changes. Core contract, hardening, performance, and DX phases are complete. Phase 5 Neon hardening (Poison guard, Gate, CounterGuard, dedicated CB metrics) is complete. Current focus is Phase 4 final item: reference adapter crate.
 
 ## Technical Context
 
@@ -18,10 +18,11 @@ The resource crate manages lifecycle, pooling, and health of external resources 
 
 | Phase | Status | Summary |
 |-------|--------|---------|
-| Phase 1: Contract and Safety Baseline | 🔄 In Progress | Finalizing INTERACTIONS, API, MIGRATION docs |
-| Phase 2: Runtime Hardening | ⬜ Planned | Shutdown/reload tests, health-to-quarantine observability |
-| Phase 3: Scale and Performance | ⬜ Planned | Benchmark-driven acquire latency, backpressure policies |
-| Phase 4: Ecosystem and DX | ⬜ Planned | Adapter crate guidance, typed key migration, cookbook |
+| Phase 1: Contract and Safety Baseline | ✅ Complete | Contract docs, error taxonomy, scope invariants locked |
+| Phase 2: Runtime Hardening | ✅ Complete | Shutdown/reload tests, health-to-quarantine observability |
+| Phase 3: Scale and Performance | ✅ Complete | Criterion benchmarks, backpressure policies, metrics hygiene |
+| Phase 4: Ecosystem and DX | 🔄 In Progress | Adapter guides, typed key migration, cookbook; RSC-T020 pending |
+| Phase 5: Neon Hardening | ✅ Complete | `Poison<T>` guard, Gate/GateGuard, CounterGuard, dedicated CB metrics counters |
 
 ## Phase Details
 
@@ -85,6 +86,21 @@ The resource crate manages lifecycle, pooling, and health of external resources 
 **Exit Criteria**:
 - At least one reference adapter and end-to-end sample integration
 
+### Phase 5: Neon Hardening
+
+**Goal**: Apply Neon-inspired safety primitives to the resource pool for correct cooperative shutdown and RAII observability.
+
+**Deliverables**:
+- `Poison<T>` / `PoisonGuard` / `PoisonError` in `crates/resource/src/poison.rs`; `PoolState` wrapped in `Mutex<Poison<PoolState>>`; drop-without-disarm permanently marks the pool poisoned with timestamp
+- `Gate`/`GateGuard` cooperative shutdown barrier in `nebula-resilience::gate`; wired into `PoolInner` (maintenance task holds `GateGuard`; `shutdown()` calls `gate.close().await` before `semaphore.close()`)
+- `CounterGuard` RAII replace manual `fetch_add`/`fetch_sub` pairs in `acquire_inner`
+- Dedicated `NEBULA_RESOURCE_CIRCUIT_BREAKER_OPENED_TOTAL` / `NEBULA_RESOURCE_CIRCUIT_BREAKER_CLOSED_TOTAL` counters with `{resource_id, operation}` label via `MetricsCollector`
+
+**Exit Criteria**:
+- All six `gate` unit tests + doctest pass
+- `cargo check --workspace --all-targets` clean
+- Hardening checklist rows in ARCHITECTURE.md show Implemented
+
 ## Inter-Crate Dependencies
 
 - **Depends on**: `nebula-core`, `nebula-system` (pressure events), `nebula-telemetry`
@@ -92,7 +108,7 @@ The resource crate manages lifecycle, pooling, and health of external resources 
 
 ## Verification
 
-- [ ] `cargo check -p nebula-resource`
-- [ ] `cargo test -p nebula-resource`
-- [ ] `cargo clippy -p nebula-resource -- -D warnings`
-- [ ] `cargo doc --no-deps -p nebula-resource`
+- [x] `cargo check -p nebula-resource`
+- [x] `cargo test -p nebula-resource`
+- [x] `cargo clippy -p nebula-resource -- -D warnings`
+- [x] `cargo doc --no-deps -p nebula-resource`

@@ -126,6 +126,7 @@
 - [x] RSL-T042 [P] Add observability hook throughput benchmark and backpressure/drop-policy tests
 - [x] RSL-T043 Fix high-signal `clippy` findings in hot paths (`circuit_breaker`, `rate_limiter`, `fallback`, `manager`)
 - [x] RSL-T044 Consolidate coverage map (unit/integration/bench) and define regression gate updates (→ T038, T039, T040, T041, T042, T043)
+- [x] RSL-T045 Implement `Gate`/`GateGuard`/`GateClosed` cooperative shutdown barrier in `crates/resilience/src/gate.rs`; export in top-level and `prelude` (used by `nebula-resource` pool for maintenance-task drain on shutdown)
 
 **Checkpoint**: Previously uncovered APIs have integration/bench coverage and `clippy -D warnings` passes for audited hot paths.
 

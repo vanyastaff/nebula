@@ -18,7 +18,8 @@
 | `manager` | always | `Manager`, `ManagerBuilder` | Central registry; dependency ordering; shutdown; hot-reload |
 | `manager_guard` | always | (internal) | Internal RAII guard logic for manager-held locks |
 | `manager_pool` | always | (internal) | Internal pool management per resource type |
-| `pool` | always | `Pool`, `PoolConfig`, `PoolStrategy` | Bounded concurrency (Semaphore); idle queue; recycle/cleanup |
+| `pool` | always | `Pool`, `PoolConfig`, `PoolStrategy` | Bounded concurrency (Semaphore); idle queue; recycle/cleanup; `Gate`/`GateGuard` and `CounterGuard` as internal RAII safety primitives |
+| `poison` | always | `Poison<T>`, `PoisonGuard`, `PoisonError` | Arm/disarm guard that permanently marks a value unusable if dropped while armed; protects pool state across async critical sections |
 | `scope` | always | `Scope`, `Strategy` | Containment model; tenant/workflow/execution/action hierarchy |
 | `context` | always | `Context` | Execution context: scope + workflow ID + exec ID + cancellation |
 | `guard` | always | `ResourceGuard` | RAII acquire guard; returns instance to pool on drop |
@@ -63,6 +64,7 @@ guard.drop():
 shutdown:
   Manager::shutdown()
     → dependency_graph reverse order
+    → gate.close().await → drains in-flight maintenance tasks
     → drain pools → Resource::cleanup per instance
     → emit ResourceEvent::CleanedUp per resource
 ```
@@ -79,11 +81,11 @@ This checklist tracks safety patterns adapted from Neon codebase practices, with
 
 | Area | Pattern | Status in `nebula-resource` | Next hardening step |
 |------|---------|-----------------------------|---------------------|
-| Cancel safety in critical sections | Arm/disarm poison guard around mutable shared state | Implemented (`Poison<T>` + guard-based poisoning in pool state transitions) | Expand docs on "dispose/recreate" guidance for poisoned pools |
+| Cancel safety in critical sections | Arm/disarm poison guard around mutable shared state | Implemented (`Poison<T>`, `PoisonGuard`, `PoisonError` in `nebula-resource::poison`; `PoolState` wrapped in `Mutex<Poison<PoolState>>>`; drop-without-disarm permanently marks pool as poisoned with timestamp and diagnostic context) | — |
 | Failure storm protection | Circuit breaker around expensive fallible operations | Implemented for pool `create` and `recycle` with open/close signaling | Add breaker saturation metrics dashboard examples |
-| Shutdown correctness | Gate-style "no new work + wait in-flight" model | Partially implemented (`closed` flag + semaphore + drain on shutdown) | Add explicit gate primitive for spawned background subtasks |
+| Shutdown correctness | Gate-style "no new work + wait in-flight" model | Implemented (`Gate`/`GateGuard` from `nebula-resilience::gate`; maintenance task holds `GateGuard`; `shutdown()` calls `gate.close().await` before semaphore close) | — |
 | Timeout envelopes | Bound long-running create/recycle operations | Implemented (`create_timeout`, `recycle_timeout`) | Add per-resource timeout profiles in cookbook |
-| Observability by RAII | Guard-based counters/timers for wait/run windows | Partially implemented (pool stats/events) | Convert remaining manual increment/decrement paths to RAII helpers |
+| Observability by RAII | Guard-based counters/timers for wait/run windows | Implemented (`CounterGuard` RAII in `acquire_inner`; dedicated CB open/close counters with `{resource_id, operation}` label via `MetricsCollector`) | — |
 
 ## How `nebula-resilience` Participates
 

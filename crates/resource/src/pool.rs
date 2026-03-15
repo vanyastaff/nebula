@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use nebula_core::{ExecutionId, WorkflowId};
 use nebula_credential::traits::RotationStrategy;
-use nebula_resilience::{CircuitBreaker, CircuitBreakerConfig, CircuitState, ResilienceError};
+use nebula_resilience::{CircuitBreaker, CircuitBreakerConfig, CircuitState, Gate, ResilienceError};
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::{Semaphore, TryAcquireError};
 use tokio_util::sync::CancellationToken;
@@ -35,6 +35,31 @@ use crate::lifecycle::Lifecycle;
 use crate::poison::{Poison, PoisonError};
 use crate::resource::Resource;
 use crate::scope::Scope;
+
+// ---------------------------------------------------------------------------
+// CounterGuard — RAII waiter-count tracker
+// ---------------------------------------------------------------------------
+
+/// RAII guard that increments an [`AtomicUsize`] on construction and
+/// decrements it on drop.
+///
+/// Used in [`Pool::acquire_inner`] to track the number of callers currently
+/// waiting for a semaphore permit, without relying on paired manual
+/// `fetch_add` / `fetch_sub` calls that can be skipped on early returns.
+struct CounterGuard(Arc<AtomicUsize>);
+
+impl CounterGuard {
+    fn new(counter: &Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(Arc::clone(counter))
+    }
+}
+
+impl Drop for CounterGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // PoolConfig
@@ -440,6 +465,12 @@ struct PoolInner<R: Resource> {
     /// Semaphore limits concurrent active (checked-out) instances.
     /// Idle instances do not hold permits.
     semaphore: Semaphore,
+    /// Cooperative shutdown barrier.
+    ///
+    /// Background tasks and request handlers enter the gate before doing work.
+    /// `shutdown()` calls `gate.close().await` to drain all active work before
+    /// closing the semaphore and cleaning up idle instances.
+    gate: Gate,
     /// Cancellation token for background tasks (maintenance).
     /// Cancelled on `shutdown()`.
     cancel: CancellationToken,
@@ -600,6 +631,7 @@ impl<R: Resource> Pool<R> {
                     },
                 )),
                 semaphore: Semaphore::new(max),
+                gate: Gate::new(),
                 cancel: cancel.clone(),
                 event_bus,
                 waiting_count: Arc::new(AtomicUsize::new(0)),
@@ -616,6 +648,13 @@ impl<R: Resource> Pool<R> {
         if let Some(interval) = maintenance_interval {
             let maintenance_pool = pool.clone();
             let handle = tokio::spawn(async move {
+                // Hold a gate guard for the lifetime of this background task.
+                // When `shutdown()` closes the gate, it will wait here until
+                // the task completes its current iteration and drops this guard.
+                let _gate_guard = match maintenance_pool.inner.gate.enter() {
+                    Ok(guard) => guard,
+                    Err(_) => return, // gate already closed before task started
+                };
                 loop {
                     tokio::select! {
                         () = tokio::time::sleep(interval) => {}
@@ -721,20 +760,13 @@ impl<R: Resource> Pool<R> {
     async fn acquire_inner(&self, ctx: &Context, start: Instant) -> Result<Guard<R::Instance>> {
         let inner = &self.inner;
 
-        // Track that we are waiting for a permit.
-        inner.waiting_count.fetch_add(1, Ordering::SeqCst);
+        // RAII guard that increments `waiting_count` on entry and decrements on
+        // any exit (success, early return, or panic), replacing paired
+        // `fetch_add` / `fetch_sub` calls that can be missed on error paths.
+        let _waiting = CounterGuard::new(&inner.waiting_count);
 
         // Acquire a permit according to configured backpressure policy.
-        let permit = match self.acquire_permit_with_policy().await {
-            Ok(permit) => permit,
-            Err(err) => {
-                inner.waiting_count.fetch_sub(1, Ordering::SeqCst);
-                return Err(err);
-            }
-        };
-
-        // We got a permit, no longer waiting.
-        inner.waiting_count.fetch_sub(1, Ordering::SeqCst);
+        let permit = self.acquire_permit_with_policy().await?;
 
         if let Some(cb) = &inner.create_breaker
             && let Err(err) = cb.can_execute().await
@@ -1505,6 +1537,10 @@ impl<R: Resource> Pool<R> {
             // The task should exit promptly because we cancelled above.
             let _ = h.await;
         }
+
+        // Close the gate: mark as closing and wait for all background tasks
+        // (and any in-flight gate guards) to drop their guards.
+        inner.gate.close().await;
 
         // Close the semaphore so new acquire() calls fail immediately
         // instead of blocking until timeout.

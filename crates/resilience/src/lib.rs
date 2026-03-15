@@ -206,6 +206,7 @@
 
 // Core modules with advanced type system features
 pub mod core;
+pub mod gate;
 pub mod helpers;
 mod manager;
 pub mod observability;
@@ -326,6 +327,7 @@ pub use patterns::{
 
 // High-level abstractions
 pub use compose::{BoxedOperation, LayerBuilder, LayerStack, ResilienceChain, ResilienceLayer};
+pub use gate::{Gate, GateClosed, GateGuard};
 pub use manager::{
     PolicyBuilder, ResilienceManager, RetryableOperation, UnTypedServiceMetrics as ServiceMetrics,
 };
@@ -413,6 +415,9 @@ pub mod prelude {
 
     // High-level abstractions
     pub use crate::{ResilienceChain, ResilienceManager, ResiliencePolicy};
+
+    // Gate / graceful-shutdown barrier
+    pub use crate::gate::{Gate, GateClosed, GateGuard};
 
     // Re-export nebula ecosystem for convenience
     pub use nebula_config::ConfigSource;
