@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use nebula_core::{ExecutionId, WorkflowId};
+use nebula_core::{ExecutionId, ResourceKey, WorkflowId};
 use nebula_credential::traits::RotationStrategy;
 use nebula_resilience::{CircuitBreaker, CircuitBreakerConfig, CircuitState, Gate, ResilienceError};
 use parking_lot::{Mutex, RwLock};
@@ -50,14 +50,14 @@ struct CounterGuard(Arc<AtomicUsize>);
 
 impl CounterGuard {
     fn new(counter: &Arc<AtomicUsize>) -> Self {
-        counter.fetch_add(1, Ordering::SeqCst);
+        counter.fetch_add(1, Ordering::Relaxed);
         Self(Arc::clone(counter))
     }
 }
 
 impl Drop for CounterGuard {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -411,11 +411,19 @@ impl LatencyRingBuffer {
         if self.full { self.buf.len() } else { self.pos }
     }
 
-    /// Compute a percentile (0–100). Returns `None` if the buffer is empty.
-    fn percentile(&self, pct: f64) -> Option<u64> {
+    /// Compute three percentiles in a single sort pass.
+    ///
+    /// More efficient than calling [`percentile`](Self::percentile) three times
+    /// because the buffer is cloned and sorted only once.
+    fn percentiles(
+        &self,
+        p50: f64,
+        p95: f64,
+        p99: f64,
+    ) -> (Option<u64>, Option<u64>, Option<u64>) {
         let n = self.len();
         if n == 0 {
-            return None;
+            return (None, None, None);
         }
         let mut sorted: Vec<u64> = if self.full {
             self.buf.clone()
@@ -423,8 +431,11 @@ impl LatencyRingBuffer {
             self.buf[..self.pos].to_vec()
         };
         sorted.sort_unstable();
-        let idx = ((pct / 100.0) * (n as f64 - 1.0)).round() as usize;
-        Some(sorted[idx.min(n - 1)])
+        let pick = |pct: f64| -> Option<u64> {
+            let idx = ((pct / 100.0) * (n as f64 - 1.0)).round() as usize;
+            Some(sorted[idx.min(n - 1)])
+        };
+        (pick(p50), pick(p95), pick(p99))
     }
 }
 
@@ -461,6 +472,9 @@ struct PoolInner<R: Resource> {
     resource: Arc<R>,
     config: R::Config,
     pool_config: PoolConfig,
+    /// Cached resource key — avoids calling `resource.metadata()` on every hot-path
+    /// operation (acquire, release, events). Populated once at pool construction.
+    resource_key: ResourceKey,
     state: Mutex<Poison<PoolState<R::Instance>>>,
     /// Semaphore limits concurrent active (checked-out) instances.
     /// Idle instances do not hold permits.
@@ -478,6 +492,10 @@ struct PoolInner<R: Resource> {
     event_bus: Option<Arc<EventBus>>,
     /// Number of callers currently waiting to acquire an instance.
     waiting_count: Arc<AtomicUsize>,
+    /// Lock-free active instance counter for adaptive backpressure.
+    ///
+    /// Mirrors `stats.active` but accessible without acquiring the state lock.
+    active_count: AtomicUsize,
     /// Optional hook registry for lifecycle hooks (Create, Cleanup).
     hooks: Option<Arc<HookRegistry>>,
     /// Handle for the background maintenance task, if spawned.
@@ -519,9 +537,8 @@ impl<R: Resource> std::fmt::Debug for Pool<R> {
         let stats = self
             .with_state_read(|state| state.stats.clone())
             .unwrap_or_default();
-        let key = self.inner.resource.metadata().key.clone();
         f.debug_struct("Pool")
-            .field("resource_id", &key.as_ref())
+            .field("resource_id", &self.inner.resource_key.as_ref())
             .field("stats", &stats)
             .finish()
     }
@@ -608,9 +625,9 @@ impl<R: Resource> Pool<R> {
         let maintenance_interval = pool_config.maintenance_interval;
         let cancel = CancellationToken::new();
 
-        let key = resource.metadata().key.clone();
+        let resource_key = resource.metadata().key.clone();
         tracing::debug!(
-            resource_id = %key,
+            resource_id = %resource_key,
             min_size = pool_config.min_size,
             max_size = pool_config.max_size,
             "Created new resource pool"
@@ -621,6 +638,7 @@ impl<R: Resource> Pool<R> {
                 resource: Arc::new(resource),
                 config,
                 pool_config,
+                resource_key,
                 state: Mutex::new(Poison::new(
                     "pool_state",
                     PoolState {
@@ -635,6 +653,7 @@ impl<R: Resource> Pool<R> {
                 cancel: cancel.clone(),
                 event_bus,
                 waiting_count: Arc::new(AtomicUsize::new(0)),
+                active_count: AtomicUsize::new(0),
                 hooks,
                 maintenance_handle: Mutex::new(None),
                 credential_state: Arc::new(RwLock::new(None)),
@@ -682,7 +701,7 @@ impl<R: Resource> Pool<R> {
     fn with_state<T>(&self, f: impl FnOnce(&mut PoolState<R::Instance>) -> T) -> Result<T> {
         let mut state = self.inner.state.lock();
         let mut guard = state.check_and_arm().map_err(|err| {
-            Self::map_poison_error(self.inner.resource.metadata().key.clone(), err)
+            Self::map_poison_error(self.inner.resource_key.clone(), err)
         })?;
         let out = f(guard.data_mut());
         guard.disarm();
@@ -692,7 +711,7 @@ impl<R: Resource> Pool<R> {
     fn with_state_read<T>(&self, f: impl FnOnce(&PoolState<R::Instance>) -> T) -> Result<T> {
         let mut state = self.inner.state.lock();
         let guard = state.check_and_arm().map_err(|err| {
-            Self::map_poison_error(self.inner.resource.metadata().key.clone(), err)
+            Self::map_poison_error(self.inner.resource_key.clone(), err)
         })?;
         let out = f(guard.data());
         guard.disarm();
@@ -706,7 +725,7 @@ impl<R: Resource> Pool<R> {
         let mut state = inner.state.lock();
         let mut guard = state
             .check_and_arm()
-            .map_err(|err| Self::map_poison_error(inner.resource.metadata().key.clone(), err))?;
+            .map_err(|err| Self::map_poison_error(inner.resource_key.clone(), err))?;
         let out = f(guard.data_mut());
         guard.disarm();
         Ok(out)
@@ -724,7 +743,7 @@ impl<R: Resource> Pool<R> {
             result = self.acquire_inner(ctx, start) => result,
             () = ctx.cancellation.cancelled() => {
                 Err(Error::Unavailable {
-                    resource_key: self.inner.resource.metadata().key.clone(),
+                    resource_key: self.inner.resource_key.clone(),
                     reason: "Operation cancelled".to_string(),
                     retryable: false,
                 })
@@ -735,13 +754,13 @@ impl<R: Resource> Pool<R> {
             let wait_duration = start.elapsed();
             match &result {
                 Ok(_) => tracing::debug!(
-                    resource_id = %self.inner.resource.metadata().key.clone(),
+                    resource_id = %self.inner.resource_key,
                     scope = %ctx.scope,
                     wait_ms = wait_duration.as_millis() as u64,
                     "Acquired resource instance"
                 ),
                 Err(e) => tracing::warn!(
-                    resource_id = %self.inner.resource.metadata().key.clone(),
+                    resource_id = %self.inner.resource_key,
                     scope = %ctx.scope,
                     wait_ms = wait_duration.as_millis() as u64,
                     error = %e,
@@ -776,13 +795,13 @@ impl<R: Resource> Pool<R> {
                     let retry_after = retry_after.unwrap_or_default();
                     Self::emit_breaker_open(inner, "create", retry_after);
                     Err(Error::CircuitBreakerOpen {
-                        resource_key: inner.resource.metadata().key.clone(),
+                        resource_key: inner.resource_key.clone(),
                         operation: "create",
                         retry_after: Some(retry_after),
                     })
                 }
                 other => Err(Error::Internal {
-                    resource_key: inner.resource.metadata().key.clone(),
+                    resource_key: inner.resource_key.clone(),
                     message: format!("create breaker check failed: {other}"),
                     source: None,
                 }),
@@ -857,6 +876,7 @@ impl<R: Resource> Pool<R> {
                 state.latency_window.push(wait_ms);
             })?;
         }
+        inner.active_count.fetch_add(1, Ordering::Relaxed);
 
         // Forget the permit — we'll add it back when the guard drops.
         permit.forget();
@@ -906,14 +926,8 @@ impl<R: Resource> Pool<R> {
 
     fn adaptive_timeout(&self, adaptive: &AdaptiveBackpressurePolicy) -> Duration {
         let inner = &self.inner;
-        let active = match self.with_state_read(|state| state.stats.active) {
-            Ok(active) => active,
-            Err(err) => {
-                tracing::error!(error = %err, "failed to read pool state for adaptive timeout");
-                return adaptive.high_pressure_timeout;
-            }
-        };
-        let waiters = inner.waiting_count.load(Ordering::SeqCst);
+        let active = inner.active_count.load(Ordering::Relaxed);
+        let waiters = inner.waiting_count.load(Ordering::Relaxed);
         let utilization = active as f64 / inner.pool_config.max_size as f64;
         if utilization >= adaptive.high_pressure_utilization
             || waiters >= adaptive.high_pressure_waiters
@@ -926,7 +940,7 @@ impl<R: Resource> Pool<R> {
 
     fn pool_exhausted_error(&self) -> Error {
         let inner = &self.inner;
-        let waiters = inner.waiting_count.load(Ordering::SeqCst);
+        let waiters = inner.waiting_count.load(Ordering::Relaxed);
         let current_size = match self.with_state(|state| {
             state.stats.exhausted_count += 1;
             state.stats.active
@@ -934,7 +948,7 @@ impl<R: Resource> Pool<R> {
             Ok(size) => size,
             Err(err) => return err,
         };
-        let key = inner.resource.metadata().key.clone();
+        let key = inner.resource_key.clone();
         if let Some(bus) = &inner.event_bus {
             bus.emit(ResourceEvent::PoolExhausted {
                 resource_key: key.clone(),
@@ -951,7 +965,7 @@ impl<R: Resource> Pool<R> {
 
     fn pool_semaphore_closed_error(&self) -> Error {
         Error::Internal {
-            resource_key: self.inner.resource.metadata().key.clone(),
+            resource_key: self.inner.resource_key.clone(),
             message: "Pool semaphore closed".to_string(),
             source: None,
         }
@@ -1025,7 +1039,7 @@ impl<R: Resource> Pool<R> {
 
         if cleanup_reason.is_none() {
             tracing::debug!(
-                resource_id = %inner.resource.metadata().key.clone(),
+                resource_id = %inner.resource_key,
                 "Released resource instance back to pool"
             );
         }
@@ -1033,18 +1047,15 @@ impl<R: Resource> Pool<R> {
         if let Some((to_cleanup, reason)) = cleanup_reason {
             Self::cleanup_with_hooks(inner, to_cleanup, &reason, None).await;
             tracing::debug!(
-                resource_id = %inner.resource.metadata().key.clone(),
+                resource_id = %inner.resource_key,
                 "Cleaned up resource instance on release (pool shutdown or recycle failed)"
             );
         }
 
-        Self::emit_event(
-            inner,
-            ResourceEvent::Released {
-                resource_key: inner.resource.metadata().key.clone(),
-                usage_duration,
-            },
-        );
+        Self::emit_event(inner, || ResourceEvent::Released {
+            resource_key: inner.resource_key.clone(),
+            usage_duration,
+        });
 
         {
             let _ = Self::with_inner_state(inner, |state| {
@@ -1053,36 +1064,34 @@ impl<R: Resource> Pool<R> {
                 state.stats.idle = state.idle.len();
             });
         }
-
+        inner.active_count.fetch_sub(1, Ordering::Relaxed);
         inner.semaphore.add_permits(1);
     }
 
     /// Emit an event if the pool has an event bus configured.
-    fn emit_event(inner: &PoolInner<R>, event: ResourceEvent) {
+    ///
+    /// The event is constructed lazily via `make_event` and is only evaluated when
+    /// an event bus is actually wired in, avoiding needless allocations in the
+    /// common case where no bus is configured.
+    fn emit_event(inner: &PoolInner<R>, make_event: impl FnOnce() -> ResourceEvent) {
         if let Some(bus) = &inner.event_bus {
-            bus.emit(event);
+            bus.emit(make_event());
         }
     }
 
     fn emit_breaker_open(inner: &PoolInner<R>, operation: &'static str, retry_after: Duration) {
-        Self::emit_event(
-            inner,
-            ResourceEvent::CircuitBreakerOpen {
-                resource_key: inner.resource.metadata().key.clone(),
-                operation,
-                retry_after,
-            },
-        );
+        Self::emit_event(inner, || ResourceEvent::CircuitBreakerOpen {
+            resource_key: inner.resource_key.clone(),
+            operation,
+            retry_after,
+        });
     }
 
     fn emit_breaker_closed(inner: &PoolInner<R>, operation: &'static str) {
-        Self::emit_event(
-            inner,
-            ResourceEvent::CircuitBreakerClosed {
-                resource_key: inner.resource.metadata().key.clone(),
-                operation,
-            },
-        );
+        Self::emit_event(inner, || ResourceEvent::CircuitBreakerClosed {
+            resource_key: inner.resource_key.clone(),
+            operation,
+        });
     }
 
     async fn breaker_retry_after(cb: &CircuitBreaker) -> Duration {
@@ -1143,7 +1152,7 @@ impl<R: Resource> Pool<R> {
             return match tokio::time::timeout(timeout, Self::create_with_hooks(inner, ctx)).await {
                 Ok(result) => result,
                 Err(_) => Err(Error::Timeout {
-                    resource_key: inner.resource.metadata().key.clone(),
+                    resource_key: inner.resource_key.clone(),
                     timeout_ms: timeout.as_millis() as u64,
                     operation: "create".to_string(),
                 }),
@@ -1157,7 +1166,7 @@ impl<R: Resource> Pool<R> {
             return match tokio::time::timeout(timeout, inner.resource.recycle(instance)).await {
                 Ok(result) => result,
                 Err(_) => Err(Error::Timeout {
-                    resource_key: inner.resource.metadata().key.clone(),
+                    resource_key: inner.resource_key.clone(),
                     timeout_ms: timeout.as_millis() as u64,
                     operation: "recycle".to_string(),
                 }),
@@ -1172,8 +1181,7 @@ impl<R: Resource> Pool<R> {
     /// Before-hooks can cancel the creation by returning
     /// [`HookResult::Cancel`](crate::hooks::HookResult::Cancel).
     async fn create_with_hooks(inner: &PoolInner<R>, ctx: &Context) -> Result<R::Instance> {
-        let key = inner.resource.metadata().key.clone();
-        let resource_id = key.as_ref();
+        let resource_id = inner.resource_key.as_ref();
 
         // Run Create before-hooks.
         if let Some(hooks) = &inner.hooks {
@@ -1215,8 +1223,7 @@ impl<R: Resource> Pool<R> {
         reason: &CleanupReason,
         ctx: Option<&Context>,
     ) {
-        let key = inner.resource.metadata().key.clone();
-        let resource_id = key.as_ref();
+        let resource_id = inner.resource_key.as_ref();
         let synthetic_ctx;
         let ctx = match ctx {
             Some(c) => c,
@@ -1245,14 +1252,10 @@ impl<R: Resource> Pool<R> {
         let _ = Self::with_inner_state(inner, |state| {
             state.stats.destroyed += 1;
         });
-        Self::emit_event(
-            inner,
-            ResourceEvent::CleanedUp {
-                resource_key: nebula_core::ResourceKey::try_from(resource_id)
-                    .expect("resource id must be a valid ResourceKey"),
-                reason: reason.clone(),
-            },
-        );
+        Self::emit_event(inner, || ResourceEvent::CleanedUp {
+            resource_key: inner.resource_key.clone(),
+            reason: reason.clone(),
+        });
     }
 
     /// Called by `ResourceManager` when the bound credential rotates.
@@ -1270,7 +1273,7 @@ impl<R: Resource> Pool<R> {
         credential_key: nebula_core::CredentialKey,
     ) -> Result<()> {
         let inner = &self.inner;
-        let key = inner.resource.metadata().key.clone();
+        let key = inner.resource_key.clone();
 
         // Update stored state (new instances will use this).
         *inner.credential_state.write() = Some(new_state.clone());
@@ -1332,9 +1335,10 @@ impl<R: Resource> Pool<R> {
     pub fn stats(&self) -> PoolStats {
         self.with_state_read(|state| {
             let mut stats = state.stats.clone();
-            stats.acquire_latency_p50_ms = state.latency_window.percentile(50.0);
-            stats.acquire_latency_p95_ms = state.latency_window.percentile(95.0);
-            stats.acquire_latency_p99_ms = state.latency_window.percentile(99.0);
+            let (p50, p95, p99) = state.latency_window.percentiles(50.0, 95.0, 99.0);
+            stats.acquire_latency_p50_ms = p50;
+            stats.acquire_latency_p95_ms = p95;
+            stats.acquire_latency_p99_ms = p99;
             stats
         })
         .unwrap_or_default()
@@ -1465,12 +1469,12 @@ impl<R: Resource> Pool<R> {
     /// Get the current number of callers waiting to acquire an instance.
     #[must_use]
     pub fn waiting_count(&self) -> usize {
-        self.inner.waiting_count.load(Ordering::SeqCst)
+        self.inner.waiting_count.load(Ordering::Relaxed)
     }
 
     /// Run maintenance: evict expired idle instances, ensure min_size.
     pub async fn maintain(&self, ctx: &Context) -> Result<()> {
-        tracing::debug!(resource_id = %self.inner.resource.metadata().key.clone(), "Running pool maintenance");
+        tracing::debug!(resource_id = %self.inner.resource_key, "Running pool maintenance");
 
         let inner = &self.inner;
 

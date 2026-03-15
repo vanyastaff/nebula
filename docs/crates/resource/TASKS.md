@@ -93,5 +93,5 @@
 - [x] `cargo check -p nebula-resource`
 - [x] `cargo test -p nebula-resource`
 - [x] `cargo clippy -p nebula-resource -- -D warnings`
-- [ ] `cargo doc --no-deps -p nebula-resource`
-- [ ] `cargo bench -p nebula-resource`
+- [x] `cargo doc --no-deps -p nebula-resource`
+- [x] `cargo bench -p nebula-resource`
