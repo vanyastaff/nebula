@@ -129,7 +129,7 @@ impl Context {
     #[allow(dead_code)] // used in tests; full manager→create() injection wiring in progress
     pub(crate) fn inject_resource(&mut self, key: ResourceKey, handle: Arc<dyn Any + Send + Sync>) {
         self.resolved_resources
-            .insert(key.as_ref().to_string(), handle);
+            .insert(key.to_string(), handle);
     }
 
     /// Retrieve a resolved sub-resource pool handle for typed acquisition.

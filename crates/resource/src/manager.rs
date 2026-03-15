@@ -446,7 +446,7 @@ impl Manager {
     {
         let meta = resource.metadata();
         let resource_key = meta.key.clone();
-        let id = resource_key.as_ref().to_string();
+        let id = resource_key.to_string();
 
         // Create pool first -- if this fails, nothing is modified.
         // Pass event bus and hooks so the pool can fire Create/Cleanup hooks.
@@ -513,13 +513,13 @@ impl Manager {
         let components = R::components();
         let meta = resource.metadata();
         let resource_key = meta.key.clone();
-        let id = resource_key.as_ref().to_string();
+        let id = resource_key.to_string();
 
         // Build dependency list from resource refs.
         let new_deps: Vec<String> = components
             .resource_refs()
             .iter()
-            .map(|r| r.key.as_ref().to_string())
+            .map(|r| r.key.to_string())
             .collect();
 
         // Create pool with credential handler.
@@ -633,7 +633,7 @@ impl Manager {
     /// Checks quarantine status, health state, and scope compatibility
     /// before delegating to the pool.
     pub async fn acquire(&self, resource_key: &ResourceKey, ctx: &Context) -> Result<AnyGuard> {
-        let id = resource_key.as_ref();
+        let id: &str = &resource_key;
         // Check quarantine -- quarantined resources cannot be acquired.
         if self.quarantine.is_quarantined(id) {
             return Err(Error::Unavailable {
@@ -821,7 +821,7 @@ impl Manager {
     /// This is a lightweight check that does not acquire from the pool.
     #[must_use]
     pub fn is_registered(&self, resource_key: &ResourceKey) -> bool {
-        self.pool_contains(resource_key.as_ref())
+        self.pool_contains(&resource_key)
     }
 
     /// Get a typed pool reference for a registered resource.
@@ -842,8 +842,7 @@ impl Manager {
         R::Instance: Any,
     {
         let key = resource.metadata().key.clone();
-        let id = key.as_ref();
-        let entry = self.pool_get(id)?;
+        let entry = self.pool_get(&key)?;
         let handle = entry.typed_handle.as_ref()?;
         handle.clone().downcast::<TypedPool<R>>().ok()
     }
@@ -854,7 +853,7 @@ impl Manager {
     ///
     /// Returns `true` if the resource was registered, `false` otherwise.
     pub async fn deregister(&self, resource_key: &ResourceKey) -> bool {
-        let id = resource_key.as_ref();
+        let id: &str = &resource_key;
         // Cancel auto-scaler (if any) — must happen before pool shutdown
         // so the scaler doesn't keep the Arc<dyn AnyPool> alive.
         if let Some((_, handle)) = self.auto_scalers.remove(id) {
@@ -946,7 +945,7 @@ impl Manager {
     /// Get a read-only status snapshot for a single resource.
     #[must_use]
     pub fn get_status(&self, resource_key: &ResourceKey) -> Option<ResourceStatus> {
-        let id = resource_key.as_ref();
+        let id: &str = &resource_key;
         let entry = self.pool_get(id)?;
         let scope = entry.scope.clone();
         let (active, idle, max_size) = entry.pool.utilization_snapshot();
@@ -993,7 +992,7 @@ impl Manager {
             })
             .collect();
 
-        statuses.sort_by(|a, b| a.metadata.key.as_ref().cmp(b.metadata.key.as_ref()));
+        statuses.sort_by(|a, b| (*a.metadata.key).cmp(&*b.metadata.key));
         statuses
     }
 
@@ -1065,7 +1064,7 @@ impl Manager {
 
     /// Internal implementation of health state propagation.
     fn propagate_health(&self, resource_key: &ResourceKey, state: HealthState) {
-        let id = resource_key.as_ref();
+        let id: &str = &resource_key;
         self.health_states.insert(id.to_string(), state.clone());
 
         let dependents = self.deps.read().get_dependents(id);
@@ -1128,7 +1127,7 @@ impl Manager {
         policy: AutoScalePolicy,
     ) -> Result<()> {
         policy.validate()?;
-        let id = resource_key.as_ref();
+        let id: &str = &resource_key;
 
         let pool_entry = self.pool_get(id).ok_or_else(|| Error::Unavailable {
             resource_key: resource_key.clone(),
@@ -1170,7 +1169,7 @@ impl Manager {
 
     /// Disable auto-scaling for a resource.
     pub fn disable_autoscaling(&self, resource_key: &ResourceKey) {
-        let id = resource_key.as_ref();
+        let id: &str = &resource_key;
         if let Some((_, handle)) = self.auto_scalers.remove(id) {
             handle.abort();
         }
@@ -1282,7 +1281,7 @@ impl Manager {
         R::Instance: Any,
     {
         let key = resource.metadata().key.clone();
-        let id = key.as_ref().to_string();
+        let id = key.to_string();
         let had_existing_pool = self.pool_contains(&id);
 
         // Build the new pool before touching the registry.
@@ -1993,7 +1992,7 @@ mod tests {
         let statuses = mgr.list_status();
         let keys: Vec<String> = statuses
             .into_iter()
-            .map(|status| status.metadata.key.as_ref().to_string())
+            .map(|status| status.metadata.key.to_string())
             .collect();
         assert_eq!(keys, vec!["alpha".to_string(), "zeta".to_string()]);
     }

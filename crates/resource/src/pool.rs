@@ -526,7 +526,7 @@ impl<R: Resource> std::fmt::Debug for Pool<R> {
             .with_state_read(|state| state.stats.clone())
             .unwrap_or_default();
         f.debug_struct("Pool")
-            .field("resource_id", &self.inner.resource_key.as_ref())
+            .field("resource_id", &&*self.inner.resource_key)
             .field("stats", &stats)
             .finish()
     }
@@ -1370,7 +1370,7 @@ impl<R: Resource> Pool<R> {
     /// Before-hooks can cancel the creation by returning
     /// [`HookResult::Cancel`](crate::hooks::HookResult::Cancel).
     async fn create_with_hooks(inner: &PoolInner<R>, ctx: &Context) -> Result<R::Instance> {
-        let resource_id = inner.resource_key.as_ref();
+        let resource_id: &str = &inner.resource_key;
 
         // Run Create before-hooks.
         if let Some(hooks) = &inner.hooks {
@@ -1412,7 +1412,7 @@ impl<R: Resource> Pool<R> {
         reason: &CleanupReason,
         ctx: Option<&Context>,
     ) {
-        let resource_id = inner.resource_key.as_ref();
+        let resource_id: &str = &inner.resource_key;
         let ctx = ctx.unwrap_or(&inner.maintenance_ctx);
 
         // Run Cleanup before-hooks (result is best-effort — cannot cancel a cleanup).
