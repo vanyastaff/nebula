@@ -64,13 +64,13 @@ pub mod scope;
 
 pub mod any;
 pub mod dependency;
+pub mod handler;
 pub(crate) mod dependency_graph;
 pub mod instrumented;
 pub(crate) mod manager_guard;
 pub(crate) mod manager_pool;
 
 pub mod autoscale;
-pub mod components;
 pub mod events;
 pub mod health;
 pub mod hooks;
@@ -81,7 +81,7 @@ pub mod pool;
 pub mod quarantine;
 
 pub use any::AnyResource;
-pub use components::TypedCredentialHandler;
+pub use handler::TypedCredentialHandler;
 pub use dependency::ResourceDependencies;
 pub use context::{Context, ResourcePoolHandle};
 pub use error::{Error, ErrorCategory, FieldViolation, Result};

@@ -35,7 +35,7 @@ use rustc_hash::FxBuildHasher;
 use smallvec::SmallVec;
 
 use crate::autoscale::{AutoScalePolicy, AutoScaler};
-use crate::components::TypedCredentialHandler;
+use crate::handler::TypedCredentialHandler;
 use crate::dependency::ResourceDependencies;
 use crate::context::Context;
 use crate::error::{Error, Result};
