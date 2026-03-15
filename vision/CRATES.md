@@ -493,10 +493,12 @@ Lifecycle management for shared, reusable I/O resources: database connection poo
 - **`Resource` trait** — interface for any managed resource type
 - **`Manager`** — central registry: create, pool, scope, health-check, and tear down resources
 - **`Pool<R>`** — FIFO/LIFO pool with configurable min/max size, idle timeout, and health validation
+- **`Poison<T>`** — poisoned-state guard for pool internals; prevents reusing state after interrupted critical sections
 - **`Scope`** — ties resource lifetime to workflow / execution / action scope; auto-cleanup on scope exit
 - **`ResourceProvider` trait** — decoupled acquisition (for testing and DI)
 - **`ResourceRef`** — `TypeId`-based handle used by actions to request resources
 - **Health checks** — periodic background health validation with quarantine on failure
+- **Resilience breakers** — integrated create/recycle circuit breakers via `nebula-resilience` to stop retry storms
 - **Autoscaling** — pool resizing based on demand metrics
 - **Instrumentation** — per-resource metrics via `nebula-metrics`
 - **Dependency graph** — ordered initialization / shutdown respecting resource dependencies

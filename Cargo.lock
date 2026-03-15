@@ -4055,6 +4055,7 @@ dependencies = [
  "nebula-eventbus",
  "nebula-metrics",
  "nebula-parameter",
+ "nebula-resilience",
  "nebula-telemetry",
  "parking_lot",
  "proptest",

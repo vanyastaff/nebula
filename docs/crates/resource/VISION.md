@@ -733,7 +733,17 @@ These are **resource-level**. Set by the resource author (or overridden by the a
 
 ### Level 3: Action-level (ActionContext — not in resource crate)
 
-Retry, circuit breaking, rate limiting — these live in `nebula-resilience` and are applied by the engine around action execution, not inside the resource. Resource crate returns classified errors (`is_retryable()`), resilience crate decides policy.
+Retry, circuit breaking, rate limiting are primarily applied by the engine/runtime around action execution.
+
+Additionally, `nebula-resource` now uses `nebula-resilience` internally for pool operation protection:
+
+- `create` and `recycle` paths are guarded by circuit breakers to prevent local failure storms.
+- breaker-open state surfaces as explicit resource errors/events, preserving observability.
+
+So the effective model is layered:
+
+- pool-level self-protection in `nebula-resource`
+- workflow/action-level resilience orchestration in engine/runtime
 
 ---
 

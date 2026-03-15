@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use nebula_core::{ExecutionId, WorkflowId};
 use nebula_credential::traits::RotationStrategy;
+use nebula_resilience::{CircuitBreaker, CircuitBreakerConfig, CircuitState, ResilienceError};
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::{Semaphore, TryAcquireError};
 use tokio_util::sync::CancellationToken;
@@ -31,6 +32,7 @@ use crate::events::{CleanupReason, EventBus, ResourceEvent};
 use crate::guard::Guard;
 use crate::hooks::{HookEvent, HookRegistry};
 use crate::lifecycle::Lifecycle;
+use crate::poison::{Poison, PoisonError};
 use crate::resource::Resource;
 use crate::scope::Scope;
 
@@ -125,6 +127,27 @@ pub struct PoolConfig {
     /// for backward compatibility.
     #[serde(default)]
     pub backpressure_policy: Option<PoolBackpressurePolicy>,
+    /// Circuit breaker applied to `Resource::create()`.
+    ///
+    /// See `nebula_resilience::standard_config()` for sensible defaults.
+    #[serde(default)]
+    pub create_breaker: Option<CircuitBreakerConfig>,
+    /// Circuit breaker applied to `Resource::recycle()`.
+    ///
+    /// See `nebula_resilience::standard_config()` for sensible defaults.
+    #[serde(default)]
+    pub recycle_breaker: Option<CircuitBreakerConfig>,
+    /// Optional timeout for a single `Resource::create()` call.
+    ///
+    /// `None` (default) keeps create unbounded and relies on higher-level
+    /// cancellation plus circuit breakers.
+    #[serde(default)]
+    pub create_timeout: Option<Duration>,
+    /// Optional timeout for a single `Resource::recycle()` call.
+    ///
+    /// `None` (default) keeps recycle unbounded.
+    #[serde(default)]
+    pub recycle_timeout: Option<Duration>,
 }
 
 impl Default for PoolConfig {
@@ -139,7 +162,21 @@ impl Default for PoolConfig {
             maintenance_interval: None,
             strategy: PoolStrategy::default(),
             backpressure_policy: None,
+            create_breaker: None,
+            recycle_breaker: None,
+            create_timeout: None,
+            recycle_timeout: None,
         }
+    }
+}
+
+impl PoolConfig {
+    /// Enable both create/recycle circuit breakers using standard defaults.
+    #[must_use]
+    pub fn with_standard_breakers(mut self) -> Self {
+        self.create_breaker = Some(nebula_resilience::standard_config());
+        self.recycle_breaker = Some(nebula_resilience::standard_config());
+        self
     }
 }
 
@@ -192,6 +229,20 @@ impl PoolConfig {
                     }
                 }
             }
+        }
+        if let Some(timeout) = self.create_timeout
+            && timeout.is_zero()
+        {
+            return Err(Error::configuration(
+                "create_timeout must be greater than zero when set",
+            ));
+        }
+        if let Some(timeout) = self.recycle_timeout
+            && timeout.is_zero()
+        {
+            return Err(Error::configuration(
+                "recycle_timeout must be greater than zero when set",
+            ));
         }
         Ok(())
     }
@@ -385,7 +436,7 @@ struct PoolInner<R: Resource> {
     resource: Arc<R>,
     config: R::Config,
     pool_config: PoolConfig,
-    state: Mutex<PoolState<R::Instance>>,
+    state: Mutex<Poison<PoolState<R::Instance>>>,
     /// Semaphore limits concurrent active (checked-out) instances.
     /// Idle instances do not hold permits.
     semaphore: Semaphore,
@@ -406,6 +457,10 @@ struct PoolInner<R: Resource> {
     credential_state: Arc<RwLock<Option<serde_json::Value>>>,
     /// Optional credential handler for rotation (None for resources without credentials).
     credential_handler: Option<Arc<dyn CredentialHandler<R::Instance>>>,
+    /// Circuit breaker for `Resource::create()` failures.
+    create_breaker: Option<CircuitBreaker>,
+    /// Circuit breaker for `Resource::recycle()` failures.
+    recycle_breaker: Option<CircuitBreaker>,
 }
 
 // ---------------------------------------------------------------------------
@@ -430,7 +485,9 @@ impl<R: Resource> Clone for Pool<R> {
 
 impl<R: Resource> std::fmt::Debug for Pool<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let stats = self.inner.state.lock().stats.clone();
+        let stats = self
+            .with_state_read(|state| state.stats.clone())
+            .unwrap_or_default();
         let key = self.inner.resource.metadata().key.clone();
         f.debug_struct("Pool")
             .field("resource_id", &key.as_ref())
@@ -496,6 +553,26 @@ impl<R: Resource> Pool<R> {
         credential_handler: Option<Arc<dyn CredentialHandler<R::Instance>>>,
     ) -> Result<Self> {
         pool_config.validate()?;
+        let create_breaker = if let Some(cfg) = &pool_config.create_breaker {
+            Some(
+                CircuitBreaker::new(cfg.clone()).map_err(|e| Error::Configuration {
+                    message: format!("create_breaker config invalid: {e}"),
+                    source: None,
+                })?,
+            )
+        } else {
+            None
+        };
+        let recycle_breaker = if let Some(cfg) = &pool_config.recycle_breaker {
+            Some(
+                CircuitBreaker::new(cfg.clone()).map_err(|e| Error::Configuration {
+                    message: format!("recycle_breaker config invalid: {e}"),
+                    source: None,
+                })?,
+            )
+        } else {
+            None
+        };
         let max = pool_config.max_size;
         let maintenance_interval = pool_config.maintenance_interval;
         let cancel = CancellationToken::new();
@@ -513,12 +590,15 @@ impl<R: Resource> Pool<R> {
                 resource: Arc::new(resource),
                 config,
                 pool_config,
-                state: Mutex::new(PoolState {
-                    idle: VecDeque::with_capacity(max),
-                    stats: PoolStats::default(),
-                    latency_window: LatencyRingBuffer::default(),
-                    shutdown: false,
-                }),
+                state: Mutex::new(Poison::new(
+                    "pool_state",
+                    PoolState {
+                        idle: VecDeque::with_capacity(max),
+                        stats: PoolStats::default(),
+                        latency_window: LatencyRingBuffer::default(),
+                        shutdown: false,
+                    },
+                )),
                 semaphore: Semaphore::new(max),
                 cancel: cancel.clone(),
                 event_bus,
@@ -527,6 +607,8 @@ impl<R: Resource> Pool<R> {
                 maintenance_handle: Mutex::new(None),
                 credential_state: Arc::new(RwLock::new(None)),
                 credential_handler,
+                create_breaker,
+                recycle_breaker,
             }),
         };
 
@@ -548,6 +630,47 @@ impl<R: Resource> Pool<R> {
         }
 
         Ok(pool)
+    }
+
+    fn map_poison_error(resource_key: nebula_core::ResourceKey, err: PoisonError) -> Error {
+        Error::Internal {
+            resource_key,
+            message: format!("pool state poisoned: {err}"),
+            source: None,
+        }
+    }
+
+    fn with_state<T>(&self, f: impl FnOnce(&mut PoolState<R::Instance>) -> T) -> Result<T> {
+        let mut state = self.inner.state.lock();
+        let mut guard = state.check_and_arm().map_err(|err| {
+            Self::map_poison_error(self.inner.resource.metadata().key.clone(), err)
+        })?;
+        let out = f(guard.data_mut());
+        guard.disarm();
+        Ok(out)
+    }
+
+    fn with_state_read<T>(&self, f: impl FnOnce(&PoolState<R::Instance>) -> T) -> Result<T> {
+        let mut state = self.inner.state.lock();
+        let guard = state.check_and_arm().map_err(|err| {
+            Self::map_poison_error(self.inner.resource.metadata().key.clone(), err)
+        })?;
+        let out = f(guard.data());
+        guard.disarm();
+        Ok(out)
+    }
+
+    fn with_inner_state<T>(
+        inner: &PoolInner<R>,
+        f: impl FnOnce(&mut PoolState<R::Instance>) -> T,
+    ) -> Result<T> {
+        let mut state = inner.state.lock();
+        let mut guard = state
+            .check_and_arm()
+            .map_err(|err| Self::map_poison_error(inner.resource.metadata().key.clone(), err))?;
+        let out = f(guard.data_mut());
+        guard.disarm();
+        Ok(out)
     }
 
     /// Acquire a resource instance from the pool.
@@ -613,15 +736,33 @@ impl<R: Resource> Pool<R> {
         // We got a permit, no longer waiting.
         inner.waiting_count.fetch_sub(1, Ordering::SeqCst);
 
+        if let Some(cb) = &inner.create_breaker
+            && let Err(err) = cb.can_execute().await
+        {
+            return match err {
+                ResilienceError::CircuitBreakerOpen { retry_after, .. } => {
+                    let retry_after = retry_after.unwrap_or_default();
+                    Self::emit_breaker_open(inner, "create", retry_after);
+                    Err(Error::CircuitBreakerOpen {
+                        resource_key: inner.resource.metadata().key.clone(),
+                        operation: "create",
+                        retry_after: Some(retry_after),
+                    })
+                }
+                other => Err(Error::Internal {
+                    resource_key: inner.resource.metadata().key.clone(),
+                    message: format!("create breaker check failed: {other}"),
+                    source: None,
+                }),
+            };
+        }
+
         // Try to get an idle instance, tracking created_at for recycled entries.
         let (instance, created_at) = loop {
-            let entry = {
-                let mut state = inner.state.lock();
-                match inner.pool_config.strategy {
-                    PoolStrategy::Fifo => state.idle.pop_front(),
-                    PoolStrategy::Lifo => state.idle.pop_back(),
-                }
-            };
+            let entry = Self::with_inner_state(inner, |state| match inner.pool_config.strategy {
+                PoolStrategy::Fifo => state.idle.pop_front(),
+                PoolStrategy::Lifo => state.idle.pop_back(),
+            })?;
             match entry {
                 Some(entry) if entry.is_expired(&inner.pool_config) => {
                     // Expired — clean up and try next
@@ -652,8 +793,19 @@ impl<R: Resource> Pool<R> {
                 None => {
                     // No idle instances — create new, firing Create hooks.
                     tracing::debug!("Creating new resource instance");
-                    let instance = Self::create_with_hooks(inner, ctx).await?;
-                    inner.state.lock().stats.created += 1;
+                    let create_result = Self::create_with_hooks_timed(inner, ctx).await;
+                    Self::maybe_record_breaker_result(
+                        inner,
+                        inner.create_breaker.as_ref(),
+                        "create",
+                        create_result.is_ok(),
+                    )
+                    .await;
+
+                    let instance = create_result?;
+                    Self::with_inner_state(inner, |state| {
+                        state.stats.created += 1;
+                    })?;
                     break (instance, None);
                 }
             }
@@ -662,15 +814,16 @@ impl<R: Resource> Pool<R> {
         // Record wait time stats now that we have an instance.
         let wait_ms = start.elapsed().as_millis() as u64;
         {
-            let mut state = inner.state.lock();
-            state.stats.total_acquisitions += 1;
-            state.stats.active += 1;
-            state.stats.idle = state.idle.len();
-            state.stats.total_wait_time_ms += wait_ms;
-            if wait_ms > state.stats.max_wait_time_ms {
-                state.stats.max_wait_time_ms = wait_ms;
-            }
-            state.latency_window.push(wait_ms);
+            Self::with_inner_state(inner, |state| {
+                state.stats.total_acquisitions += 1;
+                state.stats.active += 1;
+                state.stats.idle = state.idle.len();
+                state.stats.total_wait_time_ms += wait_ms;
+                if wait_ms > state.stats.max_wait_time_ms {
+                    state.stats.max_wait_time_ms = wait_ms;
+                }
+                state.latency_window.push(wait_ms);
+            })?;
         }
 
         // Forget the permit — we'll add it back when the guard drops.
@@ -721,7 +874,13 @@ impl<R: Resource> Pool<R> {
 
     fn adaptive_timeout(&self, adaptive: &AdaptiveBackpressurePolicy) -> Duration {
         let inner = &self.inner;
-        let active = inner.state.lock().stats.active;
+        let active = match self.with_state_read(|state| state.stats.active) {
+            Ok(active) => active,
+            Err(err) => {
+                tracing::error!(error = %err, "failed to read pool state for adaptive timeout");
+                return adaptive.high_pressure_timeout;
+            }
+        };
         let waiters = inner.waiting_count.load(Ordering::SeqCst);
         let utilization = active as f64 / inner.pool_config.max_size as f64;
         if utilization >= adaptive.high_pressure_utilization
@@ -735,9 +894,14 @@ impl<R: Resource> Pool<R> {
 
     fn pool_exhausted_error(&self) -> Error {
         let inner = &self.inner;
-        let mut state = inner.state.lock();
         let waiters = inner.waiting_count.load(Ordering::SeqCst);
-        state.stats.exhausted_count += 1;
+        let current_size = match self.with_state(|state| {
+            state.stats.exhausted_count += 1;
+            state.stats.active
+        }) {
+            Ok(size) => size,
+            Err(err) => return err,
+        };
         let key = inner.resource.metadata().key.clone();
         if let Some(bus) = &inner.event_bus {
             bus.emit(ResourceEvent::PoolExhausted {
@@ -747,7 +911,7 @@ impl<R: Resource> Pool<R> {
         }
         Error::PoolExhausted {
             resource_key: key,
-            current_size: state.stats.active,
+            current_size,
             max_size: inner.pool_config.max_size,
             waiters,
         }
@@ -766,29 +930,65 @@ impl<R: Resource> Pool<R> {
     /// Called from the guard's drop callback in a spawned task.
     async fn return_instance(
         pool: Self,
-        mut inst: R::Instance,
+        inst: R::Instance,
         created_at: Option<Instant>,
         usage_duration: Duration,
     ) {
         let inner = &pool.inner;
-        let recycle_ok = inner.resource.recycle(&mut inst).await.is_ok();
+        let mut inst_slot = Some(inst);
+        let mut recycle_ok = false;
+        let mut skip_recycle = false;
+
+        if let Some(cb) = &inner.recycle_breaker
+            && let Err(ResilienceError::CircuitBreakerOpen { retry_after, .. }) =
+                cb.can_execute().await
+        {
+            let retry_after = retry_after.unwrap_or_default();
+            Self::emit_breaker_open(inner, "recycle", retry_after);
+            skip_recycle = true;
+        }
+
+        if !skip_recycle {
+            let recycle_result =
+                Self::recycle_timed(inner, inst_slot.as_mut().expect("instance must exist")).await;
+            recycle_ok = recycle_result.is_ok();
+            Self::maybe_record_breaker_result(
+                inner,
+                inner.recycle_breaker.as_ref(),
+                "recycle",
+                recycle_result.is_ok(),
+            )
+            .await;
+        }
 
         // Check shutdown under the same lock that pushes to idle to
         // prevent a race where shutdown flips between the read and insert.
         let cleanup_reason = if recycle_ok {
-            let mut state = inner.state.lock();
-            if !state.shutdown {
-                let entry = match created_at {
-                    Some(ca) => Entry::returned(inst, ca),
-                    None => Entry::new(inst),
-                };
-                state.idle.push_back(entry);
-                None
-            } else {
-                Some((inst, CleanupReason::Shutdown))
+            match Self::with_inner_state(inner, |state| {
+                if !state.shutdown {
+                    let inst = inst_slot.take().expect("instance must exist");
+                    let entry = match created_at {
+                        Some(ca) => Entry::returned(inst, ca),
+                        None => Entry::new(inst),
+                    };
+                    state.idle.push_back(entry);
+                    None
+                } else {
+                    let inst = inst_slot.take().expect("instance must exist");
+                    Some((inst, CleanupReason::Shutdown))
+                }
+            }) {
+                Ok(reason) => reason,
+                Err(_) => Some((
+                    inst_slot.take().expect("instance must exist"),
+                    CleanupReason::RecycleFailed,
+                )),
             }
         } else {
-            Some((inst, CleanupReason::RecycleFailed))
+            Some((
+                inst_slot.take().expect("instance must exist"),
+                CleanupReason::RecycleFailed,
+            ))
         };
 
         if cleanup_reason.is_none() {
@@ -815,10 +1015,11 @@ impl<R: Resource> Pool<R> {
         );
 
         {
-            let mut state = inner.state.lock();
-            state.stats.total_releases += 1;
-            state.stats.active = state.stats.active.saturating_sub(1);
-            state.stats.idle = state.idle.len();
+            let _ = Self::with_inner_state(inner, |state| {
+                state.stats.total_releases += 1;
+                state.stats.active = state.stats.active.saturating_sub(1);
+                state.stats.idle = state.idle.len();
+            });
         }
 
         inner.semaphore.add_permits(1);
@@ -829,6 +1030,108 @@ impl<R: Resource> Pool<R> {
         if let Some(bus) = &inner.event_bus {
             bus.emit(event);
         }
+    }
+
+    fn emit_breaker_open(inner: &PoolInner<R>, operation: &'static str, retry_after: Duration) {
+        Self::emit_event(
+            inner,
+            ResourceEvent::CircuitBreakerOpen {
+                resource_key: inner.resource.metadata().key.clone(),
+                operation,
+                retry_after,
+            },
+        );
+    }
+
+    fn emit_breaker_closed(inner: &PoolInner<R>, operation: &'static str) {
+        Self::emit_event(
+            inner,
+            ResourceEvent::CircuitBreakerClosed {
+                resource_key: inner.resource.metadata().key.clone(),
+                operation,
+            },
+        );
+    }
+
+    async fn breaker_retry_after(cb: &CircuitBreaker) -> Duration {
+        cb.can_execute()
+            .await
+            .err()
+            .and_then(|e| match e {
+                ResilienceError::CircuitBreakerOpen { retry_after, .. } => retry_after,
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    async fn breaker_record_success(
+        inner: &PoolInner<R>,
+        cb: &CircuitBreaker,
+        operation: &'static str,
+    ) {
+        let prev = cb.state().await;
+        cb.record_success().await;
+        let now = cb.state().await;
+        if matches!(prev, CircuitState::HalfOpen) && matches!(now, CircuitState::Closed) {
+            Self::emit_breaker_closed(inner, operation);
+        }
+    }
+
+    async fn breaker_record_failure(
+        inner: &PoolInner<R>,
+        cb: &CircuitBreaker,
+        operation: &'static str,
+    ) {
+        cb.record_failure().await;
+        if matches!(cb.state().await, CircuitState::Open) {
+            let retry_after = Self::breaker_retry_after(cb).await;
+            Self::emit_breaker_open(inner, operation, retry_after);
+        }
+    }
+
+    async fn maybe_record_breaker_result(
+        inner: &PoolInner<R>,
+        breaker: Option<&CircuitBreaker>,
+        operation: &'static str,
+        success: bool,
+    ) {
+        let Some(cb) = breaker else {
+            return;
+        };
+
+        if success {
+            Self::breaker_record_success(inner, cb, operation).await;
+        } else {
+            Self::breaker_record_failure(inner, cb, operation).await;
+        }
+    }
+
+    async fn create_with_hooks_timed(inner: &PoolInner<R>, ctx: &Context) -> Result<R::Instance> {
+        if let Some(timeout) = inner.pool_config.create_timeout {
+            return match tokio::time::timeout(timeout, Self::create_with_hooks(inner, ctx)).await {
+                Ok(result) => result,
+                Err(_) => Err(Error::Timeout {
+                    resource_key: inner.resource.metadata().key.clone(),
+                    timeout_ms: timeout.as_millis() as u64,
+                    operation: "create".to_string(),
+                }),
+            };
+        }
+        Self::create_with_hooks(inner, ctx).await
+    }
+
+    async fn recycle_timed(inner: &PoolInner<R>, instance: &mut R::Instance) -> Result<()> {
+        if let Some(timeout) = inner.pool_config.recycle_timeout {
+            return match tokio::time::timeout(timeout, inner.resource.recycle(instance)).await {
+                Ok(result) => result,
+                Err(_) => Err(Error::Timeout {
+                    resource_key: inner.resource.metadata().key.clone(),
+                    timeout_ms: timeout.as_millis() as u64,
+                    operation: "recycle".to_string(),
+                }),
+            };
+        }
+        inner.resource.recycle(instance).await
     }
 
     /// Create a new resource instance, firing [`HookEvent::Create`]
@@ -907,7 +1210,9 @@ impl<R: Resource> Pool<R> {
                 .await;
         }
 
-        inner.state.lock().stats.destroyed += 1;
+        let _ = Self::with_inner_state(inner, |state| {
+            state.stats.destroyed += 1;
+        });
         Self::emit_event(
             inner,
             ResourceEvent::CleanedUp {
@@ -947,10 +1252,12 @@ impl<R: Resource> Pool<R> {
 
         match strategy {
             RotationStrategy::HotSwap => {
-                let mut state = inner.state.lock();
-                for entry in state.idle.iter_mut() {
-                    handler.authorize(&mut entry.instance, new_state)?;
-                }
+                Self::with_inner_state(inner, |state| {
+                    for entry in state.idle.iter_mut() {
+                        handler.authorize(&mut entry.instance, new_state)?;
+                    }
+                    Ok(())
+                })??;
             }
             RotationStrategy::DrainAndRecreate | RotationStrategy::Reconnect => {
                 Self::drain_idle(inner).await;
@@ -970,12 +1277,12 @@ impl<R: Resource> Pool<R> {
 
     /// Evict all idle instances (used by DrainAndRecreate and Reconnect).
     async fn drain_idle(inner: &PoolInner<R>) {
-        let to_cleanup: Vec<_> = {
-            let mut state = inner.state.lock();
+        let to_cleanup: Vec<_> = Self::with_inner_state(inner, |state| {
             let entries: Vec<_> = state.idle.drain(..).collect();
             state.stats.idle = state.idle.len();
             entries
-        };
+        })
+        .unwrap_or_default();
         for entry in to_cleanup {
             Self::cleanup_with_hooks(
                 inner,
@@ -991,12 +1298,26 @@ impl<R: Resource> Pool<R> {
     /// computed from a sliding window of recent acquisitions.
     #[must_use]
     pub fn stats(&self) -> PoolStats {
-        let state = self.inner.state.lock();
-        let mut stats = state.stats.clone();
-        stats.acquire_latency_p50_ms = state.latency_window.percentile(50.0);
-        stats.acquire_latency_p95_ms = state.latency_window.percentile(95.0);
-        stats.acquire_latency_p99_ms = state.latency_window.percentile(99.0);
-        stats
+        self.with_state_read(|state| {
+            let mut stats = state.stats.clone();
+            stats.acquire_latency_p50_ms = state.latency_window.percentile(50.0);
+            stats.acquire_latency_p95_ms = state.latency_window.percentile(95.0);
+            stats.acquire_latency_p99_ms = state.latency_window.percentile(99.0);
+            stats
+        })
+        .unwrap_or_default()
+    }
+
+    /// Intentionally poison internal pool state.
+    ///
+    /// This is primarily intended for integration tests that validate
+    /// poisoned-state behavior.
+    #[doc(hidden)]
+    pub fn poison_for_test(&self) {
+        let mut state = self.inner.state.lock();
+        if let Ok(_guard) = state.check_and_arm() {
+            // Dropping the guard without disarm poisons the state.
+        }
     }
 
     /// Get a reference to the pool configuration.
@@ -1017,11 +1338,11 @@ impl<R: Resource> Pool<R> {
 
         for _ in 0..count {
             // Check headroom under the lock, then release before async create.
-            let has_room = {
-                let state = inner.state.lock();
+            let has_room = Self::with_inner_state(inner, |state| {
                 let total = state.idle.len() + state.stats.active;
                 total < inner.pool_config.max_size
-            };
+            })
+            .unwrap_or(false);
 
             if !has_room {
                 break;
@@ -1034,8 +1355,7 @@ impl<R: Resource> Pool<R> {
 
             // Re-check capacity under the lock after the async create.
             // Returns Some(instance) if rejected (over capacity).
-            let rejected = {
-                let mut state = inner.state.lock();
+            let rejected = Self::with_inner_state(inner, |state| {
                 let total = state.idle.len() + state.stats.active;
                 if total < inner.pool_config.max_size {
                     state.idle.push_back(Entry::new(instance));
@@ -1046,7 +1366,9 @@ impl<R: Resource> Pool<R> {
                 } else {
                     Some(instance)
                 }
-            };
+            })
+            .ok()
+            .flatten();
 
             if let Some(surplus) = rejected {
                 Self::cleanup_with_hooks(inner, surplus, &CleanupReason::Evicted, Some(&ctx)).await;
@@ -1066,20 +1388,23 @@ impl<R: Resource> Pool<R> {
         let mut removed = 0;
 
         for _ in 0..count {
-            let entry = {
-                let mut state = inner.state.lock();
+            let entry = Self::with_inner_state(inner, |state| {
                 let total = state.idle.len() + state.stats.active;
                 if total <= inner.pool_config.min_size || state.idle.is_empty() {
-                    break;
+                    None
+                } else {
+                    state.idle.pop_front()
                 }
-                state.idle.pop_front()
-            };
+            })
+            .ok()
+            .flatten();
 
             if let Some(entry) = entry {
                 Self::cleanup_with_hooks(inner, entry.instance, &CleanupReason::Evicted, None)
                     .await;
-                let mut state = inner.state.lock();
-                state.stats.idle = state.idle.len();
+                let _ = Self::with_inner_state(inner, |state| {
+                    state.stats.idle = state.idle.len();
+                });
                 removed += 1;
             } else {
                 break;
@@ -1095,12 +1420,14 @@ impl<R: Resource> Pool<R> {
     /// without exposing the full `PoolStats`.
     #[must_use]
     pub fn utilization_snapshot(&self) -> (usize, usize, usize) {
-        let state = self.inner.state.lock();
-        (
-            state.stats.active,
-            state.idle.len(),
-            self.inner.pool_config.max_size,
-        )
+        self.with_state_read(|state| {
+            (
+                state.stats.active,
+                state.idle.len(),
+                self.inner.pool_config.max_size,
+            )
+        })
+        .unwrap_or((0, 0, self.inner.pool_config.max_size))
     }
 
     /// Get the current number of callers waiting to acquire an instance.
@@ -1117,8 +1444,7 @@ impl<R: Resource> Pool<R> {
 
         // Evict expired idle entries
         let mut to_cleanup = Vec::new();
-        {
-            let mut state = inner.state.lock();
+        Self::with_inner_state(inner, |state| {
             let mut kept = VecDeque::with_capacity(state.idle.len());
             while let Some(entry) = state.idle.pop_front() {
                 if entry.is_expired(&inner.pool_config) {
@@ -1128,35 +1454,34 @@ impl<R: Resource> Pool<R> {
                 }
             }
             state.idle = kept;
-        }
+        })?;
 
         for inst in to_cleanup {
             Self::cleanup_with_hooks(inner, inst, &CleanupReason::Evicted, Some(ctx)).await;
         }
 
         // Ensure min_size
-        let (current_idle, current_active) = {
-            let state = inner.state.lock();
-            (state.idle.len(), state.stats.active)
-        };
+        let (current_idle, current_active) =
+            Self::with_inner_state(inner, |state| (state.idle.len(), state.stats.active))?;
         let total = current_idle + current_active;
         if total < inner.pool_config.min_size {
             let needed = inner.pool_config.min_size - total;
             for _ in 0..needed {
-                match Self::create_with_hooks(inner, ctx).await {
-                    Ok(instance) => {
-                        let mut state = inner.state.lock();
-                        state.idle.push_back(Entry::new(instance));
-                        state.stats.created += 1;
-                    }
-                    Err(_) => break,
-                }
+                let Ok(instance) = Self::create_with_hooks(inner, ctx).await else {
+                    break;
+                };
+
+                Self::with_inner_state(inner, |state| {
+                    state.idle.push_back(Entry::new(instance));
+                    state.stats.created += 1;
+                })?;
             }
         }
 
         // Sync idle count
-        let mut state = inner.state.lock();
-        state.stats.idle = state.idle.len();
+        Self::with_inner_state(inner, |state| {
+            state.stats.idle = state.idle.len();
+        })?;
 
         Ok(())
     }
@@ -1186,16 +1511,19 @@ impl<R: Resource> Pool<R> {
         inner.semaphore.close();
 
         let entries: Vec<_> = {
-            let mut state = inner.state.lock();
-            state.shutdown = true;
-            state.idle.drain(..).collect()
+            Self::with_inner_state(inner, |state| {
+                state.shutdown = true;
+                state.idle.drain(..).collect()
+            })?
         };
 
         for entry in entries {
             Self::cleanup_with_hooks(inner, entry.instance, &CleanupReason::Shutdown, None).await;
         }
 
-        inner.state.lock().stats.idle = 0;
+        Self::with_inner_state(inner, |state| {
+            state.stats.idle = 0;
+        })?;
         Ok(())
     }
 }
@@ -1308,6 +1636,22 @@ mod tests {
                         ..Default::default()
                     }
                 )),
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            PoolConfig {
+                create_timeout: Some(Duration::ZERO),
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            PoolConfig {
+                recycle_timeout: Some(Duration::ZERO),
                 ..Default::default()
             }
             .validate()
@@ -1466,6 +1810,78 @@ mod tests {
         pool.shutdown().await.unwrap();
         let stats = pool.stats();
         assert_eq!(stats.idle, 0);
+    }
+
+    struct SlowResource;
+
+    impl Resource for SlowResource {
+        type Config = TestConfig;
+        type Instance = String;
+
+        fn metadata(&self) -> ResourceMetadata {
+            ResourceMetadata::from_key(ResourceKey::try_from("slow-resource").expect("valid"))
+        }
+
+        async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            Ok(format!("{}-instance", config.prefix))
+        }
+
+        async fn recycle(&self, _instance: &mut Self::Instance) -> Result<()> {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn create_timeout_returns_timeout_error() {
+        let pool = Pool::new(
+            SlowResource,
+            test_config(),
+            PoolConfig {
+                min_size: 0,
+                max_size: 1,
+                create_timeout: Some(Duration::from_millis(10)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let err = pool
+            .acquire(&test_ctx())
+            .await
+            .expect_err("create must timeout");
+        assert!(matches!(
+            err,
+            Error::Timeout { operation, .. } if operation == "create"
+        ));
+    }
+
+    #[tokio::test]
+    async fn recycle_timeout_cleans_up_instance() {
+        let pool = Pool::new(
+            SlowResource,
+            test_config(),
+            PoolConfig {
+                min_size: 0,
+                max_size: 1,
+                recycle_timeout: Some(Duration::from_millis(10)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        {
+            let (_guard, _) = pool.acquire(&test_ctx()).await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        let stats = pool.stats();
+        assert_eq!(stats.idle, 0, "timed-out recycle must not return to idle");
+        assert_eq!(
+            stats.destroyed, 1,
+            "timed-out recycle should cleanup instance"
+        );
     }
 
     // -- Resource that fails validation --

@@ -73,6 +73,31 @@ shutdown:
 - expensive `create()` paths during traffic spikes
 - full pool replacement on `reload_config` (in-place non-destructive reload not yet supported: see Open Question Q1)
 
+## Neon-Inspired Hardening Checklist
+
+This checklist tracks safety patterns adapted from Neon codebase practices, with status against `nebula-resource`.
+
+| Area | Pattern | Status in `nebula-resource` | Next hardening step |
+|------|---------|-----------------------------|---------------------|
+| Cancel safety in critical sections | Arm/disarm poison guard around mutable shared state | Implemented (`Poison<T>` + guard-based poisoning in pool state transitions) | Expand docs on "dispose/recreate" guidance for poisoned pools |
+| Failure storm protection | Circuit breaker around expensive fallible operations | Implemented for pool `create` and `recycle` with open/close signaling | Add breaker saturation metrics dashboard examples |
+| Shutdown correctness | Gate-style "no new work + wait in-flight" model | Partially implemented (`closed` flag + semaphore + drain on shutdown) | Add explicit gate primitive for spawned background subtasks |
+| Timeout envelopes | Bound long-running create/recycle operations | Implemented (`create_timeout`, `recycle_timeout`) | Add per-resource timeout profiles in cookbook |
+| Observability by RAII | Guard-based counters/timers for wait/run windows | Partially implemented (pool stats/events) | Convert remaining manual increment/decrement paths to RAII helpers |
+
+## How `nebula-resilience` Participates
+
+`nebula-resource` uses `nebula-resilience` at the pool-operation boundary, while the engine/runtime can still apply broader resilience policies at action execution boundary.
+
+- Inside `nebula-resource` pool:
+  - circuit breakers guard `create` and `recycle` paths to prevent retry storms and repeated expensive failures.
+  - breaker-open paths return classified errors and emit explicit events for operators.
+- Outside `nebula-resource` (engine/runtime/action loop):
+  - retry/backoff/rate-limit policies remain orchestration concerns and should wrap action execution flows.
+  - resource errors remain policy-carrying inputs (`retryable`, category, retry hints), not policy executors.
+
+This split keeps pool internals self-protecting under pressure, while preserving centralized resilience policy control at higher layers.
+
 ## Target Architecture
 
 - target module map:

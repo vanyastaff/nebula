@@ -51,5 +51,5 @@ It demonstrates:
 ## Design rules
 
 - adapters own protocol details, not orchestration policy
-- retry policy remains caller/resilience concern
+- action-level retry policy remains caller/resilience concern; pool create/recycle breaker protection is handled by `nebula-resource`
 - scope/quarantine/health enforcement remains in `nebula-resource`

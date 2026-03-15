@@ -21,6 +21,7 @@ nebula-credential = { path = "../credential" }
 nebula-eventbus = { path = "../eventbus" }
 nebula-metrics = { path = "../metrics" }
 nebula-telemetry = { path = "../telemetry" }
+nebula-resilience = { path = "../resilience" }
 
 # Async runtime
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync", "macros"] }

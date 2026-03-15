@@ -142,6 +142,22 @@ pub enum ResourceEvent {
         /// Reason for cleanup.
         reason: CleanupReason,
     },
+    /// Circuit breaker opened for a resource operation.
+    CircuitBreakerOpen {
+        /// Resource key.
+        resource_key: ResourceKey,
+        /// Operation name (`create` or `recycle`).
+        operation: &'static str,
+        /// Suggested delay before a retry probe.
+        retry_after: Duration,
+    },
+    /// Circuit breaker closed after recovery.
+    CircuitBreakerClosed {
+        /// Resource key.
+        resource_key: ResourceKey,
+        /// Operation name (`create` or `recycle`).
+        operation: &'static str,
+    },
     /// A resource was placed in quarantine.
     Quarantined {
         /// Resource key.
@@ -205,6 +221,8 @@ impl ResourceEvent {
             | Self::HealthChanged { resource_key, .. }
             | Self::PoolExhausted { resource_key, .. }
             | Self::CleanedUp { resource_key, .. }
+            | Self::CircuitBreakerOpen { resource_key, .. }
+            | Self::CircuitBreakerClosed { resource_key, .. }
             | Self::Quarantined { resource_key, .. }
             | Self::QuarantineReleased { resource_key, .. }
             | Self::ConfigReloaded { resource_key, .. }

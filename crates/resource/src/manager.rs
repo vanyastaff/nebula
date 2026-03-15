@@ -681,6 +681,12 @@ impl Manager {
                     resource_key: resource_key.clone(),
                     error: err.to_string(),
                 });
+                if matches!(
+                    err,
+                    Error::Unavailable { .. } | Error::CircuitBreakerOpen { .. }
+                ) {
+                    return Err(err);
+                }
                 Err(err)
             }
         }

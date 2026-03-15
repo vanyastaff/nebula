@@ -179,6 +179,11 @@ impl MetricsCollector {
                 )
                 .increment(1);
             }
+            ResourceEvent::CircuitBreakerOpen { resource_key, .. } => {
+                let id = Self::resource_label(resource_key);
+                metrics::counter!(NEBULA_RESOURCE_ERROR_TOTAL, "resource_id" => id).increment(1);
+            }
+            ResourceEvent::CircuitBreakerClosed { .. } => {}
         }
     }
 

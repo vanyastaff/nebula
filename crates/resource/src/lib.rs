@@ -73,6 +73,7 @@ pub mod health;
 pub mod hooks;
 pub mod manager;
 pub mod metrics;
+pub mod poison;
 pub mod pool;
 pub mod quarantine;
 
@@ -109,6 +110,7 @@ pub use manager::{
     ResourcePoolStatus, ResourceStatus, ShutdownConfig, TypedPool, TypedResourceGuard,
 };
 pub use metrics::MetricsCollector;
+pub use poison::{Poison, PoisonError, PoisonGuard};
 pub use pool::{
     AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig, PoolStats, PoolStrategy,
 };

@@ -28,6 +28,11 @@ Use `ErrorCategory` for action/runtime policy decisions:
 - `Fatal` => fail step, no retry
 - `Retryable` => apply retry/backoff via resilience layer
 
+Note:
+
+- `nebula-resource` already applies `nebula-resilience` circuit breakers to pool `create`/`recycle` internals.
+- keep action-level retry/backoff/rate-limit in engine/runtime so policy stays centralized.
+
 ## 3) Backpressure profile selection
 
 Configure per-resource pool behavior:

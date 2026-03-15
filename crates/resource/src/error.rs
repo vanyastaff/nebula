@@ -144,22 +144,16 @@ pub enum Error {
 
     /// Circuit breaker is open — the resource has been temporarily blocked
     /// due to repeated failures.
-    ///
-    /// **Status:** This variant is reserved for future integration with the
-    /// [`nebula-resilience`](../../nebula_resilience/index.html) crate, which
-    /// provides circuit-breaker, retry, and rate-limiting primitives. It is
-    /// not currently emitted by any code in `nebula-resource` itself, but
-    /// downstream wrappers (e.g. a resilience-aware pool decorator) can
-    /// return this error to signal that the circuit is open.
-    ///
-    /// The error is intentionally kept so that consumers can already
-    /// pattern-match on it and handle `is_retryable() == true` correctly.
-    #[error("Circuit breaker is open for resource '{resource_key}'")]
+    #[error(
+        "Circuit breaker is open for resource '{resource_key}' operation '{operation}' (retry_after={retry_after:?})"
+    )]
     CircuitBreakerOpen {
         /// The resource key
         resource_key: ResourceKey,
-        /// When the circuit breaker will attempt to close
-        retry_after_ms: Option<u64>,
+        /// Operation name.
+        operation: &'static str,
+        /// When the circuit breaker allows a new probe.
+        retry_after: Option<std::time::Duration>,
     },
 
     /// Resource pool is exhausted
@@ -275,6 +269,15 @@ impl Error {
         self.category() == ErrorCategory::Fatal
     }
 
+    /// Retry hint for backoff-aware callers.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        match self {
+            Self::CircuitBreakerOpen { retry_after, .. } => *retry_after,
+            _ => None,
+        }
+    }
+
     /// Get the resource key associated with this error (if any).
     #[must_use]
     pub fn resource_key(&self) -> Option<&ResourceKey> {
@@ -295,6 +298,17 @@ impl Error {
             | Self::Internal { resource_key, .. }
             | Self::CredentialNotConfigured { resource_key, .. } => Some(resource_key),
         }
+    }
+}
+
+impl nebula_resilience::retryable::Retryable for Error {
+    fn is_retryable(&self) -> bool {
+        Error::is_retryable(self)
+    }
+
+    fn retry_delay(&self) -> std::time::Duration {
+        self.retry_after()
+            .unwrap_or(std::time::Duration::from_millis(100))
     }
 }
 
@@ -349,10 +363,12 @@ mod tests {
         let key = ResourceKey::try_from("api").expect("valid resource key");
         let err = Error::CircuitBreakerOpen {
             resource_key: key.clone(),
-            retry_after_ms: Some(30000),
+            operation: "create",
+            retry_after: Some(std::time::Duration::from_secs(30)),
         };
         assert_eq!(err.resource_key(), Some(&key));
         assert!(err.is_retryable());
+        assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(30)));
     }
 
     #[test]
@@ -409,7 +425,8 @@ mod tests {
             },
             Error::CircuitBreakerOpen {
                 resource_key: key.clone(),
-                retry_after_ms: None,
+                operation: "create",
+                retry_after: None,
             },
             Error::PoolExhausted {
                 resource_key: key.clone(),

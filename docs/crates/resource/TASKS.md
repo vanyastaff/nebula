@@ -1,6 +1,6 @@
 # Tasks: nebula-resource
 
-**ROADMAP**: [ROADMAP.md](ROADMAP.md) | **PLAN**: [PLAN.md](PLAN.md)
+**ROADMAP**: [ROADMAP.md](ROADMAP.md) | **PLAN**: [PLAN.md](PLAN.md) | **NEON PLAN**: [NEON_HARDENING_PLAN.md](NEON_HARDENING_PLAN.md) | **NEON SPEC**: [NEON_HARDENING_SPEC.md](NEON_HARDENING_SPEC.md)
 
 ## Format: `[ID] [P?] Description`
 
