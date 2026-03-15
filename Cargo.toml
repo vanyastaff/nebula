@@ -75,9 +75,9 @@ petgraph = "0.8"
 
 # Data structures
 bitflags = "2.11"
-domain-key = { version = "0.3", features = ["serde", "uuid-v4"] }
+domain-key = { version = "0.4", features = ["serde", "uuid-v4"] }
 bon = { version = "3.9.0" }
-uuid = { version = "1.21.0", features = ["v4", "serde"] }
+uuid = { version = "1.20", features = ["v4", "serde"] }
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 im = { version = "15.1", features = ["serde"] }
 smallvec = { version = "1.15", features = ["union", "const_generics"] }

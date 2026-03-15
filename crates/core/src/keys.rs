@@ -24,20 +24,20 @@
 
 use domain_key::{define_domain, key_type};
 
-define_domain!(ParameterDomain, "parameter");
-key_type!(ParameterKey, ParameterDomain);
+define_domain!(pub ParameterDomain, "parameter");
+key_type!(pub ParameterKey, ParameterDomain);
 
-define_domain!(CredentialDomain, "credential");
-key_type!(CredentialKey, CredentialDomain);
+define_domain!(pub CredentialDomain, "credential");
+key_type!(pub CredentialKey, CredentialDomain);
 
-define_domain!(ActionDomain, "action");
-key_type!(ActionKey, ActionDomain);
+define_domain!(pub ActionDomain, "action");
+key_type!(pub ActionKey, ActionDomain);
 
-define_domain!(ResourceDomain, "resource");
-key_type!(ResourceKey, ResourceDomain);
+define_domain!(pub ResourceDomain, "resource");
+key_type!(pub ResourceKey, ResourceDomain);
 
-define_domain!(PluginDomain, "plugin");
-key_type!(PluginKey, PluginDomain);
+define_domain!(pub PluginDomain, "plugin");
+key_type!(pub PluginKey, PluginDomain);
 
 #[cfg(test)]
 mod tests {}

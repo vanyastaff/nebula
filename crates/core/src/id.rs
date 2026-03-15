@@ -15,16 +15,16 @@
 use domain_key::define_uuid;
 
 // Entity identifiers — UUID-based, Copy, 16 bytes each
-define_uuid!(UserIdDomain => UserId);
-define_uuid!(TenantIdDomain => TenantId);
-define_uuid!(ExecutionIdDomain => ExecutionId);
-define_uuid!(WorkflowIdDomain => WorkflowId);
-define_uuid!(NodeIdDomain => NodeId);
-define_uuid!(ResourceIdDomain => ResourceId);
-define_uuid!(CredentialIdDomain => CredentialId);
-define_uuid!(ProjectIdDomain => ProjectId);
-define_uuid!(RoleIdDomain => RoleId);
-define_uuid!(OrganizationIdDomain => OrganizationId);
+define_uuid!(pub UserIdDomain => UserId);
+define_uuid!(pub TenantIdDomain => TenantId);
+define_uuid!(pub ExecutionIdDomain => ExecutionId);
+define_uuid!(pub WorkflowIdDomain => WorkflowId);
+define_uuid!(pub NodeIdDomain => NodeId);
+define_uuid!(pub ResourceIdDomain => ResourceId);
+define_uuid!(pub CredentialIdDomain => CredentialId);
+define_uuid!(pub ProjectIdDomain => ProjectId);
+define_uuid!(pub RoleIdDomain => RoleId);
+define_uuid!(pub OrganizationIdDomain => OrganizationId);
 
 #[cfg(test)]
 mod tests {
