@@ -47,7 +47,7 @@
 - exit criteria:
   - at least one reference adapter and end-to-end sample integration.
 
-## Phase 5: Neon Hardening ✅
+## Phase 5: Pool Safety Hardening ✅
 
 - deliverables:
   - `Gate`/`GateGuard` cooperative shutdown barrier in `nebula-resilience::gate`; wired into `PoolInner` so maintenance task holds a `GateGuard` and `shutdown()` calls `gate.close().await` before `semaphore.close()`.

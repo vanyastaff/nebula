@@ -1,6 +1,6 @@
 # Tasks: nebula-resource
 
-**ROADMAP**: [ROADMAP.md](ROADMAP.md) | **PLAN**: [PLAN.md](PLAN.md) | **NEON PLAN**: [NEON_HARDENING_PLAN.md](NEON_HARDENING_PLAN.md) | **NEON SPEC**: [NEON_HARDENING_SPEC.md](NEON_HARDENING_SPEC.md)
+**ROADMAP**: [ROADMAP.md](ROADMAP.md) | **PLAN**: [PLAN.md](PLAN.md)
 
 ## Format: `[ID] [P?] Description`
 
@@ -75,9 +75,9 @@
 
 ---
 
-## Phase 5: Neon Hardening ✅
+## Phase 5: Pool Safety Hardening ✅
 
-**Goal**: Apply Neon-inspired safety primitives for correct cooperative shutdown and RAII observability.
+**Goal**: Apply safety primitives for correct cooperative shutdown and RAII observability.
 
 - [x] RSC-T023 Implement `Poison<T>`, `PoisonGuard`, `PoisonError` in `crates/resource/src/poison.rs`; wrap `PoolState` in `Mutex<Poison<PoolState>>`; map `PoisonError` to `Error::Internal`
 - [x] RSC-T024 Implement `Gate`/`GateGuard` cooperative shutdown barrier in `nebula-resilience::gate`; export in prelude

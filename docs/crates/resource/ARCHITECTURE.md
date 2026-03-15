@@ -75,9 +75,9 @@ shutdown:
 - expensive `create()` paths during traffic spikes
 - full pool replacement on `reload_config` (in-place non-destructive reload not yet supported: see Open Question Q1)
 
-## Neon-Inspired Hardening Checklist
+## Pool Safety Hardening Checklist
 
-This checklist tracks safety patterns adapted from Neon codebase practices, with status against `nebula-resource`.
+This checklist tracks cancel-safety and observability patterns implemented in `nebula-resource`.
 
 | Area | Pattern | Status in `nebula-resource` | Next hardening step |
 |------|---------|-----------------------------|---------------------|

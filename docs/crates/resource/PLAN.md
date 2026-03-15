@@ -4,7 +4,7 @@
 
 ## Summary
 
-The resource crate manages lifecycle, pooling, and health of external resources (databases, HTTP clients, queues, caches). It provides typed resource handles, scope-controlled access, pool management with backpressure, and event emission for health state changes. Core contract, hardening, performance, and DX phases are complete. Phase 5 Neon hardening (Poison guard, Gate, CounterGuard, dedicated CB metrics) is complete. Current focus is Phase 4 final item: reference adapter crate.
+The resource crate manages lifecycle, pooling, and health of external resources (databases, HTTP clients, queues, caches). It provides typed resource handles, scope-controlled access, pool management with backpressure, and event emission for health state changes. Core contract, hardening, performance, and DX phases are complete. Phase 5 pool safety hardening (Poison guard, Gate, CounterGuard, dedicated CB metrics) is complete. Current focus is Phase 4 final item: reference adapter crate.
 
 ## Technical Context
 
@@ -22,7 +22,7 @@ The resource crate manages lifecycle, pooling, and health of external resources 
 | Phase 2: Runtime Hardening | ✅ Complete | Shutdown/reload tests, health-to-quarantine observability |
 | Phase 3: Scale and Performance | ✅ Complete | Criterion benchmarks, backpressure policies, metrics hygiene |
 | Phase 4: Ecosystem and DX | 🔄 In Progress | Adapter guides, typed key migration, cookbook; RSC-T020 pending |
-| Phase 5: Neon Hardening | ✅ Complete | `Poison<T>` guard, Gate/GateGuard, CounterGuard, dedicated CB metrics counters |
+| Phase 5: Pool Safety Hardening | ✅ Complete | `Poison<T>` guard, Gate/GateGuard, CounterGuard, dedicated CB metrics counters |
 
 ## Phase Details
 
@@ -86,9 +86,9 @@ The resource crate manages lifecycle, pooling, and health of external resources 
 **Exit Criteria**:
 - At least one reference adapter and end-to-end sample integration
 
-### Phase 5: Neon Hardening
+### Phase 5: Pool Safety Hardening
 
-**Goal**: Apply Neon-inspired safety primitives to the resource pool for correct cooperative shutdown and RAII observability.
+**Goal**: Apply safety primitives to the resource pool for correct cooperative shutdown and RAII observability.
 
 **Deliverables**:
 - `Poison<T>` / `PoisonGuard` / `PoisonError` in `crates/resource/src/poison.rs`; `PoolState` wrapped in `Mutex<Poison<PoolState>>`; drop-without-disarm permanently marks the pool poisoned with timestamp
