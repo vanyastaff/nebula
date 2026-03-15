@@ -6,8 +6,11 @@
 use nebula_core::ResourceKey;
 use thiserror::Error;
 
-/// Result type for resource operations
-pub type Result<T> = std::result::Result<T, Error>;
+/// Result type for resource operations.
+pub type ResourceResult<T> = std::result::Result<T, Error>;
+
+/// Backward-compatible result alias for resource operations.
+pub type Result<T> = ResourceResult<T>;
 
 /// High-level error category used by callers (`action`, `runtime`) to decide policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +61,7 @@ impl std::fmt::Display for FieldViolation {
 
 /// Comprehensive error type for resource management operations
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// Resource configuration is invalid
     #[error("Configuration error: {message}")]

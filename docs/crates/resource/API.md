@@ -150,11 +150,13 @@ use nebula_resource::{Context, Manager, ManagerBuilder, PoolConfig, Scope};
 # async fn run() -> nebula_resource::Result<()> {
 let manager = ManagerBuilder::new().build();
 
-let scope = Scope::workflow_in_tenant("wf-orders", "tenant-a");
+let scope = Scope::try_workflow_in_tenant("wf-orders", "tenant-a")
+  .expect("workflow and tenant ids must be non-empty");
 manager.register_scoped(MyResource, (), PoolConfig::default(), scope)?;
 
 let ctx = Context::new(
-    Scope::execution_in_workflow("exec-42", "wf-orders", Some("tenant-a".into())),
+  Scope::try_execution_in_workflow("exec-42", "wf-orders", Some("tenant-a".into()))
+    .expect("execution/workflow ids must be non-empty"),
     "wf-orders",
     "exec-42",
 );

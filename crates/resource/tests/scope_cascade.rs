@@ -20,6 +20,11 @@ use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
 use nebula_resource::{ExecutionId, WorkflowId};
 
+mod scope_helpers;
+use scope_helpers::*;
+
+
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -163,7 +168,7 @@ async fn tenant_shutdown_cascades_to_child_scopes() {
         NamedResource { name: "tenant-db" },
         TestConfig,
         pool_cfg(),
-        Scope::tenant("A"),
+        scope_tenant("A"),
     )
     .unwrap();
 
@@ -171,7 +176,7 @@ async fn tenant_shutdown_cascades_to_child_scopes() {
         NamedResource { name: "wf-cache" },
         TestConfig,
         pool_cfg(),
-        Scope::workflow_in_tenant("wf1", "A"),
+        scope_workflow_in_tenant("wf1", "A"),
     )
     .unwrap();
 
@@ -179,13 +184,13 @@ async fn tenant_shutdown_cascades_to_child_scopes() {
         NamedResource { name: "exec-temp" },
         TestConfig,
         pool_cfg(),
-        Scope::execution_in_workflow("ex1", "wf1", Some("A".to_string())),
+        scope_execution_in_workflow("ex1", "wf1", Some("A".to_string())),
     )
     .unwrap();
 
     // Verify all three are acquirable before shutdown
     let ctx = Context::new(
-        Scope::execution_in_workflow("ex1", "wf1", Some("A".to_string())),
+        scope_execution_in_workflow("ex1", "wf1", Some("A".to_string())),
         WorkflowId::new(),
         ExecutionId::new(),
     );
@@ -203,7 +208,7 @@ async fn tenant_shutdown_cascades_to_child_scopes() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Shut down tenant "A" scope -- should cascade to all child scopes
-    mgr.shutdown_scope(&Scope::tenant("A")).await.unwrap();
+    mgr.shutdown_scope(&scope_tenant("A")).await.unwrap();
 
     // All three resources should now be gone
     let err1 = mgr.acquire(&tenant_db_key, &ctx).await;
@@ -237,7 +242,7 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
         NamedResource { name: "db-A" },
         TestConfig,
         pool_cfg(),
-        Scope::tenant("A"),
+        scope_tenant("A"),
     )
     .unwrap();
 
@@ -245,7 +250,7 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
         NamedResource { name: "cache-A" },
         TestConfig,
         pool_cfg(),
-        Scope::workflow_in_tenant("wf1", "A"),
+        scope_workflow_in_tenant("wf1", "A"),
     )
     .unwrap();
 
@@ -254,7 +259,7 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
         NamedResource { name: "db-B" },
         TestConfig,
         pool_cfg(),
-        Scope::tenant("B"),
+        scope_tenant("B"),
     )
     .unwrap();
 
@@ -262,12 +267,12 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
         NamedResource { name: "cache-B" },
         TestConfig,
         pool_cfg(),
-        Scope::workflow_in_tenant("wf1", "B"),
+        scope_workflow_in_tenant("wf1", "B"),
     )
     .unwrap();
 
     // Shut down tenant A
-    mgr.shutdown_scope(&Scope::tenant("A")).await.unwrap();
+    mgr.shutdown_scope(&scope_tenant("A")).await.unwrap();
 
     let db_b_key = ResourceKey::try_from("db-B").expect("valid resource key");
     let cache_b_key = ResourceKey::try_from("cache-B").expect("valid resource key");
@@ -275,7 +280,7 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
     let cache_a_key = ResourceKey::try_from("cache-A").expect("valid resource key");
 
     // Tenant B resources should still be accessible
-    let ctx_b = Context::new(Scope::tenant("B"), WorkflowId::new(), ExecutionId::new());
+    let ctx_b = Context::new(scope_tenant("B"), WorkflowId::new(), ExecutionId::new());
     let g1 = mgr.acquire(&db_b_key, &ctx_b).await;
     assert!(
         g1.is_ok(),
@@ -285,7 +290,7 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let ctx_b_wf = Context::new(
-        Scope::workflow_in_tenant("wf1", "B"),
+        scope_workflow_in_tenant("wf1", "B"),
         WorkflowId::new(),
         ExecutionId::new(),
     );
@@ -298,7 +303,7 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Tenant A resources should be gone
-    let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
+    let ctx_a = Context::new(scope_tenant("A"), WorkflowId::new(), ExecutionId::new());
     assert!(mgr.acquire(&db_a_key, &ctx_a).await.is_err());
     assert!(mgr.acquire(&cache_a_key, &ctx_a).await.is_err());
 }
@@ -318,7 +323,7 @@ async fn global_scope_shutdown_cascades_to_all() {
         NamedResource { name: "tenant-r" },
         TestConfig,
         pool_cfg(),
-        Scope::tenant("X"),
+        scope_tenant("X"),
     )
     .unwrap();
 
@@ -326,7 +331,7 @@ async fn global_scope_shutdown_cascades_to_all() {
         NamedResource { name: "wf-r" },
         TestConfig,
         pool_cfg(),
-        Scope::workflow_in_tenant("wf1", "X"),
+        scope_workflow_in_tenant("wf1", "X"),
     )
     .unwrap();
 
@@ -337,7 +342,7 @@ async fn global_scope_shutdown_cascades_to_all() {
     let wf_r_key = ResourceKey::try_from("wf-r").expect("valid resource key");
 
     let ctx = Context::new(
-        Scope::execution_in_workflow("ex1", "wf1", Some("X".to_string())),
+        scope_execution_in_workflow("ex1", "wf1", Some("X".to_string())),
         WorkflowId::new(),
         ExecutionId::new(),
     );
@@ -358,7 +363,7 @@ async fn workflow_scope_shutdown_does_not_affect_siblings() {
         NamedResource { name: "cache-wf1" },
         TestConfig,
         pool_cfg(),
-        Scope::workflow_in_tenant("wf1", "A"),
+        scope_workflow_in_tenant("wf1", "A"),
     )
     .unwrap();
 
@@ -366,12 +371,12 @@ async fn workflow_scope_shutdown_does_not_affect_siblings() {
         NamedResource { name: "cache-wf2" },
         TestConfig,
         pool_cfg(),
-        Scope::workflow_in_tenant("wf2", "A"),
+        scope_workflow_in_tenant("wf2", "A"),
     )
     .unwrap();
 
     // Shut down wf1 only
-    mgr.shutdown_scope(&Scope::workflow_in_tenant("wf1", "A"))
+    mgr.shutdown_scope(&scope_workflow_in_tenant("wf1", "A"))
         .await
         .unwrap();
 
@@ -380,7 +385,7 @@ async fn workflow_scope_shutdown_does_not_affect_siblings() {
 
     // wf2 resource should still work
     let ctx_wf2 = Context::new(
-        Scope::workflow_in_tenant("wf2", "A"),
+        scope_workflow_in_tenant("wf2", "A"),
         WorkflowId::new(),
         ExecutionId::new(),
     );
@@ -388,7 +393,7 @@ async fn workflow_scope_shutdown_does_not_affect_siblings() {
 
     // wf1 resource should be gone
     let ctx_wf1 = Context::new(
-        Scope::workflow_in_tenant("wf1", "A"),
+        scope_workflow_in_tenant("wf1", "A"),
         WorkflowId::new(),
         ExecutionId::new(),
     );
@@ -415,7 +420,7 @@ async fn shutdown_scope_follows_dependency_ordering() {
         },
         TestConfig,
         pool_cfg(),
-        Scope::tenant("A"),
+        scope_tenant("A"),
     )
     .unwrap();
 
@@ -426,7 +431,7 @@ async fn shutdown_scope_follows_dependency_ordering() {
         },
         TestConfig,
         pool_cfg(),
-        Scope::tenant("A"),
+        scope_tenant("A"),
     )
     .unwrap();
 
@@ -437,13 +442,13 @@ async fn shutdown_scope_follows_dependency_ordering() {
         },
         TestConfig,
         pool_cfg(),
-        Scope::tenant("A"),
+        scope_tenant("A"),
     )
     .unwrap();
 
     // Acquire and release each to populate idle instances for cleanup.
     // Use a generous sleep to ensure the spawned return tasks complete.
-    let ctx = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
+    let ctx = Context::new(scope_tenant("A"), WorkflowId::new(), ExecutionId::new());
     for name in &["db", "cache", "app"] {
         let key = ResourceKey::try_from(*name).expect("valid");
         let g = mgr.acquire(&key, &ctx).await.unwrap();
@@ -451,7 +456,7 @@ async fn shutdown_scope_follows_dependency_ordering() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    mgr.shutdown_scope(&Scope::tenant("A")).await.unwrap();
+    mgr.shutdown_scope(&scope_tenant("A")).await.unwrap();
 
     let cleanup_order = order.lock().clone();
     // All three pools had an idle instance, so all three must have been
@@ -501,12 +506,12 @@ async fn scope_shutdown_invokes_cleanup() {
         },
         TestConfig,
         pool_cfg(),
-        Scope::tenant("A"),
+        scope_tenant("A"),
     )
     .unwrap();
 
     // Acquire and release to create an idle instance
-    let ctx = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
+    let ctx = Context::new(scope_tenant("A"), WorkflowId::new(), ExecutionId::new());
 
     let tracked_db_key = ResourceKey::try_from("tracked-db").expect("valid resource key");
 
@@ -515,7 +520,7 @@ async fn scope_shutdown_invokes_cleanup() {
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    mgr.shutdown_scope(&Scope::tenant("A")).await.unwrap();
+    mgr.shutdown_scope(&scope_tenant("A")).await.unwrap();
 
     assert!(
         cleanup_count.load(Ordering::SeqCst) >= 1,

@@ -13,7 +13,8 @@ let manager = Manager::new();
 // manager.register(..., PoolConfig::default())?;
 
 let ctx = Context::new(
-    Scope::execution_in_workflow("exec-1", "wf-orders", Some("tenant-a".into())),
+    Scope::try_execution_in_workflow("exec-1", "wf-orders", Some("tenant-a".into()))
+        .expect("execution/workflow ids must be non-empty"),
     nebula_resource::WorkflowId::new(),
     nebula_resource::ExecutionId::new(),
 );

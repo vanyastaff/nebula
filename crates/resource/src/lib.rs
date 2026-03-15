@@ -51,6 +51,7 @@
 //! See [`mod@reference`] module for details on `ResourceRef` and `ResourceProvider`.
 
 #![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod context;
 pub mod error;

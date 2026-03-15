@@ -14,8 +14,12 @@ use nebula_resource::error::Result;
 use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
-use nebula_resource::scope::Scope;
 use nebula_resource::{ExecutionId, WorkflowId};
+
+mod scope_helpers;
+use scope_helpers::*;
+
+
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -63,7 +67,7 @@ async fn two_tenants_each_access_only_own_resources() {
         NamedResource { name: "db-A" },
         TestConfig,
         pool_cfg(),
-        Scope::tenant("A"),
+        scope_tenant("A"),
     )
     .unwrap();
 
@@ -71,12 +75,12 @@ async fn two_tenants_each_access_only_own_resources() {
         NamedResource { name: "db-B" },
         TestConfig,
         pool_cfg(),
-        Scope::tenant("B"),
+        scope_tenant("B"),
     )
     .unwrap();
 
-    let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
-    let ctx_b = Context::new(Scope::tenant("B"), WorkflowId::new(), ExecutionId::new());
+    let ctx_a = Context::new(scope_tenant("A"), WorkflowId::new(), ExecutionId::new());
+    let ctx_b = Context::new(scope_tenant("B"), WorkflowId::new(), ExecutionId::new());
 
     let key_a = ResourceKey::try_from("db-A").expect("valid resource key");
     let key_b = ResourceKey::try_from("db-B").expect("valid resource key");
@@ -121,7 +125,7 @@ async fn global_resource_shared_across_tenants() {
         NamedResource { name: "cache-A" },
         TestConfig,
         pool_cfg(),
-        Scope::tenant("A"),
+        scope_tenant("A"),
     )
     .unwrap();
 
@@ -129,12 +133,12 @@ async fn global_resource_shared_across_tenants() {
         NamedResource { name: "cache-B" },
         TestConfig,
         pool_cfg(),
-        Scope::tenant("B"),
+        scope_tenant("B"),
     )
     .unwrap();
 
-    let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
-    let ctx_b = Context::new(Scope::tenant("B"), WorkflowId::new(), ExecutionId::new());
+    let ctx_a = Context::new(scope_tenant("A"), WorkflowId::new(), ExecutionId::new());
+    let ctx_b = Context::new(scope_tenant("B"), WorkflowId::new(), ExecutionId::new());
 
     let metrics_key = ResourceKey::try_from("metrics").expect("valid resource key");
     let cache_a_key = ResourceKey::try_from("cache-A").expect("valid resource key");
@@ -167,7 +171,7 @@ async fn workflow_resource_accessible_from_child_execution() {
         NamedResource { name: "wf-cache" },
         TestConfig,
         pool_cfg(),
-        Scope::workflow("wf1"),
+        scope_workflow("wf1"),
     )
     .unwrap();
 
@@ -175,7 +179,7 @@ async fn workflow_resource_accessible_from_child_execution() {
 
     // Execution inside wf1 can access it
     let exec_ctx = Context::new(
-        Scope::execution_in_workflow("ex1", "wf1", None),
+        scope_execution_in_workflow("ex1", "wf1", None),
         WorkflowId::new(),
         ExecutionId::new(),
     );
@@ -186,7 +190,7 @@ async fn workflow_resource_accessible_from_child_execution() {
 
     // Execution inside wf2 cannot
     let other_exec_ctx = Context::new(
-        Scope::execution_in_workflow("ex2", "wf2", None),
+        scope_execution_in_workflow("ex2", "wf2", None),
         WorkflowId::new(),
         ExecutionId::new(),
     );
@@ -205,7 +209,7 @@ async fn workflow_resource_denied_from_different_workflow() {
         NamedResource { name: "wf1-db" },
         TestConfig,
         pool_cfg(),
-        Scope::workflow_in_tenant("wf1", "A"),
+        scope_workflow_in_tenant("wf1", "A"),
     )
     .unwrap();
 
@@ -213,20 +217,20 @@ async fn workflow_resource_denied_from_different_workflow() {
         NamedResource { name: "wf2-db" },
         TestConfig,
         pool_cfg(),
-        Scope::workflow_in_tenant("wf2", "A"),
+        scope_workflow_in_tenant("wf2", "A"),
     )
     .unwrap();
 
     // Context for wf1 execution
     let wf1_ctx = Context::new(
-        Scope::execution_in_workflow("ex1", "wf1", Some("A".to_string())),
+        scope_execution_in_workflow("ex1", "wf1", Some("A".to_string())),
         WorkflowId::new(),
         ExecutionId::new(),
     );
 
     // Context for wf2 execution
     let wf2_ctx = Context::new(
-        Scope::execution_in_workflow("ex2", "wf2", Some("A".to_string())),
+        scope_execution_in_workflow("ex2", "wf2", Some("A".to_string())),
         WorkflowId::new(),
         ExecutionId::new(),
     );
@@ -255,13 +259,13 @@ async fn tenant_resource_accessible_from_nested_action() {
         NamedResource { name: "tenant-db" },
         TestConfig,
         pool_cfg(),
-        Scope::tenant("A"),
+        scope_tenant("A"),
     )
     .unwrap();
 
     // Action deep inside tenant A's hierarchy
     let action_ctx = Context::new(
-        Scope::action_in_execution(
+        scope_action_in_execution(
             "act1",
             "ex1",
             Some("wf1".to_string()),
@@ -280,7 +284,7 @@ async fn tenant_resource_accessible_from_nested_action() {
 
     // Action in tenant B's hierarchy cannot access tenant A's resource
     let action_ctx_b = Context::new(
-        Scope::action_in_execution(
+        scope_action_in_execution(
             "act2",
             "ex2",
             Some("wf2".to_string()),
@@ -308,7 +312,7 @@ async fn full_isolation_matrix_across_scope_levels() {
         NamedResource { name: "tenant-r" },
         TestConfig,
         pool_cfg(),
-        Scope::tenant("A"),
+        scope_tenant("A"),
     )
     .unwrap();
 
@@ -316,7 +320,7 @@ async fn full_isolation_matrix_across_scope_levels() {
         NamedResource { name: "wf-r" },
         TestConfig,
         pool_cfg(),
-        Scope::workflow_in_tenant("wf1", "A"),
+        scope_workflow_in_tenant("wf1", "A"),
     )
     .unwrap();
 
@@ -326,13 +330,13 @@ async fn full_isolation_matrix_across_scope_levels() {
         },
         TestConfig,
         pool_cfg(),
-        Scope::execution_in_workflow("ex1", "wf1", Some("A".to_string())),
+        scope_execution_in_workflow("ex1", "wf1", Some("A".to_string())),
     )
     .unwrap();
 
     // Context at execution level inside tenant A / wf1 / ex1
     let exec_ctx = Context::new(
-        Scope::execution_in_workflow("ex1", "wf1", Some("A".to_string())),
+        scope_execution_in_workflow("ex1", "wf1", Some("A".to_string())),
         WorkflowId::new(),
         ExecutionId::new(),
     );
@@ -349,7 +353,7 @@ async fn full_isolation_matrix_across_scope_levels() {
     mgr.acquire(&execution_key, &exec_ctx).await.unwrap();
 
     // Context at tenant level (broader than wf/execution scope)
-    let tenant_ctx = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
+    let tenant_ctx = Context::new(scope_tenant("A"), WorkflowId::new(), ExecutionId::new());
 
     // Tenant context can access global and tenant, but NOT workflow or execution
     mgr.acquire(&global_key, &tenant_ctx).await.unwrap();
@@ -375,7 +379,7 @@ async fn concurrent_multi_tenant_acquire() {
             acquire_timeout: Duration::from_secs(1),
             ..Default::default()
         },
-        Scope::tenant("A"),
+        scope_tenant("A"),
     )
     .unwrap();
 
@@ -388,7 +392,7 @@ async fn concurrent_multi_tenant_acquire() {
             acquire_timeout: Duration::from_secs(1),
             ..Default::default()
         },
-        Scope::tenant("B"),
+        scope_tenant("B"),
     )
     .unwrap();
 
@@ -396,7 +400,7 @@ async fn concurrent_multi_tenant_acquire() {
     let mgr_b = mgr.clone();
 
     let handle_a = tokio::spawn(async move {
-        let ctx = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
+        let ctx = Context::new(scope_tenant("A"), WorkflowId::new(), ExecutionId::new());
         let key_a = ResourceKey::try_from("pool-A").expect("valid");
         let key_b = ResourceKey::try_from("pool-B").expect("valid");
         let g1 = mgr_a.acquire(&key_a, &ctx).await.unwrap();
@@ -408,7 +412,7 @@ async fn concurrent_multi_tenant_acquire() {
     });
 
     let handle_b = tokio::spawn(async move {
-        let ctx = Context::new(Scope::tenant("B"), WorkflowId::new(), ExecutionId::new());
+        let ctx = Context::new(scope_tenant("B"), WorkflowId::new(), ExecutionId::new());
         let key_a = ResourceKey::try_from("pool-A").expect("valid");
         let key_b = ResourceKey::try_from("pool-B").expect("valid");
         let g1 = mgr_b.acquire(&key_b, &ctx).await.unwrap();

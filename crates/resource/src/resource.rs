@@ -78,7 +78,12 @@ pub trait Resource: Send + Sync + 'static {
         let name = std::any::type_name::<Self>();
         let short = name.rsplit("::").next().unwrap_or(name);
         let snake = camel_to_snake(short);
-        ResourceKey::try_from(snake).expect("Resource type name must form valid ResourceKey")
+        if let Ok(key) = ResourceKey::try_from(snake.as_str()) {
+            key
+        } else {
+            // Deterministic fallback for unusual type names that cannot be represented as ResourceKey.
+            ResourceKey::new("resource.default").expect("literal fallback resource key must be valid")
+        }
     }
 }
 

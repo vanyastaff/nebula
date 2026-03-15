@@ -202,84 +202,6 @@ impl Scope {
         Ok(Self::Custom { key, value })
     }
 
-    /// Create a tenant scope.
-    ///
-    /// # Panics
-    /// Panics if `tenant_id` is empty.
-    pub fn tenant<S: Into<String>>(tenant_id: S) -> Self {
-        Self::try_tenant(tenant_id).unwrap_or_else(|e| panic!("{e}"))
-    }
-
-    /// Create a workflow scope without parent info.
-    ///
-    /// # Panics
-    /// Panics if `workflow_id` is empty.
-    pub fn workflow<S: Into<String>>(workflow_id: S) -> Self {
-        Self::try_workflow(workflow_id).unwrap_or_else(|e| panic!("{e}"))
-    }
-
-    /// Create a workflow scope with tenant parent.
-    ///
-    /// # Panics
-    /// Panics if `workflow_id` or `tenant_id` is empty.
-    pub fn workflow_in_tenant(
-        workflow_id: impl Into<String>,
-        tenant_id: impl Into<String>,
-    ) -> Self {
-        Self::try_workflow_in_tenant(workflow_id, tenant_id).unwrap_or_else(|e| panic!("{e}"))
-    }
-
-    /// Create an execution scope without parent info.
-    ///
-    /// # Panics
-    /// Panics if `execution_id` is empty.
-    pub fn execution<S: Into<String>>(execution_id: S) -> Self {
-        Self::try_execution(execution_id).unwrap_or_else(|e| panic!("{e}"))
-    }
-
-    /// Create an execution scope with full parent chain.
-    ///
-    /// # Panics
-    /// Panics if `execution_id` or `workflow_id` is empty.
-    pub fn execution_in_workflow(
-        execution_id: impl Into<String>,
-        workflow_id: impl Into<String>,
-        tenant_id: Option<String>,
-    ) -> Self {
-        Self::try_execution_in_workflow(execution_id, workflow_id, tenant_id)
-            .unwrap_or_else(|e| panic!("{e}"))
-    }
-
-    /// Create an action scope without parent info.
-    ///
-    /// # Panics
-    /// Panics if `action_id` is empty.
-    pub fn action<S: Into<String>>(action_id: S) -> Self {
-        Self::try_action(action_id).unwrap_or_else(|e| panic!("{e}"))
-    }
-
-    /// Create an action scope with full parent chain.
-    ///
-    /// # Panics
-    /// Panics if `action_id` or `execution_id` is empty.
-    pub fn action_in_execution(
-        action_id: impl Into<String>,
-        execution_id: impl Into<String>,
-        workflow_id: Option<String>,
-        tenant_id: Option<String>,
-    ) -> Self {
-        Self::try_action_in_execution(action_id, execution_id, workflow_id, tenant_id)
-            .unwrap_or_else(|e| panic!("{e}"))
-    }
-
-    /// Create a custom scope.
-    ///
-    /// # Panics
-    /// Panics if `key` or `value` is empty.
-    pub fn custom(key: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::try_custom(key, value).unwrap_or_else(|e| panic!("{e}"))
-    }
-
     /// Get the scope hierarchy level (lower numbers = broader scope)
     #[must_use]
     pub fn hierarchy_level(&self) -> u8 {
@@ -487,20 +409,64 @@ impl Strategy {
 mod tests {
     use super::*;
 
+    fn tenant(id: impl Into<String>) -> Scope {
+        Scope::try_tenant(id).expect("valid tenant scope")
+    }
+
+    fn workflow(id: impl Into<String>) -> Scope {
+        Scope::try_workflow(id).expect("valid workflow scope")
+    }
+
+    fn workflow_in_tenant(workflow_id: impl Into<String>, tenant_id: impl Into<String>) -> Scope {
+        Scope::try_workflow_in_tenant(workflow_id, tenant_id)
+            .expect("valid workflow scope with tenant")
+    }
+
+    fn execution(id: impl Into<String>) -> Scope {
+        Scope::try_execution(id).expect("valid execution scope")
+    }
+
+    fn execution_in_workflow(
+        execution_id: impl Into<String>,
+        workflow_id: impl Into<String>,
+        tenant_id: Option<String>,
+    ) -> Scope {
+        Scope::try_execution_in_workflow(execution_id, workflow_id, tenant_id)
+            .expect("valid execution scope with workflow")
+    }
+
+    fn action(id: impl Into<String>) -> Scope {
+        Scope::try_action(id).expect("valid action scope")
+    }
+
+    fn action_in_execution(
+        action_id: impl Into<String>,
+        execution_id: impl Into<String>,
+        workflow_id: Option<String>,
+        tenant_id: Option<String>,
+    ) -> Scope {
+        Scope::try_action_in_execution(action_id, execution_id, workflow_id, tenant_id)
+            .expect("valid action scope with execution")
+    }
+
+    fn custom(key: impl Into<String>, value: impl Into<String>) -> Scope {
+        Scope::try_custom(key, value).expect("valid custom scope")
+    }
+
     #[test]
     fn test_scope_hierarchy_levels() {
         assert_eq!(Scope::Global.hierarchy_level(), 0);
-        assert_eq!(Scope::tenant("test").hierarchy_level(), 1);
-        assert_eq!(Scope::workflow("wf").hierarchy_level(), 2);
-        assert_eq!(Scope::execution("ex").hierarchy_level(), 3);
-        assert_eq!(Scope::action("act").hierarchy_level(), 4);
+        assert_eq!(tenant("test").hierarchy_level(), 1);
+        assert_eq!(workflow("wf").hierarchy_level(), 2);
+        assert_eq!(execution("ex").hierarchy_level(), 3);
+        assert_eq!(action("act").hierarchy_level(), 4);
     }
 
     #[test]
     fn test_scope_containment_global() {
         let global = Scope::Global;
-        let tenant = Scope::tenant("tenant1");
-        let workflow = Scope::workflow("wf1");
+        let tenant = tenant("tenant1");
+        let workflow = workflow("wf1");
 
         assert!(global.contains(&tenant));
         assert!(global.contains(&workflow));
@@ -510,75 +476,75 @@ mod tests {
 
     #[test]
     fn test_tenant_isolation() {
-        let tenant_a = Scope::tenant("A");
-        let tenant_b = Scope::tenant("B");
+        let tenant_a = tenant("A");
+        let tenant_b = tenant("B");
 
         // Same tenant
-        assert!(tenant_a.contains(&Scope::tenant("A")));
+        assert!(tenant_a.contains(&tenant("A")));
         // Different tenant
         assert!(!tenant_a.contains(&tenant_b));
 
         // Workflow with known parent tenant
-        let wf_in_a = Scope::workflow_in_tenant("wf1", "A");
-        let wf_in_b = Scope::workflow_in_tenant("wf1", "B");
+        let wf_in_a = workflow_in_tenant("wf1", "A");
+        let wf_in_b = workflow_in_tenant("wf1", "B");
         assert!(tenant_a.contains(&wf_in_a));
         assert!(!tenant_a.contains(&wf_in_b));
 
         // Workflow without parent info: deny by default
-        let wf_no_parent = Scope::workflow("wf1");
+        let wf_no_parent = workflow("wf1");
         assert!(!tenant_a.contains(&wf_no_parent));
     }
 
     #[test]
     fn test_workflow_containment() {
-        let wf = Scope::workflow("wf1");
+        let wf = workflow("wf1");
 
         // Execution with matching workflow parent
-        let exec_in_wf1 = Scope::execution_in_workflow("ex1", "wf1", Some("A".to_string()));
+        let exec_in_wf1 = execution_in_workflow("ex1", "wf1", Some("A".to_string()));
         assert!(wf.contains(&exec_in_wf1));
 
         // Execution with different workflow parent
-        let exec_in_wf2 = Scope::execution_in_workflow("ex1", "wf2", Some("A".to_string()));
+        let exec_in_wf2 = execution_in_workflow("ex1", "wf2", Some("A".to_string()));
         assert!(!wf.contains(&exec_in_wf2));
 
         // Execution without workflow info: deny
-        let exec_no_parent = Scope::execution("ex1");
+        let exec_no_parent = execution("ex1");
         assert!(!wf.contains(&exec_no_parent));
     }
 
     #[test]
     fn test_execution_containment() {
-        let exec = Scope::execution("ex1");
+        let exec = execution("ex1");
 
         // Action with matching execution parent
-        let action_in_ex1 = Scope::action_in_execution("a1", "ex1", None, None);
+        let action_in_ex1 = action_in_execution("a1", "ex1", None, None);
         assert!(exec.contains(&action_in_ex1));
 
         // Action with different execution parent
-        let action_in_ex2 = Scope::action_in_execution("a1", "ex2", None, None);
+        let action_in_ex2 = action_in_execution("a1", "ex2", None, None);
         assert!(!exec.contains(&action_in_ex2));
 
         // Action without execution info: deny
-        let action_no_parent = Scope::action("a1");
+        let action_no_parent = action("a1");
         assert!(!exec.contains(&action_no_parent));
     }
 
     #[test]
     fn test_scope_keys() {
         assert_eq!(Scope::Global.scope_key(), "global");
-        assert_eq!(Scope::tenant("t1").scope_key(), "tenant:t1");
-        assert_eq!(Scope::workflow("w1").scope_key(), "workflow:w1");
-        assert_eq!(Scope::execution("e1").scope_key(), "execution:e1");
-        assert_eq!(Scope::action("a1").scope_key(), "action:a1");
+        assert_eq!(tenant("t1").scope_key(), "tenant:t1");
+        assert_eq!(workflow("w1").scope_key(), "workflow:w1");
+        assert_eq!(execution("e1").scope_key(), "execution:e1");
+        assert_eq!(action("a1").scope_key(), "action:a1");
 
-        let custom = Scope::custom("env", "prod");
+        let custom = custom("env", "prod");
         assert_eq!(custom.scope_key(), "custom:env=prod");
     }
 
     #[test]
     fn test_scoping_strategies() {
         let global = Scope::Global;
-        let tenant = Scope::tenant("t1");
+        let tenant = tenant("t1");
 
         assert!(Strategy::Strict.is_compatible(&global, &global));
         assert!(!Strategy::Strict.is_compatible(&global, &tenant));
@@ -593,12 +559,12 @@ mod tests {
     #[test]
     fn test_cross_tenant_denial() {
         // This is the security fix: Tenant A must NOT be able to access Tenant B's resources
-        let tenant_a = Scope::tenant("A");
+        let tenant_a = tenant("A");
 
-        let wf_in_b = Scope::workflow_in_tenant("wf1", "B");
-        let exec_in_b = Scope::execution_in_workflow("ex1", "wf1", Some("B".to_string()));
+        let wf_in_b = workflow_in_tenant("wf1", "B");
+        let exec_in_b = execution_in_workflow("ex1", "wf1", Some("B".to_string()));
         let action_in_b =
-            Scope::action_in_execution("a1", "ex1", Some("wf1".to_string()), Some("B".to_string()));
+            action_in_execution("a1", "ex1", Some("wf1".to_string()), Some("B".to_string()));
 
         assert!(!tenant_a.contains(&wf_in_b));
         assert!(!tenant_a.contains(&exec_in_b));
@@ -610,44 +576,44 @@ mod tests {
         use std::collections::HashSet;
         let mut set = HashSet::new();
         set.insert(Scope::Global);
-        set.insert(Scope::tenant("A"));
-        set.insert(Scope::tenant("A")); // duplicate
+        set.insert(tenant("A"));
+        set.insert(tenant("A")); // duplicate
         assert_eq!(set.len(), 2);
     }
 
     #[test]
-    #[should_panic(expected = "tenant_id must not be empty")]
-    fn test_empty_tenant_id_panics() {
-        Scope::tenant("");
+    fn test_empty_tenant_id_errors() {
+        let err = Scope::try_tenant("").expect_err("empty tenant id must fail");
+        assert_eq!(err, "tenant_id must not be empty");
     }
 
     #[test]
-    #[should_panic(expected = "workflow_id must not be empty")]
-    fn test_empty_workflow_id_panics() {
-        Scope::workflow("");
+    fn test_empty_workflow_id_errors() {
+        let err = Scope::try_workflow("").expect_err("empty workflow id must fail");
+        assert_eq!(err, "workflow_id must not be empty");
     }
 
     #[test]
-    #[should_panic(expected = "execution_id must not be empty")]
-    fn test_empty_execution_id_panics() {
-        Scope::execution("");
+    fn test_empty_execution_id_errors() {
+        let err = Scope::try_execution("").expect_err("empty execution id must fail");
+        assert_eq!(err, "execution_id must not be empty");
     }
 
     #[test]
-    #[should_panic(expected = "action_id must not be empty")]
-    fn test_empty_action_id_panics() {
-        Scope::action("");
+    fn test_empty_action_id_errors() {
+        let err = Scope::try_action("").expect_err("empty action id must fail");
+        assert_eq!(err, "action_id must not be empty");
     }
 
     #[test]
-    #[should_panic(expected = "custom scope key must not be empty")]
-    fn test_empty_custom_key_panics() {
-        Scope::custom("", "value");
+    fn test_empty_custom_key_errors() {
+        let err = Scope::try_custom("", "value").expect_err("empty custom key must fail");
+        assert_eq!(err, "custom scope key must not be empty");
     }
 
     #[test]
-    #[should_panic(expected = "custom scope value must not be empty")]
-    fn test_empty_custom_value_panics() {
-        Scope::custom("key", "");
+    fn test_empty_custom_value_errors() {
+        let err = Scope::try_custom("key", "").expect_err("empty custom value must fail");
+        assert_eq!(err, "custom scope value must not be empty");
     }
 }

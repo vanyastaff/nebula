@@ -247,17 +247,21 @@ impl ManagerBuilder {
                     },
                 );
                 if newly_quarantined {
-                    let key = nebula_core::ResourceKey::try_from(resource_id)
-                        .expect("resource id must be a valid ResourceKey");
-                    bus.emit(ResourceEvent::Quarantined {
-                        resource_key: key,
-                        reason: format!("health check failed ({consecutive_failures} consecutive)"),
-                        trigger: QuarantineTrigger::HealthThresholdExceeded {
-                            consecutive_failures,
-                        },
-                        from_health: previous_health.clone(),
-                        to_health: next_health.clone(),
-                    });
+                    if let Ok(key) = nebula_core::ResourceKey::try_from(resource_id) {
+                        bus.emit(ResourceEvent::Quarantined {
+                            resource_key: key,
+                            reason: format!(
+                                "health check failed ({consecutive_failures} consecutive)"
+                            ),
+                            trigger: QuarantineTrigger::HealthThresholdExceeded {
+                                consecutive_failures,
+                            },
+                            from_health: previous_health.clone(),
+                            to_health: next_health.clone(),
+                        });
+                    } else {
+                        tracing::warn!(resource_id, "skipping quarantine event for invalid resource key");
+                    }
                 }
                 hs.insert(resource_id.to_string(), next_health);
             });
@@ -914,12 +918,14 @@ impl Manager {
         for id in &ordered {
             if let Some(entry) = self.pool_remove(id) {
                 let _ = entry.pool.shutdown().await;
-                let key = nebula_core::ResourceKey::try_from(id.as_str())
-                    .expect("resource id must be a valid ResourceKey");
-                self.event_bus.emit(ResourceEvent::CleanedUp {
-                    resource_key: key,
-                    reason: crate::events::CleanupReason::Shutdown,
-                });
+                if let Ok(key) = nebula_core::ResourceKey::try_from(id.as_str()) {
+                    self.event_bus.emit(ResourceEvent::CleanedUp {
+                        resource_key: key,
+                        reason: crate::events::CleanupReason::Shutdown,
+                    });
+                } else {
+                    tracing::warn!(resource_id = %id, "skipping cleanup event for invalid resource key");
+                }
             }
             self.deps.write().remove_all_for(id);
         }
@@ -1182,12 +1188,14 @@ impl Manager {
 
         for (id, pool) in pools {
             pool.shutdown().await?;
-            let key = nebula_core::ResourceKey::try_from(id.as_str())
-                .expect("resource id must be a valid ResourceKey");
-            self.event_bus.emit(ResourceEvent::CleanedUp {
-                resource_key: key,
-                reason: crate::events::CleanupReason::Shutdown,
-            });
+            if let Ok(key) = nebula_core::ResourceKey::try_from(id.as_str()) {
+                self.event_bus.emit(ResourceEvent::CleanedUp {
+                    resource_key: key,
+                    reason: crate::events::CleanupReason::Shutdown,
+                });
+            } else {
+                tracing::warn!(resource_id = %id, "skipping cleanup event for invalid resource key");
+            }
         }
 
         self.pool_clear();
@@ -1227,12 +1235,14 @@ impl Manager {
             if let Some(entry) = self.pool_remove(id) {
                 let _ = tokio::time::timeout(config.cleanup_timeout, entry.pool.shutdown()).await;
                 self.metadata.remove(id);
-                let key = nebula_core::ResourceKey::try_from(id.as_str())
-                    .expect("resource id must be a valid ResourceKey");
-                self.event_bus.emit(ResourceEvent::CleanedUp {
-                    resource_key: key,
-                    reason: crate::events::CleanupReason::Shutdown,
-                });
+                if let Ok(key) = nebula_core::ResourceKey::try_from(id.as_str()) {
+                    self.event_bus.emit(ResourceEvent::CleanedUp {
+                        resource_key: key,
+                        reason: crate::events::CleanupReason::Shutdown,
+                    });
+                } else {
+                    tracing::warn!(resource_id = %id, "skipping cleanup event for invalid resource key");
+                }
             }
         }
 
@@ -1314,12 +1324,14 @@ impl Manager {
             },
         );
 
-        let key = nebula_core::ResourceKey::try_from(id.as_str())
-            .expect("resource id must be a valid ResourceKey");
-        self.event_bus.emit(ResourceEvent::ConfigReloaded {
-            resource_key: key,
-            scope: existing_scope,
-        });
+        if let Ok(key) = nebula_core::ResourceKey::try_from(id.as_str()) {
+            self.event_bus.emit(ResourceEvent::ConfigReloaded {
+                resource_key: key,
+                scope: existing_scope,
+            });
+        } else {
+            tracing::warn!(resource_id = %id, "skipping config reloaded event for invalid resource key");
+        }
 
         Ok(())
     }

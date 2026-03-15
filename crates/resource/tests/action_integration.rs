@@ -6,8 +6,11 @@
 use std::time::Duration;
 
 use nebula_core::ResourceKey;
+
+mod scope_helpers;
+use scope_helpers::*;
 use nebula_resource::{
-    Context, ErrorCategory, ExecutionId, Manager, PoolConfig, Resource, Scope, WorkflowId,
+    Context, ErrorCategory, ExecutionId, Manager, PoolConfig, Resource, WorkflowId,
 };
 
 #[derive(Debug, Clone)]
@@ -38,7 +41,7 @@ impl Resource for EchoResource {
 
 fn action_ctx(tenant_id: &str) -> Context {
     Context::new(
-        Scope::action_in_execution(
+        scope_action_in_execution(
             "act-1",
             "exec-1",
             Some("wf-1".to_string()),
@@ -77,7 +80,7 @@ async fn action_scope_mismatch_returns_fatal_error_contract() {
             EchoResource,
             TestConfig,
             PoolConfig::default(),
-            Scope::tenant("tenant-a"),
+            scope_tenant("tenant-a"),
         )
         .expect("resource registered");
 

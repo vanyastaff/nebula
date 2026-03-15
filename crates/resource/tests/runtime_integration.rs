@@ -4,9 +4,11 @@
 
 use nebula_core::ResourceKey;
 use nebula_resource::quarantine::QuarantineReason;
+
+mod scope_helpers;
+use scope_helpers::*;
 use nebula_resource::{
-    Context, ErrorCategory, ExecutionId, HealthState, Manager, PoolConfig, Resource, Scope,
-    WorkflowId,
+    Context, ErrorCategory, ExecutionId, HealthState, Manager, PoolConfig, Resource, WorkflowId,
 };
 
 #[derive(Debug, Clone)]
@@ -57,7 +59,7 @@ impl Resource for RuntimeResourceB {
 
 fn workflow_ctx(workflow_id: &str) -> Context {
     Context::new(
-        Scope::workflow(workflow_id),
+        scope_workflow(workflow_id),
         WorkflowId::new(),
         ExecutionId::new(),
     )
@@ -71,7 +73,7 @@ async fn runtime_shutdown_scope_only_drains_target_scope_contract() {
             RuntimeResourceA,
             TestConfig,
             PoolConfig::default(),
-            Scope::workflow("wf-a"),
+            scope_workflow("wf-a"),
         )
         .expect("resource a registered");
     manager
@@ -79,7 +81,7 @@ async fn runtime_shutdown_scope_only_drains_target_scope_contract() {
             RuntimeResourceB,
             TestConfig,
             PoolConfig::default(),
-            Scope::workflow("wf-b"),
+            scope_workflow("wf-b"),
         )
         .expect("resource b registered");
 
@@ -87,7 +89,7 @@ async fn runtime_shutdown_scope_only_drains_target_scope_contract() {
     let key_b = ResourceKey::try_from("runtime-b").expect("valid resource key");
 
     manager
-        .shutdown_scope(&Scope::workflow("wf-a"))
+        .shutdown_scope(&scope_workflow("wf-a"))
         .await
         .expect("shutdown scope succeeds");
 

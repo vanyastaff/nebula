@@ -7,6 +7,10 @@ use nebula_resource::scope::{Scope, Strategy as ScopingStrategy};
 use proptest::prelude::*;
 use std::time::Duration;
 
+mod scope_helpers;
+use scope_helpers::*;
+
+
 /// Generate an arbitrary Lifecycle
 fn arb_lifecycle() -> impl Strategy<Value = Lifecycle> {
     prop_oneof![
@@ -27,25 +31,25 @@ fn arb_lifecycle() -> impl Strategy<Value = Lifecycle> {
 fn arb_scope() -> impl Strategy<Value = Scope> {
     prop_oneof![
         Just(Scope::Global),
-        "[a-z0-9]{1,10}".prop_map(Scope::tenant),
-        "[a-z0-9]{1,10}".prop_map(Scope::workflow),
-        ("[a-z0-9]{1,10}", "[a-z0-9]{1,10}").prop_map(|(w, t)| Scope::workflow_in_tenant(w, t)),
-        "[a-z0-9]{1,10}".prop_map(Scope::execution),
+        "[a-z0-9]{1,10}".prop_map(scope_tenant),
+        "[a-z0-9]{1,10}".prop_map(scope_workflow),
+        ("[a-z0-9]{1,10}", "[a-z0-9]{1,10}").prop_map(|(w, t)| scope_workflow_in_tenant(w, t)),
+        "[a-z0-9]{1,10}".prop_map(scope_execution),
         (
             "[a-z0-9]{1,10}",
             "[a-z0-9]{1,10}",
             proptest::option::of("[a-z0-9]{1,10}")
         )
-            .prop_map(|(e, w, t)| Scope::execution_in_workflow(e, w, t)),
-        "[a-z0-9]{1,10}".prop_map(Scope::action),
+            .prop_map(|(e, w, t)| scope_execution_in_workflow(e, w, t)),
+        "[a-z0-9]{1,10}".prop_map(scope_action),
         (
             "[a-z0-9]{1,10}",
             "[a-z0-9]{1,10}",
             proptest::option::of("[a-z0-9]{1,10}"),
             proptest::option::of("[a-z0-9]{1,10}"),
         )
-            .prop_map(|(a, e, w, t)| Scope::action_in_execution(a, e, w, t)),
-        ("[a-z]{1,10}", "[a-z0-9]{1,10}").prop_map(|(k, v)| Scope::custom(k, v)),
+            .prop_map(|(a, e, w, t)| scope_action_in_execution(a, e, w, t)),
+        ("[a-z]{1,10}", "[a-z0-9]{1,10}").prop_map(|(k, v)| scope_custom(k, v)),
     ]
 }
 

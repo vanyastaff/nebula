@@ -75,11 +75,12 @@ Without a resource provider configured, `.resource()` returns
 The engine bridge builds a `Scope` from execution context:
 
 ```rust
-let scope = Scope::execution_in_workflow(
+let scope = Scope::try_execution_in_workflow(
     execution_id.to_string().as_str(),
     workflow_id.to_string().as_str(),
     None,
-);
+)
+.expect("execution and workflow ids must be non-empty");
 // Produces: Scope::Execution { execution_id, workflow_id: Some(...), tenant_id: None }
 ```
 

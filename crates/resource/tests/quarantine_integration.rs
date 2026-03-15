@@ -10,11 +10,16 @@
 use std::time::Duration;
 
 use nebula_core::ResourceKey;
+
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::PoolConfig;
+
+
+mod scope_helpers;
+use scope_helpers::*;
 use nebula_resource::quarantine::{
     QuarantineConfig, QuarantineManager, QuarantineReason, RecoveryStrategy,
 };
@@ -373,11 +378,11 @@ async fn scoped_resource_quarantine_blocks_acquire() {
         NamedResource { name: "tenant-db" },
         TestConfig,
         pool_cfg(),
-        Scope::tenant("A"),
+        scope_tenant("A"),
     )
     .unwrap();
 
-    let ctx_a = Context::new(Scope::tenant("A"), WorkflowId::new(), ExecutionId::new());
+    let ctx_a = Context::new(scope_tenant("A"), WorkflowId::new(), ExecutionId::new());
 
     let resource_key = ResourceKey::try_from("tenant-db").expect("valid resource key");
 
