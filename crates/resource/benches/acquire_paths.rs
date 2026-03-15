@@ -13,9 +13,7 @@ use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::metadata::ResourceMetadata;
-use nebula_resource::pool::{
-    AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig,
-};
+use nebula_resource::pool::{AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
 use nebula_resource::{ExecutionId, WorkflowId};
@@ -72,8 +70,7 @@ fn pool_config(max_size: usize, policy: Option<PoolBackpressurePolicy>) -> PoolC
 
 fn acquire_background_context(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
-    let pool =
-        Pool::new(BenchResource, BenchConfig, pool_config(64, None)).expect("pool creation");
+    let pool = Pool::new(BenchResource, BenchConfig, pool_config(64, None)).expect("pool creation");
     let ctx = bg_ctx();
 
     rt.block_on(async {
@@ -98,8 +95,7 @@ fn acquire_background_context(c: &mut Criterion) {
 
 fn acquire_cancellable_context(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
-    let pool =
-        Pool::new(BenchResource, BenchConfig, pool_config(64, None)).expect("pool creation");
+    let pool = Pool::new(BenchResource, BenchConfig, pool_config(64, None)).expect("pool creation");
     let ctx = cancellable_ctx();
 
     rt.block_on(async {

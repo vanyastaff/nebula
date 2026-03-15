@@ -211,7 +211,7 @@ where
         &self,
         ctx: &Context,
     ) -> Result<(
-        Guard<R::Instance, impl FnOnce(R::Instance) + Send + 'static + use<R>>,
+        Guard<R::Instance, impl FnOnce(R::Instance, bool) + Send + 'static + use<R>>,
         std::time::Duration,
     )> {
         self.inner.pool.acquire(ctx).await

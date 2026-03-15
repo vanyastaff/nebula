@@ -14,10 +14,11 @@ Key design decisions:
   types. No closure factories.
 - **Type erasure at the Manager boundary** -- `Pool<R>` is fully generic, but
   `Manager` stores pools as `Arc<dyn AnyPool>` so it can hold heterogeneous
-  resource types in one `DashMap`.
-- **RAII guards** -- `Guard<T>` returns instances to the pool on drop. The
-  manager wraps these in `AnyGuard` (type-erased) and `ResourceHandle`
-  (downcasting API for consumers).
+  resource types in one `ArcSwap<HashMap<...>>` registry optimized for read-heavy acquire paths.
+- **RAII guards with taint support** -- `Guard<T>` returns instances to the pool on drop.
+  Callers can mark a guard as tainted (`guard.taint()`) so release skips recycle and
+  proceeds to cleanup with `CleanupReason::Tainted`. The manager wraps guards as
+  `AnyGuard` / `ResourceHandle` for type-erased access.
 - **Feature-gated modules** -- the core types (`Resource`, `Guard`, `Scope`,
   `Context`, `Lifecycle`) require no async runtime. The `tokio` feature gates
   all pool, manager, health, events, hooks, quarantine, and autoscale modules.
@@ -90,18 +91,22 @@ pub trait Resource: Send + Sync + 'static {
     type Config: Config;
     type Instance: Send + Sync + 'static;
 
-    fn id(&self) -> &str;
+    fn metadata(&self) -> ResourceMetadata;
     fn create(&self, config: &Self::Config, ctx: &Context) -> impl Future<Output = Result<Self::Instance>> + Send;
     fn is_reusable(&self, instance: &Self::Instance) -> impl Future<Output = Result<bool>> + Send;
     fn recycle(&self, instance: &mut Self::Instance) -> impl Future<Output = Result<()>> + Send;
     fn cleanup(&self, instance: Self::Instance) -> impl Future<Output = Result<()>> + Send;
-    fn dependencies(&self) -> Vec<&str>;
+
+    fn declare_key() -> ResourceKey
+    where
+        Self: Sized;
 }
 ```
 
 No `async_trait` -- uses `impl Future` in return position (Rust 2024 RPITIT).
 Default implementations return `Ok(true)` for `is_reusable`, `Ok(())` for
-`recycle` and `cleanup`, and empty `Vec` for `dependencies`.
+`recycle` and `cleanup`. `declare_key()` provides a stable compile-time key for
+typed manager APIs (for example `acquire_typed::<R>(&ctx)`).
 
 ### Pool (`pool.rs`)
 
@@ -121,7 +126,8 @@ Default implementations return `Ok(true)` for `is_reusable`, `Ok(())` for
 - **`PoolStrategy`**: `Fifo` (even distribution, default) or `Lifo` (hot
   working set, lets cold instances expire).
 - **`PoolStats`**: counters for acquisitions, releases, active, idle, created,
-  destroyed.
+  destroyed, plus `acquire_latency: Option<LatencyPercentiles>`
+  (`p50/p95/p99/p999/mean`).
 
 Acquire flow within the pool:
 
@@ -161,12 +167,12 @@ before closing the semaphore — cannot complete until the maintenance loop exit
 
 | Field            | Type                                    | Purpose                              |
 |------------------|-----------------------------------------|--------------------------------------|
-| `pools`          | `DashMap<String, PoolEntry>`            | Type-erased pools keyed by ID        |
+| `pools`          | `ArcSwap<HashMap<String, PoolEntry>>`   | Type-erased pools keyed by ID        |
 | `deps`           | `RwLock<DependencyGraph>`               | Initialization/shutdown ordering     |
 | `health_checker` | `Arc<HealthChecker>`                    | Background instance monitoring       |
 | `event_bus`      | `Arc<EventBus>`                         | Lifecycle event broadcasting         |
 | `quarantine`     | `QuarantineManager`                     | Unhealthy resource isolation         |
-| `health_states`  | `DashMap<String, HealthState>`          | Per-resource health cache            |
+| `health_states`  | `moka::sync::Cache<String, HealthState>`| Per-resource health cache with TTI   |
 | `hooks`          | `HookRegistry`                          | Lifecycle hooks                      |
 
 Key methods:
@@ -211,15 +217,17 @@ Supports:
 ### Guard (`guard.rs`)
 
 ```rust
-pub struct Guard<T> {
+pub struct Guard<T, F = Box<dyn FnOnce(T, bool) + Send>> {
     resource: Option<T>,
-    on_drop: Option<Box<dyn FnOnce(T) + Send>>,
+    on_drop: Option<F>,
+    tainted: bool,
 }
 ```
 
 Implements `Deref`, `DerefMut`, and `Drop`. The drop callback typically spawns
 an async task to return the instance to the pool. `into_inner()` consumes the
-guard without triggering the callback.
+guard without triggering the callback. `taint()` marks an instance as unusable,
+so pool release skips recycle and performs cleanup directly.
 
 ### Context (`context.rs`)
 
@@ -396,7 +404,7 @@ engine::Resources::acquire("postgres")   [crates/engine/src/resource.rs]
 Manager::acquire("postgres", &ctx)       [crates/resource/src/manager.rs]
   |-- 1. Check quarantine status          -> Error::Unavailable if quarantined
   |-- 2. Check health_states map          -> Error::Unavailable if Unhealthy
-  |-- 3. Look up pool in DashMap          -> Error::Unavailable if not registered
+  |-- 3. Look up pool in ArcSwap snapshot -> Error::Unavailable if not registered
   |-- 4. Validate scope (Hierarchical)    -> Error::Unavailable if scope mismatch
   |-- 5. Run before-hooks                 -> hook can Cancel with Error
   |-- 6. pool.acquire_any(ctx)            (see below)
@@ -426,14 +434,15 @@ Guard<R::Instance> dropped
   |
   v
 on_drop callback fires
-  |-- spawns tokio task: Pool::return_instance(pool, instance, created_at, usage_duration)
+  |-- spawns tokio task: Pool::return_instance(pool, instance, created_at, usage_duration, tainted)
        |
-       |-- 1. Resource::recycle(&mut instance)
-       |-- 2. If OK and not shutdown: push Entry back to idle queue
-       |-- 3. If recycle failed or shutdown: Resource::cleanup(instance)
-       |-- 4. Emit Released event (and CleanedUp if destroyed)
-       |-- 5. Update stats (active--, idle count, releases++)
-       |-- 6. Semaphore::add_permits(1)
+       |-- 1. If tainted: skip recycle and go straight to cleanup
+       |-- 2. Else Resource::recycle(&mut instance)
+       |-- 3. If recycle OK and not shutdown: push Entry back to idle queue
+       |-- 4. If recycle failed, tainted, or shutdown: Resource::cleanup(instance)
+       |-- 5. Emit Released event (and CleanedUp with reason when destroyed)
+       |-- 6. Update stats (active--, idle count, releases++)
+       |-- 7. Semaphore::add_permits(1)
 ```
 
 ## Integration: Engine Bridge

@@ -12,11 +12,12 @@ propagates state through the dependency graph.
 | `Healthy` | true | 1.0 | Allowed |
 | `Degraded { reason, performance_impact }` | true if impact < 0.8 | 1.0 - impact | Allowed with warning |
 | `Unhealthy { reason, recoverable }` | false | 0.0 | Blocked |
-| `Unknown` | false | 0.5 | Blocked |
+| `Unknown` | false | 0.5 | Allowed (treated as non-blocking by Manager) |
 
 `performance_impact` is clamped to `[0.0, 1.0]`. `HealthStatus` also carries
-optional `latency` and `metadata` via builder methods `with_latency()` and
-`with_metadata()`.
+optional `latency`, and `metadata` is modeled as `Option<HashMap<String, String>>`
+so healthy checks avoid per-check map allocation. Use `with_latency()` and
+`with_metadata()` to populate these fields lazily.
 
 ## HealthCheckable Trait
 
@@ -145,12 +146,15 @@ is checked first -- quarantined resources return `Error::Unavailable` with
   this resource. Degraded states from other resources are untouched.
 
 ```rust
-mgr.deps.write().add_dependency("app", "db").unwrap();
-mgr.set_health_state("db", HealthState::Unhealthy {
+use nebula_core::ResourceKey;
+
+let db = ResourceKey::try_from("db").unwrap();
+mgr.deps.write().add_dependency("app", db.as_ref()).unwrap();
+mgr.set_health_state(&db, HealthState::Unhealthy {
     reason: "connection refused".into(), recoverable: true,
 });
 // "app" is now Degraded { reason: "Dependency db is unhealthy", ... }
-mgr.set_health_state("db", HealthState::Healthy);
+mgr.set_health_state(&db, HealthState::Healthy);
 // "app" is cleared back to Healthy
 ```
 
@@ -169,6 +173,6 @@ mgr.set_health_state("db", HealthState::Healthy);
 
 ## Event Bus Integration
 
-`HealthChecker::with_event_bus()` emits `ResourceEvent::HealthChanged { resource_id, from, to }`
+`HealthChecker::with_event_bus()` emits `ResourceEvent::HealthChanged { resource_key, from, to }`
 on every state transition. The bus uses `tokio::sync::broadcast` with
 fire-and-forget semantics -- events are silently dropped if no subscribers exist.

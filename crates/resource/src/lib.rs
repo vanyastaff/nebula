@@ -112,7 +112,8 @@ pub use manager::{
 pub use metrics::MetricsCollector;
 pub use poison::{Poison, PoisonError, PoisonGuard};
 pub use pool::{
-    AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig, PoolStats, PoolStrategy,
+    AdaptiveBackpressurePolicy, LatencyPercentiles, Pool, PoolBackpressurePolicy, PoolConfig,
+    PoolStats, PoolStrategy,
 };
 pub use quarantine::{
     QuarantineConfig, QuarantineEntry, QuarantineManager, QuarantineReason, RecoveryStrategy,
@@ -149,8 +150,8 @@ pub mod prelude {
         TypedResourceGuard,
     };
     pub use crate::pool::{
-        AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig, PoolStats,
-        PoolStrategy,
+        AdaptiveBackpressurePolicy, LatencyPercentiles, Pool, PoolBackpressurePolicy, PoolConfig,
+        PoolStats, PoolStrategy,
     };
 
     pub use nebula_core::{ExecutionId, ResourceId, ResourceKey, WorkflowId};

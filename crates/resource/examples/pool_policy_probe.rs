@@ -10,9 +10,7 @@ use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::metadata::ResourceMetadata;
-use nebula_resource::pool::{
-    AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig,
-};
+use nebula_resource::pool::{AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
 use nebula_resource::{ExecutionId, WorkflowId};
@@ -189,7 +187,14 @@ async fn run_policy_set(
         .expect("pool"),
     );
 
-    let ff = run_probe(Arc::clone(&fail_fast), ctx.clone(), workers, runtime, hold_time).await;
+    let ff = run_probe(
+        Arc::clone(&fail_fast),
+        ctx.clone(),
+        workers,
+        runtime,
+        hold_time,
+    )
+    .await;
     let bw = run_probe(
         Arc::clone(&bounded_wait),
         ctx.clone(),
@@ -198,7 +203,14 @@ async fn run_policy_set(
         hold_time,
     )
     .await;
-    let ad = run_probe(Arc::clone(&adaptive), ctx.clone(), workers, runtime, hold_time).await;
+    let ad = run_probe(
+        Arc::clone(&adaptive),
+        ctx.clone(),
+        workers,
+        runtime,
+        hold_time,
+    )
+    .await;
 
     let ffm = summary_metrics(ff);
     let bwm = summary_metrics(bw);
@@ -230,9 +242,7 @@ async fn main() {
     ];
     let ctx = Context::background(Scope::Global, WorkflowId::new(), ExecutionId::new());
 
-    println!(
-        "pool_policy_probe matrix: workers={workers} runtime={runtime:?}"
-    );
+    println!("pool_policy_probe matrix: workers={workers} runtime={runtime:?}");
     println!("max_size,hold_time,policy,attempts,success,fail,success_rate_pct,avg_wait_us");
 
     for max_size in max_sizes {

@@ -413,9 +413,7 @@ async fn pool_stats_have_latency_percentiles() {
 
     // Initial stats should have None percentiles
     let stats = pool.stats();
-    assert!(stats.acquire_latency_p50_ms.is_none());
-    assert!(stats.acquire_latency_p95_ms.is_none());
-    assert!(stats.acquire_latency_p99_ms.is_none());
+    assert!(stats.acquire_latency.is_none());
 
     // Acquire a few instances to populate the latency window
     for _ in 0..10 {
@@ -426,23 +424,16 @@ async fn pool_stats_have_latency_percentiles() {
 
     let stats = pool.stats();
     assert!(
-        stats.acquire_latency_p50_ms.is_some(),
-        "p50 should be populated after acquisitions"
-    );
-    assert!(
-        stats.acquire_latency_p95_ms.is_some(),
-        "p95 should be populated after acquisitions"
-    );
-    assert!(
-        stats.acquire_latency_p99_ms.is_some(),
-        "p99 should be populated after acquisitions"
+        stats.acquire_latency.is_some(),
+        "latency percentiles should be populated after acquisitions"
     );
 
     // All percentiles should be non-negative (they are u64, so always >= 0)
     // p50 <= p95 <= p99
-    let p50 = stats.acquire_latency_p50_ms.unwrap();
-    let p95 = stats.acquire_latency_p95_ms.unwrap();
-    let p99 = stats.acquire_latency_p99_ms.unwrap();
+    let latency = stats.acquire_latency.expect("latency should be present");
+    let p50 = latency.p50_ms;
+    let p95 = latency.p95_ms;
+    let p99 = latency.p99_ms;
     assert!(p50 <= p95, "p50 ({p50}) should be <= p95 ({p95})");
     assert!(p95 <= p99, "p95 ({p95}) should be <= p99 ({p99})");
 
@@ -476,7 +467,7 @@ async fn pool_stats_percentiles_reflect_latency_distribution() {
     }
 
     let stats = pool.stats();
-    assert!(stats.acquire_latency_p50_ms.is_some());
+    assert!(stats.acquire_latency.is_some());
 
     // The total_wait_time_ms should be positive
     assert!(
@@ -675,9 +666,7 @@ async fn re_register_after_deregister_with_full_cleanup() {
 #[test]
 fn pool_stats_default_has_none_percentiles() {
     let stats = nebula_resource::PoolStats::default();
-    assert!(stats.acquire_latency_p50_ms.is_none());
-    assert!(stats.acquire_latency_p95_ms.is_none());
-    assert!(stats.acquire_latency_p99_ms.is_none());
+    assert!(stats.acquire_latency.is_none());
     assert_eq!(stats.total_wait_time_ms, 0);
     assert_eq!(stats.max_wait_time_ms, 0);
 }

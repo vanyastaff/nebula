@@ -82,6 +82,16 @@ impl AnyGuardTrait for InstrumentedGuard {
             .expect("InstrumentedGuard used after into_inner")
             .as_any_mut()
     }
+
+    fn taint(&mut self) {
+        if let Some(inner) = self.inner.as_mut() {
+            inner.taint();
+        }
+    }
+
+    fn is_tainted(&self) -> bool {
+        self.inner.as_ref().is_some_and(|inner| inner.is_tainted())
+    }
 }
 
 impl Drop for InstrumentedGuard {

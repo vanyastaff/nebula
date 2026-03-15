@@ -311,6 +311,8 @@ pub enum CleanupReason {
     CredentialRotated,
     /// Recycling the instance failed.
     RecycleFailed,
+    /// Caller marked the instance as tainted.
+    Tainted,
 }
 
 // ---------------------------------------------------------------------------

@@ -10,12 +10,13 @@
 /// to `Box<dyn FnOnce(T) + Send>` so existing `Guard<T>` annotations continue
 /// to compile, but pool internals can use the concrete closure type directly
 /// to avoid a heap allocation on each acquire.
-pub struct Guard<T, F: FnOnce(T) + Send + 'static = Box<dyn FnOnce(T) + Send>> {
+pub struct Guard<T, F: FnOnce(T, bool) + Send + 'static = Box<dyn FnOnce(T, bool) + Send>> {
     resource: Option<T>,
     on_drop: Option<F>,
+    tainted: bool,
 }
 
-impl<T, F: FnOnce(T) + Send + 'static> Guard<T, F> {
+impl<T, F: FnOnce(T, bool) + Send + 'static> Guard<T, F> {
     /// Create a new guard wrapping `resource` with a drop callback.
     ///
     /// No heap allocation is performed; the callback is stored inline.
@@ -23,7 +24,19 @@ impl<T, F: FnOnce(T) + Send + 'static> Guard<T, F> {
         Self {
             resource: Some(resource),
             on_drop: Some(on_drop),
+            tainted: false,
         }
+    }
+
+    /// Mark this instance as tainted so pool return skips recycle.
+    pub fn taint(&mut self) {
+        self.tainted = true;
+    }
+
+    /// Returns true if this guard was marked tainted.
+    #[must_use]
+    pub fn is_tainted(&self) -> bool {
+        self.tainted
     }
 
     /// Take the resource out of the guard, preventing the drop callback.
@@ -34,7 +47,7 @@ impl<T, F: FnOnce(T) + Send + 'static> Guard<T, F> {
     }
 }
 
-impl<T, F: FnOnce(T) + Send + 'static> std::ops::Deref for Guard<T, F> {
+impl<T, F: FnOnce(T, bool) + Send + 'static> std::ops::Deref for Guard<T, F> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -42,24 +55,25 @@ impl<T, F: FnOnce(T) + Send + 'static> std::ops::Deref for Guard<T, F> {
     }
 }
 
-impl<T, F: FnOnce(T) + Send + 'static> std::ops::DerefMut for Guard<T, F> {
+impl<T, F: FnOnce(T, bool) + Send + 'static> std::ops::DerefMut for Guard<T, F> {
     fn deref_mut(&mut self) -> &mut T {
         self.resource.as_mut().expect("guard used after into_inner")
     }
 }
 
-impl<T, F: FnOnce(T) + Send + 'static> Drop for Guard<T, F> {
+impl<T, F: FnOnce(T, bool) + Send + 'static> Drop for Guard<T, F> {
     fn drop(&mut self) {
         if let (Some(resource), Some(on_drop)) = (self.resource.take(), self.on_drop.take()) {
-            on_drop(resource);
+            on_drop(resource, self.tainted);
         }
     }
 }
 
-impl<T: std::fmt::Debug, F: FnOnce(T) + Send + 'static> std::fmt::Debug for Guard<T, F> {
+impl<T: std::fmt::Debug, F: FnOnce(T, bool) + Send + 'static> std::fmt::Debug for Guard<T, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Guard")
             .field("resource", &self.resource)
+            .field("tainted", &self.tainted)
             .finish()
     }
 }
@@ -72,7 +86,7 @@ mod tests {
 
     #[test]
     fn guard_deref() {
-        let guard = Guard::new(42u32, |_| {});
+        let guard = Guard::new(42u32, |_, _| {});
         assert_eq!(*guard, 42);
     }
 
@@ -80,7 +94,7 @@ mod tests {
     fn guard_drop_fires_callback() {
         let called = Arc::new(AtomicBool::new(false));
         let called_c = called.clone();
-        let guard = Guard::new("hello", move |_| {
+        let guard = Guard::new("hello", move |_, _| {
             called_c.store(true, Ordering::SeqCst);
         });
         assert!(!called.load(Ordering::SeqCst));
@@ -92,7 +106,7 @@ mod tests {
     fn guard_into_inner_prevents_callback() {
         let called = Arc::new(AtomicBool::new(false));
         let called_c = called.clone();
-        let guard = Guard::new(99u32, move |_| {
+        let guard = Guard::new(99u32, move |_, _| {
             called_c.store(true, Ordering::SeqCst);
         });
         let val = guard.into_inner();
@@ -102,8 +116,16 @@ mod tests {
 
     #[test]
     fn guard_deref_mut() {
-        let mut guard = Guard::new(String::from("hello"), |_| {});
+        let mut guard = Guard::new(String::from("hello"), |_, _| {});
         guard.push_str(" world");
         assert_eq!(*guard, "hello world");
+    }
+
+    #[test]
+    fn guard_taint_marks_flag() {
+        let mut guard = Guard::new(7u32, |_, _| {});
+        assert!(!guard.is_tainted());
+        guard.taint();
+        assert!(guard.is_tainted());
     }
 }

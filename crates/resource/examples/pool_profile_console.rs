@@ -106,8 +106,12 @@ async fn main() {
     println!("ops={total_ops}");
     println!("acquired_total={}", stats.total_acquisitions);
     println!("active={} idle={}", stats.active, stats.idle);
-    println!(
-        "p50={:?}ms p95={:?}ms p99={:?}ms",
-        stats.acquire_latency_p50_ms, stats.acquire_latency_p95_ms, stats.acquire_latency_p99_ms
-    );
+    if let Some(lat) = stats.acquire_latency {
+        println!(
+            "p50={}ms p95={}ms p99={}ms p999={}ms mean={:.2}ms",
+            lat.p50_ms, lat.p95_ms, lat.p99_ms, lat.p999_ms, lat.mean_ms
+        );
+    } else {
+        println!("latency=none");
+    }
 }

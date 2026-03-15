@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use hdrhistogram::Histogram;
 use nebula_core::{ExecutionId, ResourceKey, WorkflowId};
 use nebula_credential::traits::RotationStrategy;
 use nebula_resilience::{
@@ -348,94 +349,34 @@ pub struct PoolStats {
     pub max_wait_time_ms: u64,
     /// Number of times the pool was exhausted (acquire timed out).
     pub exhausted_count: u64,
-    /// Median acquire latency over the recent window (milliseconds).
+    /// Acquire latency distribution summary.
     /// `None` when no acquisitions have been recorded yet.
-    pub acquire_latency_p50_ms: Option<u64>,
-    /// 95th-percentile acquire latency (milliseconds).
-    pub acquire_latency_p95_ms: Option<u64>,
-    /// 99th-percentile acquire latency (milliseconds).
-    pub acquire_latency_p99_ms: Option<u64>,
+    pub acquire_latency: Option<LatencyPercentiles>,
 }
 
 // ---------------------------------------------------------------------------
-// LatencyRingBuffer — fixed-size sliding window for percentile computation
+// Latency histogram
 // ---------------------------------------------------------------------------
 
-/// Fixed-capacity ring buffer that stores the most recent `N` acquire
-/// latency samples (in milliseconds). Percentiles are computed on demand
-/// by sorting a snapshot — this is cheap for the default window size
-/// (1024) and avoids external histogram dependencies.
-const LATENCY_WINDOW: usize = 1024;
-
-#[derive(Clone)]
-struct LatencyRingBuffer {
-    buf: Vec<u64>,
-    pos: usize,
-    full: bool,
+/// Acquire latency percentiles and mean (milliseconds).
+#[derive(Debug, Clone)]
+pub struct LatencyPercentiles {
+    /// 50th percentile (median).
+    pub p50_ms: u64,
+    /// 95th percentile.
+    pub p95_ms: u64,
+    /// 99th percentile.
+    pub p99_ms: u64,
+    /// 99.9th percentile.
+    pub p999_ms: u64,
+    /// Arithmetic mean latency.
+    pub mean_ms: f64,
 }
 
-type LatencyPercentiles = (Option<u64>, Option<u64>, Option<u64>);
+type LatencyHistogram = Histogram<u64>;
 
-impl std::fmt::Debug for LatencyRingBuffer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LatencyRingBuffer")
-            .field("len", &self.len())
-            .field("capacity", &self.buf.len())
-            .finish()
-    }
-}
-
-impl Default for LatencyRingBuffer {
-    fn default() -> Self {
-        Self::new(LATENCY_WINDOW)
-    }
-}
-
-impl LatencyRingBuffer {
-    fn new(capacity: usize) -> Self {
-        Self {
-            buf: vec![0; capacity],
-            pos: 0,
-            full: false,
-        }
-    }
-
-    /// Record a latency sample (milliseconds).
-    fn push(&mut self, value: u64) {
-        self.buf[self.pos] = value;
-        self.pos += 1;
-        if self.pos >= self.buf.len() {
-            self.pos = 0;
-            self.full = true;
-        }
-    }
-
-    /// Number of samples currently stored.
-    fn len(&self) -> usize {
-        if self.full { self.buf.len() } else { self.pos }
-    }
-
-    /// Compute three percentiles in a single sort pass.
-    ///
-    /// More efficient than calling [`percentile`](Self::percentile) three times
-    /// because the buffer is cloned and sorted only once.
-    fn percentiles(&self, p50: f64, p95: f64, p99: f64) -> (Option<u64>, Option<u64>, Option<u64>) {
-        let n = self.len();
-        if n == 0 {
-            return (None, None, None);
-        }
-        let mut sorted: Vec<u64> = if self.full {
-            self.buf.clone()
-        } else {
-            self.buf[..self.pos].to_vec()
-        };
-        sorted.sort_unstable();
-        let pick = |pct: f64| -> Option<u64> {
-            let idx = ((pct / 100.0) * (n as f64 - 1.0)).round() as usize;
-            Some(sorted[idx.min(n - 1)])
-        };
-        (pick(p50), pick(p95), pick(p99))
-    }
+fn new_latency_histogram() -> LatencyHistogram {
+    Histogram::<u64>::new_with_bounds(1, 60_000, 3).expect("latency histogram bounds must be valid")
 }
 
 // ---------------------------------------------------------------------------
@@ -466,7 +407,9 @@ pub(crate) trait CredentialHandler<I>: Send + Sync {
 /// needs one lock acquisition instead of two.
 enum IdleResult<T> {
     /// Non-expired entry popped; statistics already committed under lock.
-    Valid(Entry<T>),
+    /// Carries `wait_ms` so we can record it into the latency histogram
+    /// *after* releasing the state lock.
+    Valid(Entry<T>, u64),
     /// Expired entry popped; needs async cleanup, no stats committed.
     Expired(T),
     /// Queue empty; caller must create a new instance.
@@ -474,18 +417,30 @@ enum IdleResult<T> {
 }
 
 /// Combined pool state: idle queue + statistics under a single lock.
+///
+/// Latency histogram fields have been moved to [`LatencyState`] on `PoolInner`
+/// to eliminate contention between idle-queue operations and histogram recording
+/// under high-concurrency workloads.
 struct PoolState<T> {
     idle: VecDeque<Entry<T>>,
     stats: PoolStats,
-    /// Sliding window of recent acquire latencies for percentile computation.
-    latency_window: LatencyRingBuffer,
-    /// Monotonic sequence of latency-window updates.
-    latency_window_seq: u64,
-    /// Cached percentiles for the current `latency_window_seq`.
-    latency_percentiles_cache: Option<LatencyPercentiles>,
     /// Set to true after `shutdown()` to prevent Guard drops from
     /// reinserting instances into the idle queue.
     shutdown: bool,
+}
+
+/// Latency histogram state, kept in a **separate** lock from `PoolState`.
+///
+/// Separating histogram recording from the idle-queue mutex means that
+/// 32–64 concurrent workers can record latency samples in parallel with other
+/// threads checking out or returning instances, avoiding the serialisation
+/// bottleneck seen under high-contention benchmarks.
+struct LatencyState {
+    histogram: LatencyHistogram,
+    /// Monotonic counter incremented on every `histogram.record()`.
+    seq: u64,
+    /// Cached percentiles, invalidated when `seq` advances.
+    percentiles_cache: Option<LatencyPercentiles>,
 }
 
 /// Inner shared state for the pool.
@@ -497,6 +452,10 @@ struct PoolInner<R: Resource> {
     /// operation (acquire, release, events). Populated once at pool construction.
     resource_key: ResourceKey,
     state: Mutex<Poison<PoolState<R::Instance>>>,
+    /// Separate lock for latency histogram — decoupled from the idle-queue
+    /// mutex so that recording samples does not block queue operations and
+    /// vice versa under high concurrency.
+    latency_state: Mutex<LatencyState>,
     /// Semaphore limits concurrent active (checked-out) instances.
     /// Idle instances do not hold permits.
     semaphore: Semaphore,
@@ -668,12 +627,14 @@ impl<R: Resource> Pool<R> {
                     PoolState {
                         idle: VecDeque::with_capacity(max),
                         stats: PoolStats::default(),
-                        latency_window: LatencyRingBuffer::default(),
-                        latency_window_seq: 0,
-                        latency_percentiles_cache: None,
                         shutdown: false,
                     },
                 )),
+                latency_state: Mutex::new(LatencyState {
+                    histogram: new_latency_histogram(),
+                    seq: 0,
+                    percentiles_cache: None,
+                }),
                 semaphore: Semaphore::new(max),
                 gate: Gate::new(),
                 cancel: cancel.clone(),
@@ -686,7 +647,11 @@ impl<R: Resource> Pool<R> {
                 credential_handler,
                 create_breaker,
                 recycle_breaker,
-                maintenance_ctx: Context::background(Scope::Global, WorkflowId::nil(), ExecutionId::nil()),
+                maintenance_ctx: Context::background(
+                    Scope::Global,
+                    WorkflowId::nil(),
+                    ExecutionId::nil(),
+                ),
             }),
         };
 
@@ -766,7 +731,7 @@ impl<R: Resource> Pool<R> {
         &self,
         ctx: &Context,
     ) -> Result<(
-        Guard<R::Instance, impl FnOnce(R::Instance) + Send + 'static + use<R>>,
+        Guard<R::Instance, impl FnOnce(R::Instance, bool) + Send + 'static + use<R>>,
         Duration,
     )> {
         let start = Instant::now();
@@ -824,7 +789,7 @@ impl<R: Resource> Pool<R> {
         &self,
         ctx: &Context,
         start: Instant,
-    ) -> Result<Guard<R::Instance, impl FnOnce(R::Instance) + Send + 'static + use<R>>> {
+    ) -> Result<Guard<R::Instance, impl FnOnce(R::Instance, bool) + Send + 'static + use<R>>> {
         let inner = &self.inner;
 
         // RAII guard that increments `waiting_count` on entry and decrements on
@@ -882,10 +847,7 @@ impl<R: Resource> Pool<R> {
                         if wait_ms > state.stats.max_wait_time_ms {
                             state.stats.max_wait_time_ms = wait_ms;
                         }
-                        state.latency_window.push(wait_ms);
-                        state.latency_window_seq = state.latency_window_seq.wrapping_add(1);
-                        state.latency_percentiles_cache = None;
-                        IdleResult::Valid(entry)
+                        IdleResult::Valid(entry, wait_ms)
                     }
                     None => IdleResult::Miss,
                 }
@@ -897,7 +859,16 @@ impl<R: Resource> Pool<R> {
                     Self::cleanup_with_hooks(inner, inst, &CleanupReason::Expired, None).await;
                     continue;
                 }
-                IdleResult::Valid(entry) => {
+                IdleResult::Valid(entry, wait_ms) => {
+                    // Record latency *outside* the state lock — the separate
+                    // `latency_state` mutex means this does not serialise with
+                    // concurrent idle-queue operations.
+                    {
+                        let mut lat = inner.latency_state.lock();
+                        let _ = lat.histogram.record(wait_ms.max(1));
+                        lat.seq = lat.seq.wrapping_add(1);
+                        lat.percentiles_cache = None;
+                    }
                     let created_at = entry.created_at;
                     // Fast path: poll is_reusable synchronously with a noop waker.
                     // Most health checks complete immediately (e.g. checking an
@@ -924,7 +895,7 @@ impl<R: Resource> Pool<R> {
                         Ok(true) => break (entry.instance, Some(created_at)),
                         _ => {
                             // Undo the optimistically committed stats.
-                            // total_wait_time_ms and latency_window are not
+                            // total_wait_time_ms and latency_histogram are not
                             // reverted — an accepted approximation since
                             // is_reusable failures are rare.
                             tracing::debug!("Destroying invalid resource instance");
@@ -973,10 +944,14 @@ impl<R: Resource> Pool<R> {
                 if wait_ms > state.stats.max_wait_time_ms {
                     state.stats.max_wait_time_ms = wait_ms;
                 }
-                state.latency_window.push(wait_ms);
-                state.latency_window_seq = state.latency_window_seq.wrapping_add(1);
-                state.latency_percentiles_cache = None;
             })?;
+            // Record latency outside the state lock.
+            {
+                let mut lat = inner.latency_state.lock();
+                let _ = lat.histogram.record(wait_ms.max(1));
+                lat.seq = lat.seq.wrapping_add(1);
+                lat.percentiles_cache = None;
+            }
         }
         inner.active_count.fetch_add(1, Ordering::Relaxed);
 
@@ -985,17 +960,19 @@ impl<R: Resource> Pool<R> {
 
         let pool = self.clone();
         let acquire_instant = Instant::now();
-        Ok(Guard::new(instance, move |inst| {
+        Ok(Guard::new(instance, move |inst, tainted| {
             let usage_duration = acquire_instant.elapsed();
             // Fast path: attempt sync return without spawning a task.
             // Falls back to async spawn when the fast path isn't applicable.
-            if let Some(inst) = Self::try_return_sync(&pool.inner, inst, created_at, usage_duration)
+            if let Some(inst) =
+                Self::try_return_sync(&pool.inner, inst, created_at, usage_duration, tainted)
             {
                 drop(tokio::spawn(Self::return_instance(
                     pool,
                     inst,
                     created_at,
                     usage_duration,
+                    tainted,
                 )));
             }
         }))
@@ -1020,7 +997,11 @@ impl<R: Resource> Pool<R> {
         inst: R::Instance,
         created_at: Option<Instant>,
         usage_duration: Duration,
+        tainted: bool,
     ) -> Option<R::Instance> {
+        if tainted {
+            return Some(inst);
+        }
         if inner.recycle_breaker.is_some() || inner.hooks.is_some() {
             return Some(inst);
         }
@@ -1177,11 +1158,12 @@ impl<R: Resource> Pool<R> {
         inst: R::Instance,
         created_at: Option<Instant>,
         usage_duration: Duration,
+        tainted: bool,
     ) {
         let inner = &pool.inner;
         let mut inst_slot = Some(inst);
         let mut recycle_ok = false;
-        let mut skip_recycle = false;
+        let mut skip_recycle = tainted;
 
         if let Some(cb) = &inner.recycle_breaker
             && let Err(ResilienceError::CircuitBreakerOpen { retry_after, .. }) =
@@ -1224,6 +1206,8 @@ impl<R: Resource> Pool<R> {
                 let inst = inst_slot.take().expect("instance must exist");
                 let reason = if state.shutdown {
                     CleanupReason::Shutdown
+                } else if tainted {
+                    CleanupReason::Tainted
                 } else {
                     CleanupReason::RecycleFailed
                 };
@@ -1526,35 +1510,35 @@ impl<R: Resource> Pool<R> {
     /// computed from a sliding window of recent acquisitions.
     #[must_use]
     pub fn stats(&self) -> PoolStats {
-        // Clone stats + latency window while holding the lock, then drop the
-        // lock before sorting to minimise contention on the acquire path.
-        let state_lock = self.inner.state.lock();
-        let Ok(data) = state_lock.try_read() else {
-            return PoolStats::default();
+        // Snapshot stats from the state lock.
+        let mut stats = match self.with_state_read(|state| state.stats.clone()) {
+            Ok(s) => s,
+            Err(_) => return PoolStats::default(),
         };
-        let mut stats = data.stats.clone();
-        if let Some((p50, p95, p99)) = data.latency_percentiles_cache {
-            stats.acquire_latency_p50_ms = p50;
-            stats.acquire_latency_p95_ms = p95;
-            stats.acquire_latency_p99_ms = p99;
+
+        // Read latency percentiles from the separate latency lock.
+        // This lock is independent of the idle-queue mutex, so callers
+        // of `stats()` never contend with the acquire hot path.
+        let mut lat = self.inner.latency_state.lock();
+        if let Some(ref cached) = lat.percentiles_cache {
+            stats.acquire_latency = Some(cached.clone());
             return stats;
         }
-        let latency_window = data.latency_window.clone();
-        let latency_window_seq = data.latency_window_seq;
-        drop(state_lock);
+        let computed = if lat.histogram.len() == 0 {
+            None
+        } else {
+            Some(LatencyPercentiles {
+                p50_ms: lat.histogram.value_at_quantile(0.50),
+                p95_ms: lat.histogram.value_at_quantile(0.95),
+                p99_ms: lat.histogram.value_at_quantile(0.99),
+                p999_ms: lat.histogram.value_at_quantile(0.999),
+                mean_ms: lat.histogram.mean(),
+            })
+        };
+        lat.percentiles_cache = computed.clone();
+        drop(lat);
 
-        let (p50, p95, p99) = latency_window.percentiles(50.0, 95.0, 99.0);
-        stats.acquire_latency_p50_ms = p50;
-        stats.acquire_latency_p95_ms = p95;
-        stats.acquire_latency_p99_ms = p99;
-
-        // Populate cache only when no concurrent updates happened since snapshot.
-        let _ = self.with_state(|state| {
-            if state.latency_window_seq == latency_window_seq {
-                state.latency_percentiles_cache = Some((p50, p95, p99));
-            }
-        });
-
+        stats.acquire_latency = computed;
         stats
     }
 

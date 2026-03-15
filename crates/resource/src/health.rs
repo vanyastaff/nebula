@@ -29,7 +29,7 @@ pub struct HealthStatus {
     /// Latency of the health check
     pub latency: Option<std::time::Duration>,
     /// Additional metadata
-    pub metadata: std::collections::HashMap<String, String>,
+    pub metadata: Option<std::collections::HashMap<String, String>>,
 }
 
 /// Health state variants
@@ -62,7 +62,7 @@ impl HealthStatus {
         Self {
             state: HealthState::Healthy,
             latency: None,
-            metadata: std::collections::HashMap::new(),
+            metadata: None,
         }
     }
 
@@ -74,7 +74,7 @@ impl HealthStatus {
                 recoverable: true,
             },
             latency: None,
-            metadata: std::collections::HashMap::new(),
+            metadata: None,
         }
     }
 
@@ -86,7 +86,7 @@ impl HealthStatus {
                 performance_impact: performance_impact.clamp(0.0, 1.0),
             },
             latency: None,
-            metadata: std::collections::HashMap::new(),
+            metadata: None,
         }
     }
 
@@ -100,7 +100,9 @@ impl HealthStatus {
     /// Add metadata key-value pair
     #[must_use]
     pub fn with_metadata<K: Into<String>, V: Into<String>>(mut self, key: K, value: V) -> Self {
-        self.metadata.insert(key.into(), value.into());
+        self.metadata
+            .get_or_insert_with(std::collections::HashMap::new)
+            .insert(key.into(), value.into());
         self
     }
 
@@ -900,7 +902,7 @@ mod tests {
             HealthStatus {
                 state: HealthState::Unknown,
                 latency: None,
-                metadata: std::collections::HashMap::new(),
+                metadata: None,
             }
             .score(),
             0.5
@@ -915,8 +917,9 @@ mod tests {
             .with_metadata("connections", "10");
 
         assert!(status.latency.is_some());
-        assert_eq!(status.metadata.get("version").unwrap(), "14.5");
-        assert_eq!(status.metadata.get("connections").unwrap(), "10");
+        let metadata = status.metadata.expect("metadata should exist");
+        assert_eq!(metadata.get("version").unwrap(), "14.5");
+        assert_eq!(metadata.get("connections").unwrap(), "10");
     }
 
     // --- HealthChecker tests ---

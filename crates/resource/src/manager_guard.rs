@@ -25,6 +25,12 @@ pub trait AnyGuardTrait: Send {
 
     /// Access the inner instance as `&mut dyn Any` for downcasting.
     fn as_any_mut(&mut self) -> &mut dyn Any;
+
+    /// Mark the wrapped instance as tainted so pool return skips recycle.
+    fn taint(&mut self);
+
+    /// Returns true when the wrapped instance is tainted.
+    fn is_tainted(&self) -> bool;
 }
 
 /// Type-erased guard returned by [`Manager::acquire`](crate::manager::Manager::acquire).
@@ -68,6 +74,17 @@ impl ResourceHandle {
     pub fn get_mut<T: 'static>(&mut self) -> Option<&mut T> {
         self.guard.as_any_mut().downcast_mut()
     }
+
+    /// Mark this resource handle as tainted.
+    pub fn taint(&mut self) {
+        self.guard.taint();
+    }
+
+    /// Returns true when this resource was marked tainted.
+    #[must_use]
+    pub fn is_tainted(&self) -> bool {
+        self.guard.is_tainted()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -85,7 +102,7 @@ impl ResourceHandle {
 /// # Example
 ///
 /// ```rust,ignore
-/// let guard = manager.acquire_typed(TelegramBotResource, &ctx).await?;
+/// let guard = manager.acquire_typed::<TelegramBotResource>(&ctx).await?;
 /// let bot = guard.get().expect("typed guard must match resource type");
 /// ```
 pub struct TypedResourceGuard<T: Send + Sync + 'static> {
@@ -103,6 +120,17 @@ impl<T: Send + Sync + 'static> TypedResourceGuard<T> {
     /// Mutably access the resource instance.
     pub fn get_mut(&mut self) -> Option<&mut T> {
         self.guard.as_any_mut().downcast_mut()
+    }
+
+    /// Mark this typed resource guard as tainted.
+    pub fn taint(&mut self) {
+        self.guard.taint();
+    }
+
+    /// Returns true when this typed resource was marked tainted.
+    #[must_use]
+    pub fn is_tainted(&self) -> bool {
+        self.guard.is_tainted()
     }
 }
 
@@ -145,6 +173,16 @@ impl AnyGuardTrait for ReleaseHookGuard {
             .as_mut()
             .expect("guard used after drop")
             .as_any_mut()
+    }
+
+    fn taint(&mut self) {
+        if let Some(inner) = self.inner.as_mut() {
+            inner.taint();
+        }
+    }
+
+    fn is_tainted(&self) -> bool {
+        self.inner.as_ref().is_some_and(|inner| inner.is_tainted())
     }
 }
 

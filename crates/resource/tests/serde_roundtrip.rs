@@ -72,7 +72,7 @@ fn arb_health_status() -> impl Strategy<Value = HealthStatus> {
     arb_health_state().prop_map(|state| HealthStatus {
         state,
         latency: None, // Duration doesn't roundtrip via default serde (it's not Serialize by default)
-        metadata: std::collections::HashMap::new(),
+        metadata: None,
     })
 }
 

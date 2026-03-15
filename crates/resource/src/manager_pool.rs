@@ -25,11 +25,11 @@ use crate::scope::Scope;
 // ---------------------------------------------------------------------------
 
 /// Concrete guard wrapping a typed `Guard`.
-pub(crate) struct TypedGuard<R: Resource, F: FnOnce(R::Instance) + Send + 'static> {
+pub(crate) struct TypedGuard<R: Resource, F: FnOnce(R::Instance, bool) + Send + 'static> {
     pub(crate) guard: Guard<R::Instance, F>,
 }
 
-impl<R: Resource, F: FnOnce(R::Instance) + Send + 'static> AnyGuardTrait for TypedGuard<R, F>
+impl<R: Resource, F: FnOnce(R::Instance, bool) + Send + 'static> AnyGuardTrait for TypedGuard<R, F>
 where
     R::Instance: Any,
 {
@@ -39,6 +39,14 @@ where
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         &mut *self.guard
+    }
+
+    fn taint(&mut self) {
+        self.guard.taint();
+    }
+
+    fn is_tainted(&self) -> bool {
+        self.guard.is_tainted()
     }
 }
 
@@ -146,6 +154,7 @@ where
 // ---------------------------------------------------------------------------
 
 /// A pool together with the scope it was registered under.
+#[derive(Clone)]
 pub(crate) struct PoolEntry {
     pub(crate) pool: Arc<dyn AnyPool>,
     pub(crate) scope: Scope,

@@ -10,9 +10,7 @@ use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::metadata::ResourceMetadata;
-use nebula_resource::pool::{
-    AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig,
-};
+use nebula_resource::pool::{AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
 use nebula_resource::{ExecutionId, WorkflowId};
@@ -64,7 +62,12 @@ fn pool_config_with_policy(max_size: usize, policy: Option<PoolBackpressurePolic
     }
 }
 
-async fn run_contended_round(pool: Pool<BenchResource>, ctx: Context, workers: usize, iters: usize) {
+async fn run_contended_round(
+    pool: Pool<BenchResource>,
+    ctx: Context,
+    workers: usize,
+    iters: usize,
+) {
     let mut handles = Vec::with_capacity(workers);
 
     for _ in 0..workers {
@@ -179,12 +182,14 @@ fn contended_policy_compare(c: &mut Criterion) {
         BenchConfig,
         pool_config_with_policy(
             4,
-            Some(PoolBackpressurePolicy::Adaptive(AdaptiveBackpressurePolicy {
-                high_pressure_utilization: 0.8,
-                high_pressure_waiters: 8,
-                low_pressure_timeout: Duration::from_millis(20),
-                high_pressure_timeout: Duration::from_millis(2),
-            })),
+            Some(PoolBackpressurePolicy::Adaptive(
+                AdaptiveBackpressurePolicy {
+                    high_pressure_utilization: 0.8,
+                    high_pressure_waiters: 8,
+                    low_pressure_timeout: Duration::from_millis(20),
+                    high_pressure_timeout: Duration::from_millis(2),
+                },
+            )),
         ),
     )
     .expect("pool");
@@ -253,12 +258,14 @@ fn contended_policy_compare_pool8(c: &mut Criterion) {
         BenchConfig,
         pool_config_with_policy(
             8,
-            Some(PoolBackpressurePolicy::Adaptive(AdaptiveBackpressurePolicy {
-                high_pressure_utilization: 0.8,
-                high_pressure_waiters: 8,
-                low_pressure_timeout: Duration::from_millis(20),
-                high_pressure_timeout: Duration::from_millis(2),
-            })),
+            Some(PoolBackpressurePolicy::Adaptive(
+                AdaptiveBackpressurePolicy {
+                    high_pressure_utilization: 0.8,
+                    high_pressure_waiters: 8,
+                    low_pressure_timeout: Duration::from_millis(20),
+                    high_pressure_timeout: Duration::from_millis(2),
+                },
+            )),
         ),
     )
     .expect("pool");

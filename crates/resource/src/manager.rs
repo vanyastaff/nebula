@@ -1,13 +1,16 @@
 //! Resource manager — central registry, pool orchestration, and dependency ordering.
 
 use std::any::Any;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
+use moka::sync::Cache;
 use nebula_core::CredentialId;
 use nebula_credential::traits::RotationStrategy;
+use rustc_hash::FxBuildHasher;
 
 use crate::autoscale::{AutoScalePolicy, AutoScaler};
 use crate::components::{HasResourceComponents, TypedCredentialHandler};
@@ -98,7 +101,7 @@ impl Default for ShutdownConfig {
 /// multiple pools of the same resource type with different IDs.
 pub struct Manager {
     /// Pools indexed by resource ID string, with associated scope.
-    pools: DashMap<String, PoolEntry>,
+    pools: ArcSwap<HashMap<String, PoolEntry>>,
     /// Dependency graph for initialization ordering.
     deps: parking_lot::RwLock<DependencyGraph>,
     /// Background health checker.
@@ -108,19 +111,19 @@ pub struct Manager {
     /// Quarantine manager for unhealthy resources.
     quarantine: Arc<QuarantineManager>,
     /// Per-resource health states (set externally or by health checker events).
-    health_states: DashMap<String, HealthState>,
+    health_states: Cache<String, HealthState>,
     /// Per-resource metadata (from `Resource::metadata()` at registration).
-    metadata: DashMap<String, ResourceMetadata>,
+    metadata: DashMap<String, ResourceMetadata, FxBuildHasher>,
     /// Hook registry for lifecycle hooks (Arc-wrapped so pools can share it).
     hooks: Arc<HookRegistry>,
     /// Per-resource auto-scalers (resource_id → JoinHandle).
-    auto_scalers: DashMap<String, tokio::task::JoinHandle<()>>,
+    auto_scalers: DashMap<String, tokio::task::JoinHandle<()>, FxBuildHasher>,
     /// Default auto-scale policy applied to every pool at registration time.
     /// `None` means auto-scaling is off by default (enable per-resource via
     /// [`enable_autoscaling`](Self::enable_autoscaling)).
     default_autoscale_policy: Option<AutoScalePolicy>,
     /// Maps credential ID to pools that use it (for rotation dispatch).
-    credential_pool_map: Arc<DashMap<CredentialId, Vec<RotationEntry>>>,
+    credential_pool_map: Arc<DashMap<CredentialId, Vec<RotationEntry>, FxBuildHasher>>,
 }
 
 /// Entry for credential rotation dispatch.
@@ -209,7 +212,10 @@ impl ManagerBuilder {
             .event_bus
             .unwrap_or_else(|| Arc::new(EventBus::default()));
         let quarantine = Arc::new(QuarantineManager::new(self.quarantine_config));
-        let health_states: DashMap<String, HealthState> = DashMap::new();
+        let health_states: Cache<String, HealthState> = Cache::builder()
+            .max_capacity(1024)
+            .time_to_idle(Duration::from_secs(300))
+            .build();
 
         // Build the health checker with threshold callback wired to
         // quarantine + health_states + event_bus.
@@ -224,10 +230,7 @@ impl ManagerBuilder {
             let hs = health_states.clone();
             let bus = Arc::clone(&event_bus);
             health_checker.set_threshold_callback(move |resource_id, consecutive_failures| {
-                let previous_health = hs
-                    .get(resource_id)
-                    .map(|state| state.value().clone())
-                    .unwrap_or(HealthState::Unknown);
+                let previous_health = hs.get(resource_id).unwrap_or(HealthState::Unknown);
 
                 let next_health = HealthState::Unhealthy {
                     reason: format!(
@@ -260,17 +263,17 @@ impl ManagerBuilder {
         }
 
         Manager {
-            pools: DashMap::new(),
+            pools: ArcSwap::from_pointee(HashMap::new()),
             deps: parking_lot::RwLock::new(DependencyGraph::default()),
             health_checker: Arc::new(health_checker),
             event_bus,
             quarantine,
             health_states,
-            metadata: DashMap::new(),
+            metadata: DashMap::with_hasher(FxBuildHasher::default()),
             hooks: Arc::new(HookRegistry::default()),
-            auto_scalers: DashMap::new(),
+            auto_scalers: DashMap::with_hasher(FxBuildHasher::default()),
             default_autoscale_policy: self.default_autoscale_policy,
-            credential_pool_map: Arc::new(DashMap::new()),
+            credential_pool_map: Arc::new(DashMap::with_hasher(FxBuildHasher::default())),
         }
     }
 }
@@ -288,6 +291,64 @@ impl Manager {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn pools_snapshot(&self) -> Arc<HashMap<String, PoolEntry>> {
+        self.pools.load_full()
+    }
+
+    fn pool_get(&self, id: &str) -> Option<PoolEntry> {
+        self.pools_snapshot().get(id).cloned()
+    }
+
+    fn pool_contains(&self, id: &str) -> bool {
+        self.pools_snapshot().contains_key(id)
+    }
+
+    fn pool_insert(&self, id: String, entry: PoolEntry) -> Option<PoolEntry> {
+        loop {
+            let current = self.pools.load_full();
+            let mut next = (*current).clone();
+            let old = next.insert(id.clone(), entry.clone());
+            let prev = self.pools.compare_and_swap(&current, Arc::new(next));
+            if Arc::ptr_eq(&prev, &current) {
+                return old;
+            }
+        }
+    }
+
+    fn pool_remove(&self, id: &str) -> Option<PoolEntry> {
+        loop {
+            let current = self.pools.load_full();
+            if !current.contains_key(id) {
+                return None;
+            }
+            let mut next = (*current).clone();
+            let removed = next.remove(id);
+            let prev = self.pools.compare_and_swap(&current, Arc::new(next));
+            if Arc::ptr_eq(&prev, &current) {
+                return removed;
+            }
+        }
+    }
+
+    fn pool_len(&self) -> usize {
+        self.pools_snapshot().len()
+    }
+
+    fn pool_keys(&self) -> Vec<String> {
+        self.pools_snapshot().keys().cloned().collect()
+    }
+
+    fn pool_entries(&self) -> Vec<(String, PoolEntry)> {
+        self.pools_snapshot()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    fn pool_clear(&self) {
+        self.pools.store(Arc::new(HashMap::new()));
     }
 
     /// Create a manager with a custom health check configuration.
@@ -388,7 +449,7 @@ impl Manager {
 
         let typed_pool: Arc<TypedPool<R>> = Arc::new(TypedPool { pool });
         let any_pool: Arc<dyn AnyPool> = typed_pool.clone();
-        self.pools.insert(
+        let _ = self.pool_insert(
             id.clone(),
             PoolEntry {
                 pool: any_pool,
@@ -487,7 +548,7 @@ impl Manager {
             *deps = candidate;
         }
 
-        self.pools.insert(
+        let _ = self.pool_insert(
             id.clone(),
             PoolEntry {
                 pool: any_pool,
@@ -570,7 +631,7 @@ impl Manager {
 
         // Check health state -- block on Unhealthy, warn on Degraded.
         if let Some(state) = self.health_states.get(id) {
-            match state.value() {
+            match &state {
                 HealthState::Unhealthy { recoverable, .. } => {
                     self.event_bus.emit(ResourceEvent::Error {
                         resource_key: resource_key.clone(),
@@ -596,7 +657,7 @@ impl Manager {
 
         // Clone the Arc and scope to release the DashMap shard lock before
         // awaiting the potentially long-running acquire_any().
-        let (pool, resource_scope) = match self.pools.get(id) {
+        let (pool, resource_scope) = match self.pool_get(id) {
             Some(entry) => (Arc::clone(&entry.pool), entry.scope.clone()),
             None => {
                 let err = Error::Unavailable {
@@ -700,18 +761,17 @@ impl Manager {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let guard = manager.acquire_typed(TelegramBotResource, &ctx).await?;
+    /// let guard = manager.acquire_typed::<TelegramBotResource>(&ctx).await?;
     /// let bot = guard.get().expect("typed guard must match resource type");
     /// ```
     pub async fn acquire_typed<R: Resource>(
         &self,
-        resource: R,
         ctx: &Context,
     ) -> Result<TypedResourceGuard<R::Instance>>
     where
         R::Instance: Any,
     {
-        let key = resource.metadata().key.clone();
+        let key = R::declare_key();
         let guard = self.acquire(&key, ctx).await?;
         Ok(TypedResourceGuard {
             guard,
@@ -753,7 +813,7 @@ impl Manager {
     /// This is a lightweight check that does not acquire from the pool.
     #[must_use]
     pub fn is_registered(&self, resource_key: &ResourceKey) -> bool {
-        self.pools.contains_key(resource_key.as_ref())
+        self.pool_contains(resource_key.as_ref())
     }
 
     /// Get a typed pool reference for a registered resource.
@@ -775,7 +835,7 @@ impl Manager {
     {
         let key = resource.metadata().key.clone();
         let id = key.as_ref();
-        let entry = self.pools.get(id)?;
+        let entry = self.pool_get(id)?;
         let handle = entry.typed_handle.as_ref()?;
         handle.clone().downcast::<TypedPool<R>>().ok()
     }
@@ -796,10 +856,10 @@ impl Manager {
         // Stop all health monitoring tasks for this resource.
         self.health_checker.stop_monitoring_resource(id);
 
-        let removed = self.pools.remove(id);
+        let removed = self.pool_remove(id);
         self.deps.write().remove_all_for(id);
         self.metadata.remove(id);
-        self.health_states.remove(id);
+        self.health_states.invalidate(id);
 
         // Release from quarantine (if quarantined) and emit event.
         if let Some(entry) = self.quarantine.release(id) {
@@ -809,7 +869,7 @@ impl Manager {
             });
         }
 
-        if let Some((_, entry)) = removed {
+        if let Some(entry) = removed {
             let _ = entry.pool.shutdown().await;
             self.event_bus.emit(ResourceEvent::CleanedUp {
                 resource_key: resource_key.clone(),
@@ -828,10 +888,10 @@ impl Manager {
     pub async fn shutdown_scope(&self, scope: &Scope) -> Result<()> {
         // Collect pool IDs whose scope is contained by the target scope.
         let affected_ids: Vec<String> = self
-            .pools
-            .iter()
-            .filter(|entry| scope.contains(&entry.value().scope))
-            .map(|entry| entry.key().clone())
+            .pool_entries()
+            .into_iter()
+            .filter(|(_, entry)| scope.contains(&entry.scope))
+            .map(|(id, _)| id)
             .collect();
 
         // Build reverse topo sort among affected IDs.
@@ -851,7 +911,7 @@ impl Manager {
         }
 
         for id in &ordered {
-            if let Some((_, entry)) = self.pools.remove(id) {
+            if let Some(entry) = self.pool_remove(id) {
                 let _ = entry.pool.shutdown().await;
                 let key = nebula_core::ResourceKey::try_from(id.as_str())
                     .expect("resource id must be a valid ResourceKey");
@@ -876,10 +936,9 @@ impl Manager {
     #[must_use]
     pub fn get_status(&self, resource_key: &ResourceKey) -> Option<ResourceStatus> {
         let id = resource_key.as_ref();
-        let entry = self.pools.get(id)?;
+        let entry = self.pool_get(id)?;
         let scope = entry.scope.clone();
         let (active, idle, max_size) = entry.pool.utilization_snapshot();
-        drop(entry);
 
         let metadata = self
             .metadata
@@ -890,7 +949,7 @@ impl Manager {
         let health = self
             .health_states
             .get(id)
-            .map(|s| s.clone())
+            .clone()
             .unwrap_or(HealthState::Unknown);
 
         let quarantine_entry = self.quarantine.get(id);
@@ -915,10 +974,9 @@ impl Manager {
     #[must_use]
     pub fn list_status(&self) -> Vec<ResourceStatus> {
         let mut statuses: Vec<ResourceStatus> = self
-            .pools
-            .iter()
-            .filter_map(|entry| {
-                let id = entry.key().clone();
+            .pool_keys()
+            .into_iter()
+            .filter_map(|id| {
                 let key = ResourceKey::try_from(id.as_str()).ok()?;
                 self.get_status(&key)
             })
@@ -981,9 +1039,7 @@ impl Manager {
     /// Get the current health state of a resource, if set.
     #[must_use]
     pub fn get_health_state(&self, resource_key: &ResourceKey) -> Option<HealthState> {
-        self.health_states
-            .get(resource_key.as_ref())
-            .map(|r| r.clone())
+        self.health_states.get(resource_key.as_ref())
     }
 
     /// Set a resource's health state and propagate the effect to dependents.
@@ -1012,7 +1068,7 @@ impl Manager {
                     let dominated = self
                         .health_states
                         .get(dep)
-                        .is_some_and(|s| matches!(s.value(), HealthState::Unhealthy { .. }));
+                        .is_some_and(|s| matches!(s, HealthState::Unhealthy { .. }));
 
                     if !dominated {
                         self.health_states.insert(
@@ -1029,7 +1085,7 @@ impl Manager {
                 // Clear degraded states that were caused by this resource.
                 for dep in &dependents {
                     let should_clear = self.health_states.get(dep).is_some_and(|s| {
-                        matches!(s.value(), HealthState::Degraded { reason, .. }
+                        matches!(s, HealthState::Degraded { reason, .. }
                             if reason.contains(id))
                     });
 
@@ -1063,13 +1119,12 @@ impl Manager {
         policy.validate()?;
         let id = resource_key.as_ref();
 
-        let pool_entry = self.pools.get(id).ok_or_else(|| Error::Unavailable {
+        let pool_entry = self.pool_get(id).ok_or_else(|| Error::Unavailable {
             resource_key: resource_key.clone(),
             reason: "Resource not registered".to_string(),
             retryable: false,
         })?;
         let pool = Arc::clone(&pool_entry.pool);
-        drop(pool_entry);
 
         // Cancel any existing scaler for this resource.
         if let Some((_, old_handle)) = self.auto_scalers.remove(id) {
@@ -1119,9 +1174,9 @@ impl Manager {
         self.auto_scalers.clear();
 
         let pools: Vec<(String, Arc<dyn AnyPool>)> = self
-            .pools
-            .iter()
-            .map(|entry| (entry.key().clone(), Arc::clone(&entry.value().pool)))
+            .pool_entries()
+            .into_iter()
+            .map(|(id, entry)| (id, Arc::clone(&entry.pool)))
             .collect();
 
         for (id, pool) in pools {
@@ -1134,7 +1189,7 @@ impl Manager {
             });
         }
 
-        self.pools.clear();
+        self.pool_clear();
         self.metadata.clear();
         self.health_checker.shutdown();
         Ok(())
@@ -1149,7 +1204,7 @@ impl Manager {
     pub async fn shutdown_phased(&self, config: ShutdownConfig) -> Result<()> {
         // Get reverse topological order for all registered pools.
         let full_order = self.deps.read().topological_sort().unwrap_or_default();
-        let registered: HashSet<String> = self.pools.iter().map(|e| e.key().clone()).collect();
+        let registered: HashSet<String> = self.pool_keys().into_iter().collect();
         let mut ordered: Vec<String> = full_order
             .into_iter()
             .filter(|id| registered.contains(id))
@@ -1168,7 +1223,7 @@ impl Manager {
 
         // Phase 2: Cleanup each pool in dependency order with per-pool timeout.
         for id in &ordered {
-            if let Some((_, entry)) = self.pools.remove(id) {
+            if let Some(entry) = self.pool_remove(id) {
                 let _ = tokio::time::timeout(config.cleanup_timeout, entry.pool.shutdown()).await;
                 self.metadata.remove(id);
                 let key = nebula_core::ResourceKey::try_from(id.as_str())
@@ -1181,9 +1236,9 @@ impl Manager {
         }
 
         // Phase 3: Terminate -- force-clear anything remaining.
-        if !self.pools.is_empty() {
+        if self.pool_len() != 0 {
             tokio::time::sleep(config.terminate_timeout).await;
-            self.pools.clear();
+            self.pool_clear();
             self.metadata.clear();
         }
 
@@ -1212,7 +1267,7 @@ impl Manager {
     {
         let key = resource.metadata().key.clone();
         let id = key.as_ref().to_string();
-        let had_existing_pool = self.pools.contains_key(&id);
+        let had_existing_pool = self.pool_contains(&id);
 
         // Build the new pool before touching the registry.
         let new_pool = match Pool::with_hooks(
@@ -1239,7 +1294,7 @@ impl Manager {
         };
 
         // Shut down the old pool (if any), preserving the existing scope.
-        let existing_scope = if let Some((_, entry)) = self.pools.remove(&id) {
+        let existing_scope = if let Some(entry) = self.pool_remove(&id) {
             let scope = entry.scope.clone();
             let _ = entry.pool.shutdown().await;
             scope
@@ -1249,7 +1304,7 @@ impl Manager {
 
         let typed_pool: Arc<TypedPool<R>> = Arc::new(TypedPool { pool: new_pool });
         let any_pool: Arc<dyn AnyPool> = typed_pool.clone();
-        self.pools.insert(
+        let _ = self.pool_insert(
             id.clone(),
             PoolEntry {
                 pool: any_pool,
@@ -1272,7 +1327,7 @@ impl Manager {
 impl std::fmt::Debug for Manager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Manager")
-            .field("pool_count", &self.pools.len())
+            .field("pool_count", &self.pool_len())
             .field("auto_scalers", &self.auto_scalers.len())
             .finish()
     }
@@ -1360,7 +1415,7 @@ mod tests {
         mgr.register(TestResource, config, PoolConfig::default())
             .unwrap();
         mgr.shutdown().await.unwrap();
-        assert!(mgr.pools.is_empty());
+        assert_eq!(mgr.pool_len(), 0);
     }
 
     #[tokio::test]
@@ -1590,9 +1645,9 @@ mod tests {
         );
         let state = mgr.health_states.get("db").unwrap();
         assert!(
-            matches!(state.value(), HealthState::Unhealthy { .. }),
+            matches!(state, HealthState::Unhealthy { .. }),
             "expected Unhealthy, got: {:?}",
-            state.value()
+            state
         );
     }
 
@@ -1612,7 +1667,7 @@ mod tests {
         );
 
         let app_state = mgr.health_states.get("app").unwrap();
-        match app_state.value() {
+        match &app_state {
             HealthState::Degraded { reason, .. } => {
                 assert!(
                     reason.contains("db"),
@@ -1638,7 +1693,7 @@ mod tests {
             },
         );
         assert!(matches!(
-            mgr.health_states.get("app").unwrap().value(),
+            mgr.health_states.get("app").unwrap(),
             HealthState::Degraded { .. }
         ));
 
@@ -1647,7 +1702,7 @@ mod tests {
 
         let app_state = mgr.health_states.get("app").unwrap();
         assert_eq!(
-            *app_state.value(),
+            app_state,
             HealthState::Healthy,
             "app should be cleared back to Healthy"
         );
@@ -1681,9 +1736,9 @@ mod tests {
 
         let app_state = mgr.health_states.get("app").unwrap();
         assert!(
-            matches!(app_state.value(), HealthState::Degraded { reason, .. } if reason.contains("cache")),
+            matches!(app_state, HealthState::Degraded { ref reason, .. } if reason.contains("cache")),
             "degraded state from cache should remain, got: {:?}",
-            app_state.value()
+            app_state
         );
     }
 
@@ -1714,7 +1769,7 @@ mod tests {
         );
 
         let app_state = mgr.health_states.get("app").unwrap();
-        match app_state.value() {
+        match &app_state {
             HealthState::Unhealthy { reason, .. } => {
                 assert_eq!(
                     reason, "crashed",
