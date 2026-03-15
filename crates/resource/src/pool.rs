@@ -374,6 +374,8 @@ struct LatencyRingBuffer {
     full: bool,
 }
 
+type LatencyPercentiles = (Option<u64>, Option<u64>, Option<u64>);
+
 impl std::fmt::Debug for LatencyRingBuffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LatencyRingBuffer")
@@ -477,6 +479,10 @@ struct PoolState<T> {
     stats: PoolStats,
     /// Sliding window of recent acquire latencies for percentile computation.
     latency_window: LatencyRingBuffer,
+    /// Monotonic sequence of latency-window updates.
+    latency_window_seq: u64,
+    /// Cached percentiles for the current `latency_window_seq`.
+    latency_percentiles_cache: Option<LatencyPercentiles>,
     /// Set to true after `shutdown()` to prevent Guard drops from
     /// reinserting instances into the idle queue.
     shutdown: bool,
@@ -663,6 +669,8 @@ impl<R: Resource> Pool<R> {
                         idle: VecDeque::with_capacity(max),
                         stats: PoolStats::default(),
                         latency_window: LatencyRingBuffer::default(),
+                        latency_window_seq: 0,
+                        latency_percentiles_cache: None,
                         shutdown: false,
                     },
                 )),
@@ -693,14 +701,13 @@ impl<R: Resource> Pool<R> {
                     Ok(guard) => guard,
                     Err(_) => return, // gate already closed before task started
                 };
+                let maintenance_ctx = maintenance_pool.inner.maintenance_ctx.clone();
                 loop {
                     tokio::select! {
                         () = tokio::time::sleep(interval) => {}
                         () = cancel.cancelled() => break,
                     }
-                    // Use a Global-scope context for background maintenance.
-                    let ctx = Context::new(Scope::Global, WorkflowId::nil(), ExecutionId::nil());
-                    let _ = maintenance_pool.maintain(&ctx).await;
+                    let _ = maintenance_pool.maintain(&maintenance_ctx).await;
                 }
             });
             *pool.inner.maintenance_handle.lock() = Some(handle);
@@ -787,28 +794,24 @@ impl<R: Resource> Pool<R> {
             },
         };
 
-        {
-            let wait_duration = start.elapsed();
-            match &result {
-                Ok(_) => tracing::debug!(
-                    resource_id = %self.inner.resource_key,
-                    scope = %ctx.scope,
-                    wait_ms = wait_duration.as_millis() as u64,
-                    "Acquired resource instance"
-                ),
-                Err(e) => tracing::warn!(
-                    resource_id = %self.inner.resource_key,
-                    scope = %ctx.scope,
-                    wait_ms = wait_duration.as_millis() as u64,
-                    error = %e,
-                    "Failed to acquire resource instance"
-                ),
-            }
+        let wait_duration = start.elapsed();
+        match &result {
+            Ok(_) => tracing::debug!(
+                resource_id = %self.inner.resource_key,
+                scope = %ctx.scope,
+                wait_ms = wait_duration.as_millis() as u64,
+                "Acquired resource instance"
+            ),
+            Err(e) => tracing::warn!(
+                resource_id = %self.inner.resource_key,
+                scope = %ctx.scope,
+                wait_ms = wait_duration.as_millis() as u64,
+                error = %e,
+                "Failed to acquire resource instance"
+            ),
         }
-        // Suppress unused variable warning when tracing is off
-        let _ = start;
 
-        result.map(|guard| (guard, start.elapsed()))
+        result.map(|guard| (guard, wait_duration))
     }
 
     /// Inner acquire logic, separated so `acquire` can wrap it in a
@@ -880,6 +883,8 @@ impl<R: Resource> Pool<R> {
                             state.stats.max_wait_time_ms = wait_ms;
                         }
                         state.latency_window.push(wait_ms);
+                        state.latency_window_seq = state.latency_window_seq.wrapping_add(1);
+                        state.latency_percentiles_cache = None;
                         IdleResult::Valid(entry)
                     }
                     None => IdleResult::Miss,
@@ -969,6 +974,8 @@ impl<R: Resource> Pool<R> {
                     state.stats.max_wait_time_ms = wait_ms;
                 }
                 state.latency_window.push(wait_ms);
+                state.latency_window_seq = state.latency_window_seq.wrapping_add(1);
+                state.latency_percentiles_cache = None;
             })?;
         }
         inner.active_count.fetch_add(1, Ordering::Relaxed);
@@ -1520,18 +1527,34 @@ impl<R: Resource> Pool<R> {
     #[must_use]
     pub fn stats(&self) -> PoolStats {
         // Clone stats + latency window while holding the lock, then drop the
-        // lock before the sort (up to 1024 elements) to minimise contention.
+        // lock before sorting to minimise contention on the acquire path.
         let state_lock = self.inner.state.lock();
         let Ok(data) = state_lock.try_read() else {
             return PoolStats::default();
         };
         let mut stats = data.stats.clone();
+        if let Some((p50, p95, p99)) = data.latency_percentiles_cache {
+            stats.acquire_latency_p50_ms = p50;
+            stats.acquire_latency_p95_ms = p95;
+            stats.acquire_latency_p99_ms = p99;
+            return stats;
+        }
         let latency_window = data.latency_window.clone();
+        let latency_window_seq = data.latency_window_seq;
         drop(state_lock);
+
         let (p50, p95, p99) = latency_window.percentiles(50.0, 95.0, 99.0);
         stats.acquire_latency_p50_ms = p50;
         stats.acquire_latency_p95_ms = p95;
         stats.acquire_latency_p99_ms = p99;
+
+        // Populate cache only when no concurrent updates happened since snapshot.
+        let _ = self.with_state(|state| {
+            if state.latency_window_seq == latency_window_seq {
+                state.latency_percentiles_cache = Some((p50, p95, p99));
+            }
+        });
+
         stats
     }
 

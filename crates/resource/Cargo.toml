@@ -47,6 +47,7 @@ test-case = { workspace = true }
 mockall = { workspace = true }
 tempfile = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
+console-subscriber = "0.4"
 reqwest = { workspace = true }
 url = { workspace = true }
 
@@ -56,4 +57,12 @@ harness = false
 
 [[bench]]
 name = "acquire"
+harness = false
+
+[[bench]]
+name = "acquire_paths"
+harness = false
+
+[[bench]]
+name = "acquire_contended"
 harness = false
