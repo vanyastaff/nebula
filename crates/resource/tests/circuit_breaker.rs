@@ -239,3 +239,40 @@ async fn recycle_breaker_open_skips_recycle_call() {
         "second release should skip recycle when breaker is open"
     );
 }
+
+#[tokio::test]
+async fn create_and_recycle_breakers_are_independent() {
+    // Open the recycle breaker (min_operations=1 → opens after the very first
+    // failed recycle). The create_breaker is absent, so the create path is
+    // never gated. A subsequent acquire must still succeed.
+    let recycle_cfg = CircuitBreakerConfig::new().with_min_operations(1);
+    let recycle_calls = Arc::new(AtomicU32::new(0));
+    let pool = Pool::new(
+        RecycleCountingResource::new(Arc::clone(&recycle_calls)),
+        TestConfig,
+        PoolConfig {
+            min_size: 0,
+            max_size: 2,
+            acquire_timeout: Duration::from_millis(500),
+            recycle_breaker: Some(recycle_cfg),
+            // create_breaker intentionally absent — create path must stay open.
+            ..Default::default()
+        },
+    )
+    .expect("pool created");
+
+    // First acquire + release: triggers a recycle failure, opening the recycle breaker.
+    {
+        let (_g, _) = pool.acquire(&ctx()).await.expect("first acquire ok");
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Recycle breaker is now open. The create breaker is absent, so a fresh
+    // acquire — which must create a new instance — must succeed unconditionally.
+    let result = pool.acquire(&ctx()).await;
+    assert!(
+        result.is_ok(),
+        "create path unaffected by open recycle breaker; got: {:?}",
+        result.err()
+    );
+}

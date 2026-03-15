@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Semaphore;
+use tokio::time::Duration;
 use tracing::warn;
 
 // ---------------------------------------------------------------------------
@@ -138,17 +139,17 @@ impl Gate {
         // try_acquire fails only when the semaphore is closed or has no permits.
         // Since we start with MAX_PERMITS and only close in `Gate::close`,
         // a failure here means the gate is effectively closed.
-        match self.inner.sem.try_acquire() {
-            Ok(permit) => {
+        self.inner.sem.try_acquire().map_or_else(
+            |_| Err(GateClosed),
+            |permit| {
                 // Forget the permit so its slot is not returned automatically;
                 // `GateGuard::drop` will add it back explicitly.
                 permit.forget();
                 Ok(GateGuard {
                     inner: Arc::clone(&self.inner),
                 })
-            }
-            Err(_) => Err(GateClosed),
-        }
+            },
+        )
     }
 
     /// Close the gate and wait for all outstanding guards to exit.
@@ -172,7 +173,6 @@ impl Gate {
         //
         // We use `acquire_many` in a loop with periodic progress logging to
         // avoid silent stalls during shutdown.
-        use tokio::time::Duration;
 
         loop {
             match tokio::time::timeout(

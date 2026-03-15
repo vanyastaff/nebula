@@ -278,6 +278,18 @@ impl Error {
         }
     }
 
+    /// The pool operation that was rejected by an open circuit breaker.
+    ///
+    /// Returns `Some("create")` or `Some("recycle")` for [`Error::CircuitBreakerOpen`],
+    /// and `None` for all other variants.
+    #[must_use]
+    pub fn operation(&self) -> Option<&'static str> {
+        match self {
+            Self::CircuitBreakerOpen { operation, .. } => Some(operation),
+            _ => None,
+        }
+    }
+
     /// Get the resource key associated with this error (if any).
     #[must_use]
     pub fn resource_key(&self) -> Option<&ResourceKey> {
@@ -569,5 +581,20 @@ mod tests {
         };
         assert_eq!(err.category(), ErrorCategory::Fatal);
         assert!(err.is_fatal());
+    }
+
+    #[test]
+    fn circuit_breaker_open_operation_returns_op_name() {
+        let key = ResourceKey::try_from("cache").expect("valid resource key");
+        for op in ["create", "recycle"] {
+            let err = Error::CircuitBreakerOpen {
+                resource_key: key.clone(),
+                operation: op,
+                retry_after: None,
+            };
+            assert_eq!(err.operation(), Some(op), "operation should match for {op}");
+        }
+        // Any other variant must return None.
+        assert_eq!(Error::configuration("bad").operation(), None);
     }
 }

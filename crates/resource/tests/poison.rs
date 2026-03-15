@@ -75,6 +75,24 @@ fn ctx() -> Context {
     Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
 }
 
+#[test]
+fn reentrant_arm_poisons_state() {
+    // Leave the Poison in Armed state by forgetting the guard (neither disarm
+    // nor drop runs). Then re-entering an Armed state must not succeed silently:
+    // the implementation must poison the value and return Err.
+    let mut state = Poison::new("worker", 0_i32);
+    let guard = state.check_and_arm().expect("first arm must succeed");
+    // Forget the guard: Drop won't fire, state remains Armed.
+    std::mem::forget(guard);
+    // Re-arm while Armed → must fail and transition to Poisoned.
+    let err = match state.check_and_arm() {
+        Ok(_) => panic!("re-entering an armed state must not succeed"),
+        Err(e) => e,
+    };
+    assert!(matches!(err, PoisonError::Poisoned { .. }));
+    assert!(state.is_poisoned(), "state must be poisoned after re-arm");
+}
+
 #[tokio::test]
 async fn pool_acquire_returns_internal_when_state_poisoned() {
     let pool = Pool::new(

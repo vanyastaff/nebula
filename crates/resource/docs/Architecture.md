@@ -41,6 +41,7 @@ nebula-resource/src/
 |-- error.rs            Error enum, FieldViolation, Result alias
 |
 |-- [tokio] pool.rs          Pool<R>, PoolConfig, PoolStrategy, PoolStats
+|-- [tokio] poison.rs        Poison<T> wrapper, PoisonGuard, PoisonError (panic-safe state guard)
 |-- [tokio] manager.rs       Manager, DependencyGraph, AnyGuard, ResourceHandle
 |-- [tokio] events.rs        EventBus (broadcast), ResourceEvent variants
 |-- [tokio] health.rs        HealthChecker, HealthPipeline, HealthStage trait,
@@ -106,13 +107,17 @@ Default implementations return `Ok(true)` for `is_reusable`, `Ok(())` for
 
 `Pool<R>` manages a bounded set of `R::Instance` objects. Internally:
 
-- **`PoolInner<R>`** holds `Arc<R>`, `R::Config`, `PoolConfig`, a `Mutex<PoolState<T>>`
-  (idle queue + stats + shutdown flag), a `Semaphore` (limits concurrent active
-  instances), a `Gate` (cooperative shutdown barrier from `nebula-resilience`),
-  a `CancellationToken`, and an optional `EventBus`.
+- **`PoolInner<R>`** holds `Arc<R>`, `R::Config`, `PoolConfig`, a `Mutex<Poison<PoolState<T>>>`
+  (idle queue + stats + shutdown flag, wrapped in a panic-safe `Poison<T>` guard), a
+  `Semaphore` (limits concurrent active instances), a `Gate` (cooperative shutdown barrier
+  from `nebula-resilience`), a `CancellationToken`, an optional `EventBus`, and optional
+  `CircuitBreaker` instances for the `create` and `recycle` operations.
 - **`PoolConfig`** controls: `min_size`, `max_size`, `acquire_timeout`,
   `idle_timeout`, `max_lifetime`, `validation_interval`, `maintenance_interval`,
-  and `strategy` (FIFO or LIFO).
+  `strategy` (FIFO or LIFO), `create_breaker` (optional `CircuitBreakerConfig` for
+  instance creation), and `recycle_breaker` (optional `CircuitBreakerConfig` for
+  instance recycling). Call `PoolConfig::with_standard_breakers()` to apply
+  production-ready defaults for both.
 - **`PoolStrategy`**: `Fifo` (even distribution, default) or `Lifo` (hot
   working set, lets cold instances expire).
 - **`PoolStats`**: counters for acquisitions, releases, active, idle, created,
@@ -120,6 +125,9 @@ Default implementations return `Ok(true)` for `is_reusable`, `Ok(())` for
 
 Acquire flow within the pool:
 
+0. Check the `create` circuit breaker: if it is open, return
+   `Error::CircuitBreakerOpen { operation: "create", .. }` immediately and
+   emit a `ResourceEvent::CircuitBreakerOpen` event.
 1. Acquire a semaphore permit (with `acquire_timeout`).
 2. Pop an idle entry (FIFO or LIFO per strategy).
 3. If expired -- cleanup and retry from step 2.
