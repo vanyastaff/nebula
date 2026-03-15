@@ -72,3 +72,7 @@ harness = false
 [[bench]]
 name = "acquire_contended"
 harness = false
+
+[[bench]]
+name = "manager_acquire"
+harness = false
