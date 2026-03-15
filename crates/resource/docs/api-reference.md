@@ -552,7 +552,6 @@ pub struct ResourceMetadata {
     pub key: ResourceKey,
     pub name: String,
     pub description: String,
-    pub category: Option<ResourceCategory>,
     pub icon: Option<String>,
     pub icon_url: Option<String>,
     pub tags: Vec<String>,
@@ -568,21 +567,9 @@ impl ResourceMetadata {
     // Fluent setters (consume self, return Self)
     pub fn with_icon(self, icon: impl Into<String>) -> Self;
     pub fn with_icon_url(self, icon_url: impl Into<String>) -> Self;
-    pub fn with_category(self, category: ResourceCategory) -> Self;
     pub fn with_tag(self, tag: impl Into<String>) -> Self;
     pub fn with_tags<T, I>(self, tags: I) -> Self
     where T: Into<String>, I: IntoIterator<Item = T>;
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub enum ResourceCategory {
-    Database,
-    Messaging,
-    #[default]
-    Http,
-    Bot,
-    Storage,
-    Other,
 }
 ```
 

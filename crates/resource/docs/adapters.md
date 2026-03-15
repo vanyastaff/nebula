@@ -177,7 +177,7 @@ impl std::fmt::Debug for PostgresConnection {
 // src/resource.rs
 use nebula_core::ResourceKey;
 use nebula_resource::{
-    Context, Error, Resource, ResourceMetadata, ResourceCategory, Result,
+    Context, Error, Resource, ResourceMetadata, Result,
 };
 use crate::config::PostgresConfig;
 use crate::instance::PostgresConnection;
@@ -194,7 +194,6 @@ impl Resource for PostgresResource {
             "PostgreSQL",
             "Pooled PostgreSQL connection via tokio-postgres",
         )
-        .category(ResourceCategory::Database)
         .tag("sql")
         .tag("postgres")
         .build()

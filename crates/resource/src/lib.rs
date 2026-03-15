@@ -84,7 +84,7 @@ pub use error::{Error, ErrorCategory, FieldViolation, Result};
 pub use guard::Guard;
 pub use instrumented::InstrumentedGuard;
 pub use lifecycle::Lifecycle;
-pub use metadata::{ResourceCategory, ResourceMetadata, ResourceMetadataBuilder};
+pub use metadata::{ResourceMetadata, ResourceMetadataBuilder};
 pub use reference::{ErasedResourceRef, ResourceProvider, ResourceRef};
 pub use resource::{Config, Resource};
 pub use scope::{Scope, Strategy};

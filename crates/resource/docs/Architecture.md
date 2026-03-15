@@ -139,10 +139,8 @@ nebula-resource/src/
 │                       AutoScaler — Tokio task that polls utilisation and calls
 │                       caller-provided scale_up / scale_down closures.
 │
-├── metadata.rs         ResourceMetadata — display name, description, category,
-│                       icon, icon_url, tags. ResourceMetadataBuilder.
-│                       ResourceCategory (Database / Messaging / Http /
-│                       Bot / Storage / Other).
+├── metadata.rs         ResourceMetadata — display name, description, icon,
+│                       icon_url, tags. ResourceMetadataBuilder.
 │
 ├── reference.rs        ResourceRef<R> — typed wrapper around ResourceKey.
 │                       ErasedResourceRef — type-erased version for storage.

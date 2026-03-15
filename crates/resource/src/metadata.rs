@@ -7,29 +7,9 @@
 use nebula_core::ResourceKey;
 use serde::{Deserialize, Serialize};
 
-/// High-level category for discovery and UI grouping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum ResourceCategory {
-    /// Databases (Postgres, Redis, etc.).
-    Database,
-    /// Messaging (queues, brokers).
-    Messaging,
-    /// HTTP / REST APIs.
-    #[default]
-    Http,
-    /// Bots and chat APIs (Telegram, Slack, etc.).
-    Bot,
-    /// Storage (S3, filesystem).
-    Storage,
-    /// Other / custom.
-    Other,
-}
-
 /// Static metadata describing a resource type.
 ///
-/// Used for UI (resources page name/type), discovery, and categorization.
+/// Used for UI (resources page name/type) and discovery.
 /// Provide via [`Resource::metadata`](crate::resource::Resource); default uses the key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceMetadata {
@@ -43,9 +23,6 @@ pub struct ResourceMetadata {
     pub name: String,
     /// Short description of what this resource provides.
     pub description: String,
-    /// Optional category for discovery and UI grouping.
-    #[serde(default)]
-    pub category: Option<ResourceCategory>,
     /// Optional logical icon identifier for UI (e.g. `"postgres"`, `"telegram"`).
     ///
     /// The frontend is responsible for resolving this identifier to an actual
@@ -74,20 +51,12 @@ pub struct ResourceMetadataBuilder {
     key: ResourceKey,
     name: String,
     description: String,
-    category: Option<ResourceCategory>,
     icon: Option<String>,
     icon_url: Option<String>,
     tags: Vec<String>,
 }
 
 impl ResourceMetadataBuilder {
-    /// Set the optional category.
-    #[must_use]
-    pub fn category(mut self, category: ResourceCategory) -> Self {
-        self.category = Some(category);
-        self
-    }
-
     /// Set the optional icon identifier for UI.
     #[must_use]
     pub fn icon(mut self, icon: impl Into<String>) -> Self {
@@ -127,7 +96,6 @@ impl ResourceMetadataBuilder {
             key: self.key,
             name: self.name,
             description: self.description,
-            category: self.category,
             icon: self.icon,
             icon_url: self.icon_url,
             tags: self.tags,
@@ -147,7 +115,6 @@ impl ResourceMetadata {
             key,
             name: name.into(),
             description: description.into(),
-            category: None,
             icon: None,
             icon_url: None,
             tags: Vec::new(),
@@ -162,7 +129,6 @@ impl ResourceMetadata {
             key,
             name: name.into(),
             description: description.into(),
-            category: None,
             icon: None,
             icon_url: None,
             tags: Vec::new(),
@@ -186,13 +152,6 @@ impl ResourceMetadata {
     #[must_use]
     pub fn with_icon_url(mut self, icon_url: impl Into<String>) -> Self {
         self.icon_url = Some(icon_url.into());
-        self
-    }
-
-    /// Set the optional category.
-    #[must_use]
-    pub fn with_category(mut self, category: ResourceCategory) -> Self {
-        self.category = Some(category);
         self
     }
 
@@ -242,16 +201,14 @@ mod tests {
     }
 
     #[test]
-    fn metadata_build_with_category() {
+    fn metadata_build_with_icon_and_tags() {
         let key = ResourceKey::try_from("http.client").expect("valid resource key");
         let m = ResourceMetadata::build(key.clone(), "HTTP Client", "REST API client")
-            .category(ResourceCategory::Http)
             .icon("http")
             .tag("protocol:http")
             .build();
         assert_eq!(m.key, key);
         assert_eq!(m.name, "HTTP Client");
-        assert_eq!(m.category, Some(ResourceCategory::Http));
         assert_eq!(m.icon.as_deref(), Some("http"));
         assert!(m.tags.contains(&"protocol:http".to_string()));
     }

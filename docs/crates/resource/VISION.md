@@ -61,7 +61,6 @@ impl Resource for RedisResource {
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::build("redis_cache", "Redis Cache")
             .description("Shared Redis client for caching")
-            .category(ResourceCategory::Cache)
             .tag("protocol:tcp")
             .tag("service:redis")
             .finish()
@@ -159,7 +158,6 @@ impl Resource for HttpResource {
     fn metadata(&self) -> ResourceMetadata {
         let key = ResourceKey::try_from("http.client").expect("valid key");
         ResourceMetadata::build(key, "HTTP Client", "Shared HTTP client with connection pooling and timeouts")
-            .category(ResourceCategory::Http)
             .tag("protocol:http")
             .build()
     }
@@ -245,7 +243,6 @@ impl Resource for GoogleDriveResource {
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::build("google_drive", "Google Drive")
             .description("Google Drive file operations via REST API")
-            .category(ResourceCategory::ExternalApi)
             .tag("service:google_drive")
             .tag("protocol:https")
             .finish()
@@ -328,7 +325,6 @@ impl Resource for TelegramBotResource {
     fn metadata(&self) -> ResourceMetadata {
         ResourceMetadata::build("telegram_bot", "Telegram Bot")
             .description("Telegram Bot API client")
-            .category(ResourceCategory::ExternalApi)
             .tag("service:telegram")
             .tag("protocol:https")
             .finish()
@@ -450,33 +446,13 @@ Auth is **not** a separate strategy type. Each resource uses `ctx.credentials().
 
 ## Part 3: Core Types That Make It Work
 
-### 3.1 ResourceCategory
-
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum ResourceCategory {
-    Network,
-    Database,
-    Cache,
-    Messaging,
-    Storage,
-    ExternalApi,
-    InternalService,
-    Credential,
-    Ai,
-    Other,
-}
-```
-
-### 3.2 ResourceMetadata (builder)
+### 3.1 ResourceMetadata (builder)
 
 ```rust
 pub struct ResourceMetadata {
     pub key: ResourceKey,
     pub name: String,
     pub description: String,
-    pub category: ResourceCategory,
     pub icon: Option<String>,
     pub icon_url: Option<String>,
     pub tags: Vec<String>,
@@ -488,7 +464,6 @@ impl ResourceMetadata {
             key: ResourceKey::try_from(key).expect("valid resource key"),
             name: name.to_string(),
             description: String::new(),
-            category: ResourceCategory::Other,
             icon: None,
             icon_url: None,
             tags: Vec::new(),
@@ -500,7 +475,6 @@ pub struct ResourceMetadataBuilder { /* fields */ }
 
 impl ResourceMetadataBuilder {
     pub fn description(mut self, d: impl Into<String>) -> Self { self.description = d.into(); self }
-    pub fn category(mut self, c: ResourceCategory) -> Self { self.category = c; self }
     pub fn icon(mut self, i: impl Into<String>) -> Self { self.icon = Some(i.into()); self }
     pub fn tag(mut self, t: impl Into<String>) -> Self { self.tags.push(t.into()); self }
     pub fn finish(self) -> ResourceMetadata {
@@ -508,7 +482,6 @@ impl ResourceMetadataBuilder {
             key: self.key,
             name: self.name,
             description: self.description,
-            category: self.category,
             icon: self.icon,
             icon_url: None,
             tags: self.tags,
@@ -752,7 +725,7 @@ So the effective model is layered:
 | Area | Current | Target | Breaking? |
 |------|---------|--------|-----------|
 | `Resource` trait | `impl Future` + `dependencies()` | Same `impl Future`; remove `dependencies()`; remove `key()` (derive from metadata only) | Yes (minor) |
-| `ResourceMetadata` | tags only | + `category: ResourceCategory` + builder pattern | Yes (new field) |
+| `ResourceMetadata` | tags only | Keep builder pattern and icon metadata; discovery stays tag-driven | No |
 | `Manager` | `acquire` returns `AnyGuard` | + `with_resource` (scoped) | No (additive) |
 | `ResourceAccessor` | Does not exist | New type bridging Manager into ActionContext | No (additive) |
 | `AuthStrategy` | Does not exist | New enum for common auth patterns | No (additive) |
@@ -789,6 +762,6 @@ So the effective model is layered:
 | **Performance** | Pool with Semaphore + VecDeque, zero alloc on hot path, interceptors are stack-local |
 | **Safety** | Scope enforcement, RAII guard, credentials never in Config, non_exhaustive enums |
 | **Extensibility** | InterceptorChain for per-call hooks, AuthStrategy for auth patterns, Deps for dependency graph |
-| **Discoverability** | ResourceCategory enum, stable tag vocabulary, metadata as passport for UI/API/AI |
+| **Discoverability** | Stable tag vocabulary and metadata as passport for UI/API/AI |
 | **AI-friendliness** | One pattern for all resources, predictable names, machine-readable metadata |
 | **Longevity** | `impl Future` (stable Rust), `#[non_exhaustive]`, CONTRACT.md, single facade via SDK |

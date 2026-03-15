@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
-use nebula_resource::metadata::{ResourceCategory, ResourceMetadata};
+use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -180,7 +180,6 @@ impl Resource for HttpResource {
             "HTTP Client",
             "Shared HTTP client with connection pooling and timeouts",
         )
-        .category(ResourceCategory::Http)
         .icon("http")
         .tag("category:network")
         .tag("protocol:http")

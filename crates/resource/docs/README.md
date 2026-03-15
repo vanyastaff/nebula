@@ -81,7 +81,6 @@ impl Resource for HttpResource {
             "HTTP Client",
             "Reusable reqwest client for outbound HTTP calls",
         )
-        .category(nebula_resource::metadata::ResourceCategory::Http)
         .tag("http")
         .build()
     }
