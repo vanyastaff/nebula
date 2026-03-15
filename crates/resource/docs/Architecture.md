@@ -108,7 +108,8 @@ Default implementations return `Ok(true)` for `is_reusable`, `Ok(())` for
 
 - **`PoolInner<R>`** holds `Arc<R>`, `R::Config`, `PoolConfig`, a `Mutex<PoolState<T>>`
   (idle queue + stats + shutdown flag), a `Semaphore` (limits concurrent active
-  instances), a `CancellationToken`, and an optional `EventBus`.
+  instances), a `Gate` (cooperative shutdown barrier from `nebula-resilience`),
+  a `CancellationToken`, and an optional `EventBus`.
 - **`PoolConfig`** controls: `min_size`, `max_size`, `acquire_timeout`,
   `idle_timeout`, `max_lifetime`, `validation_interval`, `maintenance_interval`,
   and `strategy` (FIFO or LIFO).
@@ -134,8 +135,17 @@ Release flow (`return_instance`):
 3. Otherwise call `Resource::cleanup()` and destroy.
 4. Update stats, emit Released event, return semaphore permit.
 
+Shutdown flow (`Pool::shutdown()`):
+
+1. Call `gate.close().await` -- rejects new `enter()` calls and waits for all
+   outstanding `GateGuard`s (i.e. the maintenance task) to be dropped.
+2. Close the semaphore, draining idle entries and calling `Resource::cleanup()`
+   on each.
+
 Optional background maintenance task (if `maintenance_interval` is set) runs
-`maintain()` on a timer with cancellation support.
+`maintain()` on a timer with cancellation support. The task holds a `GateGuard`
+for its lifetime so that `Pool::shutdown()` — which calls `gate.close().await`
+before closing the semaphore — cannot complete until the maintenance loop exits.
 
 ### Manager (`manager.rs`)
 
