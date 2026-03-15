@@ -723,7 +723,7 @@ impl Manager {
                     .await;
 
                 // Run Release hooks when the guard is dropped.
-                let release_resource_id = id.to_string();
+                let release_resource_id = resource_key.clone();
                 let release_hooks = self.hooks_ref();
                 let release_bus = Arc::clone(&self.event_bus);
                 let release_ctx = ctx.clone();
@@ -802,7 +802,7 @@ impl Manager {
     fn wrap_guard_with_release_hook(
         &self,
         inner: AnyGuard,
-        resource_id: String,
+        resource_id: ResourceKey,
         hooks: SmallVec<[Arc<dyn crate::hooks::ResourceHook>; HOOKS_INLINE]>,
         event_bus: Arc<EventBus>,
         ctx: Context,

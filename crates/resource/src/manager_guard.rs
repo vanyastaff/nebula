@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 
+use nebula_core::ResourceKey;
+
 use crate::context::Context;
 use crate::events::EventBus;
 use crate::hooks::{HookEvent, HOOKS_INLINE};
@@ -159,7 +161,7 @@ impl<T: Send + Sync + 'static> std::fmt::Debug for TypedResourceGuard<T> {
 /// `release()` method instead of relying on guard drop.
 pub(crate) struct ReleaseHookGuard {
     pub(crate) inner: Option<AnyGuard>,
-    pub(crate) resource_id: String,
+    pub(crate) resource_id: ResourceKey,
     pub(crate) hooks: SmallVec<[Arc<dyn crate::hooks::ResourceHook>; HOOKS_INLINE]>,
     pub(crate) event_bus: Arc<EventBus>,
     pub(crate) ctx: Context,
@@ -203,11 +205,10 @@ impl Drop for ReleaseHookGuard {
         // Fire Release hooks in a spawned task since Drop is sync.
         tokio::spawn(async move {
             // Run before-hooks for Release (result ignored — can't cancel a drop).
+            let id = resource_id.as_ref();
             for hook in &hooks {
-                if hook.events().contains(&HookEvent::Release)
-                    && hook.filter().matches(&resource_id)
-                {
-                    let _ = hook.before(&HookEvent::Release, &resource_id, &ctx).await;
+                if hook.events().contains(&HookEvent::Release) && hook.filter().matches(id) {
+                    let _ = hook.before(&HookEvent::Release, id, &ctx).await;
                 }
             }
 
@@ -216,11 +217,8 @@ impl Drop for ReleaseHookGuard {
 
             // Run after-hooks for Release.
             for hook in &hooks {
-                if hook.events().contains(&HookEvent::Release)
-                    && hook.filter().matches(&resource_id)
-                {
-                    hook.after(&HookEvent::Release, &resource_id, &ctx, true)
-                        .await;
+                if hook.events().contains(&HookEvent::Release) && hook.filter().matches(id) {
+                    hook.after(&HookEvent::Release, id, &ctx, true).await;
                 }
             }
 
