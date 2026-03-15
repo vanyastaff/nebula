@@ -59,7 +59,9 @@ When `maintenance_interval` is set, the pool spawns a background task that:
 1. **Evicts** idle instances that exceed `idle_timeout` or `max_lifetime`
 2. **Replenishes** the pool back to `min_size` if total instances (idle + active) have fallen below it
 
-The task is cancelled automatically on `pool.shutdown()`.
+The task holds a `GateGuard` (from `nebula-resilience`) for its entire lifetime.
+`pool.shutdown()` calls `gate.close().await`, which blocks until the maintenance
+task releases its guard, guaranteeing clean teardown before the semaphore is closed.
 
 ```rust
 let config = PoolConfig {
@@ -171,9 +173,45 @@ Events emitted by the pool:
 ## Shutdown
 
 Call `pool.shutdown()` to:
-1. Cancel the maintenance background task
-2. Close the semaphore (new acquires fail immediately with `Error::Internal`)
-3. Clean up all idle instances via `Resource::cleanup()`
-4. Mark the pool as shut down so any in-flight guards clean up their instances on drop instead of returning them to idle
+1. Call `gate.close().await` — signals shutdown to new callers (`enter()` returns `GateClosed`)
+   and waits for the maintenance task to drop its `GateGuard` before proceeding.
+2. Close the semaphore (new acquires fail immediately with `Error::Internal`).
+3. Clean up all idle instances via `Resource::cleanup()`.
+4. Mark the pool as shut down so any in-flight guards clean up their instances on drop
+   instead of returning them to idle.
 
 When using `Manager`, `manager.shutdown()` shuts down all pools in reverse dependency order.
+
+## Poison Protection
+
+The pool's internal `PoolState` (idle queue + stats) is wrapped in `Poison<T>` from
+`crates/resource/src/poison.rs`. This guards against corrupt state if a mutation is
+interrupted by a panic or unexpected early return.
+
+```rust
+use nebula_resource::poison::Poison;
+
+let mut protected = Poison::new("pool_state", MyState::default());
+
+// Before mutating:
+let mut guard = protected.check_and_arm()?;  // Err(PoisonError::Poisoned) if already poisoned
+guard.data_mut().do_something();
+guard.disarm();  // mark critical section as successfully completed
+// Dropping guard without disarm() poisons the value permanently.
+```
+
+| Method | Description |
+|---|---|
+| `Poison::new(label, data)` | Wrap a value; initial state is `Clean` |
+| `check_and_arm()` | Returns `PoisonGuard` or `Err(PoisonError::Poisoned)` if already poisoned |
+| `PoisonGuard::data_mut()` | `&mut T` access inside the critical section |
+| `PoisonGuard::disarm()` | Marks section complete; state returns to `Clean` |
+| `Poison::is_poisoned()` | `true` if the value was poisoned and must not be reused |
+
+A value becomes poisoned when:
+- A `PoisonGuard` is dropped without calling `disarm()` (e.g. due to a panic).
+- `check_and_arm()` is called on an already-`Armed` value (re-entrant mutation detected).
+
+Once poisoned, all subsequent `check_and_arm()` calls return `Err(PoisonError::Poisoned)`
+with the timestamp of the poisoning event. Pool operations that encounter a poisoned
+state propagate the error rather than operating on potentially corrupt data.
