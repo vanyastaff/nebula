@@ -15,13 +15,12 @@ use crate::plugin_type::PluginType;
 /// shared across threads.
 ///
 /// ```
-/// use nebula_plugin::{PluginRegistry, PluginType, PluginMetadata, Plugin, PluginComponents};
+/// use nebula_plugin::{PluginRegistry, PluginType, PluginMetadata, Plugin};
 ///
 /// #[derive(Debug)]
 /// struct EchoPlugin(PluginMetadata);
 /// impl Plugin for EchoPlugin {
 ///     fn metadata(&self) -> &PluginMetadata { &self.0 }
-///     fn register(&self, _components: &mut PluginComponents) {}
 /// }
 ///
 /// let mut registry = PluginRegistry::new();
@@ -143,8 +142,6 @@ mod tests {
         fn metadata(&self) -> &PluginMetadata {
             &self.0
         }
-
-        fn register(&self, _components: &mut crate::PluginComponents) {}
     }
 
     fn make_type(key: &str) -> PluginType {

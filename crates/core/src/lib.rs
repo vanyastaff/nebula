@@ -73,8 +73,8 @@ pub mod prelude {
     pub use crate::types::{InterfaceVersion, ProjectType, RoleScope};
     pub use domain_key::{KeyParseError, UuidParseError};
 
-    // Dependency graph primitives
-    pub use crate::deps::{Dependency, DependencyError, DependencyKind, FromRegistry, Requires};
+    // Dependency error type
+    pub use crate::deps::DependencyError;
 
     // Core result alias
     pub use crate::Result;

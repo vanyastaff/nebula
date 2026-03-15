@@ -33,9 +33,10 @@
 //!
 //! struct MyAction { meta: ActionMetadata }
 //!
+//! impl ActionDependencies for MyAction {}
+//!
 //! impl Action for MyAction {
 //!     fn metadata(&self) -> &ActionMetadata { &self.meta }
-//!     fn components(&self) -> ActionComponents { ActionComponents::new() }
 //! }
 //!
 //! impl StatelessAction for MyAction {
@@ -57,6 +58,8 @@
 pub mod action;
 /// Ergonomic authoring helpers for low-boilerplate actions.
 pub mod authoring;
+/// Declarative dependency declaration for actions.
+pub mod dependency;
 /// Capability interfaces injected into contexts (resources, credentials, logger).
 pub mod capability;
 /// Action component collection for dependency declarations.
@@ -87,6 +90,7 @@ pub mod validation;
 // ── Public re-exports ───────────────────────────────────────────────────────
 
 pub use action::Action;
+pub use dependency::ActionDependencies;
 pub use authoring::{FnStatelessAction, stateless_fn};
 pub use capability::{
     ActionLogLevel, ActionLogger, CredentialAccessor, ExecutionEmitter, ResourceAccessor,

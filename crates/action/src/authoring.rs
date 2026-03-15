@@ -6,15 +6,15 @@ use std::future::Future;
 use std::marker::PhantomData;
 
 use crate::{
-    Action, ActionComponents, ActionError, ActionMetadata, ActionResult, Context, StatelessAction,
+    Action, ActionError, ActionMetadata, ActionResult, Context, StatelessAction,
 };
+use crate::dependency::ActionDependencies;
 
 /// Stateless action adapter backed by an async function/closure.
 ///
 /// This removes boilerplate for the common "pure stateless transform" case.
 pub struct FnStatelessAction<F, Input, Output> {
     metadata: ActionMetadata,
-    components: ActionComponents,
     func: F,
     _marker: PhantomData<fn(Input) -> Output>,
 }
@@ -25,18 +25,18 @@ impl<F, Input, Output> FnStatelessAction<F, Input, Output> {
     pub fn new(metadata: ActionMetadata, func: F) -> Self {
         Self {
             metadata,
-            components: ActionComponents::new(),
             func,
             _marker: PhantomData,
         }
     }
+}
 
-    /// Attach declared components to the generated action.
-    #[must_use]
-    pub fn with_components(mut self, components: ActionComponents) -> Self {
-        self.components = components;
-        self
-    }
+impl<F, Input, Output> ActionDependencies for FnStatelessAction<F, Input, Output>
+where
+    F: Send + Sync + 'static,
+    Input: Send + Sync + 'static,
+    Output: Send + Sync + 'static,
+{
 }
 
 impl<F, Input, Output> Action for FnStatelessAction<F, Input, Output>
@@ -47,10 +47,6 @@ where
 {
     fn metadata(&self) -> &ActionMetadata {
         &self.metadata
-    }
-
-    fn components(&self) -> ActionComponents {
-        self.components.clone()
     }
 }
 

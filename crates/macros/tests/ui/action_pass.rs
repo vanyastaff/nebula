@@ -44,8 +44,11 @@ pub struct SlackSendAction;
 pub struct DbQueryAction;
 
 // Credential and resource types for component tests
+#[derive(Default)]
 pub struct SlackOAuthCredential;
+#[derive(Default)]
 pub struct PostgresDb;
+#[derive(Default)]
 pub struct RedisCache;
 
 fn main() {
@@ -57,9 +60,10 @@ fn main() {
 
     let slack = SlackSendAction;
     let _ = slack.metadata();
-    let _ = slack.components();
 
     let db = DbQueryAction;
     let _ = db.metadata();
-    let _ = db.components();
+    // Verify ActionDependencies methods exist
+    let _ = DbQueryAction::credential();
+    let _ = DbQueryAction::resources();
 }

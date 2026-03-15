@@ -24,8 +24,8 @@ use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
 use nebula_resource::{
-    Manager, TypedPool,
-    components::{HasResourceComponents, ResourceComponents, TypedCredentialHandler},
+    Manager, ResourceDependencies, TypedPool,
+    components::{ResourceComponents, TypedCredentialHandler},
 };
 use std::sync::Arc;
 
@@ -114,14 +114,7 @@ impl Resource for HotSwapResource {
     }
 }
 
-impl HasResourceComponents for HotSwapResource {
-    fn components() -> ResourceComponents
-    where
-        Self: Sized,
-    {
-        ResourceComponents::new().credential::<TestCred>("550e8400-e29b-41d4-a716-446655440000")
-    }
-}
+impl ResourceDependencies for HotSwapResource {}
 
 // ---------------------------------------------------------------------------
 // DrainAndRecreate resource
@@ -170,14 +163,7 @@ impl Resource for DrainResource {
     }
 }
 
-impl HasResourceComponents for DrainResource {
-    fn components() -> ResourceComponents
-    where
-        Self: Sized,
-    {
-        ResourceComponents::new().credential::<TestCred>("550e8400-e29b-41d4-a716-446655440000")
-    }
-}
+impl ResourceDependencies for DrainResource {}
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -78,7 +78,7 @@ pub use nebula_credential::{
 };
 
 // Plugin types
-pub use nebula_plugin::{Plugin, PluginComponents, PluginMetadata};
+pub use nebula_plugin::{Plugin, PluginMetadata};
 
 // Macros
 pub use nebula_macros::{Action, Credential, Parameters, Plugin, Resource, Validator};

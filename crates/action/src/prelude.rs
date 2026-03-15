@@ -5,6 +5,7 @@
 //! ```
 
 pub use crate::action::Action;
+pub use crate::dependency::ActionDependencies;
 pub use crate::authoring::{FnStatelessAction, stateless_fn};
 pub use crate::capability::{
     ActionLogLevel, ActionLogger, CredentialAccessor, ExecutionEmitter, ResourceAccessor,

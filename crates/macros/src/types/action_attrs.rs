@@ -126,40 +126,60 @@ impl ActionAttrs {
         }
     }
 
-    /// Generate `ActionComponents` expression.
-    pub fn components_expr(&self) -> TokenStream2 {
-        let cred_refs: Vec<TokenStream2> = self
-            .all_credentials()
-            .iter()
-            .map(|ty| quote! { ::nebula_credential::CredentialRef::<#ty>::of() })
-            .collect();
+    /// Generate `ActionDependencies` impl expression.
+    ///
+    /// Produces an `impl ActionDependencies for StructName { ... }` block
+    /// with `credential()` and `resources()` overrides when attributes specify them.
+    pub fn dependencies_impl_expr(
+        &self,
+        struct_name: &Ident,
+        impl_generics: &syn::ImplGenerics<'_>,
+        ty_generics: &syn::TypeGenerics<'_>,
+        where_clause: Option<&syn::WhereClause>,
+    ) -> TokenStream2 {
+        let all_creds = self.all_credentials();
+        let all_res = self.all_resources();
 
-        let res_refs: Vec<TokenStream2> = self
-            .all_resources()
-            .iter()
-            .map(|ty| quote! { ::nebula_resource::ResourceRef::<#ty>::of() })
-            .collect();
-
-        let has_creds = !cred_refs.is_empty();
-        let has_res = !res_refs.is_empty();
-
-        if !has_creds && !has_res {
-            quote! { ::nebula_action::ActionComponents::new() }
-        } else if has_creds && !has_res {
-            quote! {
-                ::nebula_action::ActionComponents::new()
-                    #(.credential(#cred_refs))*
-            }
-        } else if !has_creds && has_res {
-            quote! {
-                ::nebula_action::ActionComponents::new()
-                    #(.resource(#res_refs))*
-            }
+        let credential_method = if all_creds.is_empty() {
+            quote! {}
         } else {
+            // Only take the first credential type (single credential per action)
+            let ty = all_creds[0];
             quote! {
-                ::nebula_action::ActionComponents::new()
-                    #(.credential(#cred_refs))*
-                    #(.resource(#res_refs))*
+                fn credential() -> ::std::option::Option<::std::boxed::Box<dyn ::nebula_credential::AnyCredential>>
+                where
+                    Self: Sized,
+                {
+                    Some(::std::boxed::Box::new(<#ty as ::std::default::Default>::default()))
+                }
+            }
+        };
+
+        let resources_method = if all_res.is_empty() {
+            quote! {}
+        } else {
+            let res_exprs: Vec<TokenStream2> = all_res
+                .iter()
+                .map(|ty| {
+                    quote! {
+                        ::std::boxed::Box::new(<#ty as ::std::default::Default>::default()) as ::std::boxed::Box<dyn ::nebula_resource::AnyResource>
+                    }
+                })
+                .collect();
+            quote! {
+                fn resources() -> ::std::vec::Vec<::std::boxed::Box<dyn ::nebula_resource::AnyResource>>
+                where
+                    Self: Sized,
+                {
+                    vec![ #(#res_exprs),* ]
+                }
+            }
+        };
+
+        quote! {
+            impl #impl_generics ::nebula_action::ActionDependencies for #struct_name #ty_generics #where_clause {
+                #credential_method
+                #resources_method
             }
         }
     }

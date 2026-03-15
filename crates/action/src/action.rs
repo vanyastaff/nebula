@@ -1,4 +1,4 @@
-use crate::components::ActionComponents;
+use crate::dependency::ActionDependencies;
 use crate::metadata::ActionMetadata;
 
 /// Base trait for all action types.
@@ -11,10 +11,11 @@ use crate::metadata::ActionMetadata;
 ///
 /// This trait is object-safe and can be used as `dyn Action`.
 /// The engine stores actions as `Arc<dyn Action>` in the registry.
-pub trait Action: Send + Sync + 'static {
+///
+/// Note: [`ActionDependencies`] methods (`credential()`, `resources()`) use
+/// `where Self: Sized` and are therefore not part of the vtable. They are
+/// called at registration time on concrete types only.
+pub trait Action: ActionDependencies + Send + Sync + 'static {
     /// Static metadata describing this action type.
     fn metadata(&self) -> &ActionMetadata;
-
-    /// Components required by this action.
-    fn components(&self) -> ActionComponents;
 }

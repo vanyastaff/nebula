@@ -110,14 +110,14 @@ impl TriggerCtx {
         self.state.uuid_for_env(&self.env)
     }
 
-    /// Get the cancellation token
-    pub fn cancellation(&self) -> &CancellationToken {
-        &self.base.cancellation
+    /// Get the cancellation token, if one is set.
+    pub fn cancellation(&self) -> Option<&CancellationToken> {
+        self.base.cancellation.as_ref()
     }
 
-    /// Check if the operation is cancelled
+    /// Check if the operation is cancelled.
     pub fn is_cancelled(&self) -> bool {
-        self.base.cancellation.is_cancelled()
+        self.base.cancellation.as_ref().is_some_and(|t| t.is_cancelled())
     }
 
     /// Get the workflow ID
@@ -140,9 +140,13 @@ impl TriggerCtx {
         self.base.tenant_id.as_deref()
     }
 
-    /// Create a child cancellation token
+    /// Create a child cancellation token, or a new root token if none is set.
     pub fn child_cancellation(&self) -> CancellationToken {
-        self.base.cancellation.child_token()
+        self.base
+            .cancellation
+            .as_ref()
+            .map(|t| t.child_token())
+            .unwrap_or_default()
     }
 
     /// Switch to a different environment
@@ -265,7 +269,7 @@ mod tests {
     #[test]
     fn test_cancellation() {
         let base = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
-        base.cancellation.cancel();
+        base.cancellation.as_ref().unwrap().cancel();
 
         let state = Arc::new(TriggerState::new("test-trigger"));
         let ctx = TriggerCtx::new(

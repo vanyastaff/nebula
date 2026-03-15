@@ -21,7 +21,6 @@ use serde::de::{Deserialize, DeserializeOwned};
 
 use crate::pool::CredentialHandler;
 use crate::reference::ErasedResourceRef;
-use crate::resource::Resource;
 
 /// Dependency declaration for a resource type: an optional credential and a list of
 /// sub-resource references.
@@ -82,7 +81,7 @@ impl ResourceComponents {
     /// [`DependencyGraph`]: crate::manager::DependencyGraph
     /// [`ResourceKey`]: nebula_core::ResourceKey
     /// [`credential`]: Self::credential
-    pub fn resource<R: Resource>(mut self, key: &str) -> Self {
+    pub fn resource<R>(mut self, key: &str) -> Self {
         let key = nebula_core::ResourceKey::new(key).expect(
             "invalid resource key in HasResourceComponents::components() (expected literal key)",
         );
@@ -113,34 +112,6 @@ impl ResourceComponents {
     }
 }
 
-/// Implemented on a [`Resource`] factory to declare its credential and sub-resource
-/// dependencies.
-///
-/// The manager calls `components()` once at registration time. Implement this trait
-/// when your resource requires a credential (for rotation support) or depends on
-/// another resource being available first (for dependency-ordered startup).
-///
-/// # Example
-///
-/// ```rust,ignore
-/// impl HasResourceComponents for MyDbResource {
-///     fn components() -> ResourceComponents {
-///         ResourceComponents::new()
-///             .credential::<DatabaseCredential>("550e8400-e29b-41d4-a716-446655440000")
-///             .resource::<CacheResource>("cache")
-///     }
-/// }
-/// ```
-pub trait HasResourceComponents: Resource {
-    /// Declares credential and sub-resource dependencies for this resource.
-    ///
-    /// The manager uses this to build the dependency graph, attach a credential
-    /// handler to the pool, and (when wired) inject sub-resource handles into
-    /// the context before `Resource::create()`.
-    fn components() -> ResourceComponents
-    where
-        Self: Sized;
-}
 
 // ---------------------------------------------------------------------------
 // TypedCredentialHandler — bridge from erased pool to CredentialResource

@@ -51,6 +51,14 @@ impl Default for ActionComponents {
     }
 }
 
+pub trait AnyCredential: std::any::Any + Send + Sync + 'static {}
+
+pub trait AnyResource: std::any::Any + Send + Sync + 'static {}
+
+// Blanket impls so marker types in test code satisfy macro-generated bounds.
+impl<T: std::any::Any + Send + Sync + 'static> AnyCredential for T {}
+impl<T: std::any::Any + Send + Sync + 'static> AnyResource for T {}
+
 pub struct CredentialRef<C>(std::marker::PhantomData<C>);
 
 impl<C: 'static> CredentialRef<C> {
@@ -67,9 +75,24 @@ impl<R: 'static> ResourceRef<R> {
     }
 }
 
-pub trait Action: Send + Sync + 'static {
+pub trait ActionDependencies {
+    fn credential() -> ::std::option::Option<::std::boxed::Box<dyn AnyCredential>>
+    where
+        Self: Sized,
+    {
+        None
+    }
+
+    fn resources() -> ::std::vec::Vec<::std::boxed::Box<dyn AnyResource>>
+    where
+        Self: Sized,
+    {
+        vec![]
+    }
+}
+
+pub trait Action: ActionDependencies + Send + Sync + 'static {
     fn metadata(&self) -> &crate::metadata::ActionMetadata;
-    fn components(&self) -> ActionComponents;
 }
 
 pub struct PluginComponents;
@@ -111,7 +134,6 @@ impl PluginMetadataBuilder {
 
 pub trait Plugin: Send + Sync + 'static {
     fn metadata(&self) -> &PluginMetadata;
-    fn register(&self, components: &mut PluginComponents);
 }
 
 pub mod context {

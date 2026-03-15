@@ -8,6 +8,7 @@ use crate::PluginError;
 use crate::plugin::Plugin;
 use crate::versions::PluginVersions;
 
+
 /// Wraps either a single plugin instance or a multi-version container.
 pub enum PluginType {
     /// A single, non-versioned plugin.
@@ -116,10 +117,6 @@ impl Plugin for ArcPlugin {
     fn metadata(&self) -> &crate::PluginMetadata {
         self.0.metadata()
     }
-
-    fn register(&self, components: &mut crate::PluginComponents) {
-        self.0.register(components)
-    }
 }
 
 #[cfg(test)]
@@ -133,8 +130,6 @@ mod tests {
         fn metadata(&self) -> &PluginMetadata {
             &self.0
         }
-
-        fn register(&self, _components: &mut crate::PluginComponents) {}
     }
 
     fn stub(key: &str, version: u32) -> StubPlugin {

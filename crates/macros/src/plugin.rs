@@ -43,8 +43,6 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                 static METADATA: OnceLock<::nebula_plugin::PluginMetadata> = OnceLock::new();
                 METADATA.get_or_init(|| #metadata_expr)
             }
-
-            fn register(&self, _components: &mut ::nebula_plugin::PluginComponents) {}
         }
     };
 

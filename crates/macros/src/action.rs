@@ -1,6 +1,6 @@
 //! Action derive macro.
 //!
-//! Generates `Action` trait impl with `metadata()` and `components()`.
+//! Generates `ActionDependencies` and `Action` trait impls with `metadata()`.
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -35,19 +35,17 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
     let attrs = ActionAttrs::parse(&attr_args, struct_name, description_fallback)?;
 
     let metadata_init = attrs.metadata_init_expr();
-    let components_expr = attrs.components_expr();
+    let dependencies_impl = attrs.dependencies_impl_expr(struct_name, &impl_generics, &ty_generics, where_clause);
 
     let expanded = quote! {
+        #dependencies_impl
+
         impl #impl_generics ::nebula_action::Action for #struct_name #ty_generics #where_clause {
             fn metadata(&self) -> &::nebula_action::metadata::ActionMetadata {
                 use ::std::sync::OnceLock;
 
                 static METADATA: OnceLock<::nebula_action::metadata::ActionMetadata> = OnceLock::new();
                 METADATA.get_or_init(|| #metadata_init)
-            }
-
-            fn components(&self) -> ::nebula_action::ActionComponents {
-                #components_expr
             }
         }
     };

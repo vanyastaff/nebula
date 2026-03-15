@@ -48,6 +48,8 @@
 #![deny(unsafe_code)]
 #![forbid(unsafe_code)]
 
+/// Object-safe supertrait for credential dependency declaration.
+pub mod any;
 /// Core types, errors, and primitives
 pub mod core;
 /// Credential manager - high-level API for credential operations
@@ -65,6 +67,9 @@ pub mod utils;
 
 // ── Root re-exports ─────────────────────────────────────────────────────────
 // Commonly-used types available directly as `nebula_credential::TypeName`.
+
+// Any-credential object-safe supertrait
+pub use crate::any::AnyCredential;
 
 // Core types & errors
 pub use crate::core::reference::ErasedCredentialRef;

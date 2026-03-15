@@ -5,9 +5,10 @@
 //! responsibility via tokio::select!).
 
 use nebula_action::{
-    Action, ActionComponents, ActionContext, ActionMetadata, ActionOutput, ActionResult,
-    BreakReason, StatefulAction, StatelessAction, TriggerAction, TriggerContext,
+    Action, ActionContext, ActionMetadata, ActionOutput, ActionResult, BreakReason, StatefulAction,
+    StatelessAction, TriggerAction, TriggerContext,
 };
+use nebula_action::dependency::ActionDependencies;
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 use tokio_util::sync::CancellationToken;
 
@@ -17,12 +18,11 @@ struct EchoAction {
     meta: ActionMetadata,
 }
 
+impl ActionDependencies for EchoAction {}
+
 impl Action for EchoAction {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
-    }
-    fn components(&self) -> ActionComponents {
-        ActionComponents::new()
     }
 }
 
@@ -67,12 +67,11 @@ struct CounterAction {
     meta: ActionMetadata,
 }
 
+impl ActionDependencies for CounterAction {}
+
 impl Action for CounterAction {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
-    }
-    fn components(&self) -> ActionComponents {
-        ActionComponents::new()
     }
 }
 
@@ -152,12 +151,11 @@ struct NoOpTrigger {
     meta: ActionMetadata,
 }
 
+impl ActionDependencies for NoOpTrigger {}
+
 impl Action for NoOpTrigger {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
-    }
-    fn components(&self) -> ActionComponents {
-        ActionComponents::new()
     }
 }
 

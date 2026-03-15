@@ -4,22 +4,18 @@ use std::fmt::Debug;
 
 use nebula_core::PluginKey;
 
-use crate::PluginComponents;
 use crate::PluginMetadata;
 
 /// Base trait for all plugin types in Nebula.
 ///
 /// A plugin is a user-visible, versionable packaging unit (e.g. "Slack",
-/// "HTTP Request"). It provides metadata and declares components (refs) via
-/// [`PluginComponents`].
+/// "HTTP Request"). It provides metadata describing the plugin's identity
+/// and version.
 ///
 /// This trait is **object-safe** so plugins can be stored as `Arc<dyn Plugin>`.
 pub trait Plugin: Send + Sync + Debug + 'static {
     /// Returns the static metadata for this plugin.
     fn metadata(&self) -> &PluginMetadata;
-
-    /// Declare component refs (credentials, resources, actions) into `components`.
-    fn register(&self, components: &mut PluginComponents);
 
     /// The normalized, unique key identifying this plugin type.
     fn key(&self) -> &PluginKey {
@@ -50,10 +46,6 @@ mod tests {
     impl Plugin for TestPlugin {
         fn metadata(&self) -> &PluginMetadata {
             &self.meta
-        }
-
-        fn register(&self, _components: &mut PluginComponents) {
-            // No actions to register in the test stub.
         }
     }
 

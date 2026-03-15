@@ -62,6 +62,8 @@ pub mod reference;
 pub mod resource;
 pub mod scope;
 
+pub mod any;
+pub mod dependency;
 pub(crate) mod dependency_graph;
 pub mod instrumented;
 pub(crate) mod manager_guard;
@@ -78,7 +80,9 @@ pub mod poison;
 pub mod pool;
 pub mod quarantine;
 
-pub use components::{HasResourceComponents, ResourceComponents, TypedCredentialHandler};
+pub use any::AnyResource;
+pub use components::{ResourceComponents, TypedCredentialHandler};
+pub use dependency::ResourceDependencies;
 pub use context::{Context, ResourcePoolHandle};
 pub use error::{Error, ErrorCategory, FieldViolation, Result};
 pub use guard::Guard;
@@ -129,7 +133,9 @@ pub use nebula_core::{ExecutionId, PluginKey, ResourceId, ResourceKey, WorkflowI
 /// use nebula_resource::prelude::*;
 /// ```
 pub mod prelude {
-    pub use crate::components::{HasResourceComponents, ResourceComponents};
+    pub use crate::any::AnyResource;
+    pub use crate::components::ResourceComponents;
+    pub use crate::dependency::ResourceDependencies;
     pub use crate::context::Context;
     pub use crate::error::{Error, ErrorCategory, Result};
     pub use crate::guard::Guard;

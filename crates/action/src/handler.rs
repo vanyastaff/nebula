@@ -109,8 +109,8 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use crate::action::Action;
-    use crate::components::ActionComponents;
     use crate::context::Context;
+    use crate::dependency::ActionDependencies;
     use crate::execution::StatelessAction;
     use crate::metadata::ActionMetadata;
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
@@ -142,12 +142,11 @@ mod tests {
         }
     }
 
+    impl ActionDependencies for AddAction {}
+
     impl Action for AddAction {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
-        }
-        fn components(&self) -> ActionComponents {
-            ActionComponents::new()
         }
     }
 

@@ -15,13 +15,12 @@ use crate::plugin::Plugin;
 /// have a matching key.
 ///
 /// ```
-/// use nebula_plugin::{PluginVersions, PluginMetadata, Plugin, PluginComponents};
+/// use nebula_plugin::{PluginVersions, PluginMetadata, Plugin};
 ///
 /// #[derive(Debug)]
 /// struct MyPlugin(PluginMetadata);
 /// impl Plugin for MyPlugin {
 ///     fn metadata(&self) -> &PluginMetadata { &self.0 }
-///     fn register(&self, _components: &mut PluginComponents) {}
 /// }
 ///
 /// let mut versions = PluginVersions::new();
@@ -154,8 +153,6 @@ mod tests {
         fn metadata(&self) -> &PluginMetadata {
             &self.0
         }
-
-        fn register(&self, _components: &mut crate::PluginComponents) {}
     }
 
     fn stub(key: &str, version: u32) -> StubPlugin {
