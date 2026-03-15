@@ -17,7 +17,6 @@ default = []
 [dependencies]
 # Nebula ecosystem
 nebula-core = { path = "../core" }
-nebula-credential = { path = "../credential" }
 nebula-eventbus = { path = "../eventbus" }
 nebula-metrics = { path = "../metrics" }
 nebula-telemetry = { path = "../telemetry" }

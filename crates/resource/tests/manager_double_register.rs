@@ -12,7 +12,6 @@ use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::manager::Manager;
-use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -49,8 +48,8 @@ impl TaggedResource {
 impl Resource for TaggedResource {
     type Config = TaggedConfig;
     type Instance = String;
-    fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::from_key(ResourceKey::try_from("db").expect("valid"))
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from("db").expect("valid")
     }
 
     async fn create(&self, config: &TaggedConfig, _ctx: &Context) -> Result<String> {

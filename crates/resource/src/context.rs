@@ -280,7 +280,6 @@ mod tests {
 
         use crate::error::Result;
         use crate::manager_pool::TypedPool;
-        use crate::metadata::ResourceMetadata;
         use crate::pool::{Pool, PoolConfig};
         use crate::resource::{Config, Resource};
 
@@ -295,8 +294,8 @@ mod tests {
             type Config = TestConfig;
             type Instance = String;
 
-            fn metadata(&self) -> ResourceMetadata {
-                ResourceMetadata::from_key(ResourceKey::try_from("test-http").expect("valid key"))
+            fn key(&self) -> ResourceKey {
+                ResourceKey::try_from("test-http").expect("valid key")
             }
 
             async fn create(

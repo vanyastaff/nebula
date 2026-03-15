@@ -11,7 +11,7 @@
 //! - **Pool**: Efficient resource pooling with configurable strategies (FIFO/LIFO)
 //! - **Context**: Execution context carrying scope, tenant, workflow, and cancellation info
 //! - **ResourceProvider**: Trait for decoupled resource acquisition (type-safe + dynamic)
-//! - **ResourceRef**: Type-safe wrapper around `TypeId` for resource identification
+//! - **TypeId index**: Type-safe acquisition via `acquire_typed<R>()` — no string key required
 //!
 //! ## Quick Start
 //!
@@ -48,7 +48,7 @@
 //! let any = provider.acquire("postgres", &ctx).await?;
 //! ```
 //!
-//! See [`mod@reference`] module for details on `ResourceRef` and `ResourceProvider`.
+//! See [`mod@reference`] module for details on `ResourceProvider`.
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
@@ -64,7 +64,6 @@ pub mod scope;
 
 pub mod any;
 pub mod dependency;
-pub mod handler;
 pub(crate) mod dependency_graph;
 pub mod instrumented;
 pub(crate) mod manager_guard;
@@ -81,7 +80,6 @@ pub mod pool;
 pub mod quarantine;
 
 pub use any::AnyResource;
-pub use handler::TypedCredentialHandler;
 pub use dependency::ResourceDependencies;
 pub use context::{Context, ResourcePoolHandle};
 pub use error::{Error, ErrorCategory, FieldViolation, Result};
@@ -89,7 +87,7 @@ pub use guard::Guard;
 pub use instrumented::InstrumentedGuard;
 pub use lifecycle::Lifecycle;
 pub use metadata::{ResourceMetadata, ResourceMetadataBuilder};
-pub use reference::{ErasedResourceRef, ResourceProvider, ResourceRef};
+pub use reference::{ErasedResourceRef, ResourceProvider};
 pub use resource::{Config, Resource};
 pub use scope::{Scope, Strategy};
 // Re-export execution trace types from telemetry for compatibility.
@@ -140,7 +138,7 @@ pub mod prelude {
     pub use crate::guard::Guard;
     pub use crate::lifecycle::Lifecycle;
     pub use crate::metadata::ResourceMetadata;
-    pub use crate::reference::{ErasedResourceRef, ResourceProvider, ResourceRef};
+    pub use crate::reference::{ErasedResourceRef, ResourceProvider};
     pub use crate::resource::{Config, Resource};
     pub use crate::scope::{Scope, Strategy};
 

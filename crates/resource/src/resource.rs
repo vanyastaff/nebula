@@ -23,8 +23,8 @@ pub trait Config: Send + Sync + 'static {
 /// Core resource trait (bb8-style).
 ///
 /// Defines the full lifecycle: create, validate, recycle, cleanup.
-/// Each resource type has an associated `Config`, `Instance`, and static
-/// metadata describing the resource for UI and discovery.
+/// Each resource type has an associated `Config`, `Instance`, and a canonical
+/// key that is the single source of truth for manager indexing, events, and metrics.
 pub trait Resource: Send + Sync + 'static {
     /// The configuration type for this resource.
     type Config: Config;
@@ -32,13 +32,19 @@ pub trait Resource: Send + Sync + 'static {
     /// The instance type produced by this resource.
     type Instance: Send + Sync + 'static;
 
+    /// Canonical key identifying this resource type.
+    ///
+    /// This is the **single source of truth** for the resource's identity.
+    /// The manager indexes pools by this key; events and metrics use it too.
+    fn key(&self) -> ResourceKey;
+
     /// Static metadata (display name, description, tags, icon) for UI and discovery.
     ///
-    /// Implementations **must** return a fully-populated [`ResourceMetadata`]
-    /// value with a canonical [`ResourceKey`] in `metadata.key`. This key is
-    /// used everywhere in `nebula-resource` as the logical identifier for the
-    /// resource type.
-    fn metadata(&self) -> ResourceMetadata;
+    /// Defaults to a minimal [`ResourceMetadata`] derived from [`key()`](Self::key).
+    /// Override to provide richer metadata (display name, description, tags, icon).
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(self.key())
+    }
 
     /// Create a new instance from config and context.
     fn create(
@@ -67,37 +73,4 @@ pub trait Resource: Send + Sync + 'static {
             Ok(())
         }
     }
-
-    /// Default key for dependency declaration (e.g. `ResourceRef::of`).
-    ///
-    /// Override to provide a stable key; default derives from type name (snake_case).
-    fn declare_key() -> ResourceKey
-    where
-        Self: Sized,
-    {
-        let name = std::any::type_name::<Self>();
-        let short = name.rsplit("::").next().unwrap_or(name);
-        let snake = camel_to_snake(short);
-        if let Ok(key) = ResourceKey::try_from(snake.as_str()) {
-            key
-        } else {
-            // Deterministic fallback for unusual type names that cannot be represented as ResourceKey.
-            ResourceKey::new("resource.default").expect("literal fallback resource key must be valid")
-        }
-    }
-}
-
-fn camel_to_snake(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for (i, c) in s.chars().enumerate() {
-        if c.is_uppercase() {
-            if i > 0 {
-                out.push('_');
-            }
-            out.extend(c.to_lowercase());
-        } else if c.is_alphanumeric() || c == '_' || c == '-' {
-            out.push(c);
-        }
-    }
-    out
 }

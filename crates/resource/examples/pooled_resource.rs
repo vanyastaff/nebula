@@ -51,10 +51,8 @@ struct DbResource {
 impl Resource for DbResource {
     type Config = DbConfig;
     type Instance = DbConnection;
-    fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
-        nebula_resource::metadata::ResourceMetadata::from_key(
-            nebula_core::ResourceKey::try_from("postgres").expect("valid resource key"),
-        )
+    fn key(&self) -> nebula_core::ResourceKey {
+        nebula_core::ResourceKey::try_from("postgres").expect("valid resource key")
     }
 
     async fn create(&self, _config: &DbConfig, _ctx: &Context) -> Result<DbConnection> {

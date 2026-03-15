@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
-use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -47,10 +46,8 @@ struct ConfigStoreResource;
 impl Resource for ConfigStoreResource {
     type Config = ConfigStoreConfig;
     type Instance = ();
-    fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::from_key(
-            nebula_core::ResourceKey::try_from("config-store").expect("valid key"),
-        )
+    fn key(&self) -> nebula_core::ResourceKey {
+        nebula_core::ResourceKey::try_from("config-store").expect("valid key")
     }
 
     async fn create(&self, _config: &ConfigStoreConfig, _ctx: &Context) -> Result<()> {
@@ -92,10 +89,8 @@ impl ReferenceResource {
 impl Resource for ReferenceResource {
     type Config = ReferenceConfig;
     type Instance = ReferenceInstance;
-    fn metadata(&self) -> ResourceMetadata {
-        nebula_resource::metadata::ResourceMetadata::from_key(
-            nebula_core::ResourceKey::try_from("reference-resource").expect("valid key"),
-        )
+    fn key(&self) -> nebula_core::ResourceKey {
+        nebula_core::ResourceKey::try_from("reference-resource").expect("valid key")
     }
 
     async fn create(&self, config: &ReferenceConfig, _ctx: &Context) -> Result<ReferenceInstance> {
@@ -205,8 +200,8 @@ async fn cleanup_is_called_on_shutdown() {
     impl Resource for CleanupTracker {
         type Config = ReferenceConfig;
         type Instance = ReferenceInstance;
-        fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
-            self.inner.metadata()
+        fn key(&self) -> nebula_core::ResourceKey {
+            self.inner.key()
         }
 
         async fn create(

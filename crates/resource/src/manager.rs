@@ -21,22 +21,18 @@
 //! [`HealthState`]: crate::health::HealthState
 //! [`QuarantineManager`]: crate::quarantine::QuarantineManager
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use moka::sync::Cache;
-use nebula_core::CredentialId;
-use nebula_credential::traits::RotationStrategy;
 use rustc_hash::FxBuildHasher;
 use smallvec::SmallVec;
 
 use crate::autoscale::{AutoScalePolicy, AutoScaler};
-use crate::handler::TypedCredentialHandler;
-use crate::dependency::ResourceDependencies;
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::events::{EventBus, QuarantineTrigger, ResourceEvent};
@@ -44,9 +40,8 @@ use crate::health::{HealthCheckConfig, HealthCheckable, HealthState};
 use crate::hooks::{HookEvent, HookRegistry, HOOKS_INLINE};
 use crate::instrumented::InstrumentedGuard;
 use crate::manager_guard::ReleaseHookGuard;
-use crate::manager_pool::{AnyPool, PoolEntry, RotatablePool};
+use crate::manager_pool::{AnyPool, PoolEntry};
 use crate::metadata::ResourceMetadata;
-use crate::pool::CredentialHandler;
 use crate::pool::{Pool, PoolConfig};
 use crate::quarantine::{QuarantineConfig, QuarantineManager, QuarantineReason};
 use crate::resource::Resource;
@@ -145,15 +140,11 @@ pub struct Manager {
     /// `None` means auto-scaling is off by default (enable per-resource via
     /// [`enable_autoscaling`](Self::enable_autoscaling)).
     default_autoscale_policy: Option<AutoScalePolicy>,
-    /// Maps credential ID to pools that use it (for rotation dispatch).
-    credential_pool_map: Arc<DashMap<CredentialId, Vec<RotationEntry>, FxBuildHasher>>,
-}
-
-/// Entry for credential rotation dispatch.
-struct RotationEntry {
-    credential_key: nebula_core::CredentialKey,
-    strategy: RotationStrategy,
-    pool: Weak<dyn RotatablePool>,
+    /// TypeId-to-ResourceKey index for type-safe acquisition via `acquire_typed`.
+    ///
+    /// Populated at `register` time; consulted by `acquire_typed` so that
+    /// TypeId (not a fragile type-name string) is the lookup key.
+    type_index: DashMap<TypeId, ResourceKey, FxBuildHasher>,
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +291,7 @@ impl ManagerBuilder {
             hooks: Arc::new(HookRegistry::default()),
             auto_scalers: DashMap::with_hasher(FxBuildHasher::default()),
             default_autoscale_policy: self.default_autoscale_policy,
-            credential_pool_map: Arc::new(DashMap::with_hasher(FxBuildHasher::default())),
+            type_index: DashMap::with_hasher(FxBuildHasher::default()),
         }
     }
 }
@@ -478,6 +469,9 @@ impl Manager {
         // so we use it as the single source of truth for events and autoscaling.
         self.metadata.insert(id.clone(), meta);
 
+        // Record TypeId → ResourceKey so acquire_typed<R>() can look up by type.
+        self.type_index.insert(TypeId::of::<R>(), resource_key.clone());
+
         self.event_bus.emit(ResourceEvent::Created {
             resource_key: resource_key.clone(),
             scope,
@@ -492,138 +486,6 @@ impl Manager {
         tracing::debug!(resource_id = %id, "Registered resource");
 
         Ok(())
-    }
-
-    /// Register a resource with an attached credential handler.
-    ///
-    /// Automatically:
-    /// 1. Registers sub-resource dependencies from [`ResourceDependencies::resources`].
-    /// 2. Creates the pool with the provided credential handler for rotation support.
-    pub fn register_with_handler<R>(
-        &self,
-        resource: R,
-        config: R::Config,
-        pool_config: PoolConfig,
-        handler: TypedCredentialHandler<R::Instance>,
-    ) -> Result<()>
-    where
-        R: Resource + ResourceDependencies,
-        R::Instance: Any + nebula_credential::CredentialResource,
-    {
-        let meta = resource.metadata();
-        let resource_key = meta.key.clone();
-        let id = resource_key.to_string();
-
-        // Build dependency list directly from ResourceDependencies.
-        let new_deps: Vec<String> = R::resources()
-            .iter()
-            .map(|r| r.resource_key().to_string())
-            .collect();
-
-        // Create pool with credential handler.
-        let strategy = handler.rotation_strategy();
-        let credential_handler: Arc<dyn crate::pool::CredentialHandler<R::Instance>> =
-            Arc::new(handler);
-        let pool = Pool::with_hooks_and_credential(
-            resource,
-            config,
-            pool_config,
-            Some(Arc::clone(&self.event_bus)),
-            Some(Arc::clone(&self.hooks)),
-            Some(credential_handler),
-        )?;
-
-        let typed_pool: Arc<TypedPool<R>> = Arc::new(TypedPool { pool });
-        let any_pool: Arc<dyn AnyPool> = typed_pool.clone();
-        let rotatable: Arc<dyn RotatablePool> = typed_pool.clone();
-
-        // Wire credential key → pool mapping for rotation dispatch (key only; UUID resolved at event time).
-        if let Some(cred) = R::credential() {
-            let entry = RotationEntry {
-                credential_key: nebula_core::CredentialKey::new(cred.credential_key())
-                    .unwrap_or_else(|_| {
-                        nebula_core::CredentialKey::new("unknown").expect("fallback key valid")
-                    }),
-                strategy,
-                pool: Arc::downgrade(&rotatable),
-            };
-            // Use nil UUID as placeholder — real UUID is matched at rotation-event time by key.
-            self.credential_pool_map
-                .entry(nebula_core::CredentialId::nil())
-                .or_default()
-                .push(entry);
-        }
-
-        // Validate deps and update graph.
-        {
-            let mut deps = self.deps.write();
-            let mut candidate = deps.clone();
-            candidate.remove_all_for(&id);
-            for dep in &new_deps {
-                candidate.add_dependency(&id, dep)?;
-            }
-            *deps = candidate;
-        }
-
-        let _ = self.pool_insert(
-            id.clone(),
-            PoolEntry {
-                pool: any_pool,
-                scope: Scope::Global,
-                typed_handle: Some(typed_pool),
-            },
-        );
-        self.metadata.insert(id.clone(), meta);
-
-        self.event_bus.emit(ResourceEvent::Created {
-            resource_key: resource_key.clone(),
-            scope: Scope::Global,
-        });
-
-        if let Some(policy) = &self.default_autoscale_policy {
-            let _ = self.enable_autoscaling(&resource_key, policy.clone());
-        }
-
-        tracing::debug!(resource_id = %id, "Registered resource with credential handler");
-
-        Ok(())
-    }
-
-    /// Start the background rotation subscription loop.
-    ///
-    /// Call once at application startup after all resources are registered.
-    /// Pass the subscriber from `CredentialManager::rotation_subscriber`.
-    #[expect(
-        clippy::excessive_nesting,
-        reason = "Background listener combines map lookup, weak-upgrade filtering, and async rotation handling"
-    )]
-    pub fn spawn_rotation_listener(
-        &self,
-        mut sub: nebula_eventbus::EventSubscriber<nebula_credential::CredentialRotationEvent>,
-    ) {
-        let map = Arc::clone(&self.credential_pool_map);
-        tokio::spawn(async move {
-            while let Some(event) = sub.recv().await {
-                let mut entries = Vec::new();
-                if let Some(guard) = map.get(&event.credential_id) {
-                    for entry in guard.iter() {
-                        if let Some(pool) = entry.pool.upgrade() {
-                            entries.push((entry.credential_key.clone(), entry.strategy, pool));
-                        }
-                    }
-                }
-
-                for (credential_key, strategy, pool) in entries {
-                    match pool
-                        .handle_rotation(&event.new_state, strategy, credential_key)
-                        .await
-                    {
-                        Ok(()) => {}
-                        Err(e) => tracing::error!(?e, "rotation failed for pool"),
-                    }
-                }
-            }
-        });
     }
 
     /// Acquire a resource instance by resource key.
@@ -781,7 +643,19 @@ impl Manager {
     where
         R::Instance: Any,
     {
-        let key = R::declare_key();
+        let key = self
+            .type_index
+            .get(&TypeId::of::<R>())
+            .map(|r| r.clone())
+            .ok_or_else(|| Error::Unavailable {
+                resource_key: nebula_core::ResourceKey::new("unknown")
+                    .expect("literal key is valid"),
+                reason: format!(
+                    "Resource type {} not registered",
+                    std::any::type_name::<R>()
+                ),
+                retryable: false,
+            })?;
         let guard = self.acquire(&key, ctx).await?;
         Ok(TypedResourceGuard {
             guard,
@@ -868,6 +742,8 @@ impl Manager {
         let removed = self.pool_remove(id);
         self.deps.write().remove_all_for(id);
         self.metadata.remove(id);
+        // Remove the TypeId → key mapping (scan is O(n) but deregister is rare).
+        self.type_index.retain(|_, v| v.as_str() != id);
         self.health_states.invalidate(id);
 
         // Release from quarantine (if quarantined) and emit event.
@@ -1383,9 +1259,8 @@ mod tests {
         type Config = TestConfig;
         type Instance = String;
 
-        fn metadata(&self) -> ResourceMetadata {
-            let key = ResourceKey::try_from("test").expect("valid resource key");
-            ResourceMetadata::from_key(key)
+        fn key(&self) -> ResourceKey {
+            ResourceKey::try_from("test").expect("valid resource key")
         }
 
         async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -1494,8 +1369,8 @@ mod tests {
         impl Resource for ResourceA {
             type Config = TestConfig;
             type Instance = String;
-            fn metadata(&self) -> ResourceMetadata {
-                ResourceMetadata::from_key(ResourceKey::try_from("a").expect("valid"))
+            fn key(&self) -> ResourceKey {
+                ResourceKey::try_from("a").expect("valid")
             }
             async fn create(&self, config: &TestConfig, _ctx: &Context) -> Result<String> {
                 Ok(config.value.clone())
@@ -1957,8 +1832,8 @@ mod tests {
         impl Resource for Alpha {
             type Config = TestConfig;
             type Instance = String;
-            fn metadata(&self) -> ResourceMetadata {
-                ResourceMetadata::from_key(ResourceKey::try_from("alpha").expect("valid"))
+            fn key(&self) -> ResourceKey {
+                ResourceKey::try_from("alpha").expect("valid")
             }
             async fn create(&self, config: &TestConfig, _ctx: &Context) -> Result<String> {
                 Ok(format!("instance-{}", config.value))
@@ -1969,8 +1844,8 @@ mod tests {
         impl Resource for Zeta {
             type Config = TestConfig;
             type Instance = String;
-            fn metadata(&self) -> ResourceMetadata {
-                ResourceMetadata::from_key(ResourceKey::try_from("zeta").expect("valid"))
+            fn key(&self) -> ResourceKey {
+                ResourceKey::try_from("zeta").expect("valid")
             }
             async fn create(&self, config: &TestConfig, _ctx: &Context) -> Result<String> {
                 Ok(format!("instance-{}", config.value))

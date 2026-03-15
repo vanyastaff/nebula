@@ -10,7 +10,6 @@ use nebula_resilience::retryable::Retryable;
 use nebula_resource::context::Context;
 use nebula_resource::error::Error;
 use nebula_resource::events::{EventBus, ResourceEvent};
-use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -43,8 +42,8 @@ impl Resource for FailingCreateResource {
     type Config = TestConfig;
     type Instance = String;
 
-    fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::from_key(ResourceKey::try_from("cb-create").expect("valid"))
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from("cb-create").expect("valid")
     }
 
     async fn create(
@@ -178,8 +177,8 @@ impl Resource for RecycleCountingResource {
     type Config = TestConfig;
     type Instance = String;
 
-    fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::from_key(ResourceKey::try_from("cb-recycle").expect("valid"))
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from("cb-recycle").expect("valid")
     }
 
     async fn create(

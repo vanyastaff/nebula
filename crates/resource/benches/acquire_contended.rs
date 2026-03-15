@@ -9,7 +9,6 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
-use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::{AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -26,8 +25,8 @@ impl Resource for BenchResource {
     type Config = BenchConfig;
     type Instance = u64;
 
-    fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::from_key(ResourceKey::try_from("bench-acquire-contended").expect("valid"))
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from("bench-acquire-contended").expect("valid")
     }
 
     async fn create(&self, _config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {

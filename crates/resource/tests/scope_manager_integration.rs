@@ -11,7 +11,6 @@ use nebula_core::ResourceKey;
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
-use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::{ExecutionId, WorkflowId};
@@ -36,8 +35,8 @@ struct NamedResource {
 impl Resource for NamedResource {
     type Config = TestConfig;
     type Instance = String;
-    fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::from_key(ResourceKey::try_from(self.name).expect("valid"))
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from(self.name).expect("valid")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {

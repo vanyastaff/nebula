@@ -15,7 +15,6 @@ use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::hooks::{HookEvent, HookFilter, HookRegistry, HookResult, ResourceHook};
-use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -54,8 +53,9 @@ struct SimpleResource;
 impl Resource for SimpleResource {
     type Config = TestConfig;
     type Instance = String;
-    fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::from_key(ResourceKey::try_from("simple").expect("valid resource key"))
+
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from("simple").expect("valid resource key")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -484,10 +484,9 @@ struct RecycleFailResource;
 impl Resource for RecycleFailResource {
     type Config = TestConfig;
     type Instance = String;
-    fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::from_key(
-            ResourceKey::try_from("recycle-fail").expect("valid resource key"),
-        )
+
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from("recycle-fail").expect("valid resource key")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {

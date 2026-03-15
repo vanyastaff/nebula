@@ -107,22 +107,6 @@ pub enum Error {
         attempt: u32,
     },
 
-    /// Credential handler not configured for this resource pool.
-    #[error("Credential handler not configured for resource '{resource_key}'")]
-    CredentialNotConfigured {
-        /// The resource key
-        resource_key: ResourceKey,
-    },
-
-    /// Required credential is missing
-    #[error("Missing credential '{credential_id}' for resource '{resource_key}'")]
-    MissingCredential {
-        /// The credential identifier
-        credential_id: String,
-        /// The resource key
-        resource_key: ResourceKey,
-    },
-
     /// Resource cleanup failed
     #[error("Cleanup failed for resource '{resource_key}': {reason}")]
     Cleanup {
@@ -304,7 +288,6 @@ impl Error {
             Self::Initialization { resource_key, .. }
             | Self::Unavailable { resource_key, .. }
             | Self::HealthCheck { resource_key, .. }
-            | Self::MissingCredential { resource_key, .. }
             | Self::Cleanup { resource_key, .. }
             | Self::Timeout { resource_key, .. }
             | Self::CircuitBreakerOpen { resource_key, .. }
@@ -312,7 +295,7 @@ impl Error {
             | Self::DependencyFailure { resource_key, .. }
             | Self::InvalidStateTransition { resource_key, .. }
             | Self::Internal { resource_key, .. }
-            | Self::CredentialNotConfigured { resource_key, .. } => Some(resource_key),
+            => Some(resource_key),
         }
     }
 }
@@ -424,10 +407,6 @@ mod tests {
                 resource_key: key.clone(),
                 reason: "timeout".into(),
                 attempt: 1,
-            },
-            Error::MissingCredential {
-                credential_id: "key".into(),
-                resource_key: key.clone(),
             },
             Error::Cleanup {
                 resource_key: key.clone(),

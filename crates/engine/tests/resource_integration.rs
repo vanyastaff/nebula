@@ -42,10 +42,8 @@ impl Resource for MockResource {
     type Config = MockConfig;
     type Instance = String;
 
-    fn metadata(&self) -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::from_key(
-            nebula_core::ResourceKey::try_from("mock").expect("valid resource key"),
-        )
+    fn key(&self) -> nebula_core::ResourceKey {
+        nebula_core::ResourceKey::try_from("mock").expect("valid resource key")
     }
 
     async fn create(

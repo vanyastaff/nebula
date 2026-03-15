@@ -23,7 +23,7 @@ pub trait AnyResource: Any + Send + Sync + 'static {
 /// Blanket impl: every `Resource` is automatically an `AnyResource`.
 impl<R: Resource + 'static> AnyResource for R {
     fn resource_key(&self) -> ResourceKey {
-        R::declare_key()
+        self.key()
     }
 
     fn resource_metadata(&self) -> ResourceMetadata {

@@ -9,9 +9,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use nebula_core::CredentialKey;
-use nebula_credential::traits::RotationStrategy;
-
 use crate::context::Context;
 use crate::error::Result;
 use crate::guard::Guard;
@@ -77,17 +74,6 @@ pub(crate) trait AnyPool: Send + Sync {
     fn scale_down(&self, count: usize) -> Pin<Box<dyn Future<Output = usize> + Send + '_>>;
 }
 
-/// Pool that can react to credential rotation (has a credential handler).
-pub(crate) trait RotatablePool: Send + Sync {
-    /// Apply credential rotation to the pool.
-    fn handle_rotation(
-        &self,
-        new_state: &serde_json::Value,
-        strategy: RotationStrategy,
-        credential_key: CredentialKey,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
-}
-
 /// Concrete adapter from `Pool<R>` to `AnyPool`.
 ///
 /// Returned by [`Manager::get_pool`](crate::manager::Manager::get_pool) for typed pool access.
@@ -127,25 +113,6 @@ where
 
     fn scale_down(&self, count: usize) -> Pin<Box<dyn Future<Output = usize> + Send + '_>> {
         Box::pin(async move { self.pool.scale_down(count).await })
-    }
-}
-
-impl<R: Resource> RotatablePool for TypedPool<R>
-where
-    R::Instance: Any,
-{
-    fn handle_rotation(
-        &self,
-        new_state: &serde_json::Value,
-        strategy: RotationStrategy,
-        credential_key: CredentialKey,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
-        let pool = self.pool.clone();
-        let new_state = new_state.clone();
-        Box::pin(async move {
-            pool.handle_rotation(&new_state, strategy, credential_key)
-                .await
-        })
     }
 }
 

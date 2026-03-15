@@ -34,10 +34,8 @@ struct TrackingResource {
 impl Resource for TrackingResource {
     type Config = TestConfig;
     type Instance = String;
-    fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
-        nebula_resource::metadata::ResourceMetadata::from_key(
-            ResourceKey::try_from("tracked").expect("valid"),
-        )
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from("tracked").expect("valid")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {

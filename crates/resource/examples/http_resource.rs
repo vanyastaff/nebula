@@ -5,6 +5,7 @@
 
 use std::convert::TryFrom;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use nebula_core::ResourceKey;
@@ -164,17 +165,26 @@ impl HttpResourceInstance {
 
 pub struct HttpResource;
 
+const HTTP_RESOURCE_KEY: &str = "http.client";
+
+fn http_resource_key() -> ResourceKey {
+    static KEY: LazyLock<ResourceKey> = LazyLock::new(|| {
+        ResourceKey::try_from(HTTP_RESOURCE_KEY)
+            .expect("HttpResource uses a valid resource key")
+    });
+    KEY.clone()
+}
+
 impl Resource for HttpResource {
     type Config = HttpResourceConfig;
     type Instance = HttpResourceInstance;
 
-    fn declare_key() -> ResourceKey {
-        ResourceKey::try_from("http.client").expect("HttpResource uses a valid resource key")
+    fn key(&self) -> ResourceKey {
+        http_resource_key()
     }
 
     fn metadata(&self) -> ResourceMetadata {
-        let key =
-            ResourceKey::try_from("http.client").expect("HttpResource uses a valid resource key");
+        let key = http_resource_key();
         ResourceMetadata::build(
             key.clone(),
             "HTTP Client",

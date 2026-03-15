@@ -10,7 +10,6 @@ use std::time::Duration;
 use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
-use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -41,8 +40,8 @@ impl StressResource {
 impl Resource for StressResource {
     type Config = StressConfig;
     type Instance = u64;
-    fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::from_key(ResourceKey::try_from("stress").expect("valid resource key"))
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from("stress").expect("valid resource key")
     }
 
     async fn create(&self, _config: &StressConfig, _ctx: &Context) -> Result<u64> {

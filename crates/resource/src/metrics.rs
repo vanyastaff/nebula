@@ -15,8 +15,7 @@ use nebula_metrics::naming::{
     NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
     NEBULA_RESOURCE_CIRCUIT_BREAKER_CLOSED_TOTAL, NEBULA_RESOURCE_CIRCUIT_BREAKER_OPENED_TOTAL,
     NEBULA_RESOURCE_CLEANUP_TOTAL, NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
-    NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
-    NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
+    NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
     NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
     NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
     NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
@@ -175,14 +174,6 @@ impl MetricsCollector {
                 // so dashboards surface it without needing a separate panel.
                 let id = Self::resource_label(resource_key);
                 metrics::counter!(NEBULA_RESOURCE_ERROR_TOTAL, "resource_id" => id).increment(1);
-            }
-            ResourceEvent::CredentialRotated { resource_key, .. } => {
-                let id = Self::resource_label(resource_key);
-                metrics::counter!(
-                    NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
-                    "resource_id" => id
-                )
-                .increment(1);
             }
             ResourceEvent::CircuitBreakerOpen {
                 resource_key,

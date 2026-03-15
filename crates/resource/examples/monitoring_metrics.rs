@@ -35,6 +35,10 @@ struct DemoResource;
 impl Resource for DemoResource {
     type Config = DemoConfig;
     type Instance = String;
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from("demo-metric").expect("valid resource key")
+    }
+
     fn metadata(&self) -> nebula_resource::ResourceMetadata {
         let key = ResourceKey::try_from("demo-metric").expect("valid resource key");
         nebula_resource::ResourceMetadata::new(

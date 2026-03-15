@@ -5,7 +5,6 @@ use std::time::Duration;
 use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::Error;
-use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::poison::{Poison, PoisonError};
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
@@ -58,8 +57,8 @@ impl Resource for TestResource {
     type Config = TestConfig;
     type Instance = String;
 
-    fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::from_key(ResourceKey::try_from("poison-test").expect("valid"))
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from("poison-test").expect("valid")
     }
 
     async fn create(

@@ -40,10 +40,8 @@ impl Resource for RaceResource {
     type Config = TestConfig;
     type Instance = usize;
 
-    fn metadata(&self) -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::from_key(
-            ResourceKey::try_from("ci-race").expect("valid resource key"),
-        )
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from("ci-race").expect("valid resource key")
     }
 
     async fn create(&self, _config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {

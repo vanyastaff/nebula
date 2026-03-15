@@ -9,7 +9,6 @@ use std::time::Duration;
 use nebula_core::ResourceKey;
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
-use nebula_resource::metadata::ResourceMetadata;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
@@ -41,9 +40,8 @@ struct InMemoryCache;
 impl Resource for InMemoryCache {
     type Config = CacheConfig;
     type Instance = HashMap<String, String>;
-    fn metadata(&self) -> ResourceMetadata {
-        let key = ResourceKey::try_from("in-memory-cache").expect("valid resource key");
-        ResourceMetadata::from_key(key)
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from("in-memory-cache").expect("valid resource key")
     }
 
     /// Create a new empty cache.

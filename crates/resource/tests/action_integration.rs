@@ -24,10 +24,8 @@ impl Resource for EchoResource {
     type Config = TestConfig;
     type Instance = String;
 
-    fn metadata(&self) -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::from_key(
-            ResourceKey::try_from("action-echo").expect("valid resource key"),
-        )
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from("action-echo").expect("valid resource key")
     }
 
     async fn create(

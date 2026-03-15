@@ -36,10 +36,8 @@ struct ConnectionResource;
 impl Resource for ConnectionResource {
     type Config = ConnectionConfig;
     type Instance = String;
-    fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
-        nebula_resource::metadata::ResourceMetadata::from_key(
-            nebula_core::ResourceKey::try_from("connection").expect("valid resource key"),
-        )
+    fn key(&self) -> nebula_core::ResourceKey {
+        nebula_core::ResourceKey::try_from("connection").expect("valid resource key")
     }
 
     async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {

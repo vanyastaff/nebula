@@ -23,10 +23,8 @@ impl Resource for RuntimeResourceA {
     type Config = TestConfig;
     type Instance = &'static str;
 
-    fn metadata(&self) -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::from_key(
-            ResourceKey::try_from("runtime-a").expect("valid resource key"),
-        )
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from("runtime-a").expect("valid resource key")
     }
 
     async fn create(
@@ -42,10 +40,8 @@ impl Resource for RuntimeResourceB {
     type Config = TestConfig;
     type Instance = &'static str;
 
-    fn metadata(&self) -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::from_key(
-            ResourceKey::try_from("runtime-b").expect("valid resource key"),
-        )
+    fn key(&self) -> ResourceKey {
+        ResourceKey::try_from("runtime-b").expect("valid resource key")
     }
 
     async fn create(

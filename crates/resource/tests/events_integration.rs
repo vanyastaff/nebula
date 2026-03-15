@@ -34,10 +34,9 @@ struct TestResource;
 impl Resource for TestResource {
     type Config = TestConfig;
     type Instance = String;
-    fn metadata(&self) -> nebula_resource::metadata::ResourceMetadata {
-        nebula_resource::metadata::ResourceMetadata::from_key(
-            nebula_core::ResourceKey::try_from("test").expect("valid resource key"),
-        )
+
+    fn key(&self) -> nebula_core::ResourceKey {
+        nebula_core::ResourceKey::try_from("test").expect("valid resource key")
     }
 
     async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
