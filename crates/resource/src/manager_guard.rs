@@ -6,9 +6,11 @@
 use std::any::Any;
 use std::sync::Arc;
 
+use smallvec::SmallVec;
+
 use crate::context::Context;
 use crate::events::EventBus;
-use crate::hooks::HookEvent;
+use crate::hooks::{HookEvent, HOOKS_INLINE};
 
 // ---------------------------------------------------------------------------
 // Type-erased guard
@@ -158,7 +160,7 @@ impl<T: Send + Sync + 'static> std::fmt::Debug for TypedResourceGuard<T> {
 pub(crate) struct ReleaseHookGuard {
     pub(crate) inner: Option<AnyGuard>,
     pub(crate) resource_id: String,
-    pub(crate) hooks: Vec<Arc<dyn crate::hooks::ResourceHook>>,
+    pub(crate) hooks: SmallVec<[Arc<dyn crate::hooks::ResourceHook>; HOOKS_INLINE]>,
     pub(crate) event_bus: Arc<EventBus>,
     pub(crate) ctx: Context,
 }

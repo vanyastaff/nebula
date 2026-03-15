@@ -10,9 +10,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use smallvec::SmallVec;
 
 use crate::context::Context;
 use crate::error::Error;
+
+/// Inline capacity for hook snapshots — covers the common case without a heap allocation.
+pub(crate) const HOOKS_INLINE: usize = 4;
 
 // ---------------------------------------------------------------------------
 // HookEvent
@@ -174,8 +178,8 @@ impl HookRegistry {
     /// Useful for passing hooks into spawned tasks without holding the
     /// registry lock across `.await` points.
     #[must_use]
-    pub fn snapshot(&self) -> Vec<Arc<dyn ResourceHook>> {
-        self.hooks.read().clone()
+    pub fn snapshot(&self) -> SmallVec<[Arc<dyn ResourceHook>; HOOKS_INLINE]> {
+        self.hooks.read().iter().cloned().collect()
     }
 
     /// Run all matching before-hooks in priority order.
@@ -188,7 +192,7 @@ impl HookRegistry {
         ctx: &Context,
     ) -> crate::error::Result<()> {
         // Snapshot the hooks under the lock, then release before awaiting.
-        let hooks: Vec<Arc<dyn ResourceHook>> = {
+        let hooks: SmallVec<[Arc<dyn ResourceHook>; HOOKS_INLINE]> = {
             let guard = self.hooks.read();
             guard
                 .iter()
@@ -226,7 +230,7 @@ impl HookRegistry {
         success: bool,
     ) {
         // Snapshot the hooks under the lock, then release before awaiting.
-        let hooks: Vec<Arc<dyn ResourceHook>> = {
+        let hooks: SmallVec<[Arc<dyn ResourceHook>; HOOKS_INLINE]> = {
             let guard = self.hooks.read();
             guard
                 .iter()

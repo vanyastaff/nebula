@@ -480,6 +480,11 @@ struct PoolInner<R: Resource> {
     hooks: Option<Arc<HookRegistry>>,
     /// Handle for the background maintenance task, if spawned.
     /// Stored so we can join on it during shutdown.
+    ///
+    /// Only written once at construction (never on the hot path) and taken
+    /// once during shutdown — `Mutex<Option<_>>` is the right tool here;
+    /// `AtomicTake` would require `&mut Arc<PoolInner>` at construction which
+    /// races with `tokio::spawn` in multi-threaded runtimes.
     maintenance_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Current credential state (set by `handle_rotation` or initial auth).
     /// New instances get `authorize()` called with this when created.

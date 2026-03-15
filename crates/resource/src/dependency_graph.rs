@@ -2,6 +2,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use im::HashMap as ImHashMap;
+
 use crate::error::{Error, Result};
 
 // ---------------------------------------------------------------------------
@@ -11,12 +13,17 @@ use crate::error::{Error, Result};
 /// Dependency graph for managing resource initialization order.
 ///
 /// Resources are identified by plain string keys (matching `Resource::id()`).
+///
+/// The inner maps use [`im::HashMap`] so that [`Clone`] is O(1) via structural
+/// sharing. The manager clones this graph to validate candidate state before
+/// committing — with a persistent map the clone is a pointer copy rather than
+/// a full deep copy.
 #[derive(Debug, Clone, Default)]
 pub struct DependencyGraph {
     /// resource key -> list of dependencies (what this resource depends on)
-    dependencies: HashMap<String, Vec<String>>,
+    dependencies: ImHashMap<String, Vec<String>>,
     /// resource key -> list of dependents (what depends on this resource)
-    dependents: HashMap<String, Vec<String>>,
+    dependents: ImHashMap<String, Vec<String>>,
 }
 
 impl DependencyGraph {
@@ -24,8 +31,8 @@ impl DependencyGraph {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            dependencies: HashMap::new(),
-            dependents: HashMap::new(),
+            dependencies: ImHashMap::new(),
+            dependents: ImHashMap::new(),
         }
     }
 

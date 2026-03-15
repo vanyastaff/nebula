@@ -42,6 +42,8 @@ arc-swap = { workspace = true }
 moka = { workspace = true, features = ["sync"] }
 rustc-hash = "2.1.1"
 hdrhistogram = "7.5"
+im = { workspace = true }
+smallvec = { workspace = true }
 
 [dev-dependencies]
 nebula-parameter = { path = "../parameter" }

@@ -11,6 +11,7 @@ use moka::sync::Cache;
 use nebula_core::CredentialId;
 use nebula_credential::traits::RotationStrategy;
 use rustc_hash::FxBuildHasher;
+use smallvec::SmallVec;
 
 use crate::autoscale::{AutoScalePolicy, AutoScaler};
 use crate::components::{HasResourceComponents, TypedCredentialHandler};
@@ -18,7 +19,7 @@ use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::events::{EventBus, QuarantineTrigger, ResourceEvent};
 use crate::health::{HealthCheckConfig, HealthCheckable, HealthState};
-use crate::hooks::{HookEvent, HookRegistry};
+use crate::hooks::{HookEvent, HookRegistry, HOOKS_INLINE};
 use crate::instrumented::InstrumentedGuard;
 use crate::manager_guard::ReleaseHookGuard;
 use crate::manager_pool::{AnyPool, PoolEntry, RotatablePool};
@@ -780,7 +781,7 @@ impl Manager {
     }
 
     /// Get an Arc reference to the hooks registry for use in spawned tasks.
-    fn hooks_ref(&self) -> Vec<Arc<dyn crate::hooks::ResourceHook>> {
+    fn hooks_ref(&self) -> SmallVec<[Arc<dyn crate::hooks::ResourceHook>; HOOKS_INLINE]> {
         self.hooks.snapshot()
     }
 
@@ -795,7 +796,7 @@ impl Manager {
         &self,
         inner: AnyGuard,
         resource_id: String,
-        hooks: Vec<Arc<dyn crate::hooks::ResourceHook>>,
+        hooks: SmallVec<[Arc<dyn crate::hooks::ResourceHook>; HOOKS_INLINE]>,
         event_bus: Arc<EventBus>,
         ctx: Context,
     ) -> AnyGuard {
