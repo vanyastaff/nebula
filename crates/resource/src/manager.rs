@@ -32,7 +32,7 @@ use moka::sync::Cache;
 use rustc_hash::FxBuildHasher;
 use smallvec::SmallVec;
 
-use crate::autoscale::{AutoScalePolicy, AutoScaler};
+use crate::autoscale::{AutoScalePolicy, AutoScaler, AutoScalerHandle};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::events::{EventBus, QuarantineTrigger, ResourceEvent};
@@ -44,7 +44,7 @@ use crate::manager_pool::{AnyPool, PoolEntry};
 use crate::metadata::ResourceMetadata;
 use crate::pool::{Pool, PoolConfig};
 use crate::quarantine::{QuarantineConfig, QuarantineManager, QuarantineReason};
-use crate::resource::Resource;
+use crate::resource::{Resource, ResourceDependencies};
 use crate::scope::{Scope, Strategy};
 use nebula_core::ResourceKey;
 
@@ -135,7 +135,7 @@ pub struct Manager {
     /// Hook registry for lifecycle hooks (Arc-wrapped so pools can share it).
     hooks: Arc<HookRegistry>,
     /// Per-resource auto-scalers (resource_id → JoinHandle).
-    auto_scalers: DashMap<String, tokio::task::JoinHandle<()>, FxBuildHasher>,
+    auto_scalers: DashMap<String, AutoScalerHandle, FxBuildHasher>,
     /// Default auto-scale policy applied to every pool at registration time.
     /// `None` means auto-scaling is off by default (enable per-resource via
     /// [`enable_autoscaling`](Self::enable_autoscaling)).
@@ -440,15 +440,50 @@ impl Manager {
         let resource_key = meta.key.clone();
         let id = resource_key.to_string();
 
+        // Resolve declared sub-resource dependencies into typed pool handles so can
+        // inject them into the Context before Resource::create() is called.
+        //
+        // Dependencies that are not yet registered are silently skipped — resources
+        // should be registered in topological order (dependencies first).
+        let dep_handles: Vec<(ResourceKey, Arc<dyn Any + Send + Sync>)> = {
+            <R as ResourceDependencies>::resources()
+                .into_iter()
+                .filter_map(|dep| {
+                    let key = dep.resource_key();
+                    let entry = self.pool_get(&key.to_string())?;
+                    let handle = entry.typed_handle?;
+                    Some((key, handle))
+                })
+                .collect()
+        };
+
         // Create pool first -- if this fails, nothing is modified.
         // Pass event bus and hooks so the pool can fire Create/Cleanup hooks.
-        let pool = Pool::with_hooks(
-            resource,
-            config,
-            pool_config,
-            Some(Arc::clone(&self.event_bus)),
-            Some(Arc::clone(&self.hooks)),
-        )?;
+        // When there are resolved dependencies, wrap with a context enricher that
+        // injects them before Resource::create() is called.
+        let pool = if dep_handles.is_empty() {
+            Pool::with_hooks(
+                resource,
+                config,
+                pool_config,
+                Some(Arc::clone(&self.event_bus)),
+                Some(Arc::clone(&self.hooks)),
+            )?
+        } else {
+            Pool::with_enricher(
+                resource,
+                config,
+                pool_config,
+                Some(Arc::clone(&self.event_bus)),
+                Some(Arc::clone(&self.hooks)),
+                Arc::new(move |mut ctx: Context| {
+                    for (key, handle) in &dep_handles {
+                        ctx.inject_resource(key.clone(), Arc::clone(handle));
+                    }
+                    ctx
+                }),
+            )?
+        };
 
         // register_scoped carries no explicit dependencies; just clear any
         // stale edges left from a previous registration of the same key.
@@ -729,10 +764,10 @@ impl Manager {
     /// Returns `true` if the resource was registered, `false` otherwise.
     pub async fn deregister(&self, resource_key: &ResourceKey) -> bool {
         let id: &str = &resource_key;
-        // Cancel auto-scaler (if any) — must happen before pool shutdown
+        // Gracefully shut down the auto-scaler (if any) before pool shutdown
         // so the scaler doesn't keep the Arc<dyn AnyPool> alive.
         if let Some((_, handle)) = self.auto_scalers.remove(id) {
-            handle.abort();
+            handle.shutdown().await;
         }
 
         // Stop all health monitoring tasks for this resource.
@@ -1013,9 +1048,11 @@ impl Manager {
         })?;
         let pool = Arc::clone(&pool_entry.pool);
 
-        // Cancel any existing scaler for this resource.
+        // Cancel any existing scaler for this resource (fire-and-forget — enable_autoscaling
+        // is synchronous, so we can only signal cancellation here; the old task will exit on
+        // its next loop iteration).
         if let Some((_, old_handle)) = self.auto_scalers.remove(id) {
-            old_handle.abort();
+            old_handle.cancel();
         }
 
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -1048,17 +1085,28 @@ impl Manager {
     pub fn disable_autoscaling(&self, resource_key: &ResourceKey) {
         let id: &str = &resource_key;
         if let Some((_, handle)) = self.auto_scalers.remove(id) {
-            handle.abort();
+            handle.cancel();
         }
     }
 
     /// Shut down all registered pools (simple, non-phased).
     pub async fn shutdown(&self) -> Result<()> {
-        // Cancel all auto-scalers first.
-        for entry in self.auto_scalers.iter() {
-            entry.value().abort();
+        // Gracefully stop all auto-scalers before draining pools so they don't
+        // keep Arc<dyn AnyPool> references alive during shutdown.
+        let scaler_keys: Vec<String> = self
+            .auto_scalers
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
+        let mut scaler_handles = Vec::with_capacity(scaler_keys.len());
+        for key in scaler_keys {
+            if let Some((_, handle)) = self.auto_scalers.remove(&key) {
+                scaler_handles.push(handle);
+            }
         }
-        self.auto_scalers.clear();
+        for handle in scaler_handles {
+            handle.shutdown().await;
+        }
 
         let pools: Vec<(String, Arc<dyn AnyPool>)> = self
             .pool_entries()
@@ -1363,8 +1411,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn re_register_same_key_replaces_pool() {
+    #[tokio::test]
+    async fn re_register_same_key_replaces_pool() {
         struct ResourceA;
         impl Resource for ResourceA {
             type Config = TestConfig;
@@ -1781,8 +1829,8 @@ mod tests {
         assert_eq!(new_inst, "instance-new");
     }
 
-    #[test]
-    fn get_status_returns_snapshot() {
+    #[tokio::test]
+    async fn get_status_returns_snapshot() {
         let mgr = Manager::new();
         mgr.register(
             TestResource,
@@ -1826,8 +1874,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn list_status_returns_sorted_snapshots() {
+    #[tokio::test]
+    async fn list_status_returns_sorted_snapshots() {
         struct Alpha;
         impl Resource for Alpha {
             type Config = TestConfig;

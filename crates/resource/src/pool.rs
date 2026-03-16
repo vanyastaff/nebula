@@ -186,7 +186,7 @@ impl Default for PoolConfig {
             idle_timeout: Duration::from_secs(600),
             max_lifetime: Duration::from_secs(3600),
             validation_interval: Duration::from_secs(30),
-            maintenance_interval: None,
+            maintenance_interval: Some(Duration::from_secs(60)),
             strategy: PoolStrategy::default(),
             backpressure_policy: None,
             create_breaker: None,
@@ -479,6 +479,13 @@ struct PoolInner<R: Resource> {
     /// Pre-built synthetic context for background maintenance operations
     /// (cleanup, drain, scale). Avoids a heap allocation on every invocation.
     maintenance_ctx: Context,
+    /// Optional context enricher called with a cloned `Context` immediately
+    /// before `Resource::create()`. Used by the manager to inject resolved
+    /// sub-resource pool handles declared via `ResourceDependencies`.
+    ///
+    /// `None` on the hot path (most resources); `Some` only when the resource
+    /// declares sub-resources via `ResourceDependencies::resources()`.
+    context_enricher: Option<Arc<dyn Fn(Context) -> Context + Send + Sync>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -556,6 +563,41 @@ impl<R: Resource> Pool<R> {
         event_bus: Option<Arc<EventBus>>,
         hooks: Option<Arc<HookRegistry>>,
     ) -> Result<Self> {
+        Self::build_inner(resource, config, pool_config, event_bus, hooks, None)
+    }
+
+    /// Create a new pool with hooks **and** an optional context enricher.
+    ///
+    /// The enricher receives an owned clone of the caller's [`Context`] immediately
+    /// before `Resource::create()` and may inject sub-resource pool handles (or any
+    /// other context mutation) before returning the enriched context. This is the
+    /// mechanism used by [`Manager`](crate::manager::Manager) to implement
+    /// [`inject_resource`](crate::context::Context::inject_resource) wiring for
+    /// resources that declare sub-dependencies via
+    /// [`ResourceDependencies`](crate::ResourceDependencies).
+    ///
+    /// # Errors
+    /// Returns error if `pool_config` is invalid (e.g. max_size == 0).
+    pub fn with_enricher(
+        resource: R,
+        config: R::Config,
+        pool_config: PoolConfig,
+        event_bus: Option<Arc<EventBus>>,
+        hooks: Option<Arc<HookRegistry>>,
+        enricher: Arc<dyn Fn(Context) -> Context + Send + Sync>,
+    ) -> Result<Self> {
+        Self::build_inner(resource, config, pool_config, event_bus, hooks, Some(enricher))
+    }
+
+    /// Internal constructor that accepts all optional parameters.
+    fn build_inner(
+        resource: R,
+        config: R::Config,
+        pool_config: PoolConfig,
+        event_bus: Option<Arc<EventBus>>,
+        hooks: Option<Arc<HookRegistry>>,
+        context_enricher: Option<Arc<dyn Fn(Context) -> Context + Send + Sync>>,
+    ) -> Result<Self> {
         pool_config.validate()?;
         let create_breaker = if let Some(cfg) = &pool_config.create_breaker {
             Some(
@@ -582,12 +624,6 @@ impl<R: Resource> Pool<R> {
         let cancel = CancellationToken::new();
 
         let resource_key = resource.metadata().key.clone();
-        tracing::debug!(
-            resource_id = %resource_key,
-            min_size = pool_config.min_size,
-            max_size = pool_config.max_size,
-            "Created new resource pool"
-        );
 
         let pool = Self {
             inner: Arc::new(PoolInner {
@@ -623,19 +659,16 @@ impl<R: Resource> Pool<R> {
                     WorkflowId::nil(),
                     ExecutionId::nil(),
                 ),
+                context_enricher,
             }),
         };
 
-        // Spawn automatic maintenance task if configured.
         if let Some(interval) = maintenance_interval {
             let maintenance_pool = pool.clone();
             let handle = tokio::spawn(async move {
-                // Hold a gate guard for the lifetime of this background task.
-                // When `shutdown()` closes the gate, it will wait here until
-                // the task completes its current iteration and drops this guard.
                 let _gate_guard = match maintenance_pool.inner.gate.enter() {
                     Ok(guard) => guard,
-                    Err(_) => return, // gate already closed before task started
+                    Err(_) => return,
                 };
                 let maintenance_ctx = maintenance_pool.inner.maintenance_ctx.clone();
                 loop {
@@ -1337,6 +1370,15 @@ impl<R: Resource> Pool<R> {
     /// [`HookResult::Cancel`](crate::hooks::HookResult::Cancel).
     async fn create_with_hooks(inner: &PoolInner<R>, ctx: &Context) -> Result<R::Instance> {
         let resource_id: &str = &inner.resource_key;
+
+        // Apply context enricher (e.g. sub-resource injection) before creation.
+        let enriched;
+        let ctx = if let Some(enricher) = &inner.context_enricher {
+            enriched = enricher(ctx.clone());
+            &enriched
+        } else {
+            ctx
+        };
 
         // Run Create before-hooks.
         if let Some(hooks) = &inner.hooks {

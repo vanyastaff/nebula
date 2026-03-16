@@ -184,6 +184,27 @@ pub struct HealthCheckConfig {
     pub failure_threshold: u32,
     /// Health check timeout
     pub check_timeout: Duration,
+    /// Backoff multiplier applied to the check interval after each failure.
+    ///
+    /// After the first failure the interval is multiplied by this factor on
+    /// every subsequent failure until `max_check_interval` is reached or
+    /// the resource recovers (at which point the interval resets to
+    /// `default_interval`). Must be ≥ 1.0.
+    ///
+    /// Default: `1.5`
+    pub backoff_multiplier: f64,
+    /// Upper bound on the check interval during backoff.
+    ///
+    /// Prevents unbounded growth when a resource fails for a long time.
+    /// Default: `5 × default_interval`.
+    pub max_check_interval: Duration,
+    /// Relative jitter applied to every sleep interval as `interval × (1 ± jitter_factor)`.
+    ///
+    /// Spreads health checks across time to avoid thundering-herd effects when
+    /// many resources are monitored simultaneously. Must be in `[0.0, 1.0)`.
+    ///
+    /// Default: `0.1` (±10 %).
+    pub jitter_factor: f64,
 }
 
 impl Default for HealthCheckConfig {
@@ -192,6 +213,9 @@ impl Default for HealthCheckConfig {
             default_interval: Duration::from_secs(30),
             failure_threshold: 3,
             check_timeout: Duration::from_secs(5),
+            backoff_multiplier: 1.5,
+            max_check_interval: Duration::from_secs(150), // 5 × 30 s
+            jitter_factor: 0.1,
         }
     }
 }
@@ -296,9 +320,12 @@ impl HealthChecker {
         resource_id: String,
         instance: Arc<T>,
     ) {
-        let interval = self.config.default_interval;
+        let initial_interval = self.config.default_interval;
         let check_timeout = self.config.check_timeout;
         let failure_threshold = self.config.failure_threshold;
+        let backoff_multiplier = self.config.backoff_multiplier;
+        let max_check_interval = self.config.max_check_interval;
+        let jitter_factor = self.config.jitter_factor;
         let records = Arc::clone(&self.records);
         let instance_tokens = Arc::clone(&self.instance_tokens);
         let event_bus = self.event_bus.clone();
@@ -317,11 +344,21 @@ impl HealthChecker {
         tokio::spawn(async move {
             let mut consecutive_failures = 0;
             let mut previous_state: Option<HealthState> = None;
+            let mut current_interval = initial_interval;
 
             loop {
+                // Apply jitter: sleep for interval × (1 ± jitter_factor)
+                let jitter = {
+                    use rand::RngExt as _;
+                    rand::rng().random_range(
+                        (1.0 - jitter_factor)..(1.0 + jitter_factor),
+                    )
+                };
+                let sleep_dur = current_interval.mul_f64(jitter.max(0.05));
+
                 // Wait for next check or cancellation
                 tokio::select! {
-                    () = tokio::time::sleep(interval) => {}
+                    () = tokio::time::sleep(sleep_dur) => {}
                     () = cancel.cancelled() => break,
                 }
 
@@ -330,6 +367,18 @@ impl HealthChecker {
                     tokio::time::timeout(check_timeout, instance.health_check()).await;
 
                 let status = Self::process_check_result(check_result, &mut consecutive_failures);
+
+                // Update backoff interval based on health outcome.
+                if consecutive_failures == 0 {
+                    // Recovered — reset to default interval.
+                    current_interval = initial_interval;
+                } else if consecutive_failures < failure_threshold {
+                    // Still failing but below threshold — apply backoff.
+                    current_interval = current_interval
+                        .mul_f64(backoff_multiplier)
+                        .min(max_check_interval);
+                }
+                // At or above threshold: keep at max_check_interval (quarantine handles it).
 
                 // Detect state transitions and emit HealthChanged events
                 previous_state = Self::emit_health_transition(
@@ -953,6 +1002,7 @@ mod tests {
             failure_threshold: 2,
 
             check_timeout: Duration::from_secs(1),
+            ..Default::default()
         };
         let checker = HealthChecker::new(config);
 
@@ -982,6 +1032,7 @@ mod tests {
             failure_threshold: 3,
 
             check_timeout: Duration::from_secs(1),
+            ..Default::default()
         };
         let checker = HealthChecker::new(config);
 
@@ -1011,6 +1062,7 @@ mod tests {
             failure_threshold: 2,
 
             check_timeout: Duration::from_secs(1),
+            ..Default::default()
         };
         let checker = HealthChecker::new(config);
 
@@ -1054,6 +1106,7 @@ mod tests {
             failure_threshold: 2,
 
             check_timeout: Duration::from_millis(100), // short timeout
+            ..Default::default()
         };
         let checker = HealthChecker::new(config);
 
@@ -1083,8 +1136,9 @@ mod tests {
         let config = HealthCheckConfig {
             default_interval: Duration::from_millis(50),
             failure_threshold: 5,
-
+            backoff_multiplier: 1.0, // disable backoff for predictable timing
             check_timeout: Duration::from_secs(1),
+            ..Default::default()
         };
         let checker = HealthChecker::new(config);
 
@@ -1121,6 +1175,7 @@ mod tests {
             failure_threshold: 2,
 
             check_timeout: Duration::from_secs(1),
+            ..Default::default()
         };
         let checker = HealthChecker::new(config);
 
@@ -1150,6 +1205,7 @@ mod tests {
             failure_threshold: 2,
 
             check_timeout: Duration::from_secs(1),
+            ..Default::default()
         };
         let checker = HealthChecker::new(config);
 
@@ -1177,6 +1233,7 @@ mod tests {
             failure_threshold: 2,
 
             check_timeout: Duration::from_secs(1),
+            ..Default::default()
         };
         let checker = HealthChecker::new(config);
 
@@ -1210,6 +1267,7 @@ mod tests {
             default_interval: Duration::from_millis(30),
             failure_threshold: 2,
             check_timeout: Duration::from_secs(1),
+            ..Default::default()
         };
         let checker = HealthChecker::new(config);
 
@@ -1242,6 +1300,7 @@ mod tests {
             default_interval: Duration::from_millis(30),
             failure_threshold: 5,
             check_timeout: Duration::from_secs(1),
+            ..Default::default()
         };
         let checker = HealthChecker::new(config);
 

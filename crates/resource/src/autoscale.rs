@@ -120,15 +120,14 @@ impl AutoScaler {
     /// The task checks utilization every `evaluation_window / 2` and
     /// respects the cooldown between scale operations.
     ///
-    /// Returns a [`JoinHandle`](tokio::task::JoinHandle) that can be
-    /// awaited to confirm the background task has fully exited after
-    /// [`shutdown`](Self::shutdown) is called.
+    /// Returns an [`AutoScalerHandle`] that may be `await`ed via
+    /// [`shutdown`](AutoScalerHandle::shutdown) for a clean, graceful stop.
     pub fn start<S, U, D, UF, DF>(
         &self,
         get_stats: S,
         scale_up: U,
         scale_down: D,
-    ) -> tokio::task::JoinHandle<()>
+    ) -> AutoScalerHandle
     where
         S: Fn() -> (usize, usize, usize) + Send + Sync + 'static,
         U: Fn(usize) -> UF + Send + Sync + 'static,
@@ -139,7 +138,7 @@ impl AutoScaler {
         let policy = self.policy.clone();
         let cancel = self.cancel.clone();
 
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let check_interval = (policy.evaluation_window / 2).max(Duration::from_millis(50));
 
             // Tracks when utilization first exceeded / went below watermarks.
@@ -196,12 +195,54 @@ impl AutoScaler {
                     low_since = None;
                 }
             }
-        })
+        });
+
+        AutoScalerHandle { cancel: self.cancel.clone(), handle: task }
     }
 
-    /// Cancel the background auto-scaler task.
+    /// Cancel the background auto-scaler task (fire-and-forget).
+    ///
+    /// Prefer [`AutoScalerHandle::shutdown`] for coherent graceful teardown.
     pub fn shutdown(&self) {
         self.cancel.cancel();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AutoScalerHandle
+// ---------------------------------------------------------------------------
+
+/// Owned handle to a running [`AutoScaler`] background task.
+///
+/// Created by [`AutoScaler::start`]; held by the manager in place of a raw
+/// `JoinHandle` so that shutdown can be performed gracefully.
+pub struct AutoScalerHandle {
+    cancel: CancellationToken,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl AutoScalerHandle {
+    /// Gracefully stop the scaler: signal cancellation and wait for the
+    /// background task to finish its current iteration and exit cleanly.
+    pub async fn shutdown(self) {
+        self.cancel.cancel();
+        // Ignore JoinError — the task either finished normally or was already done.
+        let _ = self.handle.await;
+    }
+
+    /// Cancel without waiting (non-blocking, equivalent to the old `.abort()`
+    /// behaviour, but cooperative rather than forceful).
+    pub fn cancel(&self) {
+        self.cancel.cancel();
+    }
+}
+
+impl std::fmt::Debug for AutoScalerHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AutoScalerHandle")
+            .field("cancelled", &self.cancel.is_cancelled())
+            .field("finished", &self.handle.is_finished())
+            .finish()
     }
 }
 

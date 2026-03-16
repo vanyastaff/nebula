@@ -189,7 +189,7 @@ impl Resource for PostgresResource {
     type Instance = PostgresConnection;
 
     fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::build(
+        ResourceMetadata::builder(
             ResourceKey::try_from("postgres").expect("valid key"),
             "PostgreSQL",
             "Pooled PostgreSQL connection via tokio-postgres",

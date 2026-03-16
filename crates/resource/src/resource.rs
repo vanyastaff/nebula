@@ -119,3 +119,8 @@ pub trait ResourceDependencies {
         vec![]
     }
 }
+
+/// Blanket impl: every `Resource` automatically satisfies `ResourceDependencies`
+/// with an empty dependency list. Override by adding an explicit
+/// `impl ResourceDependencies for MyResource { fn resources() -> … }`.
+impl<T: Resource> ResourceDependencies for T {}

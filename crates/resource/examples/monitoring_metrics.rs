@@ -41,13 +41,14 @@ impl Resource for DemoResource {
 
     fn metadata(&self) -> nebula_resource::ResourceMetadata {
         let key = resource_key!("demo-metric");
-        nebula_resource::ResourceMetadata::new(
+        nebula_resource::ResourceMetadata::builder(
             key,
             "Demo Metric Resource",
             "Example resource for monitoring metrics output",
         )
-        .with_icon("demo")
-        .with_tag("category:demo")
+        .icon("demo")
+        .tag("category:demo")
+        .build()
     }
 
     async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {

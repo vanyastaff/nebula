@@ -185,7 +185,7 @@ impl Resource for HttpResource {
 
     fn metadata(&self) -> ResourceMetadata {
         let key = http_resource_key();
-        ResourceMetadata::build(
+        ResourceMetadata::builder(
             key.clone(),
             "HTTP Client",
             "Shared HTTP client with connection pooling and timeouts",

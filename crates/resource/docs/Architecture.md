@@ -138,6 +138,8 @@ nebula-resource/src/
 ├── autoscale.rs        AutoScalePolicy (high/low watermarks, step sizes, cooldown).
 │                       AutoScaler — Tokio task that polls utilisation and calls
 │                       caller-provided scale_up / scale_down closures.
+│                       AutoScalerHandle — returned by AutoScaler::start(); exposes
+│                       shutdown().await (graceful) and cancel() (fire-and-forget).
 │
 ├── metadata.rs         ResourceMetadata — display name, description, icon,
 │                       icon_url, tags. ResourceMetadataBuilder.

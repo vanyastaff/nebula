@@ -77,7 +77,7 @@ pub mod poison;
 pub mod pool;
 pub mod quarantine;
 
-pub use context::{Context, ResourcePoolHandle};
+pub use context::{Context, ResourcePoolHandle, TraceContext};
 pub use error::{Error, ErrorCategory, FieldViolation, Result};
 pub use guard::Guard;
 pub use instrumented::InstrumentedGuard;
@@ -92,7 +92,7 @@ pub use nebula_telemetry::{
     ResourceUsageRecord,
 };
 
-pub use autoscale::{AutoScalePolicy, AutoScaler};
+pub use autoscale::{AutoScalePolicy, AutoScaler, AutoScalerHandle};
 pub use events::{
     BackPressurePolicy, CleanupReason, EventBus, EventBusStats, EventFilter, EventSubscriber,
     QuarantineTrigger, ResourceEvent, ScopedEvent, ScopedSubscriber, SubscriptionScope,

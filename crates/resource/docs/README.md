@@ -76,7 +76,7 @@ impl Resource for HttpResource {
     type Instance = HttpClient;
 
     fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::build(
+        ResourceMetadata::builder(
             ResourceKey::try_from("http.client").expect("valid key"),
             "HTTP Client",
             "Reusable reqwest client for outbound HTTP calls",
@@ -162,7 +162,7 @@ tokio::spawn(async move {
 | Automatic quarantine + recovery | `QuarantineManager` | always on |
 | Lifecycle event streaming | `EventBus`, `ResourceEvent` | always on |
 | Pre/post acquire & release hooks | `HookRegistry`, `ResourceHook` | always on |
-| Auto-scaling (utilization-based) | `AutoScaler`, `AutoScalePolicy` | opt-in |
+| Auto-scaling (utilization-based) | `AutoScaler`, `AutoScalePolicy`, `AutoScalerHandle` | opt-in |
 | Credential binding + rotation | `HasResourceComponents` | opt-in |
 | Telemetry recorder per call | `Recorder` (from `nebula-telemetry`) | opt-in |
 | Latency histograms (HDR) | `LatencyPercentiles` in `PoolStats` | always on |
@@ -186,7 +186,7 @@ nebula-resource/
 │   ├── quarantine.rs      QuarantineManager, RecoveryStrategy
 │   ├── events.rs          EventBus, ResourceEvent catalog
 │   ├── hooks.rs           HookRegistry, ResourceHook trait
-│   ├── autoscale.rs       AutoScaler, AutoScalePolicy
+│   ├── autoscale.rs       AutoScaler, AutoScalePolicy, AutoScalerHandle
 │   ├── metadata.rs        ResourceMetadata + builder
 │   ├── reference.rs       ResourceRef, ErasedResourceRef, ResourceProvider
 │   ├── error.rs           Error, ErrorCategory, FieldViolation

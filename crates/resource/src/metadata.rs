@@ -105,8 +105,17 @@ impl ResourceMetadataBuilder {
 
 impl ResourceMetadata {
     /// Start a builder with required key, name, and description.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// ResourceMetadata::builder(key, "PostgreSQL", "Primary database")
+    ///     .icon("postgres")
+    ///     .tag("category:database")
+    ///     .build()
+    /// ```
     #[must_use]
-    pub fn build(
+    pub fn builder(
         key: ResourceKey,
         name: impl Into<String>,
         description: impl Into<String>,
@@ -140,38 +149,6 @@ impl ResourceMetadata {
         let name = key.to_string();
         Self::new(key, name, String::new())
     }
-
-    /// Set the optional icon identifier for UI.
-    #[must_use]
-    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
-        self.icon = Some(icon.into());
-        self
-    }
-
-    /// Set the optional icon URL for UI.
-    #[must_use]
-    pub fn with_icon_url(mut self, icon_url: impl Into<String>) -> Self {
-        self.icon_url = Some(icon_url.into());
-        self
-    }
-
-    /// Add a single tag.
-    #[must_use]
-    pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
-        self.tags.push(tag.into());
-        self
-    }
-
-    /// Extend tags with an iterator.
-    #[must_use]
-    pub fn with_tags<T, I>(mut self, tags: I) -> Self
-    where
-        T: Into<String>,
-        I: IntoIterator<Item = T>,
-    {
-        self.tags.extend(tags.into_iter().map(Into::into));
-        self
-    }
 }
 
 #[cfg(test)]
@@ -203,7 +180,7 @@ mod tests {
     #[test]
     fn metadata_build_with_icon_and_tags() {
         let key = resource_key!("http.client");
-        let m = ResourceMetadata::build(key.clone(), "HTTP Client", "REST API client")
+        let m = ResourceMetadata::builder(key.clone(), "HTTP Client", "REST API client")
             .icon("http")
             .tag("protocol:http")
             .build();

@@ -67,20 +67,27 @@ pub enum Scope {
         /// Owning tenant (if known)
         tenant_id: Option<String>,
     },
-    /// Custom scope with a key-value pair.
+    /// Custom scope with a key-value pair and an optional parent scope.
     ///
-    /// **Note:** Custom scopes are always *isolated* — they only contain
-    /// themselves (exact key + value match). The [`Strategy::Hierarchical`]
-    /// containment rules do **not** apply to `Custom` scopes because
-    /// there is no defined parent-child relationship between arbitrary
-    /// key-value pairs. If you need hierarchical scoping, use the
-    /// built-in variants ([`Tenant`](Self::Tenant),
-    /// [`Workflow`](Self::Workflow), etc.) instead.
+    /// The optional `parent` places this custom scope *within* a known hierarchy
+    /// (e.g. `Tenant`, `Workflow`). When `parent` is present:
+    ///
+    /// - `contains()` delegates to `parent.contains(other_parent)` for the
+    ///   parent chain, in addition to requiring an exact `key`/`value` match.
+    /// - Useful for feature-flags and per-environment isolation:
+    ///   `Custom { key: "env", value: "production", parent: Some(Tenant("acme")) }`
+    ///   describes the production environment *within* tenant "acme".
+    ///
+    /// Without a parent, `Custom` scopes remain orthogonal and self-contained
+    /// (only contain themselves).
     Custom {
         /// The scope key
         key: String,
         /// The scope value
         value: String,
+        /// Optional parent scope that provides hierarchical context.
+        #[serde(default)]
+        parent: Option<Box<Scope>>,
     },
 }
 
@@ -211,7 +218,7 @@ impl Scope {
         })
     }
 
-    /// Try to create a custom scope.
+    /// Try to create a custom scope without a parent.
     pub fn try_custom(key: impl Into<String>, value: impl Into<String>) -> Result<Self, String> {
         let key = key.into();
         let value = value.into();
@@ -221,7 +228,28 @@ impl Scope {
         if value.is_empty() {
             return Err("custom scope value must not be empty".to_string());
         }
-        Ok(Self::Custom { key, value })
+        Ok(Self::Custom { key, value, parent: None })
+    }
+
+    /// Try to create a custom scope with an explicit parent.
+    ///
+    /// This places the custom scope within the given parent hierarchy.
+    /// For example, `Custom { "env", "prod", parent: Tenant("acme") }` describes
+    /// the production environment specifically within tenant "acme".
+    pub fn try_custom_with_parent(
+        key: impl Into<String>,
+        value: impl Into<String>,
+        parent: Scope,
+    ) -> Result<Self, String> {
+        let key = key.into();
+        let value = value.into();
+        if key.is_empty() {
+            return Err("custom scope key must not be empty".to_string());
+        }
+        if value.is_empty() {
+            return Err("custom scope value must not be empty".to_string());
+        }
+        Ok(Self::Custom { key, value, parent: Some(Box::new(parent)) })
     }
 
     /// Get the scope hierarchy level (lower numbers = broader scope)
@@ -233,7 +261,9 @@ impl Scope {
             Self::Workflow { .. } => 2,
             Self::Execution { .. } => 3,
             Self::Action { .. } => 4,
-            Self::Custom { .. } => 5,
+            // Custom level is parent level + 1, or 1 when parentless (orthogonal).
+            Self::Custom { parent: Some(p), .. } => p.hierarchy_level().saturating_add(1),
+            Self::Custom { parent: None, .. } => 1,
         }
     }
 
@@ -346,16 +376,22 @@ impl Scope {
             // Action only contains the exact same action (all fields must match)
             (Self::Action { .. }, Self::Action { .. }) => self == other,
 
-            // Custom scopes only contain themselves (always isolated,
-            // no hierarchical containment — see `Scope::Custom` docs).
+            // Custom scopes: key and value must match; parent chains are compared
+            // hierarchically (resource_parent.contains(caller_parent)).
+            // Deny-by-default when the resource has a parent but the caller does not.
             (
-                Self::Custom {
-                    key: k1, value: v1, ..
-                },
-                Self::Custom {
-                    key: k2, value: v2, ..
-                },
-            ) => k1 == k2 && v1 == v2,
+                Self::Custom { key: k1, value: v1, parent: p1 },
+                Self::Custom { key: k2, value: v2, parent: p2 },
+            ) => {
+                if k1 != k2 || v1 != v2 {
+                    return false;
+                }
+                match (p1, p2) {
+                    (None, _) => true,           // no parent constraint on resource side
+                    (Some(_), None) => false,    // resource requires a parent, caller has none
+                    (Some(rp), Some(cp)) => rp.contains(cp), // delegate to parent chain
+                }
+            }
 
             // Everything else: deny by default
             _ => false,
@@ -371,7 +407,10 @@ impl Scope {
             Self::Workflow { workflow_id, .. } => format!("workflow:{workflow_id}"),
             Self::Execution { execution_id, .. } => format!("execution:{execution_id}"),
             Self::Action { action_id, .. } => format!("action:{action_id}"),
-            Self::Custom { key, value } => format!("custom:{key}={value}"),
+            Self::Custom { key, value, parent: None } => format!("custom:{key}={value}"),
+            Self::Custom { key, value, parent: Some(p) } => {
+                format!("custom:{key}={value}@{}", p.scope_key())
+            }
         }
     }
 
@@ -392,7 +431,12 @@ impl Scope {
             Self::Action { action_id, .. } => {
                 format!("Action scope (action: {action_id})").into()
             }
-            Self::Custom { key, value } => format!("Custom scope ({key}={value})").into(),
+            Self::Custom { key, value, parent: None } => {
+                format!("Custom scope ({key}={value})").into()
+            }
+            Self::Custom { key, value, parent: Some(p) } => {
+                format!("Custom scope ({key}={value}) within {}", p.description()).into()
+            }
         }
     }
 }
@@ -639,5 +683,78 @@ mod tests {
     fn test_empty_custom_value_errors() {
         let err = Scope::try_custom("key", "").expect_err("empty custom value must fail");
         assert_eq!(err, "custom scope value must not be empty");
+    }
+
+    #[test]
+    fn test_custom_parentless_contains_only_itself() {
+        let c1 = custom("env", "prod");
+        let c2 = custom("env", "prod");
+        let c3 = custom("env", "staging");
+        assert!(c1.contains(&c2));
+        assert!(!c1.contains(&c3));
+        assert!(!c1.contains(&Scope::Global));
+    }
+
+    #[test]
+    fn test_custom_with_parent_contains_narrower() {
+        let parent_a = Scope::try_tenant("acme").unwrap();
+        let parent_b = Scope::try_workflow_in_tenant("wf1", "acme").unwrap();
+
+        // Resource registered at env=prod within tenant acme
+        let resource_scope =
+            Scope::try_custom_with_parent("env", "prod", parent_a.clone()).unwrap();
+
+        // Caller at same custom scope (within the same tenant)
+        let caller_same =
+            Scope::try_custom_with_parent("env", "prod", parent_a.clone()).unwrap();
+        assert!(resource_scope.contains(&caller_same));
+
+        // Caller at a narrower scope within the same tenant (workflow level)
+        let caller_narrower =
+            Scope::try_custom_with_parent("env", "prod", parent_b.clone()).unwrap();
+        assert!(resource_scope.contains(&caller_narrower));
+
+        // Caller at different value — deny
+        let caller_wrong_val =
+            Scope::try_custom_with_parent("env", "staging", parent_a.clone()).unwrap();
+        assert!(!resource_scope.contains(&caller_wrong_val));
+
+        // Caller at different parent tenant — deny
+        let parent_other = Scope::try_tenant("other").unwrap();
+        let caller_wrong_tenant =
+            Scope::try_custom_with_parent("env", "prod", parent_other).unwrap();
+        assert!(!resource_scope.contains(&caller_wrong_tenant));
+
+        // Caller has no parent — deny (resource requires parent context)
+        let caller_no_parent = custom("env", "prod");
+        assert!(!resource_scope.contains(&caller_no_parent));
+    }
+
+    #[test]
+    fn test_custom_no_parent_contains_parented_caller() {
+        // Resource with no parent constraint can serve any caller with same key/value
+        let resource_scope = custom("env", "prod");
+        let caller_with_parent =
+            Scope::try_custom_with_parent("env", "prod", Scope::try_tenant("acme").unwrap())
+                .unwrap();
+        assert!(resource_scope.contains(&caller_with_parent));
+    }
+
+    #[test]
+    fn test_custom_hierarchy_level() {
+        let c_no_parent = custom("env", "prod");
+        assert_eq!(c_no_parent.hierarchy_level(), 1);
+
+        let c_with_tenant =
+            Scope::try_custom_with_parent("env", "prod", Scope::try_tenant("a").unwrap()).unwrap();
+        assert_eq!(c_with_tenant.hierarchy_level(), 2); // tenant(1) + 1
+
+        let c_with_workflow = Scope::try_custom_with_parent(
+            "env",
+            "prod",
+            Scope::try_workflow("wf").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(c_with_workflow.hierarchy_level(), 3); // workflow(2) + 1
     }
 }

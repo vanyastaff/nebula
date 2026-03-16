@@ -4199,6 +4199,7 @@ dependencies = [
  "nebula-telemetry",
  "parking_lot",
  "proptest",
+ "rand 0.10.0",
  "reqwest 0.13.2",
  "rustc-hash",
  "serde",

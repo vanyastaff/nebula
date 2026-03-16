@@ -269,8 +269,24 @@ manager.enable_autoscaling(&key, AutoScalePolicy::default())?;
 ```
 
 The `AutoScaler` spawns a Tokio task that polls stats at `evaluation_window`
-intervals. It respects the `cooldown` to avoid thrashing. The task is
-cancelled when the `Manager` shuts down.
+intervals. It respects the `cooldown` to avoid thrashing.
+
+`AutoScaler::start()` returns an `AutoScalerHandle` that allows graceful shutdown:
+
+```rust
+// AutoScalerHandle — returned by AutoScaler::start()
+pub struct AutoScalerHandle { /* ... */ }
+
+impl AutoScalerHandle {
+    /// Cancel the background task and wait for it to finish.
+    pub async fn shutdown(self);
+    /// Fire-and-forget cancellation (does not await completion).
+    pub fn cancel(&self);
+}
+```
+
+The `Manager` stores `AutoScalerHandle` entries and calls `shutdown().await`
+for each during `Manager::shutdown()`.
 
 ---
 

@@ -13,6 +13,44 @@ use crate::resource::Resource;
 use crate::scope::Scope;
 use nebula_telemetry::{NoopRecorder, Recorder};
 
+/// W3C TraceContext propagation headers for distributed tracing.
+///
+/// Carries the standard [`traceparent`](https://www.w3.org/TR/trace-context/#traceparent-header)
+/// and optional [`tracestate`](https://www.w3.org/TR/trace-context/#tracestate-header) values.
+///
+/// Inject into outbound requests and extract from inbound requests to propagate
+/// trace context across service boundaries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceContext {
+    /// Mandatory W3C `traceparent` header value.
+    ///
+    /// Format: `{version}-{trace-id}-{parent-id}-{trace-flags}`
+    /// Example: `"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"`
+    pub traceparent: String,
+    /// Optional W3C `tracestate` header value carrying vendor-specific trace data.
+    pub tracestate: Option<String>,
+}
+
+impl TraceContext {
+    /// Extract a `TraceContext` from an HTTP header map.
+    ///
+    /// Returns `None` when the `traceparent` key is absent or empty.
+    #[must_use]
+    pub fn from_headers(headers: &HashMap<String, String>) -> Option<Self> {
+        let traceparent = headers.get("traceparent").filter(|v| !v.is_empty())?.clone();
+        let tracestate = headers.get("tracestate").filter(|v| !v.is_empty()).cloned();
+        Some(Self { traceparent, tracestate })
+    }
+
+    /// Inject the trace context into an outbound header map.
+    pub fn inject_headers(&self, headers: &mut HashMap<String, String>) {
+        headers.insert("traceparent".to_string(), self.traceparent.clone());
+        if let Some(ts) = &self.tracestate {
+            headers.insert("tracestate".to_string(), ts.clone());
+        }
+    }
+}
+
 /// Context for resource operations.
 ///
 /// Carries scope, identifiers, cancellation, credentials, and arbitrary metadata.
@@ -34,8 +72,6 @@ pub struct Context {
     pub execution_id: ExecutionId,
     /// Identifier of the workflow definition being executed.
     pub workflow_id: WorkflowId,
-    /// Optional tenant identifier for multi-tenancy isolation.
-    pub tenant_id: Option<String>,
     /// Optional cooperative cancellation token.
     ///
     /// `None` means the operation can never be cancelled externally —
@@ -50,6 +86,11 @@ pub struct Context {
     /// Sub-resource pool handles injected by the manager before `Resource::create()`.
     /// Keyed by ResourceKey. Typed via `Any` downcast in [`resource`](Self::resource).
     resolved_resources: HashMap<String, Arc<dyn Any + Send + Sync>>,
+    /// W3C TraceContext for distributed tracing propagation.
+    ///
+    /// When set, resource implementations can extract `traceparent`/`tracestate`
+    /// headers and forward them to downstream HTTP calls.
+    pub trace_context: Option<TraceContext>,
 }
 
 impl std::fmt::Debug for Context {
@@ -58,9 +99,10 @@ impl std::fmt::Debug for Context {
         s.field("scope", &self.scope)
             .field("execution_id", &self.execution_id)
             .field("workflow_id", &self.workflow_id)
-            .field("tenant_id", &self.tenant_id)
+            .field("tenant_id", &self.tenant_id())
             .field("cancellation", &self.cancellation)
             .field("metadata", &self.metadata)
+            .field("trace_context", &self.trace_context)
             .field("recorder", &"Arc<dyn Recorder>");
         s.finish()
     }
@@ -76,11 +118,11 @@ impl Context {
             scope,
             execution_id,
             workflow_id,
-            tenant_id: None,
             cancellation: Some(CancellationToken::new()),
             metadata: HashMap::new(),
             recorder: Arc::new(NoopRecorder),
             resolved_resources: HashMap::new(),
+            trace_context: None,
         }
     }
 
@@ -95,11 +137,11 @@ impl Context {
             scope,
             execution_id,
             workflow_id,
-            tenant_id: None,
             cancellation: None,
             metadata: HashMap::new(),
             recorder: Arc::new(NoopRecorder),
             resolved_resources: HashMap::new(),
+            trace_context: None,
         }
     }
 
@@ -126,7 +168,6 @@ impl Context {
     /// The handle must be `Arc<TypedPool<R>>` for the resource type `R` at the given key.
     /// Used when the manager prepares the context before `Resource::create()` for resources
     /// that declare sub-resources via `ResourceDependencies`.
-    #[allow(dead_code)] // used in tests; full manager→create() injection wiring in progress
     pub(crate) fn inject_resource(&mut self, key: ResourceKey, handle: Arc<dyn Any + Send + Sync>) {
         self.resolved_resources
             .insert(key.to_string(), handle);
@@ -155,9 +196,52 @@ impl Context {
         Some(ResourcePoolHandle { inner: typed })
     }
 
+    /// Returns the tenant identifier embedded in the current scope, if any.
+    ///
+    /// The tenant is read directly from the scope variant, eliminating the
+    /// previous redundant `tenant_id: Option<String>` field.
+    #[must_use]
+    pub fn tenant_id(&self) -> Option<&str> {
+        match &self.scope {
+            Scope::Tenant { tenant_id } => Some(tenant_id),
+            Scope::Workflow { tenant_id, .. } => tenant_id.as_deref(),
+            Scope::Execution { tenant_id, .. } => tenant_id.as_deref(),
+            Scope::Action { tenant_id, .. } => tenant_id.as_deref(),
+            _ => None,
+        }
+    }
+
     /// Set the tenant ID for multi-tenancy isolation.
+    ///
+    /// This upgrades the current scope to embed the tenant identifier rather
+    /// than storing it as a separate field:
+    ///
+    /// - `Global` → `Tenant { tenant_id }`
+    /// - `Tenant { _ }` → `Tenant { tenant_id }` (replace)
+    /// - `Workflow/Execution/Action` → their `tenant_id` sub-field updated
+    /// - `Custom` → unchanged (Custom scopes carry tenant context via `parent`)
     pub fn with_tenant(mut self, tenant_id: impl Into<String>) -> Self {
-        self.tenant_id = Some(tenant_id.into());
+        let tenant_id = tenant_id.into();
+        self.scope = match self.scope {
+            Scope::Global => Scope::Tenant { tenant_id },
+            Scope::Tenant { .. } => Scope::Tenant { tenant_id },
+            Scope::Workflow { workflow_id, .. } => Scope::Workflow {
+                workflow_id,
+                tenant_id: Some(tenant_id),
+            },
+            Scope::Execution { execution_id, workflow_id, .. } => Scope::Execution {
+                execution_id,
+                workflow_id,
+                tenant_id: Some(tenant_id),
+            },
+            Scope::Action { action_id, execution_id, workflow_id, .. } => Scope::Action {
+                action_id,
+                execution_id,
+                workflow_id,
+                tenant_id: Some(tenant_id),
+            },
+            other => other, // Custom: unchanged — use try_custom_with_parent for that
+        };
         self
     }
 
@@ -183,6 +267,15 @@ impl Context {
     #[must_use]
     pub fn recorder(&self) -> Arc<dyn Recorder> {
         Arc::clone(&self.recorder)
+    }
+
+    /// Attach a W3C `TraceContext` for distributed tracing propagation.
+    ///
+    /// Resources can read `ctx.trace_context` to forward `traceparent` /
+    /// `tracestate` headers to downstream HTTP calls.
+    pub fn with_trace_context(mut self, tc: TraceContext) -> Self {
+        self.trace_context = Some(tc);
+        self
     }
 }
 
@@ -233,7 +326,7 @@ mod tests {
         let ctx = Context::new(Scope::Global, wf, ex);
         assert_eq!(ctx.workflow_id, wf);
         assert_eq!(ctx.execution_id, ex);
-        assert!(ctx.tenant_id.is_none());
+        assert!(ctx.tenant_id().is_none());
         assert!(ctx.metadata.is_empty());
     }
 
@@ -241,7 +334,7 @@ mod tests {
     fn test_context_with_tenant() {
         let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new())
             .with_tenant("tenant-a");
-        assert_eq!(ctx.tenant_id.as_deref(), Some("tenant-a"));
+        assert_eq!(ctx.tenant_id(), Some("tenant-a"));
     }
 
     #[test]

@@ -244,6 +244,7 @@ async fn deregister_stops_health_monitoring() {
             default_interval: Duration::from_millis(50),
             failure_threshold: 3,
             check_timeout: Duration::from_secs(5),
+            ..Default::default()
         })
         .build();
 
@@ -345,6 +346,7 @@ async fn start_health_monitoring_convenience() {
             default_interval: Duration::from_millis(50),
             failure_threshold: 3,
             check_timeout: Duration::from_secs(5),
+            ..Default::default()
         })
         .build();
 

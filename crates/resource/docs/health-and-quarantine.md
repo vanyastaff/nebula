@@ -135,6 +135,13 @@ pub struct HealthCheckConfig {
     pub failure_threshold: u32,
     /// Global check timeout if the instance does not override it. Default: 5s.
     pub check_timeout: Duration,
+    /// Exponential backoff multiplier applied to the interval after each failure.
+    /// Values ≤ 1.0 disable backoff. Default: 1.5.
+    pub backoff_multiplier: f64,
+    /// Upper bound on the backoff-extended interval. Default: 150s.
+    pub max_check_interval: Duration,
+    /// Random jitter fraction added to each interval (0.0–1.0). Default: 0.1.
+    pub jitter_factor: f64,
 }
 
 pub struct HealthChecker { /* ... */ }
@@ -398,6 +405,7 @@ let manager = ManagerBuilder::new()
         default_interval: Duration::from_secs(10),
         failure_threshold: 2,
         check_timeout: Duration::from_secs(3),
+        ..Default::default()
     })
     .quarantine_config(QuarantineConfig {
         failure_threshold: 2,

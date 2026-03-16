@@ -296,7 +296,7 @@ pub struct PoolConfig {
     pub max_lifetime: Duration,
     /// How often `is_reusable` is called on idle connections. Default: 60s.
     pub validation_interval: Duration,
-    /// How often background maintenance runs. Default: None (disabled).
+    /// How often background maintenance runs. Default: Some(60s).
     pub maintenance_interval: Option<Duration>,
     /// Idle selection order. Default: Fifo.
     pub strategy: PoolStrategy,
@@ -444,8 +444,10 @@ pub struct Context {
     pub scope: Scope,
     pub execution_id: ExecutionId,
     pub workflow_id: WorkflowId,
-    pub tenant_id: Option<String>,
+    /// W3C TraceContext for distributed tracing propagation. Optional.
+    pub trace_context: Option<TraceContext>,
     // cancellation, metadata, recorder — accessed via methods
+    // tenant_id is derived from scope — see tenant_id() below
 }
 
 impl Context {
@@ -455,17 +457,44 @@ impl Context {
     /// Construct without a cancellation token (for background/system operations).
     pub fn background(scope: Scope, workflow_id: WorkflowId, execution_id: ExecutionId) -> Self;
 
+    /// Returns the tenant ID embedded in the current scope (if any).
+    /// Reads from Tenant / Workflow / Execution / Action scope variants.
+    pub fn tenant_id(&self) -> Option<&str>;
+
+    /// Upgrade the scope to embed `tenant_id` instead of storing a separate field.
+    /// Global → Tenant; Tenant → replaced; Workflow/Execution/Action → tenant_id sub-field updated.
     pub fn with_tenant(self, tenant_id: impl Into<String>) -> Self;
     pub fn with_metadata(self, key: impl Into<String>, value: impl Into<String>) -> Self;
     pub fn with_cancellation(self, token: CancellationToken) -> Self;
     pub fn with_recorder(self, recorder: Arc<dyn Recorder>) -> Self;
+    /// Attach a W3C TraceContext for distributed tracing propagation.
+    pub fn with_trace_context(self, tc: TraceContext) -> Self;
 
     pub fn is_cancellable(&self) -> bool;
     pub fn is_cancelled(&self) -> bool;
     pub fn recorder(&self) -> Arc<dyn Recorder>;
 
-    /// Retrieve a typed pool handle previously stored by the engine.
+    /// Retrieve a typed sub-resource pool handle previously injected by the manager.
     pub fn resource<R: Resource>(&self, key: &str) -> Option<ResourcePoolHandle<R>>;
+}
+
+/// W3C TraceContext propagation headers for distributed tracing.
+///
+/// Inject into outbound requests via `inject_headers`; extract from inbound
+/// requests via `from_headers`.
+pub struct TraceContext {
+    /// Mandatory `traceparent` header value.
+    /// Format: `{version}-{trace-id}-{parent-id}-{trace-flags}`
+    pub traceparent: String,
+    /// Optional `tracestate` header value carrying vendor-specific trace data.
+    pub tracestate: Option<String>,
+}
+
+impl TraceContext {
+    /// Extract from an HTTP header map; returns `None` if `traceparent` is absent.
+    pub fn from_headers(headers: &HashMap<String, String>) -> Option<Self>;
+    /// Inject `traceparent` (and `tracestate` if present) into a header map.
+    pub fn inject_headers(&self, headers: &mut HashMap<String, String>);
 }
 ```
 
@@ -481,7 +510,7 @@ pub enum Scope {
     Workflow    { workflow_id: String, tenant_id: Option<String> },
     Execution   { execution_id: String, workflow_id: Option<String>, tenant_id: Option<String> },
     Action      { action_id: String, execution_id: Option<String>, workflow_id: Option<String>, tenant_id: Option<String> },
-    Custom      { key: String, value: String },
+    Custom      { key: String, value: String, parent: Option<Box<Scope>> },
 }
 
 impl Scope {
@@ -502,9 +531,12 @@ impl Scope {
         workflow_id: Option<String>,
         tenant_id: Option<String>,
     ) -> Result<Self, String>;
+    /// Create a Custom scope without a parent.
     pub fn try_custom(key: impl Into<String>, value: impl Into<String>) -> Result<Self, String>;
+    /// Create a Custom scope nested under `parent` for hierarchical containment checks.
+    pub fn try_custom_with_parent(key: impl Into<String>, value: impl Into<String>, parent: Scope) -> Result<Self, String>;
 
-    /// Numeric depth: Global=0, Tenant=1, Workflow=2, Execution=3, Action=4, Custom=1.
+    /// Numeric depth: Global=0, Tenant=1, Workflow=2, Execution=3, Action=4, Custom≥1.
     pub fn hierarchy_level(&self) -> u8;
     pub fn is_broader_than(&self, other: &Scope) -> bool;
     pub fn is_narrower_than(&self, other: &Scope) -> bool;
@@ -561,15 +593,19 @@ impl ResourceMetadata {
     pub fn new(key: ResourceKey, name: impl Into<String>, description: impl Into<String>) -> Self;
     pub fn from_key(key: ResourceKey) -> Self;
 
-    /// Start a builder.
-    pub fn build(key: ResourceKey, name: impl Into<String>, description: impl Into<String>) -> ResourceMetadataBuilder;
+    /// Start a builder (preferred over direct construction).
+    pub fn builder(key: ResourceKey, name: impl Into<String>, description: impl Into<String>) -> ResourceMetadataBuilder;
+}
 
-    // Fluent setters (consume self, return Self)
-    pub fn with_icon(self, icon: impl Into<String>) -> Self;
-    pub fn with_icon_url(self, icon_url: impl Into<String>) -> Self;
-    pub fn with_tag(self, tag: impl Into<String>) -> Self;
-    pub fn with_tags<T, I>(self, tags: I) -> Self
+pub struct ResourceMetadataBuilder { /* ... */ }
+
+impl ResourceMetadataBuilder {
+    pub fn icon(self, icon: impl Into<String>) -> Self;
+    pub fn icon_url(self, icon_url: impl Into<String>) -> Self;
+    pub fn tag(self, tag: impl Into<String>) -> Self;
+    pub fn tags<T, I>(self, tags: I) -> Self
     where T: Into<String>, I: IntoIterator<Item = T>;
+    pub fn build(self) -> ResourceMetadata;
 }
 ```
 

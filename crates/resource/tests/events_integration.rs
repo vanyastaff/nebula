@@ -274,6 +274,7 @@ async fn health_state_transition_emits_health_changed_event() {
         default_interval: Duration::from_millis(50),
         failure_threshold: 10,
         check_timeout: Duration::from_secs(1),
+        ..Default::default()
     };
     let checker = HealthChecker::with_event_bus(config, Arc::clone(&bus));
 
@@ -338,6 +339,7 @@ async fn no_health_changed_event_when_state_unchanged() {
         default_interval: Duration::from_millis(50),
         failure_threshold: 10,
         check_timeout: Duration::from_secs(1),
+        ..Default::default()
     };
     let checker = HealthChecker::with_event_bus(config, Arc::clone(&bus));
 
@@ -378,6 +380,7 @@ async fn health_threshold_breach_emits_structured_quarantine_transition_event() 
             default_interval: Duration::from_millis(25),
             failure_threshold: 1,
             check_timeout: Duration::from_secs(1),
+            ..Default::default()
         })
         .build();
 
