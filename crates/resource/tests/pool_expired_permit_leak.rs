@@ -11,7 +11,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -55,14 +55,14 @@ impl Resource for FailThenSucceedResource {
     type Config = TestConfig;
     type Instance = String;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("fail-then-succeed").expect("valid")
+        resource_key!("fail-then-succeed")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
         let n = self.call_counter.fetch_add(1, Ordering::SeqCst);
         if n < self.fail_count {
             return Err(Error::Initialization {
-                resource_key: ResourceKey::try_from("fail-then-succeed").expect("valid"),
+                resource_key: resource_key!("fail-then-succeed"),
                 reason: format!("intentional failure on call {n}"),
                 source: None,
             });
@@ -99,7 +99,7 @@ impl Resource for ControllableResource {
     type Config = TestConfig;
     type Instance = String;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("controllable").expect("valid")
+        resource_key!("controllable")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -107,7 +107,7 @@ impl Resource for ControllableResource {
         if remaining > 0 {
             self.remaining_failures.fetch_sub(1, Ordering::SeqCst);
             return Err(Error::Initialization {
-                resource_key: ResourceKey::try_from("controllable").expect("valid"),
+                resource_key: resource_key!("controllable"),
                 reason: "induced failure".to_string(),
                 source: None,
             });

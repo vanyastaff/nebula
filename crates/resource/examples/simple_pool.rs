@@ -37,7 +37,7 @@ impl Resource for ConnectionResource {
     type Config = ConnectionConfig;
     type Instance = String;
     fn key(&self) -> nebula_core::ResourceKey {
-        nebula_core::ResourceKey::try_from("connection").expect("valid resource key")
+        nebula_core::resource_key!("connection")
     }
 
     async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {

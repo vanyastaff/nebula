@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -41,7 +41,7 @@ impl Resource for InMemoryCache {
     type Config = CacheConfig;
     type Instance = HashMap<String, String>;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("in-memory-cache").expect("valid resource key")
+        resource_key!("in-memory-cache")
     }
 
     /// Create a new empty cache.

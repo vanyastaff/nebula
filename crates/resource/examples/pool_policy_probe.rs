@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::{AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig};
@@ -26,7 +26,7 @@ impl Resource for ProbeResource {
     type Instance = u64;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("probe-pool-policy").expect("valid")
+        resource_key!("probe-pool-policy")
     }
 
     async fn create(&self, _config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {

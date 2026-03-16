@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -41,7 +41,7 @@ impl Resource for StressResource {
     type Config = StressConfig;
     type Instance = u64;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("stress").expect("valid resource key")
+        resource_key!("stress")
     }
 
     async fn create(&self, _config: &StressConfig, _ctx: &Context) -> Result<u64> {

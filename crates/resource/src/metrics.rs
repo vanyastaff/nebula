@@ -258,7 +258,7 @@ pub fn spawn_metrics_collector(
 mod tests {
     use super::*;
     use crate::events::EventBus;
-    use nebula_core::ResourceKey;
+    use nebula_core::resource_key;
     use std::time::Duration;
 
     #[tokio::test]
@@ -272,7 +272,7 @@ mod tests {
         let handle = tokio::spawn(collector.run(cancel));
 
         // Emit a variety of events
-        let key = nebula_core::ResourceKey::try_from("db").expect("valid resource key");
+        let key = nebula_core::resource_key!("db");
         bus.emit(ResourceEvent::Created {
             resource_key: key.clone(),
             scope: crate::scope::Scope::Global,
@@ -310,7 +310,7 @@ mod tests {
             RESOURCE_LABELS.insert(seed);
         }
 
-        let extra_key = ResourceKey::try_from("r-overflow").expect("valid key");
+        let extra_key = resource_key!("r-overflow");
         let overflow_label = MetricsCollector::resource_label(&extra_key);
         assert_eq!(overflow_label, "__other");
     }

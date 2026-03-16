@@ -161,6 +161,7 @@ impl Recorder for NoopRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nebula_core::resource_key;
 
     // ─────────────────────────────────────────────────────────────────────────────
     // CallRecord edge cases
@@ -170,7 +171,7 @@ mod tests {
     fn test_call_record_with_empty_payloads() {
         tracing::debug!("testing call_record with empty payloads");
         let record = CallRecord {
-            resource_key: ResourceKey::new("test_resource").expect("valid resource key"),
+            resource_key: resource_key!("test_resource"),
             operation: "test_op".to_string(),
             started_at: Instant::now(),
             duration: Duration::from_millis(100),
@@ -228,7 +229,7 @@ mod tests {
     fn test_call_record_zero_duration() {
         tracing::debug!("testing call_record with zero duration");
         let record = CallRecord {
-            resource_key: ResourceKey::new("zero_duration").expect("valid resource key"),
+            resource_key: resource_key!("zero_duration"),
             operation: "instant_op".to_string(),
             started_at: Instant::now(),
             duration: Duration::ZERO,
@@ -250,7 +251,7 @@ mod tests {
     fn test_resource_usage_record_max_values() {
         tracing::debug!("testing resource_usage_record with max values");
         let record = ResourceUsageRecord {
-            resource_key: ResourceKey::new("max_test").expect("valid resource key"),
+            resource_key: resource_key!("max_test"),
             acquired_at: Instant::now(),
             wait_duration: Duration::new(u64::MAX, 999_999_999),
             hold_duration: Duration::new(u64::MAX, 999_999_999),
@@ -264,7 +265,7 @@ mod tests {
     fn test_resource_usage_record_zero_usage() {
         tracing::debug!("testing resource_usage_record zero usage");
         let record = ResourceUsageRecord {
-            resource_key: ResourceKey::new("zero_usage").expect("valid resource key"),
+            resource_key: resource_key!("zero_usage"),
             acquired_at: Instant::now(),
             wait_duration: Duration::ZERO,
             hold_duration: Duration::ZERO,
@@ -278,7 +279,7 @@ mod tests {
     fn test_resource_usage_record_panic_drop_reason() {
         tracing::debug!("testing resource_usage_record panic drop reason");
         let record = ResourceUsageRecord {
-            resource_key: ResourceKey::new("panic_drop").expect("valid resource key"),
+            resource_key: resource_key!("panic_drop"),
             acquired_at: Instant::now(),
             wait_duration: Duration::from_millis(10),
             hold_duration: Duration::from_millis(100),
@@ -291,7 +292,7 @@ mod tests {
     fn test_resource_usage_record_detached_drop_reason() {
         tracing::debug!("testing resource_usage_record detached drop reason");
         let record = ResourceUsageRecord {
-            resource_key: ResourceKey::new("detached").expect("valid resource key"),
+            resource_key: resource_key!("detached"),
             acquired_at: Instant::now(),
             wait_duration: Duration::from_millis(5),
             hold_duration: Duration::from_millis(50),
@@ -304,7 +305,7 @@ mod tests {
     fn test_resource_usage_record_clone() {
         tracing::debug!("testing resource_usage_record clone");
         let record = ResourceUsageRecord {
-            resource_key: ResourceKey::new("clone_test").expect("valid resource key"),
+            resource_key: resource_key!("clone_test"),
             acquired_at: Instant::now(),
             wait_duration: Duration::from_millis(20),
             hold_duration: Duration::from_millis(200),
@@ -359,7 +360,7 @@ mod tests {
         tracing::debug!("testing noop_recorder record_usage");
         let recorder = NoopRecorder;
         let record = ResourceUsageRecord {
-            resource_key: ResourceKey::new("noop_test").expect("valid resource key"),
+            resource_key: resource_key!("noop_test"),
             acquired_at: Instant::now(),
             wait_duration: Duration::from_millis(1),
             hold_duration: Duration::from_millis(10),
@@ -374,7 +375,7 @@ mod tests {
         tracing::debug!("testing noop_recorder record_call");
         let recorder = NoopRecorder;
         let record = CallRecord {
-            resource_key: ResourceKey::new("noop_test").expect("valid resource key"),
+            resource_key: resource_key!("noop_test"),
             operation: "no_op".to_string(),
             started_at: Instant::now(),
             duration: Duration::from_millis(5),

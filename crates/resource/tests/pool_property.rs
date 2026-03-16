@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig, PoolStrategy};
@@ -40,7 +40,7 @@ impl Resource for CountingResource {
     type Config = TestConfig;
     type Instance = u64;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("counting").expect("valid")
+        resource_key!("counting")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<u64> {

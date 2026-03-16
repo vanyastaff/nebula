@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::Error;
 use nebula_resource::poison::{Poison, PoisonError};
@@ -58,7 +58,7 @@ impl Resource for TestResource {
     type Instance = String;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("poison-test").expect("valid")
+        resource_key!("poison-test")
     }
 
     async fn create(

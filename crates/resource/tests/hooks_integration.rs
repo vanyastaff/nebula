@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
@@ -264,7 +264,7 @@ async fn hooks_execute_in_priority_order_via_manager() {
         prio: 10,
     }));
 
-    let key = ResourceKey::try_from("db").expect("valid resource key");
+    let key = resource_key!("db");
 
     let _guard = mgr.acquire(&key, &ctx()).await.unwrap();
 
@@ -326,7 +326,7 @@ async fn before_hook_cancel_stops_manager_acquire() {
         reason: "rate limited".into(),
     }));
 
-    let key = ResourceKey::try_from("db").expect("valid resource key");
+    let key = resource_key!("db");
 
     let result = mgr.acquire(&key, &ctx()).await;
     assert!(result.is_err());
@@ -432,8 +432,8 @@ async fn hook_filter_via_manager_only_fires_for_matching_resource() {
     mgr.hooks()
         .register(Arc::clone(&db_hook) as Arc<dyn ResourceHook>);
 
-    let db_key = ResourceKey::try_from("db").expect("valid resource key");
-    let cache_key = ResourceKey::try_from("cache").expect("valid resource key");
+    let db_key = resource_key!("db");
+    let cache_key = resource_key!("cache");
 
     // Acquire "db" -- hook fires
     let g1 = mgr.acquire(&db_key, &ctx()).await.unwrap();
@@ -507,7 +507,7 @@ async fn after_hook_does_not_affect_manager_acquire() {
     mgr.hooks()
         .register(Arc::clone(&hook) as Arc<dyn ResourceHook>);
 
-    let key = ResourceKey::try_from("db").expect("valid resource key");
+    let key = resource_key!("db");
 
     // Acquire should succeed despite the after-hook
     let guard = mgr.acquire(&key, &ctx()).await;

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::PoolConfig;
@@ -38,7 +38,7 @@ impl Resource for VersionedResource {
     type Instance = String;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("pool-swap").expect("valid resource key")
+        resource_key!("pool-swap")
     }
 
     async fn create(&self, _config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -73,7 +73,7 @@ async fn config_reload_swaps_to_new_pool_while_old_drains() {
         )
         .expect("initial register");
 
-    let key = ResourceKey::try_from("pool-swap").expect("valid resource key");
+    let key = resource_key!("pool-swap");
 
     // Hold a guard from the old pool so old pool cannot be fully drained yet.
     let old_guard = manager.acquire(&key, &ctx()).await.expect("old acquire");

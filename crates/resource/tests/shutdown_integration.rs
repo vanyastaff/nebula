@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
@@ -35,7 +35,7 @@ impl Resource for TrackingResource {
     type Config = TestConfig;
     type Instance = String;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("tracked").expect("valid")
+        resource_key!("tracked")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -132,7 +132,7 @@ async fn manager_shutdown_clears_all_pools() {
     )
     .unwrap();
 
-    let key = ResourceKey::try_from("tracked").expect("valid resource key");
+    let key = resource_key!("tracked");
 
     // Acquire and release to create an idle instance
     {

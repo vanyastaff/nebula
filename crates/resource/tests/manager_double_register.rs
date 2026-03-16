@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::manager::Manager;
@@ -49,7 +49,7 @@ impl Resource for TaggedResource {
     type Config = TaggedConfig;
     type Instance = String;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("db").expect("valid")
+        resource_key!("db")
     }
 
     async fn create(&self, config: &TaggedConfig, _ctx: &Context) -> Result<String> {
@@ -89,7 +89,7 @@ async fn double_register_replaces_pool() {
     )
     .unwrap();
 
-    let key = ResourceKey::try_from("db").expect("valid resource key");
+    let key = resource_key!("db");
 
     // Acquire from first pool
     let guard = mgr.acquire(&key, &ctx()).await.unwrap();
@@ -142,7 +142,7 @@ async fn double_register_with_active_guards() {
     )
     .unwrap();
 
-    let key = ResourceKey::try_from("db").expect("valid resource key");
+    let key = resource_key!("db");
 
     // Acquire a guard from the first pool and HOLD it
     let old_guard = mgr.acquire(&key, &ctx()).await.unwrap();

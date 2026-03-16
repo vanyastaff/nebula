@@ -222,7 +222,7 @@ where
 mod tests {
     use std::sync::Arc;
 
-    use nebula_core::{ExecutionId, ResourceKey, WorkflowId};
+    use nebula_core::{resource_key, ExecutionId, ResourceKey, WorkflowId};
 
     use super::*;
 
@@ -295,7 +295,7 @@ mod tests {
             type Instance = String;
 
             fn key(&self) -> ResourceKey {
-                ResourceKey::try_from("test-http").expect("valid key")
+                resource_key!("test-http")
             }
 
             async fn create(
@@ -307,7 +307,7 @@ mod tests {
             }
         }
 
-        let key = ResourceKey::try_from("http-global").expect("valid key");
+        let key = resource_key!("http-global");
         let pool =
             Pool::new(TestResource, TestConfig, PoolConfig::default()).expect("pool creation");
         let typed = Arc::new(TypedPool { pool });

@@ -47,7 +47,7 @@ impl Resource for ConfigStoreResource {
     type Config = ConfigStoreConfig;
     type Instance = ();
     fn key(&self) -> nebula_core::ResourceKey {
-        nebula_core::ResourceKey::try_from("config-store").expect("valid key")
+        nebula_core::resource_key!("config-store")
     }
 
     async fn create(&self, _config: &ConfigStoreConfig, _ctx: &Context) -> Result<()> {
@@ -90,7 +90,7 @@ impl Resource for ReferenceResource {
     type Config = ReferenceConfig;
     type Instance = ReferenceInstance;
     fn key(&self) -> nebula_core::ResourceKey {
-        nebula_core::ResourceKey::try_from("reference-resource").expect("valid key")
+        nebula_core::resource_key!("reference-resource")
     }
 
     async fn create(&self, config: &ReferenceConfig, _ctx: &Context) -> Result<ReferenceInstance> {

@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 
 mod scope_helpers;
 use scope_helpers::*;
@@ -25,7 +25,7 @@ impl Resource for EchoResource {
     type Instance = String;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("action-echo").expect("valid resource key")
+        resource_key!("action-echo")
     }
 
     async fn create(
@@ -57,7 +57,7 @@ async fn action_dynamic_acquire_supports_downcast_contract() {
         .register(EchoResource, TestConfig, PoolConfig::default())
         .expect("resource registered");
 
-    let key = ResourceKey::try_from("action-echo").expect("valid resource key");
+    let key = resource_key!("action-echo");
     let guard = manager
         .acquire(&key, &action_ctx("tenant-a"))
         .await
@@ -82,7 +82,7 @@ async fn action_scope_mismatch_returns_fatal_error_contract() {
         )
         .expect("resource registered");
 
-    let key = ResourceKey::try_from("action-echo").expect("valid resource key");
+    let key = resource_key!("action-echo");
     let err = manager
         .acquire(&key, &action_ctx("tenant-b"))
         .await
@@ -108,7 +108,7 @@ async fn action_pool_exhaustion_maps_to_retryable_category_contract() {
         )
         .expect("resource registered");
 
-    let key = ResourceKey::try_from("action-echo").expect("valid resource key");
+    let key = resource_key!("action-echo");
     let held = manager
         .acquire(&key, &action_ctx("tenant-a"))
         .await

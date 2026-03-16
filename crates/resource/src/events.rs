@@ -310,7 +310,7 @@ pub enum CleanupReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::convert::TryFrom;
+    use nebula_core::resource_key;
 
     #[test]
     fn default_creates_bus_with_1024_buffer() {
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn emit_without_subscribers_does_not_panic() {
         let bus = EventBus::new(16);
-        let key = ResourceKey::try_from("test").expect("valid resource key");
+        let key = resource_key!("test");
         bus.emit(ResourceEvent::Created {
             resource_key: key,
             scope: Scope::Global,
@@ -336,7 +336,7 @@ mod tests {
         let bus = EventBus::new(16);
         let mut sub = bus.subscribe();
 
-        let key = ResourceKey::try_from("db").expect("valid resource key");
+        let key = resource_key!("db");
         bus.emit(ResourceEvent::Created {
             resource_key: key.clone(),
             scope: Scope::Global,
@@ -360,7 +360,7 @@ mod tests {
         let bus = EventBus::new(16);
         let mut sub = bus.subscribe();
 
-        let key = ResourceKey::try_from("db").expect("valid resource key");
+        let key = resource_key!("db");
         bus.emit(ResourceEvent::ConfigReloaded {
             resource_key: key,
             scope: Scope::Global,
@@ -376,7 +376,7 @@ mod tests {
         let mut sub1 = bus.subscribe();
         let mut sub2 = bus.subscribe();
 
-        let key = ResourceKey::try_from("redis").expect("valid resource key");
+        let key = resource_key!("redis");
         bus.emit(ResourceEvent::Error {
             resource_key: key,
             error: "connection refused".to_string(),
@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn drop_newest_policy_drops_without_subscribers() {
         let bus = EventBus::with_policy(4, BackPressurePolicy::DropNewest);
-        let key = ResourceKey::try_from("x").expect("valid resource key");
+        let key = resource_key!("x");
         bus.emit(ResourceEvent::Created {
             resource_key: key,
             scope: Scope::Global,
@@ -407,7 +407,7 @@ mod tests {
         let bus = EventBus::with_policy(4, BackPressurePolicy::DropNewest);
         let mut sub = bus.subscribe();
 
-        let key = ResourceKey::try_from("x").expect("valid resource key");
+        let key = resource_key!("x");
         bus.emit(ResourceEvent::Created {
             resource_key: key,
             scope: Scope::Global,
@@ -431,7 +431,7 @@ mod tests {
         );
         let mut sub = bus.subscribe();
 
-        let key = ResourceKey::try_from("y").expect("valid resource key");
+        let key = resource_key!("y");
         bus.emit_async(ResourceEvent::Created {
             resource_key: key,
             scope: Scope::Global,
@@ -451,7 +451,7 @@ mod tests {
             },
         );
 
-        let key = ResourceKey::try_from("z").expect("valid resource key");
+        let key = resource_key!("z");
         bus.emit_async(ResourceEvent::Created {
             resource_key: key,
             scope: Scope::Global,
@@ -491,11 +491,11 @@ mod tests {
         let mut sub = bus.subscribe_scoped(SubscriptionScope::resource("db.main"));
 
         let _ = bus.emit(ResourceEvent::Error {
-            resource_key: ResourceKey::try_from("cache.redis").expect("valid resource key"),
+            resource_key: resource_key!("cache.redis"),
             error: "miss".to_string(),
         });
         let _ = bus.emit(ResourceEvent::Error {
-            resource_key: ResourceKey::try_from("db.main").expect("valid resource key"),
+            resource_key: resource_key!("db.main"),
             error: "timeout".to_string(),
         });
 

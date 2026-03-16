@@ -336,7 +336,7 @@ mod manager_scope_tests {
 
     use std::time::Duration;
 
-    use nebula_core::ResourceKey;
+    use nebula_core::{resource_key, ResourceKey};
     use nebula_resource::Manager;
     use nebula_resource::context::Context;
     use nebula_resource::error::Result;
@@ -389,7 +389,7 @@ mod manager_scope_tests {
 
         let ctx_b = Context::new(scope_tenant("B"), WorkflowId::new(), ExecutionId::new());
 
-        let key = nebula_core::ResourceKey::try_from("db").expect("valid resource key");
+        let key = nebula_core::resource_key!("db");
         let result = mgr.acquire(&key, &ctx_b).await;
         let err = result.expect_err("cross-tenant acquire should be denied");
         assert!(
@@ -411,7 +411,7 @@ mod manager_scope_tests {
         .unwrap();
 
         let ctx_a = Context::new(scope_tenant("A"), WorkflowId::new(), ExecutionId::new());
-        let key = ResourceKey::try_from("db").expect("valid");
+        let key = resource_key!("db");
         let _guard = mgr
             .acquire(&key, &ctx_a)
             .await
@@ -435,7 +435,7 @@ mod manager_scope_tests {
             WorkflowId::new(),
             ExecutionId::new(),
         );
-        let key = ResourceKey::try_from("cache").expect("valid");
+        let key = resource_key!("cache");
         let err = mgr
             .acquire(&key, &ctx_wf2)
             .await
@@ -459,7 +459,7 @@ mod manager_scope_tests {
 
         // From tenant scope
         let ctx_tenant = Context::new(scope_tenant("A"), WorkflowId::new(), ExecutionId::new());
-        let key = ResourceKey::try_from("global-db").expect("valid");
+        let key = resource_key!("global-db");
         let _g1 = mgr
             .acquire(&key, &ctx_tenant)
             .await
@@ -495,7 +495,7 @@ mod manager_scope_tests {
 
         // Global context is broader than execution scope
         let ctx_global = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
-        let key = ResourceKey::try_from("exec-db").expect("valid");
+        let key = resource_key!("exec-db");
         let err = mgr
             .acquire(&key, &ctx_global)
             .await

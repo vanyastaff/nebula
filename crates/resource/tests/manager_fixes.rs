@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::autoscale::AutoScalePolicy;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
@@ -60,7 +60,7 @@ impl Resource for SimpleResource {
     type Config = TestConfig;
     type Instance = String;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("simple").expect("valid key")
+        resource_key!("simple")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -80,7 +80,7 @@ impl Resource for SlowResource {
     type Config = TestConfig;
     type Instance = String;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("slow").expect("valid key")
+        resource_key!("slow")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -104,7 +104,7 @@ impl Resource for CloneableResource {
     type Config = TestConfig;
     type Instance = String;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("cloneable").expect("valid key")
+        resource_key!("cloneable")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -142,7 +142,7 @@ async fn deregister_cancels_auto_scaler() {
         cooldown: Duration::from_millis(100),
         ..Default::default()
     };
-    let key = ResourceKey::try_from("simple").expect("valid resource key");
+    let key = resource_key!("simple");
     manager
         .enable_autoscaling(&key, policy)
         .expect("enable autoscaling should succeed");
@@ -186,7 +186,7 @@ async fn deregister_releases_quarantine() {
         .register(SimpleResource, TestConfig, pool_config())
         .expect("register");
 
-    let key = ResourceKey::try_from("simple").expect("valid resource key");
+    let key = resource_key!("simple");
 
     // Manually quarantine the resource
     manager.quarantine().quarantine(
@@ -251,7 +251,7 @@ async fn deregister_stops_health_monitoring() {
         .register(CloneableResource, TestConfig, pool_config())
         .expect("register");
 
-    let key = ResourceKey::try_from("cloneable").expect("valid resource key");
+    let key = resource_key!("cloneable");
 
     // Start health monitoring
     manager.start_health_monitoring(key.as_str(), AlwaysHealthy);
@@ -309,7 +309,7 @@ async fn default_autoscale_policy_applied_on_register() {
         .register(SimpleResource, TestConfig, pool_config())
         .expect("register");
 
-    let key = ResourceKey::try_from("simple").expect("valid resource key");
+    let key = resource_key!("simple");
 
     // The auto-scaler should be running in the background.
     // Verify by acquiring a bunch of instances to raise utilization,
@@ -352,7 +352,7 @@ async fn start_health_monitoring_convenience() {
         .register(CloneableResource, TestConfig, pool_config())
         .expect("register");
 
-    let key = ResourceKey::try_from("cloneable").expect("valid resource key");
+    let key = resource_key!("cloneable");
 
     // Use convenience method
     manager.start_health_monitoring(key.as_str(), AlwaysHealthy);
@@ -550,7 +550,7 @@ async fn stop_monitoring_resource_cancels_all() {
 async fn deregister_nonexistent_returns_false() {
     let manager = Manager::new();
 
-    let key = ResourceKey::try_from("nonexistent").expect("valid resource key");
+    let key = resource_key!("nonexistent");
     let was_registered = manager.deregister(&key).await;
     assert!(!was_registered);
 
@@ -569,7 +569,7 @@ async fn deregister_with_active_autoscaler_no_panic() {
         .register(SimpleResource, TestConfig, pool_config())
         .expect("register");
 
-    let key = ResourceKey::try_from("simple").expect("valid resource key");
+    let key = resource_key!("simple");
 
     let policy = AutoScalePolicy {
         evaluation_window: Duration::from_millis(20),
@@ -609,7 +609,7 @@ async fn re_register_after_deregister_with_full_cleanup() {
         .register(SimpleResource, TestConfig, pool_config())
         .expect("register");
 
-    let key = ResourceKey::try_from("simple").expect("valid resource key");
+    let key = resource_key!("simple");
 
     let policy = AutoScalePolicy {
         evaluation_window: Duration::from_millis(50),
@@ -732,7 +732,7 @@ async fn default_autoscale_plus_hooks_work_together() {
         .register(SimpleResource, TestConfig, pool_config())
         .expect("register");
 
-    let key = ResourceKey::try_from("simple").expect("valid resource key");
+    let key = resource_key!("simple");
 
     // Acquire
     let guard = manager.acquire(&key, &ctx()).await.expect("acquire");

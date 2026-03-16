@@ -648,8 +648,7 @@ impl Manager {
             .get(&TypeId::of::<R>())
             .map(|r| r.clone())
             .ok_or_else(|| Error::Unavailable {
-                resource_key: nebula_core::ResourceKey::new("unknown")
-                    .expect("literal key is valid"),
+                resource_key: nebula_core::resource_key!("unknown"),
                 reason: format!(
                     "Resource type {} not registered",
                     std::any::type_name::<R>()
@@ -1238,6 +1237,7 @@ mod tests {
     use crate::quarantine::QuarantineReason;
     use crate::resource::Config;
     use crate::scope::Scope;
+    use nebula_core::resource_key;
 
     #[derive(Debug, Clone, serde::Deserialize)]
     struct TestConfig {
@@ -1260,7 +1260,7 @@ mod tests {
         type Instance = String;
 
         fn key(&self) -> ResourceKey {
-            ResourceKey::try_from("test").expect("valid resource key")
+            resource_key!("test")
         }
 
         async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -1285,7 +1285,7 @@ mod tests {
         mgr.register(TestResource, config, PoolConfig::default())
             .unwrap();
 
-        let key = ResourceKey::try_from("test").expect("valid resource key");
+        let key = resource_key!("test");
         let guard = mgr.acquire(&key, &ctx()).await.unwrap();
         let instance = guard
             .as_any()
@@ -1297,7 +1297,7 @@ mod tests {
     #[tokio::test]
     async fn acquire_unregistered_fails() {
         let mgr = Manager::new();
-        let key = ResourceKey::try_from("test").expect("valid resource key");
+        let key = resource_key!("test");
         let result = mgr.acquire(&key, &ctx()).await;
         assert!(result.is_err());
     }
@@ -1325,7 +1325,7 @@ mod tests {
         };
         mgr.register(TestResource, config, pool_config).unwrap();
 
-        let key = ResourceKey::try_from("test").expect("valid resource key");
+        let key = resource_key!("test");
 
         // Acquire and drop — should return to pool
         {
@@ -1370,7 +1370,7 @@ mod tests {
             type Config = TestConfig;
             type Instance = String;
             fn key(&self) -> ResourceKey {
-                ResourceKey::try_from("a").expect("valid")
+                resource_key!("a")
             }
             async fn create(&self, config: &TestConfig, _ctx: &Context) -> Result<String> {
                 Ok(config.value.clone())
@@ -1448,7 +1448,7 @@ mod tests {
             _resource_id: &str,
             _ctx: &Context,
         ) -> crate::hooks::HookResult {
-            let key = ResourceKey::try_from("test").expect("valid resource key");
+            let key = resource_key!("test");
             crate::hooks::HookResult::Cancel(Error::Unavailable {
                 resource_key: key,
                 reason: "blocked by hook".to_string(),
@@ -1490,7 +1490,7 @@ mod tests {
         )
         .unwrap();
 
-        let key = ResourceKey::try_from("test").expect("valid resource key");
+        let key = resource_key!("test");
         let _guard = mgr.acquire(&key, &ctx()).await.unwrap();
 
         assert_eq!(hook.before_count.load(Ordering::SeqCst), 1);
@@ -1512,7 +1512,7 @@ mod tests {
         )
         .unwrap();
 
-        let key = ResourceKey::try_from("test").expect("valid resource key");
+        let key = resource_key!("test");
         let result = mgr.acquire(&key, &ctx()).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1529,7 +1529,7 @@ mod tests {
     #[test]
     fn set_health_state_stores_state() {
         let mgr = Manager::new();
-        let key = ResourceKey::try_from("db").expect("valid resource key");
+        let key = resource_key!("db");
         mgr.set_health_state(
             &key,
             HealthState::Unhealthy {
@@ -1551,7 +1551,7 @@ mod tests {
         // Set up dependency: "app" depends on "db"
         mgr.deps.write().add_dependency("app", "db").unwrap();
 
-        let key = ResourceKey::try_from("db").expect("valid resource key");
+        let key = resource_key!("db");
         mgr.set_health_state(
             &key,
             HealthState::Unhealthy {
@@ -1577,7 +1577,7 @@ mod tests {
         let mgr = Manager::new();
         mgr.deps.write().add_dependency("app", "db").unwrap();
 
-        let key = ResourceKey::try_from("db").expect("valid resource key");
+        let key = resource_key!("db");
         // First mark db unhealthy (cascades to app)
         mgr.set_health_state(
             &key,
@@ -1612,8 +1612,8 @@ mod tests {
             deps.add_dependency("app", "cache").unwrap();
         }
 
-        let cache_key = ResourceKey::try_from("cache").expect("valid resource key");
-        let db_key = ResourceKey::try_from("db").expect("valid resource key");
+        let cache_key = resource_key!("cache");
+        let db_key = resource_key!("db");
 
         // Mark cache unhealthy (degrades app)
         mgr.set_health_state(
@@ -1641,8 +1641,8 @@ mod tests {
         let mgr = Manager::new();
         mgr.deps.write().add_dependency("app", "db").unwrap();
 
-        let app_key = ResourceKey::try_from("app").expect("valid resource key");
-        let db_key = ResourceKey::try_from("db").expect("valid resource key");
+        let app_key = resource_key!("app");
+        let db_key = resource_key!("db");
 
         // Mark app itself as unhealthy (independent of db)
         mgr.set_health_state(
@@ -1684,7 +1684,7 @@ mod tests {
         )
         .unwrap();
 
-        let key = ResourceKey::try_from("test").expect("valid resource key");
+        let key = resource_key!("test");
         mgr.set_health_state(
             &key,
             HealthState::Unhealthy {
@@ -1714,7 +1714,7 @@ mod tests {
         mgr.register(TestResource, config_a, PoolConfig::default())
             .unwrap();
 
-        let key = ResourceKey::try_from("test").expect("valid resource key");
+        let key = resource_key!("test");
 
         // Acquire from pool A
         let guard = mgr.acquire(&key, &ctx()).await.unwrap();
@@ -1746,7 +1746,7 @@ mod tests {
         )
         .unwrap();
 
-        let key = ResourceKey::try_from("test").expect("valid resource key");
+        let key = resource_key!("test");
 
         // Hold a guard from the old pool
         let old_guard = mgr.acquire(&key, &ctx()).await.unwrap();
@@ -1797,7 +1797,7 @@ mod tests {
         )
         .unwrap();
 
-        let key = ResourceKey::try_from("test").expect("valid resource key");
+        let key = resource_key!("test");
         mgr.set_health_state(
             &key,
             HealthState::Degraded {
@@ -1833,7 +1833,7 @@ mod tests {
             type Config = TestConfig;
             type Instance = String;
             fn key(&self) -> ResourceKey {
-                ResourceKey::try_from("alpha").expect("valid")
+                resource_key!("alpha")
             }
             async fn create(&self, config: &TestConfig, _ctx: &Context) -> Result<String> {
                 Ok(format!("instance-{}", config.value))
@@ -1845,7 +1845,7 @@ mod tests {
             type Config = TestConfig;
             type Instance = String;
             fn key(&self) -> ResourceKey {
-                ResourceKey::try_from("zeta").expect("valid")
+                resource_key!("zeta")
             }
             async fn create(&self, config: &TestConfig, _ctx: &Context) -> Result<String> {
                 Ok(format!("instance-{}", config.value))

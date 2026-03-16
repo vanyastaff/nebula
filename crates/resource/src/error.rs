@@ -314,7 +314,7 @@ impl nebula_resilience::retryable::Retryable for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::convert::TryFrom;
+    use nebula_core::resource_key;
 
     #[test]
     fn configuration_has_no_resource_id() {
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn pool_exhausted_is_retryable_with_resource_id() {
-        let key = ResourceKey::try_from("postgres").expect("valid resource key");
+        let key = resource_key!("postgres");
         let err = Error::PoolExhausted {
             resource_key: key.clone(),
             current_size: 10,
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn timeout_is_retryable_with_resource_id() {
-        let key = ResourceKey::try_from("redis").expect("valid resource key");
+        let key = resource_key!("redis");
         let err = Error::Timeout {
             resource_key: key.clone(),
             timeout_ms: 5000,
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn circuit_breaker_open_is_retryable() {
-        let key = ResourceKey::try_from("api").expect("valid resource key");
+        let key = resource_key!("api");
         let err = Error::CircuitBreakerOpen {
             resource_key: key.clone(),
             operation: "create",
@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn unavailable_retryable_depends_on_flag() {
-        let key = ResourceKey::try_from("db").expect("valid resource key");
+        let key = resource_key!("db");
         let retryable = Error::Unavailable {
             resource_key: key.clone(),
             reason: "overloaded".to_string(),
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn all_resource_id_variants_covered() {
         // Variants with resource_id
-        let key = ResourceKey::try_from("r").expect("valid resource key");
+        let key = resource_key!("r");
         let variants_with_id: Vec<Error> = vec![
             Error::Initialization {
                 resource_key: key.clone(),
@@ -519,7 +519,7 @@ mod tests {
         let err = Error::configuration("invalid max_size");
         assert!(err.to_string().contains("invalid max_size"));
 
-        let key = ResourceKey::try_from("pg").expect("valid resource key");
+        let key = resource_key!("pg");
         let err = Error::PoolExhausted {
             resource_key: key,
             current_size: 5,
@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn category_retryable_for_retryable_errors() {
-        let key = ResourceKey::try_from("retryable").expect("valid resource key");
+        let key = resource_key!("retryable");
         let err = Error::PoolExhausted {
             resource_key: key,
             current_size: 2,
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn category_fatal_for_non_retryable_operational_errors() {
-        let key = ResourceKey::try_from("fatal").expect("valid resource key");
+        let key = resource_key!("fatal");
         let err = Error::Unavailable {
             resource_key: key,
             reason: "missing registration".into(),
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn circuit_breaker_open_operation_returns_op_name() {
-        let key = ResourceKey::try_from("cache").expect("valid resource key");
+        let key = resource_key!("cache");
         for op in ["create", "recycle"] {
             let err = Error::CircuitBreakerOpen {
                 resource_key: key.clone(),

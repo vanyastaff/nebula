@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -26,7 +26,7 @@ impl Resource for ProfileResource {
     type Instance = u64;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("profile-pool").expect("valid")
+        resource_key!("profile-pool")
     }
 
     async fn create(&self, _config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {

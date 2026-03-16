@@ -471,8 +471,7 @@ mod tests {
             _ctx: &Context,
         ) -> HookResult {
             HookResult::Cancel(Error::Unavailable {
-                resource_key: nebula_core::ResourceKey::try_from("test")
-                    .expect("valid resource key"),
+                resource_key: nebula_core::resource_key!("test"),
                 reason: "cancelled by hook".to_string(),
                 retryable: false,
             })

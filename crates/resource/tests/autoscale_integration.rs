@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::autoscale::{AutoScalePolicy, AutoScaler};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
@@ -54,7 +54,7 @@ impl Resource for CountingResource {
     type Config = TestConfig;
     type Instance = String;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("counting").expect("valid resource key")
+        resource_key!("counting")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {

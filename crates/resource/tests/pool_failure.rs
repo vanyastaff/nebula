@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -47,12 +47,12 @@ impl Resource for AlwaysFailResource {
     type Config = TestConfig;
     type Instance = String;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("always-fail").expect("valid")
+        resource_key!("always-fail")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
         Err(Error::Initialization {
-            resource_key: ResourceKey::try_from("always-fail").expect("valid"),
+            resource_key: resource_key!("always-fail"),
             reason: "intentional failure".to_string(),
             source: None,
         })
@@ -82,14 +82,14 @@ impl Resource for IntermittentResource {
     type Config = TestConfig;
     type Instance = String;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("intermittent").expect("valid")
+        resource_key!("intermittent")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
         let n = self.call_count.fetch_add(1, Ordering::SeqCst);
         if self.fail_mask & (1 << n) != 0 {
             return Err(Error::Initialization {
-                resource_key: ResourceKey::try_from("intermittent").expect("valid"),
+                resource_key: resource_key!("intermittent"),
                 reason: format!("intentional failure on call {n}"),
                 source: None,
             });
@@ -141,7 +141,7 @@ impl Resource for ExpiredThenFailResource {
     type Config = TestConfig;
     type Instance = String;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("expired-then-fail").expect("valid")
+        resource_key!("expired-then-fail")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -149,7 +149,7 @@ impl Resource for ExpiredThenFailResource {
         if n == 1 {
             // Second create (after expired entry cleanup) fails
             return Err(Error::Initialization {
-                resource_key: ResourceKey::try_from("expired-then-fail").expect("valid"),
+                resource_key: resource_key!("expired-then-fail"),
                 reason: "fail on replacement create".to_string(),
                 source: None,
             });

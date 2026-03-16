@@ -1661,7 +1661,7 @@ mod tests {
     use super::*;
     use crate::resource::{Config, Resource};
     use crate::scope::Scope;
-    use nebula_core::ResourceKey;
+    use nebula_core::{resource_key, ResourceKey};
 
     // -- Test resource --
 
@@ -1686,7 +1686,7 @@ mod tests {
         type Instance = String;
 
         fn key(&self) -> ResourceKey {
-            ResourceKey::try_from("test-resource").expect("valid")
+            resource_key!("test-resource")
         }
 
         async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -1947,7 +1947,7 @@ mod tests {
         type Instance = String;
 
         fn key(&self) -> ResourceKey {
-            ResourceKey::try_from("slow-resource").expect("valid")
+            resource_key!("slow-resource")
         }
 
         async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -2024,7 +2024,7 @@ mod tests {
         type Instance = String;
 
         fn key(&self) -> ResourceKey {
-            ResourceKey::try_from("invalidating").expect("valid")
+            resource_key!("invalidating")
         }
 
         async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -2100,7 +2100,7 @@ mod tests {
         type Instance = String;
 
         fn key(&self) -> ResourceKey {
-            ResourceKey::try_from("recycle-fail").expect("valid")
+            resource_key!("recycle-fail")
         }
 
         async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -2108,7 +2108,7 @@ mod tests {
         }
 
         async fn recycle(&self, _instance: &mut Self::Instance) -> Result<()> {
-            let key = nebula_core::ResourceKey::try_from("recycle-fail").expect("valid key");
+            let key = nebula_core::resource_key!("recycle-fail");
             Err(Error::Internal {
                 resource_key: key,
                 message: "recycle failed".to_string(),
@@ -2332,7 +2332,7 @@ mod tests {
         type Instance = String;
 
         fn key(&self) -> ResourceKey {
-            ResourceKey::try_from("failing-create").expect("valid")
+            resource_key!("failing-create")
         }
 
         async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -2341,7 +2341,7 @@ mod tests {
                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             if remaining > 0 {
                 return Err(Error::Initialization {
-                    resource_key: ResourceKey::try_from("failing-create").expect("valid"),
+                    resource_key: resource_key!("failing-create"),
                     reason: "intentional failure".to_string(),
                     source: None,
                 });
@@ -2542,7 +2542,7 @@ mod tests {
             type Instance = String;
 
             fn key(&self) -> ResourceKey {
-                ResourceKey::try_from("counting").expect("valid")
+                resource_key!("counting")
             }
 
             async fn create(&self, _cfg: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -2593,7 +2593,7 @@ mod tests {
             type Instance = String;
 
             fn key(&self) -> ResourceKey {
-                ResourceKey::try_from("counting").expect("valid")
+                resource_key!("counting")
             }
 
             async fn create(&self, _cfg: &TestConfig, _ctx: &Context) -> Result<String> {

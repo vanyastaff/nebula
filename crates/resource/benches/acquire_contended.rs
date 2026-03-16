@@ -6,7 +6,7 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::{AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig};
@@ -26,7 +26,7 @@ impl Resource for BenchResource {
     type Instance = u64;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("bench-acquire-contended").expect("valid")
+        resource_key!("bench-acquire-contended")
     }
 
     async fn create(&self, _config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {

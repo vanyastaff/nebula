@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
@@ -194,9 +194,9 @@ async fn tenant_shutdown_cascades_to_child_scopes() {
         ExecutionId::new(),
     );
 
-    let tenant_db_key = ResourceKey::try_from("tenant-db").expect("valid resource key");
-    let wf_cache_key = ResourceKey::try_from("wf-cache").expect("valid resource key");
-    let exec_temp_key = ResourceKey::try_from("exec-temp").expect("valid resource key");
+    let tenant_db_key = resource_key!("tenant-db");
+    let wf_cache_key = resource_key!("wf-cache");
+    let exec_temp_key = resource_key!("exec-temp");
 
     let g1 = mgr.acquire(&tenant_db_key, &ctx).await.unwrap();
     let g2 = mgr.acquire(&wf_cache_key, &ctx).await.unwrap();
@@ -273,10 +273,10 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
     // Shut down tenant A
     mgr.shutdown_scope(&scope_tenant("A")).await.unwrap();
 
-    let db_b_key = ResourceKey::try_from("db-B").expect("valid resource key");
-    let cache_b_key = ResourceKey::try_from("cache-B").expect("valid resource key");
-    let db_a_key = ResourceKey::try_from("db-A").expect("valid resource key");
-    let cache_a_key = ResourceKey::try_from("cache-A").expect("valid resource key");
+    let db_b_key = resource_key!("db-B");
+    let cache_b_key = resource_key!("cache-B");
+    let db_a_key = resource_key!("db-A");
+    let cache_a_key = resource_key!("cache-A");
 
     // Tenant B resources should still be accessible
     let ctx_b = Context::new(scope_tenant("B"), WorkflowId::new(), ExecutionId::new());
@@ -336,9 +336,9 @@ async fn global_scope_shutdown_cascades_to_all() {
 
     mgr.shutdown_scope(&Scope::Global).await.unwrap();
 
-    let global_r_key = ResourceKey::try_from("global-r").expect("valid resource key");
-    let tenant_r_key = ResourceKey::try_from("tenant-r").expect("valid resource key");
-    let wf_r_key = ResourceKey::try_from("wf-r").expect("valid resource key");
+    let global_r_key = resource_key!("global-r");
+    let tenant_r_key = resource_key!("tenant-r");
+    let wf_r_key = resource_key!("wf-r");
 
     let ctx = Context::new(
         scope_execution_in_workflow("ex1", "wf1", Some("X".to_string())),
@@ -379,8 +379,8 @@ async fn workflow_scope_shutdown_does_not_affect_siblings() {
         .await
         .unwrap();
 
-    let cache_wf2_key = ResourceKey::try_from("cache-wf2").expect("valid resource key");
-    let cache_wf1_key = ResourceKey::try_from("cache-wf1").expect("valid resource key");
+    let cache_wf2_key = resource_key!("cache-wf2");
+    let cache_wf1_key = resource_key!("cache-wf1");
 
     // wf2 resource should still work
     let ctx_wf2 = Context::new(
@@ -480,9 +480,9 @@ async fn shutdown_scope_follows_dependency_ordering() {
         "cache should shut down before db, got order: {cleanup_order:?}"
     );
 
-    let app_key = ResourceKey::try_from("app").expect("valid resource key");
-    let cache_key = ResourceKey::try_from("cache").expect("valid resource key");
-    let db_key = ResourceKey::try_from("db").expect("valid resource key");
+    let app_key = resource_key!("app");
+    let cache_key = resource_key!("cache");
+    let db_key = resource_key!("db");
 
     assert!(mgr.acquire(&app_key, &ctx).await.is_err());
     assert!(mgr.acquire(&cache_key, &ctx).await.is_err());
@@ -512,7 +512,7 @@ async fn scope_shutdown_invokes_cleanup() {
     // Acquire and release to create an idle instance
     let ctx = Context::new(scope_tenant("A"), WorkflowId::new(), ExecutionId::new());
 
-    let tracked_db_key = ResourceKey::try_from("tracked-db").expect("valid resource key");
+    let tracked_db_key = resource_key!("tracked-db");
 
     {
         let _g = mgr.acquire(&tracked_db_key, &ctx).await.unwrap();

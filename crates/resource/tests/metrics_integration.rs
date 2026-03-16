@@ -20,7 +20,7 @@ async fn metrics_collector_processes_all_event_types() {
     let handle = tokio::spawn(collector.run(cancel));
 
     // Emit one of each event type
-    let key = nebula_core::ResourceKey::try_from("db").expect("valid resource key");
+    let key = nebula_core::resource_key!("db");
     bus.emit(ResourceEvent::Created {
         resource_key: key.clone(),
         scope: Scope::Global,
@@ -90,7 +90,7 @@ async fn spawn_metrics_collector_helper_works() {
     let cancel = tokio_util::sync::CancellationToken::new();
     let handle = nebula_resource::metrics::spawn_metrics_collector(&bus, cancel);
 
-    let key = nebula_core::ResourceKey::try_from("x").expect("valid resource key");
+    let key = nebula_core::resource_key!("x");
     bus.emit(ResourceEvent::Created {
         resource_key: key,
         scope: Scope::Global,

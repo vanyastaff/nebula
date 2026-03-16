@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
@@ -81,8 +81,8 @@ async fn two_tenants_each_access_only_own_resources() {
     let ctx_a = Context::new(scope_tenant("A"), WorkflowId::new(), ExecutionId::new());
     let ctx_b = Context::new(scope_tenant("B"), WorkflowId::new(), ExecutionId::new());
 
-    let key_a = ResourceKey::try_from("db-A").expect("valid resource key");
-    let key_b = ResourceKey::try_from("db-B").expect("valid resource key");
+    let key_a = resource_key!("db-A");
+    let key_b = resource_key!("db-B");
 
     // Tenant A can access db-A, not db-B
     let g = mgr.acquire(&key_a, &ctx_a).await.unwrap();
@@ -139,9 +139,9 @@ async fn global_resource_shared_across_tenants() {
     let ctx_a = Context::new(scope_tenant("A"), WorkflowId::new(), ExecutionId::new());
     let ctx_b = Context::new(scope_tenant("B"), WorkflowId::new(), ExecutionId::new());
 
-    let metrics_key = ResourceKey::try_from("metrics").expect("valid resource key");
-    let cache_a_key = ResourceKey::try_from("cache-A").expect("valid resource key");
-    let cache_b_key = ResourceKey::try_from("cache-B").expect("valid resource key");
+    let metrics_key = resource_key!("metrics");
+    let cache_a_key = resource_key!("cache-A");
+    let cache_b_key = resource_key!("cache-B");
 
     // Both tenants can access global "metrics"
     let g1 = mgr.acquire(&metrics_key, &ctx_a).await.unwrap();
@@ -174,7 +174,7 @@ async fn workflow_resource_accessible_from_child_execution() {
     )
     .unwrap();
 
-    let wf_cache_key = ResourceKey::try_from("wf-cache").expect("valid resource key");
+    let wf_cache_key = resource_key!("wf-cache");
 
     // Execution inside wf1 can access it
     let exec_ctx = Context::new(
@@ -234,8 +234,8 @@ async fn workflow_resource_denied_from_different_workflow() {
         ExecutionId::new(),
     );
 
-    let wf1_db_key = ResourceKey::try_from("wf1-db").expect("valid resource key");
-    let wf2_db_key = ResourceKey::try_from("wf2-db").expect("valid resource key");
+    let wf1_db_key = resource_key!("wf1-db");
+    let wf2_db_key = resource_key!("wf2-db");
 
     // wf1 context can access wf1-db, not wf2-db
     mgr.acquire(&wf1_db_key, &wf1_ctx).await.unwrap();
@@ -274,7 +274,7 @@ async fn tenant_resource_accessible_from_nested_action() {
         ExecutionId::new(),
     );
 
-    let tenant_db_key = ResourceKey::try_from("tenant-db").expect("valid resource key");
+    let tenant_db_key = resource_key!("tenant-db");
 
     let g = mgr.acquire(&tenant_db_key, &action_ctx).await.unwrap();
     assert!(g.as_any().downcast_ref::<String>().is_some());
@@ -340,10 +340,10 @@ async fn full_isolation_matrix_across_scope_levels() {
         ExecutionId::new(),
     );
 
-    let global_key = ResourceKey::try_from("global-r").expect("valid resource key");
-    let tenant_key = ResourceKey::try_from("tenant-r").expect("valid resource key");
-    let wf_key = ResourceKey::try_from("wf-r").expect("valid resource key");
-    let execution_key = ResourceKey::try_from("execution-r").expect("valid resource key");
+    let global_key = resource_key!("global-r");
+    let tenant_key = resource_key!("tenant-r");
+    let wf_key = resource_key!("wf-r");
+    let execution_key = resource_key!("execution-r");
 
     // This context should be able to access: global, tenant-A, wf1, ex1
     mgr.acquire(&global_key, &exec_ctx).await.unwrap();
@@ -400,8 +400,8 @@ async fn concurrent_multi_tenant_acquire() {
 
     let handle_a = tokio::spawn(async move {
         let ctx = Context::new(scope_tenant("A"), WorkflowId::new(), ExecutionId::new());
-        let key_a = ResourceKey::try_from("pool-A").expect("valid");
-        let key_b = ResourceKey::try_from("pool-B").expect("valid");
+        let key_a = resource_key!("pool-A");
+        let key_b = resource_key!("pool-B");
         let g1 = mgr_a.acquire(&key_a, &ctx).await.unwrap();
         let g2 = mgr_a.acquire(&key_a, &ctx).await.unwrap();
         // Cannot access pool-B
@@ -412,8 +412,8 @@ async fn concurrent_multi_tenant_acquire() {
 
     let handle_b = tokio::spawn(async move {
         let ctx = Context::new(scope_tenant("B"), WorkflowId::new(), ExecutionId::new());
-        let key_a = ResourceKey::try_from("pool-A").expect("valid");
-        let key_b = ResourceKey::try_from("pool-B").expect("valid");
+        let key_a = resource_key!("pool-A");
+        let key_b = resource_key!("pool-B");
         let g1 = mgr_b.acquire(&key_b, &ctx).await.unwrap();
         let g2 = mgr_b.acquire(&key_b, &ctx).await.unwrap();
         // Cannot access pool-A

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -41,7 +41,7 @@ impl Resource for RaceResource {
     type Instance = usize;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("ci-race").expect("valid resource key")
+        resource_key!("ci-race")
     }
 
     async fn create(&self, _config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {

@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{BenchmarkGroup, Criterion, criterion_group, criterion_main, measurement::WallTime};
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -39,7 +39,7 @@ impl Resource for BenchResource {
     type Instance = u64;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("bench-manager").expect("valid key")
+        resource_key!("bench-manager")
     }
 
     async fn create(&self, _config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -74,7 +74,7 @@ fn pool_config() -> PoolConfig {
 }
 
 fn resource_key() -> ResourceKey {
-    ResourceKey::try_from("bench-manager").expect("valid key")
+    resource_key!("bench-manager")
 }
 
 // ---------------------------------------------------------------------------

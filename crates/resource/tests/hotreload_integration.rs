@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
@@ -54,7 +54,7 @@ impl Resource for TrackingResource {
     type Instance = String;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("reload-test").expect("valid key")
+        resource_key!("reload-test")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -93,7 +93,7 @@ async fn config_hot_reload_creates_new_pool() {
     )
     .unwrap();
 
-    let key = ResourceKey::try_from("reload-test").expect("valid resource key");
+    let key = resource_key!("reload-test");
 
     // Prove the old pool works: acquire and release.
     {
@@ -170,7 +170,7 @@ async fn config_hot_reload_reduces_max_size() {
     .await
     .unwrap();
 
-    let key = ResourceKey::try_from("reload-test").expect("valid resource key");
+    let key = resource_key!("reload-test");
 
     // Acquire 2 (should succeed).
     let _g1 = mgr.acquire(&key, &ctx()).await.unwrap();
@@ -205,7 +205,7 @@ async fn reload_config_on_unregistered_resource_registers_fresh() {
     .await
     .unwrap();
 
-    let key = ResourceKey::try_from("reload-test").expect("valid resource key");
+    let key = resource_key!("reload-test");
 
     // Should be acquirable now.
     let guard = mgr.acquire(&key, &ctx()).await.unwrap();
@@ -250,7 +250,7 @@ async fn reload_config_with_invalid_config_fails_cleanly() {
 
     assert!(result.is_err(), "reload with max_size=0 should fail");
 
-    let key = ResourceKey::try_from("reload-test").expect("valid resource key");
+    let key = resource_key!("reload-test");
 
     // Original pool should still work.
     let guard = mgr.acquire(&key, &ctx()).await.unwrap();
@@ -314,7 +314,7 @@ async fn invalid_reload_emits_config_reload_rejected_event() {
         other => panic!("expected ConfigReloadRejected, got {other:?}"),
     }
 
-    let key = ResourceKey::try_from("reload-test").expect("valid resource key");
+    let key = resource_key!("reload-test");
     let guard = mgr.acquire(&key, &ctx()).await.unwrap();
     let inst = guard
         .as_any()
@@ -341,7 +341,7 @@ async fn old_pool_guards_cleanup_after_reload() {
     )
     .unwrap();
 
-    let key = ResourceKey::try_from("reload-test").expect("valid resource key");
+    let key = resource_key!("reload-test");
 
     // Hold a guard from the old pool.
     let old_guard = mgr.acquire(&key, &ctx()).await.unwrap();
@@ -399,7 +399,7 @@ async fn reload_config_concurrent_acquire() {
     let acquire_handle = tokio::spawn(async move {
         let mut successes = 0u32;
         let mut failures = 0u32;
-        let key = ResourceKey::try_from("reload-test").expect("valid resource key");
+        let key = resource_key!("reload-test");
         for _ in 0..20 {
             match mgr_acquirer.acquire(&key, &ctx()).await {
                 Ok(guard) => {
@@ -441,7 +441,7 @@ async fn reload_config_concurrent_acquire() {
         "at least half of acquires should succeed, got {successes}/20"
     );
 
-    let key = ResourceKey::try_from("reload-test").expect("valid resource key");
+    let key = resource_key!("reload-test");
 
     // After reload, pool should be fully functional
     let guard = mgr.acquire(&key, &ctx()).await.unwrap();

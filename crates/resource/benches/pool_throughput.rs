@@ -7,7 +7,7 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -28,7 +28,7 @@ impl Resource for NoOpResource {
     type Config = NoOpConfig;
     type Instance = u64;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("bench-noop").expect("valid")
+        resource_key!("bench-noop")
     }
 
     async fn create(&self, _config: &NoOpConfig, _ctx: &Context) -> Result<u64> {

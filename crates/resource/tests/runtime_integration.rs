@@ -2,7 +2,7 @@
 //!
 //! These tests capture lifecycle and failure semantics runtime depends on.
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::quarantine::QuarantineReason;
 
 mod scope_helpers;
@@ -24,7 +24,7 @@ impl Resource for RuntimeResourceA {
     type Instance = &'static str;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("runtime-a").expect("valid resource key")
+        resource_key!("runtime-a")
     }
 
     async fn create(
@@ -41,7 +41,7 @@ impl Resource for RuntimeResourceB {
     type Instance = &'static str;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("runtime-b").expect("valid resource key")
+        resource_key!("runtime-b")
     }
 
     async fn create(
@@ -81,8 +81,8 @@ async fn runtime_shutdown_scope_only_drains_target_scope_contract() {
         )
         .expect("resource b registered");
 
-    let key_a = ResourceKey::try_from("runtime-a").expect("valid resource key");
-    let key_b = ResourceKey::try_from("runtime-b").expect("valid resource key");
+    let key_a = resource_key!("runtime-a");
+    let key_b = resource_key!("runtime-b");
 
     manager
         .shutdown_scope(&scope_workflow("wf-a"))
@@ -109,7 +109,7 @@ async fn runtime_manual_quarantine_is_retryable_contract() {
         .register(RuntimeResourceA, TestConfig, PoolConfig::default())
         .expect("resource registered");
 
-    let key = ResourceKey::try_from("runtime-a").expect("valid resource key");
+    let key = resource_key!("runtime-a");
     let quarantined = manager.quarantine().quarantine(
         key.as_ref(),
         QuarantineReason::ManualQuarantine {
@@ -133,7 +133,7 @@ async fn runtime_unhealthy_nonrecoverable_is_fatal_contract() {
         .register(RuntimeResourceA, TestConfig, PoolConfig::default())
         .expect("resource registered");
 
-    let key = ResourceKey::try_from("runtime-a").expect("valid resource key");
+    let key = resource_key!("runtime-a");
     manager.set_health_state(
         &key,
         HealthState::Unhealthy {

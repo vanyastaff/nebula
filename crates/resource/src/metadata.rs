@@ -177,11 +177,11 @@ impl ResourceMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::convert::TryFrom;
+    use nebula_core::resource_key;
 
     #[test]
     fn metadata_new() {
-        let key = ResourceKey::try_from("postgres").expect("valid resource key");
+        let key = resource_key!("postgres");
         let m = ResourceMetadata::new(key.clone(), "PostgreSQL", "Primary database");
         assert_eq!(m.key, key);
         assert_eq!(m.name, "PostgreSQL");
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn metadata_from_key() {
-        let key = ResourceKey::try_from("redis").expect("valid resource key");
+        let key = resource_key!("redis");
         let m = ResourceMetadata::from_key(key.clone());
         assert_eq!(m.key, key);
         assert_eq!(m.name, "redis");
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn metadata_build_with_icon_and_tags() {
-        let key = ResourceKey::try_from("http.client").expect("valid resource key");
+        let key = resource_key!("http.client");
         let m = ResourceMetadata::build(key.clone(), "HTTP Client", "REST API client")
             .icon("http")
             .tag("protocol:http")

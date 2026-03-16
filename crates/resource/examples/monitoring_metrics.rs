@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::events::{EventBus, ResourceEvent};
 use nebula_resource::manager::ManagerBuilder;
 use nebula_resource::pool::PoolConfig;
@@ -36,11 +36,11 @@ impl Resource for DemoResource {
     type Config = DemoConfig;
     type Instance = String;
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("demo-metric").expect("valid resource key")
+        resource_key!("demo-metric")
     }
 
     fn metadata(&self) -> nebula_resource::ResourceMetadata {
-        let key = ResourceKey::try_from("demo-metric").expect("valid resource key");
+        let key = resource_key!("demo-metric");
         nebula_resource::ResourceMetadata::new(
             key,
             "Demo Metric Resource",
@@ -168,7 +168,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let ctx = Context::new(Scope::Global, WorkflowId::new(), ExecutionId::new());
 
-    let demo_key = ResourceKey::try_from("demo-metric").expect("valid resource key");
+    let demo_key = resource_key!("demo-metric");
 
     // 5. Check health state (should be None initially).
     println!("Health state: {:?}", manager.get_health_state(&demo_key));

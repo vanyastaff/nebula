@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -42,7 +42,7 @@ impl Resource for SharedValidatableResource {
     type Instance = String;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("validatable").expect("valid")
+        resource_key!("validatable")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -72,7 +72,7 @@ impl Resource for MultiInvalidResource {
     type Instance = String;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("multi-invalid").expect("valid")
+        resource_key!("multi-invalid")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -102,7 +102,7 @@ impl Resource for ErrValidResource {
     type Instance = String;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("err-valid").expect("valid")
+        resource_key!("err-valid")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -113,7 +113,7 @@ impl Resource for ErrValidResource {
     async fn is_reusable(&self, _instance: &String) -> Result<bool> {
         if self.error_flag.swap(false, Ordering::SeqCst) {
             return Err(Error::HealthCheck {
-                resource_key: ResourceKey::try_from("err-valid").expect("valid"),
+                resource_key: resource_key!("err-valid"),
                 reason: "validation error".to_string(),
                 attempt: 1,
             });

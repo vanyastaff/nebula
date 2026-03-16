@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
@@ -83,7 +83,7 @@ async fn quarantined_resource_acquire_fails_retryable() {
     assert!(quarantined, "resource should be newly quarantined");
 
     // Acquire should fail
-    let resource_key = ResourceKey::try_from("db").expect("valid resource key");
+    let resource_key = resource_key!("db");
     let result = mgr.acquire(&resource_key, &ctx()).await;
     let err = result.expect_err("acquire should fail for quarantined resource");
 
@@ -117,7 +117,7 @@ async fn quarantine_release_allows_acquire() {
             reason: "maintenance".into(),
         },
     );
-    let resource_key = ResourceKey::try_from("db").expect("valid resource key");
+    let resource_key = resource_key!("db");
     assert!(mgr.acquire(&resource_key, &ctx()).await.is_err());
 
     // Release quarantine
@@ -143,7 +143,7 @@ async fn recovery_after_quarantine_release_returns_to_pool() {
     mgr.register(NamedResource { name: "cache" }, TestConfig, pool_cfg())
         .unwrap();
 
-    let resource_key = ResourceKey::try_from("cache").expect("valid resource key");
+    let resource_key = resource_key!("cache");
 
     // Pre-quarantine: acquire and release to populate pool
     {
@@ -383,7 +383,7 @@ async fn scoped_resource_quarantine_blocks_acquire() {
 
     let ctx_a = Context::new(scope_tenant("A"), WorkflowId::new(), ExecutionId::new());
 
-    let resource_key = ResourceKey::try_from("tenant-db").expect("valid resource key");
+    let resource_key = resource_key!("tenant-db");
 
     // Verify it works before quarantine
     let g = mgr.acquire(&resource_key, &ctx_a).await.unwrap();

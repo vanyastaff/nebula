@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::resource_key;
 use nebula_resource::events::{EventBus, QuarantineTrigger, ResourceEvent, SubscriptionScope};
 use nebula_resource::health::{
     HealthCheckConfig, HealthCheckable, HealthChecker, HealthState, HealthStatus,
@@ -36,7 +36,7 @@ impl Resource for TestResource {
     type Instance = String;
 
     fn key(&self) -> nebula_core::ResourceKey {
-        nebula_core::ResourceKey::try_from("test").expect("valid resource key")
+        nebula_core::resource_key!("test")
     }
 
     async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -63,7 +63,7 @@ async fn event_bus_created_event_received_by_subscriber() {
     let bus = EventBus::new(64);
     let mut rx = bus.subscribe();
 
-    let key = nebula_core::ResourceKey::try_from("db").expect("valid resource key");
+    let key = nebula_core::resource_key!("db");
     bus.emit(ResourceEvent::Created {
         resource_key: key.clone(),
         scope: Scope::Global,
@@ -87,7 +87,7 @@ async fn event_bus_multiple_event_types_received_in_order() {
     let bus = EventBus::new(64);
     let mut rx = bus.subscribe();
 
-    let key = nebula_core::ResourceKey::try_from("r1").expect("valid resource key");
+    let key = nebula_core::resource_key!("r1");
     bus.emit(ResourceEvent::Created {
         resource_key: key.clone(),
         scope: Scope::Global,
@@ -130,7 +130,7 @@ async fn event_bus_multiple_subscribers_all_receive() {
     let mut rx2 = bus.subscribe();
     let mut rx3 = bus.subscribe();
 
-    let key = nebula_core::ResourceKey::try_from("db").expect("valid resource key");
+    let key = nebula_core::resource_key!("db");
     bus.emit(ResourceEvent::Created {
         resource_key: key,
         scope: Scope::Global,
@@ -156,11 +156,11 @@ async fn event_bus_scoped_subscription_filters_resource_key() {
     let mut rx = bus.subscribe_scoped(SubscriptionScope::resource("db.primary"));
 
     bus.emit(ResourceEvent::Error {
-        resource_key: ResourceKey::try_from("cache.shared").expect("valid resource key"),
+        resource_key: resource_key!("cache.shared"),
         error: "cache miss".to_string(),
     });
     bus.emit(ResourceEvent::Error {
-        resource_key: ResourceKey::try_from("db.primary").expect("valid resource key"),
+        resource_key: resource_key!("db.primary"),
         error: "db timeout".to_string(),
     });
 
@@ -211,7 +211,7 @@ async fn manager_acquire_emits_acquired_event() {
     // Drain the Created event
     let _ = rx.recv().await.unwrap();
 
-    let key = ResourceKey::try_from("test").expect("valid resource key");
+    let key = resource_key!("test");
 
     let _guard = mgr.acquire(&key, &ctx()).await.unwrap();
 
@@ -227,7 +227,7 @@ async fn manager_acquire_failure_emits_error_event() {
     let mgr = Manager::with_event_bus(Arc::clone(&bus));
     let mut rx = bus.subscribe();
 
-    let key = ResourceKey::try_from("nonexistent").expect("valid resource key");
+    let key = resource_key!("nonexistent");
 
     // Try to acquire a nonexistent resource
     let result = mgr.acquire(&key, &ctx()).await;

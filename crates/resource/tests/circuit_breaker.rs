@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resilience::CircuitBreakerConfig;
 use nebula_resilience::retryable::Retryable;
 use nebula_resource::context::Context;
@@ -43,7 +43,7 @@ impl Resource for FailingCreateResource {
     type Instance = String;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("cb-create").expect("valid")
+        resource_key!("cb-create")
     }
 
     async fn create(
@@ -54,7 +54,7 @@ impl Resource for FailingCreateResource {
         let call = self.create_calls.fetch_add(1, Ordering::SeqCst) + 1;
         if call <= self.fail_until {
             return Err(Error::Initialization {
-                resource_key: ResourceKey::try_from("cb-create").expect("valid"),
+                resource_key: resource_key!("cb-create"),
                 reason: format!("intentional create failure #{call}"),
                 source: None,
             });
@@ -178,7 +178,7 @@ impl Resource for RecycleCountingResource {
     type Instance = String;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("cb-recycle").expect("valid")
+        resource_key!("cb-recycle")
     }
 
     async fn create(
@@ -192,7 +192,7 @@ impl Resource for RecycleCountingResource {
     async fn recycle(&self, _instance: &mut String) -> nebula_resource::Result<()> {
         self.recycle_calls.fetch_add(1, Ordering::SeqCst);
         Err(Error::Internal {
-            resource_key: ResourceKey::try_from("cb-recycle").expect("valid"),
+            resource_key: resource_key!("cb-recycle"),
             message: "recycle failed".to_string(),
             source: None,
         })

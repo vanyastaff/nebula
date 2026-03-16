@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::hooks::{HookEvent, HookFilter, HookRegistry, HookResult, ResourceHook};
@@ -55,7 +55,7 @@ impl Resource for SimpleResource {
     type Instance = String;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("simple").expect("valid resource key")
+        resource_key!("simple")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -199,7 +199,7 @@ impl ResourceHook for CancelCreateHook {
 
     async fn before(&self, _event: &HookEvent, _resource_id: &str, _ctx: &Context) -> HookResult {
         HookResult::Cancel(nebula_resource::error::Error::Unavailable {
-            resource_key: ResourceKey::try_from("simple").expect("valid resource key"),
+            resource_key: resource_key!("simple"),
             reason: "Create cancelled by hook".to_string(),
             retryable: false,
         })
@@ -486,7 +486,7 @@ impl Resource for RecycleFailResource {
     type Instance = String;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("recycle-fail").expect("valid resource key")
+        resource_key!("recycle-fail")
     }
 
     async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
@@ -495,7 +495,7 @@ impl Resource for RecycleFailResource {
 
     async fn recycle(&self, _instance: &mut String) -> Result<()> {
         Err(nebula_resource::error::Error::Internal {
-            resource_key: ResourceKey::try_from("recycle-fail").expect("valid resource key"),
+            resource_key: resource_key!("recycle-fail"),
             message: "recycle always fails".to_string(),
             source: None,
         })
@@ -558,7 +558,7 @@ async fn manager_pools_have_hooks_wired() {
     let ctx = ctx();
 
     // Acquire — should trigger Create hooks (cold pool) and Acquire hooks.
-    let resource_key = ResourceKey::try_from("simple").expect("valid resource key");
+    let resource_key = resource_key!("simple");
     let guard = manager
         .acquire(&resource_key, &ctx)
         .await

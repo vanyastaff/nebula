@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -44,7 +44,7 @@ impl Resource for StressResource {
     type Instance = usize;
 
     fn key(&self) -> ResourceKey {
-        ResourceKey::try_from("shutdown-stress").expect("valid resource key")
+        resource_key!("shutdown-stress")
     }
 
     async fn create(&self, _config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
@@ -82,7 +82,7 @@ async fn manager_shutdown_phased_completes_under_inflight_load() {
         )
         .expect("resource registered");
 
-    let key = ResourceKey::try_from("shutdown-stress").expect("valid resource key");
+    let key = resource_key!("shutdown-stress");
     let stop = Arc::new(AtomicBool::new(false));
 
     let mut workers = Vec::new();
