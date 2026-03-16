@@ -24,8 +24,8 @@ use std::{
 };
 
 use nebula_resource::{
-    Config, Context, Error, ExecutionId, Manager, ManagerBuilder, Pool, PoolAcquire,
-    PoolConfig, PoolLifetime, PoolResiliencePolicy, PoolSizing, Resource, ResourceMetadata,
+    Config, Context, Error, ExecutionId, Manager, Pool, PoolAcquire,
+    PoolConfig, PoolLifetime, PoolResiliencePolicy, PoolSizing, Resource,
     Result, Scope, WorkflowId,
 };
 use nebula_core::ResourceKey;
@@ -136,12 +136,16 @@ impl Resource for FlakyResource {
         let n = self.created.fetch_add(1, Ordering::Relaxed);
         Ok(format!("flaky-{}#{n}", cfg.id))
     }
+
+    // Don't reuse instances — every acquire triggers create(), exercising the breaker.
+    async fn is_reusable(&self, _inst: &String) -> Result<bool> {
+        Ok(false)
+    }
 }
 
 // ─── MortalResource — инстанс умирает через TTL ──────────────────────────────
 
 struct MortalInstance {
-    value: String,
     born_at: Instant,
     ttl: Duration,
 }
@@ -160,10 +164,10 @@ impl Resource for MortalResource {
         self.key.clone()
     }
 
-    async fn create(&self, cfg: &FastConfig, _ctx: &Context) -> Result<MortalInstance> {
+    async fn create(&self, _cfg: &FastConfig, _ctx: &Context) -> Result<MortalInstance> {
         let n = self.created.fetch_add(1, Ordering::Relaxed);
+        let _ = n; // suppress unused warning
         Ok(MortalInstance {
-            value: format!("mortal-{}#{n}", cfg.id),
             born_at: Instant::now(),
             ttl: self.instance_ttl,
         })
@@ -367,7 +371,7 @@ async fn flaky_resource() {
         FlakyResource {
             key: ResourceKey::try_from("flaky").unwrap(),
             attempts: Arc::clone(&attempts),
-            fail_every: 3, // каждая 3-я попытка падает
+            fail_every: 2, // каждая 2-я попытка падает → 50% failure rate
             created: Arc::clone(&created),
         },
         FastConfig { id: "f" },
@@ -376,9 +380,10 @@ async fn flaky_resource() {
             acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             resilience: PoolResiliencePolicy {
                 create_breaker: Some(CircuitBreakerConfig {
-                    failure_threshold: 3,
-                    success_threshold: 1,
-                    timeout: Duration::from_millis(200), // быстро закрывается для теста
+                    min_operations: 3,
+                    half_open_max_operations: 1,
+                    failure_rate_threshold: 0.4, // срабатывает при >40% ошибок
+                    ..Default::default()
                 }),
                 ..Default::default()
             },
@@ -399,8 +404,6 @@ async fn flaky_resource() {
             }
             Err(Error::CircuitBreakerOpen { .. }) => {
                 breaker_open += 1;
-                // ждём пока breaker закроется
-                tokio::time::sleep(Duration::from_millis(250)).await;
             }
             Err(_) => {
                 failures += 1;
@@ -456,7 +459,7 @@ async fn reconnect_storm() {
     )
     .unwrap();
 
-    let stop = Arc::new(tokio::sync::Notify::new());
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let total_ops = Arc::new(AtomicU64::new(0));
     let total_errors = Arc::new(AtomicU64::new(0));
     let start = Instant::now();
@@ -464,14 +467,14 @@ async fn reconnect_storm() {
     let handles: Vec<_> = (0..WORKERS)
         .map(|_| {
             let pool = pool.clone();
-            let stop = Arc::clone(&stop);
+            let mut stop_rx = stop_rx.clone();
             let total_ops = Arc::clone(&total_ops);
             let total_errors = Arc::clone(&total_errors);
             tokio::spawn(async move {
                 let acquire_ctx = ctx();
                 loop {
                     tokio::select! {
-                        _ = stop.notified() => break,
+                        _ = stop_rx.changed() => break,
                         result = pool.acquire(&acquire_ctx) => {
                             match result {
                                 Ok(_guard) => {
@@ -490,9 +493,7 @@ async fn reconnect_storm() {
         .collect();
 
     tokio::time::sleep(Duration::from_secs(DURATION_SECS)).await;
-    for _ in 0..WORKERS {
-        stop.notify_one();
-    }
+    let _ = stop_tx.send(true);
     for h in handles {
         h.await.unwrap();
     }
@@ -581,19 +582,19 @@ async fn run_load_phase(
 ) -> (u64, u64) {
     let ok = Arc::new(AtomicU64::new(0));
     let shed = Arc::new(AtomicU64::new(0));
-    let stop = Arc::new(tokio::sync::Notify::new());
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
 
     let handles: Vec<_> = (0..workers)
         .map(|_| {
             let pool = pool.clone();
             let ok = Arc::clone(&ok);
             let shed = Arc::clone(&shed);
-            let stop = Arc::clone(&stop);
+            let mut stop_rx = stop_rx.clone();
             tokio::spawn(async move {
                 let acquire_ctx = ctx();
                 loop {
                     tokio::select! {
-                        _ = stop.notified() => break,
+                        _ = stop_rx.changed() => break,
                         res = pool.acquire(&acquire_ctx) => {
                             match res {
                                 Ok(_g) => {
@@ -612,9 +613,7 @@ async fn run_load_phase(
         .collect();
 
     tokio::time::sleep(duration).await;
-    for _ in 0..workers {
-        stop.notify_one();
-    }
+    let _ = stop_tx.send(true);
     for h in handles {
         h.await.unwrap();
     }
@@ -632,7 +631,7 @@ async fn multi_scope_isolation() {
     const WORKERS_PER_TENANT: usize = 30;
     const OPS_PER_WORKER: usize = 50;
 
-    let manager = Manager::new();
+    let manager = Arc::new(Manager::new());
 
     // Регистрируем отдельный пул для каждого tenant'а
     for &tenant in TENANTS {
@@ -661,8 +660,12 @@ async fn multi_scope_isolation() {
         .flat_map(|&tenant| {
             let key = format!("resource.{tenant}");
             let rkey = ResourceKey::try_from(key.as_str()).unwrap();
+            let manager = Arc::clone(&manager);
+            let barrier = Arc::clone(&barrier);
+            let cross_tenant_errors = Arc::clone(&cross_tenant_errors);
+            let total_ok = Arc::clone(&total_ok);
             (0..WORKERS_PER_TENANT).map(move |_| {
-                let manager = manager.clone(); // Manager: Clone
+                let manager = Arc::clone(&manager);
                 let rkey = rkey.clone();
                 let tenant = tenant.to_string();
                 let barrier = Arc::clone(&barrier);
@@ -823,19 +826,19 @@ async fn throughput_report() {
         }
 
         let ops_total = Arc::new(AtomicU64::new(0));
-        let stop = Arc::new(tokio::sync::Notify::new());
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         let start = Instant::now();
         const MEASURE_MS: u64 = 500;
 
         let handles: Vec<_> = (0..workers).map(|_| {
             let pool = pool.clone();
             let ops = Arc::clone(&ops_total);
-            let stop = Arc::clone(&stop);
+            let mut stop_rx = stop_rx.clone();
             tokio::spawn(async move {
                 let acquire_ctx = ctx();
                 loop {
                     tokio::select! {
-                        _ = stop.notified() => break,
+                        _ = stop_rx.changed() => break,
                         res = pool.acquire(&acquire_ctx) => {
                             if res.is_ok() {
                                 ops.fetch_add(1, Ordering::Relaxed);
@@ -848,7 +851,7 @@ async fn throughput_report() {
         }).collect();
 
         tokio::time::sleep(Duration::from_millis(MEASURE_MS)).await;
-        for _ in 0..workers { stop.notify_one(); }
+        let _ = stop_tx.send(true);
         for h in handles { h.await.unwrap(); }
 
         let elapsed = start.elapsed();
@@ -861,5 +864,3 @@ async fn throughput_report() {
         println!("    throughput: {throughput:.0} ops/sec  p99: {p99}ms  ops: {ops}");
     }
 }
-
-fn main() {}
