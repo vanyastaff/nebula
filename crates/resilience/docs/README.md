@@ -184,9 +184,6 @@ crates/resilience/
 |----------|-------------|
 | [architecture.md](architecture.md) | Design decisions, const-generic validation, type-state pattern, module map |
 | [api-reference.md](api-reference.md) | Full public API reference with all types and signatures |
-| [PATTERNS.md](PATTERNS.md) | Pattern guide: composition order, mermaid flows, tuning rules |
 | [composition.md](composition.md) | `LayerBuilder` fluent API and `ResilienceChain` execution model |
 | [gate.md](gate.md) | `Gate` / `GateGuard` cooperative shutdown barrier |
 | [observability.md](observability.md) | Events, metrics, hooks, and tracing spans |
-| [RELIABILITY.md](RELIABILITY.md) | Failure modes, incident triage flow, reliability control loop |
-| [MIGRATION.md](MIGRATION.md) | Breaking changes and upgrade paths |
