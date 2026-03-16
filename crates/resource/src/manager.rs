@@ -39,8 +39,8 @@ use crate::events::{EventBus, QuarantineTrigger, ResourceEvent};
 use crate::health::{HealthCheckConfig, HealthCheckable, HealthState};
 use crate::hooks::{HookEvent, HookRegistry, HOOKS_INLINE};
 use crate::instrumented::InstrumentedGuard;
-use crate::manager_guard::ReleaseHookGuard;
-use crate::manager_pool::{AnyPool, PoolEntry};
+use self::guard::ReleaseHookGuard;
+use self::pool::{AnyPool, PoolEntry};
 use crate::metadata::ResourceMetadata;
 use crate::pool::{Pool, PoolConfig};
 use crate::quarantine::{QuarantineConfig, QuarantineManager, QuarantineReason};
@@ -49,12 +49,17 @@ use crate::scope::{Scope, Strategy};
 use nebula_core::ResourceKey;
 
 // ---------------------------------------------------------------------------
+// ── Submodules ──────────────────────────────────────────────────────────────
+pub(crate) mod dependency_graph;
+pub(crate) mod guard;
+pub(crate) mod pool;
+
 // Re-exports — keep the public API surface on `crate::manager::*`
 // ---------------------------------------------------------------------------
 
-pub use crate::dependency_graph::DependencyGraph;
-pub use crate::manager_guard::{AnyGuard, AnyGuardTrait, ResourceHandle, TypedResourceGuard};
-pub use crate::manager_pool::TypedPool;
+pub use self::dependency_graph::DependencyGraph;
+pub use self::guard::{AnyGuard, AnyGuardTrait, ResourceHandle, TypedResourceGuard};
+pub use self::pool::TypedPool;
 
 // ---------------------------------------------------------------------------
 // ShutdownConfig
@@ -502,6 +507,7 @@ impl Manager {
             PoolEntry {
                 pool: any_pool,
                 scope: scope.clone(),
+                resource_key: resource_key.clone(),
                 typed_handle: Some(typed_pool),
             },
         );
@@ -1255,6 +1261,7 @@ impl Manager {
             PoolEntry {
                 pool: any_pool,
                 scope: existing_scope.clone(),
+                resource_key: key.clone(),
                 typed_handle: Some(typed_pool),
             },
         );
@@ -1288,6 +1295,7 @@ impl std::fmt::Debug for Manager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pool::PoolSizing;
     use crate::quarantine::QuarantineReason;
     use crate::resource::Config;
     use crate::scope::Scope;
@@ -1373,8 +1381,7 @@ mod tests {
             value: "pooled".into(),
         };
         let pool_config = PoolConfig {
-            min_size: 0,
-            max_size: 1,
+            sizing: PoolSizing { min_size: 0, max_size: 1 },
             ..Default::default()
         };
         mgr.register(TestResource, config, pool_config).unwrap();
@@ -1401,7 +1408,7 @@ mod tests {
     fn register_with_invalid_pool_config_leaves_clean_state() {
         let mgr = Manager::new();
         let bad_pool = PoolConfig {
-            max_size: 0, // invalid
+            sizing: PoolSizing { min_size: 0, max_size: 0 }, // invalid
             ..Default::default()
         };
 
@@ -1844,8 +1851,7 @@ mod tests {
                 value: "status".into(),
             },
             PoolConfig {
-                min_size: 0,
-                max_size: 7,
+                sizing: PoolSizing { min_size: 0, max_size: 7 },
                 ..Default::default()
             },
         )
