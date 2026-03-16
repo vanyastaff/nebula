@@ -14,7 +14,7 @@ use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolSizing, WorkflowId};
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -79,9 +79,8 @@ impl Resource for RecycleResource {
 async fn recycle_failure_destroys_instance() {
     let fail_flag = Arc::new(AtomicBool::new(true)); // always fail recycle
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 2,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 2 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(RecycleResource::new(fail_flag), TestConfig, pool_config).unwrap();
@@ -116,9 +115,8 @@ async fn recycle_failure_destroys_instance() {
 async fn recycle_failure_does_not_block_next_acquire() {
     let fail_flag = Arc::new(AtomicBool::new(true)); // recycle fails
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 1, // only 1 slot!
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 1 }, // only 1 slot!
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let resource = RecycleResource::new(fail_flag.clone());

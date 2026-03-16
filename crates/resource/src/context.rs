@@ -189,7 +189,7 @@ impl Context {
     where
         R::Instance: Any,
     {
-        use crate::manager_pool::TypedPool;
+        use crate::manager::pool::TypedPool;
 
         let handle = self.resolved_resources.get(key)?;
         let typed = handle.clone().downcast::<TypedPool<R>>().ok()?;
@@ -292,7 +292,7 @@ impl Context {
 /// ```
 #[derive(Clone)]
 pub struct ResourcePoolHandle<R: Resource> {
-    pub(crate) inner: Arc<crate::manager_pool::TypedPool<R>>,
+    pub(crate) inner: Arc<crate::manager::pool::TypedPool<R>>,
 }
 
 impl<R: Resource> ResourcePoolHandle<R>
@@ -372,7 +372,7 @@ mod tests {
         use std::any::Any;
 
         use crate::error::Result;
-        use crate::manager_pool::TypedPool;
+        use crate::manager::pool::TypedPool;
         use crate::pool::{Pool, PoolConfig};
         use crate::resource::{Config, Resource};
 

@@ -9,7 +9,7 @@ use std::time::Duration;
 use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
-use nebula_resource::pool::{Pool, PoolConfig};
+use nebula_resource::pool::{Pool, PoolAcquire, PoolConfig, PoolSizing};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
 use nebula_resource::{ExecutionId, WorkflowId};
@@ -74,9 +74,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // 1. Create pool configuration.
     let pool_config = PoolConfig {
-        min_size: 1,
-        max_size: 4,
-        acquire_timeout: Duration::from_secs(5),
+        sizing: PoolSizing {
+            min_size: 1,
+            max_size: 4,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(5),
+            ..Default::default()
+        },
         ..Default::default()
     };
 

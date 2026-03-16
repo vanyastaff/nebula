@@ -62,10 +62,7 @@ pub mod reference;
 pub mod resource;
 pub mod scope;
 
-pub(crate) mod dependency_graph;
 pub mod instrumented;
-pub(crate) mod manager_guard;
-pub(crate) mod manager_pool;
 
 pub mod autoscale;
 pub mod events;
@@ -111,8 +108,9 @@ pub use manager::{
 pub use metrics::MetricsCollector;
 pub use poison::{Poison, PoisonError, PoisonGuard};
 pub use pool::{
-    AdaptiveBackpressurePolicy, InstanceMetadata, LatencyPercentiles, Pool, PoolBackpressurePolicy,
-    PoolConfig, PoolSharingMode, PoolStats, PoolStrategy,
+    AdaptiveBackpressurePolicy, InstanceMetadata, LatencyPercentiles, Pool, PoolAcquire,
+    PoolBackpressurePolicy, PoolConfig, PoolLifetime, PoolResiliencePolicy, PoolSharingMode,
+    PoolSizing, PoolStats, PoolStrategy, RetryConfig,
 };
 pub use quarantine::{
     QuarantineConfig, QuarantineEntry, QuarantineManager, QuarantineReason, RecoveryStrategy,

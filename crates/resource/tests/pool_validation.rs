@@ -13,7 +13,7 @@ use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolSizing, WorkflowId};
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -132,9 +132,8 @@ async fn invalid_idle_instance_replaced_on_acquire() {
     let create_count = Arc::new(AtomicU32::new(0));
 
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 2,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 2 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(
@@ -178,9 +177,8 @@ async fn all_idle_instances_invalid_creates_fresh() {
     let reject_all = Arc::new(AtomicBool::new(false));
 
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 3,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 3 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(
@@ -234,9 +232,8 @@ async fn is_valid_error_treated_as_invalid() {
     let create_count = Arc::new(AtomicU32::new(0));
 
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 2,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 2 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(

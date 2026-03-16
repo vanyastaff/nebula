@@ -12,7 +12,7 @@ use nebula_resource::error::Result;
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, Manager, WorkflowId};
+use nebula_resource::{ExecutionId, Manager, PoolAcquire, PoolSizing, WorkflowId};
 
 #[derive(Debug, Clone)]
 struct TestConfig;
@@ -65,9 +65,8 @@ async fn config_reload_swaps_to_new_pool_while_old_drains() {
             VersionedResource::new("v1", Arc::clone(&cleanup_count)),
             TestConfig,
             PoolConfig {
-                min_size: 0,
-                max_size: 4,
-                acquire_timeout: Duration::from_secs(1),
+                sizing: PoolSizing { min_size: 0, max_size: 4 },
+                acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
                 ..Default::default()
             },
         )
@@ -89,9 +88,8 @@ async fn config_reload_swaps_to_new_pool_while_old_drains() {
             VersionedResource::new("v2", Arc::clone(&cleanup_count)),
             TestConfig,
             PoolConfig {
-                min_size: 0,
-                max_size: 4,
-                acquire_timeout: Duration::from_secs(1),
+                sizing: PoolSizing { min_size: 0, max_size: 4 },
+                acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
                 ..Default::default()
             },
         )

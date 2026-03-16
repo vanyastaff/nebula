@@ -13,7 +13,7 @@ use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolSizing, WorkflowId};
 
 mod scope_helpers;
 use scope_helpers::*;
@@ -46,9 +46,8 @@ impl Resource for NamedResource {
 
 fn pool_cfg() -> PoolConfig {
     PoolConfig {
-        min_size: 0,
-        max_size: 4,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 4 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     }
 }
@@ -373,9 +372,8 @@ async fn concurrent_multi_tenant_acquire() {
         NamedResource { name: "pool-A" },
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 2,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 2 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         },
         scope_tenant("A"),
@@ -386,9 +384,8 @@ async fn concurrent_multi_tenant_acquire() {
         NamedResource { name: "pool-B" },
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 2,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 2 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         },
         scope_tenant("B"),

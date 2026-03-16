@@ -9,7 +9,10 @@ use std::time::{Duration, Instant};
 use nebula_core::{resource_key, ResourceKey};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
-use nebula_resource::pool::{AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig};
+use nebula_resource::pool::{
+    AdaptiveBackpressurePolicy, Pool, PoolAcquire, PoolBackpressurePolicy, PoolConfig,
+    PoolLifetime, PoolSizing,
+};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
 use nebula_resource::{ExecutionId, WorkflowId};
@@ -61,11 +64,19 @@ impl ProbeResult {
 
 fn pool_config(max_size: usize, policy: PoolBackpressurePolicy) -> PoolConfig {
     PoolConfig {
-        min_size: 0,
-        max_size,
-        acquire_timeout: Duration::from_secs(2),
-        maintenance_interval: None,
-        backpressure_policy: Some(policy),
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size,
+        },
+        lifetime: PoolLifetime {
+            maintenance_interval: None,
+            ..Default::default()
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(2),
+            backpressure: Some(policy),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }

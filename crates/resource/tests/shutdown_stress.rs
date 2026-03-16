@@ -12,7 +12,7 @@ use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, Manager, ShutdownConfig, WorkflowId};
+use nebula_resource::{ExecutionId, Manager, PoolAcquire, PoolSizing, ShutdownConfig, WorkflowId};
 
 #[derive(Debug, Clone)]
 struct TestConfig;
@@ -74,9 +74,8 @@ async fn manager_shutdown_phased_completes_under_inflight_load() {
             resource,
             TestConfig,
             PoolConfig {
-                min_size: 0,
-                max_size: 8,
-                acquire_timeout: Duration::from_millis(100),
+                sizing: PoolSizing { min_size: 0, max_size: 8 },
+                acquire: PoolAcquire { timeout: Duration::from_millis(100), ..Default::default() },
                 ..Default::default()
             },
         )
@@ -156,9 +155,8 @@ async fn pool_shutdown_does_not_hang_with_concurrent_acquires() {
             resource,
             TestConfig,
             PoolConfig {
-                min_size: 0,
-                max_size: 4,
-                acquire_timeout: Duration::from_millis(60),
+                sizing: PoolSizing { min_size: 0, max_size: 4 },
+                acquire: PoolAcquire { timeout: Duration::from_millis(60), ..Default::default() },
                 ..Default::default()
             },
         )

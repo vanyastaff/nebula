@@ -385,10 +385,7 @@ impl<R: Resource> Pool<R> {
 
     /// Inner acquire logic, separated so `acquire` can wrap it in a
     /// cancellation-aware `select!`.
-    #[expect(
-        clippy::type_complexity,
-        reason = "Concrete closure type; callers use inference"
-    )]
+    #[allow(clippy::excessive_nesting)]
     async fn acquire_inner(
         &self,
         ctx: &Context,
@@ -488,7 +485,7 @@ impl<R: Resource> Pool<R> {
                         use std::pin::pin;
                         use std::task::{Context as TaskCtx, Poll, Waker};
                         let waker = Waker::noop();
-                        let mut task_cx = TaskCtx::from_waker(&waker);
+                        let mut task_cx = TaskCtx::from_waker(waker);
                         let mut fut =
                             pin!(inner.resource.is_reusable_with_meta(&entry.instance, &inst_meta));
                         match fut.as_mut().poll(&mut task_cx) {
@@ -1123,7 +1120,7 @@ impl<R: Resource> Pool<R> {
             stats.acquire_latency = Some(cached.clone());
             return stats;
         }
-        let computed = if lat.histogram.len() == 0 {
+        let computed = if lat.histogram.is_empty() {
             None
         } else {
             Some(LatencyPercentiles {
@@ -1521,6 +1518,7 @@ where
 
         // Guard with a no-op drop — the shared clone is simply released when it
         // goes out of scope; the pool-resident original is unaffected.
+        #[allow(clippy::type_complexity)]
         let guard: Guard<R::Instance, fn(R::Instance, bool)> =
             Guard::new(instance, |_, _| {});
         Ok((guard, start.elapsed()))

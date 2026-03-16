@@ -9,9 +9,7 @@ use nebula_core::{resource_key, ResourceKey};
 
 mod scope_helpers;
 use scope_helpers::*;
-use nebula_resource::{
-    Context, ErrorCategory, ExecutionId, Manager, PoolConfig, Resource, WorkflowId,
-};
+use nebula_resource::{Context, ErrorCategory, ExecutionId, Manager, PoolAcquire, PoolConfig, PoolSizing, Resource, WorkflowId};
 
 #[derive(Debug, Clone)]
 struct TestConfig;
@@ -100,9 +98,8 @@ async fn action_pool_exhaustion_maps_to_retryable_category_contract() {
             EchoResource,
             TestConfig,
             PoolConfig {
-                min_size: 0,
-                max_size: 1,
-                acquire_timeout: Duration::from_millis(30),
+                sizing: PoolSizing { min_size: 0, max_size: 1 },
+                acquire: PoolAcquire { timeout: Duration::from_millis(30), ..Default::default() },
                 ..Default::default()
             },
         )

@@ -9,7 +9,7 @@ use nebula_resource::poison::{Poison, PoisonError};
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolSizing, WorkflowId};
 
 #[test]
 fn clean_poison_can_arm_and_disarm() {
@@ -98,9 +98,8 @@ async fn pool_acquire_returns_internal_when_state_poisoned() {
         TestResource,
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 1,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 1 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         },
     )

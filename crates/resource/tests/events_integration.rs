@@ -11,7 +11,7 @@ use nebula_resource::events::{EventBus, QuarantineTrigger, ResourceEvent, Subscr
 use nebula_resource::health::{
     HealthCheckConfig, HealthCheckable, HealthChecker, HealthState, HealthStatus,
 };
-use nebula_resource::pool::{Pool, PoolConfig};
+use nebula_resource::pool::{Pool, PoolAcquire, PoolConfig, PoolSizing};
 use nebula_resource::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -428,9 +428,8 @@ async fn pool_exhaustion_emits_pool_exhausted_event() {
     let mut rx = bus.subscribe();
 
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 1,
-        acquire_timeout: Duration::from_millis(100),
+        sizing: PoolSizing { min_size: 0, max_size: 1 },
+        acquire: PoolAcquire { timeout: Duration::from_millis(100), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::with_event_bus(
@@ -468,9 +467,8 @@ async fn pool_shutdown_emits_cleaned_up_shutdown_events() {
     let mut rx = bus.subscribe();
 
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 2,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 2 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::with_event_bus(
@@ -520,9 +518,8 @@ async fn pool_guard_drop_emits_released_event() {
     let mut rx = bus.subscribe();
 
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 2,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 2 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::with_event_bus(

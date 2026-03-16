@@ -11,9 +11,9 @@ use std::time::Instant;
 use nebula_core::ResourceKey;
 use nebula_telemetry::{DropReason, Recorder, ResourceUsageRecord};
 
-use crate::manager_guard::AnyGuardTrait;
+use crate::manager::guard::AnyGuardTrait;
 
-/// Wraps an [`AnyGuard`](crate::manager_guard::AnyGuard) and records Tier 1
+/// Wraps an [`AnyGuard`](crate::manager::guard::AnyGuard) and records Tier 1
 /// usage when dropped or when [`into_inner`](InstrumentedGuard::into_inner) is used.
 ///
 /// Drop reason is set automatically:

@@ -8,7 +8,7 @@ use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolSizing, WorkflowId};
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct TestConfig;
@@ -36,9 +36,8 @@ fn ctx() -> Context {
 #[tokio::test]
 async fn pool_exhaustion_returns_error() {
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 2,
-        acquire_timeout: Duration::from_millis(200),
+        sizing: PoolSizing { min_size: 0, max_size: 2 },
+        acquire: PoolAcquire { timeout: Duration::from_millis(200), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(TestResource, TestConfig, pool_config).unwrap();
@@ -68,9 +67,8 @@ async fn pool_exhaustion_returns_error() {
 #[tokio::test(start_paused = true)]
 async fn pool_reuses_after_drop() {
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 1,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 1 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(TestResource, TestConfig, pool_config).unwrap();
@@ -92,9 +90,8 @@ async fn pool_reuses_after_drop() {
 #[tokio::test]
 async fn pool_exhausted_error_is_retryable() {
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 1,
-        acquire_timeout: Duration::from_millis(100),
+        sizing: PoolSizing { min_size: 0, max_size: 1 },
+        acquire: PoolAcquire { timeout: Duration::from_millis(100), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(TestResource, TestConfig, pool_config).unwrap();

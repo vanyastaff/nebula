@@ -212,7 +212,7 @@ impl MetricsCollector {
     /// new series. This prevents a cardinality explosion in deployments that
     /// dynamically register many resource keys.
     fn resource_label(resource_key: &ResourceKey) -> String {
-        let raw: &str = &resource_key;
+        let raw: &str = resource_key;
         // Truncate long keys and mark them so they are distinguishable from the
         // original full-length key in dashboards.
         let normalized = if raw.len() > 64 {

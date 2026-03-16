@@ -12,7 +12,7 @@ use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolSizing, WorkflowId};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
@@ -66,9 +66,8 @@ async fn concurrent_cancelled_acquires_do_not_leak_permits() {
             resource,
             TestConfig,
             PoolConfig {
-                min_size: 0,
-                max_size,
-                acquire_timeout: Duration::from_millis(200),
+                sizing: PoolSizing { min_size: 0, max_size },
+                acquire: PoolAcquire { timeout: Duration::from_millis(200), ..Default::default() },
                 ..Default::default()
             },
         )
@@ -122,9 +121,8 @@ async fn concurrent_acquire_release_cycles_preserve_pool_invariants() {
             resource,
             TestConfig,
             PoolConfig {
-                min_size: 0,
-                max_size,
-                acquire_timeout: Duration::from_millis(250),
+                sizing: PoolSizing { min_size: 0, max_size },
+                acquire: PoolAcquire { timeout: Duration::from_millis(250), ..Default::default() },
                 ..Default::default()
             },
         )

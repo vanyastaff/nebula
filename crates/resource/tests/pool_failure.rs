@@ -13,7 +13,7 @@ use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolLifetime, PoolSizing, WorkflowId};
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -30,9 +30,8 @@ fn ctx() -> Context {
 
 fn pool_config(max_size: usize) -> PoolConfig {
     PoolConfig {
-        min_size: 0,
-        max_size,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     }
 }
@@ -165,10 +164,12 @@ impl Resource for ExpiredThenFailResource {
 #[tokio::test]
 async fn create_failure_after_expired_cleanup() {
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 2,
-        acquire_timeout: Duration::from_secs(2),
-        idle_timeout: Duration::from_millis(50),
+        sizing: PoolSizing { min_size: 0, max_size: 2 },
+        lifetime: PoolLifetime {
+            idle_timeout: Duration::from_millis(50),
+            ..Default::default()
+        },
+        acquire: PoolAcquire { timeout: Duration::from_secs(2), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(

@@ -19,7 +19,7 @@ use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolSizing, WorkflowId};
 
 // ---------------------------------------------------------------------------
 // Test resource
@@ -81,9 +81,8 @@ fn ctx() -> Context {
 async fn pool_scale_up_creates_idle_instances() {
     let (resource, create_count, _cleanup) = CountingResource::new();
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 5,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 5 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(resource, TestConfig, pool_config).unwrap();
@@ -106,9 +105,8 @@ async fn pool_scale_up_creates_idle_instances() {
 async fn pool_scales_up_on_high_utilization() {
     let (resource, create_count, _cleanup) = CountingResource::new();
     let pool_config = PoolConfig {
-        min_size: 1,
-        max_size: 8,
-        acquire_timeout: Duration::from_secs(2),
+        sizing: PoolSizing { min_size: 1, max_size: 8 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(2), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(resource, TestConfig, pool_config).unwrap();
@@ -188,9 +186,8 @@ async fn pool_scales_up_on_high_utilization() {
 async fn pool_scale_down_removes_idle_instances() {
     let (resource, _create, cleanup_count) = CountingResource::new();
     let pool_config = PoolConfig {
-        min_size: 1,
-        max_size: 10,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 1, max_size: 10 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(resource, TestConfig, pool_config).unwrap();
@@ -212,9 +209,8 @@ async fn pool_scale_down_removes_idle_instances() {
 async fn pool_scales_down_on_low_utilization() {
     let (resource, _create, cleanup_count) = CountingResource::new();
     let pool_config = PoolConfig {
-        min_size: 1,
-        max_size: 10,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 1, max_size: 10 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(resource, TestConfig, pool_config).unwrap();
@@ -280,9 +276,8 @@ async fn pool_scales_down_on_low_utilization() {
 async fn scale_up_capped_at_max_size() {
     let (resource, create_count, _cleanup) = CountingResource::new();
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 3,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 3 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(resource, TestConfig, pool_config).unwrap();
@@ -305,9 +300,8 @@ async fn scale_up_capped_at_max_size() {
 async fn scale_down_capped_at_min_size() {
     let (resource, _create, cleanup_count) = CountingResource::new();
     let pool_config = PoolConfig {
-        min_size: 2,
-        max_size: 10,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 2, max_size: 10 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(resource, TestConfig, pool_config).unwrap();
@@ -330,9 +324,8 @@ async fn scale_down_capped_at_min_size() {
 async fn scale_down_counts_active_towards_min() {
     let (resource, _create, cleanup_count) = CountingResource::new();
     let pool_config = PoolConfig {
-        min_size: 3,
-        max_size: 10,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 3, max_size: 10 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(resource, TestConfig, pool_config).unwrap();
@@ -359,9 +352,8 @@ async fn scale_down_counts_active_towards_min() {
 async fn scale_up_on_full_pool_is_noop() {
     let (resource, _create, _cleanup) = CountingResource::new();
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 2,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 2 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(resource, TestConfig, pool_config).unwrap();
@@ -381,9 +373,8 @@ async fn scale_up_on_full_pool_is_noop() {
 async fn scale_down_on_empty_pool_is_noop() {
     let (resource, _create, _cleanup) = CountingResource::new();
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 5,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 5 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(resource, TestConfig, pool_config).unwrap();
@@ -520,9 +511,8 @@ fn autoscale_policy_low_watermark_zero_is_valid() {
 async fn utilization_snapshot_reflects_pool_state() {
     let (resource, _create, _cleanup) = CountingResource::new();
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 10,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 10 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(resource, TestConfig, pool_config).unwrap();

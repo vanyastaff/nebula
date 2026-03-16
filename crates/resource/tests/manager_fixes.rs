@@ -23,8 +23,7 @@ use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::quarantine::QuarantineReason;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
-use nebula_resource::{Manager, ManagerBuilder};
+use nebula_resource::{ExecutionId, Manager, ManagerBuilder, PoolAcquire, PoolLifetime, PoolSizing, WorkflowId};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -41,11 +40,13 @@ fn ctx() -> Context {
 
 fn pool_config() -> PoolConfig {
     PoolConfig {
-        min_size: 0,
-        max_size: 5,
-        acquire_timeout: Duration::from_secs(2),
-        idle_timeout: Duration::from_secs(600),
-        max_lifetime: Duration::from_secs(3600),
+        sizing: PoolSizing { min_size: 0, max_size: 5 },
+        lifetime: PoolLifetime {
+            idle_timeout: Duration::from_secs(600),
+            max_lifetime: Duration::from_secs(3600),
+            ..Default::default()
+        },
+        acquire: PoolAcquire { timeout: Duration::from_secs(2), ..Default::default() },
         ..Default::default()
     }
 }
@@ -443,11 +444,13 @@ async fn pool_stats_have_latency_percentiles() {
 #[tokio::test]
 async fn pool_stats_percentiles_reflect_latency_distribution() {
     let cfg = PoolConfig {
-        min_size: 0,
-        max_size: 1,
-        acquire_timeout: Duration::from_secs(5),
-        idle_timeout: Duration::from_secs(600),
-        max_lifetime: Duration::from_secs(3600),
+        sizing: PoolSizing { min_size: 0, max_size: 1 },
+        lifetime: PoolLifetime {
+            idle_timeout: Duration::from_secs(600),
+            max_lifetime: Duration::from_secs(3600),
+            ..Default::default()
+        },
+        acquire: PoolAcquire { timeout: Duration::from_secs(5), ..Default::default() },
         ..Default::default()
     };
 

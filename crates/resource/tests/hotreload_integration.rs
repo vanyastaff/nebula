@@ -16,7 +16,7 @@ use nebula_resource::events::{EventBus, ResourceEvent};
 use nebula_resource::pool::PoolConfig;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolSizing, WorkflowId};
 
 // ---------------------------------------------------------------------------
 // Test resource
@@ -85,9 +85,8 @@ async fn config_hot_reload_creates_new_pool() {
         resource,
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 2,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 2 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         },
     )
@@ -111,9 +110,8 @@ async fn config_hot_reload_creates_new_pool() {
         TrackingResource::with_counter(&cleanup_count),
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 5,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 5 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         },
     )
@@ -148,9 +146,8 @@ async fn config_hot_reload_reduces_max_size() {
         resource,
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 5,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 5 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         },
     )
@@ -161,9 +158,8 @@ async fn config_hot_reload_reduces_max_size() {
         TrackingResource::with_counter(&cleanup_count),
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 2,
-            acquire_timeout: Duration::from_millis(200),
+            sizing: PoolSizing { min_size: 0, max_size: 2 },
+            acquire: PoolAcquire { timeout: Duration::from_millis(200), ..Default::default() },
             ..Default::default()
         },
     )
@@ -196,9 +192,8 @@ async fn reload_config_on_unregistered_resource_registers_fresh() {
         resource,
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 3,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 3 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         },
     )
@@ -226,9 +221,8 @@ async fn reload_config_with_invalid_config_fails_cleanly() {
         resource,
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 5,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 5 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         },
     )
@@ -240,9 +234,8 @@ async fn reload_config_with_invalid_config_fails_cleanly() {
             TrackingResource::with_counter(&cleanup_count),
             TestConfig,
             PoolConfig {
-                min_size: 0,
-                max_size: 0, // invalid
-                acquire_timeout: Duration::from_secs(1),
+                sizing: PoolSizing { min_size: 0, max_size: 0 }, // invalid
+                acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
                 ..Default::default()
             },
         )
@@ -273,9 +266,8 @@ async fn invalid_reload_emits_config_reload_rejected_event() {
         resource,
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 3,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 3 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         },
     )
@@ -289,9 +281,8 @@ async fn invalid_reload_emits_config_reload_rejected_event() {
             TrackingResource::with_counter(&cleanup_count),
             TestConfig,
             PoolConfig {
-                min_size: 0,
-                max_size: 0, // invalid guardrail trigger
-                acquire_timeout: Duration::from_secs(1),
+                sizing: PoolSizing { min_size: 0, max_size: 0 }, // invalid guardrail trigger
+                acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
                 ..Default::default()
             },
         )
@@ -333,9 +324,8 @@ async fn old_pool_guards_cleanup_after_reload() {
         resource,
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 5,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 5 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         },
     )
@@ -351,9 +341,8 @@ async fn old_pool_guards_cleanup_after_reload() {
         TrackingResource::with_counter(&cleanup_count),
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 3,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 3 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         },
     )
@@ -387,9 +376,8 @@ async fn reload_config_concurrent_acquire() {
         resource,
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 4,
-            acquire_timeout: Duration::from_millis(200),
+            sizing: PoolSizing { min_size: 0, max_size: 4 },
+            acquire: PoolAcquire { timeout: Duration::from_millis(200), ..Default::default() },
             ..Default::default()
         },
     )
@@ -424,9 +412,8 @@ async fn reload_config_concurrent_acquire() {
         TrackingResource::with_counter(&cleanup_count),
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 4,
-            acquire_timeout: Duration::from_millis(200),
+            sizing: PoolSizing { min_size: 0, max_size: 4 },
+            acquire: PoolAcquire { timeout: Duration::from_millis(200), ..Default::default() },
             ..Default::default()
         },
     )

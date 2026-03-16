@@ -8,7 +8,7 @@ use nebula_resource::{
     ExecutionId, WorkflowId,
     context::Context,
     error::Result,
-    pool::{Pool, PoolConfig},
+    pool::{Pool, PoolAcquire, PoolConfig, PoolLifetime, PoolSizing},
     resource::{Config, Resource},
     scope::Scope,
 };
@@ -57,13 +57,21 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // Create pool configuration
     let pool_config = PoolConfig {
-        min_size: 2,
-        max_size: 10,
-        max_lifetime: Duration::from_secs(300),
-        idle_timeout: Duration::from_secs(60),
-        validation_interval: Duration::from_secs(30),
-        acquire_timeout: Duration::from_secs(5),
-        maintenance_interval: None,
+        sizing: PoolSizing {
+            min_size: 2,
+            max_size: 10,
+        },
+        lifetime: PoolLifetime {
+            max_lifetime: Duration::from_secs(300),
+            idle_timeout: Duration::from_secs(60),
+            validation_interval: Duration::from_secs(30),
+            maintenance_interval: None,
+            ..Default::default()
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(5),
+            ..Default::default()
+        },
         ..Default::default()
     };
 

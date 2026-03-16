@@ -13,7 +13,7 @@ use nebula_resource::events::{EventBus, ResourceEvent};
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolResiliencePolicy, PoolSizing, WorkflowId};
 
 #[derive(Debug, Clone)]
 struct TestConfig;
@@ -72,10 +72,9 @@ async fn create_breaker_opens_and_reports_retryability() {
         FailingCreateResource::new(1000),
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 1,
-            acquire_timeout: Duration::from_millis(200),
-            create_breaker: Some(breaker_cfg),
+            sizing: PoolSizing { min_size: 0, max_size: 1 },
+            acquire: PoolAcquire { timeout: Duration::from_millis(200), ..Default::default() },
+            resilience: PoolResiliencePolicy { create_breaker: Some(breaker_cfg), ..Default::default() },
             ..Default::default()
         },
     )
@@ -117,10 +116,9 @@ async fn create_breaker_half_open_probe_then_close_emits_events() {
         FailingCreateResource::new(5),
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 1,
-            acquire_timeout: Duration::from_millis(200),
-            create_breaker: Some(breaker_cfg),
+            sizing: PoolSizing { min_size: 0, max_size: 1 },
+            acquire: PoolAcquire { timeout: Duration::from_millis(200), ..Default::default() },
+            resilience: PoolResiliencePolicy { create_breaker: Some(breaker_cfg), ..Default::default() },
             ..Default::default()
         },
         Some(Arc::clone(&bus)),
@@ -207,10 +205,9 @@ async fn recycle_breaker_open_skips_recycle_call() {
         RecycleCountingResource::new(Arc::clone(&recycle_calls)),
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 1,
-            acquire_timeout: Duration::from_millis(500),
-            recycle_breaker: Some(breaker_cfg),
+            sizing: PoolSizing { min_size: 0, max_size: 1 },
+            acquire: PoolAcquire { timeout: Duration::from_millis(500), ..Default::default() },
+            resilience: PoolResiliencePolicy { recycle_breaker: Some(breaker_cfg), ..Default::default() },
             ..Default::default()
         },
     )
@@ -250,11 +247,12 @@ async fn create_and_recycle_breakers_are_independent() {
         RecycleCountingResource::new(Arc::clone(&recycle_calls)),
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 2,
-            acquire_timeout: Duration::from_millis(500),
-            recycle_breaker: Some(recycle_cfg),
-            // create_breaker intentionally absent — create path must stay open.
+            sizing: PoolSizing { min_size: 0, max_size: 2 },
+            acquire: PoolAcquire { timeout: Duration::from_millis(500), ..Default::default() },
+            resilience: PoolResiliencePolicy {
+                recycle_breaker: Some(recycle_cfg), // create_breaker intentionally absent — create path must stay open.
+                ..Default::default()
+            },
             ..Default::default()
         },
     )

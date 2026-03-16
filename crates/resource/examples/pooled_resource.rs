@@ -10,7 +10,7 @@ use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::events::EventBus;
 use nebula_resource::health::{HealthCheckable, HealthStatus};
-use nebula_resource::pool::{Pool, PoolConfig, PoolStrategy};
+use nebula_resource::pool::{Pool, PoolAcquire, PoolConfig, PoolLifetime, PoolSizing, PoolStrategy};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
 use nebula_resource::{ExecutionId, WorkflowId};
@@ -106,13 +106,21 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // 1. Configure pool with LIFO strategy and automatic maintenance.
     let pool_config = PoolConfig {
-        min_size: 2,
-        max_size: 8,
-        acquire_timeout: Duration::from_secs(5),
-        idle_timeout: Duration::from_secs(120),
-        max_lifetime: Duration::from_secs(600),
-        strategy: PoolStrategy::Lifo,
-        maintenance_interval: Some(Duration::from_secs(30)),
+        sizing: PoolSizing {
+            min_size: 2,
+            max_size: 8,
+        },
+        lifetime: PoolLifetime {
+            idle_timeout: Duration::from_secs(120),
+            max_lifetime: Duration::from_secs(600),
+            maintenance_interval: Some(Duration::from_secs(30)),
+            ..Default::default()
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(5),
+            strategy: PoolStrategy::Lifo,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -120,7 +128,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("  strategy: LIFO (hot working set)");
     println!(
         "  min_size: {}, max_size: {}",
-        pool_config.min_size, pool_config.max_size
+        pool_config.sizing.min_size, pool_config.sizing.max_size
     );
     println!("  maintenance: every 30s\n");
 

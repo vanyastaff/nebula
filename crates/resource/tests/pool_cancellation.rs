@@ -12,7 +12,7 @@ use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolSizing, WorkflowId};
 use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------------
@@ -59,9 +59,8 @@ fn ctx() -> Context {
 #[tokio::test(flavor = "multi_thread")]
 async fn acquire_cancelled_mid_wait_no_slot_leak() {
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 1,
-        acquire_timeout: Duration::from_secs(30),
+        sizing: PoolSizing { min_size: 0, max_size: 1 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(30), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(SimpleResource::new(), TestConfig, pool_config).unwrap();

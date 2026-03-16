@@ -13,7 +13,7 @@ use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolSizing, WorkflowId};
 use tokio::task::JoinSet;
 
 // ---------------------------------------------------------------------------
@@ -63,9 +63,8 @@ fn ctx() -> Context {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stress_50_tasks_random_acquire_release() {
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 10,
-        acquire_timeout: Duration::from_secs(10),
+        sizing: PoolSizing { min_size: 0, max_size: 10 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(10), ..Default::default() },
         ..Default::default()
     };
     let pool = Arc::new(Pool::new(StressResource::new(), StressConfig, pool_config).unwrap());

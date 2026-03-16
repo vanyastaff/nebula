@@ -2,7 +2,7 @@
 
 use nebula_resource::health::{HealthState, HealthStatus};
 use nebula_resource::lifecycle::Lifecycle;
-use nebula_resource::pool::PoolConfig;
+use nebula_resource::pool::{PoolAcquire, PoolConfig, PoolLifetime, PoolSizing};
 use nebula_resource::scope::{Scope, Strategy as ScopingStrategy};
 use proptest::prelude::*;
 use std::time::Duration;
@@ -92,13 +92,14 @@ fn arb_pool_config() -> impl Strategy<Value = PoolConfig> {
     )
         .prop_map(
             |(min, max_extra, acquire_s, idle_s, lifetime_s, validation_s)| PoolConfig {
-                min_size: min,
-                max_size: min + max_extra,
-                acquire_timeout: Duration::from_secs(acquire_s),
-                idle_timeout: Duration::from_secs(idle_s),
-                max_lifetime: Duration::from_secs(lifetime_s),
-                validation_interval: Duration::from_secs(validation_s),
-                maintenance_interval: None,
+                sizing: PoolSizing { min_size: min, max_size: min + max_extra },
+                lifetime: PoolLifetime {
+                    idle_timeout: Duration::from_secs(idle_s),
+                    max_lifetime: Duration::from_secs(lifetime_s),
+                    validation_interval: Duration::from_secs(validation_s),
+                    maintenance_interval: None,
+                },
+                acquire: PoolAcquire { timeout: Duration::from_secs(acquire_s), ..Default::default() },
                 ..Default::default()
             },
         )
@@ -174,12 +175,12 @@ proptest! {
     fn pool_config_roundtrips(config in arb_pool_config()) {
         let json = serde_json::to_string(&config).expect("serialize");
         let back: PoolConfig = serde_json::from_str(&json).expect("deserialize");
-        prop_assert_eq!(config.min_size, back.min_size);
-        prop_assert_eq!(config.max_size, back.max_size);
-        prop_assert_eq!(config.acquire_timeout, back.acquire_timeout);
-        prop_assert_eq!(config.idle_timeout, back.idle_timeout);
-        prop_assert_eq!(config.max_lifetime, back.max_lifetime);
-        prop_assert_eq!(config.validation_interval, back.validation_interval);
+        prop_assert_eq!(config.sizing.min_size, back.sizing.min_size);
+        prop_assert_eq!(config.sizing.max_size, back.sizing.max_size);
+        prop_assert_eq!(config.acquire.timeout, back.acquire.timeout);
+        prop_assert_eq!(config.lifetime.idle_timeout, back.lifetime.idle_timeout);
+        prop_assert_eq!(config.lifetime.max_lifetime, back.lifetime.max_lifetime);
+        prop_assert_eq!(config.lifetime.validation_interval, back.lifetime.validation_interval);
     }
 
     #[test]

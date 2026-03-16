@@ -62,6 +62,50 @@ pub use self::guard::{AnyGuard, AnyGuardTrait, ResourceHandle, TypedResourceGuar
 pub use self::pool::TypedPool;
 
 // ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/// Construct the internal HashMap key for a pool entry, encoding both the
+/// resource identity and the registration scope.
+///
+/// Keys take the form `"{resource_key}:{scope_key}"`, e.g. `"logger:global"` or
+/// `"logger:tenant:acme"`.  This allows the same logical resource to be
+/// registered multiple times under different scopes without overwriting.
+fn scoped_pool_key(resource_key: &ResourceKey, scope: &Scope) -> String {
+    format!("{}:{}", resource_key, scope.scope_key())
+}
+
+/// Find the most scope-compatible pool entry for `dep_key` given `ctx_scope`.
+///
+/// Fast path: O(1) exact match using `"{dep_key}:{ctx_scope.scope_key()}"`.
+/// Slow path: O(n) linear scan for the entry whose `resource_key` matches
+/// and whose scope is hierarchically compatible, picking the one with the
+/// highest `hierarchy_level()` (most specific scope wins).
+///
+/// Returns `None` if no compatible entry exists.
+fn find_most_specific<'a>(
+    snapshot: &'a HashMap<String, PoolEntry>,
+    dep_key: &ResourceKey,
+    ctx_scope: &Scope,
+) -> Option<&'a PoolEntry> {
+    // O(1) exact match: key = "{dep_key}:{ctx_scope.scope_key()}"
+    let exact_id = scoped_pool_key(dep_key, ctx_scope);
+    if let Some(entry) = snapshot.get(&exact_id).filter(|e| Strategy::Hierarchical.is_compatible(&e.scope, ctx_scope)) {
+        return Some(entry);
+    }
+
+    // O(n) fallback: ctx_scope is more specific than any registered scope, or
+    // no exact match exists.  Find the most-specific compatible scope.
+    snapshot
+        .values()
+        .filter(|e| {
+            &e.resource_key == dep_key
+                && Strategy::Hierarchical.is_compatible(&e.scope, ctx_scope)
+        })
+        .max_by_key(|e| e.scope.hierarchy_level())
+}
+
+// ---------------------------------------------------------------------------
 // ShutdownConfig
 // ---------------------------------------------------------------------------
 
@@ -230,6 +274,7 @@ impl ManagerBuilder {
     /// quarantine resources and update health states when consecutive
     /// failures exceed the configured threshold.
     #[must_use]
+    #[allow(clippy::excessive_nesting)]
     pub fn build(self) -> Manager {
         let event_bus = self
             .event_bus
@@ -269,8 +314,8 @@ impl ManagerBuilder {
                     },
                 );
                 if newly_quarantined {
-                    if let Ok(key) = nebula_core::ResourceKey::try_from(resource_id) {
-                        bus.emit(ResourceEvent::Quarantined {
+                    match nebula_core::ResourceKey::try_from(resource_id) {
+                        Ok(key) => { bus.emit(ResourceEvent::Quarantined {
                             resource_key: key,
                             reason: format!(
                                 "health check failed ({consecutive_failures} consecutive)"
@@ -280,9 +325,8 @@ impl ManagerBuilder {
                             },
                             from_health: previous_health.clone(),
                             to_health: next_health.clone(),
-                        });
-                    } else {
-                        tracing::warn!(resource_id, "skipping quarantine event for invalid resource key");
+                        }); }
+                        Err(_) => tracing::warn!(resource_id, "skipping quarantine event for invalid resource key"),
                     }
                 }
                 hs.insert(resource_id.to_string(), next_health);
@@ -296,11 +340,11 @@ impl ManagerBuilder {
             event_bus,
             quarantine,
             health_states,
-            metadata: DashMap::with_hasher(FxBuildHasher::default()),
+            metadata: DashMap::with_hasher(FxBuildHasher),
             hooks: Arc::new(HookRegistry::default()),
-            auto_scalers: DashMap::with_hasher(FxBuildHasher::default()),
+            auto_scalers: DashMap::with_hasher(FxBuildHasher),
             default_autoscale_policy: self.default_autoscale_policy,
-            type_index: DashMap::with_hasher(FxBuildHasher::default()),
+            type_index: DashMap::with_hasher(FxBuildHasher),
         }
     }
 }
@@ -435,6 +479,7 @@ impl Manager {
     }
 
     /// Register a resource with its config, pool settings, and an explicit scope.
+    #[allow(clippy::excessive_nesting)]
     pub fn register_scoped<R: Resource>(
         &self,
         resource: R,
@@ -447,7 +492,7 @@ impl Manager {
     {
         let meta = resource.metadata();
         let resource_key = meta.key.clone();
-        let id = resource_key.to_string();
+        let id = scoped_pool_key(&resource_key, &scope);
 
         // Collect declared sub-resource dependency keys.  Handles are no longer
         // captured eagerly here — the context enricher below resolves them from the
@@ -483,13 +528,15 @@ impl Manager {
                 Some(Arc::clone(&self.hooks)),
                 Arc::new(move |mut ctx: Context| {
                     let snapshot = pools_ref.load();
+                    let ctx_scope = ctx.scope.clone();
                     for key in &dep_keys {
-                        let id: &str = key;
-                        if let Some(entry) = snapshot.get(id) {
-                            if let Some(handle) = &entry.typed_handle {
-                                ctx.inject_resource(key.clone(), Arc::clone(handle));
-                            }
-                        }
+                        let Some(handle) = find_most_specific(&snapshot, key, &ctx_scope)
+                            .and_then(|e| e.typed_handle.as_ref())
+                            .map(Arc::clone)
+                        else {
+                            continue;
+                        };
+                        ctx.inject_resource(key.clone(), handle);
                     }
                     ctx
                 }),
@@ -544,7 +591,7 @@ impl Manager {
     /// Checks quarantine status, health state, and scope compatibility
     /// before delegating to the pool.
     pub async fn acquire(&self, resource_key: &ResourceKey, ctx: &Context) -> Result<AnyGuard> {
-        let id: &str = &resource_key;
+        let id: &str = resource_key;
         // Check quarantine -- quarantined resources cannot be acquired.
         if self.quarantine.is_quarantined(id) {
             return Err(Error::Unavailable {
@@ -580,36 +627,37 @@ impl Manager {
             }
         }
 
-        // Clone the Arc and scope to release the DashMap shard lock before
-        // awaiting the potentially long-running acquire_any().
-        let (pool, resource_scope) = match self.pool_get(id) {
-            Some(entry) => (Arc::clone(&entry.pool), entry.scope.clone()),
-            None => {
-                let err = Error::Unavailable {
-                    resource_key: resource_key.clone(),
-                    reason: "Resource not registered".to_string(),
-                    retryable: false,
-                };
-                self.event_bus.emit(ResourceEvent::Error {
-                    resource_key: resource_key.clone(),
-                    error: err.to_string(),
-                });
-                return Err(err);
+        // Find the most scope-compatible pool entry, then clone the Arc to
+        // release the ArcSwap guard before awaiting acquire_any().
+        let pool = {
+            let snapshot = self.pools.load();
+            match find_most_specific(&snapshot, resource_key, &ctx.scope) {
+                Some(entry) => Arc::clone(&entry.pool),
+                None => {
+                    // Distinguish "not registered at all" from "registered but wrong scope".
+                    let has_any_scope =
+                        snapshot.values().any(|e| &e.resource_key == resource_key);
+                    let reason = if has_any_scope {
+                        format!(
+                            "Scope mismatch: no {} pool is compatible with scope {}",
+                            resource_key, ctx.scope
+                        )
+                    } else {
+                        "Resource not registered".to_string()
+                    };
+                    let err = Error::Unavailable {
+                        resource_key: resource_key.clone(),
+                        reason,
+                        retryable: false,
+                    };
+                    self.event_bus.emit(ResourceEvent::Error {
+                        resource_key: resource_key.clone(),
+                        error: err.to_string(),
+                    });
+                    return Err(err);
+                }
             }
         };
-
-        // Validate scope: the resource scope must contain the caller's scope
-        // under the Hierarchical strategy.
-        if !Strategy::Hierarchical.is_compatible(&resource_scope, &ctx.scope) {
-            return Err(Error::Unavailable {
-                resource_key: resource_key.clone(),
-                reason: format!(
-                    "Scope mismatch: resource scope {} does not contain requested scope {}",
-                    resource_scope, ctx.scope
-                ),
-                retryable: false,
-            });
-        }
 
         // Run before-hooks; if any hook cancels, abort the acquire.
         self.hooks.run_before(&HookEvent::Acquire, id, ctx).await?;
@@ -743,7 +791,10 @@ impl Manager {
     /// This is a lightweight check that does not acquire from the pool.
     #[must_use]
     pub fn is_registered(&self, resource_key: &ResourceKey) -> bool {
-        self.pool_contains(&resource_key)
+        self.pools
+            .load()
+            .values()
+            .any(|e| &e.resource_key == resource_key)
     }
 
     /// Get a typed pool reference for a registered resource.
@@ -764,36 +815,46 @@ impl Manager {
         R::Instance: Any,
     {
         let key = resource.metadata().key.clone();
-        let entry = self.pool_get(&key)?;
+        // Look up the Global-scoped entry (backward-compatible default).
+        let scoped_id = scoped_pool_key(&key, &Scope::Global);
+        let entry = self.pool_get(&scoped_id)?;
         let handle = entry.typed_handle.as_ref()?;
         handle.clone().downcast::<TypedPool<R>>().ok()
     }
 
-    /// Deregister a resource, shutting down its pool, cancelling its
-    /// auto-scaler, stopping health monitoring, releasing it from
-    /// quarantine, and removing all dependency edges.
+    /// Deregister a specific scope registration for a resource.
     ///
-    /// Returns `true` if the resource was registered, `false` otherwise.
-    pub async fn deregister(&self, resource_key: &ResourceKey) -> bool {
-        let id: &str = &resource_key;
+    /// Shuts down the pool, cancels any auto-scaler, stops health monitoring,
+    /// releases the resource from quarantine, and removes its dependency edges
+    /// for the given scope.
+    ///
+    /// Returns `true` if the scoped registration existed, `false` otherwise.
+    pub async fn deregister_scoped(&self, resource_key: &ResourceKey, scope: &Scope) -> bool {
+        let id = scoped_pool_key(resource_key, scope);
+        let id_str: &str = &id;
+        let plain_id: &str = resource_key;
+
         // Gracefully shut down the auto-scaler (if any) before pool shutdown
         // so the scaler doesn't keep the Arc<dyn AnyPool> alive.
-        if let Some((_, handle)) = self.auto_scalers.remove(id) {
+        if let Some((_, handle)) = self.auto_scalers.remove(id_str) {
             handle.shutdown().await;
         }
 
         // Stop all health monitoring tasks for this resource.
-        self.health_checker.stop_monitoring_resource(id);
+        // Health checker and health_states are keyed by plain resource key.
+        self.health_checker.stop_monitoring_resource(plain_id);
 
-        let removed = self.pool_remove(id);
-        self.deps.write().remove_all_for(id);
-        self.metadata.remove(id);
+        let removed = self.pool_remove(id_str);
+        self.deps.write().remove_all_for(id_str);
+        self.metadata.remove(id_str);
         // Remove the TypeId → key mapping (scan is O(n) but deregister is rare).
-        self.type_index.retain(|_, v| v.as_str() != id);
-        self.health_states.invalidate(id);
+        self.type_index
+            .retain(|_, v| v.as_str() != resource_key.as_str());
+        // Health states and quarantine are keyed by plain resource key.
+        self.health_states.invalidate(plain_id);
 
         // Release from quarantine (if quarantined) and emit event.
-        if let Some(entry) = self.quarantine.release(id) {
+        if let Some(entry) = self.quarantine.release(plain_id) {
             self.event_bus.emit(ResourceEvent::QuarantineReleased {
                 resource_key: resource_key.clone(),
                 recovery_attempts: entry.recovery_attempts,
@@ -810,6 +871,16 @@ impl Manager {
         } else {
             false
         }
+    }
+
+    /// Deregister the Global-scoped pool for a resource.
+    ///
+    /// This is the backward-compatible equivalent of calling
+    /// `deregister_scoped(resource_key, &Scope::Global)`.
+    ///
+    /// Returns `true` if the resource was registered, `false` otherwise.
+    pub async fn deregister(&self, resource_key: &ResourceKey) -> bool {
+        self.deregister_scoped(resource_key, &Scope::Global).await
     }
 
     /// Shut down all pools whose scope is contained by `scope`.
@@ -844,15 +915,12 @@ impl Manager {
 
         for id in &ordered {
             if let Some(entry) = self.pool_remove(id) {
+                let resource_key = entry.resource_key.clone();
                 let _ = entry.pool.shutdown().await;
-                if let Ok(key) = nebula_core::ResourceKey::try_from(id.as_str()) {
-                    self.event_bus.emit(ResourceEvent::CleanedUp {
-                        resource_key: key,
-                        reason: crate::events::CleanupReason::Shutdown,
-                    });
-                } else {
-                    tracing::warn!(resource_id = %id, "skipping cleanup event for invalid resource key");
-                }
+                self.event_bus.emit(ResourceEvent::CleanedUp {
+                    resource_key,
+                    reason: crate::events::CleanupReason::Shutdown,
+                });
             }
             self.deps.write().remove_all_for(id);
         }
@@ -867,26 +935,32 @@ impl Manager {
     }
 
     /// Get a read-only status snapshot for a single resource.
+    ///
+    /// Returns the status of the most scope-compatible pool for `resource_key`,
+    /// defaulting to the Global-scoped pool.
     #[must_use]
     pub fn get_status(&self, resource_key: &ResourceKey) -> Option<ResourceStatus> {
-        let id: &str = &resource_key;
-        let entry = self.pool_get(id)?;
+        // Look up Global-scoped entry first (backward-compatible default).
+        let scoped_id = scoped_pool_key(resource_key, &Scope::Global);
+        let entry = self.pool_get(&scoped_id)?;
+        let plain_id: &str = resource_key;
         let scope = entry.scope.clone();
         let (active, idle, max_size) = entry.pool.utilization_snapshot();
 
         let metadata = self
             .metadata
-            .get(id)
+            .get(&scoped_id)
             .map(|m| m.value().clone())
             .unwrap_or_else(|| ResourceMetadata::from_key(resource_key.clone()));
 
+        // Health states and quarantine are keyed by plain resource key (not scoped).
         let health = self
             .health_states
-            .get(id)
+            .get(plain_id)
             .clone()
             .unwrap_or(HealthState::Unknown);
 
-        let quarantine_entry = self.quarantine.get(id);
+        let quarantine_entry = self.quarantine.get(plain_id);
         let quarantined = quarantine_entry.is_some();
         let quarantine_reason = quarantine_entry.map(|entry| entry.reason.to_string());
 
@@ -908,12 +982,9 @@ impl Manager {
     #[must_use]
     pub fn list_status(&self) -> Vec<ResourceStatus> {
         let mut statuses: Vec<ResourceStatus> = self
-            .pool_keys()
+            .pool_entries()
             .into_iter()
-            .filter_map(|id| {
-                let key = ResourceKey::try_from(id.as_str()).ok()?;
-                self.get_status(&key)
-            })
+            .filter_map(|(_, entry)| self.get_status(&entry.resource_key))
             .collect();
 
         statuses.sort_by(|a, b| (*a.metadata.key).cmp(&*b.metadata.key));
@@ -988,7 +1059,7 @@ impl Manager {
 
     /// Internal implementation of health state propagation.
     fn propagate_health(&self, resource_key: &ResourceKey, state: HealthState) {
-        let id: &str = &resource_key;
+        let id: &str = resource_key;
         self.health_states.insert(id.to_string(), state.clone());
 
         let dependents = self.deps.read().get_dependents(id);
@@ -1051,9 +1122,9 @@ impl Manager {
         policy: AutoScalePolicy,
     ) -> Result<()> {
         policy.validate()?;
-        let id: &str = &resource_key;
+        let id = scoped_pool_key(resource_key, &Scope::Global);
 
-        let pool_entry = self.pool_get(id).ok_or_else(|| Error::Unavailable {
+        let pool_entry = self.pool_get(&id).ok_or_else(|| Error::Unavailable {
             resource_key: resource_key.clone(),
             reason: "Resource not registered".to_string(),
             retryable: false,
@@ -1063,7 +1134,7 @@ impl Manager {
         // Cancel any existing scaler for this resource (fire-and-forget — enable_autoscaling
         // is synchronous, so we can only signal cancellation here; the old task will exit on
         // its next loop iteration).
-        if let Some((_, old_handle)) = self.auto_scalers.remove(id) {
+        if let Some((_, old_handle)) = self.auto_scalers.remove(id.as_str()) {
             old_handle.cancel();
         }
 
@@ -1095,7 +1166,7 @@ impl Manager {
 
     /// Disable auto-scaling for a resource.
     pub fn disable_autoscaling(&self, resource_key: &ResourceKey) {
-        let id: &str = &resource_key;
+        let id: &str = resource_key;
         if let Some((_, handle)) = self.auto_scalers.remove(id) {
             handle.cancel();
         }
@@ -1174,16 +1245,13 @@ impl Manager {
         // Phase 2: Cleanup each pool in dependency order with per-pool timeout.
         for id in &ordered {
             if let Some(entry) = self.pool_remove(id) {
+                let resource_key = entry.resource_key.clone();
                 let _ = tokio::time::timeout(config.cleanup_timeout, entry.pool.shutdown()).await;
                 self.metadata.remove(id);
-                if let Ok(key) = nebula_core::ResourceKey::try_from(id.as_str()) {
-                    self.event_bus.emit(ResourceEvent::CleanedUp {
-                        resource_key: key,
-                        reason: crate::events::CleanupReason::Shutdown,
-                    });
-                } else {
-                    tracing::warn!(resource_id = %id, "skipping cleanup event for invalid resource key");
-                }
+                self.event_bus.emit(ResourceEvent::CleanedUp {
+                    resource_key,
+                    reason: crate::events::CleanupReason::Shutdown,
+                });
             }
         }
 
@@ -1218,7 +1286,16 @@ impl Manager {
         R::Instance: Any,
     {
         let key = resource.metadata().key.clone();
-        let id = key.to_string();
+
+        // Find the existing pool's scope (defaults to Global for fresh registrations).
+        let existing_scope = self
+            .pools
+            .load()
+            .values()
+            .find(|e| e.resource_key == key)
+            .map(|e| e.scope.clone())
+            .unwrap_or(Scope::Global);
+        let id = scoped_pool_key(&key, &existing_scope);
         let had_existing_pool = self.pool_contains(&id);
 
         // Build the new pool before touching the registry.
@@ -1245,13 +1322,9 @@ impl Manager {
             }
         };
 
-        // Shut down the old pool (if any), preserving the existing scope.
-        let existing_scope = if let Some(entry) = self.pool_remove(&id) {
-            let scope = entry.scope.clone();
+        // Shut down the old pool (if any).
+        if let Some(entry) = self.pool_remove(&id) {
             let _ = entry.pool.shutdown().await;
-            scope
-        } else {
-            Scope::Global
         };
 
         let typed_pool: Arc<TypedPool<R>> = Arc::new(TypedPool { pool: new_pool });
@@ -1266,14 +1339,10 @@ impl Manager {
             },
         );
 
-        if let Ok(key) = nebula_core::ResourceKey::try_from(id.as_str()) {
-            self.event_bus.emit(ResourceEvent::ConfigReloaded {
-                resource_key: key,
-                scope: existing_scope,
-            });
-        } else {
-            tracing::warn!(resource_id = %id, "skipping config reloaded event for invalid resource key");
-        }
+        self.event_bus.emit(ResourceEvent::ConfigReloaded {
+            resource_key: key,
+            scope: existing_scope,
+        });
 
         Ok(())
     }

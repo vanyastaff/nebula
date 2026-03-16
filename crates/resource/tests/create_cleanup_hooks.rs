@@ -18,7 +18,7 @@ use nebula_resource::hooks::{HookEvent, HookFilter, HookRegistry, HookResult, Re
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolLifetime, PoolSizing, WorkflowId};
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -35,11 +35,13 @@ fn ctx() -> Context {
 
 fn pool_config() -> PoolConfig {
     PoolConfig {
-        min_size: 0,
-        max_size: 3,
-        acquire_timeout: Duration::from_secs(2),
-        idle_timeout: Duration::from_secs(600),
-        max_lifetime: Duration::from_secs(3600),
+        sizing: PoolSizing { min_size: 0, max_size: 3 },
+        lifetime: PoolLifetime {
+            idle_timeout: Duration::from_secs(600),
+            max_lifetime: Duration::from_secs(3600),
+            ..Default::default()
+        },
+        acquire: PoolAcquire { timeout: Duration::from_secs(2), ..Default::default() },
         ..Default::default()
     }
 }
@@ -312,7 +314,7 @@ async fn pool_fires_cleanup_hooks_on_expired_entry_eviction() {
     registry.register(Arc::clone(&hook) as Arc<dyn ResourceHook>);
 
     let mut cfg = pool_config();
-    cfg.idle_timeout = Duration::from_millis(30);
+    cfg.lifetime.idle_timeout = Duration::from_millis(30);
 
     let pool = Pool::with_hooks(SimpleResource, TestConfig, cfg, None, Some(registry)).unwrap();
 
@@ -450,8 +452,8 @@ async fn cleanup_hooks_fire_on_maintain_eviction() {
     registry.register(Arc::clone(&hook) as Arc<dyn ResourceHook>);
 
     let mut cfg = pool_config();
-    cfg.idle_timeout = Duration::from_millis(30);
-    cfg.min_size = 0;
+    cfg.lifetime.idle_timeout = Duration::from_millis(30);
+    cfg.sizing.min_size = 0;
 
     let pool = Pool::with_hooks(SimpleResource, TestConfig, cfg, None, Some(registry)).unwrap();
 

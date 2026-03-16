@@ -12,7 +12,7 @@ use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig, PoolStrategy};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolSizing, WorkflowId};
 use proptest::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -73,10 +73,8 @@ proptest! {
 
         rt.block_on(async {
             let pool_config = PoolConfig {
-                min_size: 0,
-                max_size,
-                acquire_timeout: Duration::from_millis(50),
-                strategy,
+                sizing: PoolSizing { min_size: 0, max_size },
+                acquire: PoolAcquire { timeout: Duration::from_millis(50), strategy, ..Default::default() },
                 ..Default::default()
             };
             let pool = Pool::new(CountingResource::new(), TestConfig, pool_config).unwrap();
@@ -129,9 +127,8 @@ proptest! {
 async fn rapid_acquire_release_preserves_invariants() {
     let max_size = 4;
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size,
-        acquire_timeout: Duration::from_millis(200),
+        sizing: PoolSizing { min_size: 0, max_size },
+        acquire: PoolAcquire { timeout: Duration::from_millis(200), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(CountingResource::new(), TestConfig, pool_config).unwrap();
@@ -168,9 +165,8 @@ proptest! {
 
         rt.block_on(async {
             let pool_config = PoolConfig {
-                min_size: 0,
-                max_size,
-                acquire_timeout: Duration::from_millis(50),
+                sizing: PoolSizing { min_size: 0, max_size },
+                acquire: PoolAcquire { timeout: Duration::from_millis(50), ..Default::default() },
                 ..Default::default()
             };
             let pool = Pool::new(CountingResource::new(), TestConfig, pool_config).unwrap();
@@ -227,9 +223,8 @@ proptest! {
 
         rt.block_on(async {
             let pool_config = PoolConfig {
-                min_size: 0,
-                max_size,
-                acquire_timeout: Duration::from_millis(50),
+                sizing: PoolSizing { min_size: 0, max_size },
+                acquire: PoolAcquire { timeout: Duration::from_millis(50), ..Default::default() },
                 ..Default::default()
             };
             let pool = Pool::new(CountingResource::new(), TestConfig, pool_config).unwrap();
@@ -275,9 +270,8 @@ proptest! {
 
         rt.block_on(async {
             let pool_config = PoolConfig {
-                min_size: 0,
-                max_size,
-                acquire_timeout: Duration::from_millis(50),
+                sizing: PoolSizing { min_size: 0, max_size },
+                acquire: PoolAcquire { timeout: Duration::from_millis(50), ..Default::default() },
                 ..Default::default()
             };
             let pool = Pool::new(CountingResource::new(), TestConfig, pool_config).unwrap();
@@ -320,9 +314,8 @@ proptest! {
 #[tokio::test(start_paused = true)]
 async fn acquisitions_equal_releases_after_cleanup() {
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 3,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 3 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(CountingResource::new(), TestConfig, pool_config).unwrap();

@@ -16,7 +16,7 @@ use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolSizing, WorkflowId};
 
 // ---------------------------------------------------------------------------
 // Test resource that tracks cleanup count
@@ -59,9 +59,8 @@ async fn shutdown_cleans_idle_then_guard_drop_cleans_active() {
     let cleanup_count = Arc::new(AtomicU32::new(0));
 
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size: 2,
-        acquire_timeout: Duration::from_secs(1),
+        sizing: PoolSizing { min_size: 0, max_size: 2 },
+        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
         ..Default::default()
     };
     let pool = Pool::new(
@@ -124,9 +123,8 @@ async fn manager_shutdown_clears_all_pools() {
         },
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 2,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 2 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         },
     )
@@ -167,9 +165,8 @@ async fn shutdown_empty_pool_is_noop() {
         },
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 2,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 2 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         },
     )
@@ -198,9 +195,8 @@ async fn acquire_after_pool_shutdown_fails_immediately() {
         },
         TestConfig,
         PoolConfig {
-            min_size: 0,
-            max_size: 2,
-            acquire_timeout: Duration::from_secs(10), // long timeout
+            sizing: PoolSizing { min_size: 0, max_size: 2 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(10), ..Default::default() }, // long timeout
             ..Default::default()
         },
     )

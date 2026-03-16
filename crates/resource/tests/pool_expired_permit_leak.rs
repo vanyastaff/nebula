@@ -17,7 +17,7 @@ use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, WorkflowId};
+use nebula_resource::{ExecutionId, PoolAcquire, PoolLifetime, PoolSizing, WorkflowId};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -125,11 +125,13 @@ impl Resource for ControllableResource {
 async fn expired_entries_plus_create_failure_does_not_leak_permits() {
     let max_size: usize = 3;
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size,
-        acquire_timeout: Duration::from_secs(2),
-        idle_timeout: Duration::from_millis(50),
-        max_lifetime: Duration::from_secs(3600),
+        sizing: PoolSizing { min_size: 0, max_size },
+        lifetime: PoolLifetime {
+            idle_timeout: Duration::from_millis(50),
+            max_lifetime: Duration::from_secs(3600),
+            ..Default::default()
+        },
+        acquire: PoolAcquire { timeout: Duration::from_secs(2), ..Default::default() },
         ..Default::default()
     };
 
@@ -208,11 +210,13 @@ async fn fail_during_expired_replacement_does_not_leak_permits() {
 
     // First pool: succeed for initial fill
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size,
-        acquire_timeout: Duration::from_secs(2),
-        idle_timeout: Duration::from_millis(50),
-        max_lifetime: Duration::from_secs(3600),
+        sizing: PoolSizing { min_size: 0, max_size },
+        lifetime: PoolLifetime {
+            idle_timeout: Duration::from_millis(50),
+            max_lifetime: Duration::from_secs(3600),
+            ..Default::default()
+        },
+        acquire: PoolAcquire { timeout: Duration::from_secs(2), ..Default::default() },
         ..Default::default()
     };
 
@@ -271,11 +275,13 @@ async fn fail_during_expired_replacement_does_not_leak_permits() {
 async fn all_creates_fail_after_expire_permits_returned_on_recovery() {
     let max_size: usize = 2;
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size,
-        acquire_timeout: Duration::from_secs(2),
-        idle_timeout: Duration::from_millis(50),
-        max_lifetime: Duration::from_secs(3600),
+        sizing: PoolSizing { min_size: 0, max_size },
+        lifetime: PoolLifetime {
+            idle_timeout: Duration::from_millis(50),
+            max_lifetime: Duration::from_secs(3600),
+            ..Default::default()
+        },
+        acquire: PoolAcquire { timeout: Duration::from_secs(2), ..Default::default() },
         ..Default::default()
     };
 
@@ -327,11 +333,13 @@ async fn all_creates_fail_after_expire_permits_returned_on_recovery() {
 async fn controllable_resource_create_failure_no_permit_leak() {
     let max_size: usize = 3;
     let pool_config = PoolConfig {
-        min_size: 0,
-        max_size,
-        acquire_timeout: Duration::from_millis(500),
-        idle_timeout: Duration::from_millis(50),
-        max_lifetime: Duration::from_secs(3600),
+        sizing: PoolSizing { min_size: 0, max_size },
+        lifetime: PoolLifetime {
+            idle_timeout: Duration::from_millis(50),
+            max_lifetime: Duration::from_secs(3600),
+            ..Default::default()
+        },
+        acquire: PoolAcquire { timeout: Duration::from_millis(500), ..Default::default() },
         ..Default::default()
     };
 
