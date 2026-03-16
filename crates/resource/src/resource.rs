@@ -4,6 +4,7 @@
 //! resource instances. Each resource type exposes a **canonical [`ResourceKey`]**
 //! used across manager, events, errors, and metrics.
 
+use std::any::Any;
 use std::future::Future;
 
 use nebula_core::ResourceKey;
@@ -72,5 +73,49 @@ pub trait Resource: Send + Sync + 'static {
             drop(instance);
             Ok(())
         }
+    }
+}
+
+/// Object-safe supertrait for declaring resource dependencies.
+///
+/// `Resource` and `Action` return `Vec<Box<dyn AnyResource>>` to declare
+/// "I need resources of these types." The engine uses `Any::type_id()` on
+/// `dyn AnyResource` to identify the resource type at registration time.
+///
+/// Automatically implemented for all `R: Resource` via the blanket impl below.
+pub trait AnyResource: Any + Send + Sync + 'static {
+    /// The normalized key identifying this resource type.
+    fn resource_key(&self) -> ResourceKey;
+
+    /// Metadata for this resource type.
+    fn resource_metadata(&self) -> ResourceMetadata;
+}
+
+/// Blanket impl: every `Resource` is automatically an `AnyResource`.
+impl<R: Resource + 'static> AnyResource for R {
+    fn resource_key(&self) -> ResourceKey {
+        self.key()
+    }
+
+    fn resource_metadata(&self) -> ResourceMetadata {
+        self.metadata()
+    }
+}
+
+/// Declarative dependency declaration for resources.
+///
+/// Implement this trait on a `Resource` type to declare which
+/// sub-resource dependencies it requires. The engine calls these methods
+/// at registration time to build the dependency graph automatically.
+///
+/// Methods use `where Self: Sized` so they are not in the vtable and can
+/// only be called on concrete types at registration time.
+pub trait ResourceDependencies {
+    /// Sub-resources required by this resource.
+    fn resources() -> Vec<Box<dyn AnyResource>>
+    where
+        Self: Sized,
+    {
+        vec![]
     }
 }
