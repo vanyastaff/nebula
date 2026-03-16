@@ -237,6 +237,7 @@ mod tests {
     use nebula_action::error::ActionError;
     use nebula_action::metadata::ActionMetadata;
     use nebula_action::{ActionContext, TriggerContext};
+    use nebula_core::action_key;
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 
     struct EchoHandler {
@@ -313,7 +314,7 @@ mod tests {
     async fn execute_trusted_action() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("test.echo", "Echo", "echoes input"),
+            meta: ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
         }));
 
         let rt = make_runtime(registry);
@@ -344,7 +345,7 @@ mod tests {
     async fn execute_failing_action_propagates_error() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(FailHandler {
-            meta: ActionMetadata::new("test.fail", "Fail", "always fails"),
+            meta: ActionMetadata::new(action_key!("test.fail"), "Fail", "always fails"),
         }));
 
         let rt = make_runtime(registry);
@@ -359,7 +360,7 @@ mod tests {
     async fn data_limit_enforcement() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("test.big", "Big", "returns big output"),
+            meta: ActionMetadata::new(action_key!("test.big"), "Big", "returns big output"),
         }));
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
@@ -392,7 +393,7 @@ mod tests {
     async fn telemetry_events_emitted() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("test.tele", "Tele", "test"),
+            meta: ActionMetadata::new(action_key!("test.tele"), "Tele", "test"),
         }));
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {

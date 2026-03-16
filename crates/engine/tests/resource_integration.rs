@@ -16,7 +16,9 @@ use nebula_action::metadata::ActionMetadata;
 use nebula_action::result::ActionResult;
 use nebula_action::{ActionContext, ActionError};
 use nebula_core::Version;
+use nebula_core::action_key;
 use nebula_core::id::{NodeId, WorkflowId};
+use nebula_core::ActionKey;
 use nebula_engine::WorkflowEngine;
 use nebula_execution::context::ExecutionBudget;
 use nebula_resource::resource::{Config, Resource};
@@ -105,8 +107,9 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
     }
 }
 
-fn meta(key: &str) -> ActionMetadata {
-    ActionMetadata::new(key, key, "resource integration test")
+fn meta(key: ActionKey) -> ActionMetadata {
+    let name = key.to_string();
+    ActionMetadata::new(key, name, "resource integration test")
 }
 
 // ---------------------------------------------------------------------------
@@ -126,7 +129,7 @@ async fn action_acquires_resource_through_engine() {
     // 2. Build the action registry
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(ResourceConsumerHandler {
-        meta: meta("resource-consumer"),
+        meta: meta(action_key!("resource-consumer")),
     }));
 
     // 3. Build the engine with the resource manager attached
@@ -184,7 +187,7 @@ async fn full_resource_lifecycle_with_stats_and_shutdown() {
     // 2. Build the action registry
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(ResourceConsumerHandler {
-        meta: meta("resource-consumer"),
+        meta: meta(action_key!("resource-consumer")),
     }));
 
     // 3. Build the engine with the resource manager attached
@@ -240,7 +243,7 @@ async fn full_resource_lifecycle_with_stats_and_shutdown() {
 async fn action_resource_fails_without_manager() {
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(ResourceConsumerHandler {
-        meta: meta("resource-consumer"),
+        meta: meta(action_key!("resource-consumer")),
     }));
 
     let executor: ActionExecutor =

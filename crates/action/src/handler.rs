@@ -137,7 +137,7 @@ mod tests {
     impl AddAction {
         fn new() -> Self {
             Self {
-                meta: ActionMetadata::new("math.add", "Add", "Adds two numbers"),
+                meta: ActionMetadata::new(nebula_core::action_key!("math.add"), "Add", "Adds two numbers"),
             }
         }
     }
@@ -207,7 +207,7 @@ mod tests {
     #[tokio::test]
     async fn adapter_exposes_metadata() {
         let adapter = StatelessActionAdapter::new(AddAction::new());
-        assert_eq!(adapter.metadata().key, "math.add");
+        assert_eq!(adapter.metadata().key, nebula_core::action_key!("math.add"));
     }
 
     #[test]

@@ -915,6 +915,7 @@ mod tests {
     use nebula_action::result::ActionResult;
     use nebula_action::{ActionContext, TriggerContext};
     use nebula_core::Version;
+    use nebula_core::action_key;
     use nebula_runtime::DataPassingPolicy;
     use nebula_runtime::registry::ActionRegistry;
     use nebula_runtime::{ActionExecutor, InProcessSandbox};
@@ -1008,7 +1009,7 @@ mod tests {
     async fn single_node_workflow() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
 
         let (engine, _, _) = make_engine(registry);
@@ -1029,7 +1030,7 @@ mod tests {
     async fn linear_two_node_workflow() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
 
         let (engine, _, _) = make_engine(registry);
@@ -1059,7 +1060,7 @@ mod tests {
     async fn diamond_workflow() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
 
         let (engine, _, _) = make_engine(registry);
@@ -1102,10 +1103,10 @@ mod tests {
     async fn failing_node_stops_execution() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
         registry.register(Arc::new(FailHandler {
-            meta: ActionMetadata::new("fail", "Fail", "always fails"),
+            meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
         }));
 
         let (engine, _, _) = make_engine(registry);
@@ -1167,7 +1168,7 @@ mod tests {
     async fn telemetry_events_emitted() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
 
         let (engine, event_bus, metrics) = make_engine(registry);
@@ -1207,7 +1208,7 @@ mod tests {
     async fn metrics_recorded_on_failure() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(FailHandler {
-            meta: ActionMetadata::new("fail", "Fail", "always fails"),
+            meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
         }));
 
         let (engine, _, metrics) = make_engine(registry);
@@ -1306,10 +1307,10 @@ mod tests {
     async fn branch_workflow_only_selected_path_executes() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
         registry.register(Arc::new(BranchHandler {
-            meta: ActionMetadata::new("branch", "Branch", "branches"),
+            meta: ActionMetadata::new(action_key!("branch"), "Branch", "branches"),
             selected: "true".into(),
         }));
 
@@ -1355,10 +1356,10 @@ mod tests {
     async fn skip_propagation() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
         registry.register(Arc::new(SkipHandler {
-            meta: ActionMetadata::new("skip", "Skip", "always skips"),
+            meta: ActionMetadata::new(action_key!("skip"), "Skip", "always skips"),
         }));
 
         let (engine, _, _) = make_engine(registry);
@@ -1395,10 +1396,10 @@ mod tests {
     async fn error_routing_with_handler() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
         registry.register(Arc::new(FailHandler {
-            meta: ActionMetadata::new("fail", "Fail", "always fails"),
+            meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
         }));
 
         let (engine, _, _) = make_engine(registry);
@@ -1441,10 +1442,10 @@ mod tests {
     async fn error_without_handler_fails_fast() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
         registry.register(Arc::new(FailHandler {
-            meta: ActionMetadata::new("fail", "Fail", "always fails"),
+            meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
         }));
 
         let (engine, _, _) = make_engine(registry);
@@ -1477,7 +1478,7 @@ mod tests {
     async fn conditional_edge_on_result() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
 
         let (engine, _, _) = make_engine(registry);
@@ -1513,7 +1514,7 @@ mod tests {
     async fn diamond_with_mixed_conditions() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
 
         let (engine, _, _) = make_engine(registry);

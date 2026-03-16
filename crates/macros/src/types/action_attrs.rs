@@ -120,7 +120,11 @@ impl ActionAttrs {
         };
 
         quote! {
-            ::nebula_action::metadata::ActionMetadata::new(#key, #name, #description)
+            ::nebula_action::metadata::ActionMetadata::new(
+                ::nebula_core::ActionKey::new(#key).expect("invalid action key in #[action] attribute"),
+                #name,
+                #description,
+            )
                 .with_version(#major, #minor)
                 #params_expr
         }

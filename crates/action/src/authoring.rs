@@ -89,7 +89,7 @@ mod tests {
     #[tokio::test]
     async fn fn_stateless_action_executes_with_low_boilerplate() {
         let action = stateless_fn::<_, serde_json::Value, serde_json::Value>(
-            ActionMetadata::new("example.fn", "Fn", "Function-backed action"),
+            ActionMetadata::new(nebula_core::action_key!("example.fn"), "Fn", "Function-backed action"),
             |input| async move { Ok(input) },
         );
 

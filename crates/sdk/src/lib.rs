@@ -6,8 +6,9 @@
 //!
 //! ```rust,no_run
 //! use nebula_sdk::prelude::*;
+//! use nebula_core::action_key;
 //!
-//! let metadata = ActionBuilder::new("example.greet", "Greet")
+//! let metadata = ActionBuilder::new(action_key!("example.greet"), "Greet")
 //!     .with_description("A simple greeting action")
 //!     .build();
 //!

@@ -1,4 +1,5 @@
 use crate::port::{self, InputPort, OutputPort};
+use nebula_core::ActionKey;
 use nebula_parameter::schema::Schema;
 
 // Re-export from core so downstream code can continue using `nebula_action::InterfaceVersion`.
@@ -11,9 +12,9 @@ pub enum MetadataCompatibilityError {
     #[error("action key changed from `{previous}` to `{current}`")]
     KeyChanged {
         /// Previous key.
-        previous: String,
+        previous: ActionKey,
         /// Current key.
-        current: String,
+        current: ActionKey,
     },
     /// Interface version regressed.
     #[error(
@@ -41,7 +42,7 @@ pub enum MetadataCompatibilityError {
 #[derive(Debug, Clone)]
 pub struct ActionMetadata {
     /// Unique key identifying this action type (e.g. `"http.request"`).
-    pub key: String,
+    pub key: ActionKey,
     /// Human-readable display name (e.g. `"HTTP Request"`).
     pub name: String,
     /// Short description of what this action does.
@@ -61,12 +62,12 @@ pub struct ActionMetadata {
 impl ActionMetadata {
     /// Create metadata with the minimum required fields.
     pub fn new(
-        key: impl Into<String>,
+        key: ActionKey,
         name: impl Into<String>,
         description: impl Into<String>,
     ) -> Self {
         Self {
-            key: key.into(),
+            key,
             name: name.into(),
             description: description.into(),
             version: InterfaceVersion::new(1, 0),
@@ -142,14 +143,16 @@ impl ActionMetadata {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::action_key;
+
     use super::*;
 
     #[test]
     fn metadata_builder() {
-        let meta = ActionMetadata::new("http.request", "HTTP Request", "Make HTTP calls")
+        let meta = ActionMetadata::new(action_key!("http.request"), "HTTP Request", "Make HTTP calls")
             .with_version(2, 1);
 
-        assert_eq!(meta.key, "http.request");
+        assert_eq!(meta.key, action_key!("http.request"));
         assert_eq!(meta.name, "HTTP Request");
         assert_eq!(meta.version, InterfaceVersion::new(2, 1));
     }
@@ -175,7 +178,7 @@ mod tests {
 
     #[test]
     fn default_metadata_values() {
-        let meta = ActionMetadata::new("test", "Test", "A test action");
+        let meta = ActionMetadata::new(action_key!("test"), "Test", "A test action");
         assert_eq!(meta.version, InterfaceVersion::new(1, 0));
         // Default ports
         assert_eq!(meta.inputs.len(), 1);
@@ -192,7 +195,7 @@ mod tests {
 
     #[test]
     fn with_inputs_builder() {
-        let meta = ActionMetadata::new("ai.agent", "AI Agent", "Run agent").with_inputs(vec![
+        let meta = ActionMetadata::new(action_key!("ai.agent"), "AI Agent", "Run agent").with_inputs(vec![
             InputPort::flow("in"),
             InputPort::support("model", "AI Model", "Language model"),
         ]);
@@ -206,7 +209,7 @@ mod tests {
     fn with_outputs_builder() {
         use crate::port::FlowKind;
 
-        let meta = ActionMetadata::new("http.request", "HTTP Request", "Make calls")
+        let meta = ActionMetadata::new(action_key!("http.request"), "HTTP Request", "Make calls")
             .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")]);
         assert_eq!(meta.outputs.len(), 2);
         if let OutputPort::Flow { kind, .. } = &meta.outputs[0] {
@@ -219,7 +222,7 @@ mod tests {
 
     #[test]
     fn with_dynamic_output() {
-        let meta = ActionMetadata::new("flow.switch", "Switch", "Route by conditions")
+        let meta = ActionMetadata::new(action_key!("flow.switch"), "Switch", "Route by conditions")
             .with_inputs(vec![InputPort::flow("in")])
             .with_outputs(vec![OutputPort::dynamic("rule", "rules")]);
         assert_eq!(meta.outputs.len(), 1);
@@ -231,7 +234,7 @@ mod tests {
     fn with_support_input_full_config() {
         use crate::port::{ConnectionFilter, SupportPort};
 
-        let meta = ActionMetadata::new("ai.agent", "AI Agent", "Run agent").with_inputs(vec![
+        let meta = ActionMetadata::new(action_key!("ai.agent"), "AI Agent", "Run agent").with_inputs(vec![
             InputPort::flow("in"),
             InputPort::Support(SupportPort {
                 key: "tools".into(),
@@ -254,7 +257,7 @@ mod tests {
 
     #[test]
     fn builder_chaining_with_ports() {
-        let meta = ActionMetadata::new("test", "Test", "desc")
+        let meta = ActionMetadata::new(action_key!("test"), "Test", "desc")
             .with_version(2, 0)
             .with_inputs(vec![InputPort::flow("in")])
             .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")]);
@@ -266,10 +269,10 @@ mod tests {
 
     #[test]
     fn schema_change_requires_major_bump() {
-        let prev = ActionMetadata::new("http.request", "HTTP Request", "desc")
+        let prev = ActionMetadata::new(action_key!("http.request"), "HTTP Request", "desc")
             .with_version(1, 0)
             .with_outputs(vec![OutputPort::flow("out")]);
-        let next = ActionMetadata::new("http.request", "HTTP Request", "desc")
+        let next = ActionMetadata::new(action_key!("http.request"), "HTTP Request", "desc")
             .with_version(1, 1)
             .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")]);
 
@@ -282,10 +285,10 @@ mod tests {
 
     #[test]
     fn schema_change_with_major_bump_is_valid() {
-        let prev = ActionMetadata::new("http.request", "HTTP Request", "desc")
+        let prev = ActionMetadata::new(action_key!("http.request"), "HTTP Request", "desc")
             .with_version(1, 0)
             .with_outputs(vec![OutputPort::flow("out")]);
-        let next = ActionMetadata::new("http.request", "HTTP Request", "desc")
+        let next = ActionMetadata::new(action_key!("http.request"), "HTTP Request", "desc")
             .with_version(2, 0)
             .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")]);
 
@@ -294,8 +297,8 @@ mod tests {
 
     #[test]
     fn key_change_is_rejected() {
-        let prev = ActionMetadata::new("a.one", "A", "desc").with_version(1, 0);
-        let next = ActionMetadata::new("a.two", "A", "desc").with_version(2, 0);
+        let prev = ActionMetadata::new(action_key!("a.one"), "A", "desc").with_version(1, 0);
+        let next = ActionMetadata::new(action_key!("a.two"), "A", "desc").with_version(2, 0);
 
         let err = next.validate_compatibility(&prev).unwrap_err();
         assert!(matches!(err, MetadataCompatibilityError::KeyChanged { .. }));
@@ -303,8 +306,8 @@ mod tests {
 
     #[test]
     fn version_regression_is_rejected() {
-        let prev = ActionMetadata::new("a.one", "A", "desc").with_version(2, 1);
-        let next = ActionMetadata::new("a.one", "A", "desc").with_version(2, 0);
+        let prev = ActionMetadata::new(action_key!("a.one"), "A", "desc").with_version(2, 1);
+        let next = ActionMetadata::new(action_key!("a.one"), "A", "desc").with_version(2, 0);
 
         let err = next.validate_compatibility(&prev).unwrap_err();
         assert!(matches!(

@@ -9,6 +9,7 @@ use nebula_action::{
     StatelessAction, TriggerAction, TriggerContext,
 };
 use nebula_action::dependency::ActionDependencies;
+use nebula_core::action_key;
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 use tokio_util::sync::CancellationToken;
 
@@ -42,7 +43,7 @@ impl StatelessAction for EchoAction {
 #[tokio::test]
 async fn stateless_action_execute_returns_success() {
     let action = EchoAction {
-        meta: ActionMetadata::new("test.echo", "Echo", "Echo input to output"),
+        meta: ActionMetadata::new(action_key!("test.echo"), "Echo", "Echo input to output"),
     };
     let ctx = ActionContext::new(
         ExecutionId::new(),
@@ -106,7 +107,7 @@ impl StatefulAction for CounterAction {
 #[tokio::test]
 async fn stateful_action_continue_then_break() {
     let action = CounterAction {
-        meta: ActionMetadata::new("test.counter", "Counter", "Count then break"),
+        meta: ActionMetadata::new(action_key!("test.counter"), "Counter", "Count then break"),
     };
     let ctx = ActionContext::new(
         ExecutionId::new(),
@@ -172,7 +173,7 @@ impl TriggerAction for NoOpTrigger {
 #[tokio::test]
 async fn trigger_action_start_stop_succeed() {
     let action = NoOpTrigger {
-        meta: ActionMetadata::new("test.noop_trigger", "NoOp Trigger", "Start/stop no-op"),
+        meta: ActionMetadata::new(action_key!("test.noop_trigger"), "NoOp Trigger", "Start/stop no-op"),
     };
     let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new());
     action.start(&ctx).await.unwrap();

@@ -13,7 +13,9 @@ use nebula_action::metadata::ActionMetadata;
 use nebula_action::result::ActionResult;
 use nebula_action::{ActionContext, ActionError};
 use nebula_core::Version;
+use nebula_core::action_key;
 use nebula_core::id::{NodeId, WorkflowId};
+use nebula_core::ActionKey;
 use nebula_engine::WorkflowEngine;
 use nebula_execution::ExecutionStatus;
 use nebula_execution::context::ExecutionBudget;
@@ -211,7 +213,7 @@ async fn engine_with_telemetry_service_wires_bus_and_metrics() {
     let metrics = telemetry.metrics_arc();
 
     let registry = Arc::new(ActionRegistry::new());
-    registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
+    registry.register(Arc::new(EchoHandler { meta: meta(action_key!("echo")) }));
 
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
@@ -237,8 +239,9 @@ async fn engine_with_telemetry_service_wires_bus_and_metrics() {
     assert!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get() >= 1);
 }
 
-fn meta(key: &str) -> ActionMetadata {
-    ActionMetadata::new(key, key, "integration test handler")
+fn meta(key: ActionKey) -> ActionMetadata {
+    let name = key.to_string();
+    ActionMetadata::new(key, name, "integration test handler")
 }
 
 // ---------------------------------------------------------------------------
@@ -250,9 +253,9 @@ fn meta(key: &str) -> ActionMetadata {
 #[tokio::test]
 async fn linear_pipeline_data_flows_through() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
+    registry.register(Arc::new(EchoHandler { meta: meta(action_key!("echo")) }));
     registry.register(Arc::new(DoubleHandler {
-        meta: meta("double"),
+        meta: meta(action_key!("double")),
     }));
 
     let (engine, _, _) = make_engine(registry);
@@ -282,12 +285,12 @@ async fn linear_pipeline_data_flows_through() {
 #[tokio::test]
 async fn fan_out_parallel_execution() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
+    registry.register(Arc::new(EchoHandler { meta: meta(action_key!("echo")) }));
     registry.register(Arc::new(DoubleHandler {
-        meta: meta("double"),
+        meta: meta(action_key!("double")),
     }));
     registry.register(Arc::new(Add10Handler {
-        meta: meta("add10"),
+        meta: meta(action_key!("add10")),
     }));
 
     let (engine, _, _) = make_engine(registry);
@@ -320,12 +323,12 @@ async fn fan_out_parallel_execution() {
 #[tokio::test]
 async fn diamond_merge_receives_combined_outputs() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
+    registry.register(Arc::new(EchoHandler { meta: meta(action_key!("echo")) }));
     registry.register(Arc::new(DoubleHandler {
-        meta: meta("double"),
+        meta: meta(action_key!("double")),
     }));
     registry.register(Arc::new(Add10Handler {
-        meta: meta("add10"),
+        meta: meta(action_key!("add10")),
     }));
 
     let (engine, _, _) = make_engine(registry);
@@ -373,8 +376,8 @@ async fn diamond_merge_receives_combined_outputs() {
 #[tokio::test]
 async fn error_propagation_stops_downstream() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
-    registry.register(Arc::new(FailHandler { meta: meta("fail") }));
+    registry.register(Arc::new(EchoHandler { meta: meta(action_key!("echo")) }));
+    registry.register(Arc::new(FailHandler { meta: meta(action_key!("fail")) }));
 
     let (engine, _, _) = make_engine(registry);
 
@@ -412,11 +415,11 @@ async fn error_propagation_stops_downstream() {
 async fn cancellation_via_sibling_failure() {
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(SlowHandler {
-        meta: meta("slow"),
+        meta: meta(action_key!("slow")),
         delay: Duration::from_secs(10),
     }));
-    registry.register(Arc::new(FailHandler { meta: meta("fail") }));
-    registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
+    registry.register(Arc::new(FailHandler { meta: meta(action_key!("fail")) }));
+    registry.register(Arc::new(EchoHandler { meta: meta(action_key!("echo")) }));
 
     let (engine, _, _) = make_engine(registry);
 
@@ -463,7 +466,7 @@ async fn cancellation_via_sibling_failure() {
 #[tokio::test]
 async fn telemetry_covers_full_lifecycle() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
+    registry.register(Arc::new(EchoHandler { meta: meta(action_key!("echo")) }));
 
     let (engine, event_bus, metrics) = make_engine(registry);
 
@@ -524,7 +527,7 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(CounterHandler {
-        meta: meta("counter"),
+        meta: meta(action_key!("counter")),
         count: counter.clone(),
     }));
 
@@ -556,9 +559,9 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
 #[tokio::test]
 async fn deep_chain_propagates_outputs() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register(Arc::new(EchoHandler { meta: meta("echo") }));
+    registry.register(Arc::new(EchoHandler { meta: meta(action_key!("echo")) }));
     registry.register(Arc::new(DoubleHandler {
-        meta: meta("double"),
+        meta: meta(action_key!("double")),
     }));
 
     let (engine, _, _) = make_engine(registry);
@@ -597,7 +600,7 @@ async fn deep_chain_propagates_outputs() {
 #[tokio::test]
 async fn metrics_accurate_on_failure() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register(Arc::new(FailHandler { meta: meta("fail") }));
+    registry.register(Arc::new(FailHandler { meta: meta(action_key!("fail")) }));
 
     let (engine, _, metrics) = make_engine(registry);
 

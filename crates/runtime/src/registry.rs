@@ -44,7 +44,7 @@ impl ActionRegistry {
     ///
     /// If a handler with the same key already exists, it is replaced.
     pub fn register(&self, handler: Arc<dyn InternalHandler>) {
-        let key = handler.metadata().key.clone();
+        let key = handler.metadata().key.as_str().to_owned();
         tracing::info!(action_key = %key, "registered action handler");
         self.handlers.insert(key, handler);
     }
@@ -122,6 +122,8 @@ mod tests {
     use nebula_action::error::ActionError;
     use nebula_action::metadata::ActionMetadata;
     use nebula_action::result::ActionResult;
+    use nebula_core::ActionKey;
+    use nebula_core::action_key;
 
     /// Minimal test handler that echoes input.
     struct EchoHandler {
@@ -129,9 +131,10 @@ mod tests {
     }
 
     impl EchoHandler {
-        fn new(key: &str) -> Self {
+        fn new(key: ActionKey) -> Self {
+            let name = key.to_string();
             Self {
-                meta: ActionMetadata::new(key, key, "test handler"),
+                meta: ActionMetadata::new(key, name, "test handler"),
             }
         }
     }
@@ -154,13 +157,13 @@ mod tests {
     #[test]
     fn register_and_lookup() {
         let reg = ActionRegistry::new();
-        reg.register(Arc::new(EchoHandler::new("test.echo")));
+        reg.register(Arc::new(EchoHandler::new(action_key!("test.echo"))));
 
         assert!(reg.contains("test.echo"));
         assert_eq!(reg.len(), 1);
 
         let handler = reg.get("test.echo").unwrap();
-        assert_eq!(handler.metadata().key, "test.echo");
+        assert_eq!(handler.metadata().key, action_key!("test.echo"));
     }
 
     #[test]
@@ -173,15 +176,15 @@ mod tests {
     #[test]
     fn register_replaces_existing() {
         let reg = ActionRegistry::new();
-        reg.register(Arc::new(EchoHandler::new("test.a")));
-        reg.register(Arc::new(EchoHandler::new("test.a")));
+        reg.register(Arc::new(EchoHandler::new(action_key!("test.a"))));
+        reg.register(Arc::new(EchoHandler::new(action_key!("test.a"))));
         assert_eq!(reg.len(), 1);
     }
 
     #[test]
     fn remove_handler() {
         let reg = ActionRegistry::new();
-        reg.register(Arc::new(EchoHandler::new("test.rem")));
+        reg.register(Arc::new(EchoHandler::new(action_key!("test.rem"))));
         assert!(reg.contains("test.rem"));
 
         let removed = reg.remove("test.rem");
@@ -192,9 +195,9 @@ mod tests {
     #[test]
     fn keys_lists_all() {
         let reg = ActionRegistry::new();
-        reg.register(Arc::new(EchoHandler::new("a")));
-        reg.register(Arc::new(EchoHandler::new("b")));
-        reg.register(Arc::new(EchoHandler::new("c")));
+        reg.register(Arc::new(EchoHandler::new(action_key!("a"))));
+        reg.register(Arc::new(EchoHandler::new(action_key!("b"))));
+        reg.register(Arc::new(EchoHandler::new(action_key!("c"))));
 
         let mut keys = reg.keys();
         keys.sort();

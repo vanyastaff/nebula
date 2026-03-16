@@ -1,4 +1,5 @@
 extern crate self as nebula_action;
+extern crate self as nebula_core;
 extern crate self as nebula_credential;
 extern crate self as nebula_parameter;
 extern crate self as nebula_plugin;
@@ -6,12 +7,29 @@ extern crate self as nebula_resource;
 
 pub use schema::{Field, Schema};
 
+/// Minimal ActionKey stub for proc-macro tests.
+#[derive(Clone, Debug)]
+pub struct ActionKey(String);
+
+impl ActionKey {
+    /// Stub for `ActionKey::new` — always succeeds in tests.
+    pub fn new(s: &str) -> Result<Self, String> {
+        Ok(Self(s.to_owned()))
+    }
+}
+
+impl std::fmt::Display for ActionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 pub mod metadata {
     #[derive(Clone)]
     pub struct ActionMetadata;
 
     impl ActionMetadata {
-        pub fn new(_key: &str, _name: &str, _description: &str) -> Self {
+        pub fn new(_key: crate::ActionKey, _name: &str, _description: &str) -> Self {
             Self
         }
 

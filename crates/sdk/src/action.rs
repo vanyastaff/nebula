@@ -6,14 +6,16 @@
 //!
 //! ```rust,no_run
 //! use nebula_sdk::action::ActionBuilder;
+//! use nebula_core::action_key;
 //!
-//! let action = ActionBuilder::new("my.action", "My Action")
+//! let action = ActionBuilder::new(action_key!("my.action"), "My Action")
 //!     .with_description("Does something useful")
 //!     .with_version(1, 0)
 //!     .build();
 //! ```
 
 use nebula_action::ActionMetadata;
+use nebula_core::ActionKey;
 
 /// Builder for creating action metadata.
 ///
@@ -21,14 +23,15 @@ use nebula_action::ActionMetadata;
 ///
 /// ```
 /// use nebula_sdk::action::ActionBuilder;
+/// use nebula_core::action_key;
 ///
-/// let metadata = ActionBuilder::new("http.request", "HTTP Request")
+/// let metadata = ActionBuilder::new(action_key!("http.request"), "HTTP Request")
 ///     .with_description("Makes HTTP requests")
 ///     .with_version(2, 0)
 ///     .build();
 /// ```
 pub struct ActionBuilder {
-    key: String,
+    key: ActionKey,
     name: String,
     description: String,
     version: (u32, u32),
@@ -39,11 +42,11 @@ impl ActionBuilder {
     ///
     /// # Arguments
     ///
-    /// * `key` - Unique action identifier (e.g., "http.request")
+    /// * `key` - Unique action identifier (e.g., `action_key!("http.request")`)
     /// * `name` - Human-readable name
-    pub fn new(key: impl Into<String>, name: impl Into<String>) -> Self {
+    pub fn new(key: ActionKey, name: impl Into<String>) -> Self {
         Self {
-            key: key.into(),
+            key,
             name: name.into(),
             description: String::new(),
             version: (1, 0),
@@ -138,16 +141,18 @@ pub mod helpers {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::action_key;
+
     use super::ActionBuilder;
 
     #[test]
     fn test_action_builder() {
-        let metadata = ActionBuilder::new("test.action", "Test Action")
+        let metadata = ActionBuilder::new(action_key!("test.action"), "Test Action")
             .with_description("A test action")
             .with_version(2, 1)
             .build();
 
-        assert_eq!(metadata.key, "test.action");
+        assert_eq!(metadata.key, action_key!("test.action"));
         assert_eq!(metadata.name, "Test Action");
         assert_eq!(metadata.description, "A test action");
     }

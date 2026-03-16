@@ -60,7 +60,7 @@ pub fn validate_action_package(
 ) -> Result<(), ActionPackageValidationErrors> {
     let mut errors = Vec::new();
 
-    if metadata.key.trim().is_empty() {
+    if metadata.key.as_str().is_empty() {
         errors.push(ActionPackageValidationError::EmptyMetadataField { field: "key" });
     }
     if metadata.name.trim().is_empty() {
@@ -117,11 +117,13 @@ pub fn validate_action_package(
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::action_key;
+
     use super::*;
     use crate::port::{DynamicPort, SupportPort};
 
     fn valid_metadata() -> ActionMetadata {
-        ActionMetadata::new("test.action", "Test", "desc")
+        ActionMetadata::new(action_key!("test.action"), "Test", "desc")
     }
 
     #[test]
@@ -132,7 +134,7 @@ mod tests {
 
     #[test]
     fn duplicate_ports_fail_validation() {
-        let meta = ActionMetadata::new("test.action", "Test", "desc")
+        let meta = ActionMetadata::new(action_key!("test.action"), "Test", "desc")
             .with_inputs(vec![InputPort::flow("in"), InputPort::flow("in")])
             .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("out")]);
 
@@ -149,7 +151,7 @@ mod tests {
 
     #[test]
     fn invalid_support_and_dynamic_ports_fail_validation() {
-        let meta = ActionMetadata::new("test.action", "Test", "desc")
+        let meta = ActionMetadata::new(action_key!("test.action"), "Test", "desc")
             .with_inputs(vec![InputPort::Support(SupportPort {
                 key: "tools".into(),
                 name: "".into(),
