@@ -1,29 +1,39 @@
-//! Resource pool — generic pool integrated with the `Resource` trait.
+//! Resource pool — generic pool integrated with the [\Resource\] trait.
 //!
-//! `Pool<R>` calls `R::create`, `R::is_valid`, `R::recycle` and `R::cleanup`
+//! [\Pool<R>\] calls [\R::create\], [\R::is_valid\], [\R::recycle\] and [\R::cleanup\]
 //! directly, removing the need for closure factories.
 //!
 //! ## Lifecycle Hooks
 //!
-//! When a [`HookRegistry`] is attached (via [`Pool::with_hooks`]), the pool
-//! fires [`HookEvent::Create`] before/after [`Resource::create()`] and
-//! [`HookEvent::Cleanup`] before/after [`Resource::cleanup()`]. Before-hooks
+//! When a [\HookRegistry\] is attached (via [\Pool::with_hooks\]), the pool
+//! fires [\HookEvent::Create\] before/after [\Resource::create()\] and
+//! [\HookEvent::Cleanup\] before/after [\Resource::cleanup()\]. Before-hooks
 //! can cancel create operations; cleanup hooks are best-effort (errors are
 //! logged but never propagated).
 //!
-//! [`Resource::create()`]: crate::Resource::create
-//! [`Resource::cleanup()`]: crate::Resource::cleanup
+//! [\Resource::create()\]: crate::Resource::create
+//! [\Resource::cleanup()\]: crate::Resource::cleanup
 
+// ── Submodules ────────────────────────────────────────────────────────────────
+pub mod config;
+pub(crate) mod inner;
+pub(crate) mod stats;
+
+// ── Public re-exports ─────────────────────────────────────────────────────────
+pub use config::{
+    AdaptiveBackpressurePolicy, PoolAcquire, PoolBackpressurePolicy, PoolConfig, PoolLifetime,
+    PoolResiliencePolicy, PoolSharingMode, PoolSizing, PoolStrategy, RetryConfig,
+};
+pub use stats::{LatencyPercentiles, PoolStats};
+
+// ── Imports ───────────────────────────────────────────────────────────────────
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use hdrhistogram::Histogram;
-use nebula_core::{ExecutionId, ResourceKey, WorkflowId};
-use nebula_resilience::{
-    CircuitBreaker, CircuitBreakerConfig, CircuitState, Gate, ResilienceError,
-};
+use nebula_core::{ExecutionId, WorkflowId};
+use nebula_resilience::{CircuitBreaker, CircuitState, Gate, ResilienceError};
 use parking_lot::Mutex;
 use tokio::sync::{Semaphore, TryAcquireError};
 use tokio_util::sync::CancellationToken;
@@ -33,325 +43,38 @@ use crate::error::{Error, Result};
 use crate::events::{CleanupReason, EventBus, ResourceEvent};
 use crate::guard::Guard;
 use crate::hooks::{HookEvent, HookRegistry};
-use crate::lifecycle::Lifecycle;
 use crate::poison::{Poison, PoisonError};
 use crate::resource::Resource;
 use crate::scope::Scope;
 
-// ---------------------------------------------------------------------------
-// CounterGuard — RAII waiter-count tracker
-// ---------------------------------------------------------------------------
-
-/// RAII guard that increments an [`AtomicUsize`] on construction and
-/// decrements it on drop.
-///
-/// Used in [`Pool::acquire_inner`] to track the number of callers currently
-/// waiting for a semaphore permit, without relying on paired manual
-/// `fetch_add` / `fetch_sub` calls that can be skipped on early returns.
-struct CounterGuard(Arc<AtomicUsize>);
-
-impl CounterGuard {
-    fn new(counter: &Arc<AtomicUsize>) -> Self {
-        counter.fetch_add(1, Ordering::Relaxed);
-        Self(Arc::clone(counter))
-    }
-}
-
-impl Drop for CounterGuard {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
-    }
-}
+use self::inner::{
+    CounterGuard, Entry, EntryMeta, IdleResult, LatencyState, PoolInner, PoolResilienceState,
+    PoolState,
+};
+use self::stats::new_latency_histogram;
 
 // ---------------------------------------------------------------------------
-// PoolConfig
-// ---------------------------------------------------------------------------
-
-use serde::{Deserialize, Serialize};
-
-/// Strategy for selecting idle instances from the pool.
-///
-/// Controls whether the most-recently-used or least-recently-used
-/// idle instance is returned on acquire.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum PoolStrategy {
-    /// First-in, first-out: return the **oldest** idle instance.
-    ///
-    /// Distributes usage evenly across instances. This is the default.
-    #[default]
-    Fifo,
-    /// Last-in, first-out: return the **most recently used** idle instance.
-    ///
-    /// Keeps a hot working set small, letting less-used instances idle-expire
-    /// naturally. Useful when `min_size` is low relative to `max_size`.
-    Lifo,
-}
-
-/// Sharing mode for a pool.
-///
-/// Controls whether pool instances are acquired exclusively (the default) or
-/// served as cheap clones to multiple concurrent callers simultaneously.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum PoolSharingMode {
-    /// Classical pool — one exclusive [`Guard`] per instance at a time.
-    ///
-    /// Semaphore permits are consumed on acquire and returned on drop.
-    /// This is the default and mirrors the behaviour of `bb8` / `deadpool`.
-    #[default]
-    Exclusive,
-    /// Single shared instance — `acquire()` returns a **clone** of the single
-    /// managed instance without consuming a semaphore permit.
-    ///
-    /// Requires `R::Instance: Clone`.  Rate-limiting state, connection handles,
-    /// and any mutable state must live inside the instance itself (e.g. behind
-    /// an `Arc<Mutex<_>>`).  The `Guard`'s on-drop is a no-op — there is nothing
-    /// to return.
-    ///
-    /// Ideal for: Telegram `Bot`, `reqwest::Client`, `sqlx::PgPool`, structured
-    /// loggers, and any resource whose instance is already `Arc`-wrapped and
-    /// safe for concurrent access via `&self`.
-    Shared,
-}
-
-/// Backpressure policy for acquire behavior when the pool is saturated.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum PoolBackpressurePolicy {
-    /// Immediately return [`Error::PoolExhausted`] when no permit is available.
-    FailFast,
-    /// Wait up to `timeout` for a permit, then return [`Error::PoolExhausted`].
-    BoundedWait {
-        /// Max wait time for permit acquisition.
-        timeout: Duration,
-    },
-    /// Dynamically choose wait timeout based on current pressure.
-    Adaptive(AdaptiveBackpressurePolicy),
-}
-
-/// Configuration for adaptive acquire backpressure behavior.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AdaptiveBackpressurePolicy {
-    /// Utilization threshold (`active / max_size`) considered high pressure.
-    pub high_pressure_utilization: f64,
-    /// Waiter threshold considered high pressure.
-    pub high_pressure_waiters: usize,
-    /// Timeout used under low pressure.
-    pub low_pressure_timeout: Duration,
-    /// Timeout used under high pressure.
-    pub high_pressure_timeout: Duration,
-}
-
-impl Default for AdaptiveBackpressurePolicy {
-    fn default() -> Self {
-        Self {
-            high_pressure_utilization: 0.8,
-            high_pressure_waiters: 8,
-            low_pressure_timeout: Duration::from_secs(30),
-            high_pressure_timeout: Duration::from_millis(100),
-        }
-    }
-}
-
-/// Configuration for resource pooling
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PoolConfig {
-    /// Minimum number of resources in the pool
-    pub min_size: usize,
-    /// Maximum number of resources in the pool
-    pub max_size: usize,
-    /// Timeout for acquiring a resource from the pool
-    pub acquire_timeout: Duration,
-    /// Time after which idle resources are removed
-    pub idle_timeout: Duration,
-    /// Maximum lifetime of a resource
-    pub max_lifetime: Duration,
-    /// Interval for validation/health checks
-    pub validation_interval: Duration,
-    /// If set, a background task calls `maintain()` at this interval.
-    /// `None` disables automatic maintenance (the default).
-    #[serde(default)]
-    pub maintenance_interval: Option<Duration>,
-    /// Strategy for selecting idle instances on acquire.
-    /// Default: [`PoolStrategy::Fifo`].
-    #[serde(default)]
-    pub strategy: PoolStrategy,
-    /// Optional acquire backpressure policy profile.
-    ///
-    /// When omitted, bounded-wait behavior is preserved using `acquire_timeout`
-    /// for backward compatibility.
-    #[serde(default)]
-    pub backpressure_policy: Option<PoolBackpressurePolicy>,
-    /// Circuit breaker applied to `Resource::create()`.
-    ///
-    /// See `nebula_resilience::standard_config()` for sensible defaults.
-    #[serde(default)]
-    pub create_breaker: Option<CircuitBreakerConfig>,
-    /// Circuit breaker applied to `Resource::recycle()`.
-    ///
-    /// See `nebula_resilience::standard_config()` for sensible defaults.
-    #[serde(default)]
-    pub recycle_breaker: Option<CircuitBreakerConfig>,
-    /// Optional timeout for a single `Resource::create()` call.
-    ///
-    /// `None` (default) keeps create unbounded and relies on higher-level
-    /// cancellation plus circuit breakers.
-    #[serde(default)]
-    pub create_timeout: Option<Duration>,
-    /// Optional timeout for a single `Resource::recycle()` call.
-    ///
-    /// `None` (default) keeps recycle unbounded.
-    #[serde(default)]
-    pub recycle_timeout: Option<Duration>,
-    /// Instance sharing mode.
-    ///
-    /// [`PoolSharingMode::Shared`] serves clones of a single instance to any
-    /// number of concurrent callers without semaphore permits.  Requires
-    /// `R::Instance: Clone`.  Default: [`PoolSharingMode::Exclusive`].
-    #[serde(default)]
-    pub sharing_mode: PoolSharingMode,
-    /// Pre-warm the pool on construction.
-    ///
-    /// When `true`, `Pool::new` will create up to `min_size` instances
-    /// eagerly (before the first acquire).  Creation errors during warm-up
-    /// are non-fatal and logged at `WARN` level — the pool is still usable
-    /// with fewer pre-created instances.
-    ///
-    /// Default: `false` (lazy, current behaviour).
-    #[serde(default)]
-    pub warm_up: bool,
-}
-
-impl Default for PoolConfig {
-    fn default() -> Self {
-        Self {
-            min_size: 1,
-            max_size: 10,
-            acquire_timeout: Duration::from_secs(30),
-            idle_timeout: Duration::from_secs(600),
-            max_lifetime: Duration::from_secs(3600),
-            validation_interval: Duration::from_secs(30),
-            maintenance_interval: Some(Duration::from_secs(60)),
-            strategy: PoolStrategy::default(),
-            backpressure_policy: None,
-            create_breaker: None,
-            recycle_breaker: None,
-            create_timeout: None,
-            recycle_timeout: None,
-            sharing_mode: PoolSharingMode::default(),
-            warm_up: false,
-        }
-    }
-}
-
-impl PoolConfig {
-    /// Enable both create/recycle circuit breakers using standard defaults.
-    #[must_use]
-    pub fn with_standard_breakers(mut self) -> Self {
-        self.create_breaker = Some(nebula_resilience::standard_config());
-        self.recycle_breaker = Some(nebula_resilience::standard_config());
-        self
-    }
-}
-
-impl PoolConfig {
-    /// Validate pool configuration, returning an error if invalid.
-    pub fn validate(&self) -> Result<()> {
-        if self.max_size == 0 {
-            return Err(Error::configuration("max_size must be greater than 0"));
-        }
-        if self.min_size > self.max_size {
-            return Err(Error::configuration(format!(
-                "min_size ({}) must not exceed max_size ({})",
-                self.min_size, self.max_size
-            )));
-        }
-        if self.acquire_timeout.is_zero() {
-            return Err(Error::configuration(
-                "acquire_timeout must be greater than zero",
-            ));
-        }
-        if let Some(policy) = &self.backpressure_policy {
-            match policy {
-                PoolBackpressurePolicy::FailFast => {}
-                PoolBackpressurePolicy::BoundedWait { timeout } => {
-                    if timeout.is_zero() {
-                        return Err(Error::configuration(
-                            "backpressure bounded wait timeout must be greater than zero",
-                        ));
-                    }
-                }
-                PoolBackpressurePolicy::Adaptive(adaptive) => {
-                    if !(0.0..=1.0).contains(&adaptive.high_pressure_utilization)
-                        || adaptive.high_pressure_utilization == 0.0
-                    {
-                        return Err(Error::configuration(
-                            "adaptive high_pressure_utilization must be in (0, 1]",
-                        ));
-                    }
-                    if adaptive.high_pressure_waiters == 0 {
-                        return Err(Error::configuration(
-                            "adaptive high_pressure_waiters must be greater than zero",
-                        ));
-                    }
-                    if adaptive.low_pressure_timeout.is_zero()
-                        || adaptive.high_pressure_timeout.is_zero()
-                    {
-                        return Err(Error::configuration(
-                            "adaptive timeouts must be greater than zero",
-                        ));
-                    }
-                }
-            }
-        }
-        if let Some(timeout) = self.create_timeout
-            && timeout.is_zero()
-        {
-            return Err(Error::configuration(
-                "create_timeout must be greater than zero when set",
-            ));
-        }
-        if let Some(timeout) = self.recycle_timeout
-            && timeout.is_zero()
-        {
-            return Err(Error::configuration(
-                "recycle_timeout must be greater than zero when set",
-            ));
-        }
-        Ok(())
-    }
-
-    /// Returns the effective acquire backpressure policy for this config.
-    #[must_use]
-    pub fn effective_backpressure_policy(&self) -> PoolBackpressurePolicy {
-        self.backpressure_policy
-            .clone()
-            .unwrap_or(PoolBackpressurePolicy::BoundedWait {
-                timeout: self.acquire_timeout,
-            })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Pool internals
+// InstanceMetadata
 // ---------------------------------------------------------------------------
 
 /// Lifecycle metadata for a pool-managed instance.
 ///
-/// Passed to [`Resource::is_reusable_with_meta`](crate::resource::Resource::is_reusable_with_meta)
-/// and [`Resource::recycle_with_meta`](crate::resource::Resource::recycle_with_meta) so that
+/// Passed to [\Resource::is_reusable_with_meta\](crate::resource::Resource::is_reusable_with_meta)
+/// and [\Resource::recycle_with_meta\](crate::resource::Resource::recycle_with_meta) so that
 /// adapters can make lifecycle decisions based on age and usage without storing
 /// that data inside the instance itself (which would couple the instance type to
 /// pool internals).
 ///
 /// ## Deprecation note on existing signatures
 ///
-/// `Resource::is_reusable` and `Resource::recycle` retain their original
+/// \Resource::is_reusable\ and \Resource::recycle\ retain their original
 /// no-metadata signatures for backward compatibility.  Override
-/// `is_reusable_with_meta` / `recycle_with_meta` to access this context;
+/// \is_reusable_with_meta\ / ecycle_with_meta\ to access this context;
 /// the pool calls those first and falls back to the plain versions only if the
 /// metadata variants are not overridden (default no-op).
 #[derive(Debug, Clone, Copy)]
 pub struct InstanceMetadata {
-    /// When the instance was first created by `Resource::create()`.
+    /// When the instance was first created by \Resource::create()\.
     pub created_at: Instant,
     /// The last time this instance was returned to the idle queue.
     pub idle_since: Instant,
@@ -369,233 +92,6 @@ impl InstanceMetadata {
     }
 }
 
-/// A pool entry wrapping a resource instance with lifecycle tracking.
-struct Entry<T> {
-    instance: T,
-    created_at: Instant,
-    last_used: Instant,
-    /// How many times this entry has been acquired (for [`InstanceMetadata`]).
-    acquire_count: usize,
-    /// Current lifecycle state of this entry.
-    /// Tracked for observability and future use in drain/shutdown logic.
-    #[allow(dead_code)]
-    lifecycle: Lifecycle,
-}
-
-impl<T> Entry<T> {
-    fn new(instance: T) -> Self {
-        let now = Instant::now();
-        Self {
-            instance,
-            created_at: now,
-            last_used: now,
-            acquire_count: 0,
-            lifecycle: Lifecycle::Ready,
-        }
-    }
-
-    /// Return an entry to the pool, preserving the original `created_at`.
-    fn returned(instance: T, created_at: Instant, acquire_count: usize) -> Self {
-        Self {
-            instance,
-            created_at,
-            last_used: Instant::now(),
-            acquire_count,
-            lifecycle: Lifecycle::Idle,
-        }
-    }
-
-    fn is_expired(&self, config: &PoolConfig) -> bool {
-        self.created_at.elapsed() > config.max_lifetime
-            || self.last_used.elapsed() > config.idle_timeout
-    }
-}
-
-/// Pool statistics.
-#[derive(Debug, Clone, Default)]
-pub struct PoolStats {
-    /// Total successful acquisitions.
-    pub total_acquisitions: u64,
-    /// Total releases back to pool.
-    pub total_releases: u64,
-    /// Current number of instances checked out.
-    pub active: usize,
-    /// Current number of idle instances in pool.
-    pub idle: usize,
-    /// Total instances ever created.
-    pub created: u64,
-    /// Total instances ever destroyed.
-    pub destroyed: u64,
-    /// Cumulative wait time across all acquisitions (milliseconds).
-    pub total_wait_time_ms: u64,
-    /// Maximum observed wait time for a single acquisition (milliseconds).
-    pub max_wait_time_ms: u64,
-    /// Number of times the pool was exhausted (acquire timed out).
-    pub exhausted_count: u64,
-    /// Acquire latency distribution summary.
-    /// `None` when no acquisitions have been recorded yet.
-    pub acquire_latency: Option<LatencyPercentiles>,
-}
-
-// ---------------------------------------------------------------------------
-// Latency histogram
-// ---------------------------------------------------------------------------
-
-/// Acquire latency percentiles and mean (milliseconds).
-#[derive(Debug, Clone)]
-pub struct LatencyPercentiles {
-    /// 50th percentile (median).
-    pub p50_ms: u64,
-    /// 95th percentile.
-    pub p95_ms: u64,
-    /// 99th percentile.
-    pub p99_ms: u64,
-    /// 99.9th percentile.
-    pub p999_ms: u64,
-    /// Arithmetic mean latency.
-    pub mean_ms: f64,
-}
-
-type LatencyHistogram = Histogram<u64>;
-
-fn new_latency_histogram() -> LatencyHistogram {
-    Histogram::<u64>::new_with_bounds(1, 60_000, 3).expect("latency histogram bounds must be valid")
-}
-
-// ---------------------------------------------------------------------------
-// PoolState
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// IdleResult — outcome of a single pop from the idle queue
-// ---------------------------------------------------------------------------
-
-/// Result of one idle-queue pop, produced inside `with_inner_state`.
-///
-/// Carrying this out of the lock lets the hot path commit statistics
-/// *in the same critical section as the pop*, so the acquire path only
-/// needs one lock acquisition instead of two.
-enum IdleResult<T> {
-    /// Non-expired entry popped; statistics already committed under lock.
-    /// Carries `wait_ms` so we can record it into the latency histogram
-    /// *after* releasing the state lock.
-    Valid(Entry<T>, u64),
-    /// Expired entry popped; needs async cleanup, no stats committed.
-    Expired(T),
-    /// Queue empty; caller must create a new instance.
-    Miss,
-}
-
-/// Internal metadata pulled from an [`Entry`] at acquire time and carried
-/// through to the release path so that [`InstanceMetadata`] can be built
-/// without a second state-lock acquisition.
-///
-/// `None` for freshly created instances (no pre-existing entry data).
-#[derive(Debug, Clone, Copy)]
-struct EntryMeta {
-    created_at: Instant,
-    /// Incremented each time the instance is checked out.  The +1 for the
-    /// current acquisition has already been applied.
-    acquire_count: usize,
-}
-
-impl EntryMeta {
-    fn to_instance_metadata(self, idle_since: Instant) -> InstanceMetadata {
-        InstanceMetadata {
-            created_at: self.created_at,
-            idle_since,
-            acquire_count: self.acquire_count,
-        }
-    }
-}
-
-/// Combined pool state: idle queue + statistics under a single lock.
-///
-/// Latency histogram fields have been moved to [`LatencyState`] on `PoolInner`
-/// to eliminate contention between idle-queue operations and histogram recording
-/// under high-concurrency workloads.
-struct PoolState<T> {
-    idle: VecDeque<Entry<T>>,
-    stats: PoolStats,
-    /// Set to true after `shutdown()` to prevent Guard drops from
-    /// reinserting instances into the idle queue.
-    shutdown: bool,
-}
-
-/// Latency histogram state, kept in a **separate** lock from `PoolState`.
-///
-/// Separating histogram recording from the idle-queue mutex means that
-/// 32–64 concurrent workers can record latency samples in parallel with other
-/// threads checking out or returning instances, avoiding the serialisation
-/// bottleneck seen under high-contention benchmarks.
-struct LatencyState {
-    histogram: LatencyHistogram,
-    /// Monotonic counter incremented on every `histogram.record()`.
-    seq: u64,
-    /// Cached percentiles, invalidated when `seq` advances.
-    percentiles_cache: Option<LatencyPercentiles>,
-}
-
-/// Inner shared state for the pool.
-struct PoolInner<R: Resource> {
-    resource: Arc<R>,
-    config: R::Config,
-    pool_config: PoolConfig,
-    /// Cached resource key — avoids calling `resource.metadata()` on every hot-path
-    /// operation (acquire, release, events). Populated once at pool construction.
-    resource_key: ResourceKey,
-    state: Mutex<Poison<PoolState<R::Instance>>>,
-    /// Separate lock for latency histogram — decoupled from the idle-queue
-    /// mutex so that recording samples does not block queue operations and
-    /// vice versa under high concurrency.
-    latency_state: Mutex<LatencyState>,
-    /// Semaphore limits concurrent active (checked-out) instances.
-    /// Idle instances do not hold permits.
-    semaphore: Semaphore,
-    /// Cooperative shutdown barrier.
-    ///
-    /// Background tasks and request handlers enter the gate before doing work.
-    /// `shutdown()` calls `gate.close().await` to drain all active work before
-    /// closing the semaphore and cleaning up idle instances.
-    gate: Gate,
-    /// Cancellation token for background tasks (maintenance).
-    /// Cancelled on `shutdown()`.
-    cancel: CancellationToken,
-    /// Optional event bus for emitting lifecycle events.
-    event_bus: Option<Arc<EventBus>>,
-    /// Number of callers currently waiting to acquire an instance.
-    waiting_count: Arc<AtomicUsize>,
-    /// Lock-free active instance counter for adaptive backpressure.
-    ///
-    /// Mirrors `stats.active` but accessible without acquiring the state lock.
-    active_count: AtomicUsize,
-    /// Optional hook registry for lifecycle hooks (Create, Cleanup).
-    hooks: Option<Arc<HookRegistry>>,
-    /// Handle for the background maintenance task, if spawned.
-    /// Stored so we can join on it during shutdown.
-    ///
-    /// Only written once at construction (never on the hot path) and taken
-    /// once during shutdown — `Mutex<Option<_>>` is the right tool here;
-    /// `AtomicTake` would require `&mut Arc<PoolInner>` at construction which
-    /// races with `tokio::spawn` in multi-threaded runtimes.
-    maintenance_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// Circuit breaker for `Resource::create()` failures.
-    create_breaker: Option<CircuitBreaker>,
-    /// Circuit breaker for `Resource::recycle()` failures.
-    recycle_breaker: Option<CircuitBreaker>,
-    /// Pre-built synthetic context for background maintenance operations
-    /// (cleanup, drain, scale). Avoids a heap allocation on every invocation.
-    maintenance_ctx: Context,
-    /// Optional context enricher called with a cloned `Context` immediately
-    /// before `Resource::create()`. Used by the manager to inject resolved
-    /// sub-resource pool handles declared via `ResourceDependencies`.
-    ///
-    /// `None` on the hot path (most resources); `Some` only when the resource
-    /// declares sub-resources via `ResourceDependencies::resources()`.
-    context_enricher: Option<Arc<dyn Fn(Context) -> Context + Send + Sync>>,
-}
-
-// ---------------------------------------------------------------------------
 // Pool<R>
 // ---------------------------------------------------------------------------
 
@@ -706,29 +202,10 @@ impl<R: Resource> Pool<R> {
         context_enricher: Option<Arc<dyn Fn(Context) -> Context + Send + Sync>>,
     ) -> Result<Self> {
         pool_config.validate()?;
-        let create_breaker = if let Some(cfg) = &pool_config.create_breaker {
-            Some(
-                CircuitBreaker::new(cfg.clone()).map_err(|e| Error::Configuration {
-                    message: format!("create_breaker config invalid: {e}"),
-                    source: None,
-                })?,
-            )
-        } else {
-            None
-        };
-        let recycle_breaker = if let Some(cfg) = &pool_config.recycle_breaker {
-            Some(
-                CircuitBreaker::new(cfg.clone()).map_err(|e| Error::Configuration {
-                    message: format!("recycle_breaker config invalid: {e}"),
-                    source: None,
-                })?,
-            )
-        } else {
-            None
-        };
-        let max = pool_config.max_size;
-        let maintenance_interval = pool_config.maintenance_interval;
-        let pool_config_warm_up = pool_config.warm_up;
+        let resilience = PoolResilienceState::from_policy(&pool_config.resilience)?;
+        let max = pool_config.sizing.max_size;
+        let maintenance_interval = pool_config.lifetime.maintenance_interval;
+        let pool_config_warm_up = pool_config.acquire.warm_up;
         let cancel = CancellationToken::new();
 
         let resource_key = resource.metadata().key.clone();
@@ -760,8 +237,7 @@ impl<R: Resource> Pool<R> {
                 active_count: AtomicUsize::new(0),
                 hooks,
                 maintenance_handle: Mutex::new(None),
-                create_breaker,
-                recycle_breaker,
+                resilience: resilience.map(Box::new),
                 maintenance_ctx: Context::background(
                     Scope::Global,
                     WorkflowId::nil(),
@@ -928,7 +404,8 @@ impl<R: Resource> Pool<R> {
         // Acquire a permit according to configured backpressure policy.
         let permit = self.acquire_permit_with_policy().await?;
 
-        if let Some(cb) = &inner.create_breaker
+        let create_breaker = inner.resilience.as_ref().and_then(|r| r.create_breaker.as_ref());
+        if let Some(cb) = create_breaker
             && let Err(err) = cb.can_execute().await
         {
             return match err {
@@ -954,7 +431,7 @@ impl<R: Resource> Pool<R> {
         // eliminating the second lock acquisition on the hot idle-reuse path.
         let (instance, idle_since, entry_meta) = loop {
             let idle_result = Self::with_inner_state(inner, |state| {
-                let entry = match inner.pool_config.strategy {
+                let entry = match inner.pool_config.acquire.strategy {
                     PoolStrategy::Fifo => state.idle.pop_front(),
                     PoolStrategy::Lifo => state.idle.pop_back(),
                 };
@@ -1056,7 +533,7 @@ impl<R: Resource> Pool<R> {
                     let create_result = Self::create_with_hooks_timed(inner, ctx).await;
                     Self::maybe_record_breaker_result(
                         inner,
-                        inner.create_breaker.as_ref(),
+                        inner.resilience.as_ref().and_then(|r| r.create_breaker.as_ref()),
                         "create",
                         create_result.is_ok(),
                     )
@@ -1162,7 +639,9 @@ impl<R: Resource> Pool<R> {
         if inner.resource.is_broken(&inst) {
             return Some(inst);
         }
-        if inner.recycle_breaker.is_some() || inner.hooks.is_some() {
+        if inner.resilience.as_ref().is_some_and(|r| r.recycle_breaker.is_some())
+            || inner.hooks.is_some()
+        {
             return Some(inst);
         }
 
@@ -1275,7 +754,7 @@ impl<R: Resource> Pool<R> {
         let inner = &self.inner;
         let active = inner.active_count.load(Ordering::Relaxed);
         let waiters = inner.waiting_count.load(Ordering::Relaxed);
-        let utilization = active as f64 / inner.pool_config.max_size as f64;
+        let utilization = active as f64 / inner.pool_config.sizing.max_size as f64;
         if utilization >= adaptive.high_pressure_utilization
             || waiters >= adaptive.high_pressure_waiters
         {
@@ -1304,7 +783,7 @@ impl<R: Resource> Pool<R> {
         Error::PoolExhausted {
             resource_key: key,
             current_size,
-            max_size: inner.pool_config.max_size,
+            max_size: inner.pool_config.sizing.max_size,
             waiters,
         }
     }
@@ -1339,7 +818,8 @@ impl<R: Resource> Pool<R> {
             skip_recycle = true;
         }
 
-        if let Some(cb) = &inner.recycle_breaker
+        let recycle_breaker = inner.resilience.as_ref().and_then(|r| r.recycle_breaker.as_ref());
+        if let Some(cb) = recycle_breaker
             && let Err(ResilienceError::CircuitBreakerOpen { retry_after, .. }) =
                 cb.can_execute().await
         {
@@ -1362,7 +842,7 @@ impl<R: Resource> Pool<R> {
             recycle_ok = recycle_result.is_ok();
             Self::maybe_record_breaker_result(
                 inner,
-                inner.recycle_breaker.as_ref(),
+                inner.resilience.as_ref().and_then(|r| r.recycle_breaker.as_ref()),
                 "recycle",
                 recycle_result.is_ok(),
             )
@@ -1514,7 +994,7 @@ impl<R: Resource> Pool<R> {
     }
 
     async fn create_with_hooks_timed(inner: &PoolInner<R>, ctx: &Context) -> Result<R::Instance> {
-        if let Some(timeout) = inner.pool_config.create_timeout {
+        if let Some(timeout) = inner.pool_config.resilience.create_timeout {
             return match tokio::time::timeout(timeout, Self::create_with_hooks(inner, ctx)).await {
                 Ok(result) => result,
                 Err(_) => Err(Error::Timeout {
@@ -1532,7 +1012,7 @@ impl<R: Resource> Pool<R> {
         instance: &mut R::Instance,
         meta: &InstanceMetadata,
     ) -> Result<()> {
-        if let Some(timeout) = inner.pool_config.recycle_timeout {
+        if let Some(timeout) = inner.pool_config.resilience.recycle_timeout {
             return match tokio::time::timeout(
                 timeout,
                 inner.resource.recycle_with_meta(instance, meta),
@@ -1693,7 +1173,7 @@ impl<R: Resource> Pool<R> {
             // Check headroom under the lock, then release before async create.
             let has_room = Self::with_inner_state(inner, |state| {
                 let total = state.idle.len() + state.stats.active;
-                total < inner.pool_config.max_size
+                total < inner.pool_config.sizing.max_size
             })
             .unwrap_or(false);
 
@@ -1710,7 +1190,7 @@ impl<R: Resource> Pool<R> {
             // Returns Some(instance) if rejected (over capacity).
             let rejected = Self::with_inner_state(inner, |state| {
                 let total = state.idle.len() + state.stats.active;
-                if total < inner.pool_config.max_size {
+                if total < inner.pool_config.sizing.max_size {
                     state.idle.push_back(Entry::new(instance));
                     state.stats.created += 1;
                     state.stats.idle = state.idle.len();
@@ -1743,7 +1223,7 @@ impl<R: Resource> Pool<R> {
         for _ in 0..count {
             let entry = Self::with_inner_state(inner, |state| {
                 let total = state.idle.len() + state.stats.active;
-                if total <= inner.pool_config.min_size || state.idle.is_empty() {
+                if total <= inner.pool_config.sizing.min_size || state.idle.is_empty() {
                     None
                 } else {
                     state.idle.pop_front()
@@ -1777,10 +1257,10 @@ impl<R: Resource> Pool<R> {
             (
                 state.stats.active,
                 state.idle.len(),
-                self.inner.pool_config.max_size,
+                self.inner.pool_config.sizing.max_size,
             )
         })
-        .unwrap_or((0, 0, self.inner.pool_config.max_size))
+        .unwrap_or((0, 0, self.inner.pool_config.sizing.max_size))
     }
 
     /// Get the current number of callers waiting to acquire an instance.
@@ -1817,8 +1297,8 @@ impl<R: Resource> Pool<R> {
         let (current_idle, current_active) =
             Self::with_inner_state(inner, |state| (state.idle.len(), state.stats.active))?;
         let total = current_idle + current_active;
-        if total < inner.pool_config.min_size {
-            let needed = inner.pool_config.min_size - total;
+        if total < inner.pool_config.sizing.min_size {
+            let needed = inner.pool_config.sizing.min_size - total;
             for _ in 0..needed {
                 let Ok(instance) = Self::create_with_hooks(inner, ctx).await else {
                     break;
@@ -1896,7 +1376,7 @@ impl<R: Resource> Pool<R> {
     /// on the server, or entries matching a business-logic condition).
     pub async fn retain<F>(&self, mut predicate: F) -> usize
     where
-        F: FnMut(&R::Instance, std::time::Instant, std::time::Instant) -> bool,
+        F: FnMut(&R::Instance, &InstanceMetadata) -> bool,
     {
         let inner = &self.inner;
         let mut to_evict = Vec::new();
@@ -1905,8 +1385,13 @@ impl<R: Resource> Pool<R> {
             let total = state.idle.len() + state.stats.active;
             let mut kept = VecDeque::with_capacity(state.idle.len());
             for entry in state.idle.drain(..) {
-                let keep = total.saturating_sub(to_evict.len()) > inner.pool_config.min_size
-                    && predicate(&entry.instance, entry.created_at, entry.last_used);
+                let meta = InstanceMetadata {
+                    created_at: entry.created_at,
+                    idle_since: entry.last_used,
+                    acquire_count: entry.acquire_count,
+                };
+                let keep = total.saturating_sub(to_evict.len()) > inner.pool_config.sizing.min_size
+                    && predicate(&entry.instance, &meta);
                 if keep {
                     kept.push_back(entry);
                 } else {
@@ -1940,7 +1425,7 @@ impl<R: Resource> Pool<R> {
     /// `new_max < min_size`.
     pub fn set_max_size(&self, new_max: usize) -> Result<()> {
         let inner = &self.inner;
-        let min_size = inner.pool_config.min_size;
+        let min_size = inner.pool_config.sizing.min_size;
         if new_max == 0 {
             return Err(Error::configuration("max_size must be greater than 0"));
         }
@@ -1951,7 +1436,7 @@ impl<R: Resource> Pool<R> {
         }
         // Read old max atomically (pool_config is immutable after construction,
         // but we need the current semaphore permit count via the available_permits API).
-        let old_max = inner.pool_config.max_size;
+        let old_max = inner.pool_config.sizing.max_size;
         match new_max.cmp(&old_max) {
             std::cmp::Ordering::Greater => {
                 let delta = new_max - old_max;
@@ -2093,10 +1578,10 @@ mod tests {
     #[test]
     fn test_pool_config_default() {
         let config = PoolConfig::default();
-        assert_eq!(config.min_size, 1);
-        assert_eq!(config.max_size, 10);
-        assert_eq!(config.acquire_timeout, Duration::from_secs(30));
-        assert!(config.backpressure_policy.is_none());
+        assert_eq!(config.sizing.min_size, 1);
+        assert_eq!(config.sizing.max_size, 10);
+        assert_eq!(config.acquire.timeout, Duration::from_secs(30));
+        assert!(config.acquire.backpressure.is_none());
         assert_eq!(
             config.effective_backpressure_policy(),
             PoolBackpressurePolicy::BoundedWait {
@@ -2109,7 +1594,7 @@ mod tests {
     fn test_pool_config_validation() {
         assert!(
             PoolConfig {
-                max_size: 0,
+                sizing: PoolSizing { max_size: 0, ..Default::default() },
                 ..Default::default()
             }
             .validate()
@@ -2117,8 +1602,7 @@ mod tests {
         );
         assert!(
             PoolConfig {
-                min_size: 11,
-                max_size: 10,
+                sizing: PoolSizing { min_size: 11, max_size: 10 },
                 ..Default::default()
             }
             .validate()
@@ -2126,7 +1610,7 @@ mod tests {
         );
         assert!(
             PoolConfig {
-                acquire_timeout: Duration::ZERO,
+                acquire: PoolAcquire { timeout: Duration::ZERO, ..Default::default() },
                 ..Default::default()
             }
             .validate()
@@ -2134,9 +1618,10 @@ mod tests {
         );
         assert!(
             PoolConfig {
-                backpressure_policy: Some(PoolBackpressurePolicy::BoundedWait {
-                    timeout: Duration::ZERO
-                }),
+                acquire: PoolAcquire {
+                    backpressure: Some(PoolBackpressurePolicy::BoundedWait { timeout: Duration::ZERO }),
+                    ..Default::default()
+                },
                 ..Default::default()
             }
             .validate()
@@ -2144,12 +1629,13 @@ mod tests {
         );
         assert!(
             PoolConfig {
-                backpressure_policy: Some(PoolBackpressurePolicy::Adaptive(
-                    AdaptiveBackpressurePolicy {
+                acquire: PoolAcquire {
+                    backpressure: Some(PoolBackpressurePolicy::Adaptive(AdaptiveBackpressurePolicy {
                         high_pressure_utilization: 1.2,
                         ..Default::default()
-                    }
-                )),
+                    })),
+                    ..Default::default()
+                },
                 ..Default::default()
             }
             .validate()
@@ -2157,7 +1643,7 @@ mod tests {
         );
         assert!(
             PoolConfig {
-                create_timeout: Some(Duration::ZERO),
+                resilience: PoolResiliencePolicy { create_timeout: Some(Duration::ZERO), ..Default::default() },
                 ..Default::default()
             }
             .validate()
@@ -2165,7 +1651,7 @@ mod tests {
         );
         assert!(
             PoolConfig {
-                recycle_timeout: Some(Duration::ZERO),
+                resilience: PoolResiliencePolicy { recycle_timeout: Some(Duration::ZERO), ..Default::default() },
                 ..Default::default()
             }
             .validate()
@@ -2180,10 +1666,12 @@ mod tests {
             TestResource,
             test_config(),
             PoolConfig {
-                min_size: 0,
-                max_size: 1,
-                acquire_timeout: Duration::from_secs(10),
-                backpressure_policy: Some(PoolBackpressurePolicy::FailFast),
+                sizing: PoolSizing { min_size: 0, max_size: 1 },
+                acquire: PoolAcquire {
+                    timeout: Duration::from_secs(10),
+                    backpressure: Some(PoolBackpressurePolicy::FailFast),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )
@@ -2207,12 +1695,14 @@ mod tests {
             TestResource,
             test_config(),
             PoolConfig {
-                min_size: 0,
-                max_size: 1,
-                acquire_timeout: Duration::from_secs(10),
-                backpressure_policy: Some(PoolBackpressurePolicy::BoundedWait {
-                    timeout: Duration::from_millis(40),
-                }),
+                sizing: PoolSizing { min_size: 0, max_size: 1 },
+                acquire: PoolAcquire {
+                    timeout: Duration::from_secs(10),
+                    backpressure: Some(PoolBackpressurePolicy::BoundedWait {
+                        timeout: Duration::from_millis(40),
+                    }),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )
@@ -2236,17 +1726,19 @@ mod tests {
             TestResource,
             test_config(),
             PoolConfig {
-                min_size: 0,
-                max_size: 1,
-                acquire_timeout: Duration::from_secs(10),
-                backpressure_policy: Some(PoolBackpressurePolicy::Adaptive(
-                    AdaptiveBackpressurePolicy {
-                        high_pressure_utilization: 0.5,
-                        high_pressure_waiters: 1,
-                        low_pressure_timeout: Duration::from_secs(1),
-                        high_pressure_timeout: Duration::from_millis(30),
-                    },
-                )),
+                sizing: PoolSizing { min_size: 0, max_size: 1 },
+                acquire: PoolAcquire {
+                    timeout: Duration::from_secs(10),
+                    backpressure: Some(PoolBackpressurePolicy::Adaptive(
+                        AdaptiveBackpressurePolicy {
+                            high_pressure_utilization: 0.5,
+                            high_pressure_waiters: 1,
+                            low_pressure_timeout: Duration::from_secs(1),
+                            high_pressure_timeout: Duration::from_millis(30),
+                        },
+                    )),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )
@@ -2297,9 +1789,8 @@ mod tests {
     #[tokio::test]
     async fn pool_respects_max_size() {
         let pool_config = PoolConfig {
-            min_size: 0,
-            max_size: 2,
-            acquire_timeout: Duration::from_millis(100),
+            sizing: PoolSizing { min_size: 0, max_size: 2 },
+            acquire: PoolAcquire { timeout: Duration::from_millis(100), ..Default::default() },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2353,9 +1844,11 @@ mod tests {
             SlowResource,
             test_config(),
             PoolConfig {
-                min_size: 0,
-                max_size: 1,
-                create_timeout: Some(Duration::from_millis(10)),
+                sizing: PoolSizing { min_size: 0, max_size: 1 },
+                resilience: PoolResiliencePolicy {
+                    create_timeout: Some(Duration::from_millis(10)),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )
@@ -2377,9 +1870,11 @@ mod tests {
             SlowResource,
             test_config(),
             PoolConfig {
-                min_size: 0,
-                max_size: 1,
-                recycle_timeout: Some(Duration::from_millis(10)),
+                sizing: PoolSizing { min_size: 0, max_size: 1 },
+                resilience: PoolResiliencePolicy {
+                    recycle_timeout: Some(Duration::from_millis(10)),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )
@@ -2428,9 +1923,8 @@ mod tests {
     #[tokio::test]
     async fn exhausted_count_tracked() {
         let pool_config = PoolConfig {
-            min_size: 0,
-            max_size: 1,
-            acquire_timeout: Duration::from_millis(50),
+            sizing: PoolSizing { min_size: 0, max_size: 1 },
+            acquire: PoolAcquire { timeout: Duration::from_millis(50), ..Default::default() },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2453,9 +1947,8 @@ mod tests {
             fail_after: std::sync::atomic::AtomicU32::new(0),
         };
         let pool_config = PoolConfig {
-            min_size: 0,
-            max_size: 2,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 2 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         };
         let pool = Pool::new(resource, test_config(), pool_config).unwrap();
@@ -2506,9 +1999,8 @@ mod tests {
     #[tokio::test]
     async fn recycle_failure_destroys_instance() {
         let pool_config = PoolConfig {
-            min_size: 0,
-            max_size: 2,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 2 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         };
         let pool = Pool::new(RecycleFailResource, test_config(), pool_config).unwrap();
@@ -2530,9 +2022,8 @@ mod tests {
     #[tokio::test]
     async fn pool_recovers_after_recycle_failure() {
         let pool_config = PoolConfig {
-            min_size: 0,
-            max_size: 1,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 1 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         };
         let pool = Pool::new(RecycleFailResource, test_config(), pool_config).unwrap();
@@ -2555,13 +2046,14 @@ mod tests {
     #[tokio::test]
     async fn maintain_evicts_expired_and_replenishes() {
         let pool_config = PoolConfig {
-            min_size: 2,
-            max_size: 5,
-            acquire_timeout: Duration::from_secs(1),
-            idle_timeout: Duration::from_millis(50), // very short
-            max_lifetime: Duration::from_secs(3600),
-            validation_interval: Duration::from_secs(30),
-            maintenance_interval: None,
+            sizing: PoolSizing { min_size: 2, max_size: 5 },
+            lifetime: PoolLifetime {
+                idle_timeout: Duration::from_millis(50), // very short
+                max_lifetime: Duration::from_secs(3600),
+                validation_interval: Duration::from_secs(30),
+                maintenance_interval: None,
+            },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2590,13 +2082,14 @@ mod tests {
     #[tokio::test]
     async fn maintain_does_not_exceed_min_size() {
         let pool_config = PoolConfig {
-            min_size: 1,
-            max_size: 5,
-            acquire_timeout: Duration::from_secs(1),
-            idle_timeout: Duration::from_secs(3600),
-            max_lifetime: Duration::from_secs(3600),
-            validation_interval: Duration::from_secs(30),
-            maintenance_interval: None,
+            sizing: PoolSizing { min_size: 1, max_size: 5 },
+            lifetime: PoolLifetime {
+                idle_timeout: Duration::from_secs(3600),
+                max_lifetime: Duration::from_secs(3600),
+                validation_interval: Duration::from_secs(30),
+                maintenance_interval: None,
+            },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2624,9 +2117,8 @@ mod tests {
     #[tokio::test]
     async fn concurrent_acquires_respect_max_size() {
         let pool_config = PoolConfig {
-            min_size: 0,
-            max_size: 5,
-            acquire_timeout: Duration::from_millis(200),
+            sizing: PoolSizing { min_size: 0, max_size: 5 },
+            acquire: PoolAcquire { timeout: Duration::from_millis(200), ..Default::default() },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2657,9 +2149,11 @@ mod tests {
     #[tokio::test]
     async fn acquire_after_shutdown_fails_immediately() {
         let pool_config = PoolConfig {
-            min_size: 0,
-            max_size: 2,
-            acquire_timeout: Duration::from_secs(5), // long timeout
+            sizing: PoolSizing { min_size: 0, max_size: 2 },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(5), // long timeout
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2682,9 +2176,8 @@ mod tests {
     #[tokio::test]
     async fn guard_dropped_after_shutdown_cleans_up() {
         let pool_config = PoolConfig {
-            min_size: 0,
-            max_size: 2,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 2 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2742,8 +2235,7 @@ mod tests {
             TestResource,
             test_config(),
             PoolConfig {
-                min_size: 0,
-                max_size: 2,
+                sizing: PoolSizing { min_size: 0, max_size: 2 },
                 ..Default::default()
             },
         )
@@ -2771,9 +2263,8 @@ mod tests {
             remaining_failures: std::sync::atomic::AtomicU32::new(1),
         };
         let pool_config = PoolConfig {
-            min_size: 0,
-            max_size: 1,
-            acquire_timeout: Duration::from_secs(1),
+            sizing: PoolSizing { min_size: 0, max_size: 1 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         };
         let pool = Pool::new(resource, test_config(), pool_config).unwrap();
@@ -2793,9 +2284,8 @@ mod tests {
     #[tokio::test]
     async fn acquire_respects_cancellation() {
         let pool_config = PoolConfig {
-            min_size: 0,
-            max_size: 1,
-            acquire_timeout: Duration::from_secs(10),
+            sizing: PoolSizing { min_size: 0, max_size: 1 },
+            acquire: PoolAcquire { timeout: Duration::from_secs(10), ..Default::default() },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2835,10 +2325,12 @@ mod tests {
     #[tokio::test]
     async fn maintenance_task_replenishes_pool() {
         let pool_config = PoolConfig {
-            min_size: 2,
-            max_size: 5,
-            acquire_timeout: Duration::from_secs(1),
-            maintenance_interval: Some(Duration::from_millis(50)),
+            sizing: PoolSizing { min_size: 2, max_size: 5 },
+            lifetime: PoolLifetime {
+                maintenance_interval: Some(Duration::from_millis(50)),
+                ..Default::default()
+            },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2861,10 +2353,12 @@ mod tests {
     #[tokio::test]
     async fn maintenance_task_cancelled_on_shutdown() {
         let pool_config = PoolConfig {
-            min_size: 2,
-            max_size: 5,
-            acquire_timeout: Duration::from_secs(1),
-            maintenance_interval: Some(Duration::from_millis(50)),
+            sizing: PoolSizing { min_size: 2, max_size: 5 },
+            lifetime: PoolLifetime {
+                maintenance_interval: Some(Duration::from_millis(50)),
+                ..Default::default()
+            },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2883,10 +2377,12 @@ mod tests {
     #[tokio::test]
     async fn no_maintenance_task_when_interval_is_none() {
         let pool_config = PoolConfig {
-            min_size: 2,
-            max_size: 5,
-            acquire_timeout: Duration::from_secs(1),
-            maintenance_interval: None, // explicitly None
+            sizing: PoolSizing { min_size: 2, max_size: 5 },
+            lifetime: PoolLifetime {
+                maintenance_interval: None, // explicitly None
+                ..Default::default()
+            },
+            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2913,7 +2409,7 @@ mod tests {
     #[test]
     fn pool_config_default_strategy_is_fifo() {
         let config = PoolConfig::default();
-        assert_eq!(config.strategy, PoolStrategy::Fifo);
+        assert_eq!(config.acquire.strategy, PoolStrategy::Fifo);
     }
 
     /// FIFO: returning A then B, next acquire should yield A (oldest).
@@ -2938,10 +2434,12 @@ mod tests {
         }
 
         let pool_config = PoolConfig {
-            min_size: 0,
-            max_size: 3,
-            acquire_timeout: Duration::from_secs(1),
-            strategy: PoolStrategy::Fifo,
+            sizing: PoolSizing { min_size: 0, max_size: 3 },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                strategy: PoolStrategy::Fifo,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(
@@ -2989,10 +2487,12 @@ mod tests {
         }
 
         let pool_config = PoolConfig {
-            min_size: 0,
-            max_size: 3,
-            acquire_timeout: Duration::from_secs(1),
-            strategy: PoolStrategy::Lifo,
+            sizing: PoolSizing { min_size: 0, max_size: 3 },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                strategy: PoolStrategy::Lifo,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(
