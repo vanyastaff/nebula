@@ -159,6 +159,8 @@ impl ResourceHook for CountingHook {
             HookEvent::Release => {
                 self.release_before.fetch_add(1, Ordering::SeqCst);
             }
+            // New P1 hook variants — no-op in this test fixture.
+            _ => {}
         }
         HookResult::Continue
     }
@@ -177,6 +179,8 @@ impl ResourceHook for CountingHook {
             HookEvent::Release => {
                 self.release_after.fetch_add(1, Ordering::SeqCst);
             }
+            // New P1 hook variants — no-op in this test fixture.
+            _ => {}
         }
     }
 }

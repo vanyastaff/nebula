@@ -75,8 +75,12 @@ pub trait Resource: Send + Sync + 'static {
 |--------|-------------|
 | `metadata` | Returns static `ResourceMetadata` used for discovery and events. The `metadata.key` is the canonical `ResourceKey` for this type. |
 | `create` | Builds a new `Instance` from `Config` and `Context`. Called when the pool needs a new connection. |
+| `is_broken` | **Synchronous** fast-path broken check. Return `true` if the instance is obviously dead (e.g. closed socket, invalid descriptor) so the pool skips recycle immediately. Default: always `false`. |
+| `prepare` | **Async** per-acquire hook called just before the instance is handed to the caller. Use for authentication refresh, lease renewal, or health pre-check. Default: no-op. |
 | `is_reusable` | Returns `Ok(true)` if the instance can be reused after being returned to the pool. Return `Ok(false)` or `Err` to discard. Default: always reusable. |
+| `is_reusable_with_meta` | Metadata-aware variant of `is_reusable`. Receives an `InstanceMetadata` snapshot (creation time, idle duration, acquire count). Defaults to calling `is_reusable`. |
 | `recycle` | Resets state before returning an instance to the idle queue (e.g. rollback uncommitted transactions). Default: no-op. |
+| `recycle_with_meta` | Metadata-aware variant of `recycle`. Receives `InstanceMetadata`. Defaults to calling `recycle`. |
 | `cleanup` | Permanently destroys an instance (close socket, flush buffers). Called for tainted or expired instances. Default: drop. |
 | `declare_key` | Returns the `ResourceKey` used by `ResourceRef::of::<R>()`. Default: snake_case of the type name. Override for a stable key independent of type name. |
 
@@ -310,6 +314,14 @@ pub struct PoolConfig {
     pub create_timeout: Option<Duration>,
     /// Timeout for Resource::recycle. Default: None.
     pub recycle_timeout: Option<Duration>,
+    /// Whether instances are exclusively owned by one caller (default) or
+    /// cloned and shared across callers without consuming semaphore permits.
+    /// `Shared` requires `R::Instance: Clone`; use `Pool::acquire_shared`.
+    pub sharing_mode: PoolSharingMode,
+    /// When `true`, the pool spawns a background warm-up `maintain` call
+    /// immediately after construction to pre-fill idle instances up to
+    /// `min_size`. Default: `false`.
+    pub warm_up: bool,
 }
 
 impl PoolConfig {
@@ -342,6 +354,28 @@ pub enum PoolStrategy {
 
 ---
 
+### `PoolSharingMode`
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PoolSharingMode {
+    /// Each caller gets an exclusively owned instance (the pool's default).
+    #[default]
+    Exclusive,
+    /// Callers receive a cloned copy of an idle instance without consuming a
+    /// semaphore permit. Requires `R::Instance: Clone`. Use
+    /// `Pool::acquire_shared` to opt into this mode per call.
+    Shared,
+}
+```
+
+`Shared` is intended for lightweight, immutable-by-convention instances
+(e.g. a config snapshot or read-only HTTP client wrapper). The pool keeps
+one resident instance alive; every call to `acquire_shared` clones it and
+returns a no-op guard (drop does not recycle or return a permit).
+
+---
+
 ### `PoolBackpressurePolicy`
 
 ```rust
@@ -365,6 +399,83 @@ pub struct AdaptiveBackpressurePolicy {
     pub low_pressure_timeout: Duration,
     /// Acquire timeout under high pressure. Default: 100ms.
     pub high_pressure_timeout: Duration,
+}
+```
+
+---
+
+### `InstanceMetadata`
+
+Passed to `Resource::is_reusable_with_meta` and `Resource::recycle_with_meta`.
+Allows implementations to make lifecycle decisions based on how long an instance
+has been alive, how long it has been idle, and how many times it has been used.
+
+```rust
+#[derive(Debug, Clone, Copy)]
+pub struct InstanceMetadata {
+    /// When the instance was created by `Resource::create`.
+    pub created_at: Instant,
+    /// When the instance last entered the idle queue (last release time).
+    pub idle_since: Instant,
+    /// How many times this instance has been checked out (including current).
+    pub acquire_count: usize,
+}
+```
+
+**Example** — rotate a connection if it is more than 30 minutes old:
+
+```rust
+async fn is_reusable_with_meta(
+    &self,
+    instance: &Self::Instance,
+    meta: &InstanceMetadata,
+) -> Result<bool> {
+    if meta.created_at.elapsed() > Duration::from_secs(1800) {
+        return Ok(false); // force cleanup and re-create
+    }
+    self.is_reusable(instance).await
+}
+```
+
+---
+
+### Pool methods
+
+```rust
+impl<R: Resource> Pool<R> {
+    /// Evict idle instances for which `predicate` returns `false`.
+    /// Respects `min_size` — will not drop below the minimum.
+    /// Returns the number of evicted instances.
+    pub async fn retain<F>(
+        &self,
+        predicate: F,  // FnMut(&R::Instance, created_at: Instant, idle_since: Instant) -> bool
+    ) -> usize;
+
+    /// Resize the pool live without draining it.
+    /// - Grow: adds `(new_max - current_max)` semaphore permits.
+    /// - Shrink: best-effort — tries to quietly absorb excess permits;
+    ///   active guards beyond `new_max` complete normally.
+    pub fn set_max_size(&self, new_max: usize) -> Result<()>;
+}
+
+/// Available only when `R::Instance: Clone`.
+impl<R: Resource> Pool<R>
+where
+    R::Instance: Clone,
+{
+    /// Acquire a cloned snapshot of the front idle instance without consuming
+    /// a semaphore permit. If the idle queue is empty, creates one instance
+    /// and keeps it resident.
+    ///
+    /// The returned guard's `on_drop` is a no-op — dropping the guard neither
+    /// returns a permit nor recycles the instance.
+    ///
+    /// Use for lightweight, effectively-immutable resources (e.g. config
+    /// snapshots, read-only clients).
+    pub async fn acquire_shared(
+        &self,
+        ctx: &Context,
+    ) -> Result<(Guard<R::Instance, fn(R::Instance, bool)>, Duration)>;
 }
 ```
 
@@ -428,6 +539,19 @@ where
 
     /// Extract the inner value, consuming the guard without calling the callback.
     pub fn into_inner(self) -> T;
+
+    /// Detach the instance from the pool: fires the `on_detach` callback (which
+    /// returns the semaphore permit and decrements the active count) but skips
+    /// the `on_drop` recycle/cleanup path entirely. Use when ownership of the
+    /// instance is being transferred outside the pool (e.g. moved into a long-
+    /// lived actor).
+    pub fn detach(self) -> T;
+
+    /// Leak the instance: extracts the value without calling any callback.
+    /// The semaphore permit is **not** returned. The pool's active count and
+    /// `max_size` enforcement are permanently affected until the pool is
+    /// destroyed. Only use for diagnostics or intentional permanent extraction.
+    pub fn leak(self) -> T;
 }
 
 // Implements: Deref<Target = T>, DerefMut, Debug (where T: Debug), Drop

@@ -46,12 +46,41 @@ pub enum HookEvent {
     /// [`HookResult::Cancel`], which causes the acquire to fail with
     /// the error from the hook.
     Create,
+    /// After `Resource::create()` succeeds and before the first acquire.
+    ///
+    /// Use for one-time initialisation that must happen on the new instance
+    /// but only once (e.g. `SET search_path`, `SET timezone`, registering
+    /// the connection in a registry).  Cannot cancel the creation.
+    PostCreate,
     /// Before/after cleaning up (permanently destroying) a resource instance.
     ///
     /// **Note:** Cleanup is irrevocable — the before-hook result is
     /// **ignored** and cannot prevent the cleanup from proceeding.
     /// Before-hooks are called for observability only.
     Cleanup,
+    /// Before handing an idle instance to the caller.
+    ///
+    /// Called after [`is_reusable`](crate::resource::Resource::is_reusable)
+    /// returns `true` but before `prepare` and the guard is constructed.
+    /// Use for conditional pings (`idle_for > threshold`), lazy reconnects,
+    /// or metrics recording at the instance level.  Before-hooks can cancel
+    /// (i.e. discard the instance and retry) by returning
+    /// [`HookResult::Cancel`].
+    PreAcquire,
+    /// After `Resource::recycle()` succeeds and before the instance is pushed
+    /// back to the idle queue.
+    ///
+    /// Use to flush pending state, reset per-execution fields set by
+    /// `prepare`, or record per-release metrics.  Errors are logged but
+    /// never propagated.
+    PostRecycle,
+    /// After the [`Guard`](crate::guard::Guard) has been dropped and the
+    /// instance returned to the idle queue (or cleaned up).
+    ///
+    /// Use for audit logging, release-latency metrics, or any observability
+    /// that must happen after the instance is fully released.  Cannot cancel
+    /// or affect the release outcome.
+    PostRelease,
 }
 
 impl std::fmt::Display for HookEvent {
@@ -60,7 +89,11 @@ impl std::fmt::Display for HookEvent {
             Self::Acquire => write!(f, "Acquire"),
             Self::Release => write!(f, "Release"),
             Self::Create => write!(f, "Create"),
+            Self::PostCreate => write!(f, "PostCreate"),
             Self::Cleanup => write!(f, "Cleanup"),
+            Self::PreAcquire => write!(f, "PreAcquire"),
+            Self::PostRecycle => write!(f, "PostRecycle"),
+            Self::PostRelease => write!(f, "PostRelease"),
         }
     }
 }

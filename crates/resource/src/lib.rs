@@ -111,8 +111,8 @@ pub use manager::{
 pub use metrics::MetricsCollector;
 pub use poison::{Poison, PoisonError, PoisonGuard};
 pub use pool::{
-    AdaptiveBackpressurePolicy, LatencyPercentiles, Pool, PoolBackpressurePolicy, PoolConfig,
-    PoolStats, PoolStrategy,
+    AdaptiveBackpressurePolicy, InstanceMetadata, LatencyPercentiles, Pool, PoolBackpressurePolicy,
+    PoolConfig, PoolSharingMode, PoolStats, PoolStrategy,
 };
 pub use quarantine::{
     QuarantineConfig, QuarantineEntry, QuarantineManager, QuarantineReason, RecoveryStrategy,

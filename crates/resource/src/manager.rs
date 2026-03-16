@@ -119,7 +119,11 @@ impl Default for ShutdownConfig {
 /// multiple pools of the same resource type with different IDs.
 pub struct Manager {
     /// Pools indexed by resource ID string, with associated scope.
-    pools: ArcSwap<HashMap<String, PoolEntry>>,
+    ///
+    /// Wrapped in `Arc` so context enrichers built at registration time can
+    /// capture a shared handle, enabling dynamic (live) dependency lookup
+    /// rather than snapshotting handles eagerly.
+    pools: Arc<ArcSwap<HashMap<String, PoolEntry>>>,
     /// Dependency graph for initialization ordering.
     deps: parking_lot::RwLock<DependencyGraph>,
     /// Background health checker.
@@ -281,7 +285,7 @@ impl ManagerBuilder {
         }
 
         Manager {
-            pools: ArcSwap::from_pointee(HashMap::new()),
+            pools: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             deps: parking_lot::RwLock::new(DependencyGraph::default()),
             health_checker: Arc::new(health_checker),
             event_bus,
@@ -440,28 +444,20 @@ impl Manager {
         let resource_key = meta.key.clone();
         let id = resource_key.to_string();
 
-        // Resolve declared sub-resource dependencies into typed pool handles so can
-        // inject them into the Context before Resource::create() is called.
-        //
-        // Dependencies that are not yet registered are silently skipped — resources
-        // should be registered in topological order (dependencies first).
-        let dep_handles: Vec<(ResourceKey, Arc<dyn Any + Send + Sync>)> = {
-            <R as ResourceDependencies>::resources()
-                .into_iter()
-                .filter_map(|dep| {
-                    let key = dep.resource_key();
-                    let entry = self.pool_get(&key.to_string())?;
-                    let handle = entry.typed_handle?;
-                    Some((key, handle))
-                })
-                .collect()
-        };
+        // Collect declared sub-resource dependency keys.  Handles are no longer
+        // captured eagerly here — the context enricher below resolves them from the
+        // live pool snapshot at acquire-time, so a re-registered dependency is
+        // picked up automatically without requiring re-registration of the parent.
+        let dep_keys: Vec<ResourceKey> = <R as ResourceDependencies>::resources()
+            .into_iter()
+            .map(|dep| dep.resource_key())
+            .collect();
 
         // Create pool first -- if this fails, nothing is modified.
         // Pass event bus and hooks so the pool can fire Create/Cleanup hooks.
         // When there are resolved dependencies, wrap with a context enricher that
         // injects them before Resource::create() is called.
-        let pool = if dep_handles.is_empty() {
+        let pool = if dep_keys.is_empty() {
             Pool::with_hooks(
                 resource,
                 config,
@@ -470,6 +466,10 @@ impl Manager {
                 Some(Arc::clone(&self.hooks)),
             )?
         } else {
+            // Capture an Arc to the live pool map so that the enricher always
+            // resolves dependency handles from the most-current snapshot — this
+            // means a re-registered dependency is picked up automatically.
+            let pools_ref = Arc::clone(&self.pools);
             Pool::with_enricher(
                 resource,
                 config,
@@ -477,8 +477,14 @@ impl Manager {
                 Some(Arc::clone(&self.event_bus)),
                 Some(Arc::clone(&self.hooks)),
                 Arc::new(move |mut ctx: Context| {
-                    for (key, handle) in &dep_handles {
-                        ctx.inject_resource(key.clone(), Arc::clone(handle));
+                    let snapshot = pools_ref.load();
+                    for key in &dep_keys {
+                        let id: &str = key;
+                        if let Some(entry) = snapshot.get(id) {
+                            if let Some(handle) = &entry.typed_handle {
+                                ctx.inject_resource(key.clone(), Arc::clone(handle));
+                            }
+                        }
                     }
                     ctx
                 }),

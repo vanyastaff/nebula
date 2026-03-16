@@ -89,6 +89,8 @@ pub struct PoolConfig {
 | `recycle_breaker` | Circuit breaker for `Resource::recycle`. |
 | `create_timeout` | Per-call timeout for `Resource::create`. Defaults to `acquire_timeout`. |
 | `recycle_timeout` | Per-call timeout for `Resource::recycle`. |
+| `sharing_mode` | `Exclusive` (default) or `Shared`. `Shared` requires `R::Instance: Clone`; use `Pool::acquire_shared`. |
+| `warm_up` | When `true`, spawns a background `maintain` call immediately after pool construction to pre-fill up to `min_size` idle instances. |
 
 **Validation:** `PoolConfig::validate()` enforces `min_size <= max_size` and
 non-zero `max_size`. Call it explicitly or let `Manager::register` call it for you.
@@ -117,6 +119,76 @@ pub enum PoolStrategy {
 - Ideal when `min_size` is much smaller than `max_size` and load is bursty:
   most requests hit the same few connections; the rest idle out.
 - Database connection pools behind a PgBouncer often benefit from LIFO.
+
+---
+
+## Sharing Mode
+
+`PoolSharingMode` controls whether callers own an instance exclusively or
+receive a clone without consuming a pool slot.
+
+```rust
+pub enum PoolSharingMode {
+    #[default] Exclusive,  // one instance per caller, semaphore-guarded
+    Shared,                // clone of resident instance, no permit consumed
+}
+```
+
+### `Pool::acquire_shared` (requires `R::Instance: Clone`)
+
+```rust
+let (guard, wait) = pool.acquire_shared(&ctx).await?;
+let snapshot: MyConfig = (*guard).clone();
+// dropping `guard` is a no-op — no permit consumed, no recycle
+```
+
+The pool keeps one resident instance alive. Every call to `acquire_shared`:
+1. Peeks at the front of the idle queue (no pop).
+2. Clones the instance.
+3. Calls `Resource::prepare` on the clone.
+4. Returns a `Guard` whose drop callback is a no-op.
+
+If the idle queue is empty the pool **creates** one instance, pushes it to
+the idle queue, and then clones it — the original stays resident.
+
+**Use cases**: read-only configuration snapshots, immutable HTTP client
+wrappers, shared authentication credentials.
+
+---
+
+## Dynamic Pool Resizing
+
+### `Pool::set_max_size`
+
+```rust
+pool.set_max_size(new_max)?;
+```
+
+- **Grow** (`new_max > current_max`): adds `delta` semaphore permits immediately.
+- **Shrink** (`new_max < current_max`): best-effort absorption — tries to
+  acquire then forget excess permits. Active guards beyond `new_max` are
+  unaffected and complete normally; the pool slowly converges to the new limit
+  as they are returned.
+
+Returns `Error::Configuration` if `new_max == 0`.
+
+---
+
+## Idle Instance Filtering
+
+### `Pool::retain`
+
+```rust
+let evicted = pool.retain(|instance, created_at, idle_since| {
+    // keep instances younger than 30 minutes
+    created_at.elapsed() < Duration::from_secs(1800)
+}).await;
+println!("evicted {evicted} stale instances");
+```
+
+Evicts every idle instance for which the predicate returns `false`. Respects
+`min_size` — will not drop below the configured minimum. Evicted instances
+are cleaned up via `Resource::cleanup(CleanupReason::Evicted)`.
 
 ---
 
@@ -304,10 +376,12 @@ Resource::create(config, ctx)
   │         └─ false           → Resource::cleanup (CleanupReason::RecycleFailed)
   │
   ├─ checked out (Guard held by caller)
-  │    │ guard.taint() called  → Resource::cleanup (CleanupReason::Tainted)
-  │    └─ guard dropped        → Resource::recycle → back to idle queue
+  │    │ guard.taint() called    → Resource::cleanup (CleanupReason::Tainted)
+  │    │ guard.detach() called   → permit returned, instance owned by caller
+  │    │ guard.leak() called     → permit NOT returned, instance owned by caller
+  │    └─ guard dropped normally → Resource::recycle_with_meta → back to idle queue
   │
-  └─ Manager::shutdown()       → Resource::cleanup (CleanupReason::Shutdown)
+  └─ Manager::shutdown()         → Resource::cleanup (CleanupReason::Shutdown)
 ```
 
 ---

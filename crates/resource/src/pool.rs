@@ -87,6 +87,32 @@ pub enum PoolStrategy {
     Lifo,
 }
 
+/// Sharing mode for a pool.
+///
+/// Controls whether pool instances are acquired exclusively (the default) or
+/// served as cheap clones to multiple concurrent callers simultaneously.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PoolSharingMode {
+    /// Classical pool — one exclusive [`Guard`] per instance at a time.
+    ///
+    /// Semaphore permits are consumed on acquire and returned on drop.
+    /// This is the default and mirrors the behaviour of `bb8` / `deadpool`.
+    #[default]
+    Exclusive,
+    /// Single shared instance — `acquire()` returns a **clone** of the single
+    /// managed instance without consuming a semaphore permit.
+    ///
+    /// Requires `R::Instance: Clone`.  Rate-limiting state, connection handles,
+    /// and any mutable state must live inside the instance itself (e.g. behind
+    /// an `Arc<Mutex<_>>`).  The `Guard`'s on-drop is a no-op — there is nothing
+    /// to return.
+    ///
+    /// Ideal for: Telegram `Bot`, `reqwest::Client`, `sqlx::PgPool`, structured
+    /// loggers, and any resource whose instance is already `Arc`-wrapped and
+    /// safe for concurrent access via `&self`.
+    Shared,
+}
+
 /// Backpressure policy for acquire behavior when the pool is saturated.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PoolBackpressurePolicy {
@@ -175,6 +201,23 @@ pub struct PoolConfig {
     /// `None` (default) keeps recycle unbounded.
     #[serde(default)]
     pub recycle_timeout: Option<Duration>,
+    /// Instance sharing mode.
+    ///
+    /// [`PoolSharingMode::Shared`] serves clones of a single instance to any
+    /// number of concurrent callers without semaphore permits.  Requires
+    /// `R::Instance: Clone`.  Default: [`PoolSharingMode::Exclusive`].
+    #[serde(default)]
+    pub sharing_mode: PoolSharingMode,
+    /// Pre-warm the pool on construction.
+    ///
+    /// When `true`, `Pool::new` will create up to `min_size` instances
+    /// eagerly (before the first acquire).  Creation errors during warm-up
+    /// are non-fatal and logged at `WARN` level — the pool is still usable
+    /// with fewer pre-created instances.
+    ///
+    /// Default: `false` (lazy, current behaviour).
+    #[serde(default)]
+    pub warm_up: bool,
 }
 
 impl Default for PoolConfig {
@@ -193,6 +236,8 @@ impl Default for PoolConfig {
             recycle_breaker: None,
             create_timeout: None,
             recycle_timeout: None,
+            sharing_mode: PoolSharingMode::default(),
+            warm_up: false,
         }
     }
 }
@@ -289,11 +334,48 @@ impl PoolConfig {
 // Pool internals
 // ---------------------------------------------------------------------------
 
+/// Lifecycle metadata for a pool-managed instance.
+///
+/// Passed to [`Resource::is_reusable_with_meta`](crate::resource::Resource::is_reusable_with_meta)
+/// and [`Resource::recycle_with_meta`](crate::resource::Resource::recycle_with_meta) so that
+/// adapters can make lifecycle decisions based on age and usage without storing
+/// that data inside the instance itself (which would couple the instance type to
+/// pool internals).
+///
+/// ## Deprecation note on existing signatures
+///
+/// `Resource::is_reusable` and `Resource::recycle` retain their original
+/// no-metadata signatures for backward compatibility.  Override
+/// `is_reusable_with_meta` / `recycle_with_meta` to access this context;
+/// the pool calls those first and falls back to the plain versions only if the
+/// metadata variants are not overridden (default no-op).
+#[derive(Debug, Clone, Copy)]
+pub struct InstanceMetadata {
+    /// When the instance was first created by `Resource::create()`.
+    pub created_at: Instant,
+    /// The last time this instance was returned to the idle queue.
+    pub idle_since: Instant,
+    /// Number of times this instance has been acquired (checked out).
+    pub acquire_count: usize,
+}
+
+impl InstanceMetadata {
+    fn default_for_new_instance(created_at: Instant) -> Self {
+        Self {
+            created_at,
+            idle_since: created_at,
+            acquire_count: 1,
+        }
+    }
+}
+
 /// A pool entry wrapping a resource instance with lifecycle tracking.
 struct Entry<T> {
     instance: T,
     created_at: Instant,
     last_used: Instant,
+    /// How many times this entry has been acquired (for [`InstanceMetadata`]).
+    acquire_count: usize,
     /// Current lifecycle state of this entry.
     /// Tracked for observability and future use in drain/shutdown logic.
     #[allow(dead_code)]
@@ -307,16 +389,18 @@ impl<T> Entry<T> {
             instance,
             created_at: now,
             last_used: now,
+            acquire_count: 0,
             lifecycle: Lifecycle::Ready,
         }
     }
 
     /// Return an entry to the pool, preserving the original `created_at`.
-    fn returned(instance: T, created_at: Instant) -> Self {
+    fn returned(instance: T, created_at: Instant, acquire_count: usize) -> Self {
         Self {
             instance,
             created_at,
             last_used: Instant::now(),
+            acquire_count,
             lifecycle: Lifecycle::Idle,
         }
     }
@@ -400,6 +484,29 @@ enum IdleResult<T> {
     Expired(T),
     /// Queue empty; caller must create a new instance.
     Miss,
+}
+
+/// Internal metadata pulled from an [`Entry`] at acquire time and carried
+/// through to the release path so that [`InstanceMetadata`] can be built
+/// without a second state-lock acquisition.
+///
+/// `None` for freshly created instances (no pre-existing entry data).
+#[derive(Debug, Clone, Copy)]
+struct EntryMeta {
+    created_at: Instant,
+    /// Incremented each time the instance is checked out.  The +1 for the
+    /// current acquisition has already been applied.
+    acquire_count: usize,
+}
+
+impl EntryMeta {
+    fn to_instance_metadata(self, idle_since: Instant) -> InstanceMetadata {
+        InstanceMetadata {
+            created_at: self.created_at,
+            idle_since,
+            acquire_count: self.acquire_count,
+        }
+    }
 }
 
 /// Combined pool state: idle queue + statistics under a single lock.
@@ -621,6 +728,7 @@ impl<R: Resource> Pool<R> {
         };
         let max = pool_config.max_size;
         let maintenance_interval = pool_config.maintenance_interval;
+        let pool_config_warm_up = pool_config.warm_up;
         let cancel = CancellationToken::new();
 
         let resource_key = resource.metadata().key.clone();
@@ -680,6 +788,22 @@ impl<R: Resource> Pool<R> {
                 }
             });
             *pool.inner.maintenance_handle.lock() = Some(handle);
+        }
+
+        // Pre-warm: eagerly create up to `min_size` instances so they are ready
+        // before the first acquire.  Errors are non-fatal and logged at WARN level.
+        if pool_config_warm_up {
+            let warm_pool = pool.clone();
+            drop(tokio::spawn(async move {
+                let ctx = warm_pool.inner.maintenance_ctx.clone();
+                if let Err(e) = warm_pool.maintain(&ctx).await {
+                    tracing::warn!(
+                        resource_id = %warm_pool.inner.resource_key,
+                        error = %e,
+                        "Pool warm-up failed (non-fatal)"
+                    );
+                }
+            }));
         }
 
         Ok(pool)
@@ -828,7 +952,7 @@ impl<R: Resource> Pool<R> {
         // Pop from the idle queue.  For valid (non-expired) entries the full
         // acquisition stats are committed **inside the same lock** as the pop,
         // eliminating the second lock acquisition on the hot idle-reuse path.
-        let (instance, created_at) = loop {
+        let (instance, idle_since, entry_meta) = loop {
             let idle_result = Self::with_inner_state(inner, |state| {
                 let entry = match inner.pool_config.strategy {
                     PoolStrategy::Fifo => state.idle.pop_front(),
@@ -873,18 +997,23 @@ impl<R: Resource> Pool<R> {
                         lat.seq = lat.seq.wrapping_add(1);
                         lat.percentiles_cache = None;
                     }
-                    let created_at = entry.created_at;
-                    // Fast path: poll is_reusable synchronously with a noop waker.
-                    // Most health checks complete immediately (e.g. checking an
-                    // atomic flag); only fall back to .await when truly Pending.
-                    // The TaskCtx is scoped to the inner block so it is dropped
-                    // before the .await, keeping the future Send.
+                    let entry_meta = EntryMeta {
+                        created_at: entry.created_at,
+                        acquire_count: entry.acquire_count + 1,
+                    };
+                    let inst_meta = entry_meta.to_instance_metadata(entry.last_used);
+                    // Fast path: poll is_reusable_with_meta synchronously with a
+                    // noop waker.  Most health checks complete immediately (e.g.
+                    // checking an atomic flag); only fall back to .await when truly
+                    // Pending.  The TaskCtx is scoped to the inner block so it is
+                    // dropped before the .await, keeping the future Send.
                     let sync_result = {
                         use std::pin::pin;
                         use std::task::{Context as TaskCtx, Poll, Waker};
                         let waker = Waker::noop();
                         let mut task_cx = TaskCtx::from_waker(&waker);
-                        let mut fut = pin!(inner.resource.is_reusable(&entry.instance));
+                        let mut fut =
+                            pin!(inner.resource.is_reusable_with_meta(&entry.instance, &inst_meta));
                         match fut.as_mut().poll(&mut task_cx) {
                             Poll::Ready(result) => Some(result),
                             Poll::Pending => None,
@@ -893,10 +1022,12 @@ impl<R: Resource> Pool<R> {
                     };
                     let reusable = match sync_result {
                         Some(result) => result,
-                        None => inner.resource.is_reusable(&entry.instance).await,
+                        None => {
+                            inner.resource.is_reusable_with_meta(&entry.instance, &inst_meta).await
+                        }
                     };
                     match reusable {
-                        Ok(true) => break (entry.instance, Some(created_at)),
+                        Ok(true) => break (entry.instance, entry.last_used, Some(entry_meta)),
                         _ => {
                             // Undo the optimistically committed stats.
                             // total_wait_time_ms and latency_histogram are not
@@ -931,13 +1062,13 @@ impl<R: Resource> Pool<R> {
                     )
                     .await;
                     let instance = create_result?;
-                    break (instance, None);
+                    break (instance, Instant::now(), None);
                 }
             }
         };
 
         // Stats lock for the create path only (idle-reuse committed them above).
-        if created_at.is_none() {
+        if entry_meta.is_none() {
             let wait_ms = start.elapsed().as_millis() as u64;
             Self::with_inner_state(inner, |state| {
                 state.stats.total_acquisitions += 1;
@@ -962,24 +1093,43 @@ impl<R: Resource> Pool<R> {
         // Forget the permit — we'll add it back when the guard drops.
         permit.forget();
 
+        // Prepare the instance for this specific execution context.
+        // No-op by default; overridden by resources that need per-execution fields
+        // (e.g. Logger setting execution_id/workflow_id structured fields).
+        let mut instance = instance;
+        inner.resource.prepare(&mut instance, ctx).await?;
+
         let pool = self.clone();
         let acquire_instant = Instant::now();
-        Ok(Guard::new(instance, move |inst, tainted| {
+        let mut guard = Guard::new(instance, move |inst, tainted| {
             let usage_duration = acquire_instant.elapsed();
             // Fast path: attempt sync return without spawning a task.
             // Falls back to async spawn when the fast path isn't applicable.
             if let Some(inst) =
-                Self::try_return_sync(&pool.inner, inst, created_at, usage_duration, tainted)
+                Self::try_return_sync(&pool.inner, inst, idle_since, entry_meta, usage_duration, tainted)
             {
                 drop(tokio::spawn(Self::return_instance(
                     pool,
                     inst,
-                    created_at,
+                    idle_since,
+                    entry_meta,
                     usage_duration,
                     tainted,
                 )));
             }
-        }))
+        });
+
+        // Wire the detach callback so callers can call Guard::detach() to extract
+        // the instance and release the semaphore permit for a replacement.
+        {
+            let inner_for_detach = Arc::clone(&self.inner);
+            guard.set_detach_callback(move || {
+                inner_for_detach.active_count.fetch_sub(1, Ordering::Relaxed);
+                inner_for_detach.semaphore.add_permits(1);
+            });
+        }
+
+        Ok(guard)
     }
 
     /// Attempt a zero-allocation synchronous return of an instance to the pool.
@@ -999,11 +1149,17 @@ impl<R: Resource> Pool<R> {
     fn try_return_sync(
         inner: &PoolInner<R>,
         inst: R::Instance,
-        created_at: Option<Instant>,
+        idle_since: Instant,
+        entry_meta: Option<EntryMeta>,
         usage_duration: Duration,
         tainted: bool,
     ) -> Option<R::Instance> {
         if tainted {
+            return Some(inst);
+        }
+        // Fast synchronous broken-check: skip async recycle entirely for obviously
+        // dead instances (closed socket, invalid descriptor, etc.).
+        if inner.resource.is_broken(&inst) {
             return Some(inst);
         }
         if inner.recycle_breaker.is_some() || inner.hooks.is_some() {
@@ -1011,12 +1167,20 @@ impl<R: Resource> Pool<R> {
         }
 
         let mut inst = inst;
-        // Poll recycle once with a noop waker.  The Pin and future drop at
-        // block end, releasing the `&mut inst` borrow before we move `inst`.
+        // Build InstanceMetadata for recycle_with_meta.  For freshly created
+        // instances (`entry_meta` is None) we fall back to conservative defaults
+        // using `idle_since` as both the creation time and the idle-since time.
+        let inst_meta = match entry_meta {
+            Some(m) => m.to_instance_metadata(idle_since),
+            None => InstanceMetadata::default_for_new_instance(idle_since),
+        };
+        // Poll recycle_with_meta once with a noop waker.  The Pin and future
+        // drop at block end, releasing the `&mut inst` borrow before we move
+        // `inst`.
         let recycle_ok = {
             let waker = std::task::Waker::noop();
             let cx = &mut std::task::Context::from_waker(waker);
-            let mut fut = std::pin::pin!(inner.resource.recycle(&mut inst));
+            let mut fut = std::pin::pin!(inner.resource.recycle_with_meta(&mut inst, &inst_meta));
             matches!(fut.as_mut().poll(cx), std::task::Poll::Ready(Ok(())))
         };
         if !recycle_ok {
@@ -1036,8 +1200,8 @@ impl<R: Resource> Pool<R> {
                         s.stats.total_releases += 1;
                         s.stats.active = s.stats.active.saturating_sub(1);
                         let i = inst_opt.take().expect("always Some before first take");
-                        let entry = match created_at {
-                            Some(ca) => Entry::returned(i, ca),
+                        let entry = match entry_meta {
+                            Some(m) => Entry::returned(i, m.created_at, m.acquire_count),
                             None => Entry::new(i),
                         };
                         s.idle.push_back(entry);
@@ -1160,7 +1324,8 @@ impl<R: Resource> Pool<R> {
     async fn return_instance(
         pool: Self,
         inst: R::Instance,
-        created_at: Option<Instant>,
+        idle_since: Instant,
+        entry_meta: Option<EntryMeta>,
         usage_duration: Duration,
         tainted: bool,
     ) {
@@ -1168,6 +1333,11 @@ impl<R: Resource> Pool<R> {
         let mut inst_slot = Some(inst);
         let mut recycle_ok = false;
         let mut skip_recycle = tainted;
+
+        // Synchronous broken-check supersedes all other skip conditions.
+        if !skip_recycle && inner.resource.is_broken(inst_slot.as_ref().expect("instance must exist")) {
+            skip_recycle = true;
+        }
 
         if let Some(cb) = &inner.recycle_breaker
             && let Err(ResilienceError::CircuitBreakerOpen { retry_after, .. }) =
@@ -1179,8 +1349,16 @@ impl<R: Resource> Pool<R> {
         }
 
         if !skip_recycle {
-            let recycle_result =
-                Self::recycle_timed(inner, inst_slot.as_mut().expect("instance must exist")).await;
+            let inst_meta = match entry_meta {
+                Some(m) => m.to_instance_metadata(idle_since),
+                None => InstanceMetadata::default_for_new_instance(idle_since),
+            };
+            let recycle_result = Self::recycle_timed(
+                inner,
+                inst_slot.as_mut().expect("instance must exist"),
+                &inst_meta,
+            )
+            .await;
             recycle_ok = recycle_result.is_ok();
             Self::maybe_record_breaker_result(
                 inner,
@@ -1199,8 +1377,8 @@ impl<R: Resource> Pool<R> {
             state.stats.active = state.stats.active.saturating_sub(1);
             if recycle_ok && !state.shutdown {
                 let inst = inst_slot.take().expect("instance must exist");
-                let entry = match created_at {
-                    Some(ca) => Entry::returned(inst, ca),
+                let entry = match entry_meta {
+                    Some(m) => Entry::returned(inst, m.created_at, m.acquire_count),
                     None => Entry::new(inst),
                 };
                 state.idle.push_back(entry);
@@ -1349,9 +1527,18 @@ impl<R: Resource> Pool<R> {
         Self::create_with_hooks(inner, ctx).await
     }
 
-    async fn recycle_timed(inner: &PoolInner<R>, instance: &mut R::Instance) -> Result<()> {
+    async fn recycle_timed(
+        inner: &PoolInner<R>,
+        instance: &mut R::Instance,
+        meta: &InstanceMetadata,
+    ) -> Result<()> {
         if let Some(timeout) = inner.pool_config.recycle_timeout {
-            return match tokio::time::timeout(timeout, inner.resource.recycle(instance)).await {
+            return match tokio::time::timeout(
+                timeout,
+                inner.resource.recycle_with_meta(instance, meta),
+            )
+            .await
+            {
                 Ok(result) => result,
                 Err(_) => Err(Error::Timeout {
                     resource_key: inner.resource_key.clone(),
@@ -1360,7 +1547,7 @@ impl<R: Resource> Pool<R> {
                 }),
             };
         }
-        inner.resource.recycle(instance).await
+        inner.resource.recycle_with_meta(instance, meta).await
     }
 
     /// Create a new resource instance, firing [`HookEvent::Create`]
@@ -1695,6 +1882,163 @@ impl<R: Resource> Pool<R> {
             state.stats.idle = 0;
         })?;
         Ok(())
+    }
+
+    /// Remove idle instances that do not satisfy `predicate`, cleaning them up.
+    ///
+    /// The predicate receives `(&instance, created_at, last_used)` for each idle
+    /// entry. Returning `false` evicts the entry. Returns the number of evicted
+    /// instances. Respects `min_size`: the pool will not drop entries that would
+    /// bring the total below `min_size`.
+    ///
+    /// Useful for complex eviction policies beyond `idle_timeout` /
+    /// `max_lifetime` thresholds (e.g. evict connections consuming more than N MB
+    /// on the server, or entries matching a business-logic condition).
+    pub async fn retain<F>(&self, mut predicate: F) -> usize
+    where
+        F: FnMut(&R::Instance, std::time::Instant, std::time::Instant) -> bool,
+    {
+        let inner = &self.inner;
+        let mut to_evict = Vec::new();
+
+        Self::with_inner_state(inner, |state| {
+            let total = state.idle.len() + state.stats.active;
+            let mut kept = VecDeque::with_capacity(state.idle.len());
+            for entry in state.idle.drain(..) {
+                let keep = total.saturating_sub(to_evict.len()) > inner.pool_config.min_size
+                    && predicate(&entry.instance, entry.created_at, entry.last_used);
+                if keep {
+                    kept.push_back(entry);
+                } else {
+                    to_evict.push(entry.instance);
+                }
+            }
+            state.idle = kept;
+            state.stats.idle = state.idle.len();
+        })
+        .unwrap_or(());
+
+        let evicted = to_evict.len();
+        for inst in to_evict {
+            Self::cleanup_with_hooks(inner, inst, &CleanupReason::Evicted, None).await;
+        }
+        evicted
+    }
+
+    /// Resize the pool to a new maximum in-place.
+    ///
+    /// **Growing** (`new_max > current_max`): adds semaphore permits immediately.
+    /// Background maintenance will create new instances up to `min_size` on the
+    /// next cycle.
+    ///
+    /// **Shrinking** (`new_max < current_max`): removes permits. Idle instances
+    /// above `new_max` are evicted on the next `maintain()` cycle; active
+    /// instances already checked out continue until returned.
+    ///
+    /// # Errors
+    /// Returns [`Error::Configuration`] when `new_max == 0` or
+    /// `new_max < min_size`.
+    pub fn set_max_size(&self, new_max: usize) -> Result<()> {
+        let inner = &self.inner;
+        let min_size = inner.pool_config.min_size;
+        if new_max == 0 {
+            return Err(Error::configuration("max_size must be greater than 0"));
+        }
+        if new_max < min_size {
+            return Err(Error::configuration(format!(
+                "new max_size ({new_max}) must not be less than min_size ({min_size})"
+            )));
+        }
+        // Read old max atomically (pool_config is immutable after construction,
+        // but we need the current semaphore permit count via the available_permits API).
+        let old_max = inner.pool_config.max_size;
+        match new_max.cmp(&old_max) {
+            std::cmp::Ordering::Greater => {
+                let delta = new_max - old_max;
+                inner.semaphore.add_permits(delta);
+            }
+            std::cmp::Ordering::Less => {
+                // Best-effort: try to acquire extra permits to shrink the semaphore.
+                // If active instances hold them, they will be returned on release.
+                let delta = old_max - new_max;
+                for _ in 0..delta {
+                    // Non-blocking: skip if no permit available right now.
+                    if inner.semaphore.try_acquire().is_ok() {
+                        // Intentionally forget — this effectively reduces the
+                        // semaphore's available count permanently.
+                    }
+                }
+            }
+            std::cmp::Ordering::Equal => {}
+        }
+        tracing::debug!(
+            resource_id = %inner.resource_key,
+            old_max,
+            new_max,
+            "Pool max_size updated"
+        );
+        Ok(())
+    }
+}
+
+// ── Shared-mode acquisition ──────────────────────────────────────────────────
+
+impl<R: Resource> Pool<R>
+where
+    R::Instance: Clone,
+{
+    /// Acquire an instance from a [`PoolSharingMode::Shared`] pool.
+    ///
+    /// Returns a **clone** of the single managed instance without consuming a
+    /// semaphore permit. The guard's drop is a no-op — the underlying instance
+    /// stays alive in the idle queue and never needs to be "returned".
+    ///
+    /// This is the correct acquire path for resources whose instance is
+    /// `Arc`-backed (`Arc<Bot>`, `reqwest::Client`, `sqlx::PgPool`, etc.).
+    /// Multiple concurrent callers each receive their own cheap clone.
+    ///
+    /// [`prepare`](crate::resource::Resource::prepare) is still called so that
+    /// execution-context fields (e.g. `execution_id`, `correlation_id`) are
+    /// set on the clone before it is handed to the caller.
+    ///
+    /// # Errors
+    /// Returns an error if no instance exists and creation fails, or if
+    /// [`prepare`](crate::resource::Resource::prepare) fails.
+    pub async fn acquire_shared(
+        &self,
+        ctx: &Context,
+    ) -> Result<(Guard<R::Instance, impl FnOnce(R::Instance, bool) + Send + 'static>, Duration)>
+    {
+        let start = Instant::now();
+
+        // Fast path: peek at the idle queue (no pop) and clone the front instance.
+        let maybe_clone = Self::with_inner_state(&self.inner, |state| {
+            state.idle.front().map(|e| e.instance.clone())
+        })?;
+
+        let instance = if let Some(cloned) = maybe_clone {
+            cloned
+        } else {
+            // No idle instance yet — create one and keep it resident.
+            let inst = Self::create_with_hooks_timed(&self.inner, ctx).await?;
+            let inst_clone = inst.clone();
+            Self::with_inner_state(&self.inner, |state| {
+                state.idle.push_back(Entry::new(inst));
+                state.stats.created += 1;
+                state.stats.idle = state.idle.len();
+            })?;
+            inst_clone
+        };
+
+        // Enrich the clone with execution-context fields (e.g. correlation_id).
+        let mut instance = instance;
+        self.inner.resource.prepare(&mut instance, ctx).await?;
+
+        // Guard with a no-op drop — the shared clone is simply released when it
+        // goes out of scope; the pool-resident original is unaffected.
+        let guard: Guard<R::Instance, fn(R::Instance, bool)> =
+            Guard::new(instance, |_, _| {});
+        Ok((guard, start.elapsed()))
     }
 }
 

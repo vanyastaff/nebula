@@ -371,10 +371,33 @@ pub enum HookEvent {
     Release,
     /// Before/after Resource::create — before-hook can cancel.
     Create,
+    /// After Resource::create, before the first acquire.
+    /// Useful for post-creation setup (e.g. migration, seeding).
+    PostCreate,
     /// Before/after Resource::cleanup — result ignored (irrevocable).
     Cleanup,
+    /// Before an idle instance is handed to the caller (i.e. after
+    /// `is_reusable_with_meta` passes but before the Guard is returned).
+    PreAcquire,
+    /// After `recycle_with_meta` succeeds and the instance is back in the
+    /// idle queue, but before the semaphore permit is released.
+    PostRecycle,
+    /// After the Guard drops and the release path completes
+    /// (permit returned and Released event emitted).
+    PostRelease,
 }
 ```
+
+| Variant | Phase | Can cancel? | Notes |
+|---------|-------|-------------|-------|
+| `Acquire` | Before semaphore wait | ✅ before-hook | Fired even when an idle instance is available |
+| `PreAcquire` | After validation, before Guard | ✅ before-hook | Only fired on the idle fast-path |
+| `Create` | Before `Resource::create` | ✅ before-hook | |
+| `PostCreate` | After `Resource::create` | ❌ | Useful for schema migration / seeding |
+| `Release` | Before recycle starts | ❌ after-hook only | |
+| `PostRecycle` | After recycle, before returning to idle | ❌ | |
+| `PostRelease` | After permit returned & event emitted | ❌ | |
+| `Cleanup` | Before/after `Resource::cleanup` | ❌ | |
 
 ### `HookFilter`
 

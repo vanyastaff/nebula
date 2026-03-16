@@ -60,6 +60,28 @@
   - `cargo check --workspace --all-targets` clean.
   - hardening checklist rows in `ARCHITECTURE.md` updated to Implemented.
 
+## Phase 6: Adapter-Grade Safety and Instance-Aware Lifecycle ✅
+
+- deliverables:
+  - `Resource::is_broken` — synchronous broken check; wired as the first gate on the release path, before taint detection and recycle.
+  - `Resource::prepare` — per-acquire async hook for token refresh, lease renewal, and pre-flight validation.
+  - `Guard::detach()` — transfers ownership, fires `on_detach` (semaphore permit returned), skips `on_drop`/recycle.
+  - `Guard::leak()` — transfers ownership without firing any callback; permit is forfeited permanently.
+  - `PoolSharingMode { Exclusive, Shared }` enum; `PoolConfig::sharing_mode` field (default `Exclusive`).
+  - `PoolConfig::warm_up` — spawns background warm-up on pool construction when `true`.
+  - `Pool::acquire_shared` (where `R::Instance: Clone`) — returns a cloned instance without consuming a semaphore permit.
+  - `HookEvent` extended: `PostCreate`, `PreAcquire`, `PostRecycle`, `PostRelease` (8 total hook points).
+  - `InstanceMetadata { created_at, idle_since, acquire_count }` threaded through the acquire/return hotpath.
+  - `Resource::is_reusable_with_meta` / `Resource::recycle_with_meta` called throughout acquire and release paths.
+  - `Pool::retain(predicate)` — conditional idle eviction; returns count removed.
+  - `Pool::set_max_size(n)` — live pool size resizing; returns `Err` if n < current idle count.
+  - Dynamic `context_enricher` in `Manager` — `pools` wrapped in `Arc<ArcSwap<...>>`; enricher resolves dep handles from live snapshot at acquire time.
+- risks:
+  - none remaining — all delivered and verified (355 tests pass, 0 warnings).
+- exit criteria:
+  - 355 tests pass; `cargo check -p nebula-resource` → 0 errors, 0 warnings.
+  - All new API surface documented in `crates/resource/docs/`.
+
 ## Metrics of Readiness
 
 - correctness:

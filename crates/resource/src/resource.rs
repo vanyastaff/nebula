@@ -12,6 +12,7 @@ use nebula_core::ResourceKey;
 use crate::context::Context;
 use crate::error::Result;
 use crate::metadata::ResourceMetadata;
+use crate::pool::InstanceMetadata;
 
 /// Configuration trait for resource types.
 pub trait Config: Send + Sync + 'static {
@@ -62,8 +63,80 @@ pub trait Resource: Send + Sync + 'static {
         async { Ok(true) }
     }
 
+    /// Synchronous O(1) check for obvious breakage, called during Guard release.
+    ///
+    /// Invoked synchronously in the drop path before the async recycle round-trip.
+    /// Must not block. Checks cheap indicators: closed TCP socket, invalid descriptor,
+    /// or an atomic broken flag set by the instance.
+    ///
+    /// `true`  → pool discards the instance and spawns async cleanup (no recycle).
+    /// `false` → pool continues to the normal async recycle path.
+    ///
+    /// Complements [`is_reusable`](Self::is_reusable): `is_broken` is a fast release-time
+    /// guard; `is_reusable` is a deeper validity check at acquire-from-idle time.
+    fn is_broken(&self, _instance: &Self::Instance) -> bool {
+        false
+    }
+
     /// Recycle an instance before returning it to the pool.
     fn recycle(&self, _instance: &mut Self::Instance) -> impl Future<Output = Result<()>> + Send {
+        async { Ok(()) }
+    }
+
+    /// Deep reuse check with pool lifecycle metadata.
+    ///
+    /// Same contract as [`is_reusable`](Self::is_reusable) but also receives
+    /// [`InstanceMetadata`] so that adapters can make decisions based on instance
+    /// age, idle time, or acquisition count without storing that data inside the
+    /// instance itself.
+    ///
+    /// **Migration note:** Override this method instead of `is_reusable` when you
+    /// need metadata.  The pool calls this first; `is_reusable` is only called when
+    /// this default implementation is not overridden (it delegates to `is_reusable`).
+    fn is_reusable_with_meta(
+        &self,
+        instance: &Self::Instance,
+        _meta: &InstanceMetadata,
+    ) -> impl Future<Output = Result<bool>> + Send {
+        self.is_reusable(instance)
+    }
+
+    /// Recycle with pool lifecycle metadata.
+    ///
+    /// Same as [`recycle`](Self::recycle) but also receives [`InstanceMetadata`] so
+    /// that adapters can make fine-grained decisions (e.g. skip flush if the instance
+    /// was idle for less than a second). Defaults to delegating to `recycle`.
+    ///
+    /// **Migration note:** Override this method instead of `recycle` when you need
+    /// the metadata; do not override both.
+    fn recycle_with_meta(
+        &self,
+        instance: &mut Self::Instance,
+        _meta: &InstanceMetadata,
+    ) -> impl Future<Output = Result<()>> + Send {
+        self.recycle(instance)
+    }
+
+    /// Prepare an instance for a specific execution context before handing it to the caller.
+    ///
+    /// Called after a successful [`recycle`](Self::recycle) and immediately before the
+    /// [`Guard`](crate::guard::Guard) is returned to the caller. Receives the full
+    /// [`Context`] with `execution_id`, `workflow_id`, `tenant_id`, and scope.
+    ///
+    /// Typical uses:
+    /// - **Logger**: set structured fields (`execution_id`, `workflow_id`, `tenant_id`).
+    /// - **HTTP client**: inject a `X-Correlation-ID` into default headers.
+    /// - **Telegram bot**: bind a `correlation_id` to the rate-limiter context.
+    ///
+    /// The counterpart is [`recycle`](Self::recycle): `prepare` sets execution-scoped
+    /// fields, `recycle` clears them so the instance is returned "clean" to the idle queue.
+    ///
+    /// Default: no-op. Zero overhead on the hot path when not overridden.
+    fn prepare(
+        &self,
+        _instance: &mut Self::Instance,
+        _ctx: &Context,
+    ) -> impl Future<Output = Result<()>> + Send {
         async { Ok(()) }
     }
 

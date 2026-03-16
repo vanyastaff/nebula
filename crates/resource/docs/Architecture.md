@@ -33,15 +33,25 @@ the manager hold heterogeneous resource types in one registry that is optimised
 for read-heavy acquire paths — readers take a snapshot of the `ArcSwap` with no
 locking; writes (register, hot-reload) pay one atomic swap.
 
-### 3. RAII guards with taint support
+### 3. RAII guards with taint, detach, and leak support
 
 `Guard<T>` holds a checked-out instance and calls a drop-callback on release.
 Callers signal that an instance is broken by calling `guard.taint()` before
 dropping; the pool then skips recycling and routes the instance to
-`Resource::cleanup`. The internal `Poison<T>` primitive guards pool state
-across async critical sections — if a future is cancelled mid-operation,
-`Poison` marks the value unusable so a subsequent accessor sees the error
-immediately rather than observing corrupt state.
+`Resource::cleanup`.
+
+Two additional escape hatches avoid the drop path entirely:
+- `Guard::detach()` — transfers ownership out of the guard, fires the
+  `on_detach` callback (semaphore permit returned), but skips `on_drop`/recycle.
+  Use when the instance is valid but must outlive the pool slot temporarily.
+- `Guard::leak()` — transfers ownership without firing any callback and
+  without returning the semaphore permit. Use sparingly; the leaked slot is
+  permanently consumed.
+
+The internal `Poison<T>` primitive guards pool state across async critical
+sections — if a future is cancelled mid-operation, `Poison` marks the value
+unsable so a subsequent accessor sees the error immediately rather than
+observing corrupt state.
 
 ### 4. Scope isolation
 
@@ -60,6 +70,15 @@ callback registration, no circular imports. Each subscriber gets its own
 configured on the bus and never stall the acquire path.
 
 ### 6. Cancellation everywhere
+
+### 7. `is_broken` as the first return-path gate
+
+The `Resource::is_broken` method is a **synchronous** fast-path check on the
+release path: it runs before taint inspection, before the circuit breaker, and
+before `recycle_with_meta`. This means an unhealthy instance is immediately
+routed to `Resource::cleanup` without touching the recycle path, preventing
+broken state from being pushed back into the idle queue. The default
+implementation returns `false` (no broken detection).
 
 `Context` carries a `CancellationToken`. Pool acquire, health checks, and
 auto-scale loops all branch on cancellation via `tokio::select!`. Dropping the
@@ -86,6 +105,8 @@ nebula-resource/src/
 │
 ├── guard.rs            Guard<T, F> — RAII acquire handle.
 │                       taint() marks instance for cleanup on drop (skips recycle).
+│                       detach() — fires on_detach (permit returned), skips on_drop/recycle.
+│                       leak() — transfers ownership; no callback, no permit return.
 │                       into_inner() extracts the value without invoking the callback.
 │
 ├── context.rs          Context — scope, workflow_id, execution_id, tenant_id,
@@ -99,8 +120,12 @@ nebula-resource/src/
 │                       hierarchy_level() and contains() power Strategy::is_compatible.
 │
 ├── pool.rs             Pool<R> — bounded semaphore pool.
-│                         PoolConfig, PoolStrategy, PoolBackpressurePolicy,
-│                         AdaptiveBackpressurePolicy, PoolStats, LatencyPercentiles.
+│                         PoolConfig (+ sharing_mode: PoolSharingMode, warm_up: bool),
+│                         PoolStrategy, PoolSharingMode { Exclusive, Shared },
+│                         PoolBackpressurePolicy, AdaptiveBackpressurePolicy,
+│                         PoolStats, LatencyPercentiles.
+│                         InstanceMetadata { created_at, idle_since, acquire_count }.
+│                       Methods: acquire, acquire_shared (Clone), retain, set_max_size.
 │                       Internal: Gate/GateGuard, CounterGuard (RAII helpers).
 │
 ├── manager.rs          Manager — ArcSwap registry of Arc<dyn AnyPool>.
@@ -130,8 +155,10 @@ nebula-resource/src/
 │                         ScopedSubscriber, SubscriptionScope, PublishOutcome.
 │
 ├── hooks.rs            HookRegistry — ordered pre/post callbacks for
-│                       acquire, release, create, cleanup.
+│                       acquire, release, create, cleanup + 4 new variants.
 │                       ResourceHook trait. HookEvent, HookFilter, HookResult.
+│                       HookEvent variants: Acquire, PreAcquire, Create, PostCreate,
+│                         Cleanup, Release, PostRecycle, PostRelease.
 │                       Built-ins: AuditHook (priority 10),
 │                                  SlowAcquireHook (priority 90).
 │
@@ -208,12 +235,16 @@ Pool<R>::acquire_inner(&ctx)
   │  7. Pop idle instance from VecDeque:
   │     ├─ Fifo: pop_front  (oldest idle instance)
   │     └─ Lifo: pop_back   (most recently used)
-  │  8. Call Resource::is_reusable on idle instance:
+  │  8. Call Resource::is_reusable_with_meta(instance, &InstanceMetadata):
   │     └─ false / Err → Resource::cleanup, try next idle instance
+  │  8b. HookRegistry::run_before(HookEvent::PreAcquire, ...)  [idle path only]
   │  9. No idle instance → Resource::create (circuit-breaker guarded)
-  │ 10. Record acquire latency in HDR histogram
-  │ 11. EventBus::emit(Acquired { wait_duration })
-  │ 12. Wrap instance in Guard<T> with on_drop = pool release callback
+  │     └─ After create: HookRegistry::run_after(HookEvent::PostCreate, ...)
+  │ 10. Resource::prepare(&mut instance, &ctx)  (token refresh, pre-flight check)
+  │ 11. Record acquire latency in HDR histogram
+  │ 12. EventBus::emit(Acquired { wait_duration })
+  │ 13. Wrap instance in Guard<T> with on_drop = pool release callback
+  │     and on_detach = semaphore-only release callback
   ▼
 Manager wraps Guard in InstrumentedGuard
   │ 13. Attach ctx.recorder() for per-call telemetry
@@ -230,14 +261,19 @@ InstrumentedGuard::drop
   │  1. Emit CallRecord via Recorder (DropReason::Released or Panic)
   ▼
 Guard<T>::drop (invokes on_drop callback)
-  │  if tainted:
+  │  1. Resource::is_broken(instance)?  [fast-path synchronous check]
+  │     └─ true → Resource::cleanup, skip recycle
+  │  if tainted OR broken:
   │    Resource::cleanup(instance)
-  │    EventBus::emit(CleanedUp { reason: Tainted })
+  │    EventBus::emit(CleanedUp { reason: Tainted | Broken })
   │  else:
-  │    Resource::recycle(&mut instance)  (circuit-breaker guarded)
+  │    Resource::recycle_with_meta(&mut instance, &InstanceMetadata)
+  │      (circuit-breaker guarded)
+  │    HookRegistry::run_after(HookEvent::PostRecycle, ...)
   │    VecDeque::push_back (Lifo) or push_front (Fifo) back to idle queue
   │    Semaphore::add_permits(1)
   │    EventBus::emit(Released { usage_duration })
+  │    HookRegistry::run_after(HookEvent::PostRelease, ...)
   ▼
 ReleaseHookGuard::drop
   │  HookRegistry::run_after(HookEvent::Release, ..., success)
