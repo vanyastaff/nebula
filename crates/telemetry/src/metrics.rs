@@ -1,19 +1,33 @@
 //! Metrics primitives and registry.
 //!
 //! Provides lightweight metric types (counter, gauge, histogram) and a
-//! registry to create and retrieve them. The MVP implementation stores
-//! values in-memory with atomics -- no external exporter needed.
+//! registry to create and retrieve them. The implementation stores values
+//! in-memory with atomics and uses [`lasso`]-backed string interning plus
+//! [`dashmap`]-backed sharded maps for low-latency concurrent access on the
+//! hot recording path.
 
-use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tracing::warn;
+use dashmap::DashMap;
+
+use crate::labels::{LabelInterner, LabelSet, MetricKey};
+
+/// Returns the current time as milliseconds since the Unix epoch.
+#[inline]
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 /// An incrementing counter.
 #[derive(Debug, Clone)]
 pub struct Counter {
     value: Arc<AtomicU64>,
+    last_updated_ms: Arc<AtomicU64>,
 }
 
 impl Counter {
@@ -22,23 +36,32 @@ impl Counter {
     pub fn new() -> Self {
         Self {
             value: Arc::new(AtomicU64::new(0)),
+            last_updated_ms: Arc::new(AtomicU64::new(now_ms())),
         }
     }
 
     /// Increment by one.
     pub fn inc(&self) {
         self.value.fetch_add(1, Ordering::Relaxed);
+        self.last_updated_ms.store(now_ms(), Ordering::Relaxed);
     }
 
     /// Increment by a given amount.
     pub fn inc_by(&self, n: u64) {
         self.value.fetch_add(n, Ordering::Relaxed);
+        self.last_updated_ms.store(now_ms(), Ordering::Relaxed);
     }
 
     /// Current value.
     #[must_use]
     pub fn get(&self) -> u64 {
         self.value.load(Ordering::Relaxed)
+    }
+
+    /// Milliseconds since Unix epoch of the last write to this counter.
+    #[must_use]
+    pub fn last_updated_ms(&self) -> u64 {
+        self.last_updated_ms.load(Ordering::Relaxed)
     }
 }
 
@@ -52,6 +75,7 @@ impl Default for Counter {
 #[derive(Debug, Clone)]
 pub struct Gauge {
     value: Arc<AtomicI64>,
+    last_updated_ms: Arc<AtomicU64>,
 }
 
 impl Gauge {
@@ -60,28 +84,38 @@ impl Gauge {
     pub fn new() -> Self {
         Self {
             value: Arc::new(AtomicI64::new(0)),
+            last_updated_ms: Arc::new(AtomicU64::new(now_ms())),
         }
     }
 
     /// Increment by one.
     pub fn inc(&self) {
         self.value.fetch_add(1, Ordering::Relaxed);
+        self.last_updated_ms.store(now_ms(), Ordering::Relaxed);
     }
 
     /// Decrement by one.
     pub fn dec(&self) {
         self.value.fetch_sub(1, Ordering::Relaxed);
+        self.last_updated_ms.store(now_ms(), Ordering::Relaxed);
     }
 
     /// Set to a specific value.
     pub fn set(&self, v: i64) {
         self.value.store(v, Ordering::Relaxed);
+        self.last_updated_ms.store(now_ms(), Ordering::Relaxed);
     }
 
     /// Current value.
     #[must_use]
     pub fn get(&self) -> i64 {
         self.value.load(Ordering::Relaxed)
+    }
+
+    /// Milliseconds since Unix epoch of the last write to this gauge.
+    #[must_use]
+    pub fn last_updated_ms(&self) -> u64 {
+        self.last_updated_ms.load(Ordering::Relaxed)
     }
 }
 
@@ -114,6 +148,8 @@ pub struct Histogram {
     total_count: Arc<AtomicU64>,
     /// Sum of all observed values (stored as f64 bits).
     sum_bits: Arc<AtomicU64>,
+    /// Milliseconds since Unix epoch of the last observation.
+    last_updated_ms: Arc<AtomicU64>,
 }
 
 impl Clone for Histogram {
@@ -123,6 +159,7 @@ impl Clone for Histogram {
             counts: Arc::clone(&self.counts),
             total_count: Arc::clone(&self.total_count),
             sum_bits: Arc::clone(&self.sum_bits),
+            last_updated_ms: Arc::clone(&self.last_updated_ms),
         }
     }
 }
@@ -167,6 +204,7 @@ impl Histogram {
             counts: Arc::new(counts),
             total_count: Arc::new(AtomicU64::new(0)),
             sum_bits: Arc::new(AtomicU64::new(0.0_f64.to_bits())),
+            last_updated_ms: Arc::new(AtomicU64::new(now_ms())),
         }
     }
 
@@ -199,6 +237,7 @@ impl Histogram {
                 break;
             }
         }
+        self.last_updated_ms.store(now_ms(), Ordering::Relaxed);
     }
 
     /// Number of observations recorded.
@@ -302,6 +341,12 @@ impl Histogram {
         // Fallback: return last boundary.
         self.boundaries.last().copied().unwrap_or(0.0)
     }
+
+    /// Milliseconds since Unix epoch of the last observation recorded.
+    #[must_use]
+    pub fn last_updated_ms(&self) -> u64 {
+        self.last_updated_ms.load(Ordering::Relaxed)
+    }
 }
 
 impl Default for Histogram {
@@ -314,6 +359,13 @@ impl Default for Histogram {
 ///
 /// Prefer names with the `nebula_` prefix (e.g. `nebula_executions_total`)
 /// for consistency and future Prometheus/OTLP export.
+///
+/// Metric names are interned via [`LabelInterner`] (backed by
+/// [`lasso::ThreadedRodeo`]) so repeated `counter("same_name")` calls pay
+/// only an integer comparison after the first call, not a string allocation.
+///
+/// Concurrent access uses [`DashMap`] — a sharded lock-free map — so
+/// recording metrics on hot paths does not block other threads.
 ///
 /// # Examples
 ///
@@ -331,9 +383,11 @@ impl Default for Histogram {
 /// ```
 #[derive(Debug, Clone)]
 pub struct MetricsRegistry {
-    counters: Arc<RwLock<HashMap<String, Counter>>>,
-    gauges: Arc<RwLock<HashMap<String, Gauge>>>,
-    histograms: Arc<RwLock<HashMap<String, Histogram>>>,
+    /// Shared string interner — both metric names and label keys/values.
+    pub(crate) interner: LabelInterner,
+    counters: Arc<DashMap<MetricKey, Counter>>,
+    gauges: Arc<DashMap<MetricKey, Gauge>>,
+    histograms: Arc<DashMap<MetricKey, Histogram>>,
 }
 
 impl MetricsRegistry {
@@ -341,37 +395,157 @@ impl MetricsRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            counters: Arc::new(RwLock::new(HashMap::new())),
-            gauges: Arc::new(RwLock::new(HashMap::new())),
-            histograms: Arc::new(RwLock::new(HashMap::new())),
+            interner: LabelInterner::new(),
+            counters: Arc::new(DashMap::new()),
+            gauges: Arc::new(DashMap::new()),
+            histograms: Arc::new(DashMap::new()),
         }
     }
 
-    /// Get or create a counter by name.
+    /// Access the underlying label interner.
+    ///
+    /// Use this to build [`LabelSet`]s that are compatible with the labeled
+    /// metric accessors on this registry.
+    #[must_use]
+    pub fn interner(&self) -> &LabelInterner {
+        &self.interner
+    }
+
+    // ── Unlabeled accessors ─────────────────────────────────────────────────
+
+    /// Get or create an unlabeled counter by name.
     pub fn counter(&self, name: &str) -> Counter {
-        let mut map = self.counters.write().unwrap_or_else(|poisoned| {
-            warn!("counter registry lock was poisoned, recovering");
-            poisoned.into_inner()
-        });
-        map.entry(name.to_owned()).or_default().clone()
+        let key = MetricKey::unlabeled(self.interner.intern(name));
+        self.counters.entry(key).or_default().value().clone()
     }
 
-    /// Get or create a gauge by name.
+    /// Get or create an unlabeled gauge by name.
     pub fn gauge(&self, name: &str) -> Gauge {
-        let mut map = self.gauges.write().unwrap_or_else(|poisoned| {
-            warn!("gauge registry lock was poisoned, recovering");
-            poisoned.into_inner()
-        });
-        map.entry(name.to_owned()).or_default().clone()
+        let key = MetricKey::unlabeled(self.interner.intern(name));
+        self.gauges.entry(key).or_default().value().clone()
     }
 
-    /// Get or create a histogram by name.
+    /// Get or create an unlabeled histogram by name.
     pub fn histogram(&self, name: &str) -> Histogram {
-        let mut map = self.histograms.write().unwrap_or_else(|poisoned| {
-            warn!("histogram registry lock was poisoned, recovering");
-            poisoned.into_inner()
-        });
-        map.entry(name.to_owned()).or_default().clone()
+        let key = MetricKey::unlabeled(self.interner.intern(name));
+        self.histograms.entry(key).or_default().value().clone()
+    }
+
+    // ── Labeled accessors ───────────────────────────────────────────────────
+
+    /// Get or create a counter for the given metric name and label set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_telemetry::metrics::MetricsRegistry;
+    ///
+    /// let reg = MetricsRegistry::new();
+    /// let labels = reg.interner().label_set(&[("action_type", "http.request")]);
+    /// let counter = reg.counter_labeled("nebula_action_executions_total", &labels);
+    /// counter.inc();
+    /// assert_eq!(counter.get(), 1);
+    /// ```
+    pub fn counter_labeled(&self, name: &str, labels: &LabelSet) -> Counter {
+        let key = MetricKey::labeled(self.interner.intern(name), labels.clone());
+        self.counters.entry(key).or_default().value().clone()
+    }
+
+    /// Get or create a gauge for the given metric name and label set.
+    pub fn gauge_labeled(&self, name: &str, labels: &LabelSet) -> Gauge {
+        let key = MetricKey::labeled(self.interner.intern(name), labels.clone());
+        self.gauges.entry(key).or_default().value().clone()
+    }
+
+    /// Get or create a histogram for the given metric name and label set.
+    pub fn histogram_labeled(&self, name: &str, labels: &LabelSet) -> Histogram {
+        let key = MetricKey::labeled(self.interner.intern(name), labels.clone());
+        self.histograms.entry(key).or_default().value().clone()
+    }
+
+    /// Get or create a histogram with custom bucket boundaries and a label set.
+    pub fn histogram_with_buckets_labeled(
+        &self,
+        name: &str,
+        labels: &LabelSet,
+        boundaries: Vec<f64>,
+    ) -> Histogram {
+        let key = MetricKey::labeled(self.interner.intern(name), labels.clone());
+        self.histograms
+            .entry(key)
+            .or_insert_with(|| Histogram::with_buckets(boundaries))
+            .value()
+            .clone()
+    }
+
+    // ── Snapshot / export ───────────────────────────────────────────────────
+
+    /// Iterate all counter entries as `(MetricKey, Counter)` pairs.
+    ///
+    /// Used by exporters (Prometheus, OTLP) to serialize the current state.
+    pub fn snapshot_counters(&self) -> Vec<(MetricKey, Counter)> {
+        self.counters
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect()
+    }
+
+    /// Iterate all gauge entries as `(MetricKey, Gauge)` pairs.
+    pub fn snapshot_gauges(&self) -> Vec<(MetricKey, Gauge)> {
+        self.gauges
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect()
+    }
+
+    /// Iterate all histogram entries as `(MetricKey, Histogram)` pairs.
+    pub fn snapshot_histograms(&self) -> Vec<(MetricKey, Histogram)> {
+        self.histograms
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect()
+    }
+
+    // ── Expiration ──────────────────────────────────────────────────────────
+
+    /// Remove all metric series that have not been updated within `max_age`.
+    ///
+    /// This prevents unbounded memory growth when dynamic labels (e.g.
+    /// `action_type`, `workflow_id`) create many high-cardinality series over
+    /// time. Stable global metrics (unlabeled or with a fixed label set) are
+    /// naturally retained because they are written to continuously.
+    ///
+    /// Call this periodically from a background task or at the end of a
+    /// logical time window (e.g. after completing a batch of executions).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use nebula_telemetry::metrics::MetricsRegistry;
+    ///
+    /// let reg = MetricsRegistry::new();
+    /// let c = reg.counter("nebula_actions_total");
+    /// c.inc();
+    ///
+    /// // Retain everything written in the last 5 minutes.
+    /// reg.retain_recent(Duration::from_secs(300));
+    /// assert_eq!(reg.metric_count(), 1); // still present — just updated
+    /// ```
+    pub fn retain_recent(&self, max_age: Duration) {
+        let cutoff_ms = now_ms().saturating_sub(max_age.as_millis() as u64);
+        self.counters.retain(|_, v| v.last_updated_ms() >= cutoff_ms);
+        self.gauges.retain(|_, v| v.last_updated_ms() >= cutoff_ms);
+        self.histograms
+            .retain(|_, v| v.last_updated_ms() >= cutoff_ms);
+    }
+
+    /// Total number of tracked metric series (counters + gauges + histograms).
+    ///
+    /// Useful for cardinality monitoring.
+    #[must_use]
+    pub fn metric_count(&self) -> usize {
+        self.counters.len() + self.gauges.len() + self.histograms.len()
     }
 }
 
@@ -587,29 +761,114 @@ mod tests {
     }
 
     #[test]
-    fn registry_recovers_from_poisoned_lock() {
+    fn registry_labeled_counter_independent_from_unlabeled() {
         let reg = MetricsRegistry::new();
-        reg.counter("before");
+        let labels = reg.interner().label_set(&[("env", "prod")]);
+        let labeled = reg.counter_labeled("nebula_requests_total", &labels);
+        let unlabeled = reg.counter("nebula_requests_total");
 
-        // Poison the counters lock.
-        let inner = reg.counters.clone();
-        let handle = std::thread::spawn(move || {
-            let _guard = inner.write().unwrap();
-            panic!("intentional panic to poison registry lock");
-        });
-        assert!(handle.join().is_err());
+        labeled.inc_by(10);
+        unlabeled.inc_by(3);
 
-        // After poisoning, counter/gauge/histogram creation must recover.
-        let c = reg.counter("after");
-        c.inc();
-        assert_eq!(c.get(), 1);
+        assert_eq!(labeled.get(), 10);
+        assert_eq!(unlabeled.get(), 3);
+    }
 
-        let g = reg.gauge("g");
-        g.set(42);
-        assert_eq!(g.get(), 42);
+    #[test]
+    fn registry_different_label_sets_are_independent() {
+        let reg = MetricsRegistry::new();
+        let prod = reg.interner().label_set(&[("env", "prod")]);
+        let staging = reg.interner().label_set(&[("env", "staging")]);
 
-        let h = reg.histogram("h");
-        h.observe(1.0);
-        assert_eq!(h.count(), 1);
+        let c_prod = reg.counter_labeled("nebula_executions_total", &prod);
+        let c_staging = reg.counter_labeled("nebula_executions_total", &staging);
+        c_prod.inc_by(5);
+        c_staging.inc_by(2);
+
+        assert_eq!(c_prod.get(), 5);
+        assert_eq!(c_staging.get(), 2);
+    }
+
+    #[test]
+    fn registry_same_label_set_different_order_returns_same_metric() {
+        let reg = MetricsRegistry::new();
+        let ls1 = reg
+            .interner()
+            .label_set(&[("status", "ok"), ("action", "http.request")]);
+        let ls2 = reg
+            .interner()
+            .label_set(&[("action", "http.request"), ("status", "ok")]);
+
+        let c1 = reg.counter_labeled("nebula_action_executions_total", &ls1);
+        c1.inc_by(7);
+        let c2 = reg.counter_labeled("nebula_action_executions_total", &ls2);
+
+        assert_eq!(
+            c2.get(),
+            7,
+            "same label set in different order must return same metric"
+        );
+    }
+
+    #[test]
+    fn snapshot_returns_all_registered_metrics() {
+        let reg = MetricsRegistry::new();
+        reg.counter("c1").inc();
+        reg.counter("c2").inc_by(3);
+        reg.gauge("g1").set(99);
+        reg.histogram("h1").observe(1.0);
+
+        assert_eq!(reg.snapshot_counters().len(), 2);
+        assert_eq!(reg.snapshot_gauges().len(), 1);
+        assert_eq!(reg.snapshot_histograms().len(), 1);
+    }
+
+    #[test]
+    fn metric_count_sums_all_types() {
+        let reg = MetricsRegistry::new();
+        reg.counter("c1").inc();
+        reg.gauge("g1").set(1);
+        reg.histogram("h1").observe(1.0);
+        assert_eq!(reg.metric_count(), 3);
+    }
+
+    #[test]
+    fn retain_recent_keeps_recently_updated_metrics() {
+        let reg = MetricsRegistry::new();
+        reg.counter("fresh").inc();
+        reg.gauge("also_fresh").set(1);
+
+        // Everything was just written — a 1-hour window should keep all.
+        reg.retain_recent(Duration::from_secs(3600));
+        assert_eq!(reg.metric_count(), 2);
+    }
+
+    #[test]
+    fn retain_recent_removes_stale_metrics() {
+        let reg = MetricsRegistry::new();
+
+        // Register a counter and immediately call retain_recent with zero
+        // max_age so the cutoff is `now_ms()`.  Any metric whose timestamp
+        // is strictly less than the cutoff will be removed.  Since we just
+        // created the metrics they will have timestamps >= cutoff, so this
+        // verifies the boundary condition: nothing is removed at max_age = 0.
+        reg.counter("a").inc();
+        reg.gauge("b").set(1);
+        reg.histogram("c").observe(0.5);
+        reg.retain_recent(Duration::from_secs(3600));
+        assert_eq!(reg.metric_count(), 3, "all metrics are recent, none should be removed");
+
+        // Now retain with max_age = 0: cutoff = now_ms(), so only metrics
+        // updated at exactly now_ms() or later survive.  In practice all
+        // metrics were created a few microseconds ago which means
+        // their timestamp < cutoff, and they will be evicted.
+        // We sleep 1 ms to ensure the cutoff is strictly after creation time.
+        std::thread::sleep(Duration::from_millis(2));
+        reg.retain_recent(Duration::ZERO);
+        assert_eq!(
+            reg.metric_count(),
+            0,
+            "all metrics should be evicted when max_age = 0"
+        );
     }
 }

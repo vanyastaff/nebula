@@ -6,8 +6,10 @@
 use std::sync::Arc;
 
 use nebula_eventbus::EventBusStats;
+use nebula_telemetry::labels::LabelSet;
 use nebula_telemetry::metrics::{Counter, Gauge, Histogram, MetricsRegistry};
 
+use crate::filter::LabelAllowlist;
 use crate::naming::*;
 
 /// Adapter that exposes telemetry metrics under standard `nebula_*` names.
@@ -15,16 +17,56 @@ use crate::naming::*;
 /// Holds an `Arc<MetricsRegistry>` and provides accessors that return
 /// counters/gauges/histograms with the canonical names. Engine and runtime
 /// can use this to record metrics that are ready for Prometheus/OTLP export.
+///
+/// An optional [`LabelAllowlist`] can be configured via
+/// [`TelemetryAdapter::with_allowlist`] to strip high-cardinality label keys
+/// before they reach the registry.
 #[derive(Clone, Debug)]
 pub struct TelemetryAdapter {
     registry: Arc<MetricsRegistry>,
+    allowlist: LabelAllowlist,
 }
 
 impl TelemetryAdapter {
     /// Create an adapter over the given telemetry registry.
+    ///
+    /// By default all labels are passed through. Use
+    /// [`TelemetryAdapter::with_allowlist`] to restrict which keys are stored.
     #[must_use]
     pub fn new(registry: Arc<MetricsRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            allowlist: LabelAllowlist::all(),
+        }
+    }
+
+    /// Attach a [`LabelAllowlist`] that filters label keys on every labeled
+    /// accessor call.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::sync::Arc;
+    /// use nebula_telemetry::metrics::MetricsRegistry;
+    /// use nebula_metrics::{TelemetryAdapter, LabelAllowlist};
+    ///
+    /// let reg = Arc::new(MetricsRegistry::new());
+    /// let adapter = TelemetryAdapter::new(Arc::clone(&reg))
+    ///     .with_allowlist(LabelAllowlist::only(["action_type", "status", "trigger_type"]));
+    /// ```
+    #[must_use]
+    pub fn with_allowlist(mut self, allowlist: LabelAllowlist) -> Self {
+        self.allowlist = allowlist;
+        self
+    }
+
+    /// Apply the configured [`LabelAllowlist`] to `labels`.
+    ///
+    /// Use this to build a safe [`LabelSet`] before calling labeled accessors
+    /// when the incoming label set may contain high-cardinality keys.
+    #[must_use]
+    pub fn filter_labels(&self, labels: &LabelSet) -> LabelSet {
+        self.allowlist.apply(labels, self.registry.interner())
     }
 
     /// Underlying registry for custom or legacy metric names.
@@ -101,6 +143,69 @@ impl TelemetryAdapter {
     #[must_use]
     pub fn histogram(&self, name: &str) -> Histogram {
         self.registry.histogram(name)
+    }
+
+    // ---------- Labeled variants of canonical action metrics ----------
+
+    /// Counter: action executions with label dimensions (e.g. `action_type`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use nebula_telemetry::metrics::MetricsRegistry;
+    /// use nebula_metrics::adapter::TelemetryAdapter;
+    ///
+    /// let reg = Arc::new(MetricsRegistry::new());
+    /// let adapter = TelemetryAdapter::new(Arc::clone(&reg));
+    /// let labels = reg.interner().label_set(&[("action_type", "http.request")]);
+    /// adapter.action_executions_labeled(&labels).inc();
+    /// ```
+    #[must_use]
+    pub fn action_executions_labeled(&self, labels: &LabelSet) -> Counter {
+        self.registry
+            .counter_labeled(NEBULA_ACTION_EXECUTIONS_TOTAL, labels)
+    }
+
+    /// Counter: action failures with label dimensions.
+    #[must_use]
+    pub fn action_failures_labeled(&self, labels: &LabelSet) -> Counter {
+        self.registry
+            .counter_labeled(NEBULA_ACTION_FAILURES_TOTAL, labels)
+    }
+
+    /// Histogram: action execution duration with label dimensions.
+    #[must_use]
+    pub fn action_duration_labeled(&self, labels: &LabelSet) -> Histogram {
+        self.registry
+            .histogram_labeled(NEBULA_ACTION_DURATION_SECONDS, labels)
+    }
+
+    /// Counter: workflow executions started with label dimensions.
+    #[must_use]
+    pub fn workflow_executions_started_labeled(&self, labels: &LabelSet) -> Counter {
+        self.registry
+            .counter_labeled(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL, labels)
+    }
+
+    /// Counter: workflow executions completed with label dimensions.
+    #[must_use]
+    pub fn workflow_executions_completed_labeled(&self, labels: &LabelSet) -> Counter {
+        self.registry
+            .counter_labeled(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL, labels)
+    }
+
+    /// Counter: workflow executions failed with label dimensions.
+    #[must_use]
+    pub fn workflow_executions_failed_labeled(&self, labels: &LabelSet) -> Counter {
+        self.registry
+            .counter_labeled(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, labels)
+    }
+
+    /// Access the underlying label interner to build [`LabelSet`]s.
+    #[must_use]
+    pub fn interner(&self) -> &nebula_telemetry::labels::LabelInterner {
+        self.registry.interner()
     }
 
     // ---------- EventBus snapshots ----------

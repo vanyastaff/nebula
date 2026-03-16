@@ -92,6 +92,7 @@ url = { version = "2.5", features = ["serde"] }
 base64 = "0.22.1"
 bytes = "1.11.1"
 hex = "0.4"
+lasso = { version = "0.7", features = ["multi-threaded"] }
 
 # Crypto
 sha2 = "0.10"

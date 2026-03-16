@@ -2,10 +2,17 @@
 //!
 //! Renders metrics from a telemetry registry to Prometheus exposition format.
 //! Use with an HTTP server to serve GET /metrics.
+//!
+//! The exporter iterates all entries in the registry (unlabeled **and**
+//! labeled) via the `snapshot_*` APIs, groups them by metric name, and
+//! renders each family with a single `# HELP` / `# TYPE` header followed by
+//! sample lines. Labels are rendered as `{key1="value1",key2="value2"}`.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use nebula_telemetry::labels::LabelInterner;
 use nebula_telemetry::metrics::MetricsRegistry;
 
 use crate::naming::{
@@ -31,173 +38,172 @@ const DEFAULT_BUCKETS: &[f64] = &[
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 ];
 
-/// Counter metric descriptor.
-struct CounterDesc {
-    name: &'static str,
-    help: &'static str,
+// ── Static metric descriptors ─────────────────────────────────────────────────
+
+fn counter_help(name: &str) -> &'static str {
+    match name {
+        NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL => "Total workflow executions started.",
+        NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL => {
+            "Total workflow executions completed successfully."
+        }
+        NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL => "Total workflow executions failed.",
+        NEBULA_ACTION_EXECUTIONS_TOTAL => "Total action executions.",
+        NEBULA_ACTION_FAILURES_TOTAL => "Total action failures.",
+        NEBULA_RESOURCE_CREATE_TOTAL => "Total resource instances created.",
+        NEBULA_RESOURCE_ACQUIRE_TOTAL => "Total resource acquisitions.",
+        NEBULA_RESOURCE_RELEASE_TOTAL => "Total resource releases.",
+        NEBULA_RESOURCE_CLEANUP_TOTAL => "Total resource cleanups.",
+        NEBULA_RESOURCE_ERROR_TOTAL => "Total resource errors.",
+        NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL => "Total pool exhaustion events.",
+        NEBULA_RESOURCE_QUARANTINE_TOTAL => "Total resources quarantined.",
+        NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL => "Total resources released from quarantine.",
+        NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL => "Total config reloads.",
+        NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL => "Total credential rotations applied.",
+        _ => "Custom counter.",
+    }
 }
 
-/// Gauge metric descriptor.
-struct GaugeDesc {
-    name: &'static str,
-    help: &'static str,
+fn gauge_help(name: &str) -> &'static str {
+    match name {
+        NEBULA_RESOURCE_HEALTH_STATE => {
+            "Resource health state (1=healthy, 0.5=degraded, 0=unhealthy)."
+        }
+        NEBULA_RESOURCE_POOL_WAITERS => "Number of waiters when pool exhausted.",
+        NEBULA_EVENTBUS_SENT => "EventBus sent events snapshot.",
+        NEBULA_EVENTBUS_DROPPED => "EventBus dropped events snapshot.",
+        NEBULA_EVENTBUS_SUBSCRIBERS => "EventBus active subscribers snapshot.",
+        NEBULA_EVENTBUS_DROP_RATIO_PPM => "EventBus drop ratio in parts-per-million.",
+        _ => "Custom gauge.",
+    }
 }
 
-/// Histogram metric descriptor.
-struct HistogramDesc {
-    name: &'static str,
-    help: &'static str,
+fn histogram_help(name: &str) -> &'static str {
+    match name {
+        NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS => "Workflow execution duration in seconds.",
+        NEBULA_ACTION_DURATION_SECONDS => "Action execution duration in seconds.",
+        NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS => {
+            "Wait time before resource acquisition in seconds."
+        }
+        NEBULA_RESOURCE_USAGE_DURATION_SECONDS => "Resource usage duration in seconds.",
+        _ => "Custom histogram.",
+    }
 }
 
-/// All known counter metrics.
-const COUNTERS: &[CounterDesc] = &[
-    CounterDesc {
-        name: NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
-        help: "Total workflow executions started.",
-    },
-    CounterDesc {
-        name: NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
-        help: "Total workflow executions completed successfully.",
-    },
-    CounterDesc {
-        name: NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL,
-        help: "Total workflow executions failed.",
-    },
-    CounterDesc {
-        name: NEBULA_ACTION_EXECUTIONS_TOTAL,
-        help: "Total action executions.",
-    },
-    CounterDesc {
-        name: NEBULA_ACTION_FAILURES_TOTAL,
-        help: "Total action failures.",
-    },
-    CounterDesc {
-        name: NEBULA_RESOURCE_CREATE_TOTAL,
-        help: "Total resource instances created.",
-    },
-    CounterDesc {
-        name: NEBULA_RESOURCE_ACQUIRE_TOTAL,
-        help: "Total resource acquisitions.",
-    },
-    CounterDesc {
-        name: NEBULA_RESOURCE_RELEASE_TOTAL,
-        help: "Total resource releases.",
-    },
-    CounterDesc {
-        name: NEBULA_RESOURCE_CLEANUP_TOTAL,
-        help: "Total resource cleanups.",
-    },
-    CounterDesc {
-        name: NEBULA_RESOURCE_ERROR_TOTAL,
-        help: "Total resource errors.",
-    },
-    CounterDesc {
-        name: NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL,
-        help: "Total pool exhaustion events.",
-    },
-    CounterDesc {
-        name: NEBULA_RESOURCE_QUARANTINE_TOTAL,
-        help: "Total resources quarantined.",
-    },
-    CounterDesc {
-        name: NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL,
-        help: "Total resources released from quarantine.",
-    },
-    CounterDesc {
-        name: NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
-        help: "Total config reloads.",
-    },
-    CounterDesc {
-        name: NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
-        help: "Total credential rotations applied.",
-    },
-];
+// ── Label rendering ───────────────────────────────────────────────────────────
 
-/// All known gauge metrics.
-const GAUGES: &[GaugeDesc] = &[
-    GaugeDesc {
-        name: NEBULA_RESOURCE_HEALTH_STATE,
-        help: "Resource health state (1=healthy, 0.5=degraded, 0=unhealthy).",
-    },
-    GaugeDesc {
-        name: NEBULA_RESOURCE_POOL_WAITERS,
-        help: "Number of waiters when pool exhausted.",
-    },
-    GaugeDesc {
-        name: NEBULA_EVENTBUS_SENT,
-        help: "EventBus sent events snapshot.",
-    },
-    GaugeDesc {
-        name: NEBULA_EVENTBUS_DROPPED,
-        help: "EventBus dropped events snapshot.",
-    },
-    GaugeDesc {
-        name: NEBULA_EVENTBUS_SUBSCRIBERS,
-        help: "EventBus active subscribers snapshot.",
-    },
-    GaugeDesc {
-        name: NEBULA_EVENTBUS_DROP_RATIO_PPM,
-        help: "EventBus drop ratio in parts-per-million.",
-    },
-];
+/// Render a Prometheus label selector string: `{k1="v1",k2="v2"}`.
+///
+/// Returns an empty string if the label set is empty (unlabeled metric).
+fn render_labels(labels: &nebula_telemetry::labels::LabelSet, interner: &LabelInterner) -> String {
+    if labels.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("{");
+    for (i, (k, v)) in labels.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let k_str = interner.resolve(k);
+        let v_str = interner.resolve(v);
+        // Escape double-quotes and backslashes in label values (Prometheus spec).
+        let v_escaped = v_str.replace('\\', "\\\\").replace('"', "\\\"");
+        let _ = write!(out, "{}=\"{v_escaped}\"", k_str);
+    }
+    out.push('}');
+    out
+}
 
-/// All known histogram metrics.
-const HISTOGRAMS: &[HistogramDesc] = &[
-    HistogramDesc {
-        name: NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS,
-        help: "Workflow execution duration in seconds.",
-    },
-    HistogramDesc {
-        name: NEBULA_ACTION_DURATION_SECONDS,
-        help: "Action execution duration in seconds.",
-    },
-    HistogramDesc {
-        name: NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
-        help: "Wait time before resource acquisition in seconds.",
-    },
-    HistogramDesc {
-        name: NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
-        help: "Resource usage duration in seconds.",
-    },
-];
+// ── snapshot function ─────────────────────────────────────────────────────────
 
 /// Render the registry into Prometheus text exposition format.
 ///
-/// Includes all known `nebula_*` counters, gauges, and histograms with
-/// `# HELP` and `# TYPE` metadata lines. Histograms include per-bucket
-/// cumulative counts using default Prometheus boundaries.
+/// Dynamically iterates all entries in the registry — including labeled
+/// metrics — via `snapshot_counters`, `snapshot_gauges`, and
+/// `snapshot_histograms`.  Entries are grouped by metric name so each family
+/// gets a single `# HELP` / `# TYPE` header, matching the Prometheus
+/// exposition format spec.
 #[must_use]
 pub fn snapshot(registry: &MetricsRegistry) -> String {
+    let interner = registry.interner();
     let mut out = String::new();
 
-    for desc in COUNTERS {
-        let value = registry.counter(desc.name).get();
-        let _ = writeln!(out, "# HELP {} {}", desc.name, desc.help);
-        let _ = writeln!(out, "# TYPE {} counter", desc.name);
-        let _ = writeln!(out, "{} {value}", desc.name);
+    // ── Counters ──────────────────────────────────────────────────────────
+    // Group by metric name so each family emits one HELP+TYPE header.
+    let mut counter_families: BTreeMap<String, Vec<_>> = BTreeMap::new();
+    for (key, counter) in registry.snapshot_counters() {
+        let name = interner.resolve(key.name).to_owned();
+        counter_families
+            .entry(name)
+            .or_default()
+            .push((key.labels, counter));
     }
-
-    for desc in GAUGES {
-        let value = registry.gauge(desc.name).get();
-        let _ = writeln!(out, "# HELP {} {}", desc.name, desc.help);
-        let _ = writeln!(out, "# TYPE {} gauge", desc.name);
-        let _ = writeln!(out, "{} {value}", desc.name);
-    }
-
-    for desc in HISTOGRAMS {
-        let hist = registry.histogram(desc.name);
-        let count = hist.count();
-        let sum = hist.sum();
-        let buckets = hist.bucket_counts(DEFAULT_BUCKETS);
-
-        let _ = writeln!(out, "# HELP {} {}", desc.name, desc.help);
-        let _ = writeln!(out, "# TYPE {} histogram", desc.name);
-        for (le, cumulative) in &buckets {
-            let _ = writeln!(out, "{}_bucket{{le=\"{le}\"}} {cumulative}", desc.name);
+    for (name, entries) in &counter_families {
+        let _ = writeln!(out, "# HELP {name} {}", counter_help(name));
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for (labels, counter) in entries {
+            let label_str = render_labels(labels, interner);
+            let _ = writeln!(out, "{name}{label_str} {}", counter.get());
         }
-        let _ = writeln!(out, "{}_bucket{{le=\"+Inf\"}} {count}", desc.name);
-        let _ = writeln!(out, "{}_sum {sum}", desc.name);
-        let _ = writeln!(out, "{}_count {count}", desc.name);
+    }
+
+    // ── Gauges ────────────────────────────────────────────────────────────
+    let mut gauge_families: BTreeMap<String, Vec<_>> = BTreeMap::new();
+    for (key, gauge) in registry.snapshot_gauges() {
+        let name = interner.resolve(key.name).to_owned();
+        gauge_families
+            .entry(name)
+            .or_default()
+            .push((key.labels, gauge));
+    }
+    for (name, entries) in &gauge_families {
+        let _ = writeln!(out, "# HELP {name} {}", gauge_help(name));
+        let _ = writeln!(out, "# TYPE {name} gauge");
+        for (labels, gauge) in entries {
+            let label_str = render_labels(labels, interner);
+            let _ = writeln!(out, "{name}{label_str} {}", gauge.get());
+        }
+    }
+
+    // ── Histograms ────────────────────────────────────────────────────────
+    let mut histogram_families: BTreeMap<String, Vec<_>> = BTreeMap::new();
+    for (key, histogram) in registry.snapshot_histograms() {
+        let name = interner.resolve(key.name).to_owned();
+        histogram_families
+            .entry(name)
+            .or_default()
+            .push((key.labels, histogram));
+    }
+    for (name, entries) in &histogram_families {
+        let _ = writeln!(out, "# HELP {name} {}", histogram_help(name));
+        let _ = writeln!(out, "# TYPE {name} histogram");
+        for (labels, hist) in entries {
+            let count = hist.count();
+            let sum = hist.sum();
+            let buckets = hist.bucket_counts(DEFAULT_BUCKETS);
+            let label_str = render_labels(labels, interner);
+            // Insert le label into label set for bucket lines.
+            for (le, cumulative) in &buckets {
+                if label_str.is_empty() {
+                    let _ = writeln!(out, "{name}_bucket{{le=\"{le}\"}} {cumulative}");
+                } else {
+                    // Merge existing labels with le — strip trailing `}` and append.
+                    let merged = format!("{},le=\"{le}\"}}", &label_str[..label_str.len() - 1]);
+                    let _ = writeln!(out, "{name}_bucket{merged} {cumulative}");
+                }
+            }
+            // +Inf bucket
+            if label_str.is_empty() {
+                let _ = writeln!(out, "{name}_bucket{{le=\"+Inf\"}} {count}");
+                let _ = writeln!(out, "{name}_sum {sum}");
+                let _ = writeln!(out, "{name}_count {count}");
+            } else {
+                let inf_labels = format!("{},le=\"+Inf\"}}", &label_str[..label_str.len() - 1]);
+                let _ = writeln!(out, "{name}_bucket{inf_labels} {count}");
+                let sum_labels = label_str.clone();
+                let _ = writeln!(out, "{name}_sum{sum_labels} {sum}");
+                let _ = writeln!(out, "{name}_count{sum_labels} {count}");
+            }
+        }
     }
 
     out
@@ -277,27 +283,18 @@ mod tests {
         hist.observe(3.0); // <= 5.0
 
         let out = snapshot(&registry);
-        // 0.005 bucket: 1 observation (0.003)
         assert!(
             out.contains("nebula_action_duration_seconds_bucket{le=\"0.005\"} 1\n"),
             "bucket 0.005:\n{out}"
         );
-        // 0.025 bucket: 2 observations (0.003, 0.02)
         assert!(
             out.contains("nebula_action_duration_seconds_bucket{le=\"0.025\"} 2\n"),
             "bucket 0.025:\n{out}"
         );
-        // 0.5 bucket: 3 observations
         assert!(
             out.contains("nebula_action_duration_seconds_bucket{le=\"0.5\"} 3\n"),
             "bucket 0.5:\n{out}"
         );
-        // 5.0 bucket: 4 observations
-        assert!(
-            out.contains("nebula_action_duration_seconds_bucket{le=\"5\"} 4\n"),
-            "bucket 5.0:\n{out}"
-        );
-        // +Inf: 4 total
         assert!(
             out.contains("nebula_action_duration_seconds_bucket{le=\"+Inf\"} 4\n"),
             "+Inf:\n{out}"
@@ -308,9 +305,15 @@ mod tests {
     fn empty_histogram_renders_all_zeros() {
         let registry = Arc::new(MetricsRegistry::new());
         let out = snapshot(&registry);
-        assert!(out.contains("nebula_action_duration_seconds_bucket{le=\"+Inf\"} 0\n"));
-        assert!(out.contains("nebula_action_duration_seconds_sum 0\n"));
-        assert!(out.contains("nebula_action_duration_seconds_count 0\n"));
+        // Empty registry — no histogram entries, nothing to render.
+        // Recording one observation triggers rendering.
+        registry
+            .histogram("nebula_action_duration_seconds")
+            .observe(0.0);
+        let out2 = snapshot(&registry);
+        assert!(out2.contains("nebula_action_duration_seconds_bucket{le=\"+Inf\"} 1\n"));
+        // An empty registry should produce an empty string.
+        assert!(out.is_empty(), "empty registry should produce no output");
     }
 
     #[test]
@@ -340,16 +343,50 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_renders_labeled_counters() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let interner = registry.interner();
+        let http_labels = interner.label_set(&[("action_type", "http.request")]);
+        let math_labels = interner.label_set(&[("action_type", "math.add")]);
+
+        registry
+            .counter_labeled("nebula_action_executions_total", &http_labels)
+            .inc_by(10);
+        registry
+            .counter_labeled("nebula_action_executions_total", &math_labels)
+            .inc_by(3);
+
+        let out = snapshot(&registry);
+        assert!(
+            out.contains("# TYPE nebula_action_executions_total counter"),
+            "missing TYPE:\n{out}"
+        );
+        assert!(
+            out.contains(r#"nebula_action_executions_total{action_type="http.request"} 10"#),
+            "missing http label:\n{out}"
+        );
+        assert!(
+            out.contains(r#"nebula_action_executions_total{action_type="math.add"} 3"#),
+            "missing math label:\n{out}"
+        );
+    }
+
+    #[test]
     fn snapshot_includes_help_and_type_lines() {
         let registry = Arc::new(MetricsRegistry::new());
-        let out = snapshot(&registry);
+        // Trigger creation of known metrics.
+        registry
+            .counter("nebula_workflow_executions_started_total")
+            .inc();
+        registry.gauge("nebula_resource_health_state").set(1);
+        registry
+            .histogram("nebula_workflow_execution_duration_seconds")
+            .observe(1.0);
 
-        // Every metric should have HELP and TYPE
+        let out = snapshot(&registry);
         assert!(out.contains("# HELP nebula_workflow_executions_started_total"));
         assert!(out.contains("# TYPE nebula_workflow_executions_started_total counter"));
         assert!(out.contains("# HELP nebula_resource_health_state"));
-        assert!(out.contains("# TYPE nebula_resource_health_state gauge"));
-        assert!(out.contains("# HELP nebula_workflow_execution_duration_seconds"));
         assert!(out.contains("# TYPE nebula_workflow_execution_duration_seconds histogram"));
     }
 

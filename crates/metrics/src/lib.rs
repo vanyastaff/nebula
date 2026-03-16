@@ -11,19 +11,23 @@
 //!   using those names
 //! - **[`snapshot`]** — Prometheus text-format export with `# HELP`, `# TYPE` metadata
 //!   and per-bucket histogram output
+//! - **[`filter::LabelAllowlist`]** — allowlist that strips high-cardinality label keys
+//!   before they reach the registry (prevents cardinality explosion)
 //! - **[`prelude`]** — convenience re-exports for common types
 //!
 //! In-memory primitives (Counter, Gauge, Histogram) remain in `nebula-telemetry`; this crate
-//! adds naming convention, a thin adapter, and Prometheus text export.
+//! adds naming convention, a thin adapter, Prometheus text export, and label safety guards.
 
 pub mod adapter;
 pub mod export;
+pub mod filter;
 pub mod naming;
 /// Convenience re-exports.
 pub mod prelude;
 
 pub use adapter::TelemetryAdapter;
 pub use export::prometheus::{PrometheusExporter, content_type, snapshot};
+pub use filter::LabelAllowlist;
 pub use naming::{
     NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,
     NEBULA_EVENTBUS_DROP_RATIO_PPM, NEBULA_EVENTBUS_DROPPED, NEBULA_EVENTBUS_SENT,

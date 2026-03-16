@@ -11,8 +11,14 @@ pub use crate::ScopedEvent;
 pub use crate::SubscriptionScope;
 pub use crate::event::{EventBus, EventSubscriber, ExecutionEvent, ScopedSubscriber};
 
+// ── Labels ───────────────────────────────────────────────────────────────────
+pub use crate::labels::{LabelInterner, LabelSet, MetricKey};
+
 // ── Metrics ─────────────────────────────────────────────────────────────────
 pub use crate::metrics::{Counter, Gauge, Histogram, MetricsRegistry, NoopMetricsRegistry};
+
+// ── Error ────────────────────────────────────────────────────────────────────
+pub use crate::error::{TelemetryError, TelemetryResult};
 
 // ── Service ─────────────────────────────────────────────────────────────────
 pub use crate::service::{NoopTelemetry, TelemetryService};
