@@ -78,4 +78,7 @@ pub mod prelude {
 
     // Core result alias
     pub use crate::Result;
+
+    // Compile-time-validated key construction macros
+    pub use crate::{action_key, credential_key, parameter_key, plugin_key, resource_key};
 }

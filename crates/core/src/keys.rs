@@ -39,5 +39,83 @@ key_type!(pub ResourceKey, ResourceDomain);
 define_domain!(pub PluginDomain, "plugin");
 key_type!(pub PluginKey, PluginDomain);
 
+/// Constructs a [`ResourceKey`] from a string literal, validated at **compile time**.
+///
+/// Invalid literals are rejected by the compiler, not at runtime.
+///
+/// # Example
+/// ```
+/// use nebula_core::resource_key;
+/// let k = resource_key!("postgres");
+/// ```
+#[macro_export]
+macro_rules! resource_key {
+    ($s:literal) => {{
+        const _: () = assert!(
+            $crate::ResourceKey::is_valid_key_const($s),
+            "invalid resource key literal"
+        );
+        $crate::ResourceKey::new($s).unwrap()
+    }};
+}
+
+/// Constructs an [`ActionKey`] from a string literal, validated at compile time.
+#[macro_export]
+macro_rules! action_key {
+    ($s:literal) => {{
+        const _: () = assert!($crate::ActionKey::is_valid_key_const($s), "invalid action key literal");
+        $crate::ActionKey::new($s).unwrap()
+    }};
+}
+
+/// Constructs a [`CredentialKey`] from a string literal, validated at compile time.
+#[macro_export]
+macro_rules! credential_key {
+    ($s:literal) => {{
+        const _: () = assert!($crate::CredentialKey::is_valid_key_const($s), "invalid credential key literal");
+        $crate::CredentialKey::new($s).unwrap()
+    }};
+}
+
+/// Constructs a [`PluginKey`] from a string literal, validated at compile time.
+#[macro_export]
+macro_rules! plugin_key {
+    ($s:literal) => {{
+        const _: () = assert!($crate::PluginKey::is_valid_key_const($s), "invalid plugin key literal");
+        $crate::PluginKey::new($s).unwrap()
+    }};
+}
+
+/// Constructs a [`ParameterKey`] from a string literal, validated at compile time.
+#[macro_export]
+macro_rules! parameter_key {
+    ($s:literal) => {{
+        const _: () = assert!($crate::ParameterKey::is_valid_key_const($s), "invalid parameter key literal");
+        $crate::ParameterKey::new($s).unwrap()
+    }};
+}
+
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use crate::{CredentialKey, ResourceKey};
+
+    #[test]
+    fn macro_produces_correct_key() {
+        let k = resource_key!("postgres");
+        assert_eq!(k, ResourceKey::new("postgres").unwrap());
+    }
+
+    #[test]
+    fn is_valid_key_const_matches_runtime_new() {
+        let valid = ["postgres", "my-db", "http.request", "v2_api", "a"];
+        for s in valid {
+            assert!(ResourceKey::is_valid_key_const(s), "{s:?} should be valid");
+            assert!(ResourceKey::new(s).is_ok(), "{s:?} const=true but new() failed");
+        }
+        let invalid = ["", "bad_", "a--b", "bad!", "my key"];
+        for s in invalid {
+            assert!(!ResourceKey::is_valid_key_const(s), "{s:?} should be invalid");
+            assert!(CredentialKey::new(s).is_err(), "{s:?} const=false but new() succeeded");
+        }
+    }
+}
