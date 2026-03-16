@@ -198,7 +198,7 @@ mod tests {
     async fn test_flow_credential_with_override() {
         let flow = TestFlow;
         let credential = FlowCredential::new(flow).with_metadata(CredentialMetadata {
-            key: CredentialKey::new("custom").unwrap(),
+            key: nebula_core::credential_key!("custom"),
             name: "Custom Name".to_string(),
             description: "Custom Description".to_string(),
             supports_refresh: true,
