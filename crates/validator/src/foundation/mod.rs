@@ -47,7 +47,6 @@
 
 // Module declarations
 pub mod any;
-pub mod context;
 pub mod error;
 pub mod field_path;
 pub mod traits;
@@ -55,7 +54,6 @@ pub mod validatable;
 
 // Re-export core types
 pub use any::AnyValidator;
-pub use context::{ContextualValidator, ValidationContext, ValidationContextBuilder};
 pub use error::{ErrorSeverity, ValidationError, ValidationErrors, ValidationMode};
 pub use field_path::FieldPath;
 pub use traits::{Validatable, Validate, ValidateExt};
@@ -87,9 +85,8 @@ pub use crate::combinators::when::When;
 /// ```
 pub mod prelude {
     pub use super::{
-        And, AnyValidator, ContextualValidator, ErrorSeverity, Not, Or, Validatable, Validate,
-        ValidateExt, ValidationContext, ValidationContextBuilder, ValidationError,
-        ValidationErrors, When,
+        And, AnyValidator, ErrorSeverity, Not, Or, Validatable, Validate, ValidateExt,
+        ValidationError, ValidationErrors, When,
     };
 }
 

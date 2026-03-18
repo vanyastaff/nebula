@@ -12,9 +12,6 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-# Caching
-moka = { workspace = true, features = ["sync"] }
-
 # Error handling
 thiserror = { workspace = true }
 
@@ -53,6 +50,3 @@ harness = false
 name = "error_construction"
 harness = false
 
-[[bench]]
-name = "cache"
-harness = false

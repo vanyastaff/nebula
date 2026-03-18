@@ -29,6 +29,7 @@ pub use crate::foundation::{
     ValidateExt, ValidationError, ValidationErrors, ValidationMode, When,
 };
 
+
 // ============================================================================
 // PROOF TOKENS
 // ============================================================================
@@ -60,7 +61,7 @@ pub use crate::validators::*;
 // ============================================================================
 
 pub use crate::combinators::{
-    AllOf, AnyOf, Cached, CollectionNested, Each, Field, JsonField, MultiField, NestedValidate,
-    OptionalNested, SelfValidating, all_of, and, any_of, cached, collection_nested, each, field,
+    AllOf, AnyOf, CollectionNested, Each, Field, JsonField, MultiField, NestedValidate,
+    OptionalNested, SelfValidating, all_of, and, any_of, collection_nested, each, field,
     json_field, json_field_optional, named_field, nested_validator, not, optional_nested, or,
 };

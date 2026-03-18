@@ -4339,7 +4339,6 @@ name = "nebula-validator"
 version = "0.1.0"
 dependencies = [
  "criterion",
- "moka",
  "pretty_assertions",
  "proptest",
  "regex",

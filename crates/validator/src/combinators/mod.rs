@@ -75,7 +75,6 @@
 
 // Module declarations
 pub mod and;
-pub mod cached;
 pub mod each;
 pub mod error;
 pub mod factories;
@@ -93,7 +92,6 @@ pub mod json_field;
 
 // Re-export all combinator types
 pub use and::{And, AndAll, and, and_all};
-pub use cached::{CacheStats, Cached, cached};
 pub use each::{Each, each, each_fail_fast};
 pub use error::CombinatorError;
 pub use factories::{AllOf, AnyOf, all_of, any_of};
@@ -128,10 +126,10 @@ pub use when::{When, when};
 /// ```
 pub mod prelude {
     pub use super::{
-        AllOf, And, AndAll, AnyOf, Cached, Each, Field, FieldValidateExt, JsonField, Lazy, Not,
-        Optional, Or, OrAny, Unless, When, WithCode, WithMessage, all_of, and, and_all, any_of,
-        cached, each, each_fail_fast, field, json_field, json_field_optional, lazy, named_field,
-        not, optional, or, or_any, unless, when, with_code, with_message,
+        AllOf, And, AndAll, AnyOf, Each, Field, FieldValidateExt, JsonField, Lazy, Not, Optional,
+        Or, OrAny, Unless, When, WithCode, WithMessage, all_of, and, and_all, any_of, each,
+        each_fail_fast, field, json_field, json_field_optional, lazy, named_field, not, optional,
+        or, or_any, unless, when, with_code, with_message,
     };
 }
 
@@ -321,39 +319,6 @@ mod integration_tests {
         assert!(validator.validate(&"hello".to_string()).is_err()); // Just right, so NOT fails
     }
 
-    #[test]
-    fn test_cached_with_complex_validator() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let call_count_clone = call_count.clone();
-
-        struct Counting {
-            counter: Arc<AtomicUsize>,
-        }
-
-        impl Validate<String> for Counting {
-            fn validate(&self, _: &String) -> Result<(), ValidationError> {
-                self.counter.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            }
-        }
-
-        let validator = cached(
-            Counting {
-                counter: call_count_clone,
-            }
-            .and(MinLength { min: 5 }),
-        );
-
-        validator.validate(&"hello".to_string()).unwrap();
-        validator.validate(&"hello".to_string()).unwrap();
-        validator.validate(&"hello".to_string()).unwrap();
-
-        // Should only call inner validator once due to caching
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
-    }
 }
 
 // ============================================================================
