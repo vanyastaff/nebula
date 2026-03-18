@@ -1,112 +1,114 @@
-# Migration
+# nebula-validator — Migration Guide
 
-> **Migration authority** for all error‑code and field‑path contract changes.
-> Referenced by `error_registry_v1.json` → `change_policy.migration_authority`.
+This document is the authority for all breaking changes, deprecation notices, and migration
+paths in `nebula-validator`. It is referenced by the error code registry
+(`tests/fixtures/compat/error_registry_v1.json`) and enforced by
+`tests/contract/migration_requirements_test.rs`.
+
+---
 
 ## Versioning Policy
 
-- compatibility promise:
-  - minor releases keep behavior-compatible validator semantics.
-  - minor releases are additive only for validators/combinators/error helpers.
-  - major releases may change semantics with explicit migration steps.
-- deprecation window:
-  - at least one minor release before removal of deprecated APIs (unless security-critical).
+**Minor releases** (`x.Y.z`) are additive only:
+- New validators, combinators, and error helper constructors may be added.
+- New error codes may be registered with `stability: "stable"`.
+- No existing stable error code may be renamed, removed, or have its semantics changed.
+- No field-path format contract may change.
+
+**Major releases** (`X.0.0`) may introduce breaking changes, subject to the requirements below:
+- Every breaking change must have an entry in the [Breaking Changes](#breaking-changes) table.
+- Every removed or renamed API must have a migration action.
+- No breaking change may ship without a migration mapping in this file.
+
+**Deprecation window:** Deprecated items remain available for at least one minor release cycle
+before removal. Removal happens in the next major release.
+
+---
 
 ## Error Code Stability
 
-Each error code in `error_registry_v1.json` has a stability level:
+Each code in `tests/fixtures/compat/error_registry_v1.json` carries a stability level:
 
-| Stability | Meaning |
-|-----------|---------|
-| `stable` | Will not change meaning or be removed in minor releases. |
+| Level | Meaning |
+|-------|---------|
+| `stable` | Meaning and behavior will not change in minor releases. |
 | `deprecated` | Scheduled for removal in the next major release. |
 
-### Deprecation Process
+### Deprecation process
 
-1. **Mark** — add `#[deprecated(since = "x.y.z", note = "...")]` to the item.
+1. **Mark** — add `#[deprecated(since = "x.y.z", note = "use X instead")]` to the item.
 2. **Registry** — set `"stability": "deprecated"` in `error_registry_v1.json`.
-3. **Document** — add an entry to the Breaking Change Mapping table below.
+3. **Document** — add an entry to the [Breaking Changes](#breaking-changes) table.
 4. **Grace period** — the deprecated item remains for at least one major release cycle.
-5. **Remove** — in the next major release, remove the item and record it in the table.
+5. **Remove** — delete in the next major release and record the removal in this file.
 
-## Field‑Path Contract
+---
 
-All field paths follow **RFC 6901 JSON Pointer** format:
+## Field-Path Contract
 
-- Root: empty string
-- Nested: `/parent/child`
-- Array: `/items/0`
-- Special chars: `~0` for `~`, `~1` for `/`
+All field paths stored in `ValidationError` are **RFC 6901 JSON Pointer** format:
 
-Dot‑notation inputs (e.g. `user.email`) are converted to JSON Pointer (`/user/email`)
-by `ValidationError::with_field()`. The field‑path format for a given
-validator/combinator combination is part of the minor‑release contract.
+| Input | Stored as |
+|-------|-----------|
+| `user.email` | `/user/email` |
+| `items[0].name` | `/items/0/name` |
+| `a/b` (literal slash) | `/a~1b` |
+| `a~b` (literal tilde) | `/a~0b` |
+| root | `""` (empty string) |
+
+`ValidationError::with_field(path)` normalizes any dot/bracket input.
+`ValidationError::with_pointer(pointer)` accepts an already-normalized pointer.
+`field_pointer()` is the canonical accessor for downstream consumers.
+
+The field-path format for a given validator/combinator pair is part of the minor-release
+contract. Changing which format a combinator produces requires a major version bump.
+
+---
 
 ## Breaking Changes
 
-- validator v2 (in progress):
-  - `ValidationError::with_field("a.b[0]")` now canonicalizes into RFC 6901 JSON Pointer (`/a/b/0`).
-  - `ValidationError` serialization now includes `pointer` in addition to `field`.
-  - new `ValidationError::with_pointer(..)` and `ValidationError::field_pointer()` helpers.
-  - consumer adapters should prefer `field_pointer()` over raw `field` access.
-  - `nebula-api` switched to `nebula-validator` validation contract in `ValidatedJson` extractor.
-  - API validation problems now carry structured field errors (`code`, `pointer`, `detail`).
-  - derive macros no longer panic on invalid regex patterns; they emit structured validation errors.
-- potential future breaking candidates:
-  - typed `FieldPath`
-  - explicit fail-fast/collect-all default policy change
-  - strict error code registry enforcement
+### v0.x → Current
 
-## Rollout Plan
+| Contract area | Old behavior | New behavior | Version | Consumer impact | Migration |
+|---------------|-------------|-------------|---------|-----------------|-----------|
+| Field-path format | Mixed dot/bracket notation stored verbatim | RFC 6901 JSON Pointer normalized by `with_field()` | v0.x | Consumers reading `field` as dot-notation must switch to `field_pointer()` or the `pointer` key in the JSON envelope | Replace `error.field` reads with `error.field_pointer()` |
+| Error serialization | `field` key only in JSON envelope | Both `field` (raw) and `pointer` (RFC 6901) keys emitted | v0.x | Additive; consumers reading `field` are unaffected | Prefer `pointer` key for new consumers |
+| API validation | `nebula-api` used a parallel local validation trait | Uses `nebula_validator::foundation::Validate<T>` directly | v0.x | Handlers implementing local `Validate` must migrate to the validator trait | Implement `nebula_validator::foundation::Validate<T>` |
+| Regex errors in macros | `#[validate(regex = "...")]` panicked on invalid regex | Returns structured `ValidationError` with code `invalid_regex_pattern` | v0.x | Callers relying on panic behavior must handle a validation error | Match on `ValidatorError::ValidationFailed` |
+| Combinator types | `ValidateExt::and()` returned `foundation::And`, free `and()` returned `combinators::And` | Both return `combinators::And` — single canonical type | v0.x | Code using both paths in the same generic bound would see a type mismatch | Remove `foundation::And` references; use `combinators::And` |
 
-1. preparation:
-  - add pointer-native APIs (`with_pointer`, `field_pointer`) and emit pointer in JSON envelope.
-2. cutover:
-  - normalize all `with_field` inputs to RFC 6901 pointer format.
-3. consumer migration:
-  - update config/parameter/api adapters to consume pointer paths.
-4. cleanup:
-  - remove remaining raw-field assumptions in tests and fixtures.
+---
 
-## Rollback Plan
+## Config Integration
 
-- trigger conditions:
-  - consumer breakage in error-code/path contracts.
-- rollback steps:
-  - revert to previous stable version and restore compatibility mapping.
-- data/state reconciliation:
-  - ensure persisted validation error envelopes remain parseable by consumers.
+Changes that affect `nebula-config` compatibility require an additional fixture update.
 
-## Validation Checklist
+| Surface | Old | New | Impacted consumer | Required update |
+|---------|-----|-----|-------------------|-----------------|
+| Category constants | _(see registry)_ | _(see registry)_ | `nebula-config` | `tests/fixtures/compat/validator_contract_v*.json` |
 
-- API compatibility checks:
-  - compile-time checks for public trait signatures.
-- integration checks:
-  - consumer fixtures for `api`, `workflow`, `plugin`.
-- performance checks:
-  - benchmark comparison against previous baseline.
+---
 
-## Breaking Change Mapping Template
+## Rollback Guidance
 
-Use this table for any behavior-significant change:
+If a release is rolled back due to contract breakage:
 
-| Contract Area | Old Behavior | New Behavior | Version | Consumer Impact | Migration Action |
-|---|---|---|---|---|---|
-| error code | `<old_code>` | `<new_code>` | `vX.Y.0` | API/UI mapping break | map old->new in adapter |
-| field-path format | `<old_path_format>` | `<new_path_format>` | `vX.Y.0` | parser break | update path parser and fixtures |
-| combinator semantics | `<old_semantic>` | `<new_semantic>` | `vX.Y.0` | behavior drift | update tests and rollout notes |
+1. Revert to the previous stable tag.
+2. Restore `error_registry_v1.json` and `minor_contract_v1.json` to their pre-release state.
+3. Verify that `tests/contract/compatibility_fixtures_test.rs` passes against the reverted
+   registry.
+4. Ensure persisted validation error envelopes (e.g., stored in workflow execution logs)
+   remain parseable by the reverted consumer code.
 
-Rules:
+---
 
-- major version required for any row that changes semantics.
-- mapping section is required before release candidate is cut.
+## Validation Checklist Before a Major Release
 
-## Config Integration Mapping Requirements
-
-For changes that impact config-validator compatibility:
-
-| Surface | Old Behavior | New Behavior | Impacted Consumer | Required Fixture Update |
-|---|---|---|---|---|
-| category constants | `<old_category_set>` | `<new_category_set>` | `nebula-config` | `validator_contract_v*.json` |
-| validation message semantics | `<old_message_shape>` | `<new_message_shape>` | operator tooling | validator diagnostics contract tests |
-| field-path meaning | `<old_field_path_rule>` | `<new_field_path_rule>` | config and API adapters | category/path compatibility tests |
+- [ ] Every breaking change has an entry in the table above.
+- [ ] Every deprecated item has `#[deprecated]` in the source and `"stability": "deprecated"`
+      in the registry.
+- [ ] `tests/contract/migration_requirements_test.rs` passes.
+- [ ] `tests/contract/governance_policy_test.rs` passes.
+- [ ] `tests/contract/compatibility_fixtures_test.rs` passes against the new registry.
+- [ ] Downstream crates (`nebula-config`, `nebula-api`, `nebula-parameter`) compile without
+      deprecation warnings after applying the documented migrations.
