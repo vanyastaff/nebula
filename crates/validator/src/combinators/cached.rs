@@ -5,7 +5,7 @@
 //! the same input.
 
 use crate::foundation::{Validate, ValidationError};
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasher, Hash};
 use std::sync::Arc;
 
 // ============================================================================
@@ -30,7 +30,8 @@ use std::sync::Arc;
 /// - Thread-safe using lock-free `moka` cache
 /// - **LRU eviction policy** with configurable capacity (default: 1000 entries)
 /// - Cache persists for the lifetime of the validator
-/// - Uses double-hashing `(u64, u64)` keys to minimize collision risk
+/// - Uses double-hashing `(u64, u64)` keys with independently-seeded SipHash
+///   for ~1/2^128 collision probability
 pub struct Cached<V> {
     pub(crate) validator: V,
     pub(crate) cache: Arc<moka::sync::Cache<(u64, u64), CachedResult>>,
@@ -146,22 +147,22 @@ where
 // HELPER FUNCTIONS
 // ============================================================================
 
-/// Seed for the second hasher to produce an independent hash.
-const HASH_SEED: u64 = 0x517c_c1b7_2722_0a95;
+/// Two `RandomState` instances with distinct internal seeds.
+/// `RandomState::new()` generates fresh random keys each time, so the two
+/// hashers are statistically independent — a collision on one does not
+/// imply a collision on the other, giving ~1/2^128 collision probability.
+static HASHER_A: std::sync::LazyLock<std::collections::hash_map::RandomState> =
+    std::sync::LazyLock::new(std::collections::hash_map::RandomState::new);
+static HASHER_B: std::sync::LazyLock<std::collections::hash_map::RandomState> =
+    std::sync::LazyLock::new(std::collections::hash_map::RandomState::new);
 
 /// Computes two independent hashes of the input as a `(u64, u64)` cache key.
 ///
-/// Using two hashes reduces collision probability from ~1/2^64 (single hash)
-/// to ~1/2^128 (double hash), making accidental collisions astronomically unlikely.
+/// Each hash uses a separately-seeded `RandomState` (SipHash with random keys).
+/// Because the two hashers have independent keys, collision probability is
+/// ~1/2^128 — a genuine double-hash, not a seed-prepend trick.
 fn compute_double_hash<T: Hash + ?Sized>(value: &T) -> (u64, u64) {
-    let mut h1 = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut h1);
-
-    let mut h2 = std::collections::hash_map::DefaultHasher::new();
-    HASH_SEED.hash(&mut h2);
-    value.hash(&mut h2);
-
-    (h1.finish(), h2.finish())
+    (HASHER_A.hash_one(value), HASHER_B.hash_one(value))
 }
 
 /// Creates a CACHED combinator from a validator.

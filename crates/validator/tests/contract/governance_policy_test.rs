@@ -42,7 +42,7 @@ fn load_error_registry() -> ErrorRegistry {
 #[test]
 fn registry_has_required_metadata_and_policy() {
     let registry = load_error_registry();
-    assert_eq!(registry.version, "1.1.0");
+    assert_eq!(registry.version, "1.2.0");
     assert_eq!(registry.artifact, "validator_error_registry");
     assert_eq!(registry.change_policy.minor_rule, "additive_only");
     assert_eq!(
@@ -101,6 +101,7 @@ fn registry_contains_all_canonical_error_codes() {
         "max_size",
         "exact_size",
         "size_range",
+        "not_empty_collection",
         // Network validators
         "ipv4",
         "ipv6",
@@ -114,6 +115,9 @@ fn registry_contains_all_canonical_error_codes() {
         // Combinator codes
         "or_failed",
         "or_any_failed",
+        "any_of_failed",
+        "all_failed",
+        "any_failed",
         "not_failed",
         "each_failed",
         "path_not_found",

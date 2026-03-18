@@ -204,7 +204,11 @@ where
             }
         }
 
-        Err(errors.into_single_error("any_of validation failed: none of the validators passed"))
+        let count = errors.len();
+        Err(
+            ValidationError::new("any_of_failed", format!("All {count} validators in any_of failed"))
+                .with_nested(errors.into_iter().collect()),
+        )
     }
 }
 

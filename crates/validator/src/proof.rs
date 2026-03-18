@@ -100,10 +100,14 @@ impl<T> Validated<T> {
 
     /// Maps the inner value through a function, producing a new `Validated<U>`.
     ///
-    /// The caller asserts that `f` preserves the validation invariant.
-    /// Use sparingly — prefer re-validating when in doubt.
+    /// # Safety (logical)
+    ///
+    /// The caller **must** guarantee that `f` preserves the validation invariant.
+    /// Misuse breaks the trust boundary that `Validated<T>` exists to enforce.
+    /// Prefer re-validating when in doubt.
     #[inline]
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Validated<U> {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> Validated<U> {
         Validated {
             value: f(self.value),
         }

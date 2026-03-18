@@ -9,10 +9,11 @@
 //! |------|------|-------|
 //! | [`StaticOnly`](ExecutionMode::StaticOnly) | Value rules, predicates, combinators | Deferred (`Custom`, `UniqueBy`) |
 //! | [`Deferred`](ExecutionMode::Deferred) | Deferred rules only | Everything else |
-//! | [`Full`](ExecutionMode::Full) | All rules | Nothing |
+//! | [`Full`](ExecutionMode::Full) | All value + deferred rules | Predicates (use [`Rule::evaluate`] directly) |
 //!
-//! Note: predicate rules always return `Ok(())` from `validate_value` —
-//! they are designed for [`Rule::evaluate`] instead.
+//! **Important:** Predicate rules (`Eq`, `Ne`, `Gt`, etc.) always return
+//! `Ok(())` from `validate_value` regardless of mode. To evaluate predicates,
+//! call [`Rule::evaluate`] directly with a context map.
 //!
 //! # Examples
 //!
@@ -45,7 +46,10 @@ pub enum ExecutionMode {
     /// Execute only deferred rules (requires runtime context).
     Deferred,
 
-    /// Execute all rules in deterministic order.
+    /// Execute all value + deferred rules in deterministic order.
+    ///
+    /// Note: predicate rules still return `Ok(())` from `validate_value` —
+    /// they require `Rule::evaluate()` with a context map.
     Full,
 }
 

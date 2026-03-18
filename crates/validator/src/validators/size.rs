@@ -148,7 +148,7 @@ impl<T> Validate<[T]> for NotEmptyCollection<T> {
     fn validate(&self, input: &[T]) -> Result<(), ValidationError> {
         if input.is_empty() {
             Err(ValidationError::new(
-                "not_empty",
+                "not_empty_collection",
                 "Collection must not be empty",
             ))
         } else {
@@ -206,6 +206,10 @@ impl<T> Validate<[T]> for SizeRange<T> {
 
 /// Creates a validator that checks if a collection size is within a range.
 ///
+/// # Panics
+///
+/// Panics if `min > max`.
+///
 /// # Examples
 ///
 /// ```
@@ -220,6 +224,7 @@ impl<T> Validate<[T]> for SizeRange<T> {
 /// ```
 #[must_use]
 pub fn size_range<T>(min: usize, max: usize) -> SizeRange<T> {
+    assert!(min <= max, "size_range: min ({min}) must be <= max ({max})");
     SizeRange {
         min,
         max,
@@ -288,5 +293,18 @@ mod tests {
         assert!(validator.validate(&[1, 2, 3, 4]).is_ok());
         assert!(validator.validate(&[1]).is_err());
         assert!(validator.validate(&[1, 2, 3, 4, 5]).is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "min (10) must be <= max (2)")]
+    fn test_size_range_inverted_bounds_panics() {
+        let _ = size_range::<i32>(10, 2);
+    }
+
+    #[test]
+    fn test_not_empty_collection_error_code() {
+        let validator = not_empty_collection::<i32>();
+        let err = validator.validate(&[]).unwrap_err();
+        assert_eq!(err.code.as_ref(), "not_empty_collection");
     }
 }

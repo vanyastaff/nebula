@@ -98,7 +98,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::foundation::{Validate, ValidationError};
-use crate::validators::{max, max_length, max_size, min, min_length, min_size};
+use crate::validators::{max_length, max_size, min_length, min_size};
 
 // ============================================================================
 // REGEX CACHE — avoids recompiling patterns on every validate_value/evaluate call
@@ -123,6 +123,40 @@ fn cached_regex(pattern: &str) -> Result<regex::Regex, ValidationError> {
     let mut cache = REGEX_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     cache.entry(pattern.to_owned()).or_insert(re.clone());
     Ok(re)
+}
+
+// ============================================================================
+// JSON NUMBER HELPERS — precision-safe comparison for integers > 2^53
+// ============================================================================
+
+/// Ordering between two JSON numbers, using the highest-precision path.
+///
+/// Tries `i64` first, then `u64`, then `f64`. Returns `None` if either
+/// operand is not a number or if a `NaN` comparison is indeterminate.
+fn json_number_cmp(
+    value: &serde_json::Value,
+    bound: &serde_json::Number,
+) -> Option<std::cmp::Ordering> {
+    let val_num = value.as_number()?;
+
+    // i64 path — covers most integers exactly
+    if let (Some(a), Some(b)) = (val_num.as_i64(), bound.as_i64()) {
+        return Some(a.cmp(&b));
+    }
+
+    // u64 path — covers large positive integers that don't fit in i64
+    if let (Some(a), Some(b)) = (val_num.as_u64(), bound.as_u64()) {
+        return Some(a.cmp(&b));
+    }
+
+    // f64 fallback — handles floats; may lose precision for very large ints
+    let a = val_num.as_f64()?;
+    let b = bound.as_f64()?;
+    a.partial_cmp(&b)
+}
+
+fn format_json_number(n: &serde_json::Number) -> String {
+    n.to_string()
 }
 
 /// Unified declarative rule.
@@ -457,10 +491,16 @@ impl Rule {
                 min: min_val,
                 message,
             } => {
-                if let (Some(current), Some(bound)) = (value.as_f64(), min_val.as_f64()) {
-                    min(bound)
-                        .validate(&current)
-                        .map_err(|e| override_message(e, message))?;
+                if let Some(ord) = json_number_cmp(value, min_val)
+                    && ord.is_lt()
+                {
+                    let err = ValidationError::new(
+                        "min",
+                        format!("Value must be at least {}", format_json_number(min_val)),
+                    )
+                    .with_param("min", format_json_number(min_val))
+                    .with_param("actual", value.to_string());
+                    return Err(override_message(err, message));
                 }
                 Ok(())
             }
@@ -468,10 +508,16 @@ impl Rule {
                 max: max_val,
                 message,
             } => {
-                if let (Some(current), Some(bound)) = (value.as_f64(), max_val.as_f64()) {
-                    max(bound)
-                        .validate(&current)
-                        .map_err(|e| override_message(e, message))?;
+                if let Some(ord) = json_number_cmp(value, max_val)
+                    && ord.is_gt()
+                {
+                    let err = ValidationError::new(
+                        "max",
+                        format!("Value must be at most {}", format_json_number(max_val)),
+                    )
+                    .with_param("max", format_json_number(max_val))
+                    .with_param("actual", value.to_string());
+                    return Err(override_message(err, message));
                 }
                 Ok(())
             }
@@ -538,25 +584,42 @@ impl Rule {
 
             // ── Logical combinators ─────────────────────────────────
             Self::All { rules } => {
+                let mut errors = Vec::new();
                 for rule in rules {
-                    rule.validate_value(value)?;
+                    if let Err(e) = rule.validate_value(value) {
+                        errors.push(e);
+                    }
                 }
-                Ok(())
+                if errors.is_empty() {
+                    Ok(())
+                } else if errors.len() == 1 {
+                    Err(errors.into_iter().next().unwrap())
+                } else {
+                    let count = errors.len();
+                    Err(ValidationError::new(
+                        "all_failed",
+                        format!("{count} of the rules failed"),
+                    )
+                    .with_nested(errors))
+                }
             }
             Self::Any { rules } => {
                 if rules.is_empty() {
                     return Ok(());
                 }
-                let mut last_err = None;
+                let mut errors = Vec::new();
                 for rule in rules {
                     match rule.validate_value(value) {
                         Ok(()) => return Ok(()),
-                        Err(e) => last_err = Some(e),
+                        Err(e) => errors.push(e),
                     }
                 }
-                Err(last_err.unwrap_or_else(|| {
-                    ValidationError::new("any_failed", "none of the rules passed")
-                }))
+                let count = errors.len();
+                Err(ValidationError::new(
+                    "any_failed",
+                    format!("All {count} alternatives failed"),
+                )
+                .with_nested(errors))
             }
             Self::Not { inner } => match inner.validate_value(value) {
                 Ok(()) => Err(ValidationError::new("not_failed", "negated rule passed")),

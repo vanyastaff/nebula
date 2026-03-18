@@ -268,7 +268,7 @@ fn collection_not_empty_json() {
     assert!(v.validate_any(&json!([1])).is_ok());
 
     let err = v.validate_any(&json!([])).unwrap_err();
-    assert_eq!(err.code.as_ref(), "not_empty");
+    assert_eq!(err.code.as_ref(), "not_empty_collection");
 }
 
 #[test]

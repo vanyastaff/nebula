@@ -1,5 +1,5 @@
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "artifact": "validator_error_registry",
   "error_codes": [
     {
@@ -58,9 +58,15 @@
     },
     {
       "code": "not_empty",
-      "meaning": "string or collection is empty",
+      "meaning": "string is empty",
       "stability": "stable",
-      "source": "validators::length::NotEmpty + validators::size::NotEmptyCollection"
+      "source": "validators::length::NotEmpty"
+    },
+    {
+      "code": "not_empty_collection",
+      "meaning": "collection is empty",
+      "stability": "stable",
+      "source": "validators::size::NotEmptyCollection"
     },
     {
       "code": "invalid_range",
@@ -241,6 +247,24 @@
       "meaning": "all validators in OR-any collection failed",
       "stability": "stable",
       "source": "combinators::or::OrAny"
+    },
+    {
+      "code": "any_of_failed",
+      "meaning": "all validators in any_of collection failed",
+      "stability": "stable",
+      "source": "combinators::factories::AnyOf"
+    },
+    {
+      "code": "all_failed",
+      "meaning": "multiple rules in Rule::All combinator failed",
+      "stability": "stable",
+      "source": "rule::Rule::All"
+    },
+    {
+      "code": "any_failed",
+      "meaning": "all rules in Rule::Any combinator failed",
+      "stability": "stable",
+      "source": "rule::Rule::Any"
     },
     {
       "code": "not_failed",

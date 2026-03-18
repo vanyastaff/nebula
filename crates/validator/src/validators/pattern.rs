@@ -93,9 +93,9 @@ crate::validator! {
 // ============================================================================
 
 crate::validator! {
-    /// Validates that a string contains only numeric characters.
+    /// Validates that a string contains only ASCII digit characters (`0`–`9`).
     pub Numeric for str;
-    rule(input) { input.chars().all(char::is_numeric) }
+    rule(input) { input.bytes().all(|b| b.is_ascii_digit()) }
     error(input) { ValidationError::new("numeric", "String must contain only numbers") }
     fn numeric();
 }

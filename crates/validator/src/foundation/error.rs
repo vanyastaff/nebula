@@ -377,13 +377,13 @@ impl ValidationError {
     }
 
     /// Returns the field path as canonical JSON Pointer (RFC 6901).
+    ///
+    /// The field is already stored in normalized pointer form (set via
+    /// `with_field` or `with_pointer`), so this is a zero-allocation accessor.
     #[must_use]
     #[inline]
     pub fn field_pointer(&self) -> Option<Cow<'_, str>> {
-        self.field
-            .as_deref()
-            .and_then(to_json_pointer)
-            .map(Cow::Owned)
+        self.field.as_deref().map(Cow::Borrowed)
     }
 
     /// Returns the number of errors (including nested).
@@ -669,10 +669,9 @@ pub(crate) fn to_json_pointer(path: &str) -> Option<String> {
                 if closed && !idx.is_empty() {
                     segments.push(idx);
                 } else {
-                    if !idx.is_empty() {
-                        current.push_str(&idx);
-                    }
-                    break;
+                    // Unclosed bracket — treat `[` and contents as literal text
+                    current.push('[');
+                    current.push_str(&idx);
                 }
             }
             _ => current.push(ch),
@@ -983,6 +982,14 @@ mod tests {
         let error_with = ValidationError::new("test", "Test")
             .with_nested(vec![ValidationError::new("child", "Child")]);
         assert!(error_with.has_nested());
+    }
+
+    #[test]
+    fn test_unclosed_bracket_preserves_content() {
+        // Unclosed bracket should not silently drop the index content
+        let error = ValidationError::new("test", "Test").with_field("items[0");
+        // "items" becomes first segment, "[0" becomes second (bracket preserved as literal)
+        assert_eq!(error.field.as_deref(), Some("/items/[0"));
     }
 
     #[test]
