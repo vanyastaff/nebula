@@ -30,9 +30,10 @@ use std::sync::Arc;
 /// - Thread-safe using lock-free `moka` cache
 /// - **LRU eviction policy** with configurable capacity (default: 1000 entries)
 /// - Cache persists for the lifetime of the validator
+/// - Uses double-hashing `(u64, u64)` keys to minimize collision risk
 pub struct Cached<V> {
     pub(crate) validator: V,
-    pub(crate) cache: Arc<moka::sync::Cache<u64, CachedResult>>,
+    pub(crate) cache: Arc<moka::sync::Cache<(u64, u64), CachedResult>>,
 }
 
 /// Cached validation result (Arc-wrapped for cheap cloning).
@@ -124,12 +125,10 @@ where
     V: Validate<T>,
 {
     fn validate(&self, input: &T) -> Result<(), ValidationError> {
-        // Compute hash of input
-        let hash = compute_hash(input);
+        let key = compute_double_hash(input);
 
         // Try to get from cache (lock-free!)
-        if let Some(cached_result) = self.cache.get(&hash) {
-            // Cache hit! Return cloned result from Arc
+        if let Some(cached_result) = self.cache.get(&key) {
             return (*cached_result).clone();
         }
 
@@ -137,7 +136,7 @@ where
         let result = self.validator.validate(input);
 
         // Store result in cache (Arc-wrapped for cheap cloning)
-        self.cache.insert(hash, Arc::new(result.clone()));
+        self.cache.insert(key, Arc::new(result.clone()));
 
         result
     }
@@ -147,11 +146,22 @@ where
 // HELPER FUNCTIONS
 // ============================================================================
 
-/// Computes a hash of the input for cache lookups.
-fn compute_hash<T: Hash + ?Sized>(value: &T) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut hasher);
-    hasher.finish()
+/// Seed for the second hasher to produce an independent hash.
+const HASH_SEED: u64 = 0x517c_c1b7_2722_0a95;
+
+/// Computes two independent hashes of the input as a `(u64, u64)` cache key.
+///
+/// Using two hashes reduces collision probability from ~1/2^64 (single hash)
+/// to ~1/2^128 (double hash), making accidental collisions astronomically unlikely.
+fn compute_double_hash<T: Hash + ?Sized>(value: &T) -> (u64, u64) {
+    let mut h1 = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut h1);
+
+    let mut h2 = std::collections::hash_map::DefaultHasher::new();
+    HASH_SEED.hash(&mut h2);
+    value.hash(&mut h2);
+
+    (h1.finish(), h2.finish())
 }
 
 /// Creates a CACHED combinator from a validator.
@@ -318,5 +328,12 @@ mod tests {
         let raw_err = raw.validate("hi").unwrap_err();
         let cached_err = wrapped.validate("hi").unwrap_err();
         assert_eq!(raw_err.code, cached_err.code);
+    }
+
+    #[test]
+    fn test_double_hash_differs() {
+        // Verify the two hash components are different for the same input
+        let (h1, h2) = compute_double_hash("hello");
+        assert_ne!(h1, h2, "double hash components should differ");
     }
 }

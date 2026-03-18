@@ -205,7 +205,7 @@ Zero-cost proof token certifying the inner value passed validation.
 |--------|-------|
 | `validator.validate_into(value)` | Primary path; returns `ValidatorResult<Validated<V>>` |
 | `Validated::new(value, &validator)` | Direct construction; same semantics |
-| `Validated::new_unchecked(value)` | Escape hatch for pre-validated data |
+| `Validated::new_unchecked(value)` | Internal escape hatch (`pub(crate)`) |
 
 ### Access
 

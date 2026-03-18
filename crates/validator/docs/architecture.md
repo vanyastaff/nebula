@@ -305,8 +305,8 @@ error construction, and cache hit/miss. Regressions beyond the agreed threshold 
 
 4. **`Validated<T>` cannot be constructed without validation.**
    There is no `impl Deserialize for Validated<T>`. The only construction paths are
-   `validate_into`, `Validated::new`, and the `unsafe` `new_unchecked` escape hatch
-   (for pre-validated data crossing FFI boundaries).
+   `validate_into` and `Validated::new`. The internal `new_unchecked` is `pub(crate)`
+   and not accessible to downstream consumers.
 
 5. **No unsafe code.**
    The crate is compiled with `#![forbid(unsafe_code)]`.

@@ -94,9 +94,36 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use crate::foundation::{Validate, ValidationError};
-use crate::validators::{matches_regex, max, max_length, max_size, min, min_length, min_size};
+use crate::validators::{max, max_length, max_size, min, min_length, min_size};
+
+// ============================================================================
+// REGEX CACHE — avoids recompiling patterns on every validate_value/evaluate call
+// ============================================================================
+
+/// Global regex cache to avoid recompiling the same pattern string repeatedly.
+/// Keyed by the raw pattern string; values are compiled `Regex` instances.
+static REGEX_CACHE: std::sync::LazyLock<Mutex<HashMap<String, regex::Regex>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Returns a compiled regex for the given pattern, using the cache.
+fn cached_regex(pattern: &str) -> Result<regex::Regex, ValidationError> {
+    {
+        let cache = REGEX_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(re) = cache.get(pattern) {
+            return Ok(re.clone());
+        }
+    }
+    let re = regex::Regex::new(pattern).map_err(|e| {
+        ValidationError::new("invalid_pattern", format!("invalid regex: {e}"))
+    })?;
+    let mut cache = REGEX_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.entry(pattern.to_owned()).or_insert(re.clone());
+    Ok(re)
+}
 
 /// Unified declarative rule.
 ///
@@ -325,6 +352,9 @@ pub enum Rule {
 impl Rule {
     /// Returns `true` if this rule validates a single value
     /// (as opposed to evaluating context predicates).
+    ///
+    /// Deferred rules (`Custom`, `UniqueBy`) are **not** classified as value rules;
+    /// use [`is_deferred`](Self::is_deferred) to check for those.
     #[must_use]
     pub fn is_value_rule(&self) -> bool {
         matches!(
@@ -337,8 +367,6 @@ impl Rule {
                 | Self::OneOf { .. }
                 | Self::MinItems { .. }
                 | Self::MaxItems { .. }
-                | Self::UniqueBy { .. }
-                | Self::Custom { .. }
         )
     }
 
@@ -416,12 +444,12 @@ impl Rule {
             }
             Self::Pattern { pattern, message } => {
                 if let Some(s) = value.as_str() {
-                    let validator = matches_regex(pattern).map_err(|e| {
-                        ValidationError::new("invalid_pattern", format!("invalid regex: {e}"))
-                    })?;
-                    validator
-                        .validate(s)
-                        .map_err(|e| override_message(e, message))?;
+                    let re = cached_regex(pattern)?;
+                    if !re.is_match(s) {
+                        let err = ValidationError::invalid_format("", "regex")
+                            .with_param("pattern", pattern.clone());
+                        return Err(override_message(err, message));
+                    }
                 }
                 Ok(())
             }
@@ -448,6 +476,17 @@ impl Rule {
                 Ok(())
             }
             Self::OneOf { values, message } => {
+                if values.is_empty() {
+                    return Ok(());
+                }
+                // Check if any candidate shares the same JSON type as the input.
+                // If no type match exists, pass silently (consistent with other value rules).
+                let has_same_type = values
+                    .iter()
+                    .any(|v| std::mem::discriminant(v) == std::mem::discriminant(value));
+                if !has_same_type {
+                    return Ok(());
+                }
                 if !values.contains(value) {
                     let msg = message
                         .clone()
@@ -584,7 +623,7 @@ impl Rule {
                 .get(field)
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|string| {
-                    matches_regex(pattern).is_ok_and(|validator| validator.validate(string).is_ok())
+                    cached_regex(pattern).is_ok_and(|re| re.is_match(string))
                 }),
             Self::In {
                 field,

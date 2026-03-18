@@ -119,7 +119,7 @@ impl<T> Validated<T> {
     ///
     /// Prefer [`Validated::new`] or [`Validate::validate_into`](crate::foundation::Validate::validate_into).
     #[inline]
-    pub fn new_unchecked(value: T) -> Self {
+    pub(crate) fn new_unchecked(value: T) -> Self {
         Self { value }
     }
 }

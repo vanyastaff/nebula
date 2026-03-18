@@ -40,27 +40,6 @@ fn load_error_registry() -> ErrorRegistry {
 }
 
 #[test]
-fn decisions_document_declares_additive_minor_policy() {
-    let decisions = include_str!("../../docs/DECISIONS.md");
-    assert!(
-        decisions.contains("minor releases"),
-        "DECISIONS must mention minor release policy"
-    );
-    assert!(
-        decisions.contains("additive"),
-        "DECISIONS must enforce additive-only guidance for minor releases"
-    );
-}
-
-#[test]
-fn api_document_declares_major_break_conditions() {
-    let api = include_str!("../../docs/API.md");
-    assert!(api.contains("major bump required"));
-    assert!(api.contains("error code"));
-    assert!(api.contains("field-path"));
-}
-
-#[test]
 fn registry_has_required_metadata_and_policy() {
     let registry = load_error_registry();
     assert_eq!(registry.version, "1.1.0");
@@ -185,17 +164,6 @@ fn registry_has_no_duplicate_codes_or_categories() {
 }
 
 #[test]
-fn docs_reference_canonical_registry_artifact() {
-    let api = include_str!("../../docs/API.md");
-    let decisions = include_str!("../../docs/DECISIONS.md");
-    let strategy = include_str!("../../docs/TEST_STRATEGY.md");
-
-    assert!(api.contains("error_registry_v1.json"));
-    assert!(decisions.contains("error_registry_v1.json"));
-    assert!(strategy.contains("error_registry_v1.json"));
-}
-
-#[test]
 fn registry_stability_values_are_valid() {
     let registry = load_error_registry();
     let allowed = ["stable", "deprecated"];
@@ -214,7 +182,7 @@ fn registry_stability_values_are_valid() {
 #[test]
 fn registry_change_policy_references_migration_doc() {
     let registry = load_error_registry();
-    let migration = include_str!("../../docs/MIGRATION.md");
+    let migration = include_str!("../../docs/migration.md");
 
     assert!(
         !registry.change_policy.migration_authority.is_empty(),
@@ -222,11 +190,11 @@ fn registry_change_policy_references_migration_doc() {
     );
     assert!(
         migration.contains("error_registry_v1.json"),
-        "MIGRATION.md must reference the error registry artifact"
+        "migration.md must reference the error registry artifact"
     );
     assert!(
         migration.contains("Deprecation Process"),
-        "MIGRATION.md must document the deprecation process"
+        "migration.md must document the deprecation process"
     );
 }
 

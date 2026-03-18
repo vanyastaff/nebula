@@ -159,7 +159,10 @@ pub struct Time;
 
 impl Validate<str> for Time {
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
-        parse_time_parts(input)?;
+        let rest = parse_time_parts(input)?;
+        if !rest.is_empty() {
+            return Err(time_format_err(input));
+        }
         Ok(())
     }
 }
@@ -337,6 +340,8 @@ mod tests {
         assert!(Time.validate("24:00:00").is_err()); // hour out of range
         assert!(Time.validate("12:60:00").is_err()); // minute out of range
         assert!(Time.validate("12:30").is_err()); // missing seconds
+        assert!(Time.validate("12:30:45GARBAGE").is_err()); // trailing garbage
+        assert!(Time.validate("12:30:45 extra").is_err()); // trailing space
         assert!(Time.validate("not-a-time").is_err());
     }
 

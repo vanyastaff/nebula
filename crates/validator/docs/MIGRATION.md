@@ -34,7 +34,7 @@ Each code in `tests/fixtures/compat/error_registry_v1.json` carries a stability 
 | `stable` | Meaning and behavior will not change in minor releases. |
 | `deprecated` | Scheduled for removal in the next major release. |
 
-### Deprecation process
+### Deprecation Process
 
 1. **Mark** — add `#[deprecated(since = "x.y.z", note = "use X instead")]` to the item.
 2. **Registry** — set `"stability": "deprecated"` in `error_registry_v1.json`.
