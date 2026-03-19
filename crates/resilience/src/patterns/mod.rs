@@ -5,6 +5,7 @@ pub mod bulkhead;
 pub mod circuit_breaker;
 pub mod fallback;
 pub mod hedge;
+pub mod load_shed;
 pub mod retry;
 pub mod timeout;
 
@@ -13,18 +14,20 @@ pub mod rate_limiter;
 
 // Re-exports
 pub use bulkhead::{Bulkhead, BulkheadConfig};
-pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerConfig as NewCircuitBreakerConfig, Outcome as CircuitOutcome};
+pub use circuit_breaker::{
+    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerConfig as NewCircuitBreakerConfig,
+    Outcome as CircuitOutcome,
+};
 pub use fallback::{
     AnyStringFallbackStrategy, CacheFallback, FallbackStrategy, FunctionFallback, ValueFallback,
 };
 pub use hedge::{HedgeConfig, HedgeExecutor};
-pub use retry::{RetryStrategy, retry};
+pub use retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
 pub use timeout::{timeout, timeout_with_original_error};
 
 // Rate limiter exports
-pub use rate_limiter::{
-    AdaptiveRateLimiter, AnyRateLimiter, LeakyBucket, RateLimiter,
-    SlidingWindow, TokenBucket,
-};
 #[cfg(feature = "governor")]
 pub use rate_limiter::GovernorRateLimiter;
+pub use rate_limiter::{
+    AdaptiveRateLimiter, AnyRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket,
+};

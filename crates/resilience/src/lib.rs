@@ -283,6 +283,7 @@ pub use patterns::{
     retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with},
 
     timeout::{TimeoutExecutor, timeout as timeout_fn, timeout_with_original_error},
+    load_shed::load_shed,
 };
 
 // High-level abstractions
@@ -346,6 +347,13 @@ pub mod prelude {
 }
 
 // builder module removed — superseded by ResiliencePipeline
+
+/// Functional resilience API — convenience functions for simple cases.
+pub mod resilience {
+    pub use crate::patterns::load_shed::load_shed;
+    pub use crate::patterns::retry::{retry, retry_with};
+    pub use crate::patterns::timeout::timeout_with_original_error as with_timeout;
+}
 
 /// Type-level constants for common configurations.
 pub mod constants {
