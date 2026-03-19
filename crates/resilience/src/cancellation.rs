@@ -176,9 +176,7 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Check for cancellation first
         if self.cancellation.is_cancelled() {
-            return Poll::Ready(Err(CallError::Cancelled {
-                reason: Some("Future was cancelled".to_string()),
-            }));
+            return Poll::Ready(Err(CallError::Cancelled { reason: None }));
         }
 
         // Poll the underlying future
@@ -191,9 +189,7 @@ where
 
                 // Check if cancellation is ready
                 if cancellation_future.as_mut().poll(cx).is_ready() {
-                    Poll::Ready(Err(CallError::Cancelled {
-                        reason: Some("Future was cancelled while pending".to_string()),
-                    }))
+                    Poll::Ready(Err(CallError::Cancelled { reason: None }))
                 } else {
                     Poll::Pending
                 }
