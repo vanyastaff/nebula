@@ -55,6 +55,8 @@ impl fmt::Debug for TokenBucket {
 
 impl TokenBucket {
     /// Create new token bucket with validation
+    // Reason: usize capacity cast to f64 for token tracking — acceptable for rate limiting.
+    #[allow(clippy::cast_precision_loss)]
     #[must_use]
     pub fn new(capacity: usize, refill_rate: f64) -> Self {
         // Security: prevent creating token buckets with invalid parameters
@@ -81,6 +83,8 @@ impl TokenBucket {
 }
 
 impl RateLimiter for TokenBucket {
+    // Reason: usize burst_size cast to f64 for token math — acceptable for rate limiting.
+    #[allow(clippy::cast_precision_loss)]
     async fn acquire(&self) -> Result<(), CallError<()>> {
         let mut state = self.state.lock();
 
@@ -117,6 +121,8 @@ impl RateLimiter for TokenBucket {
         tokens
     }
 
+    // Reason: usize capacity cast to f64 for token reset — acceptable for rate limiting.
+    #[allow(clippy::cast_precision_loss)]
     async fn reset(&self) {
         let mut state = self.state.lock();
         state.tokens = self.capacity as f64;

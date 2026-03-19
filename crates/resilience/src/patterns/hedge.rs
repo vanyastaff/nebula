@@ -71,6 +71,11 @@ impl HedgeExecutor {
     ///
     /// - Returns the first `Ok(T)` result, aborting remaining requests.
     /// - Returns the last `Err` if all attempts fail.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::Operation)` if all attempts (including hedges) fail,
+    /// or `Err(CallError::Cancelled)` if all tasks were cancelled.
     #[allow(clippy::excessive_nesting)]
     pub async fn execute<T, E, F>(&self, operation: F) -> Result<T, CallError<E>>
     where
@@ -131,6 +136,8 @@ impl HedgeExecutor {
 
                 () = &mut delay => {
                     // Fire hedge
+                    // Reason: max_hedges is a small config value, never exceeds u32.
+                    #[allow(clippy::cast_possible_truncation)]
                     let hedge_num = (hedges_sent + 1) as u32;
                     self.sink.record(ResilienceEvent::HedgeFired { hedge_number: hedge_num });
                     handles.push(tokio::spawn(operation()));
@@ -183,6 +190,10 @@ impl AdaptiveHedgeExecutor {
     }
 
     /// Set the target latency percentile for hedge delay calculation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ConfigError)` if `percentile` is not finite or outside 0.0..=1.0.
     pub fn with_target_percentile(mut self, percentile: f64) -> Result<Self, crate::ConfigError> {
         if !percentile.is_finite() || !(0.0..=1.0).contains(&percentile) {
             return Err(crate::ConfigError::new(
@@ -195,12 +206,18 @@ impl AdaptiveHedgeExecutor {
     }
 
     /// Inject a metrics sink.
+    #[must_use]
     pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }
 
     /// Execute with adaptive hedging.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::Operation)` if all attempts fail,
+    /// or `Err(CallError::Cancelled)` if all tasks were cancelled.
     pub async fn execute<T, E, F>(&self, operation: F) -> Result<T, CallError<E>>
     where
         T: Send + 'static,
@@ -249,6 +266,13 @@ impl LatencyTracker {
         }
     }
 
+    // Reason: u128 nanosecond values from Duration::as_nanos() are truncated to u64
+    // (max ~584 years), and f64 precision loss is acceptable for percentile calculations.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
     fn record(&mut self, latency: Duration) {
         if self.ring.len() == self.max_samples
             && let Some(oldest) = self.ring.pop_front()
@@ -266,6 +290,12 @@ impl LatencyTracker {
         self.ring.push_back(latency);
     }
 
+    // Reason: f64 precision loss and sign loss are acceptable for percentile index calculation.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
     fn percentile(&self, p: f64) -> Option<Duration> {
         if self.ring.is_empty() || !p.is_finite() {
             return None;

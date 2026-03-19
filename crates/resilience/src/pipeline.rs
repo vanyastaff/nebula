@@ -37,6 +37,12 @@ pub struct PipelineBuilder<E: 'static> {
     steps: Vec<Step<E>>,
 }
 
+impl<E: Send + 'static> Default for PipelineBuilder<E> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<E: Send + 'static> PipelineBuilder<E> {
     /// Create a new builder.
     #[must_use]
@@ -76,7 +82,9 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     #[must_use]
     pub fn build(self) -> ResiliencePipeline<E> {
         validate_order(&self.steps);
-        ResiliencePipeline { steps: Arc::new(self.steps) }
+        ResiliencePipeline {
+            steps: Arc::new(self.steps),
+        }
     }
 }
 
@@ -121,6 +129,11 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     }
 
     /// Execute `f` through all pipeline steps.
+    ///
+    /// # Errors
+    ///
+    /// Returns the appropriate `CallError` variant depending on which pipeline
+    /// step fails (timeout, retry exhaustion, circuit open, bulkhead full, or operation error).
     pub async fn call<T, F>(&self, f: F) -> Result<T, CallError<E>>
     where
         T: Send + 'static,
@@ -136,7 +149,6 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
 
 // ── Recursive step executor ───────────────────────────────────────────────────
 
-#[allow(clippy::excessive_nesting)]
 fn run_steps<T, E, F>(
     steps: Arc<Vec<Step<E>>>,
     idx: usize,
@@ -153,128 +165,134 @@ where
         }
 
         match &steps[idx] {
-            // ── Timeout ───────────────────────────────────────────────────────
             Step::Timeout(d) => {
                 let d = *d;
                 tokio::time::timeout(d, run_steps(steps, idx + 1, f))
                     .await
                     .unwrap_or_else(|_| Err(CallError::Timeout(d)))
             }
-
-            // ── Retry ─────────────────────────────────────────────────────────
-            //
-            // The inner steps return `Result<T, CallError<E>>`. The `retry_with` closure
-            // must return `Result<T, Inner>` where `Inner` is the retriable error type.
-            //
-            // We use `Option<E>` as the inner error:
-            // - `Some(e)` → operation error, retried according to the config predicate
-            // - `None`    → non-operation error (bail); the actual error is stored in `bail`
-            //              and the `retry_if` predicate stops retrying immediately
-            Step::Retry(config) => {
-                // Bail channel for non-Operation errors from inner steps.
-                let bail: Arc<Mutex<Option<CallError<E>>>> = Arc::new(Mutex::new(None));
-                let bail_check = Arc::clone(&bail);
-
-                // Build an inner RetryConfig<Option<E>>:
-                // - Same max_attempts and backoff as the original config
-                // - retry_if: retry Some(e) (operation errors), stop on None (bail)
-                let inner_config = RetryConfig::<Option<E>>::new_unchecked(config.max_attempts)
-                    .backoff(config.backoff.clone())
-                    .jitter(config.jitter.clone())
-                    .retry_if(move |e: &Option<E>| {
-                        // Stop if bail is set (non-operation error occurred)
-                        e.is_some() && bail_check.lock().is_none()
-                    });
-
-                let result = retry_with(inner_config, {
-                    let steps = Arc::clone(&steps);
-                    let f = Arc::clone(&f);
-                    let bail = Arc::clone(&bail);
-                    move || {
-                        let steps = Arc::clone(&steps);
-                        let f = Arc::clone(&f);
-                        let bail = Arc::clone(&bail);
-                        Box::pin(async move {
-                            match run_steps(steps, idx + 1, f).await {
-                                Ok(v) => Ok(v),
-                                Err(CallError::Operation(e)) => Err(Some(e)),
-                                Err(other) => {
-                                    let mut guard = bail.lock();
-                                    *guard = Some(other);
-                                    Err(None) // signals bail to retry_if
-                                }
-                            }
-                        })
-                    }
-                })
-                .await;
-
-                // Map CallError<Option<E>> → CallError<E>
-                match result {
-                    Ok(v) => Ok(v),
-                    Err(CallError::RetriesExhausted { attempts, last: Some(e) }) => {
-                        Err(CallError::RetriesExhausted { attempts, last: e })
-                    }
-                    Err(
-                        CallError::RetriesExhausted { last: None, .. }
-                        | CallError::Operation(None),
-                    ) => {
-                        // Non-operation error caused early termination — recover from bail
-                        Err({ let mut g = bail.lock(); g.take() }.unwrap_or(CallError::Cancelled { reason: None }))
-                    }
-                    Err(CallError::Operation(Some(e))) => Err(CallError::Operation(e)),
-                    Err(CallError::CircuitOpen) => Err(CallError::CircuitOpen),
-                    Err(CallError::BulkheadFull) => Err(CallError::BulkheadFull),
-                    Err(CallError::Timeout(d)) => Err(CallError::Timeout(d)),
-                    Err(CallError::RateLimited) => Err(CallError::RateLimited),
-                    Err(CallError::LoadShed) => Err(CallError::LoadShed),
-                    Err(CallError::Cancelled { reason }) => Err(CallError::Cancelled { reason }),
-                }
-            }
-
-            // ── CircuitBreaker ────────────────────────────────────────────────
+            Step::Retry(config) => run_retry_step(config, Arc::clone(&steps), idx, f).await,
             Step::CircuitBreaker(cb) => {
                 let cb = Arc::clone(cb);
-                cb.call(move || {
-                    let steps = Arc::clone(&steps);
-                    let f = Arc::clone(&f);
-                    Box::pin(async move {
-                        match run_steps(steps, idx + 1, f).await {
-                            Ok(v) => Ok(v),
-                            Err(CallError::Operation(e)) => Err(e),
-                            // Non-Operation errors are unreachable in a well-ordered pipeline
-                            // (timeout before circuit_breaker). Panic with a clear message.
-                            Err(_) => unreachable!(
-                                "ResiliencePipeline: non-Operation error inside CircuitBreaker step; \
-                                 ensure timeout is ordered before circuit_breaker"
-                            ),
-                        }
-                    })
-                })
-                .await
+                cb.call(move || run_inner_unwrapped(steps, idx, f, "CircuitBreaker"))
+                    .await
             }
-
-            // ── Bulkhead ──────────────────────────────────────────────────────
             Step::Bulkhead(bh) => {
                 let bh = Arc::clone(bh);
-                bh.call(move || {
-                    let steps = Arc::clone(&steps);
-                    let f = Arc::clone(&f);
-                    Box::pin(async move {
-                        match run_steps(steps, idx + 1, f).await {
-                            Ok(v) => Ok(v),
-                            Err(CallError::Operation(e)) => Err(e),
-                            Err(_) => unreachable!(
-                                "ResiliencePipeline: non-Operation error inside Bulkhead step; \
-                                 ensure timeout/retry are ordered before bulkhead"
-                            ),
-                        }
-                    })
-                })
-                .await
+                bh.call(move || run_inner_unwrapped(steps, idx, f, "Bulkhead"))
+                    .await
             }
         }
     })
+}
+
+/// Unwrap inner pipeline steps for use inside CB / Bulkhead wrappers.
+///
+/// Non-`Operation` errors are unreachable in a well-ordered pipeline
+/// (timeout before circuit breaker / bulkhead).
+fn run_inner_unwrapped<T, E, F>(
+    steps: Arc<Vec<Step<E>>>,
+    idx: usize,
+    f: Arc<F>,
+    step_name: &'static str,
+) -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+    F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync + 'static,
+{
+    Box::pin(async move {
+        match run_steps(steps, idx + 1, f).await {
+            Ok(v) => Ok(v),
+            Err(CallError::Operation(e)) => Err(e),
+            Err(_) => unreachable!(
+                "ResiliencePipeline: non-Operation error inside {step_name} step; \
+                 ensure timeout/retry are ordered before {step_name}"
+            ),
+        }
+    })
+}
+
+/// Execute the Retry step of the pipeline.
+#[allow(clippy::excessive_nesting)]
+async fn run_retry_step<T, E, F>(
+    config: &RetryConfig<E>,
+    steps: Arc<Vec<Step<E>>>,
+    idx: usize,
+    f: Arc<F>,
+) -> Result<T, CallError<E>>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+    F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync + 'static,
+{
+    let bail: Arc<Mutex<Option<CallError<E>>>> = Arc::new(Mutex::new(None));
+    let bail_check = Arc::clone(&bail);
+
+    let inner_config = RetryConfig::<Option<E>>::new_unchecked(config.max_attempts)
+        .backoff(config.backoff.clone())
+        .jitter(config.jitter.clone())
+        .retry_if(move |e: &Option<E>| e.is_some() && bail_check.lock().is_none());
+
+    let result = retry_with(inner_config, {
+        let steps = Arc::clone(&steps);
+        let f = Arc::clone(&f);
+        let bail = Arc::clone(&bail);
+        move || {
+            let steps = Arc::clone(&steps);
+            let f = Arc::clone(&f);
+            let bail = Arc::clone(&bail);
+            Box::pin(async move { classify_inner(run_steps(steps, idx + 1, f).await, &bail) })
+        }
+    })
+    .await;
+
+    map_retry_result(result, &bail)
+}
+
+/// Classify an inner pipeline result for the retry layer.
+///
+/// `Ok` and `Operation` errors pass through; non-operation errors are
+/// stashed in `bail` and signalled as `Err(None)` to stop retrying.
+fn classify_inner<T, E>(
+    result: Result<T, CallError<E>>,
+    bail: &Arc<Mutex<Option<CallError<E>>>>,
+) -> Result<T, Option<E>> {
+    match result {
+        Ok(v) => Ok(v),
+        Err(CallError::Operation(e)) => Err(Some(e)),
+        Err(other) => {
+            *bail.lock() = Some(other);
+            Err(None)
+        }
+    }
+}
+
+/// Map `CallError<Option<E>>` back to `CallError<E>` after retry.
+fn map_retry_result<T, E: Send>(
+    result: Result<T, CallError<Option<E>>>,
+    bail: &Arc<Mutex<Option<CallError<E>>>>,
+) -> Result<T, CallError<E>> {
+    match result {
+        Ok(v) => Ok(v),
+        Err(CallError::RetriesExhausted {
+            attempts,
+            last: Some(e),
+        }) => Err(CallError::RetriesExhausted { attempts, last: e }),
+        Err(CallError::RetriesExhausted { last: None, .. } | CallError::Operation(None)) => {
+            Err(bail
+                .lock()
+                .take()
+                .unwrap_or(CallError::Cancelled { reason: None }))
+        }
+        Err(CallError::Operation(Some(e))) => Err(CallError::Operation(e)),
+        Err(CallError::CircuitOpen) => Err(CallError::CircuitOpen),
+        Err(CallError::BulkheadFull) => Err(CallError::BulkheadFull),
+        Err(CallError::Timeout(d)) => Err(CallError::Timeout(d)),
+        Err(CallError::RateLimited) => Err(CallError::RateLimited),
+        Err(CallError::LoadShed) => Err(CallError::LoadShed),
+        Err(CallError::Cancelled { reason }) => Err(CallError::Cancelled { reason }),
+    }
 }
 
 #[cfg(test)]
@@ -291,7 +309,11 @@ mod tests {
 
         let pipeline = ResiliencePipeline::<&str>::builder()
             .timeout(Duration::from_secs(5))
-            .retry(RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
+            .retry(
+                RetryConfig::new(3)
+                    .unwrap()
+                    .backoff(BackoffConfig::Fixed(Duration::from_millis(1))),
+            )
             .build();
 
         let result = pipeline
@@ -304,7 +326,10 @@ mod tests {
             })
             .await;
 
-        assert!(matches!(result, Err(CallError::RetriesExhausted { attempts: 3, .. })));
+        assert!(matches!(
+            result,
+            Err(CallError::RetriesExhausted { attempts: 3, .. })
+        ));
         assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 
@@ -312,7 +337,11 @@ mod tests {
     async fn pipeline_warns_on_bad_layer_order() {
         // timeout INSIDE retry is suboptimal — just verify build() succeeds
         let _pipeline = ResiliencePipeline::<&str>::builder()
-            .retry(RetryConfig::new(2).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
+            .retry(
+                RetryConfig::new(2)
+                    .unwrap()
+                    .backoff(BackoffConfig::Fixed(Duration::from_millis(1))),
+            )
             .timeout(Duration::from_secs(1))
             .build();
     }
@@ -320,10 +349,16 @@ mod tests {
     #[tokio::test]
     async fn pipeline_returns_ok_on_success() {
         let pipeline = ResiliencePipeline::<&str>::builder()
-            .retry(RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::ZERO)))
+            .retry(
+                RetryConfig::new(3)
+                    .unwrap()
+                    .backoff(BackoffConfig::Fixed(Duration::ZERO)),
+            )
             .build();
 
-        let result = pipeline.call(|| Box::pin(async { Ok::<u32, &str>(42) })).await;
+        let result = pipeline
+            .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
+            .await;
         assert_eq!(result.unwrap(), 42);
     }
 

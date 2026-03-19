@@ -12,6 +12,8 @@ use crate::{
 
 /// Execute `future` with a timeout.
 ///
+/// # Errors
+///
 /// Returns `Err(CallError::Timeout(duration))` if `future` does not complete in time.
 pub async fn timeout<T, F>(duration: Duration, future: F) -> Result<T, CallError<()>>
 where
@@ -24,9 +26,13 @@ where
 
 /// Execute `future` (which returns `Result<T, E>`) with a timeout and a metrics sink.
 ///
-/// - Operation success → `Ok(T)`
-/// - Operation error  → `Err(CallError::Operation(e))`
-/// - Timeout elapsed  → `Err(CallError::Timeout(duration))` + emits `TimeoutElapsed`
+/// - Operation success -> `Ok(T)`
+/// - Operation error  -> `Err(CallError::Operation(e))`
+/// - Timeout elapsed  -> `Err(CallError::Timeout(duration))` + emits `TimeoutElapsed`
+///
+/// # Errors
+///
+/// Returns `Err(CallError::Timeout)` on timeout or `Err(CallError::Operation)` on operation error.
 pub async fn timeout_with_original_error<T, E, F>(
     duration: Duration,
     future: F,
@@ -38,6 +44,10 @@ where
 }
 
 /// Like [`timeout_with_original_error`] but emits [`ResilienceEvent::TimeoutElapsed`] via `sink`.
+///
+/// # Errors
+///
+/// Returns `Err(CallError::Timeout)` on timeout or `Err(CallError::Operation)` on operation error.
 pub async fn timeout_with_sink<T, E, F>(
     duration: Duration,
     future: F,
@@ -64,6 +74,7 @@ pub struct TimeoutExecutor {
 
 impl TimeoutExecutor {
     /// Create a new executor with the given duration and a noop sink.
+    #[must_use]
     pub fn new(duration: Duration) -> Self {
         Self {
             duration,
@@ -72,12 +83,17 @@ impl TimeoutExecutor {
     }
 
     /// Inject a metrics sink.
+    #[must_use]
     pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }
 
     /// Execute `future` within the configured timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::Timeout)` on timeout or `Err(CallError::Operation)` on operation error.
     pub async fn call<T, E, F>(&self, future: F) -> Result<T, CallError<E>>
     where
         F: Future<Output = Result<T, E>>,

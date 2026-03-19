@@ -36,6 +36,8 @@ pub struct AdaptiveRateLimiter {
 
 impl AdaptiveRateLimiter {
     /// Create new adaptive rate limiter
+    // Reason: f64 rates cast to usize for token bucket capacity — acceptable for rate limiting.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     #[must_use]
     pub fn new(initial_rate: f64, min_rate: f64, max_rate: f64) -> Self {
         let token_bucket = TokenBucket::new(initial_rate as usize, initial_rate);
@@ -57,6 +59,13 @@ impl AdaptiveRateLimiter {
     }
 
     /// Adjust rate based on error rate. Caller must hold the lock.
+    // Reason: usize counts cast to f64 for rate calculation, and f64 rate cast to usize for
+    // token bucket capacity — acceptable for approximate rate limiting.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn adjust_rate_locked(&self, state: &mut AdaptiveState) {
         if state.last_stats_reset.elapsed() < self.stats_window {
             return;
@@ -131,6 +140,8 @@ impl RateLimiter for AdaptiveRateLimiter {
         f64::from_bits(self.atomic_rate.load(Ordering::Acquire))
     }
 
+    // Reason: f64 rate cast to usize for token bucket capacity — acceptable for rate limiting.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     async fn reset(&self) {
         // Reset stats, rate, and inner limiter atomically under a single write lock.
         let mut state = self.state.write();

@@ -17,9 +17,9 @@ use crate::{
 pub struct CircuitBreakerConfig {
     /// Number of failures before opening the circuit. Min: 1.
     pub failure_threshold: u32,
-    /// How long to wait in Open state before transitioning to HalfOpen.
+    /// How long to wait in Open state before transitioning to `HalfOpen`.
     pub reset_timeout: Duration,
-    /// Max concurrent probe operations allowed in HalfOpen state. Default: 1.
+    /// Max concurrent probe operations allowed in `HalfOpen` state. Default: 1.
     pub half_open_max_ops: u32,
     /// Minimum number of operations required before the failure rate can trip the breaker. Default: 5.
     pub min_operations: u32,
@@ -51,6 +51,11 @@ impl Default for CircuitBreakerConfig {
 
 impl CircuitBreakerConfig {
     /// Validate configuration. Called by `CircuitBreaker::new()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ConfigError)` if `failure_threshold` is 0, `reset_timeout` is zero,
+    /// or `failure_rate_threshold` is outside 0.0..=1.0.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.failure_threshold == 0 {
             return Err(ConfigError::new("failure_threshold", "must be >= 1"));
@@ -124,6 +129,8 @@ struct InnerState {
 impl CircuitBreaker {
     /// Create a new circuit breaker with the given configuration.
     ///
+    /// # Errors
+    ///
     /// Returns `Err(ConfigError)` if configuration is invalid.
     pub fn new(config: CircuitBreakerConfig) -> Result<Self, ConfigError> {
         config.validate()?;
@@ -140,12 +147,14 @@ impl CircuitBreaker {
     }
 
     /// Replace the metrics sink (builder-style).
+    #[must_use]
     pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }
 
     /// Replace the clock (builder-style, for testing).
+    #[must_use]
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
         self.clock = clock;
         self
@@ -153,7 +162,10 @@ impl CircuitBreaker {
 
     /// Execute a closure under the circuit breaker.
     ///
-    /// Returns `Err(CallError::CircuitOpen)` immediately if the breaker is open.
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::CircuitOpen)` if the breaker is open,
+    /// or `Err(CallError::Operation)` if the operation itself fails.
     pub async fn call<T, E>(
         &self,
         f: impl FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, E>> + Send>>,
@@ -167,11 +179,15 @@ impl CircuitBreaker {
         result.map_err(CallError::Operation)
     }
 
-    /// Check if the circuit allows execution. Returns `Err(CallError::CircuitOpen)` when open.
+    /// Check if the circuit allows execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::CircuitOpen)` when the circuit is open.
     pub fn can_execute<E>(&self) -> Result<(), CallError<E>> {
         let mut inner = self.state.lock();
         match inner.state {
-            State::Closed => Ok(()),
+            State::Closed | State::HalfOpen => Ok(()),
             State::Open { opened_at } => {
                 let elapsed = self.clock.now().duration_since(opened_at);
                 if elapsed >= self.config.reset_timeout {
@@ -179,6 +195,7 @@ impl CircuitBreaker {
                     inner.state = State::HalfOpen;
                     inner.failures = 0;
                     inner.total = 0;
+                    drop(inner);
                     self.sink.record(ResilienceEvent::CircuitStateChanged {
                         from: prev,
                         to: CircuitState::HalfOpen,
@@ -188,11 +205,13 @@ impl CircuitBreaker {
                     Err(CallError::CircuitOpen)
                 }
             }
-            State::HalfOpen => Ok(()),
         }
     }
 
     /// Record an operation outcome directly (useful when driving the CB from external code).
+    // Reason: the lock guard is held intentionally across the entire match to ensure
+    // atomic state transitions — dropping early would create a TOCTOU window.
+    #[allow(clippy::significant_drop_tightening)]
     pub fn record_outcome(&self, outcome: Outcome) {
         let mut inner = self.state.lock();
         match outcome {
@@ -250,6 +269,10 @@ impl CircuitBreaker {
     }
 
     /// Alias for `new()` — backward compat with manager.rs.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ConfigError)` if configuration is invalid.
     pub fn with_config(config: CircuitBreakerConfig) -> Result<Self, ConfigError> {
         Self::new(config)
     }
@@ -266,7 +289,7 @@ impl std::fmt::Debug for CircuitBreaker {
     }
 }
 
-fn to_circuit_state(s: State) -> CircuitState {
+const fn to_circuit_state(s: State) -> CircuitState {
     match s {
         State::Closed => CircuitState::Closed,
         State::Open { .. } => CircuitState::Open,

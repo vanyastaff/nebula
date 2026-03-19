@@ -42,6 +42,8 @@ impl LeakyBucket {
 }
 
 impl RateLimiter for LeakyBucket {
+    // Reason: f64 leak amount cast to usize — acceptable for bucket level calculation.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     async fn acquire(&self) -> Result<(), CallError<()>> {
         let mut state = self.state.lock();
 
@@ -71,6 +73,8 @@ impl RateLimiter for LeakyBucket {
         operation().await.map_err(CallError::Operation)
     }
 
+    // Reason: usize capacity cast to f64 — acceptable for rate reporting.
+    #[allow(clippy::cast_precision_loss)]
     async fn current_rate(&self) -> f64 {
         let state = self.state.lock();
         (self.capacity - state.level) as f64

@@ -140,6 +140,10 @@ impl Gate {
     ///
     /// Returns [`GateClosed`] if the gate is closing or already closed. The
     /// check is non-blocking and uses `try_acquire`, so it never blocks.
+    // Reason: the permit must outlive the closing check — we either forget it
+    // (creating a guard) or drop it (returning it to the semaphore). The drop
+    // order is intentional and correct.
+    #[allow(clippy::significant_drop_tightening)]
     pub fn enter(&self) -> Result<GateGuard, GateClosed> {
         // Acquire first to hold our place in the semaphore, THEN check closing.
         //

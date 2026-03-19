@@ -174,6 +174,8 @@ impl Metric {
     // Under concurrent writes the snapshot may be slightly inconsistent
     // (e.g. count and sum from different points in time). This is acceptable
     // for approximate monitoring metrics — same trade-off as Prometheus counters.
+    // Reason: u64 count cast to f64 is acceptable for approximate metric averages.
+    #[allow(clippy::cast_precision_loss)]
     fn snapshot(&self) -> MetricSnapshot {
         let count = self.count.load(Ordering::Relaxed);
         let sum = f64::from_bits(self.sum.load(Ordering::Relaxed));

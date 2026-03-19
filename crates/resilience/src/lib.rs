@@ -65,78 +65,8 @@
 //! ```
 
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::perf)]
-#![expect(
-    clippy::module_name_repetitions,
-    reason = "pattern types repeat module name by design"
-)]
-#![expect(
-    clippy::missing_errors_doc,
-    reason = "error docs deferred to thiserror Display impls"
-)]
-#![expect(
-    clippy::missing_panics_doc,
-    reason = "panics section not needed for infallible paths"
-)]
-#![expect(
-    clippy::cast_possible_truncation,
-    reason = "numeric casts are range-checked at call sites"
-)]
-#![expect(
-    clippy::cast_sign_loss,
-    reason = "unsigned values cast from checked non-negative sources"
-)]
-#![expect(
-    clippy::cast_precision_loss,
-    reason = "precision loss acceptable for metrics/rates"
-)]
-#![expect(
-    clippy::doc_markdown,
-    reason = "technical identifiers in docs are intentional"
-)]
-#![expect(
-    clippy::needless_pass_by_value,
-    reason = "impl Into<String> params require owned values"
-)]
-#![expect(
-    clippy::return_self_not_must_use,
-    reason = "builder methods chain by convention"
-)]
-#![expect(
-    clippy::cast_possible_wrap,
-    reason = "usize to i64/i32 casts never exceed range"
-)]
-#![expect(
-    clippy::should_implement_trait,
-    reason = "FallbackChain::add is builder-style, not Add trait"
-)]
-#![expect(
-    clippy::new_without_default,
-    reason = "PipelineBuilder::new() is const fn and cannot be called from Default::default()"
-)]
-#![expect(
-    clippy::missing_const_for_fn,
-    reason = "pre-existing code not being rewritten in this phase"
-)]
-#![expect(
-    clippy::must_use_candidate,
-    reason = "pre-existing code not being rewritten in this phase"
-)]
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "pre-existing code not being rewritten in this phase"
-)]
-#![expect(
-    clippy::excessive_nesting,
-    reason = "pre-existing code not being rewritten in this phase"
-)]
-#![expect(
-    clippy::match_same_arms,
-    reason = "pre-existing code not being rewritten in this phase"
-)]
-#![expect(
-    clippy::missing_fields_in_debug,
-    reason = "pre-existing code not being rewritten in this phase"
-)]
+// Reason: types like CircuitBreakerConfig deliberately repeat the module name for readability.
+#![allow(clippy::module_name_repetitions)]
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
@@ -154,13 +84,22 @@ pub mod retryable;
 
 pub use core::{
     // Error types
-    CircuitBreakerOpenState, ErrorClass, ErrorContext, ResilienceError, ResilienceResult,
-
-    // Metrics
-    MetricKind, MetricSnapshot, Metrics, MetricsCollector,
-
+    CircuitBreakerOpenState,
     // Policy source
-    ConstantLoad, LoadSignal, PolicySource,
+    ConstantLoad,
+    ErrorClass,
+    ErrorContext,
+    LoadSignal,
+    // Metrics
+    MetricKind,
+    MetricSnapshot,
+    Metrics,
+    MetricsCollector,
+
+    PolicySource,
+
+    ResilienceError,
+    ResilienceResult,
 
     // Core error and result types
     types::{CallError, CallResult, ConfigError},

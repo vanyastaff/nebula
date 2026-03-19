@@ -104,6 +104,7 @@ impl AnyRateLimiter {
         }
     }
     /// Wrap a `SlidingWindow`.
+    #[must_use]
     pub fn sliding_window(l: SlidingWindow) -> Self {
         Self {
             inner: AnyRateLimiterInner::SlidingWindow(Arc::new(l)),
@@ -127,6 +128,7 @@ impl AnyRateLimiter {
     }
 
     /// Inject a metrics sink.
+    #[must_use]
     pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self

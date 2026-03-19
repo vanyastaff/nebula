@@ -7,27 +7,43 @@ use super::error::{ErrorClass, ResilienceError};
 /// Result type for resilience operations
 pub type ResilienceResult<T> = Result<T, ResilienceError>;
 
-/// Extension trait for Result types
+/// Extension trait for Result types.
 pub trait ResultExt<T> {
-    /// Map error with context
+    /// Map error with context.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ResilienceError::Custom)` wrapping the original error with the given context.
     fn with_context<C, F>(self, f: F) -> ResilienceResult<T>
     where
         C: fmt::Display + Send + Sync + 'static,
         F: FnOnce() -> C;
 
-    /// Convert to resilience result
+    /// Convert to resilience result.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ResilienceError::Custom)` wrapping the original error.
     fn into_resilience(self) -> ResilienceResult<T>;
 
-    /// Check if error is retryable
+    /// Check if error is retryable.
     fn is_retryable_error(&self) -> bool;
 
-    /// Get error classification
+    /// Get error classification.
     fn error_class(&self) -> Option<ErrorClass>;
 
-    /// Add timeout context
+    /// Add timeout context.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ResilienceError::Timeout)` with the given duration if the original result is an error.
     fn timeout_context(self, duration: std::time::Duration) -> ResilienceResult<T>;
 
-    /// Wrap error with custom message
+    /// Wrap error with custom message.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ResilienceError::Custom)` wrapping the original error with the given message.
     fn wrap_err(self, msg: impl Into<String>) -> ResilienceResult<T>;
 }
 

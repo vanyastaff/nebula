@@ -79,25 +79,25 @@ async fn test_observability_failure_storm_metrics_and_event_delivery() {
         let hooks = hooks.clone();
         tasks.push(tokio::spawn(async move {
             for _ in 0..EVENTS_PER_WORKER {
-                hooks.emit(PatternEvent::Failed {
+                hooks.emit(&PatternEvent::Failed {
                     pattern: "retry".to_string(),
                     operation: "storm-op".to_string(),
                     error: "downstream unavailable".to_string(),
                     duration: Duration::from_millis(3),
                 });
 
-                hooks.emit(PatternEvent::RetryAttempt {
+                hooks.emit(&PatternEvent::RetryAttempt {
                     operation: "storm-op".to_string(),
                     attempt: 2,
                     max_attempts: 3,
                 });
 
-                hooks.emit(PatternEvent::TimeoutOccurred {
+                hooks.emit(&PatternEvent::TimeoutOccurred {
                     operation: "storm-op".to_string(),
                     timeout: Duration::from_millis(10),
                 });
 
-                hooks.emit(PatternEvent::CircuitBreakerStateChanged {
+                hooks.emit(&PatternEvent::CircuitBreakerStateChanged {
                     service: "storm-svc".to_string(),
                     from_state: "closed".to_string(),
                     to_state: "open".to_string(),
@@ -159,7 +159,7 @@ async fn test_observability_backpressure_no_drop_with_slow_hook() {
         let hooks = Arc::clone(&hooks);
         tasks.push(tokio::spawn(async move {
             for _ in 0..EVENTS_PER_WORKER {
-                hooks.emit(PatternEvent::TimeoutOccurred {
+                hooks.emit(&PatternEvent::TimeoutOccurred {
                     operation: "slow-path".to_string(),
                     timeout: Duration::from_millis(5),
                 });

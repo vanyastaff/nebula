@@ -75,6 +75,8 @@ impl RateLimiter for SlidingWindow {
         operation().await.map_err(CallError::Operation)
     }
 
+    // Reason: usize request count cast to f64 — acceptable for rate reporting.
+    #[allow(clippy::cast_precision_loss)]
     async fn current_rate(&self) -> f64 {
         let now = Instant::now();
         let mut requests = self.requests.lock();

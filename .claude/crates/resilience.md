@@ -33,4 +33,10 @@ Fault-tolerance patterns — circuit breaker, retry, bulkhead, rate limiter, tim
 ## Relations
 - Zero internal nebula deps (fully standalone). Used by nebula-resource, nebula-credential, nebula-engine for external call resilience.
 
+- **`ObservabilityHooks::emit()` takes `&PatternEvent`** (changed from owned). All callers must pass a reference.
+- **`CircuitState` is `Copy`** — derives `Copy` in addition to `Clone`.
+- **`PipelineBuilder<E>` implements `Default`** via `Default::default()` delegating to `Self::new()`.
+- **`run_steps` refactored**: Retry arm extracted to `run_retry_step`, CB/Bulkhead inner bodies to `run_inner_unwrapped`, result mapping to `classify_inner` + `map_retry_result`. All private helpers in `pipeline.rs`.
+- **All 18 crate-level `#![expect(clippy::...)]` removed** — each warning fixed at source or locally `#[allow]`-ed with a `// Reason:` comment.
+
 <!-- reviewed: 2026-03-19 -->

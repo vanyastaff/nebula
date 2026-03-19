@@ -1,6 +1,6 @@
-//! MetricsSink — event sink for resilience observability.
+//! `MetricsSink` — event sink for resilience observability.
 //!
-//! Replaces the custom ObservabilityHook system. The default is [`NoopSink`].
+//! Replaces the custom `ObservabilityHook` system. The default is [`NoopSink`].
 //! In nebula-engine, `EventBusSink` wraps nebula-eventbus — no direct dep here.
 
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use std::time::Duration;
 
 /// A state in the circuit breaker state machine.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CircuitState {
     /// Normal operation — requests pass through.
     Closed,
@@ -54,7 +54,7 @@ pub enum ResilienceEvent {
     LoadShed,
 }
 
-/// Receives resilience events for observability (metrics, logging, EventBus).
+/// Receives resilience events for observability (metrics, logging, `EventBus`).
 pub trait MetricsSink: Send + Sync {
     /// Record a resilience event.
     fn record(&self, event: ResilienceEvent);

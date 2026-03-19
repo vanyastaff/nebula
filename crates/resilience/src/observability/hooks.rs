@@ -502,10 +502,10 @@ impl ObservabilityHooks {
         self
     }
 
-    /// Emit an event to all hooks
-    pub fn emit(&self, event: PatternEvent) {
+    /// Emit an event to all hooks.
+    pub fn emit(&self, event: &PatternEvent) {
         for hook in self.hooks.iter() {
-            hook.on_event(&event);
+            hook.on_event(event);
         }
     }
 
@@ -649,12 +649,12 @@ mod tests {
             .with_hook(Arc::new(MetricsHook::new()))
             .with_hook(Arc::new(LoggingHook::new(LogLevel::Info)));
 
-        hooks.emit(PatternEvent::Started {
+        hooks.emit(&PatternEvent::Started {
             pattern: "test".to_string(),
             operation: "test_op".to_string(),
         });
 
-        hooks.emit(PatternEvent::Succeeded {
+        hooks.emit(&PatternEvent::Succeeded {
             pattern: "test".to_string(),
             operation: "test_op".to_string(),
             duration: Duration::from_millis(50),
