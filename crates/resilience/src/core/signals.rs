@@ -25,12 +25,20 @@ pub struct ConstantLoad {
 impl ConstantLoad {
     /// A fully idle signal (0% load, 0% errors, 5ms latency).
     pub fn idle() -> Self {
-        Self { factor: 0.0, error_rate: 0.0, p99_latency: Duration::from_millis(5) }
+        Self {
+            factor: 0.0,
+            error_rate: 0.0,
+            p99_latency: Duration::from_millis(5),
+        }
     }
 
     /// A fully saturated signal (100% load, 50% errors, 2s latency).
     pub fn saturated() -> Self {
-        Self { factor: 1.0, error_rate: 0.5, p99_latency: Duration::from_secs(2) }
+        Self {
+            factor: 1.0,
+            error_rate: 0.5,
+            p99_latency: Duration::from_secs(2),
+        }
     }
 }
 

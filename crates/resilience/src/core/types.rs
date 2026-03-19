@@ -47,9 +47,10 @@ impl<E> CallError<E> {
     {
         match self {
             Self::Operation(e) => CallError::Operation(f(e)),
-            Self::RetriesExhausted { attempts, last } => {
-                CallError::RetriesExhausted { attempts, last: f(last) }
-            }
+            Self::RetriesExhausted { attempts, last } => CallError::RetriesExhausted {
+                attempts,
+                last: f(last),
+            },
             Self::CircuitOpen => CallError::CircuitOpen,
             Self::BulkheadFull => CallError::BulkheadFull,
             Self::Timeout(d) => CallError::Timeout(d),
@@ -70,7 +71,10 @@ pub struct ConfigError {
 
 impl ConfigError {
     pub fn new(field: &'static str, message: impl Into<String>) -> Self {
-        Self { field, message: message.into() }
+        Self {
+            field,
+            message: message.into(),
+        }
     }
 }
 
@@ -108,7 +112,9 @@ mod tests {
 
     #[test]
     fn cancelled_is_not_retriable() {
-        let e: CallError<MyErr> = CallError::Cancelled { reason: Some("shutdown".into()) };
+        let e: CallError<MyErr> = CallError::Cancelled {
+            reason: Some("shutdown".into()),
+        };
         assert!(!e.is_retriable());
     }
 }

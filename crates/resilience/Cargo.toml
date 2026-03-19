@@ -58,7 +58,7 @@ loom = "0.7"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [[bench]]
-name = "circuit_breaker"
+name = "compose"
 harness = false
 
 [[bench]]
@@ -70,27 +70,11 @@ name = "manager"
 harness = false
 
 [[bench]]
-name = "retry"
-harness = false
-
-[[bench]]
-name = "compose"
-harness = false
-
-[[bench]]
 name = "timeout"
 harness = false
 
 [[bench]]
-name = "bulkhead"
-harness = false
-
-[[bench]]
 name = "fallback"
-harness = false
-
-[[bench]]
-name = "hedge"
 harness = false
 
 [[bench]]

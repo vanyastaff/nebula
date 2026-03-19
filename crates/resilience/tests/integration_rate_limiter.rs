@@ -68,11 +68,11 @@ async fn test_adaptive_rate_limiter_adjusts() {
 }
 
 #[tokio::test]
-async fn test_any_rate_limiter_enum() {
-    let token_bucket = AnyRateLimiter::TokenBucket(Arc::new(TokenBucket::new(100, 10.0)));
-    let leaky = AnyRateLimiter::LeakyBucket(Arc::new(LeakyBucket::new(100, 10.0)));
+async fn test_any_rate_limiter_factory() {
+    let token_bucket = AnyRateLimiter::token_bucket(TokenBucket::new(100, 10.0));
+    let leaky = AnyRateLimiter::leaky_bucket(LeakyBucket::new(100, 10.0));
 
-    // Both should work through the enum
+    // Both should work through the wrapper
     assert!(token_bucket.acquire().await.is_ok());
     assert!(leaky.acquire().await.is_ok());
 }

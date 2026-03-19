@@ -1,76 +1,73 @@
-//! Benchmarks for layer composition overhead in deep chains
+//! Benchmarks for `ResiliencePipeline` composition and execution overhead.
 //!
 //! Measures:
-//! - chain build cost by depth
-//! - chain execute overhead with no-op layers
-#![expect(
-    clippy::excessive_nesting,
-    reason = "Composition benchmark scenarios require deeply nested async setup and execution"
-)]
+//! - pipeline build cost by step count
+//! - pipeline execute overhead for the happy path
+//! - pipeline retry path overhead
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::{
-    BoxedOperation, LayerBuilder, LayerStack, ResilienceError, ResilienceLayer, RetryableOperation,
+    ResiliencePipeline,
+    patterns::{
+        bulkhead::{Bulkhead, BulkheadConfig},
+        circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
+        retry::{BackoffConfig, RetryConfig},
+    },
 };
-use std::future::Future;
 use std::hint::black_box;
-use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
-struct NoopLayer;
-
-impl ResilienceLayer<u64> for NoopLayer {
-    fn apply<'a>(
-        &'a self,
-        operation: &'a BoxedOperation<u64>,
-        next: &'a (dyn LayerStack<u64> + Send + Sync),
-        _cancellation: Option<&'a nebula_resilience::core::CancellationContext>,
-    ) -> Pin<Box<dyn Future<Output = Result<u64, ResilienceError>> + Send + 'a>> {
-        next.execute(operation)
-    }
-
-    fn name(&self) -> &'static str {
-        "noop"
-    }
+fn build_pipeline_1step() -> ResiliencePipeline<&'static str> {
+    ResiliencePipeline::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
 }
 
-fn build_chain(depth: usize) -> Arc<dyn LayerStack<u64> + Send + Sync> {
-    let mut builder = LayerBuilder::<u64>::new();
-    for _ in 0..depth {
-        builder = builder.with_layer(Arc::new(NoopLayer));
-    }
-    builder.build()
+fn build_pipeline_2step() -> ResiliencePipeline<&'static str> {
+    ResiliencePipeline::builder()
+        .timeout(Duration::from_secs(5))
+        .retry(RetryConfig::new(3).backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
+        .build()
 }
 
-fn compose_build_overhead(c: &mut Criterion) {
-    let mut group = c.benchmark_group("compose/build");
+fn build_pipeline_4step() -> ResiliencePipeline<&'static str> {
+    let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default()).unwrap());
+    let bh = Arc::new(Bulkhead::new(BulkheadConfig { max_concurrency: 64, ..Default::default() }).unwrap());
+    ResiliencePipeline::builder()
+        .timeout(Duration::from_secs(5))
+        .retry(RetryConfig::new(3).backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
+        .circuit_breaker(cb)
+        .bulkhead(bh)
+        .build()
+}
 
-    for &depth in &[1, 3, 5, 8, 12, 16] {
-        group.bench_with_input(BenchmarkId::new("depth", depth), &depth, |b, &depth| {
-            b.iter(|| {
-                let chain = build_chain(depth);
-                black_box(chain)
-            });
-        });
-    }
+fn pipeline_build_overhead(c: &mut Criterion) {
+    let mut group = c.benchmark_group("pipeline/build");
+
+    group.bench_function("1step", |b| b.iter(|| black_box(build_pipeline_1step())));
+    group.bench_function("2step", |b| b.iter(|| black_box(build_pipeline_2step())));
+    group.bench_function("4step", |b| b.iter(|| black_box(build_pipeline_4step())));
 
     group.finish();
 }
 
-fn compose_execute_overhead(c: &mut Criterion) {
-    let mut group = c.benchmark_group("compose/execute");
+fn pipeline_execute_overhead(c: &mut Criterion) {
+    let mut group = c.benchmark_group("pipeline/execute");
 
-    for &depth in &[1, 3, 5, 8, 12, 16] {
-        group.bench_with_input(BenchmarkId::new("depth", depth), &depth, |b, &depth| {
+    for steps in [1usize, 2, 4] {
+        let pipeline: ResiliencePipeline<&str> = match steps {
+            1 => build_pipeline_1step(),
+            2 => build_pipeline_2step(),
+            _ => build_pipeline_4step(),
+        };
+
+        group.bench_with_input(BenchmarkId::new("steps", steps), &steps, |b, _| {
             let rt = tokio::runtime::Runtime::new().unwrap();
-            let chain = build_chain(depth);
-
             b.to_async(&rt).iter(|| {
-                let chain = Arc::clone(&chain);
+                let p = &pipeline;
                 async move {
-                    let operation = || async { Ok::<u64, ResilienceError>(black_box(42)) };
-                    let boxed = BoxedOperation::new(operation);
-                    let result = chain.execute(&boxed).await;
+                    let result = p.call(|| Box::pin(async { Ok::<u64, &str>(black_box(42)) })).await;
                     black_box(result)
                 }
             });
@@ -80,36 +77,27 @@ fn compose_execute_overhead(c: &mut Criterion) {
     group.finish();
 }
 
-fn compose_execute_retry_shape(c: &mut Criterion) {
-    let mut group = c.benchmark_group("compose/execute_retryable_clone");
+fn pipeline_retry_path(c: &mut Criterion) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let pipeline = ResiliencePipeline::<&str>::builder()
+        .retry(RetryConfig::new(3).backoff(BackoffConfig::Fixed(Duration::ZERO)))
+        .build();
 
-    for &depth in &[3, 8, 16] {
-        group.bench_with_input(BenchmarkId::new("depth", depth), &depth, |b, &depth| {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let chain = build_chain(depth);
-            let operation = Arc::new(|| async { Ok::<u64, ResilienceError>(black_box(7)) });
-
-            b.to_async(&rt).iter(|| {
-                let chain = Arc::clone(&chain);
-                let operation = Arc::clone(&operation);
-                async move {
-                    let boxed = BoxedOperation::from_arc(
-                        operation as Arc<dyn RetryableOperation<u64> + Send + Sync>,
-                    );
-                    let result = chain.execute(&boxed).await;
-                    black_box(result)
-                }
-            });
+    c.bench_function("pipeline/retry_success_first_attempt", |b| {
+        b.to_async(&rt).iter(|| {
+            let p = &pipeline;
+            async move {
+                let result = p.call(|| Box::pin(async { Ok::<u64, &str>(black_box(1)) })).await;
+                black_box(result)
+            }
         });
-    }
-
-    group.finish();
+    });
 }
 
 criterion_group!(
     benches,
-    compose_build_overhead,
-    compose_execute_overhead,
-    compose_execute_retry_shape,
+    pipeline_build_overhead,
+    pipeline_execute_overhead,
+    pipeline_retry_path,
 );
 criterion_main!(benches);

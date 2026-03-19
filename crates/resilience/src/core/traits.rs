@@ -536,9 +536,7 @@ pub fn timeout<const MS: u64>() -> TimeoutConfig<MS> {
 pub trait CanExecute: Send + Sync {
     /// Returns `Ok(())` if the pattern allows execution, or an error with
     /// details about why the request is being rejected.
-    fn can_execute(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = ResilienceResult<()>> + Send + '_>>;
+    fn can_execute(&self) -> Pin<Box<dyn Future<Output = ResilienceResult<()>> + Send + '_>>;
 }
 
 /// Lightweight health query trait.
@@ -551,7 +549,11 @@ pub trait PatternHealth: Send + Sync {
 
     /// Human-readable status string.
     fn health_status(&self) -> &'static str {
-        if self.is_healthy() { "healthy" } else { "degraded" }
+        if self.is_healthy() {
+            "healthy"
+        } else {
+            "degraded"
+        }
     }
 }
 

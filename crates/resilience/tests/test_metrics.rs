@@ -53,7 +53,7 @@ async fn test_circuit_breaker_metrics() {
 
     // Initial state should be Closed
     assert_eq!(format!("{:?}", cb_stats.state), "Closed");
-    assert_eq!(cb_stats.failure_count, 0);
+    assert_eq!(cb_stats.failures, 0);
 }
 
 #[tokio::test]

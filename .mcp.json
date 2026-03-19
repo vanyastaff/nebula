@@ -1,28 +1,5 @@
 {
   "mcpServers": {
-    "sequential-thinking": {
-      "command": "cmd",
-      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-sequential-thinking"]
-    },
-    "filesystem": {
-      "command": "cmd",
-      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\vanya\\RustroverProjects\\nebula"]
-    },
-    "memory": {
-      "command": "cmd",
-      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-memory"]
-    },
-    "deepwiki": {
-      "type": "http",
-      "url": "https://mcp.deepwiki.com/mcp"
-    },
-    "github": {
-      "command": "cmd",
-      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
-      }
-    },
     "serena": {
       "command": "uvx",
       "args": [
@@ -38,10 +15,6 @@
     },
     "rust-docs": {
       "command": "rust-docs-mcp"
-    },
-    "rust-cargo": {
-      "command": "rust-mcp-server",
-      "args": ["--workspace", "C:\\Users\\vanya\\RustroverProjects\\nebula"]
     }
   }
 }

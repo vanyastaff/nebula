@@ -1,143 +1,68 @@
-//! Resilience patterns for building fault-tolerant systems with advanced type safety
+//! Resilience patterns for building fault-tolerant Rust services.
 //!
-//! This crate provides resilience patterns including retry, circuit breaker,
-//! bulkhead, rate limiter, and timeout functionality using advanced Rust type system features:
-//!
-//! - **Const generics** for compile-time configuration validation
-//! - **Phantom types** for zero-cost state safety
-//! - **GATs (Generic Associated Types)** for flexible async operations
-//! - **Sealed traits** for controlled extensibility
-//! - **Type-state patterns** for compile-time correctness
-//! - **Zero-cost abstractions** with marker types
+//! Patterns: retry, circuit breaker, bulkhead, rate limiter, timeout, hedge, load shed.
+//! All return `CallError<E>` so callers keep their own error type.
 //!
 //! # Quick Start
 //!
 //! ```rust,no_run
-//! use nebula_resilience::prelude::*;
+//! use nebula_resilience::{ResiliencePipeline, CallError};
+//! use nebula_resilience::patterns::retry::{RetryConfig, BackoffConfig};
 //! use std::time::Duration;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Type-safe circuit breaker with compile-time configuration
-//!     let config = CircuitBreakerConfig::<5, 30_000>::new()
-//!         .with_half_open_limit(3)
-//!         .with_min_operations(10);
+//!     let pipeline = ResiliencePipeline::<&str>::builder()
+//!         .timeout(Duration::from_secs(5))
+//!         .retry(RetryConfig::new(3).backoff(BackoffConfig::Fixed(Duration::from_millis(100))))
+//!         .build();
 //!
-//!     let breaker = CircuitBreaker::new(config)?;
-//!
-//!     // Type-safe retry with const generics
-//!     let retry_strategy = exponential_retry::<3>()?;
-//!
-//!     // Execute with both patterns
-//!     let result = breaker.execute(|| async {
-//!         retry_strategy.execute_resilient(|| async {
-//!             // Your operation here
-//!             Ok::<_, ResilienceError>("success")
-//!         })
-//!         .await
-//!         .map_err(|failure| failure.error)
-//!     }).await;
+//!     let result = pipeline.call(|| Box::pin(async {
+//!         Ok::<_, &str>("success")
+//!     })).await;
 //!     Ok(())
 //! }
 //! ```
 //!
-//! # Type-Safe Circuit Breaker
+//! # Circuit Breaker
 //!
 //! ```rust,no_run
-//! use nebula_resilience::{CircuitBreaker, CircuitBreakerConfig, ResilienceError};
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Compile-time validated configuration with const generics
-//!     let config = CircuitBreakerConfig::<3, 10_000>::new()
-//!         .with_half_open_limit(2)
-//!         .with_min_operations(5);
-//!
-//!     let breaker = CircuitBreaker::new(config)?;
-//!
-//!     let result = breaker.execute(|| async {
-//!         Ok::<_, ResilienceError>("success")
-//!     }).await;
-//!     Ok(())
-//! }
-//! ```
-//!
-//! # Advanced Retry Strategies
-//!
-//! ```rust,no_run
-//! use nebula_resilience::{
-//!     RetryStrategy, ExponentialBackoff, ConservativeCondition,
-//!     RetryConfig, JitterPolicy, ResilienceError
-//! };
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Type-safe retry with const generics and zero-cost abstractions
-//!     let config = RetryConfig::new(
-//!         ExponentialBackoff::<100, 20, 5000>::default(),
-//!         ConservativeCondition::<3>::new()
-//!     ).with_jitter(JitterPolicy::Equal);
-//!
-//!     let strategy = RetryStrategy::new(config)?;
-//!
-//!     let (result, stats) = strategy.execute(|| async {
-//!         Ok::<_, ResilienceError>("success")
-//!     }).await?;
-//!     Ok(())
-//! }
-//! ```
-//!
-//! # Typestate Pattern Example
-//!
-//! The circuit breaker uses typestate pattern for compile-time state safety:
-//!
-//! ```rust
-//! use nebula_resilience::patterns::circuit_breaker::{
-//!     CircuitBreaker, CircuitBreakerConfig,
-//! };
-//!
-//! # #[tokio::main]
-//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // Type-safe builder that tracks configuration state
-//! let config = CircuitBreakerConfig::<5, 30_000>::new()
-//!     .with_half_open_limit(3);
-//!
-//! let breaker = CircuitBreaker::new(config)?;
-//! // Circuit breaker starts in Closed state (type: CircuitBreaker<5, 30_000>)
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! # Const Generic Validation
-//!
-//! Configuration is validated at compile time using const generics:
-//!
-//! ```rust
 //! use nebula_resilience::patterns::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+//! use std::time::Duration;
 //!
-//! # #[tokio::main]
-//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // Compile-time validated circuit breaker
-//! // FAILURE_THRESHOLD=5, RESET_TIMEOUT_MS=30000
-//! let breaker = CircuitBreaker::<5, 30_000>::new(
-//!     CircuitBreakerConfig::new()
-//! )?;
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let cb = CircuitBreaker::new(CircuitBreakerConfig {
+//!         failure_threshold: 5,
+//!         reset_timeout: Duration::from_secs(30),
+//!         ..Default::default()
+//!     })?;
 //!
-//! // The const generics ensure configuration validity at compile time
-//! // This prevents runtime configuration errors
-//! # Ok(())
-//! # }
+//!     let result = cb.call(|| Box::pin(async {
+//!         Ok::<_, &str>("success")
+//!     })).await;
+//!     Ok(())
+//! }
 //! ```
 //!
-//! # Advanced Type Features
+//! # Retry
 //!
-//! This crate demonstrates several advanced Rust type system features:
+//! ```rust,no_run
+//! use nebula_resilience::patterns::retry::{RetryConfig, BackoffConfig, retry_with};
+//! use nebula_resilience::CallError;
+//! use std::time::Duration;
 //!
-//! - **Const Generics**: Compile-time configuration validation
-//! - **Phantom Types**: Zero-cost state tracking without runtime overhead
-//! - **GATs**: Flexible async operation handling
-//! - **Sealed Traits**: Controlled API extensibility
-//! - **Typestate Pattern**: Compile-time state machine correctness
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let config = RetryConfig::<&str>::new(3)
+//!         .backoff(BackoffConfig::Fixed(Duration::from_millis(50)));
+//!
+//!     let result: Result<u32, CallError<&str>> = retry_with(config, || Box::pin(async {
+//!         Ok(42u32)
+//!     })).await;
+//!     Ok(())
+//! }
+//! ```
 
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::perf)]
 // Pedantic lints suppressed crate-wide — expect will warn if no longer needed
@@ -216,7 +141,6 @@ mod policy;
 pub mod retryable;
 
 // High-level composition and management
-mod compose;
 pub mod pipeline;
 
 // Re-exports from core with type safety
@@ -286,11 +210,6 @@ pub use patterns::{
     load_shed::load_shed,
 };
 
-// High-level abstractions
-pub use compose::{
-    BoxedOperation, FallbackLayer, HedgeLayer, LayerBuilder, LayerStack, RateLimiterLayer,
-    ResilienceChain, ResilienceLayer,
-};
 pub use core::{ConstantLoad, LoadSignal, PolicySource};
 pub use observability::{MetricsSink, NoopSink, RecordingSink, ResilienceEvent};
 // CircuitState re-exported as SinkCircuitState to avoid conflict with old patterns::circuit_breaker::State
@@ -311,12 +230,14 @@ pub use policy::{PolicyMetadata, ResiliencePolicy};
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// use nebula_resilience::prelude::*;
+/// use std::time::Duration;
 ///
-/// // Create standard circuit breaker and retry strategy
-/// let breaker = StandardCircuitBreaker::default();
-/// let retry = exponential_retry::<3>().unwrap();
+/// // Circuit breaker with default settings
+/// let cb = CircuitBreaker::new(CircuitBreakerConfig::default()).unwrap();
+/// // Retry: 3 attempts with 50ms fixed backoff
+/// let config = RetryConfig::<&str>::new(3).backoff(BackoffConfig::Fixed(Duration::from_millis(50)));
 /// ```
 pub mod prelude {
     // Errors and results
@@ -335,9 +256,8 @@ pub mod prelude {
     };
 
     // Composition and management
-    pub use crate::{
-        LayerBuilder, PolicyBuilder, ResilienceChain, ResilienceManager, ResiliencePolicy,
-    };
+    pub use crate::{PolicyBuilder, ResilienceManager, ResiliencePolicy};
+    pub use crate::pipeline::{PipelineBuilder, ResiliencePipeline};
 
     // Gate / graceful-shutdown barrier
     pub use crate::gate::{Gate, GateClosed, GateGuard};

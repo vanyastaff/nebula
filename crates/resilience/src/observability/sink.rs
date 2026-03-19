@@ -21,7 +21,10 @@ pub enum CircuitState {
 #[derive(Debug, Clone)]
 pub enum ResilienceEvent {
     /// Circuit breaker transitioned between states.
-    CircuitStateChanged { from: CircuitState, to: CircuitState },
+    CircuitStateChanged {
+        from: CircuitState,
+        to: CircuitState,
+    },
     /// A retry attempt was made.
     RetryAttempt { attempt: u32, will_retry: bool },
     /// A bulkhead rejected a request (at capacity).
@@ -68,14 +71,17 @@ impl RecordingSink {
 
     /// Count events matching a given kind string.
     pub fn count(&self, kind: &str) -> usize {
-        self.events().iter().filter(|e| event_kind(e) == kind).count()
+        self.events()
+            .iter()
+            .filter(|e| event_kind(e) == kind)
+            .count()
     }
 
     /// Returns true if a `CircuitStateChanged` event to `to` was recorded.
     pub fn has_state_change(&self, to: CircuitState) -> bool {
-        self.events().iter().any(|e| {
-            matches!(e, ResilienceEvent::CircuitStateChanged { to: t, .. } if *t == to)
-        })
+        self.events()
+            .iter()
+            .any(|e| matches!(e, ResilienceEvent::CircuitStateChanged { to: t, .. } if *t == to))
     }
 }
 

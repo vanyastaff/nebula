@@ -28,10 +28,10 @@
 //! ```
 
 // Under loom, swap std atomics for loom-instrumented equivalents.
-#[cfg(not(loom))]
-use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(loom)]
 use loom::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(loom))]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use std::sync::Arc;
 

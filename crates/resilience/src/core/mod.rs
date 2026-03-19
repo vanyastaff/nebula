@@ -45,8 +45,8 @@ pub use error::{CircuitBreakerOpenState, ErrorClass, ErrorContext, ResilienceErr
 pub use metrics::{MetricKind, MetricSnapshot, Metrics, MetricsCollector};
 pub use result::{ResilienceResult, ResultExt};
 pub use traits::{
-    CanExecute, ExecuteGuard, FromResilienceError, PatternHealth,
-    Executable, HealthCheck, PatternMetrics, ResiliencePattern, Retryable,
+    CanExecute, Executable, ExecuteGuard, FromResilienceError, HealthCheck, PatternHealth,
+    PatternMetrics, ResiliencePattern, Retryable,
     circuit_states::{Closed, HalfOpen, Open, StateTransition, TypestateCircuitState},
 };
 
@@ -57,9 +57,9 @@ pub use advanced::{
 };
 
 // Re-export core error and result types (ConfigError exported via lib.rs directly to avoid conflict)
-pub use types::{CallError, CallResult};
 pub use policy_source::PolicySource;
 pub use signals::{ConstantLoad, LoadSignal};
+pub use types::{CallError, CallResult};
 
 // Re-export cancellation support
 pub use cancellation::{

@@ -9,11 +9,11 @@
 //! - Comparison between different algorithms
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+#[cfg(feature = "governor")]
+use nebula_resilience::patterns::GovernorRateLimiter;
 use nebula_resilience::{
     AdaptiveRateLimiter, LeakyBucket, RateLimiter, ResilienceError, SlidingWindow, TokenBucket,
 };
-#[cfg(feature = "governor")]
-use nebula_resilience::patterns::GovernorRateLimiter;
 use std::hint::black_box;
 use std::sync::Arc;
 

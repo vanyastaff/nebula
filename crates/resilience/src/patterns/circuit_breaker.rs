@@ -1,8 +1,8 @@
 //! Circuit breaker pattern — plain-struct config, injectable sink and clock.
 
+use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
-use parking_lot::Mutex;
 
 use crate::{
     CallError, ConfigError,
@@ -55,7 +55,10 @@ impl CircuitBreakerConfig {
             return Err(ConfigError::new("reset_timeout", "must be > 0"));
         }
         if !(0.0..=1.0).contains(&self.failure_rate_threshold) {
-            return Err(ConfigError::new("failure_rate_threshold", "must be 0.0..=1.0"));
+            return Err(ConfigError::new(
+                "failure_rate_threshold",
+                "must be 0.0..=1.0",
+            ));
         }
         Ok(())
     }
@@ -122,7 +125,11 @@ impl CircuitBreaker {
         config.validate()?;
         Ok(Self {
             config,
-            state: Mutex::new(InnerState { state: State::Closed, failures: 0, total: 0 }),
+            state: Mutex::new(InnerState {
+                state: State::Closed,
+                failures: 0,
+                total: 0,
+            }),
             clock: Arc::new(SystemClock),
             sink: Arc::new(NoopSink),
         })
@@ -210,7 +217,9 @@ impl CircuitBreaker {
                     && inner.total >= self.config.min_operations
                 {
                     let prev = to_circuit_state(inner.state);
-                    inner.state = State::Open { opened_at: self.clock.now() };
+                    inner.state = State::Open {
+                        opened_at: self.clock.now(),
+                    };
                     self.sink.record(ResilienceEvent::CircuitStateChanged {
                         from: prev,
                         to: CircuitState::Open,
@@ -263,8 +272,8 @@ fn to_circuit_state(s: State) -> CircuitState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CallError, RecordingSink};
     use crate::observability::sink::CircuitState as CS;
+    use crate::{CallError, RecordingSink};
     use std::time::Duration;
 
     fn default_config() -> CircuitBreakerConfig {
@@ -285,7 +294,10 @@ mod tests {
         for _ in 0..3 {
             let _ = cb.call::<(), _>(|| Box::pin(async { Err("fail") })).await;
         }
-        let err: CallError<&str> = cb.call::<(), _>(|| Box::pin(async { Ok(()) })).await.unwrap_err();
+        let err: CallError<&str> = cb
+            .call::<(), _>(|| Box::pin(async { Ok(()) }))
+            .await
+            .unwrap_err();
         assert!(matches!(err, CallError::CircuitOpen));
     }
 
@@ -308,7 +320,9 @@ mod tests {
             .unwrap()
             .with_sink(sink.clone());
         for _ in 0..3 {
-            let _ = cb.call::<(), &str>(|| Box::pin(async { Err("fail") })).await;
+            let _ = cb
+                .call::<(), &str>(|| Box::pin(async { Err("fail") }))
+                .await;
         }
         assert!(sink.has_state_change(CS::Open));
     }
