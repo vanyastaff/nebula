@@ -15,10 +15,10 @@ use nebula_action::InternalHandler;
 use nebula_action::metadata::ActionMetadata;
 use nebula_action::result::ActionResult;
 use nebula_action::{ActionContext, ActionError};
+use nebula_core::ActionKey;
 use nebula_core::Version;
 use nebula_core::action_key;
 use nebula_core::id::{NodeId, WorkflowId};
-use nebula_core::ActionKey;
 use nebula_engine::WorkflowEngine;
 use nebula_execution::context::ExecutionBudget;
 use nebula_resource::resource::{Config, Resource};
@@ -136,8 +136,8 @@ async fn action_acquires_resource_through_engine() {
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
-    let event_bus = Arc::new(EventBus::new(128));
-    let metrics = Arc::new(MetricsRegistry::new());
+    let event_bus = EventBus::new(128);
+    let metrics = MetricsRegistry::new();
     let runtime = Arc::new(ActionRuntime::new(
         registry,
         sandbox,
@@ -177,7 +177,10 @@ async fn full_resource_lifecycle_with_stats_and_shutdown() {
             MockResource,
             MockConfig,
             PoolConfig {
-                sizing: PoolSizing { min_size: 0, max_size: 2 },
+                sizing: PoolSizing {
+                    min_size: 0,
+                    max_size: 2,
+                },
                 ..Default::default()
             },
         )
@@ -193,8 +196,8 @@ async fn full_resource_lifecycle_with_stats_and_shutdown() {
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
-    let event_bus = Arc::new(EventBus::new(128));
-    let metrics = Arc::new(MetricsRegistry::new());
+    let event_bus = EventBus::new(128);
+    let metrics = MetricsRegistry::new();
     let runtime = Arc::new(ActionRuntime::new(
         registry,
         sandbox,
@@ -248,8 +251,8 @@ async fn action_resource_fails_without_manager() {
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
-    let event_bus = Arc::new(EventBus::new(128));
-    let metrics = Arc::new(MetricsRegistry::new());
+    let event_bus = EventBus::new(128);
+    let metrics = MetricsRegistry::new();
     let runtime = Arc::new(ActionRuntime::new(
         registry,
         sandbox,

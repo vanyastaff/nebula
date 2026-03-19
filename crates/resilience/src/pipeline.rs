@@ -7,7 +7,9 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use crate::{
@@ -176,12 +178,12 @@ where
                 // Build an inner RetryConfig<Option<E>>:
                 // - Same max_attempts and backoff as the original config
                 // - retry_if: retry Some(e) (operation errors), stop on None (bail)
-                let inner_config = RetryConfig::<Option<E>>::new(config.max_attempts)
+                let inner_config = RetryConfig::<Option<E>>::new_unchecked(config.max_attempts)
                     .backoff(config.backoff.clone())
                     .jitter(config.jitter.clone())
                     .retry_if(move |e: &Option<E>| {
                         // Stop if bail is set (non-operation error occurred)
-                        e.is_some() && bail_check.lock().unwrap().is_none()
+                        e.is_some() && bail_check.lock().is_none()
                     });
 
                 let result = retry_with(inner_config, {
@@ -197,7 +199,8 @@ where
                                 Ok(v) => Ok(v),
                                 Err(CallError::Operation(e)) => Err(Some(e)),
                                 Err(other) => {
-                                    *bail.lock().unwrap() = Some(other);
+                                    let mut guard = bail.lock();
+                                    *guard = Some(other);
                                     Err(None) // signals bail to retry_if
                                 }
                             }
@@ -217,7 +220,7 @@ where
                         | CallError::Operation(None),
                     ) => {
                         // Non-operation error caused early termination — recover from bail
-                        Err(bail.lock().unwrap().take().unwrap_or(CallError::Cancelled { reason: None }))
+                        Err({ let mut g = bail.lock(); g.take() }.unwrap_or(CallError::Cancelled { reason: None }))
                     }
                     Err(CallError::Operation(Some(e))) => Err(CallError::Operation(e)),
                     Err(CallError::CircuitOpen) => Err(CallError::CircuitOpen),
@@ -288,7 +291,7 @@ mod tests {
 
         let pipeline = ResiliencePipeline::<&str>::builder()
             .timeout(Duration::from_secs(5))
-            .retry(RetryConfig::new(3).backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
+            .retry(RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
             .build();
 
         let result = pipeline
@@ -309,7 +312,7 @@ mod tests {
     async fn pipeline_warns_on_bad_layer_order() {
         // timeout INSIDE retry is suboptimal — just verify build() succeeds
         let _pipeline = ResiliencePipeline::<&str>::builder()
-            .retry(RetryConfig::new(2).backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
+            .retry(RetryConfig::new(2).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
             .timeout(Duration::from_secs(1))
             .build();
     }
@@ -317,7 +320,7 @@ mod tests {
     #[tokio::test]
     async fn pipeline_returns_ok_on_success() {
         let pipeline = ResiliencePipeline::<&str>::builder()
-            .retry(RetryConfig::new(3).backoff(BackoffConfig::Fixed(Duration::ZERO)))
+            .retry(RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::ZERO)))
             .build();
 
         let result = pipeline.call(|| Box::pin(async { Ok::<u32, &str>(42) })).await;

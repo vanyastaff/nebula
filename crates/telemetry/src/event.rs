@@ -7,13 +7,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nebula_eventbus::EventBus as EventBusInner;
-use nebula_eventbus::EventFilter;
 use nebula_eventbus::FilteredSubscriber;
-use nebula_eventbus::ScopedEvent;
-use nebula_eventbus::SubscriptionScope;
 use serde::{Deserialize, Serialize};
 
-use crate::context::TraceContext;
+// Re-export eventbus types used in the public API of this module.
+pub use nebula_eventbus::{EventFilter, PublishOutcome, ScopedEvent, SubscriptionScope};
+
+use crate::trace::TraceContext;
 
 /// Execution lifecycle event.
 ///

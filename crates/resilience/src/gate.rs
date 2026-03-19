@@ -114,6 +114,12 @@ impl std::fmt::Debug for Gate {
     }
 }
 
+impl Default for Gate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Gate {
     /// Create a new, open gate.
     #[must_use]

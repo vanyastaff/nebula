@@ -36,8 +36,8 @@ pub struct ActionRuntime {
     #[allow(dead_code)] // reserved for sandboxed execution
     sandbox: Arc<dyn SandboxRunner>,
     data_policy: DataPassingPolicy,
-    event_bus: Arc<EventBus>,
-    metrics: Arc<MetricsRegistry>,
+    event_bus: EventBus,
+    metrics: MetricsRegistry,
 }
 
 impl ActionRuntime {
@@ -46,8 +46,8 @@ impl ActionRuntime {
         registry: Arc<ActionRegistry>,
         sandbox: Arc<dyn SandboxRunner>,
         data_policy: DataPassingPolicy,
-        event_bus: Arc<EventBus>,
-        metrics: Arc<MetricsRegistry>,
+        event_bus: EventBus,
+        metrics: MetricsRegistry,
     ) -> Self {
         Self {
             registry,
@@ -73,8 +73,8 @@ impl ActionRuntime {
             registry,
             sandbox,
             data_policy,
-            telemetry.event_bus_arc(),
-            telemetry.metrics_arc(),
+            telemetry.event_bus().clone(),
+            telemetry.metrics().clone(),
         )
     }
 
@@ -298,8 +298,8 @@ mod tests {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
-        let event_bus = Arc::new(EventBus::new(64));
-        let metrics = Arc::new(MetricsRegistry::new());
+        let event_bus = EventBus::new(64);
+        let metrics = MetricsRegistry::new();
 
         ActionRuntime::new(
             registry,
@@ -367,8 +367,8 @@ mod tests {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
-        let event_bus = Arc::new(EventBus::new(64));
-        let metrics = Arc::new(MetricsRegistry::new());
+        let event_bus = EventBus::new(64);
+        let metrics = MetricsRegistry::new();
 
         let rt = ActionRuntime::new(
             registry,
@@ -400,8 +400,8 @@ mod tests {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
-        let event_bus = Arc::new(EventBus::new(64));
-        let metrics = Arc::new(MetricsRegistry::new());
+        let event_bus = EventBus::new(64);
+        let metrics = MetricsRegistry::new();
         let mut sub = event_bus.subscribe();
 
         let rt = ActionRuntime::new(

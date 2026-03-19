@@ -1,91 +1,28 @@
-//! Core types and traits for the resilience library
+//! Core types for the resilience library.
 //!
-//! This module provides the fundamental building blocks used throughout
-//! the library, including error types, traits, metrics, and configuration.
-//!
-//! # Module Overview
-//!
-//! - [`advanced`] - Advanced type system features (typestate, GADTs, variance)
-//! - [`categories`] - Sealed category traits for pattern classification
-//! - [`config`] - Configuration management and validation
-//! - [`traits`] - Core resilience traits and abstractions
-//! - [`types`] - Type-safe newtypes for configuration values
+//! - [`types`] — `CallError<E>`, `ConfigError`, `CallResult<T, E>`
+//! - [`error`] — `ResilienceError` (used by fallback/cancellation patterns)
+//! - [`metrics`] — `MetricsCollector`, `MetricSnapshot`
+//! - [`policy_source`] — `PolicySource<C>`, `LoadSignal`, `ConstantLoad`
+//! - [`signals`] — load signal types
+//! - [`cancellation`] — `CancellationContext`, `ShutdownCoordinator`
 
-pub mod advanced;
 pub mod cancellation;
-pub mod categories;
-pub mod config;
-pub mod dynamic;
 mod error;
 mod metrics;
 pub mod policy_source;
 mod result;
 pub mod signals;
-pub mod traits;
 pub mod types;
 
-// Re-export primary types
-pub use config::{
-    CommonConfig,
-    ConfigBuilder,
-    ConfigError,
-    ConfigResult,
-    ConfigSource,
-    Configurable,
-    // Re-export nebula-config types
-    NebulaConfig,
-    ResilienceConfig,
-    ResilienceConfigManager,
-};
-pub use dynamic::{
-    BulkheadConfigBuilder, CircuitBreakerConfigBuilder, DynamicConfig, DynamicConfigBuilder,
-    DynamicConfigurable, ResiliencePresets, RetryConfigBuilder,
-};
+// Primary re-exports
 pub use error::{CircuitBreakerOpenState, ErrorClass, ErrorContext, ResilienceError};
 pub use metrics::{MetricKind, MetricSnapshot, Metrics, MetricsCollector};
-pub use result::{ResilienceResult, ResultExt};
-pub use traits::{
-    CanExecute, Executable, ExecuteGuard, FromResilienceError, HealthCheck, PatternHealth,
-    PatternMetrics, ResiliencePattern, Retryable,
-    circuit_states::{Closed, HalfOpen, Open, StateTransition, TypestateCircuitState},
-};
-
-// Re-export advanced type system features
-pub use advanced::{
-    Aggressive, Balanced, Complete, ComposedPolicy, Conservative, ConstValidated, PolicyBuilder,
-    Strategy, StrategyConfig, Unconfigured, ValidatedRetryConfig, WithCircuitBreaker, WithRetry,
-};
-
-// Re-export core error and result types (ConfigError exported via lib.rs directly to avoid conflict)
 pub use policy_source::PolicySource;
+pub use result::{ResilienceResult, ResultExt};
 pub use signals::{ConstantLoad, LoadSignal};
 pub use types::{CallError, CallResult};
 
-// Re-export cancellation support
 pub use cancellation::{
     CancellableFuture, CancellationContext, CancellationExt, ShutdownCoordinator,
 };
-
-// Re-export unified categories
-pub use categories::{
-    Category, PatternCategory, ServiceCategory,
-    pattern::{Fallback, FlowControl, Protection, Retry, Timeout as TimeoutCategory},
-    service::{Cache, Database, Generic, Http, MessageQueue},
-};
-
-/// Core constants
-pub mod constants {
-    use std::time::Duration;
-
-    /// Default timeout duration
-    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-
-    /// Default retry attempts
-    pub const DEFAULT_RETRY_ATTEMPTS: usize = 3;
-
-    /// Default circuit breaker threshold
-    pub const DEFAULT_FAILURE_THRESHOLD: usize = 5;
-
-    /// Default rate limit
-    pub const DEFAULT_RATE_LIMIT: f64 = 100.0;
-}

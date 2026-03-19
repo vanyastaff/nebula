@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use nebula_core::{ExecutionId, WorkflowId};
-use nebula_resilience::{CircuitBreaker, CircuitState, Gate, Outcome as CircuitOutcome};
+use nebula_resilience::{CircuitBreaker, CircuitState, Gate, Outcome};
 use parking_lot::Mutex;
 use tokio::sync::{Semaphore, TryAcquireError};
 use tokio_util::sync::CancellationToken;
@@ -919,7 +919,7 @@ impl<R: Resource> Pool<R> {
 
     fn breaker_record_success(inner: &PoolInner<R>, cb: &CircuitBreaker, operation: &'static str) {
         let was_half_open = matches!(cb.circuit_state(), CircuitState::HalfOpen);
-        cb.record_outcome(CircuitOutcome::Success);
+        cb.record_outcome(Outcome::Success);
         // A successful probe from HalfOpen always transitions to Closed per
         // circuit-breaker contract — no need for a second state() call.
         if was_half_open {
@@ -928,7 +928,7 @@ impl<R: Resource> Pool<R> {
     }
 
     fn breaker_record_failure(inner: &PoolInner<R>, cb: &CircuitBreaker, operation: &'static str) {
-        cb.record_outcome(CircuitOutcome::Failure);
+        cb.record_outcome(Outcome::Failure);
         if matches!(cb.circuit_state(), CircuitState::Open) {
             Self::emit_breaker_open(inner, operation, Duration::ZERO);
         }

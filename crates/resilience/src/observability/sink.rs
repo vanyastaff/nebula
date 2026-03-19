@@ -3,7 +3,9 @@
 //! Replaces the custom ObservabilityHook system. The default is [`NoopSink`].
 //! In nebula-engine, `EventBusSink` wraps nebula-eventbus — no direct dep here.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 /// A state in the circuit breaker state machine.
@@ -81,7 +83,7 @@ impl RecordingSink {
     /// Returns a snapshot of all recorded events.
     #[must_use]
     pub fn events(&self) -> Vec<ResilienceEvent> {
-        self.events.lock().unwrap().clone()
+        self.events.lock().clone()
     }
 
     /// Count events matching a given kind string.
@@ -104,7 +106,7 @@ impl RecordingSink {
 
 impl MetricsSink for RecordingSink {
     fn record(&self, event: ResilienceEvent) {
-        self.events.lock().unwrap().push(event);
+        self.events.lock().push(event);
     }
 }
 

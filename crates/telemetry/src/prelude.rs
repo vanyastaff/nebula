@@ -4,27 +4,14 @@
 //! use nebula_telemetry::prelude::*;
 //! ```
 
-// ── Events ──────────────────────────────────────────────────────────────────
-pub use crate::EventFilter;
-pub use crate::PublishOutcome;
-pub use crate::ScopedEvent;
-pub use crate::SubscriptionScope;
-pub use crate::event::{EventBus, EventSubscriber, ExecutionEvent, ScopedSubscriber};
-
-// ── Labels ───────────────────────────────────────────────────────────────────
-pub use crate::labels::{LabelInterner, LabelSet, MetricKey};
-
-// ── Metrics ─────────────────────────────────────────────────────────────────
-pub use crate::metrics::{Counter, Gauge, Histogram, MetricsRegistry, NoopMetricsRegistry};
-
-// ── Error ────────────────────────────────────────────────────────────────────
-pub use crate::error::{TelemetryError, TelemetryResult};
-
 // ── Service ─────────────────────────────────────────────────────────────────
 pub use crate::service::{NoopTelemetry, TelemetryService};
 
-// ── Trace ───────────────────────────────────────────────────────────────────
-pub use crate::trace::{
-    CallBody, CallPayload, CallRecord, CallStatus, DropReason, NoopRecorder, Recorder,
-    ResourceUsageRecord,
-};
+// ── Events ──────────────────────────────────────────────────────────────────
+pub use crate::event::{EventBus, ExecutionEvent};
+
+// ── Metrics ─────────────────────────────────────────────────────────────────
+pub use crate::metrics::{Counter, Gauge, Histogram, MetricsRegistry};
+
+// ── Recording ───────────────────────────────────────────────────────────────
+pub use crate::recorder::{NoopRecorder, Recorder};

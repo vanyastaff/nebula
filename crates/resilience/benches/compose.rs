@@ -27,7 +27,7 @@ fn build_pipeline_1step() -> ResiliencePipeline<&'static str> {
 fn build_pipeline_2step() -> ResiliencePipeline<&'static str> {
     ResiliencePipeline::builder()
         .timeout(Duration::from_secs(5))
-        .retry(RetryConfig::new(3).backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
+        .retry(RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
         .build()
 }
 
@@ -36,7 +36,7 @@ fn build_pipeline_4step() -> ResiliencePipeline<&'static str> {
     let bh = Arc::new(Bulkhead::new(BulkheadConfig { max_concurrency: 64, ..Default::default() }).unwrap());
     ResiliencePipeline::builder()
         .timeout(Duration::from_secs(5))
-        .retry(RetryConfig::new(3).backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
+        .retry(RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
         .circuit_breaker(cb)
         .bulkhead(bh)
         .build()
@@ -80,7 +80,7 @@ fn pipeline_execute_overhead(c: &mut Criterion) {
 fn pipeline_retry_path(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let pipeline = ResiliencePipeline::<&str>::builder()
-        .retry(RetryConfig::new(3).backoff(BackoffConfig::Fixed(Duration::ZERO)))
+        .retry(RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::ZERO)))
         .build();
 
     c.bench_function("pipeline/retry_success_first_attempt", |b| {

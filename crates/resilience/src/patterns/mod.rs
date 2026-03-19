@@ -14,10 +14,7 @@ pub mod rate_limiter;
 
 // Re-exports
 pub use bulkhead::{Bulkhead, BulkheadConfig};
-pub use circuit_breaker::{
-    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerConfig as NewCircuitBreakerConfig,
-    Outcome as CircuitOutcome,
-};
+pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
 pub use fallback::{
     AnyStringFallbackStrategy, CacheFallback, FallbackStrategy, FunctionFallback, ValueFallback,
 };

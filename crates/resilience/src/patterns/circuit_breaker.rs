@@ -23,7 +23,11 @@ pub struct CircuitBreakerConfig {
     pub half_open_max_ops: u32,
     /// Minimum number of operations required before the failure rate can trip the breaker. Default: 5.
     pub min_operations: u32,
-    /// Failure rate (0.0..=1.0) that triggers opening. Default: 0.5.
+    /// Reserved: rate-based tripping is not yet implemented.
+    ///
+    /// This field is validated (must be 0.0..=1.0) but **not used** by `record_outcome()`.
+    /// The circuit opens based on the absolute `failure_threshold` count only.
+    /// Default: 0.5.
     pub failure_rate_threshold: f64,
     /// Sliding window for failure counting. Default: 60s.
     pub sliding_window: Duration,
@@ -192,7 +196,7 @@ impl CircuitBreaker {
     pub fn record_outcome(&self, outcome: Outcome) {
         let mut inner = self.state.lock();
         match outcome {
-            Outcome::Cancelled => return, // never count cancellations as failures
+            Outcome::Cancelled => (), // never count cancellations as failures
             Outcome::Success => {
                 if inner.state == State::HalfOpen {
                     let prev = to_circuit_state(inner.state);
@@ -212,8 +216,8 @@ impl CircuitBreaker {
                 if matches!(outcome, Outcome::Timeout) && !self.config.count_timeouts_as_failures {
                     return;
                 }
-                inner.failures += 1;
-                inner.total += 1;
+                inner.failures = inner.failures.saturating_add(1);
+                inner.total = inner.total.saturating_add(1);
                 if inner.failures >= self.config.failure_threshold
                     && inner.total >= self.config.min_operations
                 {
