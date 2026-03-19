@@ -16,10 +16,10 @@
 //! span.success(); // or span.failure(&error)
 //! ```
 
-use tracing::{debug, error, info, warn};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
+use tracing::{debug, error, info, warn};
 
 // =============================================================================
 // SEALED PATTERN CATEGORY TRAIT

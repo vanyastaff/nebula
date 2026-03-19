@@ -35,7 +35,8 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
     let attrs = ActionAttrs::parse(&attr_args, struct_name, description_fallback)?;
 
     let metadata_init = attrs.metadata_init_expr();
-    let dependencies_impl = attrs.dependencies_impl_expr(struct_name, &impl_generics, &ty_generics, where_clause);
+    let dependencies_impl =
+        attrs.dependencies_impl_expr(struct_name, &impl_generics, &ty_generics, where_clause);
 
     let expanded = quote! {
         #dependencies_impl

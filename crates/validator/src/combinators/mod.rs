@@ -318,7 +318,6 @@ mod integration_tests {
         assert!(validator.validate(&"verylongstring".to_string()).is_ok()); // Too long, so NOT passes
         assert!(validator.validate(&"hello".to_string()).is_err()); // Just right, so NOT fails
     }
-
 }
 
 // ============================================================================

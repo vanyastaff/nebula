@@ -32,15 +32,15 @@ use moka::sync::Cache;
 use rustc_hash::FxBuildHasher;
 use smallvec::SmallVec;
 
+use self::guard::ReleaseHookGuard;
+use self::pool::{AnyPool, PoolEntry};
 use crate::autoscale::{AutoScalePolicy, AutoScaler, AutoScalerHandle};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::events::{EventBus, QuarantineTrigger, ResourceEvent};
 use crate::health::{HealthCheckConfig, HealthCheckable, HealthState};
-use crate::hooks::{HookEvent, HookRegistry, HOOKS_INLINE};
+use crate::hooks::{HOOKS_INLINE, HookEvent, HookRegistry};
 use crate::instrumented::InstrumentedGuard;
-use self::guard::ReleaseHookGuard;
-use self::pool::{AnyPool, PoolEntry};
 use crate::metadata::ResourceMetadata;
 use crate::pool::{Pool, PoolConfig};
 use crate::quarantine::{QuarantineConfig, QuarantineManager, QuarantineReason};
@@ -90,7 +90,10 @@ fn find_most_specific<'a>(
 ) -> Option<&'a PoolEntry> {
     // O(1) exact match: key = "{dep_key}:{ctx_scope.scope_key()}"
     let exact_id = scoped_pool_key(dep_key, ctx_scope);
-    if let Some(entry) = snapshot.get(&exact_id).filter(|e| Strategy::Hierarchical.is_compatible(&e.scope, ctx_scope)) {
+    if let Some(entry) = snapshot
+        .get(&exact_id)
+        .filter(|e| Strategy::Hierarchical.is_compatible(&e.scope, ctx_scope))
+    {
         return Some(entry);
     }
 
@@ -99,8 +102,7 @@ fn find_most_specific<'a>(
     snapshot
         .values()
         .filter(|e| {
-            &e.resource_key == dep_key
-                && Strategy::Hierarchical.is_compatible(&e.scope, ctx_scope)
+            &e.resource_key == dep_key && Strategy::Hierarchical.is_compatible(&e.scope, ctx_scope)
         })
         .max_by_key(|e| e.scope.hierarchy_level())
 }
@@ -315,18 +317,23 @@ impl ManagerBuilder {
                 );
                 if newly_quarantined {
                     match nebula_core::ResourceKey::try_from(resource_id) {
-                        Ok(key) => { bus.emit(ResourceEvent::Quarantined {
-                            resource_key: key,
-                            reason: format!(
-                                "health check failed ({consecutive_failures} consecutive)"
-                            ),
-                            trigger: QuarantineTrigger::HealthThresholdExceeded {
-                                consecutive_failures,
-                            },
-                            from_health: previous_health.clone(),
-                            to_health: next_health.clone(),
-                        }); }
-                        Err(_) => tracing::warn!(resource_id, "skipping quarantine event for invalid resource key"),
+                        Ok(key) => {
+                            bus.emit(ResourceEvent::Quarantined {
+                                resource_key: key,
+                                reason: format!(
+                                    "health check failed ({consecutive_failures} consecutive)"
+                                ),
+                                trigger: QuarantineTrigger::HealthThresholdExceeded {
+                                    consecutive_failures,
+                                },
+                                from_health: previous_health.clone(),
+                                to_health: next_health.clone(),
+                            });
+                        }
+                        Err(_) => tracing::warn!(
+                            resource_id,
+                            "skipping quarantine event for invalid resource key"
+                        ),
                     }
                 }
                 hs.insert(resource_id.to_string(), next_health);
@@ -564,7 +571,8 @@ impl Manager {
         self.metadata.insert(id.clone(), meta);
 
         // Record TypeId → ResourceKey so acquire_typed<R>() can look up by type.
-        self.type_index.insert(TypeId::of::<R>(), resource_key.clone());
+        self.type_index
+            .insert(TypeId::of::<R>(), resource_key.clone());
 
         self.event_bus.emit(ResourceEvent::Created {
             resource_key: resource_key.clone(),
@@ -635,8 +643,7 @@ impl Manager {
                 Some(entry) => Arc::clone(&entry.pool),
                 None => {
                     // Distinguish "not registered at all" from "registered but wrong scope".
-                    let has_any_scope =
-                        snapshot.values().any(|e| &e.resource_key == resource_key);
+                    let has_any_scope = snapshot.values().any(|e| &e.resource_key == resource_key);
                     let reason = if has_any_scope {
                         format!(
                             "Scope mismatch: no {} pool is compatible with scope {}",
@@ -1176,11 +1183,7 @@ impl Manager {
     pub async fn shutdown(&self) -> Result<()> {
         // Gracefully stop all auto-scalers before draining pools so they don't
         // keep Arc<dyn AnyPool> references alive during shutdown.
-        let scaler_keys: Vec<String> = self
-            .auto_scalers
-            .iter()
-            .map(|e| e.key().clone())
-            .collect();
+        let scaler_keys: Vec<String> = self.auto_scalers.iter().map(|e| e.key().clone()).collect();
         let mut scaler_handles = Vec::with_capacity(scaler_keys.len());
         for key in scaler_keys {
             if let Some((_, handle)) = self.auto_scalers.remove(&key) {
@@ -1450,7 +1453,10 @@ mod tests {
             value: "pooled".into(),
         };
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 1 },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 1,
+            },
             ..Default::default()
         };
         mgr.register(TestResource, config, pool_config).unwrap();
@@ -1477,7 +1483,10 @@ mod tests {
     fn register_with_invalid_pool_config_leaves_clean_state() {
         let mgr = Manager::new();
         let bad_pool = PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 0 }, // invalid
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 0,
+            }, // invalid
             ..Default::default()
         };
 
@@ -1920,7 +1929,10 @@ mod tests {
                 value: "status".into(),
             },
             PoolConfig {
-                sizing: PoolSizing { min_size: 0, max_size: 7 },
+                sizing: PoolSizing {
+                    min_size: 0,
+                    max_size: 7,
+                },
                 ..Default::default()
             },
         )

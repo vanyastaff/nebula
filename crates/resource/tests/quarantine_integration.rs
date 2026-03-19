@@ -9,22 +9,21 @@
 
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::PoolConfig;
 
-
 mod scope_helpers;
-use scope_helpers::*;
 use nebula_resource::quarantine::{
     QuarantineConfig, QuarantineManager, QuarantineReason, RecoveryStrategy,
 };
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
 use nebula_resource::{ExecutionId, PoolAcquire, PoolSizing, WorkflowId};
+use scope_helpers::*;
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -52,8 +51,14 @@ impl Resource for NamedResource {
 
 fn pool_cfg() -> PoolConfig {
     PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 4 },
-        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 4,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(1),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }

@@ -428,8 +428,14 @@ async fn pool_exhaustion_emits_pool_exhausted_event() {
     let mut rx = bus.subscribe();
 
     let pool_config = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 1 },
-        acquire: PoolAcquire { timeout: Duration::from_millis(100), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 1,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_millis(100),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let pool = Pool::with_event_bus(
@@ -467,8 +473,14 @@ async fn pool_shutdown_emits_cleaned_up_shutdown_events() {
     let mut rx = bus.subscribe();
 
     let pool_config = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 2 },
-        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 2,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(1),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let pool = Pool::with_event_bus(
@@ -518,8 +530,14 @@ async fn pool_guard_drop_emits_released_event() {
     let mut rx = bus.subscribe();
 
     let pool_config = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 2 },
-        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 2,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(1),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let pool = Pool::with_event_bus(

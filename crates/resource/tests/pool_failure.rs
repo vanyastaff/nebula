@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -30,8 +30,14 @@ fn ctx() -> Context {
 
 fn pool_config(max_size: usize) -> PoolConfig {
     PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size },
-        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(1),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -164,12 +170,18 @@ impl Resource for ExpiredThenFailResource {
 #[tokio::test]
 async fn create_failure_after_expired_cleanup() {
     let pool_config = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 2 },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 2,
+        },
         lifetime: PoolLifetime {
             idle_timeout: Duration::from_millis(50),
             ..Default::default()
         },
-        acquire: PoolAcquire { timeout: Duration::from_secs(2), ..Default::default() },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(2),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let pool = Pool::new(

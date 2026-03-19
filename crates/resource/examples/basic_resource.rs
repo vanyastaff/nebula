@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolAcquire, PoolConfig, PoolSizing};

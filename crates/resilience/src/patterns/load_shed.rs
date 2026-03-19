@@ -30,8 +30,11 @@ mod tests {
     async fn load_shed_rejects_when_signaled() {
         let shed = Arc::new(AtomicBool::new(true));
         let s = shed.clone();
-        let result: Result<u32, CallError<()>> =
-            load_shed(move || s.load(Ordering::SeqCst), || Box::pin(async { Ok(1u32) })).await;
+        let result: Result<u32, CallError<()>> = load_shed(
+            move || s.load(Ordering::SeqCst),
+            || Box::pin(async { Ok(1u32) }),
+        )
+        .await;
         assert!(matches!(result, Err(CallError::LoadShed)));
     }
 

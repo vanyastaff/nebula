@@ -112,10 +112,7 @@ impl<E: 'static> RetryConfig<E> {
     /// Returns `Err(ConfigError)` if `max_attempts` is 0.
     pub fn new(max_attempts: u32) -> Result<Self, crate::ConfigError> {
         if max_attempts == 0 {
-            return Err(crate::ConfigError::new(
-                "max_attempts",
-                "must be >= 1",
-            ));
+            return Err(crate::ConfigError::new("max_attempts", "must be >= 1"));
         }
         Ok(Self {
             max_attempts,
@@ -237,7 +234,8 @@ where
     E: 'static,
     F: FnMut() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>>,
 {
-    let config = RetryConfig::<E>::new(n).expect("retry() requires n >= 1; use retry_with() for fallible config");
+    let config = RetryConfig::<E>::new(n)
+        .expect("retry() requires n >= 1; use retry_with() for fallible config");
     retry_with(config, f).await
 }
 
@@ -253,7 +251,9 @@ mod tests {
     async fn retries_up_to_max_attempts() {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
-        let config = RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1)));
+        let config = RetryConfig::new(3)
+            .unwrap()
+            .backoff(BackoffConfig::Fixed(Duration::from_millis(1)));
 
         let result: Result<(), CallError<&str>> = retry_with(config, || {
             let c = c.clone();
@@ -275,7 +275,9 @@ mod tests {
     async fn stops_on_success() {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
-        let config = RetryConfig::new(5).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1)));
+        let config = RetryConfig::new(5)
+            .unwrap()
+            .backoff(BackoffConfig::Fixed(Duration::from_millis(1)));
 
         let result: Result<u32, CallError<&str>> = retry_with(config, || {
             let c = c.clone();

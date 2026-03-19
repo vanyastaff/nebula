@@ -9,8 +9,7 @@ use hdrhistogram::Histogram;
 pub(super) type LatencyHistogram = Histogram<u64>;
 
 pub(super) fn new_latency_histogram() -> LatencyHistogram {
-    Histogram::<u64>::new_with_bounds(1, 60_000, 3)
-        .expect("latency histogram bounds must be valid")
+    Histogram::<u64>::new_with_bounds(1, 60_000, 3).expect("latency histogram bounds must be valid")
 }
 
 // ---------------------------------------------------------------------------

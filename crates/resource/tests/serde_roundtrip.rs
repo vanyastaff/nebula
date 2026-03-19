@@ -10,7 +10,6 @@ use std::time::Duration;
 mod scope_helpers;
 use scope_helpers::*;
 
-
 /// Generate an arbitrary Lifecycle
 fn arb_lifecycle() -> impl Strategy<Value = Lifecycle> {
     prop_oneof![
@@ -92,14 +91,20 @@ fn arb_pool_config() -> impl Strategy<Value = PoolConfig> {
     )
         .prop_map(
             |(min, max_extra, acquire_s, idle_s, lifetime_s, validation_s)| PoolConfig {
-                sizing: PoolSizing { min_size: min, max_size: min + max_extra },
+                sizing: PoolSizing {
+                    min_size: min,
+                    max_size: min + max_extra,
+                },
                 lifetime: PoolLifetime {
                     idle_timeout: Duration::from_secs(idle_s),
                     max_lifetime: Duration::from_secs(lifetime_s),
                     validation_interval: Duration::from_secs(validation_s),
                     maintenance_interval: None,
                 },
-                acquire: PoolAcquire { timeout: Duration::from_secs(acquire_s), ..Default::default() },
+                acquire: PoolAcquire {
+                    timeout: Duration::from_secs(acquire_s),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )

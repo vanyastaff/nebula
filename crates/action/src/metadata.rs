@@ -61,11 +61,7 @@ pub struct ActionMetadata {
 
 impl ActionMetadata {
     /// Create metadata with the minimum required fields.
-    pub fn new(
-        key: ActionKey,
-        name: impl Into<String>,
-        description: impl Into<String>,
-    ) -> Self {
+    pub fn new(key: ActionKey, name: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
             key,
             name: name.into(),
@@ -149,8 +145,12 @@ mod tests {
 
     #[test]
     fn metadata_builder() {
-        let meta = ActionMetadata::new(action_key!("http.request"), "HTTP Request", "Make HTTP calls")
-            .with_version(2, 1);
+        let meta = ActionMetadata::new(
+            action_key!("http.request"),
+            "HTTP Request",
+            "Make HTTP calls",
+        )
+        .with_version(2, 1);
 
         assert_eq!(meta.key, action_key!("http.request"));
         assert_eq!(meta.name, "HTTP Request");
@@ -195,10 +195,11 @@ mod tests {
 
     #[test]
     fn with_inputs_builder() {
-        let meta = ActionMetadata::new(action_key!("ai.agent"), "AI Agent", "Run agent").with_inputs(vec![
-            InputPort::flow("in"),
-            InputPort::support("model", "AI Model", "Language model"),
-        ]);
+        let meta = ActionMetadata::new(action_key!("ai.agent"), "AI Agent", "Run agent")
+            .with_inputs(vec![
+                InputPort::flow("in"),
+                InputPort::support("model", "AI Model", "Language model"),
+            ]);
         assert_eq!(meta.inputs.len(), 2);
         assert!(meta.inputs[0].is_flow());
         assert!(meta.inputs[1].is_support());
@@ -234,17 +235,19 @@ mod tests {
     fn with_support_input_full_config() {
         use crate::port::{ConnectionFilter, SupportPort};
 
-        let meta = ActionMetadata::new(action_key!("ai.agent"), "AI Agent", "Run agent").with_inputs(vec![
-            InputPort::flow("in"),
-            InputPort::Support(SupportPort {
-                key: "tools".into(),
-                name: "Tools".into(),
-                description: "Agent tools".into(),
-                required: false,
-                multi: true,
-                filter: ConnectionFilter::new().with_allowed_tags(vec!["langchain_tool".into()]),
-            }),
-        ]);
+        let meta = ActionMetadata::new(action_key!("ai.agent"), "AI Agent", "Run agent")
+            .with_inputs(vec![
+                InputPort::flow("in"),
+                InputPort::Support(SupportPort {
+                    key: "tools".into(),
+                    name: "Tools".into(),
+                    description: "Agent tools".into(),
+                    required: false,
+                    multi: true,
+                    filter: ConnectionFilter::new()
+                        .with_allowed_tags(vec!["langchain_tool".into()]),
+                }),
+            ]);
         assert_eq!(meta.inputs.len(), 2);
         if let InputPort::Support(s) = &meta.inputs[1] {
             assert!(s.multi);

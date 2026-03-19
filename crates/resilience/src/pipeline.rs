@@ -76,7 +76,9 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     #[must_use]
     pub fn build(self) -> ResiliencePipeline<E> {
         validate_order(&self.steps);
-        ResiliencePipeline { steps: Arc::new(self.steps) }
+        ResiliencePipeline {
+            steps: Arc::new(self.steps),
+        }
     }
 }
 
@@ -212,15 +214,19 @@ where
                 // Map CallError<Option<E>> → CallError<E>
                 match result {
                     Ok(v) => Ok(v),
-                    Err(CallError::RetriesExhausted { attempts, last: Some(e) }) => {
-                        Err(CallError::RetriesExhausted { attempts, last: e })
-                    }
+                    Err(CallError::RetriesExhausted {
+                        attempts,
+                        last: Some(e),
+                    }) => Err(CallError::RetriesExhausted { attempts, last: e }),
                     Err(
-                        CallError::RetriesExhausted { last: None, .. }
-                        | CallError::Operation(None),
+                        CallError::RetriesExhausted { last: None, .. } | CallError::Operation(None),
                     ) => {
                         // Non-operation error caused early termination — recover from bail
-                        Err({ let mut g = bail.lock(); g.take() }.unwrap_or(CallError::Cancelled { reason: None }))
+                        Err({
+                            let mut g = bail.lock();
+                            g.take()
+                        }
+                        .unwrap_or(CallError::Cancelled { reason: None }))
                     }
                     Err(CallError::Operation(Some(e))) => Err(CallError::Operation(e)),
                     Err(CallError::CircuitOpen) => Err(CallError::CircuitOpen),
@@ -291,7 +297,11 @@ mod tests {
 
         let pipeline = ResiliencePipeline::<&str>::builder()
             .timeout(Duration::from_secs(5))
-            .retry(RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
+            .retry(
+                RetryConfig::new(3)
+                    .unwrap()
+                    .backoff(BackoffConfig::Fixed(Duration::from_millis(1))),
+            )
             .build();
 
         let result = pipeline
@@ -304,7 +314,10 @@ mod tests {
             })
             .await;
 
-        assert!(matches!(result, Err(CallError::RetriesExhausted { attempts: 3, .. })));
+        assert!(matches!(
+            result,
+            Err(CallError::RetriesExhausted { attempts: 3, .. })
+        ));
         assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 
@@ -312,7 +325,11 @@ mod tests {
     async fn pipeline_warns_on_bad_layer_order() {
         // timeout INSIDE retry is suboptimal — just verify build() succeeds
         let _pipeline = ResiliencePipeline::<&str>::builder()
-            .retry(RetryConfig::new(2).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
+            .retry(
+                RetryConfig::new(2)
+                    .unwrap()
+                    .backoff(BackoffConfig::Fixed(Duration::from_millis(1))),
+            )
             .timeout(Duration::from_secs(1))
             .build();
     }
@@ -320,10 +337,16 @@ mod tests {
     #[tokio::test]
     async fn pipeline_returns_ok_on_success() {
         let pipeline = ResiliencePipeline::<&str>::builder()
-            .retry(RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::ZERO)))
+            .retry(
+                RetryConfig::new(3)
+                    .unwrap()
+                    .backoff(BackoffConfig::Fixed(Duration::ZERO)),
+            )
             .build();
 
-        let result = pipeline.call(|| Box::pin(async { Ok::<u32, &str>(42) })).await;
+        let result = pipeline
+            .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
+            .await;
         assert_eq!(result.unwrap(), 42);
     }
 

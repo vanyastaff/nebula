@@ -6,7 +6,9 @@ use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nebula_eventbus::{BackPressurePolicy, EventBus, EventBusRegistry, EventFilter, PublishOutcome};
+use nebula_eventbus::{
+    BackPressurePolicy, EventBus, EventBusRegistry, EventFilter, PublishOutcome,
+};
 use tokio::task;
 use tracing::debug;
 

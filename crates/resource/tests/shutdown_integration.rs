@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
@@ -59,8 +59,14 @@ async fn shutdown_cleans_idle_then_guard_drop_cleans_active() {
     let cleanup_count = Arc::new(AtomicU32::new(0));
 
     let pool_config = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 2 },
-        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 2,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(1),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let pool = Pool::new(
@@ -123,8 +129,14 @@ async fn manager_shutdown_clears_all_pools() {
         },
         TestConfig,
         PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 2 },
-            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 2,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
             ..Default::default()
         },
     )
@@ -165,8 +177,14 @@ async fn shutdown_empty_pool_is_noop() {
         },
         TestConfig,
         PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 2 },
-            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 2,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
             ..Default::default()
         },
     )
@@ -195,8 +213,14 @@ async fn acquire_after_pool_shutdown_fails_immediately() {
         },
         TestConfig,
         PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 2 },
-            acquire: PoolAcquire { timeout: Duration::from_secs(10), ..Default::default() }, // long timeout
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 2,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(10),
+                ..Default::default()
+            }, // long timeout
             ..Default::default()
         },
     )

@@ -154,13 +154,22 @@ pub mod retryable;
 
 pub use core::{
     // Error types
-    CircuitBreakerOpenState, ErrorClass, ErrorContext, ResilienceError, ResilienceResult,
-
-    // Metrics
-    MetricKind, MetricSnapshot, Metrics, MetricsCollector,
-
+    CircuitBreakerOpenState,
     // Policy source
-    ConstantLoad, LoadSignal, PolicySource,
+    ConstantLoad,
+    ErrorClass,
+    ErrorContext,
+    LoadSignal,
+    // Metrics
+    MetricKind,
+    MetricSnapshot,
+    Metrics,
+    MetricsCollector,
+
+    PolicySource,
+
+    ResilienceError,
+    ResilienceResult,
 
     // Core error and result types
     types::{CallError, CallResult, ConfigError},

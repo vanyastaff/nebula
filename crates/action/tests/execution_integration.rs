@@ -4,11 +4,11 @@
 //! on ActionResult/ActionError. They do not test cancellation (that is the runtime's
 //! responsibility via tokio::select!).
 
+use nebula_action::dependency::ActionDependencies;
 use nebula_action::{
     Action, ActionContext, ActionMetadata, ActionOutput, ActionResult, BreakReason, StatefulAction,
     StatelessAction, TriggerAction, TriggerContext,
 };
-use nebula_action::dependency::ActionDependencies;
 use nebula_core::action_key;
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 use tokio_util::sync::CancellationToken;
@@ -173,7 +173,11 @@ impl TriggerAction for NoOpTrigger {
 #[tokio::test]
 async fn trigger_action_start_stop_succeed() {
     let action = NoOpTrigger {
-        meta: ActionMetadata::new(action_key!("test.noop_trigger"), "NoOp Trigger", "Start/stop no-op"),
+        meta: ActionMetadata::new(
+            action_key!("test.noop_trigger"),
+            "NoOp Trigger",
+            "Start/stop no-op",
+        ),
     };
     let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new());
     action.start(&ctx).await.unwrap();

@@ -136,8 +136,8 @@ pub mod prelude {
 
     pub use crate::autoscale::AutoScalePolicy;
     pub use crate::events::{
-        BackPressurePolicy, EventBus, EventBusStats, EventFilter, QuarantineTrigger,
-        ResourceEvent, ScopedEvent, ScopedSubscriber, Subscriber, SubscriptionScope,
+        BackPressurePolicy, EventBus, EventBusStats, EventFilter, QuarantineTrigger, ResourceEvent,
+        ScopedEvent, ScopedSubscriber, Subscriber, SubscriptionScope,
     };
     pub use crate::health::{HealthCheckable, HealthState, HealthStatus, ResourceHealthAdapter};
     pub use crate::hooks::{HookEvent, HookFilter, HookRegistry, HookResult, ResourceHook};
