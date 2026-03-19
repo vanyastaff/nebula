@@ -32,11 +32,11 @@ pub use config::BumpConfig;
 use cursor::{AtomicCursor, CellCursor, Cursor};
 
 use crate::allocator::{
-    AllocError, AllocResult, Allocator, BulkAllocator, MemoryUsage, OptionalStats, Resettable,
+    Allocator, BulkAllocator, MemoryError, MemoryResult, MemoryUsage, OptionalStats, Resettable,
     StatisticsProvider, ThreadSafeAllocator,
 };
 
-use crate::core::SyncUnsafeCell;
+use crate::foundation::SyncUnsafeCell;
 use crate::utils::{Backoff, MemoryOps, PrefetchManager, align_up, atomic_max, cache_line_size};
 
 /// Production-ready bump allocator
@@ -56,9 +56,9 @@ pub struct BumpAllocator {
 
 impl BumpAllocator {
     /// Creates a new bump allocator with specified capacity and configuration
-    pub fn with_config(capacity: usize, config: BumpConfig) -> AllocResult<Self> {
+    pub fn with_config(capacity: usize, config: BumpConfig) -> MemoryResult<Self> {
         if capacity == 0 {
-            return Err(AllocError::invalid_layout("invalid layout"));
+            return Err(MemoryError::invalid_layout("invalid layout"));
         }
 
         let mut vec = vec![0u8; capacity];
@@ -122,32 +122,32 @@ impl BumpAllocator {
     }
 
     /// Creates allocator with default configuration
-    pub fn new(capacity: usize) -> AllocResult<Self> {
+    pub fn new(capacity: usize) -> MemoryResult<Self> {
         Self::with_config(capacity, BumpConfig::default())
     }
 
     /// Creates production-optimized allocator
-    pub fn production(capacity: usize) -> AllocResult<Self> {
+    pub fn production(capacity: usize) -> MemoryResult<Self> {
         Self::with_config(capacity, BumpConfig::production())
     }
 
     /// Creates debug-optimized allocator
-    pub fn debug(capacity: usize) -> AllocResult<Self> {
+    pub fn debug(capacity: usize) -> MemoryResult<Self> {
         Self::with_config(capacity, BumpConfig::debug())
     }
 
     /// Convenience: 64KB allocator
-    pub fn small() -> AllocResult<Self> {
+    pub fn small() -> MemoryResult<Self> {
         Self::production(64 * 1024)
     }
 
     /// Convenience: 1MB allocator
-    pub fn medium() -> AllocResult<Self> {
+    pub fn medium() -> MemoryResult<Self> {
         Self::production(1024 * 1024)
     }
 
     /// Convenience: 16MB allocator
-    pub fn large() -> AllocResult<Self> {
+    pub fn large() -> MemoryResult<Self> {
         Self::production(16 * 1024 * 1024)
     }
 
@@ -187,22 +187,22 @@ impl BumpAllocator {
     }
 
     /// Restores allocator to previous checkpoint
-    pub fn restore(&self, checkpoint: BumpCheckpoint) -> AllocResult<()> {
+    pub fn restore(&self, checkpoint: BumpCheckpoint) -> MemoryResult<()> {
         let current_gen = self.generation.load(Ordering::Acquire);
         if checkpoint.generation != current_gen {
-            return Err(AllocError::invalid_input(
+            return Err(MemoryError::invalid_input(
                 "checkpoint from different generation",
             ));
         }
 
         let current = self.cursor.load(Ordering::Acquire);
         if checkpoint.position < self.start_addr || checkpoint.position > self.end_addr {
-            return Err(AllocError::invalid_input(
+            return Err(MemoryError::invalid_input(
                 "checkpoint position out of bounds",
             ));
         }
         if checkpoint.position > current {
-            return Err(AllocError::invalid_input("checkpoint is in the future"));
+            return Err(MemoryError::invalid_input("checkpoint is in the future"));
         }
 
         // Fill deallocated region with pattern
@@ -356,10 +356,10 @@ unsafe impl Allocator for BumpAllocator {
     /// - `layout` has valid size and alignment (align is power of two)
     /// - Returned pointer not used after allocator reset/drop
     /// - Bump allocators don't support individual deallocation
-    unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+    unsafe fn allocate(&self, layout: Layout) -> MemoryResult<NonNull<[u8]>> {
         let ptr = self
             .try_bump(layout.size(), layout.align())
-            .ok_or_else(|| AllocError::out_of_memory_with_layout(layout))?;
+            .ok_or_else(|| MemoryError::out_of_memory_with_layout(layout))?;
 
         let slice = NonNull::slice_from_raw_parts(ptr, layout.size());
         Ok(slice)
@@ -437,33 +437,35 @@ impl crate::allocator::sealed::AllocatorInternal for BumpAllocator {
     unsafe fn internal_restore(
         &mut self,
         checkpoint: crate::allocator::sealed::InternalCheckpoint,
-    ) -> AllocResult<()> {
+    ) -> MemoryResult<()> {
         let current_generation = self.generation.load(Ordering::Acquire);
 
         // Validate checkpoint is not stale
         if checkpoint.generation != current_generation {
-            return Err(AllocError::InvalidState {
+            return Err(MemoryError::InvalidState {
                 reason: format!(
                     "stale checkpoint: expected generation {}, got {}",
                     current_generation, checkpoint.generation
-                ),
+                )
+                .into_boxed_str(),
             });
         }
 
         // Validate checkpoint is from this allocator
         if checkpoint.chunk_id != self.start_addr as u64 {
-            return Err(AllocError::InvalidState {
+            return Err(MemoryError::InvalidState {
                 reason: "checkpoint from different allocator".into(),
             });
         }
 
         // Validate offset is within bounds
         if checkpoint.offset > self.capacity {
-            return Err(AllocError::InvalidState {
+            return Err(MemoryError::InvalidState {
                 reason: format!(
                     "checkpoint offset {} exceeds capacity {}",
                     checkpoint.offset, self.capacity
-                ),
+                )
+                .into_boxed_str(),
             });
         }
 

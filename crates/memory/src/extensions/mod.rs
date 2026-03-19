@@ -84,7 +84,8 @@ impl ExtensionRegistry {
         // Check for duplicate extension name
         if self.extensions.read().contains_key(&name) {
             return Err(MemoryError::InvalidOperation {
-                reason: format!("Extension with name '{name}' is already registered"),
+                reason: format!("Extension with name '{name}' is already registered")
+                    .into_boxed_str(),
             });
         }
 
@@ -126,7 +127,7 @@ impl ExtensionRegistry {
             Ok(())
         } else {
             Err(MemoryError::NotFound {
-                reason: format!("Extension with name '{name}' not found"),
+                reason: format!("Extension with name '{name}' not found").into_boxed_str(),
             })
         }
     }

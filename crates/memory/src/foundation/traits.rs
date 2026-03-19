@@ -2,37 +2,6 @@
 //!
 //! This module defines the fundamental traits used throughout nebula-memory.
 
-use crate::error::{MemoryError, MemoryResult};
-use core::alloc::Layout;
-
-/// Core memory management trait for allocators and pools
-///
-/// This trait defines the basic interface for memory allocation and deallocation.
-/// It is implemented by custom allocators, pools, and arenas.
-pub trait MemoryManager {
-    /// Allocate memory with the given layout
-    ///
-    /// # Safety
-    /// The returned pointer must be valid for reads and writes of `layout.size()` bytes,
-    /// and must be properly aligned to `layout.align()`.
-    unsafe fn allocate(&mut self, layout: Layout) -> Result<*mut u8, MemoryError>;
-
-    /// Deallocate previously allocated memory
-    ///
-    /// # Safety
-    /// - `ptr` must have been allocated by this allocator with the same layout
-    /// - `ptr` must not be used after deallocation
-    unsafe fn deallocate(&mut self, ptr: *mut u8, layout: Layout);
-
-    /// Reset the memory manager to initial state
-    ///
-    /// This operation deallocates all memory and returns the manager to a clean state.
-    fn reset(&mut self) -> MemoryResult<()>;
-
-    /// Get the name of this memory manager for debugging
-    fn name(&self) -> &'static str;
-}
-
 /// Memory usage tracking trait
 ///
 /// Implemented by allocators and memory managers that track usage statistics.

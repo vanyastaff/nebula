@@ -138,7 +138,7 @@ nebula-memory = "0.1"
 
 ```rust
 use nebula_memory::allocator::{Allocator, BumpAllocator};
-use nebula_memory::core::traits::Resettable;
+use nebula_memory::foundation::traits::Resettable;
 
 fn handle_request(data: &[u8]) -> Result<Response> {
     // Create request-scoped allocator
@@ -246,7 +246,7 @@ let arr = unsafe { alloc!(allocator, [u32; 10]) }?;
 ### Statistics Tracking
 
 ```rust
-use nebula_memory::core::traits::StatisticsProvider;
+use nebula_memory::foundation::traits::StatisticsProvider;
 
 let config = BumpConfig {
     track_stats: true,
@@ -265,7 +265,7 @@ if let Some(stats) = allocator.statistics() {
 ### Memory Usage Monitoring
 
 ```rust
-use nebula_memory::core::traits::MemoryUsage;
+use nebula_memory::foundation::traits::MemoryUsage;
 
 let allocator = PoolAllocator::new(128, 64)?;
 
