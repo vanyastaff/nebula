@@ -106,7 +106,7 @@ where
             .monitor
             .lock()
             .map_err(|e| MemoryError::InitializationFailed {
-                reason: format!("Monitor lock failed: {e}"),
+                reason: format!("Monitor lock failed: {e}").into(),
             })?;
         let monitoring_stats = monitor.get_stats();
 
@@ -119,7 +119,7 @@ where
             .monitor
             .lock()
             .map_err(|e| MemoryError::InitializationFailed {
-                reason: format!("Monitor lock failed: {e}"),
+                reason: format!("Monitor lock failed: {e}").into(),
             })?;
 
         // Check if large allocation should be allowed

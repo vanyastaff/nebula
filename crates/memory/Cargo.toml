@@ -71,6 +71,9 @@ tracing = { workspace = true, optional = true }
 backtrace = { version = "0.3", optional = true }
 rand = { workspace = true, optional = true }
 
+# Pin projection
+pin-project = "1.1"
+
 # Errors
 thiserror = { workspace = true }
 

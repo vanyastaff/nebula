@@ -178,14 +178,37 @@ impl<T: Poolable> ThreadSafePool<T> {
             });
         }
 
-        // Check if we can create new object
+        // Check if we can create new object (atomically reserve a slot)
         if let Some(max) = self.config.max_capacity {
-            let created = self
-                .created_count
-                .load(std::sync::atomic::Ordering::Relaxed);
+            let mut current = self.created_count.load(std::sync::atomic::Ordering::Acquire);
 
-            if created >= max {
-                // Need to wait for object to be returned
+            // Try to atomically reserve a slot for creation
+            let slot_reserved = loop {
+                if current >= max {
+                    // Pool is at capacity, cannot create more
+                    break false;
+                }
+
+                // Try to atomically increment if still under max
+                match self.created_count.compare_exchange_weak(
+                    current,
+                    current + 1,
+                    std::sync::atomic::Ordering::AcqRel,  // Success: synchronize reservation
+                    std::sync::atomic::Ordering::Acquire, // Failure: reload current value
+                ) {
+                    Ok(_) => {
+                        // Successfully reserved a slot
+                        break true;
+                    }
+                    Err(actual) => {
+                        // Another thread modified created_count, retry with updated value
+                        current = actual;
+                    }
+                }
+            };
+
+            if !slot_reserved {
+                // Could not reserve a slot, need to wait for object to be returned
                 if let Some(timeout) = timeout {
                     let start = std::time::Instant::now();
                     while inner.objects.is_empty() && !inner.shutdown {
@@ -224,17 +247,18 @@ impl<T: Poolable> ThreadSafePool<T> {
 
                 return Err(MemoryError::pool_exhausted("pool", 0));
             }
+        } else {
+            // Unbounded pool - always increment
+            self.created_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
-        // Create new object
+        // Create new object (slot has been reserved if pool is bounded)
         drop(inner); // Release lock for creation
 
         #[cfg(feature = "stats")]
         self.stats.record_miss();
 
         let obj = (self.factory)();
-        self.created_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.callbacks.on_create(&obj);
 
         #[cfg(feature = "stats")]
@@ -463,6 +487,10 @@ impl<T: Poolable> ThreadSafePool<T> {
 
         // Check against pressure threshold from config
         if let Some(max) = self.config.max_capacity {
+            // Guard against division by zero
+            if max == 0 {
+                return false; // Zero-capacity pool never needs optimization
+            }
             let usage_percent = (inner.objects.len() * 100) / max;
             usage_percent >= self.config.pressure_threshold as usize
         } else {

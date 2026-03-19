@@ -37,6 +37,46 @@ use crate::error::{MemoryError, MemoryResult};
 /// Default timeout for arena operations (10 seconds)
 const DEFAULT_ARENA_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Guard for immutable access to arena-allocated value
+///
+/// This guard holds a read lock on the arena and provides access to the value.
+/// The reference is valid as long as the guard exists.
+pub struct ArenaHandleRef<'a, T> {
+    _guard: tokio::sync::RwLockReadGuard<'a, Arena>,
+    value: &'a T,
+}
+
+impl<T> std::ops::Deref for ArenaHandleRef<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.value
+    }
+}
+
+/// Guard for mutable access to arena-allocated value
+///
+/// This guard holds a write lock on the arena and provides mutable access to the value.
+/// The reference is valid as long as the guard exists.
+pub struct ArenaHandleMut<'a, T> {
+    _guard: tokio::sync::RwLockWriteGuard<'a, Arena>,
+    value: &'a mut T,
+}
+
+impl<T> std::ops::Deref for ArenaHandleMut<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.value
+    }
+}
+
+impl<T> std::ops::DerefMut for ArenaHandleMut<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.value
+    }
+}
+
 /// Handle to allocated arena memory
 ///
 /// This provides safe access to arena-allocated values without lifetime issues.
@@ -53,46 +93,63 @@ pub struct ArenaHandle<T> {
 // - RwLock synchronizes all arena access
 unsafe impl<T: Send> Send for ArenaHandle<T> {}
 
-// SAFETY: ArenaHandle can be shared between threads if T: Send.
+// SAFETY: ArenaHandle can be shared between threads if T: Send + Sync.
 // - All access requires acquiring RwLock (read or write)
-// - T: Send ensures value access is thread-safe
-// - Multiple threads can hold handles, but RwLock ensures exclusive/shared access
+// - T: Send allows transferring ownership across threads
+// - T: Sync required because get() returns &T from &self (shared access)
+// - Multiple threads can hold handles, RwLock ensures exclusive/shared access
 // - Arc<RwLock<Arena>> provides synchronization
-unsafe impl<T: Send> Sync for ArenaHandle<T> {}
+unsafe impl<T: Send + Sync> Sync for ArenaHandle<T> {}
 
 impl<T> ArenaHandle<T> {
     /// Get reference to the value
+    ///
+    /// Returns a guard that holds a read lock on the arena.
+    /// The reference is valid as long as the guard exists.
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
-    pub async fn get(&self) -> &T {
+    pub async fn get(&self) -> ArenaHandleRef<'_, T> {
         #[cfg(feature = "tracing")]
         trace!("Getting arena handle reference");
 
-        // Keep arena lock alive while accessing
-        let _arena = self.arena.read().await;
+        // Acquire read lock on arena
+        let guard = self.arena.read().await;
 
         // SAFETY: Dereferencing arena-allocated pointer.
         // - ptr is valid (allocated in AsyncArena::alloc)
-        // - _arena holds read lock (synchronized access)
+        // - guard holds read lock (synchronized access)
         // - Arena remains alive (Arc keeps it valid)
-        // - Returns immutable reference tied to _arena guard lifetime
-        unsafe { &*self.ptr }
+        // - Reference lifetime is tied to guard lifetime
+        let value = unsafe { &*self.ptr };
+
+        ArenaHandleRef {
+            _guard: guard,
+            value,
+        }
     }
 
     /// Get mutable reference to the value
+    ///
+    /// Returns a guard that holds a write lock on the arena.
+    /// The reference is valid as long as the guard exists.
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
-    pub async fn get_mut(&self) -> &mut T {
+    pub async fn get_mut(&self) -> ArenaHandleMut<'_, T> {
         #[cfg(feature = "tracing")]
         trace!("Getting arena handle mutable reference");
 
-        // Keep arena lock alive while accessing
-        let _arena = self.arena.write().await;
+        // Acquire write lock on arena
+        let mut guard = self.arena.write().await;
 
         // SAFETY: Creating mutable reference to arena-allocated value.
         // - ptr is valid (allocated in AsyncArena::alloc)
-        // - _arena holds write lock (exclusive access, no other references)
+        // - guard holds write lock (exclusive access, no other references)
         // - Arena remains alive (Arc keeps it valid)
-        // - Returns mutable reference tied to _arena guard lifetime
-        unsafe { &mut *self.ptr }
+        // - Reference lifetime is tied to guard lifetime
+        let value = unsafe { &mut *self.ptr };
+
+        ArenaHandleMut {
+            _guard: guard,
+            value,
+        }
     }
 
     /// Modify the value with a closure
@@ -144,7 +201,7 @@ impl<T> ArenaHandle<T> {
             warn!(?duration, "Arena modify operation timed out");
 
             MemoryError::InvalidState {
-                reason: format!("arena modify timed out after {:?}", duration),
+                reason: format!("arena modify timed out after {:?}", duration).into(),
             }
         })
     }
@@ -160,7 +217,7 @@ impl<T> ArenaHandle<T> {
             warn!(?duration, "Arena read operation timed out");
 
             MemoryError::InvalidState {
-                reason: format!("arena read timed out after {:?}", duration),
+                reason: format!("arena read timed out after {:?}", duration).into(),
             }
         })
     }
@@ -305,7 +362,7 @@ impl AsyncArena {
                 warn!(?duration, "Arena allocation timed out");
 
                 MemoryError::InvalidState {
-                    reason: format!("arena allocation timed out after {:?}", duration),
+                    reason: format!("arena allocation timed out after {:?}", duration).into(),
                 }
             })?
     }
@@ -400,7 +457,7 @@ impl AsyncArena {
             warn!(?duration, "Arena slice allocation timed out");
 
             MemoryError::InvalidState {
-                reason: format!("arena slice allocation timed out after {:?}", duration),
+                reason: format!("arena slice allocation timed out after {:?}", duration).into(),
             }
         })?
     }
@@ -457,7 +514,7 @@ impl AsyncArena {
             warn!(?duration, "Arena string allocation timed out");
 
             MemoryError::InvalidState {
-                reason: format!("arena string allocation timed out after {:?}", duration),
+                reason: format!("arena string allocation timed out after {:?}", duration).into(),
             }
         })?
     }
