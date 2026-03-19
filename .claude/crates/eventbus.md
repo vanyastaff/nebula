@@ -9,7 +9,7 @@ Generic typed pub/sub event bus — transport infrastructure only, no domain eve
 ## Key Decisions
 - Backed by `tokio::sync::broadcast` — bounded, Lagged semantics, zero-copy clone.
 - `BackPressurePolicy` controls what happens when the buffer is full (drop oldest vs drop newest vs block). Block policy uses exponential backoff (50µs base, 1ms cap) instead of fixed polling.
-- `EventBusRegistry` provides multi-bus isolation by key (e.g., per-tenant buses).
+- `EventBusRegistry` provides multi-bus isolation by key (e.g., per-tenant buses). Uses `parking_lot::RwLock` (no poison recovery needed).
 - `FilteredSubscriber` + `EventFilter` for predicate-based selective subscription.
 - `SubscriberStream` / `FilteredStream` via `into_stream()` — `futures_core::Stream` adapters for use with `StreamExt` combinators. Lagged events auto-skipped (same semantics as `recv()`).
 - `SubscriptionScope` + `ScopedEvent` for targeted subscriptions (e.g., listen only for a specific workflow's events).
