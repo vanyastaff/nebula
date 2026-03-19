@@ -217,6 +217,7 @@ pub mod retryable;
 
 // High-level composition and management
 mod compose;
+pub mod pipeline;
 
 // Re-exports from core with type safety
 pub use core::{
@@ -293,6 +294,7 @@ pub use core::{ConstantLoad, LoadSignal, PolicySource};
 pub use observability::{MetricsSink, NoopSink, RecordingSink, ResilienceEvent};
 // CircuitState re-exported as SinkCircuitState to avoid conflict with old patterns::circuit_breaker::State
 pub use gate::{Gate, GateClosed, GateGuard};
+pub use pipeline::{PipelineBuilder, ResiliencePipeline};
 pub use manager::{
     PolicyBuilder, ResilienceManager, RetryableOperation, UnTypedServiceMetrics as ServiceMetrics,
 };
