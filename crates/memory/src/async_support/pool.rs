@@ -276,7 +276,7 @@ impl<T: Poolable> AsyncPool<T> {
             warn!(?duration, "Pool acquire operation timed out");
 
             MemoryError::InvalidState {
-                reason: format!("pool acquire timed out after {:?}", duration),
+                reason: format!("pool acquire timed out after {:?}", duration).into(),
             }
         })?
     }

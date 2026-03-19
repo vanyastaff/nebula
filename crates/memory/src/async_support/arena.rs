@@ -201,7 +201,7 @@ impl<T> ArenaHandle<T> {
             warn!(?duration, "Arena modify operation timed out");
 
             MemoryError::InvalidState {
-                reason: format!("arena modify timed out after {:?}", duration),
+                reason: format!("arena modify timed out after {:?}", duration).into(),
             }
         })
     }
@@ -217,7 +217,7 @@ impl<T> ArenaHandle<T> {
             warn!(?duration, "Arena read operation timed out");
 
             MemoryError::InvalidState {
-                reason: format!("arena read timed out after {:?}", duration),
+                reason: format!("arena read timed out after {:?}", duration).into(),
             }
         })
     }
@@ -362,7 +362,7 @@ impl AsyncArena {
                 warn!(?duration, "Arena allocation timed out");
 
                 MemoryError::InvalidState {
-                    reason: format!("arena allocation timed out after {:?}", duration),
+                    reason: format!("arena allocation timed out after {:?}", duration).into(),
                 }
             })?
     }
@@ -457,7 +457,7 @@ impl AsyncArena {
             warn!(?duration, "Arena slice allocation timed out");
 
             MemoryError::InvalidState {
-                reason: format!("arena slice allocation timed out after {:?}", duration),
+                reason: format!("arena slice allocation timed out after {:?}", duration).into(),
             }
         })?
     }
@@ -514,7 +514,7 @@ impl AsyncArena {
             warn!(?duration, "Arena string allocation timed out");
 
             MemoryError::InvalidState {
-                reason: format!("arena string allocation timed out after {:?}", duration),
+                reason: format!("arena string allocation timed out after {:?}", duration).into(),
             }
         })?
     }
