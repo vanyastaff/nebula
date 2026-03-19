@@ -24,7 +24,8 @@ pub struct ConstantLoad {
 
 impl ConstantLoad {
     /// A fully idle signal (0% load, 0% errors, 5ms latency).
-    pub fn idle() -> Self {
+    #[must_use]
+    pub const fn idle() -> Self {
         Self {
             factor: 0.0,
             error_rate: 0.0,
@@ -33,7 +34,8 @@ impl ConstantLoad {
     }
 
     /// A fully saturated signal (100% load, 50% errors, 2s latency).
-    pub fn saturated() -> Self {
+    #[must_use]
+    pub const fn saturated() -> Self {
         Self {
             factor: 1.0,
             error_rate: 0.5,
@@ -63,13 +65,13 @@ mod tests {
     #[test]
     fn idle_signal_returns_zero_load() {
         let s = ConstantLoad::idle();
-        assert_eq!(s.load_factor(), 0.0);
-        assert_eq!(s.error_rate(), 0.0);
+        assert!((s.load_factor() - 0.0).abs() < f64::EPSILON);
+        assert!((s.error_rate() - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn saturated_signal_returns_full_load() {
         let s = ConstantLoad::saturated();
-        assert_eq!(s.load_factor(), 1.0);
+        assert!((s.load_factor() - 1.0).abs() < f64::EPSILON);
     }
 }

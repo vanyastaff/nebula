@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::{
     CallError,
-    observability::sink::{MetricsSink, NoopSink, ResilienceEvent},
+    sink::{MetricsSink, NoopSink, ResilienceEvent},
 };
 
 // ── Backoff ───────────────────────────────────────────────────────────────────
@@ -46,6 +46,14 @@ impl BackoffConfig {
         }
     }
 
+    // Reason: u128 millis cast to f64 for exponential math, f64 result cast to u64 for Duration,
+    // and u32 attempt cast to i32 for powi are all acceptable within configured retry bounds.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap
+    )]
     pub(crate) fn delay_for(&self, attempt: u32) -> Duration {
         match self {
             Self::Fixed(d) => *d,
@@ -178,6 +186,15 @@ impl<E: 'static> RetryConfig<E> {
 ///
 /// - If all attempts fail and retrying was allowed: returns `Err(CallError::RetriesExhausted)`
 /// - If the predicate says don't retry: returns `Err(CallError::Operation)` immediately
+///
+/// # Errors
+///
+/// Returns `Err(CallError::RetriesExhausted)` when all attempts are exhausted,
+/// or `Err(CallError::Operation)` if the retry predicate rejects the error.
+///
+/// # Panics
+///
+/// Panics if `config.max_attempts` is 0 (this is prevented by [`RetryConfig::new`]).
 pub async fn retry_with<T, E, F>(config: RetryConfig<E>, mut f: F) -> Result<T, CallError<E>>
 where
     E: 'static,
@@ -226,6 +243,10 @@ where
 
 /// Convenience: retry up to `n` times with no backoff.
 ///
+/// # Errors
+///
+/// Returns `Err(CallError::RetriesExhausted)` when all `n` attempts are exhausted.
+///
 /// # Panics
 ///
 /// Panics if `n` is 0 (use [`retry_with`] with [`RetryConfig::new`] for fallible construction).
@@ -246,6 +267,11 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
+
+    fn fail_twice(counter: &AtomicU32) -> Result<u32, &'static str> {
+        let n = counter.fetch_add(1, Ordering::SeqCst);
+        if n < 2 { Err("fail") } else { Ok(99) }
+    }
 
     #[tokio::test]
     async fn retries_up_to_max_attempts() {
@@ -281,10 +307,7 @@ mod tests {
 
         let result: Result<u32, CallError<&str>> = retry_with(config, || {
             let c = c.clone();
-            Box::pin(async move {
-                let n = c.fetch_add(1, Ordering::SeqCst);
-                if n < 2 { Err("fail") } else { Ok(99u32) }
-            })
+            Box::pin(async move { fail_twice(&c) })
         })
         .await;
 
@@ -292,16 +315,17 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 
+    #[derive(Debug)]
+    enum MyErr {
+        #[allow(dead_code)]
+        Transient,
+        Permanent,
+    }
+
     #[tokio::test]
     async fn retry_if_predicate_stops_on_permanent_error() {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
-
-        #[derive(Debug)]
-        enum MyErr {
-            Transient,
-            Permanent,
-        }
 
         let config = RetryConfig::new(5)
             .unwrap()

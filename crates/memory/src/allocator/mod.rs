@@ -24,7 +24,7 @@ pub use bump::BumpAllocator;
 pub use pool::PoolStats;
 pub use pool::{PoolAllocator, PoolBox, PoolConfig};
 
-pub use crate::error::{AllocError, AllocResult};
+pub use crate::error::{MemoryError, MemoryResult};
 pub use manager::{AllocatorId, AllocatorManager, GlobalAllocatorManager};
 #[cfg(feature = "monitoring")]
 pub use monitored::{MonitoredAllocator, MonitoredConfig};

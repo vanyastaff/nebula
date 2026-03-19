@@ -7,8 +7,13 @@ use crate::CallError;
 
 /// Shed load immediately when `should_shed()` returns `true`.
 ///
-/// - If `should_shed()` returns `true` → `Err(CallError::LoadShed)` without calling `f`.
-/// - Otherwise → executes `f()` and maps `Err(e)` to `Err(CallError::Operation(e))`.
+/// - If `should_shed()` returns `true` -> `Err(CallError::LoadShed)` without calling `f`.
+/// - Otherwise -> executes `f()` and maps `Err(e)` to `Err(CallError::Operation(e))`.
+///
+/// # Errors
+///
+/// Returns `Err(CallError::LoadShed)` when the shed predicate fires,
+/// or `Err(CallError::Operation)` if the operation itself fails.
 pub async fn load_shed<T, E, S, F>(should_shed: S, f: F) -> Result<T, CallError<E>>
 where
     S: Fn() -> bool,

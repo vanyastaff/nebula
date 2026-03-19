@@ -263,6 +263,10 @@ impl<P: PatternCategory> Drop for PatternSpanGuard<P> {
 // =============================================================================
 
 /// Execute an async operation with a typed span.
+///
+/// # Errors
+///
+/// Propagates any error returned by the wrapped operation `f`.
 pub async fn with_typed_span<P, F, Fut, T, E>(operation: &str, f: F) -> Result<T, E>
 where
     P: PatternCategory,
@@ -288,10 +292,14 @@ where
 // ORIGINAL IMPLEMENTATION
 // =============================================================================
 
-/// Create a new span for a resilience operation
+/// Create a new span for a resilience operation.
 ///
 /// This is a lightweight wrapper that can be extended with OpenTelemetry
 /// when the `telemetry` feature is enabled in nebula-log.
+///
+/// # Errors
+///
+/// Propagates any error returned by the wrapped operation `f`.
 ///
 /// # Example
 ///

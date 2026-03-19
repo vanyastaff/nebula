@@ -5,9 +5,6 @@
 use core::alloc::Layout;
 use thiserror::Error;
 
-#[cfg(feature = "logging")]
-use nebula_log::{error, warn};
-
 // ============================================================================
 // Main Error Types
 // ============================================================================
@@ -22,10 +19,10 @@ pub enum MemoryError {
     AllocationFailed { size: usize, align: usize },
 
     #[error("Invalid memory layout: {reason}")]
-    InvalidLayout { reason: String },
+    InvalidLayout { reason: Box<str> },
 
     #[error("Size overflow during operation: {operation}")]
-    SizeOverflow { operation: String },
+    SizeOverflow { operation: Box<str> },
 
     #[error("Invalid alignment: {alignment}")]
     InvalidAlignment { alignment: usize },
@@ -35,28 +32,28 @@ pub enum MemoryError {
 
     // --- Pool Errors ---
     #[error("Memory pool '{pool_id}' exhausted (capacity: {capacity})")]
-    PoolExhausted { pool_id: String, capacity: usize },
+    PoolExhausted { pool_id: Box<str>, capacity: usize },
 
     #[error("Invalid configuration: {reason}")]
-    InvalidConfig { reason: String },
+    InvalidConfig { reason: Box<str> },
 
     // --- Arena Errors ---
     #[error("Arena '{arena_id}' exhausted: requested {requested} bytes, available {available}")]
     ArenaExhausted {
-        arena_id: String,
+        arena_id: Box<str>,
         requested: usize,
         available: usize,
     },
 
     // --- Cache Errors ---
     #[error("Cache miss for key: {key}")]
-    CacheMiss { key: String },
+    CacheMiss { key: Box<str> },
 
     #[error("Cache overflow: {current} bytes used, {max} bytes maximum")]
     CacheOverflow { current: usize, max: usize },
 
     #[error("Invalid cache key: {reason}")]
-    InvalidCacheKey { reason: String },
+    InvalidCacheKey { reason: Box<str> },
 
     // --- Budget Errors ---
     #[error("Memory budget exceeded: {used} bytes used, {limit} bytes limit")]
@@ -64,30 +61,33 @@ pub enum MemoryError {
 
     // --- System Errors ---
     #[error("Memory corruption detected in {component}: {details}")]
-    Corruption { component: String, details: String },
+    Corruption {
+        component: Box<str>,
+        details: Box<str>,
+    },
 
     #[error("Concurrent access error: {details}")]
-    ConcurrentAccess { details: String },
+    ConcurrentAccess { details: Box<str> },
 
     #[error("Invalid state: {reason}")]
-    InvalidState { reason: String },
+    InvalidState { reason: Box<str> },
 
     #[error("Initialization failed: {reason}")]
-    InitializationFailed { reason: String },
+    InitializationFailed { reason: Box<str> },
 
     // --- Feature Support Errors ---
     #[error("Feature not supported: {feature}{}", context.as_ref().map(|c| format!(" ({c})")).unwrap_or_default())]
     NotSupported {
         feature: &'static str,
-        context: Option<String>,
+        context: Option<Box<str>>,
     },
 
     // --- General Errors ---
     #[error("Operation not found: {reason}")]
-    NotFound { reason: String },
+    NotFound { reason: Box<str> },
 
     #[error("Invalid operation: {reason}")]
-    InvalidOperation { reason: String },
+    InvalidOperation { reason: Box<str> },
 }
 
 impl MemoryError {
@@ -135,13 +135,8 @@ impl MemoryError {
     // ============================================================================
 
     /// Create allocation failed error
+    #[must_use]
     pub fn allocation_failed(size: usize, align: usize) -> Self {
-        #[cfg(feature = "logging")]
-        error!(
-            "Memory allocation failed: {} bytes with {} alignment",
-            size, align
-        );
-
         Self::AllocationFailed { size, align }
     }
 
@@ -154,14 +149,14 @@ impl MemoryError {
     /// Create invalid layout error
     pub fn invalid_layout(reason: &str) -> Self {
         Self::InvalidLayout {
-            reason: reason.to_string(),
+            reason: reason.into(),
         }
     }
 
     /// Create size overflow error
     pub fn size_overflow(operation: &str) -> Self {
         Self::SizeOverflow {
-            operation: operation.to_string(),
+            operation: operation.into(),
         }
     }
 
@@ -181,11 +176,8 @@ impl MemoryError {
 
     /// Create pool exhausted error
     pub fn pool_exhausted(pool_id: &str, capacity: usize) -> Self {
-        #[cfg(feature = "logging")]
-        warn!("Memory pool exhausted: {}", pool_id);
-
         Self::PoolExhausted {
-            pool_id: pool_id.to_string(),
+            pool_id: pool_id.into(),
             capacity,
         }
     }
@@ -193,14 +185,14 @@ impl MemoryError {
     /// Create invalid pool config error
     pub fn invalid_pool_config(reason: &str) -> Self {
         Self::InvalidConfig {
-            reason: format!("invalid pool config: {reason}"),
+            reason: format!("invalid pool config: {reason}").into_boxed_str(),
         }
     }
 
     /// Create invalid config error
     pub fn invalid_config(reason: &str) -> Self {
         Self::InvalidConfig {
-            reason: reason.to_string(),
+            reason: reason.into(),
         }
     }
 
@@ -209,7 +201,7 @@ impl MemoryError {
     /// Create arena exhausted error
     pub fn arena_exhausted(arena_id: &str, requested: usize, available: usize) -> Self {
         Self::ArenaExhausted {
-            arena_id: arena_id.to_string(),
+            arena_id: arena_id.into(),
             requested,
             available,
         }
@@ -218,7 +210,7 @@ impl MemoryError {
     /// Create invalid arena operation error
     pub fn invalid_arena_operation(operation: &str) -> Self {
         Self::InvalidState {
-            reason: format!("invalid arena operation: {operation}"),
+            reason: format!("invalid arena operation: {operation}").into_boxed_str(),
         }
     }
 
@@ -226,9 +218,7 @@ impl MemoryError {
 
     /// Create cache miss error
     pub fn cache_miss(key: &str) -> Self {
-        Self::CacheMiss {
-            key: key.to_string(),
-        }
+        Self::CacheMiss { key: key.into() }
     }
 
     /// Create cache full error
@@ -243,7 +233,7 @@ impl MemoryError {
     /// Create invalid cache key error
     pub fn invalid_cache_key(key: &str) -> Self {
         Self::InvalidCacheKey {
-            reason: format!("invalid key: {key}"),
+            reason: format!("invalid key: {key}").into_boxed_str(),
         }
     }
 
@@ -258,7 +248,7 @@ impl MemoryError {
     /// Create invalid budget error
     pub fn invalid_budget(reason: &str) -> Self {
         Self::InvalidConfig {
-            reason: format!("invalid budget: {reason}"),
+            reason: format!("invalid budget: {reason}").into_boxed_str(),
         }
     }
 
@@ -266,27 +256,24 @@ impl MemoryError {
 
     /// Create memory corruption error
     pub fn corruption(component: &str, details: &str) -> Self {
-        #[cfg(feature = "logging")]
-        error!("Memory corruption: {component} - {details}");
-
         Self::Corruption {
-            component: component.to_string(),
-            details: details.to_string(),
+            component: component.into(),
+            details: details.into(),
         }
     }
 
     /// Create concurrent access error
     pub fn concurrent_access(details: &str) -> Self {
         Self::ConcurrentAccess {
-            details: details.to_string(),
+            details: details.into(),
         }
     }
 
     /// Create leak detected error
     pub fn leak_detected(size: usize, location: &str) -> Self {
         Self::Corruption {
-            component: "memory tracker".to_string(),
-            details: format!("leak detected: {size} bytes at {location}"),
+            component: "memory tracker".into(),
+            details: format!("leak detected: {size} bytes at {location}").into_boxed_str(),
         }
     }
 
@@ -296,14 +283,15 @@ impl MemoryError {
         Self::InvalidState {
             reason: format!(
                 "fragmentation: {available} bytes available, largest block {largest_block}, requested {requested}"
-            ),
+            )
+            .into_boxed_str(),
         }
     }
 
     /// Create initialization failed error
     pub fn initialization_failed(component: &str) -> Self {
         Self::InitializationFailed {
-            reason: format!("failed to initialize {component}"),
+            reason: format!("failed to initialize {component}").into_boxed_str(),
         }
     }
 
@@ -321,28 +309,28 @@ impl MemoryError {
     #[must_use]
     pub fn invalid_index(index: usize, max: usize) -> Self {
         Self::InvalidState {
-            reason: format!("invalid index {index} (max: {max})"),
+            reason: format!("invalid index {index} (max: {max})").into_boxed_str(),
         }
     }
 
     /// Create decompression failed error
     pub fn decompression_failed(reason: &str) -> Self {
         Self::InvalidState {
-            reason: format!("decompression failed: {reason}"),
+            reason: format!("decompression failed: {reason}").into_boxed_str(),
         }
     }
 
     /// Create monitor error
     pub fn monitor_error(reason: &str) -> Self {
         Self::InvalidState {
-            reason: format!("monitor error: {reason}"),
+            reason: format!("monitor error: {reason}").into_boxed_str(),
         }
     }
 
     /// Create not supported error
     pub fn not_supported(operation: &str) -> Self {
         Self::InvalidState {
-            reason: format!("operation not supported: {operation}"),
+            reason: format!("operation not supported: {operation}").into_boxed_str(),
         }
     }
 
@@ -371,13 +359,6 @@ impl MemoryError {
 
 /// Result type for memory operations
 pub type MemoryResult<T> = core::result::Result<T, MemoryError>;
-
-/// Generic result type alias
-pub type Result<T> = MemoryResult<T>;
-
-/// Type aliases for allocator module backward compatibility
-pub type AllocError = MemoryError;
-pub type AllocResult<T> = MemoryResult<T>;
 
 // ============================================================================
 // Tests

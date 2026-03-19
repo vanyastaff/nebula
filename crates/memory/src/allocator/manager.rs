@@ -10,7 +10,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use dashmap::DashMap;
 
-use super::{AllocError, AllocResult, Allocator, ThreadSafeAllocator};
+use super::{Allocator, MemoryError, MemoryResult, ThreadSafeAllocator};
 
 /// Unique identifier for registered allocators
 ///
@@ -61,7 +61,7 @@ pub trait ManagedAllocator: Send + Sync {
     ///
     /// Caller must ensure `layout` has non-zero size and valid alignment.
     /// The returned pointer must be deallocated with the same layout.
-    unsafe fn managed_allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>>;
+    unsafe fn managed_allocate(&self, layout: Layout) -> MemoryResult<NonNull<[u8]>>;
 
     /// Deallocate memory
     ///
@@ -84,7 +84,7 @@ pub trait ManagedAllocator: Send + Sync {
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>>;
+    ) -> MemoryResult<NonNull<[u8]>>;
 
     /// Get allocator name for debugging
     fn name(&self) -> &'static str;
@@ -92,7 +92,7 @@ pub trait ManagedAllocator: Send + Sync {
 
 /// Blanket implementation for any thread-safe allocator
 impl<A: ThreadSafeAllocator + 'static> ManagedAllocator for A {
-    unsafe fn managed_allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+    unsafe fn managed_allocate(&self, layout: Layout) -> MemoryResult<NonNull<[u8]>> {
         // SAFETY: Caller's safety requirements are forwarded to the underlying allocator.
         // This is a simple delegation - all preconditions documented in trait apply.
         unsafe { self.allocate(layout) }
@@ -109,7 +109,7 @@ impl<A: ThreadSafeAllocator + 'static> ManagedAllocator for A {
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         // SAFETY: Caller's invariants (ptr validity, matching old_layout, aligned layouts)
         // are forwarded to the underlying allocator without modification.
         unsafe { self.reallocate(ptr, old_layout, new_layout) }
@@ -255,11 +255,11 @@ impl AllocatorManager {
     /// - `layout` must have non-zero size and valid alignment
     /// - Returned pointer must be deallocated with the same layout
     /// - Caller must ensure an allocator is active before calling
-    pub unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+    pub unsafe fn allocate(&self, layout: Layout) -> MemoryResult<NonNull<[u8]>> {
         // SAFETY: We delegate to the active allocator. Caller's safety requirements
         // are forwarded unchanged. Returns error if no allocator is active.
         self.with_active_allocator(|alloc| unsafe { alloc.managed_allocate(layout) })
-            .unwrap_or_else(|| Err(AllocError::invalid_layout("no active allocator")))
+            .unwrap_or_else(|| Err(MemoryError::invalid_layout("no active allocator")))
     }
 
     /// Deallocate using the currently active allocator
@@ -288,47 +288,29 @@ impl AllocatorManager {
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         // SAFETY: Caller's invariants are forwarded to the active allocator.
         // Returns error if no allocator is active.
         self.with_active_allocator(|alloc| unsafe {
             alloc.managed_reallocate(ptr, old_layout, new_layout)
         })
-        .unwrap_or_else(|| Err(AllocError::invalid_layout("no active allocator")))
+        .unwrap_or_else(|| Err(MemoryError::invalid_layout("no active allocator")))
     }
 }
 
-/// Global allocator manager singleton
-use core::sync::atomic::AtomicBool;
-
-static MANAGER_INIT: AtomicBool = AtomicBool::new(false);
-
-static GLOBAL_MANAGER: std::sync::OnceLock<AllocatorManager> = std::sync::OnceLock::new();
+/// Global allocator manager singleton (lazily initialized)
+static GLOBAL_MANAGER: std::sync::LazyLock<AllocatorManager> =
+    std::sync::LazyLock::new(AllocatorManager::new);
 
 /// Singleton implementation of allocator manager
 pub struct GlobalAllocatorManager;
 
 impl GlobalAllocatorManager {
-    /// Initializes the global allocator manager
-    #[must_use = "initialization result must be checked"]
-    pub fn init() -> Result<(), &'static str> {
-        GLOBAL_MANAGER
-            .set(AllocatorManager::new())
-            .map_err(|_| "Global allocator manager already initialized")?;
-        MANAGER_INIT.store(true, Ordering::SeqCst);
-        Ok(())
-    }
-
-    /// Gets a reference to the global manager
+    /// Gets a reference to the global manager.
+    ///
+    /// The manager is lazily initialized on first access — no explicit `init()` call needed.
     pub fn get() -> &'static AllocatorManager {
-        GLOBAL_MANAGER.get().expect(
-            "Global allocator manager not initialized. Call GlobalAllocatorManager::init() first.",
-        )
-    }
-
-    /// Try to get the global manager without panicking
-    pub fn try_get() -> Option<&'static AllocatorManager> {
-        GLOBAL_MANAGER.get()
+        &GLOBAL_MANAGER
     }
 }
 
@@ -360,7 +342,7 @@ macro_rules! set_active_allocator {
 /// - No data races can occur in allocation/deallocation paths
 /// - Pointers returned are valid and properly aligned (guaranteed by underlying allocators)
 unsafe impl Allocator for AllocatorManager {
-    unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+    unsafe fn allocate(&self, layout: Layout) -> MemoryResult<NonNull<[u8]>> {
         // SAFETY: Simple delegation to our own allocate method, which forwards
         // to the active allocator. Safety requirements are inherited from trait.
         unsafe { self.allocate(layout) }
@@ -377,7 +359,7 @@ unsafe impl Allocator for AllocatorManager {
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         // SAFETY: Delegation to our reallocate method. All caller invariants
         // (ptr validity, layout matching) are preserved.
         unsafe { self.reallocate(ptr, old_layout, new_layout) }
@@ -395,20 +377,13 @@ unsafe impl ThreadSafeAllocator for AllocatorManager {}
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, Once};
+    use std::sync::Mutex;
 
     use super::*;
     use crate::allocator::system::SystemAllocator;
 
-    static INIT: Once = Once::new();
     /// Serialize tests that use the global allocator manager to avoid races
     static GLOBAL_MANAGER_LOCK: Mutex<()> = Mutex::new(());
-
-    fn ensure_global_manager_initialized() {
-        INIT.call_once(|| {
-            GlobalAllocatorManager::init().expect("Failed to initialize global manager");
-        });
-    }
 
     #[test]
     fn test_manager_basic_functionality() {
@@ -430,7 +405,6 @@ mod tests {
     #[test]
     fn test_allocator_switching() {
         let _lock = GLOBAL_MANAGER_LOCK.lock().unwrap();
-        ensure_global_manager_initialized();
         let manager = GlobalAllocatorManager::get();
 
         let system1 = SystemAllocator::new();
@@ -452,7 +426,6 @@ mod tests {
     #[test]
     fn test_macros() {
         let _lock = GLOBAL_MANAGER_LOCK.lock().unwrap();
-        ensure_global_manager_initialized();
         let manager = GlobalAllocatorManager::get();
 
         let system_alloc = SystemAllocator::new();

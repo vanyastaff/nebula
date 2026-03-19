@@ -22,7 +22,7 @@ use core::alloc::Layout;
 use core::ptr::NonNull;
 
 use super::{
-    AllocResult, Allocator, AllocatorStats, AtomicAllocatorStats, BasicMemoryUsage, BulkAllocator,
+    Allocator, AllocatorStats, AtomicAllocatorStats, BasicMemoryUsage, BulkAllocator, MemoryResult,
     MemoryUsage, Resettable, StatisticsProvider, ThreadSafeAllocator,
 };
 
@@ -128,7 +128,7 @@ unsafe impl<A: Allocator> Allocator for TrackedAllocator<A> {
     /// - `layout` has non-zero size (unless `A::supports_zero_sized_allocs()`)
     /// - `layout.align()` is a power of two
     /// - `layout.size()` when rounded up to nearest multiple of align does not overflow isize
-    unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+    unsafe fn allocate(&self, layout: Layout) -> MemoryResult<NonNull<[u8]>> {
         // SAFETY: Forwarding to inner allocator's allocate.
         // - layout validity is enforced by caller's contract (see above)
         // - Inner allocator upholds Allocator trait safety requirements
@@ -176,7 +176,7 @@ unsafe impl<A: Allocator> Allocator for TrackedAllocator<A> {
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         // SAFETY: Forwarding to inner allocator's reallocate.
         // - ptr was allocated by self.inner with old_layout (caller's contract)
         // - new_layout.align() == old_layout.align() (caller's contract)
@@ -221,7 +221,7 @@ unsafe impl<A: BulkAllocator> BulkAllocator for TrackedAllocator<A> {
         &self,
         layout: Layout,
         count: usize,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         let total_size = layout.size().saturating_mul(count);
 
         // SAFETY: Forwarding to inner's bulk allocate.
@@ -267,7 +267,7 @@ unsafe impl<A: BulkAllocator> BulkAllocator for TrackedAllocator<A> {
         layout: Layout,
         old_count: usize,
         new_count: usize,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         let old_total_size = layout.size().saturating_mul(old_count);
         let new_total_size = layout.size().saturating_mul(new_count);
 

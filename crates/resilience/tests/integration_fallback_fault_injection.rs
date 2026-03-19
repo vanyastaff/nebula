@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nebula_resilience::ResilienceError;
-use nebula_resilience::patterns::fallback::{
+use nebula_resilience::fallback::{
     CacheFallback, ChainFallback, FallbackOperation, FallbackStrategy, FunctionFallback,
     PriorityFallback, ValueFallback,
 };

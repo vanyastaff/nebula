@@ -63,10 +63,13 @@ pub trait SerializableValue: Send + Sync {
     fn to_json(&self) -> MemoryResult<String> {
         Err(MemoryError::NotSupported {
             feature: "JSON serialization",
-            context: Some(format!(
-                "Type {} does not support JSON serialization",
-                self.type_name()
-            )),
+            context: Some(
+                format!(
+                    "Type {} does not support JSON serialization",
+                    self.type_name()
+                )
+                .into_boxed_str(),
+            ),
         })
     }
 
@@ -230,7 +233,7 @@ impl Serializer for JsonSerializer {
         type_hint: &str,
     ) -> MemoryResult<Box<dyn SerializableValue>> {
         let json = core::str::from_utf8(data).map_err(|_| MemoryError::InvalidConfig {
-            reason: "Invalid UTF-8 in JSON data".to_string(),
+            reason: "Invalid UTF-8 in JSON data".into(),
         })?;
 
         // Very simplified JSON parsing - just for demonstration
@@ -249,7 +252,7 @@ impl Serializer for JsonSerializer {
                 let num = json
                     .parse::<f64>()
                     .map_err(|_| MemoryError::InvalidConfig {
-                        reason: "Invalid JSON number".to_string(),
+                        reason: "Invalid JSON number".into(),
                     })?;
                 Ok(Box::new(NumberValue(num)))
             }
@@ -267,7 +270,7 @@ impl Serializer for JsonSerializer {
             }
             _ => Err(MemoryError::NotSupported {
                 feature: "JSON deserialization",
-                context: Some(format!("Type {type_hint} not supported")),
+                context: Some(format!("Type {type_hint} not supported").into_boxed_str()),
             }),
         }
     }
@@ -310,7 +313,7 @@ impl SerializationExtension {
             Some(serializer) => serializer.serialize(value),
             None => Err(MemoryError::NotSupported {
                 feature: "Serialization format",
-                context: Some(format!("{format} is not supported")),
+                context: Some(format!("{format} is not supported").into_boxed_str()),
             }),
         }
     }
@@ -326,7 +329,7 @@ impl SerializationExtension {
             Some(serializer) => serializer.deserialize(data, type_hint),
             None => Err(MemoryError::NotSupported {
                 feature: "Deserialization format",
-                context: Some(format!("{format} is not supported")),
+                context: Some(format!("{format} is not supported").into_boxed_str()),
             }),
         }
     }
@@ -405,7 +408,7 @@ pub fn serialize(
         Some(extension) => extension.serialize(value, format),
         None => Err(MemoryError::NotSupported {
             feature: "Serialization",
-            context: Some("Global serialization extension not initialized".to_string()),
+            context: Some("Global serialization extension not initialized".into()),
         }),
     }
 }
@@ -420,7 +423,7 @@ pub fn deserialize(
         Some(extension) => extension.deserialize(data, type_hint, format),
         None => Err(MemoryError::NotSupported {
             feature: "Deserialization",
-            context: Some("Global serialization extension not initialized".to_string()),
+            context: Some("Global serialization extension not initialized".into()),
         }),
     }
 }

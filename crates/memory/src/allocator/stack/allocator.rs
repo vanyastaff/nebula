@@ -37,9 +37,10 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use super::{StackConfig, StackMarker};
 use crate::allocator::{
-    AllocError, AllocResult, Allocator, AllocatorStats, MemoryUsage, Resettable, StatisticsProvider,
+    Allocator, AllocatorStats, MemoryError, MemoryResult, MemoryUsage, Resettable,
+    StatisticsProvider,
 };
-use crate::core::SyncUnsafeCell;
+use crate::foundation::SyncUnsafeCell;
 use crate::utils::{Backoff, align_up, atomic_max};
 
 /// Stack allocator that supports LIFO allocation and deallocation
@@ -88,9 +89,9 @@ pub struct StackAllocator {
 
 impl StackAllocator {
     /// Creates a new stack allocator with custom configuration
-    pub fn with_config(capacity: usize, config: StackConfig) -> AllocResult<Self> {
+    pub fn with_config(capacity: usize, config: StackConfig) -> MemoryResult<Self> {
         if capacity == 0 {
-            return Err(AllocError::invalid_layout("capacity cannot be zero"));
+            return Err(MemoryError::invalid_layout("capacity cannot be zero"));
         }
 
         let mut vec = vec![0u8; capacity];
@@ -137,22 +138,22 @@ impl StackAllocator {
     }
 
     /// Creates a new stack allocator with default configuration
-    pub fn new(capacity: usize) -> AllocResult<Self> {
+    pub fn new(capacity: usize) -> MemoryResult<Self> {
         Self::with_config(capacity, StackConfig::default())
     }
 
     /// Creates a production-optimized stack allocator
-    pub fn production(capacity: usize) -> AllocResult<Self> {
+    pub fn production(capacity: usize) -> MemoryResult<Self> {
         Self::with_config(capacity, StackConfig::production())
     }
 
     /// Creates a debug-optimized stack allocator
-    pub fn debug(capacity: usize) -> AllocResult<Self> {
+    pub fn debug(capacity: usize) -> MemoryResult<Self> {
         Self::with_config(capacity, StackConfig::debug())
     }
 
     /// Creates a performance-optimized stack allocator
-    pub fn performance(capacity: usize) -> AllocResult<Self> {
+    pub fn performance(capacity: usize) -> MemoryResult<Self> {
         Self::with_config(capacity, StackConfig::performance())
     }
 
@@ -234,14 +235,14 @@ impl StackAllocator {
     /// - All pointers to memory allocated after the marker become invalid
     /// - The marker position must not be in the future (greater than current
     ///   top)
-    pub unsafe fn restore_to_marker(&self, marker: StackMarker) -> Result<(), AllocError> {
+    pub unsafe fn restore_to_marker(&self, marker: StackMarker) -> Result<(), MemoryError> {
         let current_top = self.top.load(Ordering::Acquire);
 
         if marker.position > current_top {
-            return Err(AllocError::invalid_layout("invalid layout")); // marker from the future
+            return Err(MemoryError::invalid_layout("invalid layout")); // marker from the future
         }
         if marker.position < self.start_addr || marker.position > self.end_addr {
-            return Err(AllocError::invalid_layout("invalid layout")); // out of bounds
+            return Err(MemoryError::invalid_layout("invalid layout")); // out of bounds
         }
 
         self.top.store(marker.position, Ordering::Release);
@@ -369,13 +370,13 @@ impl StackAllocator {
     }
 
     /// Convenience constructors
-    pub fn small() -> AllocResult<Self> {
+    pub fn small() -> MemoryResult<Self> {
         Self::new(32 * 1024)
     } // 32KB
-    pub fn medium() -> AllocResult<Self> {
+    pub fn medium() -> MemoryResult<Self> {
         Self::new(512 * 1024)
     } // 512KB
-    pub fn large() -> AllocResult<Self> {
+    pub fn large() -> MemoryResult<Self> {
         Self::new(8 * 1024 * 1024)
     } // 8MB
 }
@@ -386,7 +387,7 @@ impl StackAllocator {
 // - deallocate only works for most recent allocation (stack LIFO)
 // - All operations properly synchronized via atomic top pointer
 unsafe impl Allocator for StackAllocator {
-    unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+    unsafe fn allocate(&self, layout: Layout) -> MemoryResult<NonNull<[u8]>> {
         if layout.size() == 0 {
             // Handle zero-sized allocations
             let ptr = NonNull::<u8>::dangling();
@@ -396,7 +397,10 @@ unsafe impl Allocator for StackAllocator {
         if let Some(ptr) = self.try_allocate(layout.size(), layout.align()) {
             Ok(NonNull::slice_from_raw_parts(ptr, layout.size()))
         } else {
-            Err(AllocError::allocation_failed(layout.size(), layout.align()))
+            Err(MemoryError::allocation_failed(
+                layout.size(),
+                layout.align(),
+            ))
         }
     }
 
@@ -415,7 +419,7 @@ unsafe impl Allocator for StackAllocator {
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         // Check if this is the most recent allocation and we can extend in-place
         let current_top = self.top.load(Ordering::Acquire);
         let ptr_addr = ptr.as_ptr() as usize;

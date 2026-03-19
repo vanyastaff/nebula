@@ -28,7 +28,7 @@
 
 use core::fmt;
 
-use crate::allocator::{AllocResult, Allocator};
+use crate::allocator::{Allocator, MemoryResult};
 
 // ============================================================================
 // Sealing Mechanism
@@ -195,9 +195,9 @@ impl fmt::Display for FragmentationStats {
 ///
 /// ```rust
 /// use nebula_memory::allocator::{BumpAllocator, sealed::AllocatorInternal};
-/// use nebula_memory::allocator::AllocResult;
+/// use nebula_memory::allocator::MemoryResult;
 ///
-/// fn analyze_allocator<A: AllocatorInternal>(alloc: &A) -> AllocResult<()> {
+/// fn analyze_allocator<A: AllocatorInternal>(alloc: &A) -> MemoryResult<()> {
 ///     // Can use internal methods
 ///     let checkpoint = alloc.internal_checkpoint();
 ///     let stats = alloc.internal_fragmentation();
@@ -278,7 +278,7 @@ pub trait AllocatorInternal: private::Sealed + Allocator {
     /// # Ok(())
     /// # }
     /// ```
-    unsafe fn internal_restore(&mut self, checkpoint: InternalCheckpoint) -> AllocResult<()>;
+    unsafe fn internal_restore(&mut self, checkpoint: InternalCheckpoint) -> MemoryResult<()>;
 
     /// Get fragmentation statistics
     ///

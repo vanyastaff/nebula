@@ -211,7 +211,7 @@ impl ResilienceError {
     }
 
     /// Create a circuit breaker open error
-    pub fn circuit_breaker_open(state: CircuitBreakerOpenState) -> Self {
+    pub const fn circuit_breaker_open(state: CircuitBreakerOpenState) -> Self {
         Self::CircuitBreakerOpen {
             state,
             retry_after: None,

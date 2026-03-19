@@ -21,6 +21,7 @@ Fault-tolerance patterns — circuit breaker, retry, bulkhead, rate limiter, tim
 - `Gate` = graceful-shutdown barrier.
 - `PolicySource<C>` + `LoadSignal` + `ConstantLoad` for adaptive policy configuration.
 - **Dead code removed (2026-03-19)**: `ResilienceManager`, `PolicyBuilder`, `ResiliencePolicy`, typestate `PolicyBuilder<State>`, strategy markers, `core::categories`, `core::config`, `core::dynamic`, `core::traits`, `core::advanced` — all were unused downstream.
+- **Flat module structure (2026-03-19)**: `core/`, `patterns/`, `observability/` directories eliminated — all modules live directly under `src/`. `rate_limiter/` (5 files) merged into single `rate_limiter.rs`. Import paths changed from `crate::patterns::retry` to `crate::retry`, `crate::observability::sink` to `crate::sink`, etc. Public API unchanged — all types re-exported from crate root.
 
 ## Traps
 - **`failure_rate_threshold` is ignored in CB tripping**: the circuit breaker opens based on absolute `failure_threshold` count, not rate. Doc comment on the field now says "Reserved — not used". Downstream tests that relied on rate-based tripping must be updated to use `failure_threshold`.
@@ -33,4 +34,10 @@ Fault-tolerance patterns — circuit breaker, retry, bulkhead, rate limiter, tim
 ## Relations
 - Zero internal nebula deps (fully standalone). Used by nebula-resource, nebula-credential, nebula-engine for external call resilience.
 
-<!-- reviewed: 2026-03-19 -->
+- **`ObservabilityHooks::emit()` takes `&PatternEvent`** (changed from owned). All callers must pass a reference.
+- **`CircuitState` is `Copy`** — derives `Copy` in addition to `Clone`.
+- **`PipelineBuilder<E>` implements `Default`** via `Default::default()` delegating to `Self::new()`.
+- **`run_steps` refactored**: Retry arm extracted to `run_retry_step`, CB/Bulkhead inner bodies to `run_inner_unwrapped`, result mapping to `classify_inner` + `map_retry_result`. All private helpers in `pipeline.rs`.
+- **All 18 crate-level `#![expect(clippy::...)]` removed** — each warning fixed at source or locally `#[allow]`-ed with a `// Reason:` comment.
+
+<!-- reviewed: 2026-03-19 (flat structure) -->

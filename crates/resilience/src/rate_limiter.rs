@@ -1,0 +1,765 @@
+//! Rate limiting implementations.
+//!
+//! This module provides multiple rate limiting algorithms:
+//!
+//! - **`TokenBucket`**: Classic token bucket with refill rate
+//! - **`LeakyBucket`**: Leaky bucket with constant leak rate
+//! - **`SlidingWindow`**: Sliding time window counter
+//! - **`AdaptiveRateLimiter`**: Self-adjusting based on error rates
+//! - **`GovernorRateLimiter`**: Production-grade GCRA algorithm
+//!
+//! # Examples
+//!
+//! ```
+//! use nebula_resilience::rate_limiter::TokenBucket;
+//!
+//! let limiter = TokenBucket::new(100, 10.0); // 100 capacity, 10 req/sec
+//! ```
+
+use std::collections::VecDeque;
+use std::fmt;
+use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+use parking_lot::{Mutex, RwLock};
+
+use crate::{
+    CallError,
+    sink::{MetricsSink, NoopSink, ResilienceEvent},
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRAIT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Rate limiter trait.
+///
+/// Returns `Err(CallError::RateLimited)` when the rate limit is exceeded.
+#[allow(async_fn_in_trait)]
+pub trait RateLimiter: Send + Sync {
+    /// Try to acquire permission. Returns `Err(CallError::RateLimited)` if limit hit.
+    async fn acquire(&self) -> Result<(), CallError<()>>;
+
+    /// Acquire permission then execute `operation`. Returns `Err(CallError::RateLimited)` or
+    /// the operation's own error wrapped in `CallError::Operation`.
+    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
+        T: Send;
+
+    /// Returns the current rate or available capacity (implementation-dependent).
+    async fn current_rate(&self) -> f64;
+
+    /// Clears all state and resets to initial conditions.
+    async fn reset(&self);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TOKEN BUCKET
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug)]
+struct TokenBucketState {
+    tokens: f64,
+    last_refill: Instant,
+}
+
+/// Token bucket rate limiter
+///
+/// Classic token bucket algorithm with configurable capacity and refill rate.
+/// Tokens are added at a constant rate and consumed by operations.
+///
+/// # Security
+///
+/// - Maximum capacity limited to 100,000 to prevent memory exhaustion
+/// - Refill rate clamped between 0.001 and 10,000 req/sec
+///
+/// # Examples
+///
+/// ```
+/// use nebula_resilience::rate_limiter::TokenBucket;
+///
+/// let limiter = TokenBucket::new(100, 10.0); // 100 capacity, 10 req/sec
+/// ```
+pub struct TokenBucket {
+    /// Maximum tokens in bucket
+    capacity: usize,
+    /// Mutable runtime state
+    state: Mutex<TokenBucketState>,
+    /// Token refill rate per second
+    refill_rate: f64,
+    /// Burst size
+    burst_size: usize,
+}
+
+impl fmt::Debug for TokenBucket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokenBucket")
+            .field("capacity", &self.capacity)
+            .field("refill_rate", &self.refill_rate)
+            .field("burst_size", &self.burst_size)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TokenBucket {
+    /// Create new token bucket with validation
+    // Reason: usize capacity cast to f64 for token tracking — acceptable for rate limiting.
+    #[allow(clippy::cast_precision_loss)]
+    #[must_use]
+    pub fn new(capacity: usize, refill_rate: f64) -> Self {
+        let safe_capacity = capacity.min(100_000);
+        let safe_refill_rate = refill_rate.clamp(0.001, 10_000.0);
+
+        Self {
+            capacity: safe_capacity,
+            state: Mutex::new(TokenBucketState {
+                tokens: safe_capacity as f64,
+                last_refill: Instant::now(),
+            }),
+            refill_rate: safe_refill_rate,
+            burst_size: safe_capacity,
+        }
+    }
+
+    /// Set burst size
+    #[must_use = "builder methods must be chained or built"]
+    pub const fn with_burst(mut self, burst_size: usize) -> Self {
+        self.burst_size = burst_size;
+        self
+    }
+}
+
+impl RateLimiter for TokenBucket {
+    // Reason: usize burst_size cast to f64 for token math — acceptable for rate limiting.
+    #[allow(clippy::cast_precision_loss)]
+    async fn acquire(&self) -> Result<(), CallError<()>> {
+        let mut state = self.state.lock();
+
+        let now = Instant::now();
+        let elapsed = now.duration_since(state.last_refill).as_secs_f64();
+        let tokens_to_add = elapsed * self.refill_rate;
+        state.tokens = (state.tokens + tokens_to_add).min(self.burst_size as f64);
+        state.last_refill = now;
+
+        if state.tokens >= 1.0 {
+            state.tokens -= 1.0;
+            drop(state);
+            Ok(())
+        } else {
+            drop(state);
+            Err(CallError::RateLimited)
+        }
+    }
+
+    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
+        T: Send,
+    {
+        self.acquire().await.map_err(|_| CallError::RateLimited)?;
+        operation().await.map_err(CallError::Operation)
+    }
+
+    async fn current_rate(&self) -> f64 {
+        let state = self.state.lock();
+        let tokens = state.tokens;
+        drop(state);
+        tokens
+    }
+
+    // Reason: usize capacity cast to f64 for token reset — acceptable for rate limiting.
+    #[allow(clippy::cast_precision_loss)]
+    async fn reset(&self) {
+        let mut state = self.state.lock();
+        state.tokens = self.capacity as f64;
+        state.last_refill = Instant::now();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LEAKY BUCKET
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug)]
+struct LeakyBucketState {
+    level: usize,
+    last_leak: Instant,
+}
+
+/// Leaky bucket rate limiter
+///
+/// Implements the leaky bucket algorithm where requests fill a bucket
+/// that leaks at a constant rate.
+pub struct LeakyBucket {
+    /// Bucket capacity
+    capacity: usize,
+    /// Mutable runtime state
+    state: Mutex<LeakyBucketState>,
+    /// Leak rate per second
+    leak_rate: f64,
+}
+
+impl LeakyBucket {
+    /// Create new leaky bucket
+    #[must_use]
+    pub fn new(capacity: usize, leak_rate: f64) -> Self {
+        Self {
+            capacity,
+            state: Mutex::new(LeakyBucketState {
+                level: 0,
+                last_leak: Instant::now(),
+            }),
+            leak_rate,
+        }
+    }
+}
+
+impl RateLimiter for LeakyBucket {
+    // Reason: f64 leak amount cast to usize — acceptable for bucket level calculation.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    async fn acquire(&self) -> Result<(), CallError<()>> {
+        let mut state = self.state.lock();
+
+        let now = Instant::now();
+        let elapsed = now.duration_since(state.last_leak).as_secs_f64();
+        let leaked = (elapsed * self.leak_rate) as usize;
+        state.level = state.level.saturating_sub(leaked);
+        state.last_leak = now;
+
+        if state.level < self.capacity {
+            state.level += 1;
+            drop(state);
+            Ok(())
+        } else {
+            drop(state);
+            Err(CallError::RateLimited)
+        }
+    }
+
+    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
+        T: Send,
+    {
+        self.acquire().await.map_err(|_| CallError::RateLimited)?;
+        operation().await.map_err(CallError::Operation)
+    }
+
+    // Reason: usize capacity cast to f64 — acceptable for rate reporting.
+    #[allow(clippy::cast_precision_loss)]
+    async fn current_rate(&self) -> f64 {
+        let state = self.state.lock();
+        (self.capacity - state.level) as f64
+    }
+
+    async fn reset(&self) {
+        let mut state = self.state.lock();
+        state.level = 0;
+        state.last_leak = Instant::now();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SLIDING WINDOW
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Sliding window rate limiter
+///
+/// Tracks requests in a sliding time window and limits based on count.
+pub struct SlidingWindow {
+    /// Window duration
+    window_duration: Duration,
+    /// Maximum requests per window
+    max_requests: usize,
+    /// Request timestamps
+    requests: Arc<Mutex<VecDeque<Instant>>>,
+}
+
+impl SlidingWindow {
+    /// Create new sliding window rate limiter
+    #[must_use]
+    pub fn new(window_duration: Duration, max_requests: usize) -> Self {
+        Self {
+            window_duration,
+            max_requests,
+            requests: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
+
+    fn clean_old_requests_locked(
+        requests: &mut VecDeque<Instant>,
+        now: Instant,
+        window_duration: Duration,
+    ) {
+        let cutoff = now.checked_sub(window_duration).unwrap_or(now);
+
+        while let Some(&front) = requests.front() {
+            if front < cutoff {
+                requests.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+impl RateLimiter for SlidingWindow {
+    async fn acquire(&self) -> Result<(), CallError<()>> {
+        let now = Instant::now();
+        let mut requests = self.requests.lock();
+        Self::clean_old_requests_locked(&mut requests, now, self.window_duration);
+
+        if requests.len() < self.max_requests {
+            requests.push_back(now);
+            drop(requests);
+            Ok(())
+        } else {
+            drop(requests);
+            Err(CallError::RateLimited)
+        }
+    }
+
+    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
+        T: Send,
+    {
+        self.acquire().await.map_err(|_| CallError::RateLimited)?;
+        operation().await.map_err(CallError::Operation)
+    }
+
+    // Reason: usize request count cast to f64 — acceptable for rate reporting.
+    #[allow(clippy::cast_precision_loss)]
+    async fn current_rate(&self) -> f64 {
+        let now = Instant::now();
+        let mut requests = self.requests.lock();
+        Self::clean_old_requests_locked(&mut requests, now, self.window_duration);
+        let len = requests.len() as f64;
+        drop(requests);
+        len
+    }
+
+    async fn reset(&self) {
+        let mut requests = self.requests.lock();
+        requests.clear();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADAPTIVE RATE LIMITER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Mutable state behind a single lock.
+struct AdaptiveState {
+    inner: Arc<TokenBucket>,
+    success_count: usize,
+    error_count: usize,
+    last_stats_reset: Instant,
+    current_rate: f64,
+    initial_rate: f64,
+}
+
+/// Adaptive rate limiter that adjusts based on error rates
+///
+/// Automatically adjusts rate limiting based on success/error ratios.
+/// - High error rate (>10%) → decrease rate
+/// - Low error rate (<1%) → increase rate
+pub struct AdaptiveRateLimiter {
+    state: Arc<RwLock<AdaptiveState>>,
+    /// Lock-free copy of `current_rate` for cheap reads without taking the lock.
+    /// Stored as `f64::to_bits()` / read via `f64::from_bits()`.
+    atomic_rate: AtomicU64,
+    stats_window: Duration,
+    min_rate: f64,
+    max_rate: f64,
+}
+
+impl AdaptiveRateLimiter {
+    /// Create new adaptive rate limiter
+    // Reason: f64 rates cast to usize for token bucket capacity — acceptable for rate limiting.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[must_use]
+    pub fn new(initial_rate: f64, min_rate: f64, max_rate: f64) -> Self {
+        let token_bucket = TokenBucket::new(initial_rate as usize, initial_rate);
+
+        Self {
+            state: Arc::new(RwLock::new(AdaptiveState {
+                inner: Arc::new(token_bucket),
+                success_count: 0,
+                error_count: 0,
+                last_stats_reset: Instant::now(),
+                current_rate: initial_rate,
+                initial_rate,
+            })),
+            atomic_rate: AtomicU64::new(initial_rate.to_bits()),
+            stats_window: Duration::from_mins(1),
+            min_rate,
+            max_rate,
+        }
+    }
+
+    /// Adjust rate based on error rate. Caller must hold the lock.
+    // Reason: usize counts cast to f64 for rate calculation, and f64 rate cast to usize for
+    // token bucket capacity — acceptable for approximate rate limiting.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    fn adjust_rate_locked(&self, state: &mut AdaptiveState) {
+        if state.last_stats_reset.elapsed() < self.stats_window {
+            return;
+        }
+
+        let total = state.success_count + state.error_count;
+        if total > 0 {
+            let error_rate = state.error_count as f64 / total as f64;
+
+            if error_rate > 0.1 {
+                state.current_rate = (state.current_rate * 0.9).max(self.min_rate);
+            } else if error_rate < 0.01 {
+                state.current_rate = (state.current_rate * 1.1).min(self.max_rate);
+            }
+
+            let new_limiter = TokenBucket::new(state.current_rate as usize, state.current_rate);
+            state.inner = Arc::new(new_limiter);
+            self.atomic_rate
+                .store(state.current_rate.to_bits(), Ordering::Release);
+        }
+
+        state.success_count = 0;
+        state.error_count = 0;
+        state.last_stats_reset = Instant::now();
+    }
+
+    /// Record success
+    pub fn record_success(&self) {
+        let mut state = self.state.write();
+        state.success_count += 1;
+        self.adjust_rate_locked(&mut state);
+        drop(state);
+    }
+
+    /// Record error
+    pub fn record_error(&self) {
+        let mut state = self.state.write();
+        state.error_count += 1;
+        self.adjust_rate_locked(&mut state);
+        drop(state);
+    }
+}
+
+impl RateLimiter for AdaptiveRateLimiter {
+    async fn acquire(&self) -> Result<(), CallError<()>> {
+        let limiter = {
+            let state = self.state.read();
+            state.inner.clone()
+        };
+
+        limiter.acquire().await
+    }
+
+    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
+        T: Send,
+    {
+        self.acquire().await.map_err(|_| CallError::RateLimited)?;
+        let result = operation().await;
+
+        match &result {
+            Ok(_) => self.record_success(),
+            Err(_) => self.record_error(),
+        }
+
+        result.map_err(CallError::Operation)
+    }
+
+    async fn current_rate(&self) -> f64 {
+        f64::from_bits(self.atomic_rate.load(Ordering::Acquire))
+    }
+
+    // Reason: f64 rate cast to usize for token bucket capacity — acceptable for rate limiting.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    async fn reset(&self) {
+        let mut state = self.state.write();
+        state.success_count = 0;
+        state.error_count = 0;
+        state.last_stats_reset = Instant::now();
+        state.current_rate = state.initial_rate;
+        state.inner = Arc::new(TokenBucket::new(
+            state.initial_rate as usize,
+            state.initial_rate,
+        ));
+        self.atomic_rate
+            .store(state.initial_rate.to_bits(), Ordering::Release);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GOVERNOR RATE LIMITER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "governor")]
+mod governor_impl {
+    use governor::clock::Clock;
+    use governor::{DefaultDirectRateLimiter, Quota, RateLimiter as GovernorLimiter};
+    use std::future::Future;
+    use std::num::NonZeroU32;
+    use std::time::Duration;
+
+    use super::RateLimiter;
+    use crate::CallError;
+
+    /// Governor-based rate limiter using GCRA (Generic Cell Rate Algorithm)
+    ///
+    /// Production-grade, sub-millisecond precision, lock-free implementation.
+    pub struct GovernorRateLimiter {
+        limiter: DefaultDirectRateLimiter,
+        rate_per_second: f64,
+        burst_capacity: u32,
+    }
+
+    impl GovernorRateLimiter {
+        /// Create a new governor-based rate limiter.
+        #[must_use]
+        pub fn new(rate_per_second: f64, burst_capacity: u32) -> Self {
+            let safe_rate = rate_per_second.clamp(0.001, 1_000_000.0);
+            let safe_burst = burst_capacity.min(100_000);
+            let burst = NonZeroU32::new(safe_burst.max(1)).unwrap_or(NonZeroU32::MIN);
+
+            let request_period =
+                Duration::from_secs_f64(1.0 / safe_rate).max(Duration::from_nanos(1));
+            let quota = Quota::with_period(request_period).map_or_else(
+                || Quota::per_second(NonZeroU32::MIN).allow_burst(burst),
+                |base| base.allow_burst(burst),
+            );
+
+            Self {
+                limiter: GovernorLimiter::direct(quota),
+                rate_per_second: safe_rate,
+                burst_capacity: safe_burst,
+            }
+        }
+
+        /// Returns the configured rate per second.
+        #[must_use]
+        pub const fn rate_per_second(&self) -> f64 {
+            self.rate_per_second
+        }
+
+        /// Returns the configured burst capacity.
+        #[must_use]
+        pub const fn burst_capacity(&self) -> u32 {
+            self.burst_capacity
+        }
+
+        /// Create with custom quota for advanced use cases.
+        #[must_use]
+        pub fn with_quota(quota: Quota) -> Self {
+            Self {
+                limiter: GovernorLimiter::direct(quota),
+                rate_per_second: 0.0,
+                burst_capacity: 0,
+            }
+        }
+    }
+
+    impl RateLimiter for GovernorRateLimiter {
+        async fn acquire(&self) -> Result<(), CallError<()>> {
+            match self.limiter.check() {
+                Ok(()) => Ok(()),
+                Err(_) => Err(CallError::RateLimited),
+            }
+        }
+
+        async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+        where
+            F: FnOnce() -> Fut + Send,
+            Fut: Future<Output = Result<T, E>> + Send,
+            T: Send,
+        {
+            self.acquire().await.map_err(|_| CallError::RateLimited)?;
+            operation().await.map_err(CallError::Operation)
+        }
+
+        async fn current_rate(&self) -> f64 {
+            self.rate_per_second
+        }
+
+        async fn reset(&self) {
+            // GCRA state decays naturally — no-op for trait compatibility
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn rate_limited_after_burst_exhausted() {
+            let limiter = GovernorRateLimiter::new(10.0, 5);
+
+            for _ in 0..5 {
+                assert!(limiter.acquire().await.is_ok());
+            }
+
+            let result = limiter.acquire().await;
+            assert!(matches!(result, Err(CallError::RateLimited)));
+        }
+
+        #[tokio::test]
+        async fn execute_succeeds_within_capacity() {
+            let limiter = GovernorRateLimiter::new(100.0, 10);
+            let result = limiter.execute(|| async { Ok::<i32, &str>(42) }).await;
+            assert_eq!(result.unwrap(), 42);
+        }
+    }
+}
+
+#[cfg(feature = "governor")]
+pub use governor_impl::GovernorRateLimiter;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ANY RATE LIMITER (enum dispatch)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Enum wrapper for dyn-compatible rate limiters.
+///
+/// The `Governor` variant is only available when the `governor` feature is enabled.
+#[derive(Clone)]
+pub enum AnyRateLimiterInner {
+    /// Token bucket rate limiter
+    TokenBucket(Arc<TokenBucket>),
+    /// Leaky bucket rate limiter
+    LeakyBucket(Arc<LeakyBucket>),
+    /// Sliding window rate limiter
+    SlidingWindow(Arc<SlidingWindow>),
+    /// Adaptive rate limiter
+    Adaptive(Arc<AdaptiveRateLimiter>),
+    /// Governor-based GCRA rate limiter (production-grade).
+    /// Requires the `governor` feature.
+    #[cfg(feature = "governor")]
+    Governor(Arc<GovernorRateLimiter>),
+}
+
+/// Rate limiter with an injectable [`MetricsSink`] for observability.
+#[derive(Clone)]
+pub struct AnyRateLimiter {
+    inner: AnyRateLimiterInner,
+    sink: Arc<dyn MetricsSink>,
+}
+
+impl AnyRateLimiter {
+    /// Wrap a `TokenBucket`.
+    pub fn token_bucket(l: TokenBucket) -> Self {
+        Self {
+            inner: AnyRateLimiterInner::TokenBucket(Arc::new(l)),
+            sink: Arc::new(NoopSink),
+        }
+    }
+    /// Wrap a `LeakyBucket`.
+    pub fn leaky_bucket(l: LeakyBucket) -> Self {
+        Self {
+            inner: AnyRateLimiterInner::LeakyBucket(Arc::new(l)),
+            sink: Arc::new(NoopSink),
+        }
+    }
+    /// Wrap a `SlidingWindow`.
+    #[must_use]
+    pub fn sliding_window(l: SlidingWindow) -> Self {
+        Self {
+            inner: AnyRateLimiterInner::SlidingWindow(Arc::new(l)),
+            sink: Arc::new(NoopSink),
+        }
+    }
+    /// Wrap an `AdaptiveRateLimiter`.
+    pub fn adaptive(l: AdaptiveRateLimiter) -> Self {
+        Self {
+            inner: AnyRateLimiterInner::Adaptive(Arc::new(l)),
+            sink: Arc::new(NoopSink),
+        }
+    }
+    #[cfg(feature = "governor")]
+    /// Wrap a `GovernorRateLimiter`.
+    pub fn governor(l: GovernorRateLimiter) -> Self {
+        Self {
+            inner: AnyRateLimiterInner::Governor(Arc::new(l)),
+            sink: Arc::new(NoopSink),
+        }
+    }
+
+    /// Inject a metrics sink.
+    #[must_use]
+    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+        self.sink = Arc::new(sink);
+        self
+    }
+}
+
+macro_rules! dispatch_inner {
+    ($inner:expr, $method:ident $(, $arg:expr)*) => {
+        match $inner {
+            AnyRateLimiterInner::TokenBucket(l)   => l.$method($($arg),*).await,
+            AnyRateLimiterInner::LeakyBucket(l)   => l.$method($($arg),*).await,
+            AnyRateLimiterInner::SlidingWindow(l) => l.$method($($arg),*).await,
+            AnyRateLimiterInner::Adaptive(l)      => l.$method($($arg),*).await,
+            #[cfg(feature = "governor")]
+            AnyRateLimiterInner::Governor(l)      => l.$method($($arg),*).await,
+        }
+    };
+}
+
+impl RateLimiter for AnyRateLimiter {
+    async fn acquire(&self) -> Result<(), CallError<()>> {
+        let result = dispatch_inner!(&self.inner, acquire);
+        if result.is_err() {
+            self.sink.record(ResilienceEvent::RateLimitExceeded);
+        }
+        result
+    }
+
+    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
+        T: Send,
+    {
+        self.acquire().await.map_err(|_| CallError::RateLimited)?;
+        operation().await.map_err(CallError::Operation)
+    }
+
+    async fn current_rate(&self) -> f64 {
+        dispatch_inner!(&self.inner, current_rate)
+    }
+
+    async fn reset(&self) {
+        dispatch_inner!(&self.inner, reset);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::RecordingSink;
+
+    #[tokio::test]
+    async fn emits_rate_limit_exceeded_event() {
+        let sink = RecordingSink::new();
+        let limiter =
+            AnyRateLimiter::token_bucket(TokenBucket::new(1, 0.001)).with_sink(sink.clone());
+
+        assert!(limiter.acquire().await.is_ok()); // first — succeeds (1 token)
+        let _ = limiter.acquire().await; // second — rate limited
+
+        assert!(sink.count("rate_limit_exceeded") > 0);
+    }
+}

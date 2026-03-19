@@ -266,7 +266,7 @@ impl<T: Poolable> AsyncPool<T> {
             warn!("Attempted to acquire from shut down pool");
 
             return Err(MemoryError::InvalidState {
-                reason: "pool is shut down".to_string(),
+                reason: "pool is shut down".into(),
             });
         }
 
@@ -287,12 +287,12 @@ impl<T: Poolable> AsyncPool<T> {
         let _permit = tokio::select! {
             permit = self.semaphore.acquire() => {
                 permit.map_err(|_| MemoryError::InvalidState {
-                    reason: "semaphore closed".to_string(),
+                    reason: "semaphore closed".into(),
                 })?
             }
             _ = self.shutdown.cancelled() => {
                 return Err(MemoryError::InvalidState {
-                    reason: "pool is shut down".to_string(),
+                    reason: "pool is shut down".into(),
                 });
             }
         };

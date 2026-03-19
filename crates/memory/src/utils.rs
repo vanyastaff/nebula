@@ -31,7 +31,7 @@ use core::ptr;
 use core::sync::atomic::{Ordering, compiler_fence, fence};
 use std::time::{Duration, Instant};
 
-use crate::allocator::{AllocError, AllocResult};
+use crate::allocator::{MemoryError, MemoryResult};
 
 /// Aligns a value up to the nearest multiple of alignment
 ///
@@ -482,7 +482,7 @@ impl Drop for Timer {
 // Checked Arithmetic for Overflow Safety
 // ============================================================================
 
-/// Extension trait for checked arithmetic operations that return `AllocResult`
+/// Extension trait for checked arithmetic operations that return `MemoryResult`
 ///
 /// This trait provides a consistent way to handle overflow/underflow in
 /// memory-related calculations throughout the crate.
@@ -499,80 +499,80 @@ impl Drop for Timer {
 /// assert!(usize::MAX.try_add(1).is_err());
 /// ```
 pub trait CheckedArithmetic: Sized {
-    /// Checked addition. Returns `AllocError` on overflow.
-    fn try_add(self, rhs: Self) -> AllocResult<Self>;
+    /// Checked addition. Returns `MemoryError` on overflow.
+    fn try_add(self, rhs: Self) -> MemoryResult<Self>;
 
-    /// Checked subtraction. Returns `AllocError` on underflow.
-    fn try_sub(self, rhs: Self) -> AllocResult<Self>;
+    /// Checked subtraction. Returns `MemoryError` on underflow.
+    fn try_sub(self, rhs: Self) -> MemoryResult<Self>;
 
-    /// Checked multiplication. Returns `AllocError` on overflow.
-    fn try_mul(self, rhs: Self) -> AllocResult<Self>;
+    /// Checked multiplication. Returns `MemoryError` on overflow.
+    fn try_mul(self, rhs: Self) -> MemoryResult<Self>;
 
-    /// Checked division. Returns `AllocError` on division by zero.
-    fn try_div(self, rhs: Self) -> AllocResult<Self>;
+    /// Checked division. Returns `MemoryError` on division by zero.
+    fn try_div(self, rhs: Self) -> MemoryResult<Self>;
 }
 
 impl CheckedArithmetic for usize {
     #[inline]
-    fn try_add(self, rhs: Self) -> AllocResult<Self> {
+    fn try_add(self, rhs: Self) -> MemoryResult<Self> {
         self.checked_add(rhs)
-            .ok_or_else(|| AllocError::InvalidLayout {
-                reason: format!("overflow: {self} + {rhs}"),
+            .ok_or_else(|| MemoryError::InvalidLayout {
+                reason: format!("overflow: {self} + {rhs}").into_boxed_str(),
             })
     }
 
     #[inline]
-    fn try_sub(self, rhs: Self) -> AllocResult<Self> {
+    fn try_sub(self, rhs: Self) -> MemoryResult<Self> {
         self.checked_sub(rhs)
-            .ok_or_else(|| AllocError::InvalidLayout {
-                reason: format!("underflow: {self} - {rhs}"),
+            .ok_or_else(|| MemoryError::InvalidLayout {
+                reason: format!("underflow: {self} - {rhs}").into_boxed_str(),
             })
     }
 
     #[inline]
-    fn try_mul(self, rhs: Self) -> AllocResult<Self> {
+    fn try_mul(self, rhs: Self) -> MemoryResult<Self> {
         self.checked_mul(rhs)
-            .ok_or_else(|| AllocError::InvalidLayout {
-                reason: format!("overflow: {self} * {rhs}"),
+            .ok_or_else(|| MemoryError::InvalidLayout {
+                reason: format!("overflow: {self} * {rhs}").into_boxed_str(),
             })
     }
 
     #[inline]
-    fn try_div(self, rhs: Self) -> AllocResult<Self> {
+    fn try_div(self, rhs: Self) -> MemoryResult<Self> {
         self.checked_div(rhs)
-            .ok_or_else(|| AllocError::invalid_input("division by zero"))
+            .ok_or_else(|| MemoryError::invalid_input("division by zero"))
     }
 }
 
 impl CheckedArithmetic for isize {
     #[inline]
-    fn try_add(self, rhs: Self) -> AllocResult<Self> {
+    fn try_add(self, rhs: Self) -> MemoryResult<Self> {
         self.checked_add(rhs)
-            .ok_or_else(|| AllocError::InvalidLayout {
-                reason: format!("overflow: {self} + {rhs}"),
+            .ok_or_else(|| MemoryError::InvalidLayout {
+                reason: format!("overflow: {self} + {rhs}").into_boxed_str(),
             })
     }
 
     #[inline]
-    fn try_sub(self, rhs: Self) -> AllocResult<Self> {
+    fn try_sub(self, rhs: Self) -> MemoryResult<Self> {
         self.checked_sub(rhs)
-            .ok_or_else(|| AllocError::InvalidLayout {
-                reason: format!("underflow: {self} - {rhs}"),
+            .ok_or_else(|| MemoryError::InvalidLayout {
+                reason: format!("underflow: {self} - {rhs}").into_boxed_str(),
             })
     }
 
     #[inline]
-    fn try_mul(self, rhs: Self) -> AllocResult<Self> {
+    fn try_mul(self, rhs: Self) -> MemoryResult<Self> {
         self.checked_mul(rhs)
-            .ok_or_else(|| AllocError::InvalidLayout {
-                reason: format!("overflow: {self} * {rhs}"),
+            .ok_or_else(|| MemoryError::InvalidLayout {
+                reason: format!("overflow: {self} * {rhs}").into_boxed_str(),
             })
     }
 
     #[inline]
-    fn try_div(self, rhs: Self) -> AllocResult<Self> {
+    fn try_div(self, rhs: Self) -> MemoryResult<Self> {
         self.checked_div(rhs)
-            .ok_or_else(|| AllocError::invalid_input("division by zero"))
+            .ok_or_else(|| MemoryError::invalid_input("division by zero"))
     }
 }
 

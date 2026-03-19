@@ -10,7 +10,7 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 #[cfg(feature = "governor")]
-use nebula_resilience::patterns::GovernorRateLimiter;
+use nebula_resilience::rate_limiter::GovernorRateLimiter;
 use nebula_resilience::{
     AdaptiveRateLimiter, LeakyBucket, RateLimiter, ResilienceError, SlidingWindow, TokenBucket,
 };

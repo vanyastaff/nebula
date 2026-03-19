@@ -6,7 +6,7 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::ResilienceError;
-use nebula_resilience::patterns::fallback::{
+use nebula_resilience::fallback::{
     ChainFallback, FallbackOperation, FallbackStrategy, ValueFallback,
 };
 use std::hint::black_box;

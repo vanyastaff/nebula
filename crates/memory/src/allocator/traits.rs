@@ -49,20 +49,20 @@
 use core::alloc::Layout;
 use core::ptr::NonNull;
 
-use super::{AllocError, AllocResult};
+use super::{MemoryError, MemoryResult};
 
 // Re-export core traits for convenience
-pub use crate::core::traits::{BasicMemoryUsage, MemoryUsage, Resettable};
+pub use crate::foundation::traits::{BasicMemoryUsage, MemoryUsage, Resettable};
 
 /// Validation of layout parameters
 ///
 /// Performs comprehensive validation of allocation layout to catch
 /// common errors early and provide detailed diagnostics.
 #[inline]
-fn validate_layout(layout: Layout) -> AllocResult<()> {
+fn validate_layout(layout: Layout) -> MemoryResult<()> {
     // Check that alignment is a power of two
     if !layout.align().is_power_of_two() {
-        return Err(AllocError::invalid_alignment(layout.align()));
+        return Err(MemoryError::invalid_alignment(layout.align()));
     }
 
     // Check for zero-sized allocations (they're valid but need special handling)
@@ -72,7 +72,7 @@ fn validate_layout(layout: Layout) -> AllocResult<()> {
 
     // Check for potential overflow when adding padding
     if layout.size() > isize::MAX as usize - (layout.align() - 1) {
-        return Err(AllocError::size_overflow("layout calculation"));
+        return Err(MemoryError::size_overflow("layout calculation"));
     }
 
     Ok(())
@@ -105,7 +105,7 @@ pub unsafe trait Allocator {
     /// # Errors
     /// - Returns error if memory cannot be allocated
     /// - Returns error for invalid layout parameters
-    unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>>;
+    unsafe fn allocate(&self, layout: Layout) -> MemoryResult<NonNull<[u8]>>;
 
     /// Deallocates memory at the given pointer with the specified layout
     ///
@@ -138,7 +138,7 @@ pub unsafe trait Allocator {
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         validate_layout(new_layout)?;
 
         // Optimization: if size and alignment are the same, return the same pointer
@@ -196,7 +196,7 @@ pub unsafe trait Allocator {
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         debug_assert!(new_layout.size() >= old_layout.size());
 
         // SAFETY: Allocating new memory with new_layout.
@@ -246,7 +246,7 @@ pub unsafe trait Allocator {
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         debug_assert!(new_layout.size() <= old_layout.size());
 
         // Can shrink in-place if:
@@ -326,12 +326,12 @@ pub unsafe trait BulkAllocator: Allocator {
     ///
     /// # Returns
     /// - `Ok(ptr)`: Pointer to the beginning of the contiguous memory region
-    /// - `Err(AllocError)`: If allocation fails or parameters are invalid
+    /// - `Err(MemoryError)`: If allocation fails or parameters are invalid
     unsafe fn allocate_contiguous(
         &self,
         layout: Layout,
         count: usize,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         if count == 0 {
             // For zero count, return a valid dangling pointer
             let dangling = NonNull::<u8>::dangling();
@@ -342,11 +342,11 @@ pub unsafe trait BulkAllocator: Allocator {
         let total_size = layout
             .size()
             .checked_mul(count)
-            .ok_or_else(|| AllocError::size_overflow("layout calculation"))?;
+            .ok_or_else(|| MemoryError::size_overflow("layout calculation"))?;
 
         // Check against maximum allocation size
         if total_size > Self::max_allocation_size() {
-            return Err(AllocError::allocation_too_large(
+            return Err(MemoryError::allocation_too_large(
                 total_size,
                 Self::max_allocation_size(),
             ));
@@ -354,7 +354,7 @@ pub unsafe trait BulkAllocator: Allocator {
 
         // Create layout for the total allocation
         let total_layout = Layout::from_size_align(total_size, layout.align())
-            .map_err(|_| AllocError::invalid_layout("invalid layout"))?;
+            .map_err(|_| MemoryError::invalid_layout("invalid layout"))?;
 
         // SAFETY: Delegating to allocate with valid total_layout.
         // - total_layout is valid (just constructed above with validation)
@@ -408,7 +408,7 @@ pub unsafe trait BulkAllocator: Allocator {
         layout: Layout,
         old_count: usize,
         new_count: usize,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         if old_count == new_count {
             // No change in count, return same pointer
             let total_size = layout.size().saturating_mul(new_count);
@@ -419,18 +419,18 @@ pub unsafe trait BulkAllocator: Allocator {
         let old_total_size = layout
             .size()
             .checked_mul(old_count)
-            .ok_or_else(|| AllocError::size_overflow("layout calculation"))?;
+            .ok_or_else(|| MemoryError::size_overflow("layout calculation"))?;
 
         let new_total_size = layout
             .size()
             .checked_mul(new_count)
-            .ok_or_else(|| AllocError::size_overflow("layout calculation"))?;
+            .ok_or_else(|| MemoryError::size_overflow("layout calculation"))?;
 
         let old_layout = Layout::from_size_align(old_total_size, layout.align())
-            .map_err(|_| AllocError::invalid_layout("invalid layout"))?;
+            .map_err(|_| MemoryError::invalid_layout("invalid layout"))?;
 
         let new_layout = Layout::from_size_align(new_total_size, layout.align())
-            .map_err(|_| AllocError::invalid_layout("invalid layout"))?;
+            .map_err(|_| MemoryError::invalid_layout("invalid layout"))?;
 
         // SAFETY: Reallocating contiguous allocation to new count.
         // - ptr was allocated by allocate_contiguous (caller contract)
@@ -490,7 +490,7 @@ pub unsafe trait ThreadSafeAllocator: Allocator + Sync + Send {}
 /// // Array allocation
 /// let array = unsafe { allocator.alloc_array::<u32>(10)? };
 ///
-/// # Ok::<(), nebula_memory::AllocError>(())
+/// # Ok::<(), nebula_memory::MemoryError>(())
 /// ```
 ///
 /// # Safety
@@ -518,10 +518,10 @@ pub trait TypedAllocator: Allocator {
     ///     ptr.as_ptr().write(42);
     ///     assert_eq!(*ptr.as_ptr(), 42);
     /// }
-    /// # Ok::<(), nebula_memory::AllocError>(())
+    /// # Ok::<(), nebula_memory::MemoryError>(())
     /// ```
     #[inline]
-    unsafe fn alloc_typed<T>(&self) -> AllocResult<NonNull<T>> {
+    unsafe fn alloc_typed<T>(&self) -> MemoryResult<NonNull<T>> {
         let layout = Layout::new::<T>();
         // SAFETY: Allocating memory for type T.
         // - layout is valid (derived from T at compile time)
@@ -531,7 +531,7 @@ pub trait TypedAllocator: Allocator {
         // ptr is guaranteed non-null from allocate, but explicit check for safety
         let typed_ptr = ptr.as_ptr().cast::<T>();
         NonNull::new(typed_ptr)
-            .ok_or_else(|| AllocError::allocation_failed(layout.size(), layout.align()))
+            .ok_or_else(|| MemoryError::allocation_failed(layout.size(), layout.align()))
     }
 
     /// Allocates and initializes memory for a single instance of type `T`
@@ -552,10 +552,10 @@ pub trait TypedAllocator: Allocator {
     /// unsafe {
     ///     assert_eq!(&*ptr.as_ptr(), "hello");
     /// }
-    /// # Ok::<(), nebula_memory::AllocError>(())
+    /// # Ok::<(), nebula_memory::MemoryError>(())
     /// ```
     #[inline]
-    unsafe fn alloc_init<T>(&self, value: T) -> AllocResult<NonNull<T>> {
+    unsafe fn alloc_init<T>(&self, value: T) -> MemoryResult<NonNull<T>> {
         // SAFETY: Allocating uninitialized memory for T.
         // - alloc_typed returns valid, aligned pointer or error
         let ptr = unsafe { self.alloc_typed::<T>()? };
@@ -590,17 +590,17 @@ pub trait TypedAllocator: Allocator {
     ///         ptr.as_ptr().add(i).write(i as u32);
     ///     }
     /// }
-    /// # Ok::<(), nebula_memory::AllocError>(())
+    /// # Ok::<(), nebula_memory::MemoryError>(())
     /// ```
     #[inline]
-    unsafe fn alloc_array<T>(&self, count: usize) -> AllocResult<NonNull<T>> {
+    unsafe fn alloc_array<T>(&self, count: usize) -> MemoryResult<NonNull<T>> {
         if count == 0 {
             // For zero-sized allocation, return a dangling but properly aligned pointer
             return Ok(NonNull::dangling());
         }
 
         let layout =
-            Layout::array::<T>(count).map_err(|_| AllocError::size_overflow("array layout"))?;
+            Layout::array::<T>(count).map_err(|_| MemoryError::size_overflow("array layout"))?;
 
         // SAFETY: Allocating memory for array of T.
         // - layout is valid (Layout::array checks for overflow)
@@ -611,7 +611,7 @@ pub trait TypedAllocator: Allocator {
         // ptr is guaranteed non-null from allocate, but explicit check for safety
         let typed_ptr = ptr.as_ptr().cast::<T>();
         NonNull::new(typed_ptr)
-            .ok_or_else(|| AllocError::allocation_failed(layout.size(), layout.align()))
+            .ok_or_else(|| MemoryError::allocation_failed(layout.size(), layout.align()))
     }
 
     /// Allocates and initializes an array by cloning a value
@@ -632,10 +632,14 @@ pub trait TypedAllocator: Allocator {
     ///         assert_eq!(*ptr.as_ptr().add(i), 42);
     ///     }
     /// }
-    /// # Ok::<(), nebula_memory::AllocError>(())
+    /// # Ok::<(), nebula_memory::MemoryError>(())
     /// ```
     #[inline]
-    unsafe fn alloc_array_with<T: Clone>(&self, count: usize, value: T) -> AllocResult<NonNull<T>> {
+    unsafe fn alloc_array_with<T: Clone>(
+        &self,
+        count: usize,
+        value: T,
+    ) -> MemoryResult<NonNull<T>> {
         // SAFETY: Allocating uninitialized array.
         // - alloc_array returns valid, aligned pointer or error
         let ptr = unsafe { self.alloc_array::<T>(count)? };
@@ -709,10 +713,10 @@ pub trait TypedAllocator: Allocator {
     /// let allocator = BumpAllocator::new(1024)?;
     /// let value = allocator.try_alloc_value(String::from("hello"))?;
     /// assert_eq!(&*value, "hello");
-    /// # Ok::<(), nebula_memory::AllocError>(())
+    /// # Ok::<(), nebula_memory::MemoryError>(())
     /// ```
     #[inline]
-    fn try_alloc_value<T>(&self, value: T) -> AllocResult<AllocatedValue<'_, T, Self>>
+    fn try_alloc_value<T>(&self, value: T) -> MemoryResult<AllocatedValue<'_, T, Self>>
     where
         Self: Sized,
     {
@@ -738,14 +742,14 @@ pub trait TypedAllocator: Allocator {
     /// let allocator = BumpAllocator::new(1024)?;
     /// let array = allocator.try_alloc_array_with(10, 42u32)?;
     /// assert_eq!(array.len(), 10);
-    /// # Ok::<(), nebula_memory::AllocError>(())
+    /// # Ok::<(), nebula_memory::MemoryError>(())
     /// ```
     #[inline]
     fn try_alloc_array_with<T: Clone>(
         &self,
         count: usize,
         value: T,
-    ) -> AllocResult<AllocatedArray<'_, T, Self>>
+    ) -> MemoryResult<AllocatedArray<'_, T, Self>>
     where
         Self: Sized,
     {
@@ -878,7 +882,7 @@ impl<A: Allocator + ?Sized> TypedAllocator for A {}
 /// - All safety contracts preserved through delegation
 /// - `**self` dereference is always safe for `&T`
 unsafe impl<T: Allocator + ?Sized> Allocator for &T {
-    unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+    unsafe fn allocate(&self, layout: Layout) -> MemoryResult<NonNull<[u8]>> {
         // SAFETY: Forwarding to underlying allocator.
         // - Same safety contract as T::allocate
         // - **self safely dereferences &T to access T
@@ -897,7 +901,7 @@ unsafe impl<T: Allocator + ?Sized> Allocator for &T {
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         // SAFETY: Forwarding to underlying allocator.
         // - Same safety contract as T::reallocate
         // - **self safely dereferences &T to access T
@@ -909,7 +913,7 @@ unsafe impl<T: Allocator + ?Sized> Allocator for &T {
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         // SAFETY: Forwarding to underlying allocator.
         // - Same safety contract as T::grow
         // - **self safely dereferences &T to access T
@@ -921,7 +925,7 @@ unsafe impl<T: Allocator + ?Sized> Allocator for &T {
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         // SAFETY: Forwarding to underlying allocator.
         // - Same safety contract as T::shrink
         // - **self safely dereferences &T to access T
@@ -941,7 +945,7 @@ unsafe impl<T: BulkAllocator + ?Sized> BulkAllocator for &T {
         &self,
         layout: Layout,
         count: usize,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         // SAFETY: Forwarding to underlying bulk allocator.
         // - Same safety contract as T::allocate_contiguous
         // - **self safely dereferences &T to access T
@@ -961,7 +965,7 @@ unsafe impl<T: BulkAllocator + ?Sized> BulkAllocator for &T {
         layout: Layout,
         old_count: usize,
         new_count: usize,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         // SAFETY: Forwarding to underlying bulk allocator.
         // - Same safety contract as T::reallocate_contiguous
         // - **self safely dereferences &T to access T

@@ -52,7 +52,7 @@ impl AsyncAllocator for NoopAsyncAllocator {
         use crate::error::MemoryError;
         boxed(core::future::ready(Err(MemoryError::NotSupported {
             feature: "async allocation",
-            context: Some("NoopAsyncAllocator does not support allocation".to_string()),
+            context: Some("NoopAsyncAllocator does not support allocation".into()),
         })))
     }
 
@@ -65,7 +65,7 @@ impl AsyncAllocator for NoopAsyncAllocator {
         use crate::error::MemoryError;
         boxed(core::future::ready(Err(MemoryError::NotSupported {
             feature: "async deallocation",
-            context: Some("NoopAsyncAllocator does not support deallocation".to_string()),
+            context: Some("NoopAsyncAllocator does not support deallocation".into()),
         })))
     }
 

@@ -7,7 +7,7 @@ use tokio::sync::Semaphore;
 
 use crate::{
     CallError, ConfigError,
-    observability::sink::{MetricsSink, NoopSink, ResilienceEvent},
+    sink::{MetricsSink, NoopSink, ResilienceEvent},
 };
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -35,6 +35,10 @@ impl Default for BulkheadConfig {
 
 impl BulkheadConfig {
     /// Validate configuration. Called by `Bulkhead::new()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ConfigError)` if `max_concurrency` or `queue_size` is 0.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.max_concurrency == 0 {
             return Err(ConfigError::new("max_concurrency", "must be >= 1"));
@@ -64,12 +68,16 @@ impl std::fmt::Debug for Bulkhead {
         f.debug_struct("Bulkhead")
             .field("max_concurrency", &self.config.max_concurrency)
             .field("active", &self.active_operations())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 impl Bulkhead {
-    /// Create a new bulkhead. Returns `Err(ConfigError)` if config is invalid.
+    /// Create a new bulkhead.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ConfigError)` if config is invalid.
     pub fn new(config: BulkheadConfig) -> Result<Self, ConfigError> {
         config.validate()?;
         Ok(Self {
@@ -81,6 +89,7 @@ impl Bulkhead {
     }
 
     /// Replace the metrics sink (builder-style).
+    #[must_use]
     pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
@@ -106,13 +115,16 @@ impl Bulkhead {
 
     /// Maximum concurrency limit.
     #[must_use]
-    pub fn max_concurrency(&self) -> usize {
+    pub const fn max_concurrency(&self) -> usize {
         self.config.max_concurrency
     }
 
     /// Execute a closure under the bulkhead.
     ///
-    /// Returns `Err(CallError::BulkheadFull)` immediately when the queue is full.
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::BulkheadFull)` when the queue is full,
+    /// or `Err(CallError::Operation)` if the operation itself fails.
     pub async fn call<T, E>(
         &self,
         f: impl FnOnce() -> std::pin::Pin<Box<dyn Future<Output = Result<T, E>> + Send>>,
@@ -121,7 +133,12 @@ impl Bulkhead {
         f().await.map_err(CallError::Operation)
     }
 
-    /// Acquire a permit directly. Use [`call`] for the typical execute-and-release pattern.
+    /// Acquire a permit directly. Use [`call`](Bulkhead::call) for the typical execute-and-release pattern.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::BulkheadFull)` when the queue is full,
+    /// or `Err(CallError::Timeout)` if a permit timeout is configured and exceeded.
     pub async fn acquire<E>(&self) -> Result<BulkheadPermit, CallError<E>> {
         self.acquire_permit().await
     }
@@ -240,11 +257,6 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_when_queue_full() {
-        let bh = Bulkhead::new(BulkheadConfig {
-            max_concurrency: 1,
-            queue_size: 0, // validate requires >= 1, so use 1 but saturate it
-            timeout: None,
-        });
         // queue_size=0 is invalid, use 1 with saturation
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
@@ -254,7 +266,7 @@ mod tests {
         .unwrap();
 
         // Hold the only permit
-        let _permit = bh.acquire::<&str>().await.unwrap();
+        let permit = bh.acquire::<&str>().await.unwrap();
         // Queue one waiter
         let bh2 = bh.clone();
         let waiter = tokio::spawn(async move { bh2.acquire::<&str>().await });
@@ -264,7 +276,7 @@ mod tests {
         let err = bh.acquire::<&str>().await.unwrap_err();
         assert!(matches!(err, CallError::BulkheadFull));
 
-        drop(_permit);
+        drop(permit);
         waiter.await.unwrap().unwrap(); // the queued one succeeds
     }
 

@@ -24,9 +24,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(feature = "logging")]
 use nebula_log::{debug, error, warn};
 
-use crate::allocator::{
-    AllocError, AllocResult, Allocator, AllocatorStats, AtomicAllocatorStats, StatisticsProvider,
-};
+use crate::allocator::{Allocator, AllocatorStats, AtomicAllocatorStats, StatisticsProvider};
 use crate::error::{MemoryError, MemoryResult};
 
 use crate::monitoring::{IntegratedStats, MemoryMonitor, MonitoringConfig, PressureAction};
@@ -190,7 +188,7 @@ unsafe impl<A> Allocator for MonitoredAllocator<A>
 where
     A: Allocator,
 {
-    unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+    unsafe fn allocate(&self, layout: Layout) -> MemoryResult<NonNull<[u8]>> {
         // Check if allocation should be allowed
         match self.should_allow_allocation(layout) {
             Ok(true) => {
@@ -233,7 +231,7 @@ where
             Ok(false) => {
                 // Allocation denied by monitor
                 self.stats.record_allocation_failure();
-                Err(AllocError::allocation_failed_with_layout(layout))
+                Err(MemoryError::allocation_failed_with_layout(layout))
             }
             Err(monitor_error) => {
                 // Monitor error - log and allow allocation
@@ -281,7 +279,7 @@ where
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         // Check if the new size should be allowed
         match self.should_allow_allocation(new_layout) {
             Ok(true) => {
@@ -302,7 +300,7 @@ where
             }
             Ok(false) => {
                 self.stats.record_allocation_failure();
-                Err(AllocError::allocation_failed_with_layout(new_layout))
+                Err(MemoryError::allocation_failed_with_layout(new_layout))
             }
             Err(_) => {
                 // Monitor error - allow growth
@@ -329,7 +327,7 @@ where
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         // SAFETY: Forwarding to inner allocator.
         // - ptr/old_layout/new_layout valid (caller contract)
         // - Shrinking always allowed (reduces memory usage)
