@@ -7,52 +7,25 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use super::RateLimiter;
-use crate::{ResilienceError, ResilienceResult};
+use crate::CallError;
 
 /// Governor-based rate limiter using GCRA (Generic Cell Rate Algorithm)
 ///
-/// This is a production-grade rate limiter that uses the industry-standard
-/// GCRA algorithm, which is more accurate and efficient than simple token bucket.
-///
-/// Features:
-/// - Sub-millisecond precision
-/// - No background tasks needed
-/// - Lock-free implementation
-/// - Handles burst traffic elegantly
-///
-/// # Examples
-///
-/// ```
-/// use nebula_resilience::patterns::rate_limiter::GovernorRateLimiter;
-///
-/// let limiter = GovernorRateLimiter::new(100.0, 10); // 100 req/sec, burst 10
-/// ```
+/// Production-grade, sub-millisecond precision, lock-free implementation.
 pub struct GovernorRateLimiter {
-    /// Inner governor rate limiter
     limiter: DefaultDirectRateLimiter,
-    /// Request rate for metrics
     rate_per_second: f64,
-    /// Burst capacity for rate limiting
-    ///
-    /// Stored for future metrics collection and introspection APIs.
-    /// Will be exposed via a `stats()` method for observability.
     burst_capacity: u32,
 }
 
 impl GovernorRateLimiter {
-    /// Create a new governor-based rate limiter
-    ///
-    /// # Arguments
-    /// * `rate_per_second` - Number of requests allowed per second
-    /// * `burst_capacity` - Maximum burst size (how many requests can be made instantly)
+    /// Create a new governor-based rate limiter.
     #[must_use]
     pub fn new(rate_per_second: f64, burst_capacity: u32) -> Self {
-        // Security: validate inputs
         let safe_rate = rate_per_second.clamp(0.001, 1_000_000.0);
         let safe_burst = burst_capacity.min(100_000);
         let burst = NonZeroU32::new(safe_burst.max(1)).unwrap_or(NonZeroU32::MIN);
 
-        // Preserve fractional rates by using period-based quotas instead of ceil-per-second.
         let request_period = Duration::from_secs_f64(1.0 / safe_rate).max(Duration::from_nanos(1));
         let quota = Quota::with_period(request_period).map_or_else(
             || Quota::per_second(NonZeroU32::MIN).allow_burst(burst),
@@ -78,54 +51,41 @@ impl GovernorRateLimiter {
         self.burst_capacity
     }
 
-    /// Create with custom quota for advanced use cases
+    /// Create with custom quota for advanced use cases.
     #[must_use]
     pub fn with_quota(quota: Quota) -> Self {
         Self {
             limiter: GovernorLimiter::direct(quota),
-            rate_per_second: 0.0, // Unknown
-            burst_capacity: 0,    // Unknown
+            rate_per_second: 0.0,
+            burst_capacity: 0,
         }
     }
 }
 
 impl RateLimiter for GovernorRateLimiter {
-    async fn acquire(&self) -> ResilienceResult<()> {
+    async fn acquire(&self) -> Result<(), CallError<()>> {
         match self.limiter.check() {
             Ok(()) => Ok(()),
-            Err(negative) => {
-                // Calculate retry_after from the negative decision
-                let wait_duration = negative.wait_time_from(self.limiter.clock().now());
-
-                Err(ResilienceError::RateLimitExceeded {
-                    retry_after: Some(wait_duration),
-                    limit: self.rate_per_second,
-                    current: self.rate_per_second + 1.0, // Over limit
-                })
-            }
+            Err(_) => Err(CallError::RateLimited),
         }
     }
 
-    async fn execute<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
+    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = ResilienceResult<T>> + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
         T: Send,
     {
-        self.acquire().await?;
-        operation().await
+        self.acquire().await.map_err(|_| CallError::RateLimited)?;
+        operation().await.map_err(CallError::Operation)
     }
 
     async fn current_rate(&self) -> f64 {
-        // Governor doesn't expose current rate directly
-        // Return configured rate
         self.rate_per_second
     }
 
     async fn reset(&self) {
-        // Governor's GCRA algorithm doesn't need explicit reset
-        // State decays naturally over time
-        // This is a no-op for compatibility with the trait
+        // GCRA state decays naturally — no-op for trait compatibility
     }
 }
 
@@ -134,34 +94,21 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_governor_rate_limiter_basic() {
+    async fn rate_limited_after_burst_exhausted() {
         let limiter = GovernorRateLimiter::new(10.0, 5);
 
-        // Should succeed for burst capacity
         for _ in 0..5 {
             assert!(limiter.acquire().await.is_ok());
         }
 
-        // Should fail after burst exhausted
         let result = limiter.acquire().await;
-        assert!(result.is_err());
-
-        if let Err(ResilienceError::RateLimitExceeded { retry_after, .. }) = result {
-            assert!(retry_after.is_some());
-        } else {
-            panic!("Expected RateLimitExceeded error");
-        }
+        assert!(matches!(result, Err(CallError::RateLimited)));
     }
 
     #[tokio::test]
-    async fn test_governor_rate_limiter_execute() {
+    async fn execute_succeeds_within_capacity() {
         let limiter = GovernorRateLimiter::new(100.0, 10);
-
-        let result = limiter
-            .execute(|| async { Ok::<i32, ResilienceError>(42) })
-            .await;
-
-        assert!(result.is_ok());
+        let result = limiter.execute(|| async { Ok::<i32, &str>(42) }).await;
         assert_eq!(result.unwrap(), 42);
     }
 }

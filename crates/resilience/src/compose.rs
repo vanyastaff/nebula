@@ -368,7 +368,14 @@ impl<T: Send + Sync + 'static> ResilienceLayer<T> for RateLimiterLayer {
         cancellation: Option<&'a CancellationContext>,
     ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
         Box::pin(async move {
-            self.limiter.acquire().await?;
+            self.limiter
+                .acquire()
+                .await
+                .map_err(|_| ResilienceError::RateLimitExceeded {
+                    retry_after: None,
+                    limit: 0.0,
+                    current: 0.0,
+                })?;
             next.execute_with_cancellation(operation, cancellation)
                 .await
         })

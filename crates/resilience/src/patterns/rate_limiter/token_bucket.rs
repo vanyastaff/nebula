@@ -3,10 +3,10 @@
 use parking_lot::Mutex;
 use std::fmt;
 use std::future::Future;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::RateLimiter;
-use crate::{ResilienceError, ResilienceResult};
+use crate::CallError;
 
 #[derive(Debug)]
 struct TokenBucketState {
@@ -81,7 +81,7 @@ impl TokenBucket {
 }
 
 impl RateLimiter for TokenBucket {
-    async fn acquire(&self) -> ResilienceResult<()> {
+    async fn acquire(&self) -> Result<(), CallError<()>> {
         let mut state = self.state.lock();
 
         let now = Instant::now();
@@ -96,22 +96,18 @@ impl RateLimiter for TokenBucket {
             Ok(())
         } else {
             drop(state);
-            Err(ResilienceError::RateLimitExceeded {
-                retry_after: Some(Duration::from_secs_f64(1.0 / self.refill_rate)),
-                limit: self.refill_rate,
-                current: self.refill_rate + 1.0, // Over limit
-            })
+            Err(CallError::RateLimited)
         }
     }
 
-    async fn execute<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
+    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = ResilienceResult<T>> + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
         T: Send,
     {
-        self.acquire().await?;
-        operation().await
+        self.acquire().await.map_err(|_| CallError::RateLimited)?;
+        operation().await.map_err(CallError::Operation)
     }
 
     async fn current_rate(&self) -> f64 {

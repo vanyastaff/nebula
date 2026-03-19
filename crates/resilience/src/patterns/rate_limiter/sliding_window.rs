@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::RateLimiter;
-use crate::{ResilienceError, ResilienceResult};
+use crate::CallError;
 
 /// Sliding window rate limiter
 ///
@@ -50,7 +50,7 @@ impl SlidingWindow {
 }
 
 impl RateLimiter for SlidingWindow {
-    async fn acquire(&self) -> ResilienceResult<()> {
+    async fn acquire(&self) -> Result<(), CallError<()>> {
         let now = Instant::now();
         let mut requests = self.requests.lock();
         Self::clean_old_requests_locked(&mut requests, now, self.window_duration);
@@ -60,30 +60,19 @@ impl RateLimiter for SlidingWindow {
             drop(requests);
             Ok(())
         } else {
-            // Calculate retry after based on oldest request
-            let retry_after = requests.front().map_or(Duration::from_secs(1), |&oldest| {
-                self.window_duration
-                    .checked_sub(now.duration_since(oldest))
-                    .unwrap_or(Duration::from_millis(1))
-            });
             drop(requests);
-
-            Err(ResilienceError::RateLimitExceeded {
-                retry_after: Some(retry_after),
-                limit: self.max_requests as f64,
-                current: (self.max_requests + 1) as f64,
-            })
+            Err(CallError::RateLimited)
         }
     }
 
-    async fn execute<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
+    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = ResilienceResult<T>> + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
         T: Send,
     {
-        self.acquire().await?;
-        operation().await
+        self.acquire().await.map_err(|_| CallError::RateLimited)?;
+        operation().await.map_err(CallError::Operation)
     }
 
     async fn current_rate(&self) -> f64 {

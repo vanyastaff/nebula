@@ -2,12 +2,12 @@
 
 use parking_lot::RwLock;
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use super::{RateLimiter, TokenBucket};
-use crate::ResilienceResult;
+use crate::CallError;
 
 /// Mutable state behind a single lock.
 struct AdaptiveState {
@@ -99,7 +99,7 @@ impl AdaptiveRateLimiter {
 }
 
 impl RateLimiter for AdaptiveRateLimiter {
-    async fn acquire(&self) -> ResilienceResult<()> {
+    async fn acquire(&self) -> Result<(), CallError<()>> {
         let limiter = {
             let state = self.state.read();
             state.inner.clone()
@@ -108,13 +108,13 @@ impl RateLimiter for AdaptiveRateLimiter {
         limiter.acquire().await
     }
 
-    async fn execute<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
+    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = ResilienceResult<T>> + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
         T: Send,
     {
-        self.acquire().await?;
+        self.acquire().await.map_err(|_| CallError::RateLimited)?;
         let result = operation().await;
 
         match &result {
@@ -122,7 +122,7 @@ impl RateLimiter for AdaptiveRateLimiter {
             Err(_) => self.record_error(),
         }
 
-        result
+        result.map_err(CallError::Operation)
     }
 
     async fn current_rate(&self) -> f64 {

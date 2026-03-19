@@ -19,7 +19,10 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use crate::ResilienceResult;
+use crate::{
+    CallError,
+    observability::sink::{MetricsSink, NoopSink, ResilienceEvent},
+};
 
 // Re-export implementations
 mod adaptive;
@@ -36,44 +39,34 @@ pub use leaky_bucket::LeakyBucket;
 pub use sliding_window::SlidingWindow;
 pub use token_bucket::TokenBucket;
 
-/// Rate limiter trait
+/// Rate limiter trait.
 ///
-/// Defines the common interface for all rate limiting implementations.
+/// Returns `Err(CallError::RateLimited)` when the rate limit is exceeded.
 #[allow(async_fn_in_trait)]
 pub trait RateLimiter: Send + Sync {
-    /// Try to acquire permission for an operation
-    ///
-    /// Returns `Ok(())` if permission granted, or `Err(RateLimitExceeded)` if rate limit hit.
-    async fn acquire(&self) -> ResilienceResult<()>;
+    /// Try to acquire permission. Returns `Err(CallError::RateLimited)` if limit hit.
+    async fn acquire(&self) -> Result<(), CallError<()>>;
 
-    /// Execute an operation with rate limiting
-    ///
-    /// Acquires permission first, then executes the operation.
-    async fn execute<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
+    /// Acquire permission then execute `operation`. Returns `Err(CallError::RateLimited)` or
+    /// the operation's own error wrapped in `CallError::Operation`.
+    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = ResilienceResult<T>> + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
         T: Send;
 
-    /// Get current rate
-    ///
     /// Returns the current rate or available capacity (implementation-dependent).
     async fn current_rate(&self) -> f64;
 
-    /// Reset the rate limiter
-    ///
     /// Clears all state and resets to initial conditions.
     async fn reset(&self);
 }
 
-/// Enum wrapper for dyn-compatible rate limiters
-///
-/// Allows storing different rate limiter types in a single enum for
-/// dynamic dispatch without trait objects.
+/// Enum wrapper for dyn-compatible rate limiters.
 ///
 /// The `Governor` variant is only available when the `governor` feature is enabled.
 #[derive(Clone)]
-pub enum AnyRateLimiter {
+pub enum AnyRateLimiterInner {
     /// Token bucket rate limiter
     TokenBucket(Arc<TokenBucket>),
     /// Leaky bucket rate limiter
@@ -88,50 +81,113 @@ pub enum AnyRateLimiter {
     Governor(Arc<GovernorRateLimiter>),
 }
 
-/// Dispatch a method call to the concrete rate limiter variant.
-///
-/// Cannot be used with `execute()` because that method has generic type
-/// parameters that can't be forwarded through a macro arm.
-macro_rules! dispatch {
-    ($self:expr, $method:ident $(, $arg:expr)*) => {
-        match $self {
-            Self::TokenBucket(l)   => l.$method($($arg),*).await,
-            Self::LeakyBucket(l)   => l.$method($($arg),*).await,
-            Self::SlidingWindow(l) => l.$method($($arg),*).await,
-            Self::Adaptive(l)      => l.$method($($arg),*).await,
+/// Rate limiter with an injectable [`MetricsSink`] for observability.
+#[derive(Clone)]
+pub struct AnyRateLimiter {
+    inner: AnyRateLimiterInner,
+    sink: Arc<dyn MetricsSink>,
+}
+
+impl AnyRateLimiter {
+    /// Wrap a `TokenBucket`.
+    pub fn token_bucket(l: TokenBucket) -> Self {
+        Self {
+            inner: AnyRateLimiterInner::TokenBucket(Arc::new(l)),
+            sink: Arc::new(NoopSink),
+        }
+    }
+    /// Wrap a `LeakyBucket`.
+    pub fn leaky_bucket(l: LeakyBucket) -> Self {
+        Self {
+            inner: AnyRateLimiterInner::LeakyBucket(Arc::new(l)),
+            sink: Arc::new(NoopSink),
+        }
+    }
+    /// Wrap a `SlidingWindow`.
+    pub fn sliding_window(l: SlidingWindow) -> Self {
+        Self {
+            inner: AnyRateLimiterInner::SlidingWindow(Arc::new(l)),
+            sink: Arc::new(NoopSink),
+        }
+    }
+    /// Wrap an `AdaptiveRateLimiter`.
+    pub fn adaptive(l: AdaptiveRateLimiter) -> Self {
+        Self {
+            inner: AnyRateLimiterInner::Adaptive(Arc::new(l)),
+            sink: Arc::new(NoopSink),
+        }
+    }
+    #[cfg(feature = "governor")]
+    /// Wrap a `GovernorRateLimiter`.
+    pub fn governor(l: GovernorRateLimiter) -> Self {
+        Self {
+            inner: AnyRateLimiterInner::Governor(Arc::new(l)),
+            sink: Arc::new(NoopSink),
+        }
+    }
+
+    /// Inject a metrics sink.
+    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+        self.sink = Arc::new(sink);
+        self
+    }
+}
+
+macro_rules! dispatch_inner {
+    ($inner:expr, $method:ident $(, $arg:expr)*) => {
+        match $inner {
+            AnyRateLimiterInner::TokenBucket(l)   => l.$method($($arg),*).await,
+            AnyRateLimiterInner::LeakyBucket(l)   => l.$method($($arg),*).await,
+            AnyRateLimiterInner::SlidingWindow(l) => l.$method($($arg),*).await,
+            AnyRateLimiterInner::Adaptive(l)      => l.$method($($arg),*).await,
             #[cfg(feature = "governor")]
-            Self::Governor(l)      => l.$method($($arg),*).await,
+            AnyRateLimiterInner::Governor(l)      => l.$method($($arg),*).await,
         }
     };
 }
 
 impl RateLimiter for AnyRateLimiter {
-    async fn acquire(&self) -> ResilienceResult<()> {
-        dispatch!(self, acquire)
+    async fn acquire(&self) -> Result<(), CallError<()>> {
+        let result = dispatch_inner!(&self.inner, acquire);
+        if result.is_err() {
+            self.sink.record(ResilienceEvent::RateLimitExceeded);
+        }
+        result
     }
 
-    async fn execute<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
+    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = ResilienceResult<T>> + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
         T: Send,
     {
-        // Generic type parameters prevent use of the dispatch! macro here.
-        match self {
-            Self::TokenBucket(l)   => l.execute(operation).await,
-            Self::LeakyBucket(l)   => l.execute(operation).await,
-            Self::SlidingWindow(l) => l.execute(operation).await,
-            Self::Adaptive(l)      => l.execute(operation).await,
-            #[cfg(feature = "governor")]
-            Self::Governor(l)      => l.execute(operation).await,
-        }
+        self.acquire().await.map_err(|_| CallError::RateLimited)?;
+        operation().await.map_err(CallError::Operation)
     }
 
     async fn current_rate(&self) -> f64 {
-        dispatch!(self, current_rate)
+        dispatch_inner!(&self.inner, current_rate)
     }
 
     async fn reset(&self) {
-        dispatch!(self, reset)
+        dispatch_inner!(&self.inner, reset)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::RecordingSink;
+
+    #[tokio::test]
+    async fn emits_rate_limit_exceeded_event() {
+        let sink = RecordingSink::new();
+        let limiter =
+            AnyRateLimiter::token_bucket(TokenBucket::new(1, 0.001)).with_sink(sink.clone());
+
+        assert!(limiter.acquire().await.is_ok()); // first — succeeds (1 token)
+        let _ = limiter.acquire().await; // second — rate limited
+
+        assert!(sink.count("rate_limit_exceeded") > 0);
     }
 }
