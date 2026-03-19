@@ -146,11 +146,9 @@ impl MetricsCollector {
                 self.registry
                     .counter_labeled(RESOURCE_POOL_EXHAUSTED.as_str(), &labels)
                     .inc();
-                #[allow(clippy::cast_possible_wrap)]
-                // Reason: waiter counts are small non-negative values; i64 wrapping is unreachable.
                 self.registry
                     .gauge_labeled(RESOURCE_POOL_WAITERS.as_str(), &labels)
-                    .set(*waiters as i64);
+                    .set(i64::try_from(*waiters).unwrap_or(i64::MAX));
             }
             ResourceEvent::Quarantined { resource_key, .. } => {
                 let labels = self.resource_labels(resource_key);
