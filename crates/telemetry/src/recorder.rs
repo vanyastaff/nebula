@@ -1,9 +1,18 @@
-//! Buffered execution recorder with configurable flush strategies.
+//! Execution recording: resource usage, per-call enrichment, and buffered sink.
 //!
-//! [`BufferedRecorder`] collects [`ResourceUsageRecord`] and [`CallRecord`]
-//! entries via a non-blocking MPSC channel and flushes them in batches to a
-//! pluggable [`RecordSink`]. This avoids blocking the hot path (action
-//! execution) while ensuring records are eventually persisted or exported.
+//! ## Recording tiers
+//!
+//! **Tier 1** — [`ResourceUsageRecord`]: produced automatically by the resource
+//! layer (e.g. instrumented guard) on drop. No author effort required.
+//!
+//! **Tier 2** — [`CallRecord`]: optional enrichment (request/response, operation name)
+//! that resource (or action) authors can record via [`Recorder::record_call`].
+//!
+//! ## Buffered recording
+//!
+//! [`BufferedRecorder`] collects records via a non-blocking MPSC channel and
+//! flushes them in batches to a pluggable [`RecordSink`]. This avoids blocking
+//! the hot path while ensuring records are eventually persisted or exported.
 //!
 //! ## Quick Start
 //!
@@ -19,13 +28,147 @@
 //! # }
 //! ```
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use nebula_core::ResourceKey;
 use tokio::sync::mpsc;
 use tracing;
 
-use crate::trace::{CallRecord, Recorder, ResourceUsageRecord};
+use crate::trace::TraceContext;
+
+// ── DropReason ───────────────────────────────────────────────────────────────
+
+/// How a resource guard was released. Determined automatically by the kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DropReason {
+    /// Normal drop — instance returned to pool.
+    Released,
+    /// Dropped during a panic (`std::thread::panicking()` was true).
+    Panic,
+    /// Explicitly taken out of guard via `into_inner()`.
+    Detached,
+}
+
+// ── ResourceUsageRecord — Tier 1 (automatic) ────────────────────────────────
+
+/// Tier 1: Automatic usage record. Produced for every acquired resource when
+/// the guard is dropped.
+#[derive(Debug, Clone)]
+pub struct ResourceUsageRecord {
+    /// Resource key (e.g. `http_client`, `postgres`).
+    pub resource_key: ResourceKey,
+    /// When the instance was acquired from the pool.
+    pub acquired_at: Instant,
+    /// Time spent waiting for an available instance (pool contention).
+    pub wait_duration: Duration,
+    /// Time the instance was held (from acquire until drop).
+    pub hold_duration: Duration,
+    /// How the guard was released.
+    pub drop_reason: DropReason,
+}
+
+// ── CallRecord — Tier 2 (optional enrichment) ───────────────────────────────
+
+/// Tier 2: Optional per-call enrichment. Created by instance methods that call
+/// [`Recorder::record_call`].
+#[derive(Debug, Clone)]
+pub struct CallRecord {
+    /// Resource key.
+    pub resource_key: ResourceKey,
+    /// Human-readable operation (e.g. `"GET /users"`, `"sendMessage"`, `"SELECT ..."`).
+    pub operation: String,
+    /// When the call started.
+    pub started_at: Instant,
+    /// Call duration.
+    pub duration: Duration,
+    /// Success or error message.
+    pub status: CallStatus,
+    /// What was sent (optional).
+    pub request: Option<CallPayload>,
+    /// What was received (optional).
+    pub response: Option<CallPayload>,
+    /// Extra key-value (e.g. `status_code`, `chat_id`, `row_count`).
+    pub metadata: HashMap<String, String>,
+    /// Optional trace context for correlating this call with a distributed trace.
+    pub trace_context: Option<TraceContext>,
+}
+
+/// Success or error outcome of a call.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum CallStatus {
+    /// Call succeeded.
+    Success,
+    /// Call failed with message.
+    Error(String),
+}
+
+/// Payload of a call — generic for HTTP, DB, messaging, etc.
+#[derive(Debug, Clone, Default)]
+pub struct CallPayload {
+    /// Short summary (e.g. `"GET https://api.example.com/users"`).
+    pub summary: String,
+    /// Headers or options (HTTP headers, SSH options, etc.).
+    pub headers: Option<Vec<(String, String)>>,
+    /// Body or command text.
+    pub body: Option<CallBody>,
+    /// Size in bytes if known.
+    pub size_bytes: Option<u64>,
+}
+
+/// Body content — text, binary, or redacted (secrets).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum CallBody {
+    /// Plain text (JSON, SQL, command).
+    Text(String),
+    /// Binary with MIME and size.
+    Binary {
+        /// MIME type or label.
+        mime: String,
+        /// Size in bytes.
+        size: u64,
+    },
+    /// Contains secrets — intentionally not logged.
+    Redacted,
+}
+
+// ── Recorder trait ───────────────────────────────────────────────────────────
+
+/// Sink for execution trace: usage and call records. Engine injects a real
+/// implementation; tests use [`NoopRecorder`].
+pub trait Recorder: Send + Sync {
+    /// Tier 1: called automatically when a resource guard is dropped.
+    fn record_usage(&self, record: ResourceUsageRecord);
+
+    /// Tier 2: called optionally by instance methods for richer execution view.
+    fn record_call(&self, record: CallRecord);
+
+    /// Whether enrichment recording is enabled. Instance code can skip
+    /// building [`CallRecord`] when this is false.
+    fn is_enrichment_enabled(&self) -> bool {
+        true
+    }
+}
+
+// ── NoopRecorder ─────────────────────────────────────────────────────────────
+
+/// No-op recorder for tests and non-instrumented contexts.
+#[derive(Debug, Clone, Default)]
+pub struct NoopRecorder;
+
+impl Recorder for NoopRecorder {
+    fn record_usage(&self, _record: ResourceUsageRecord) {}
+
+    fn record_call(&self, _record: CallRecord) {}
+
+    fn is_enrichment_enabled(&self) -> bool {
+        false
+    }
+}
 
 // ── RecordEntry ──────────────────────────────────────────────────────────────
 
@@ -252,14 +395,289 @@ async fn flush_loop(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::Mutex;
-    use std::time::Instant;
 
-    use nebula_core::ResourceKey;
+    use nebula_core::resource_key;
 
     use super::*;
-    use crate::trace::{CallStatus, DropReason};
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Recording types
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn call_record_with_empty_payloads() {
+        let record = CallRecord {
+            resource_key: resource_key!("test_resource"),
+            operation: "test_op".to_string(),
+            started_at: Instant::now(),
+            duration: Duration::from_millis(100),
+            status: CallStatus::Success,
+            request: None,
+            response: None,
+            metadata: HashMap::new(),
+            trace_context: None,
+        };
+        assert_eq!(record.operation, "test_op");
+        assert!(record.request.is_none());
+        assert!(record.response.is_none());
+    }
+
+    #[test]
+    fn call_payload_redacted() {
+        let payload = CallPayload {
+            summary: "GET /secrets".to_string(),
+            headers: None,
+            body: Some(CallBody::Redacted),
+            size_bytes: Some(1024),
+        };
+        assert!(matches!(payload.body, Some(CallBody::Redacted)));
+    }
+
+    #[test]
+    fn call_payload_oversized_content() {
+        let large_text = "x".repeat(65536);
+        let payload = CallPayload {
+            summary: "large_payload".to_string(),
+            headers: None,
+            body: Some(CallBody::Text(large_text.clone())),
+            size_bytes: Some(65536),
+        };
+        if let Some(CallBody::Text(body)) = payload.body {
+            assert_eq!(body.len(), 65536);
+        }
+    }
+
+    #[test]
+    fn call_status_error_with_empty_message() {
+        let status = CallStatus::Error("".to_string());
+        match status {
+            CallStatus::Error(msg) => assert_eq!(msg, ""),
+            _ => panic!("expected Error variant"),
+        }
+    }
+
+    #[test]
+    fn call_record_zero_duration() {
+        let record = CallRecord {
+            resource_key: resource_key!("zero_duration"),
+            operation: "instant_op".to_string(),
+            started_at: Instant::now(),
+            duration: Duration::ZERO,
+            status: CallStatus::Success,
+            request: None,
+            response: None,
+            metadata: HashMap::new(),
+            trace_context: None,
+        };
+        assert_eq!(record.duration, Duration::ZERO);
+    }
+
+    #[test]
+    fn resource_usage_record_max_values() {
+        let record = ResourceUsageRecord {
+            resource_key: resource_key!("max_test"),
+            acquired_at: Instant::now(),
+            wait_duration: Duration::new(u64::MAX, 999_999_999),
+            hold_duration: Duration::new(u64::MAX, 999_999_999),
+            drop_reason: DropReason::Released,
+        };
+        assert_eq!(record.wait_duration.as_secs(), u64::MAX);
+        assert_eq!(record.hold_duration.as_secs(), u64::MAX);
+    }
+
+    #[test]
+    fn resource_usage_record_zero_usage() {
+        let record = ResourceUsageRecord {
+            resource_key: resource_key!("zero_usage"),
+            acquired_at: Instant::now(),
+            wait_duration: Duration::ZERO,
+            hold_duration: Duration::ZERO,
+            drop_reason: DropReason::Released,
+        };
+        assert_eq!(record.wait_duration, Duration::ZERO);
+        assert_eq!(record.hold_duration, Duration::ZERO);
+    }
+
+    #[test]
+    fn resource_usage_record_panic_drop_reason() {
+        let record = ResourceUsageRecord {
+            resource_key: resource_key!("panic_drop"),
+            acquired_at: Instant::now(),
+            wait_duration: Duration::from_millis(10),
+            hold_duration: Duration::from_millis(100),
+            drop_reason: DropReason::Panic,
+        };
+        assert_eq!(record.drop_reason, DropReason::Panic);
+    }
+
+    #[test]
+    fn resource_usage_record_detached_drop_reason() {
+        let record = ResourceUsageRecord {
+            resource_key: resource_key!("detached"),
+            acquired_at: Instant::now(),
+            wait_duration: Duration::from_millis(5),
+            hold_duration: Duration::from_millis(50),
+            drop_reason: DropReason::Detached,
+        };
+        assert_eq!(record.drop_reason, DropReason::Detached);
+    }
+
+    #[test]
+    fn resource_usage_record_clone() {
+        let record = ResourceUsageRecord {
+            resource_key: resource_key!("clone_test"),
+            acquired_at: Instant::now(),
+            wait_duration: Duration::from_millis(20),
+            hold_duration: Duration::from_millis(200),
+            drop_reason: DropReason::Released,
+        };
+        let cloned = record.clone();
+        assert_eq!(record.resource_key, cloned.resource_key);
+        assert_eq!(record.wait_duration, cloned.wait_duration);
+        assert_eq!(record.hold_duration, cloned.hold_duration);
+        assert_eq!(record.drop_reason, cloned.drop_reason);
+    }
+
+    #[test]
+    fn call_status_success() {
+        let status = CallStatus::Success;
+        assert!(matches!(status, CallStatus::Success));
+    }
+
+    #[test]
+    fn call_status_error() {
+        let msg = "connection timeout".to_string();
+        let status = CallStatus::Error(msg.clone());
+        match status {
+            CallStatus::Error(m) => assert_eq!(m, msg),
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[test]
+    fn call_status_clone() {
+        let original = CallStatus::Error("test_error".to_string());
+        let cloned = original.clone();
+        assert_eq!(format!("{:?}", original), format!("{:?}", cloned));
+    }
+
+    #[test]
+    fn noop_recorder_record_usage_is_noop() {
+        let recorder = NoopRecorder;
+        let record = ResourceUsageRecord {
+            resource_key: resource_key!("noop_test"),
+            acquired_at: Instant::now(),
+            wait_duration: Duration::from_millis(1),
+            hold_duration: Duration::from_millis(10),
+            drop_reason: DropReason::Released,
+        };
+        recorder.record_usage(record);
+    }
+
+    #[test]
+    fn noop_recorder_record_call_is_noop() {
+        let recorder = NoopRecorder;
+        let record = CallRecord {
+            resource_key: resource_key!("noop_test"),
+            operation: "no_op".to_string(),
+            started_at: Instant::now(),
+            duration: Duration::from_millis(5),
+            status: CallStatus::Success,
+            request: None,
+            response: None,
+            metadata: HashMap::new(),
+            trace_context: None,
+        };
+        recorder.record_call(record);
+    }
+
+    #[test]
+    fn noop_recorder_is_enrichment_enabled() {
+        let recorder = NoopRecorder;
+        assert!(!recorder.is_enrichment_enabled());
+    }
+
+    #[test]
+    fn noop_recorder_is_object_safe() {
+        let recorder: std::sync::Arc<dyn Recorder + Send + Sync> =
+            std::sync::Arc::new(NoopRecorder);
+        assert!(!recorder.is_enrichment_enabled());
+    }
+
+    #[test]
+    fn noop_recorder_clone() {
+        let original = NoopRecorder;
+        let cloned = original.clone();
+        let _ = format!("{:?}", cloned);
+    }
+
+    #[test]
+    fn call_payload_binary() {
+        let payload = CallPayload {
+            summary: "binary_file".to_string(),
+            headers: None,
+            body: Some(CallBody::Binary {
+                mime: "application/octet-stream".to_string(),
+                size: 2048,
+            }),
+            size_bytes: Some(2048),
+        };
+        if let Some(CallBody::Binary { mime, size }) = payload.body {
+            assert_eq!(mime, "application/octet-stream");
+            assert_eq!(size, 2048);
+        } else {
+            panic!("expected Binary variant");
+        }
+    }
+
+    #[test]
+    fn call_payload_with_headers() {
+        let headers = vec![
+            ("Content-Type".to_string(), "application/json".to_string()),
+            ("Authorization".to_string(), "Bearer token123".to_string()),
+        ];
+        let payload = CallPayload {
+            summary: "request".to_string(),
+            headers: Some(headers.clone()),
+            body: Some(CallBody::Text(r#"{"key":"value"}"#.to_string())),
+            size_bytes: Some(16),
+        };
+        assert_eq!(payload.headers, Some(headers));
+    }
+
+    #[test]
+    fn call_payload_default() {
+        let payload = CallPayload::default();
+        assert_eq!(payload.summary, "");
+        assert!(payload.headers.is_none());
+        assert!(payload.body.is_none());
+        assert!(payload.size_bytes.is_none());
+    }
+
+    #[test]
+    fn drop_reason_all_variants() {
+        let reasons = vec![
+            DropReason::Released,
+            DropReason::Panic,
+            DropReason::Detached,
+        ];
+        for reason in reasons {
+            assert_eq!(reason, reason);
+            let _ = format!("{:?}", reason);
+        }
+    }
+
+    #[test]
+    fn drop_reason_is_copy() {
+        let reason = DropReason::Released;
+        let _copy = reason;
+        let _ = reason;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // BufferedRecorder
+    // ─────────────────────────────────────────────────────────────────────────
 
     /// Test sink that collects flushed records for assertions.
     #[derive(Debug, Clone, Default)]
@@ -276,7 +694,7 @@ mod tests {
 
     fn make_usage_record(key: &str) -> ResourceUsageRecord {
         ResourceUsageRecord {
-            resource_key: ResourceKey::new(key).expect("valid test key"),
+            resource_key: nebula_core::ResourceKey::new(key).expect("valid test key"),
             acquired_at: Instant::now(),
             wait_duration: Duration::from_millis(1),
             hold_duration: Duration::from_millis(10),
@@ -286,7 +704,7 @@ mod tests {
 
     fn make_call_record(key: &str, op: &str) -> CallRecord {
         CallRecord {
-            resource_key: ResourceKey::new(key).expect("valid test key"),
+            resource_key: nebula_core::ResourceKey::new(key).expect("valid test key"),
             operation: op.to_owned(),
             started_at: Instant::now(),
             duration: Duration::from_millis(5),
@@ -312,7 +730,6 @@ mod tests {
         recorder.record_usage(make_usage_record("db"));
         recorder.record_call(make_call_record("db", "SELECT"));
 
-        // Wait for flush interval to trigger
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         let flushed = sink.flushed.lock().unwrap();
@@ -326,7 +743,7 @@ mod tests {
         let recorder = BufferedRecorder::start(
             BufferedRecorderConfig {
                 buffer_size,
-                flush_interval: Duration::from_secs(60), // Long interval — won't trigger
+                flush_interval: Duration::from_secs(60),
             },
             sink.clone(),
         );
@@ -335,7 +752,6 @@ mod tests {
             recorder.record_usage(make_usage_record(&format!("res-{i}")));
         }
 
-        // Give the background task time to process
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let flushed = sink.flushed.lock().unwrap();
@@ -353,12 +769,9 @@ mod tests {
             sink.clone(),
         );
 
-        // Fill channel beyond capacity — should not panic
         for i in 0..100 {
             recorder.record_usage(make_usage_record(&format!("res-{i}")));
         }
-
-        // No panic = success
     }
 
     #[tokio::test]
@@ -375,7 +788,6 @@ mod tests {
         recorder.record_usage(make_usage_record("db"));
         recorder.record_call(make_call_record("api", "POST /users"));
 
-        // Give records time to enter channel
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         recorder.shutdown().await;
@@ -398,14 +810,15 @@ mod tests {
         recorder.record_call(make_call_record("http", "GET /health"));
 
         tokio::time::sleep(Duration::from_millis(100)).await;
-        // No panic = success
+    }
+
+    async fn produce_records(rec: Arc<BufferedRecorder>, thread_id: usize) {
+        for i in 0..25 {
+            rec.record_usage(make_usage_record(&format!("t{thread_id}-r{i}")));
+        }
     }
 
     #[tokio::test]
-    #[expect(
-        clippy::excessive_nesting,
-        reason = "spawn block with inner loop is idiomatic here; extracting would obscure test intent"
-    )]
     async fn multiple_concurrent_producers() {
         let sink = CollectingSink::default();
         let recorder = Arc::new(BufferedRecorder::start(
@@ -418,20 +831,13 @@ mod tests {
 
         let mut handles = Vec::new();
         for t in 0..4 {
-            let rec = Arc::clone(&recorder);
-            let task = async move {
-                for i in 0..25 {
-                    rec.record_usage(make_usage_record(&format!("t{t}-r{i}")));
-                }
-            };
-            handles.push(tokio::spawn(task));
+            handles.push(tokio::spawn(produce_records(Arc::clone(&recorder), t)));
         }
 
         for h in handles {
             h.await.unwrap();
         }
 
-        // Wait for flush
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         let flushed = sink.flushed.lock().unwrap();

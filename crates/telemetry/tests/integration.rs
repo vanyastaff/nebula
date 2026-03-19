@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use nebula_telemetry::SubscriptionScope;
+use nebula_telemetry::event::SubscriptionScope;
 use nebula_telemetry::event::{EventBus, ExecutionEvent};
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_telemetry::{NoopTelemetry, TelemetryService};
@@ -85,10 +85,10 @@ async fn scoped_subscription_receives_only_matching_execution() {
 #[test]
 fn noop_telemetry_arc_provides_same_bus_and_metrics() {
     let telemetry = NoopTelemetry::arc();
-    let bus1 = telemetry.event_bus_arc();
-    let bus2 = telemetry.event_bus_arc();
-    let metrics1 = telemetry.metrics_arc();
-    let metrics2 = telemetry.metrics_arc();
+    let bus1 = telemetry.event_bus().clone();
+    let bus2 = telemetry.event_bus().clone();
+    let metrics1 = telemetry.metrics().clone();
+    let metrics2 = telemetry.metrics().clone();
 
     telemetry.event_bus().emit(ExecutionEvent::Started {
         execution_id: "e1".into(),

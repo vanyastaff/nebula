@@ -54,8 +54,8 @@ use crate::result::ExecutionResult;
 /// 6. Tracking execution state and emitting telemetry
 pub struct WorkflowEngine {
     runtime: Arc<ActionRuntime>,
-    event_bus: Arc<EventBus>,
-    metrics: Arc<MetricsRegistry>,
+    event_bus: EventBus,
+    metrics: MetricsRegistry,
     /// Node registry for node-level metadata and versioning.
     plugin_registry: PluginRegistry,
     /// Resolves node parameters (expressions, templates, references) to JSON.
@@ -69,11 +69,7 @@ pub struct WorkflowEngine {
 
 impl WorkflowEngine {
     /// Create a new engine with the given components.
-    pub fn new(
-        runtime: Arc<ActionRuntime>,
-        event_bus: Arc<EventBus>,
-        metrics: Arc<MetricsRegistry>,
-    ) -> Self {
+    pub fn new(runtime: Arc<ActionRuntime>, event_bus: EventBus, metrics: MetricsRegistry) -> Self {
         let expression_engine = Arc::new(ExpressionEngine::with_cache_size(1024));
         Self {
             runtime,
@@ -95,7 +91,11 @@ impl WorkflowEngine {
         runtime: Arc<ActionRuntime>,
         telemetry: Arc<dyn TelemetryService>,
     ) -> Self {
-        Self::new(runtime, telemetry.event_bus_arc(), telemetry.metrics_arc())
+        Self::new(
+            runtime,
+            telemetry.event_bus().clone(),
+            telemetry.metrics().clone(),
+        )
     }
 
     /// Access the node registry.
@@ -981,15 +981,13 @@ mod tests {
         }
     }
 
-    fn make_engine(
-        registry: Arc<ActionRegistry>,
-    ) -> (WorkflowEngine, Arc<EventBus>, Arc<MetricsRegistry>) {
+    fn make_engine(registry: Arc<ActionRegistry>) -> (WorkflowEngine, EventBus, MetricsRegistry) {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
-        let event_bus = Arc::new(EventBus::new(64));
-        let metrics = Arc::new(MetricsRegistry::new());
+        let event_bus = EventBus::new(64);
+        let metrics = MetricsRegistry::new();
 
         let runtime = Arc::new(ActionRuntime::new(
             registry,

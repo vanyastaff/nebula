@@ -29,7 +29,6 @@
 //! `nebula_action_duration_seconds`) to avoid collisions and support
 //! future export (Prometheus/OTLP). See the crate ROADMAP for the full convention.
 
-pub mod context;
 pub mod error;
 pub mod event;
 pub mod labels;
@@ -40,17 +39,15 @@ pub mod recorder;
 pub mod service;
 pub mod trace;
 
-pub use context::{SpanId, TraceContext, TraceContextError, TraceId};
 pub use error::{TelemetryError, TelemetryResult};
 pub use event::{EventBus, EventSubscriber, ExecutionEvent, ScopedSubscriber};
 pub use labels::{LabelInterner, LabelSet, MetricKey};
-pub use metrics::{Counter, Gauge, Histogram, MetricsRegistry, NoopMetricsRegistry};
-pub use nebula_eventbus::{EventFilter, PublishOutcome, ScopedEvent, SubscriptionScope};
-pub use recorder::{BufferedRecorder, BufferedRecorderConfig, LogSink, RecordEntry, RecordSink};
+pub use metrics::{Counter, Gauge, Histogram, MetricsRegistry};
+pub use recorder::{
+    BufferedRecorder, BufferedRecorderConfig, CallBody, CallPayload, CallRecord, CallStatus,
+    DropReason, LogSink, NoopRecorder, RecordEntry, RecordSink, Recorder, ResourceUsageRecord,
+};
 pub use service::{
     NoopTelemetry, ProductionTelemetry, ProductionTelemetryBuilder, TelemetryService,
 };
-pub use trace::{
-    CallBody, CallPayload, CallRecord, CallStatus, DropReason, NoopRecorder, Recorder,
-    ResourceUsageRecord,
-};
+pub use trace::{SpanId, TraceContext, TraceContextError, TraceId};

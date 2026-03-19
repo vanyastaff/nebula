@@ -534,7 +534,8 @@ impl MetricsRegistry {
     /// ```
     pub fn retain_recent(&self, max_age: Duration) {
         let cutoff_ms = now_ms().saturating_sub(max_age.as_millis() as u64);
-        self.counters.retain(|_, v| v.last_updated_ms() >= cutoff_ms);
+        self.counters
+            .retain(|_, v| v.last_updated_ms() >= cutoff_ms);
         self.gauges.retain(|_, v| v.last_updated_ms() >= cutoff_ms);
         self.histograms
             .retain(|_, v| v.last_updated_ms() >= cutoff_ms);
@@ -550,26 +551,6 @@ impl MetricsRegistry {
 }
 
 impl Default for MetricsRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// A no-op metrics registry that discards all observations.
-///
-/// Useful for testing and contexts where metrics are not needed.
-#[derive(Debug, Clone, Copy)]
-pub struct NoopMetricsRegistry;
-
-impl NoopMetricsRegistry {
-    /// Create a noop registry.
-    #[must_use]
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for NoopMetricsRegistry {
     fn default() -> Self {
         Self::new()
     }
@@ -856,7 +837,11 @@ mod tests {
         reg.gauge("b").set(1);
         reg.histogram("c").observe(0.5);
         reg.retain_recent(Duration::from_secs(3600));
-        assert_eq!(reg.metric_count(), 3, "all metrics are recent, none should be removed");
+        assert_eq!(
+            reg.metric_count(),
+            3,
+            "all metrics are recent, none should be removed"
+        );
 
         // Now retain with max_age = 0: cutoff = now_ms(), so only metrics
         // updated at exactly now_ms() or later survive.  In practice all
