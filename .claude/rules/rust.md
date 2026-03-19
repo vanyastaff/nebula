@@ -28,11 +28,44 @@
 - Use `#[should_panic(expected = "...")]` sparingly — prefer `assert!(matches!(result, Err(...)))`
 - `MemoryStorage` for test-only storage — never mock the `Storage` trait directly
 
+### When a test fails
+**Never adjust test expectations to match broken logic.** A failing test is a signal — investigate:
+1. **Is the logic wrong?** — fix the implementation, not the test
+2. **Is the test wrong?** — only if the test's assumptions were incorrect from the start
+3. **Never** change assertions just to get a green pass — that hides bugs
+
 ## Dependencies
 - New deps require: MIT/Apache-2.0 compatible license, check `deny.toml`
 - Prefer `parking_lot` over `std::sync::Mutex`
 - `tokio` for async runtime — no mixing with `async-std`
 - Check `cargo deny check` passes before adding new dependencies
+
+## Clippy Discipline
+
+Zero warnings policy — `cargo clippy --workspace -- -D warnings`.
+
+### `#[allow(...)]` rules
+When clippy fires, always try to **fix the code first**:
+1. **Refactor** — restructure, extract, simplify to satisfy the lint
+2. **Only if impossible** — add `#[allow(...)]` with a `// Reason:` comment explaining why the code cannot be improved
+
+Never add `#[allow(...)]` just because "it works" or to make CI green faster. If clippy complains, the code is almost always improvable.
+
+### Allowed exceptions (only after refactor attempt failed)
+- `#[allow(clippy::excessive_nesting)]` — only for match arms on deep enums and async closures that can't be flattened
+- `#[allow(clippy::too_many_arguments)]` — only for internal constructors where a builder would be overengineering
+- `#[allow(clippy::type_complexity)]` — only for trait-associated types with unavoidable generics
+- `#[allow(clippy::cognitive_complexity)]` — never. Refactor the function instead.
+
+### Nesting
+- Use early return (`let-else`, guard clauses) to keep nesting ≤ 3 levels
+- Extract inner logic into named functions when nesting grows
+- `clippy.toml` threshold is 5 — but aim for 3
+
+### Complexity
+- `cognitive-complexity-threshold = 25` in `clippy.toml` — if you hit it, split the function
+- `too-many-lines-threshold = 100` — functions over 100 lines need splitting
+- `too-many-arguments-threshold = 7` — use a config struct or builder above 4 params
 
 ## Performance
 - `Arc<T>` for shared ownership — never `Rc<T>` (everything is `Send`)

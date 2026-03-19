@@ -23,4 +23,4 @@ Fault-tolerance patterns — circuit breaker, retry, bulkhead, rate limiter, tim
 ## Relations
 - No nebula deps. Used by nebula-resource, nebula-credential, nebula-engine for external call resilience.
 
-<!-- reviewed: 2026-03-18 -->
+<!-- reviewed: 2026-03-18T23:25 -->
