@@ -1,127 +1,169 @@
 # nebula-resilience — Observability
 
-`nebula-resilience` exposes three observability extension points:
+`nebula-resilience` has two independent observability layers:
 
-- **`MetricsCollector`** — in-process metrics accumulator with security-hardened key
-  validation and per-key `MetricSnapshot` exports.
-- **`ObservabilityHooks`** — ordered list of callbacks that receive a `PatternEvent`
-  on every significant lifecycle transition.
-- **Tracing spans** — RAII `SpanGuard` and `PatternSpanGuard<C>` helpers that emit
-  structured `tracing` events at start, success, and failure.
+1. **`MetricsSink` / `ResilienceEvent`** — primary sink for structured events emitted by
+   patterns (circuit breaker transitions, retry attempts, bulkhead rejections, etc.).
+   This is the preferred integration point for production metrics pipelines.
+
+2. **`ObservabilityHooks` / `PatternEvent`** — legacy hook system providing `Event<C>`
+   typed events and built-in `LoggingHook` / `MetricsHook` for `tracing`-based
+   observability.
 
 ---
 
 ## Table of Contents
 
-- [MetricsCollector](#metricscollector)
-- [MetricSnapshot](#metricsnapshot)
-- [MetricTimer](#metrictimer)
-- [ObservabilityHooks](#observabilityhooks)
+- [MetricsSink](#metricssink)
+- [ResilienceEvent](#resilienceevent)
+- [RecordingSink (testing)](#recordingsink-testing)
+- [Injecting a Sink](#injecting-a-sink)
+- [ObservabilityHooks (legacy)](#observabilityhooks-legacy)
 - [PatternEvent](#patternevent)
-- [ObservabilityHook Trait](#observabilityhook-trait)
-- [Built-in Hooks](#built-in-hooks)
 - [Typed Events](#typed-events)
-- [Typed Metrics](#typed-metrics)
 - [Tracing Spans](#tracing-spans)
+- [MetricsCollector](#metricscollector)
 - [Wire-Up Example](#wire-up-example)
 
 ---
 
-## MetricsCollector
+## MetricsSink
 
-In-process metrics store. Keyed by arbitrary `String` names. Security-hardened:
-names over 256 characters are silently dropped; more than 10 000 unique keys cause
-subsequent new keys to be dropped.
+The primary observability trait. Implemented by `NoopSink` (default) and `RecordingSink`
+(testing). In production, implement `MetricsSink` to forward events to your metrics
+backend (Prometheus, EventBus, etc.).
 
 ```rust
-pub struct MetricsCollector { /* ... */ }
-
-impl MetricsCollector {
-    /// Create a new collector. Pass `enabled: false` to make all methods no-ops.
-    pub fn new(enabled: bool) -> Self;
-
-    /// Record a raw f64 sample. NaN and ±Infinity are silently dropped.
-    pub fn record(&self, name: impl Into<String>, value: f64);
-
-    /// Increment a counter by 1.0.
-    pub fn increment(&self, name: impl Into<String>);
-
-    /// Record a `Duration` as milliseconds.
-    pub fn record_duration(&self, name: impl Into<String>, duration: Duration);
-
-    /// Start a wall-clock timer. Records when `MetricTimer` is dropped.
-    pub fn start_timer(&self, name: impl Into<String>) -> MetricTimer;
-
-    /// Read a point-in-time snapshot for one key. Returns `None` if key is unknown.
-    pub fn snapshot(&self, name: &str) -> Option<MetricSnapshot>;
-
-    /// Read snapshots for all registered keys.
-    pub fn all_snapshots(&self) -> HashMap<String, MetricSnapshot>;
-
-    /// Reset recorded values for one key (keeps the key slot).
-    pub fn reset(&self, name: &str);
-
-    /// Drop all keys and their values.
-    pub fn clear(&self);
+pub trait MetricsSink: Send + Sync {
+    fn record(&self, event: ResilienceEvent);
 }
+
+/// Default — discards all events. Zero cost.
+pub struct NoopSink;
 ```
 
-### Suggested naming convention
-
-Use `<pattern>.<event>` to keep metrics grouped:
-
-| Name | Meaning |
-|------|---------|
-| `circuit_breaker.open` | Circuit transitioned to Open |
-| `circuit_breaker.half_open` | Circuit transitioned to HalfOpen |
-| `circuit_breaker.closed` | Circuit transitioned to Closed |
-| `retry.attempt` | Retry attempt count |
-| `retry.exhausted` | Retry budget depleted |
-| `bulkhead.rejected` | Request rejected due to capacity |
-| `bulkhead.wait_ms` | Duration spent waiting for a permit |
-| `timeout.fired` | Timeout limit exceeded |
-| `rate_limiter.rejected` | Request rejected by rate limiter |
+All implementations are called synchronously. Keep them fast; offload heavy I/O to a
+background channel.
 
 ---
 
-## MetricSnapshot
+## ResilienceEvent
 
-Read-only point-in-time view of accumulated values for one key:
+Typed events emitted by patterns:
 
 ```rust
-pub struct MetricSnapshot {
-    pub count: u64,   // total number of recorded samples
-    pub sum: f64,     // sum of all samples
-    pub min: f64,     // minimum recorded value
-    pub max: f64,     // maximum recorded value
-    pub mean: f64,    // arithmetic mean (sum / count)
+#[derive(Debug, Clone)]
+pub enum ResilienceEvent {
+    /// Circuit breaker transitioned between states.
+    CircuitStateChanged {
+        from: CircuitState,
+        to: CircuitState,
+    },
+    /// A retry attempt was made (1-based).
+    RetryAttempt {
+        attempt: u32,
+        will_retry: bool,
+    },
+    /// Bulkhead rejected a request (at capacity).
+    BulkheadRejected,
+    /// A timeout elapsed.
+    TimeoutElapsed { duration: Duration },
+    /// A hedge request was fired (1-based).
+    HedgeFired { hedge_number: u32 },
+    /// Rate limit was exceeded.
+    RateLimitExceeded,
+    /// Load shed — request rejected due to overload.
+    LoadShed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CircuitState {
+    Closed,
+    Open,
+    HalfOpen,
 }
 ```
 
 ---
 
-## MetricTimer
+## RecordingSink (testing)
 
-RAII duration recorder. Records elapsed time (in milliseconds) to the underlying
-`MetricsCollector` when dropped:
+For test assertions — records all events in memory:
 
 ```rust
-let timer = collector.start_timer("db.query_ms");
-let result = db.query(sql).await;
-drop(timer); // automatically records elapsed duration
+let sink = Arc::new(RecordingSink::new());
+
+// Inject into CircuitBreaker
+let cb = CircuitBreaker::with_sink(config, sink.clone())?;
+
+// ... run operations ...
+
+// Assert
+assert_eq!(sink.count("retry_attempt"), 3);
+assert!(sink.has_state_change(CircuitState::Open));
+
+// Inspect all events
+for event in sink.events() {
+    println!("{event:?}");
+}
+```
+
+Available `count()` kind strings:
+
+| Kind string | Event |
+|-------------|-------|
+| `"circuit_state_changed"` | `CircuitStateChanged` |
+| `"retry_attempt"` | `RetryAttempt` |
+| `"bulkhead_rejected"` | `BulkheadRejected` |
+| `"timeout_elapsed"` | `TimeoutElapsed` |
+| `"hedge_fired"` | `HedgeFired` |
+| `"rate_limit_exceeded"` | `RateLimitExceeded` |
+| `"load_shed"` | `LoadShed` |
+
+---
+
+## Injecting a Sink
+
+Currently `CircuitBreaker` accepts a sink via `with_sink()`. Other patterns use the
+sink at construction time where applicable.
+
+```rust
+use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+use nebula_resilience::sink::{MetricsSink, ResilienceEvent};
+use std::sync::Arc;
+
+struct PrometheusSink { /* ... */ }
+
+impl MetricsSink for PrometheusSink {
+    fn record(&self, event: ResilienceEvent) {
+        match event {
+            ResilienceEvent::CircuitStateChanged { to, .. } => {
+                // increment circuit_state counter
+            }
+            ResilienceEvent::RetryAttempt { attempt, .. } => {
+                // increment retry_total counter
+            }
+            _ => {}
+        }
+    }
+}
+
+let sink = Arc::new(PrometheusSink { /* ... */ });
+let cb = CircuitBreaker::with_sink(CircuitBreakerConfig::default(), sink)?;
 ```
 
 ---
 
-## ObservabilityHooks
+## ObservabilityHooks (legacy)
 
-An ordered collection of `ObservabilityHook` implementations. Emit a `PatternEvent`
-to call every registered hook in insertion order.
+The older hook system. Useful for `tracing`-integrated logging. Separate from `MetricsSink`.
 
 ```rust
-pub struct ObservabilityHooks {
-    hooks: Vec<Arc<dyn ObservabilityHook>>,
+pub trait ObservabilityHook: Send + Sync {
+    fn on_event(&self, event: &PatternEvent);
 }
+
+pub struct ObservabilityHooks { … }
 
 impl ObservabilityHooks {
     pub fn new() -> Self;
@@ -131,66 +173,16 @@ impl ObservabilityHooks {
 }
 ```
 
----
+Built-in hooks:
 
-## PatternEvent
-
-Untyped event passed to legacy `ObservabilityHook` implementations:
-
-```rust
-pub struct PatternEvent {
-    pub pattern: String,    // e.g. "retry", "circuit_breaker"
-    pub operation: String,  // caller-provided operation name
-    pub duration: Option<Duration>,
-    pub success: bool,
-    pub error: Option<String>,
-    pub metadata: HashMap<String, String>,
-}
-```
-
----
-
-## ObservabilityHook Trait
-
-```rust
-pub trait ObservabilityHook: Send + Sync {
-    fn on_event(&self, event: &PatternEvent);
-}
-```
-
-All registered hooks are called synchronously inside `ObservabilityHooks::emit()`.
-Keep hook implementations fast; defer slow I/O to a background channel if needed.
-
----
-
-## Built-in Hooks
-
-### `LoggingHook`
-
-Logs every event via `tracing` at a configurable level. The per-category default log
-level is used when no level is specified.
+**`LoggingHook`** — logs every event via `tracing` at a configurable level:
 
 ```rust
 let hook = LoggingHook::new(LogLevel::Info);
 hooks.add(Arc::new(hook));
 ```
 
-`LogLevel` variants:
-
-```rust
-pub enum LogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-}
-```
-
-### `MetricsHook`
-
-Forwards events to a `MetricsCollector`, incrementing per-pattern counters and
-recording durations.
+**`MetricsHook`** — forwards events to a `MetricsCollector`:
 
 ```rust
 let collector = Arc::new(MetricsCollector::new(true));
@@ -198,12 +190,20 @@ let hook = MetricsHook::new(collector.clone());
 hooks.add(Arc::new(hook));
 ```
 
-After a run, read aggregated results:
+---
+
+## PatternEvent
+
+Untyped event for legacy hooks:
 
 ```rust
-if let Some(snap) = collector.snapshot("retry.attempt") {
-    println!("total retry attempts: {}", snap.count);
-    println!("mean delay ms: {:.1}", snap.mean);
+pub struct PatternEvent {
+    pub pattern: String,    // e.g. "retry", "circuit_breaker"
+    pub operation: String,
+    pub duration: Option<Duration>,
+    pub success: bool,
+    pub error: Option<String>,
+    pub metadata: HashMap<String, String>,
 }
 ```
 
@@ -214,18 +214,18 @@ if let Some(snap) = collector.snapshot("retry.attempt") {
 `Event<C: EventCategory>` provides compile-time category tagging:
 
 ```rust
-use nebula_resilience::observability::{Event, RetryEventCategory};
+use nebula_resilience::hooks::{Event, RetryEventCategory};
 
 let event = Event::<RetryEventCategory>::new("payment_api")
     .with_duration(Duration::from_millis(250))
-    .with_context("attempt", "2")
-    .with_context("max_attempts", "3");
+    .with_error("connection refused")
+    .with_context("attempt", "2");
 
 // event.category() → "retry"
-// event.log_level() → LogLevel::Info (default for retry)
+// event.is_error() → true
 ```
 
-### Event category markers
+### Event category markers (sealed)
 
 | Type | `name()` | Default log level |
 |------|---------|------------------|
@@ -235,52 +235,19 @@ let event = Event::<RetryEventCategory>::new("payment_api")
 | `TimeoutEventCategory` | `"timeout"` | `Warn` |
 | `RateLimiterEventCategory` | `"rate_limiter"` | `Info` |
 
-Categories are sealed: no external implementations are allowed. This ensures all
-event classification is exhaustive within the crate.
-
 ### `Event<C>` builder API
 
 ```rust
 impl<C: EventCategory> Event<C> {
     pub fn new(operation: impl Into<String>) -> Self;
-
-    /// Attach elapsed duration.
     pub fn with_duration(self, duration: Duration) -> Self;
-
-    /// Attach error description (marks event as error via is_error()).
     pub fn with_error(self, error: impl Into<String>) -> Self;
-
-    /// Add arbitrary key-value context.
     pub fn with_context(self, key: impl Into<String>, value: impl Into<String>) -> Self;
-
-    /// Returns typed category name.
-    pub fn category(&self) -> &'static str { C::name() }
-
-    /// Returns whether this should be sampled by the category's policy.
-    pub fn is_sampled(&self) -> bool { C::is_sampled() }
-
-    /// Returns true when an error was attached.
-    pub fn is_error(&self) -> bool { self.error.is_some() }
+    pub fn category(&self) -> &'static str;
+    pub fn is_error(&self) -> bool;
+    pub fn is_sampled(&self) -> bool;
 }
 ```
-
----
-
-## Typed Metrics
-
-`Metric<DIMENSIONS>` carries a fixed set of label key-value pairs as a const-generic
-array. Zero-cost at the dimension count level — no heap allocation for labels.
-
-```rust
-use nebula_resilience::observability::metrics;
-
-// Convenience constructors from the `metrics` module:
-let hist  = metrics::operation_histogram("latency_ms", "api", "get", 42.0);
-let gauge = metrics::state_gauge("circuit_state", "payment_api", "open");
-let count = metrics::error_counter("errors", "retry", "timeout");
-```
-
-Each constructor produces a `Metric<2>` with `("service", …)` / `("operation", …)` labels.
 
 ---
 
@@ -288,24 +255,25 @@ Each constructor produces a `Metric<2>` with `("service", …)` / `("operation",
 
 ### `SpanGuard`
 
-Records a `tracing` event at construction and another at drop:
+RAII tracing span that records success or error on drop:
 
 ```rust
-use nebula_resilience::observability::spans::{SpanGuard, create_span, record_success, record_error};
+use nebula_resilience::spans::{create_span, record_success, record_error};
 
 let span = create_span("my_operation", "retry");
-// ... perform work ...
-record_success(&span);  // emits a tracing event at INFO level
-// or
-record_error(&span, &error);  // emits a tracing event at WARN level
+let result = do_work().await;
+match &result {
+    Ok(_)  => record_success(&span),
+    Err(e) => record_error(&span, e),
+}
 ```
 
 ### `PatternSpanGuard<C: PatternCategory>`
 
-Typed span guard. Pattern category is a compile-time constant:
+Typed span guard — pattern category is a compile-time constant:
 
 ```rust
-use nebula_resilience::observability::spans::{PatternSpanGuard, RetryPattern};
+use nebula_resilience::spans::{PatternSpanGuard, PatternCategory};
 
 let span = PatternSpanGuard::<RetryPattern>::new("payment_api");
 // span.category_name() → "retry"
@@ -316,14 +284,39 @@ match do_work().await {
 }
 ```
 
-Pattern categories:
+---
 
-| Type | `name()` | Logs start? |
-|------|---------|------------|
-| `RetryPattern` | `"retry"` | yes |
-| `CircuitBreakerPattern` | `"circuit_breaker"` | yes |
-| `TimeoutPattern` | `"timeout"` | yes |
-| `BulkheadPattern` | `"bulkhead"` | yes |
+## MetricsCollector
+
+In-process accumulator for numeric metrics. Security-hardened: names over 256 chars
+are silently dropped; more than 10 000 unique keys cause subsequent new keys to be dropped.
+
+```rust
+pub struct MetricsCollector { … }
+pub type Metrics = Arc<MetricsCollector>;
+
+impl MetricsCollector {
+    pub fn new(enabled: bool) -> Self;
+
+    pub fn record(&self, name: impl Into<String>, value: f64);
+    pub fn increment(&self, name: impl Into<String>);
+    pub fn record_duration(&self, name: impl Into<String>, duration: Duration);
+    pub fn start_timer(&self, name: impl Into<String>) -> MetricTimer;
+
+    pub fn snapshot(&self, name: &str) -> Option<MetricSnapshot>;
+    pub fn all_snapshots(&self) -> HashMap<String, MetricSnapshot>;
+    pub fn reset(&self, name: &str);
+    pub fn clear(&self);
+}
+
+pub struct MetricSnapshot {
+    pub count: u64,
+    pub sum: f64,
+    pub min: f64,
+    pub max: f64,
+    pub mean: f64,
+}
+```
 
 ---
 
@@ -332,31 +325,36 @@ Pattern categories:
 Complete observability setup for a production service:
 
 ```rust
-use nebula_resilience::core::metrics::{MetricKind, MetricsCollector};
-use nebula_resilience::observability::{ObservabilityHooks, LoggingHook, MetricsHook, LogLevel};
+use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+use nebula_resilience::sink::{MetricsSink, NoopSink, RecordingSink, ResilienceEvent};
+use nebula_resilience::hooks::{ObservabilityHooks, LoggingHook, MetricsHook, LogLevel};
+use nebula_resilience::metrics::MetricsCollector;
 use std::sync::Arc;
+use std::time::Duration;
 
-// 1. Metrics collector
+// 1. MetricsSink for structured events (primary)
+let sink = Arc::new(RecordingSink::new()); // or your custom impl
+
+let cb = CircuitBreaker::with_sink(
+    CircuitBreakerConfig {
+        failure_threshold: 5,
+        reset_timeout: Duration::from_secs(30),
+        ..Default::default()
+    },
+    sink.clone(),
+)?;
+
+// 2. Legacy hooks for tracing-based logging (optional)
 let collector = Arc::new(MetricsCollector::new(true));
-
-// 2. Hooks
 let mut hooks = ObservabilityHooks::new();
 hooks.add(Arc::new(LoggingHook::new(LogLevel::Debug)));
 hooks.add(Arc::new(MetricsHook::new(collector.clone())));
 
-// 3. Emit events from pattern implementations
-hooks.emit(PatternEvent {
-    pattern: "circuit_breaker".to_string(),
-    operation: "payment_api".to_string(),
-    duration: Some(Duration::from_millis(15)),
-    success: false,
-    error: Some("connection refused".to_string()),
-    metadata: Default::default(),
-});
+// 3. After running operations, inspect
+let events = sink.events();
+println!("Circuit state changes: {}", sink.count("circuit_state_changed"));
 
-// 4. Export metrics at any time
-let snapshots = collector.all_snapshots();
-for (name, snap) in &snapshots {
-    println!("{name}: count={}, mean={:.2}ms", snap.count, snap.mean);
+if let Some(snap) = collector.snapshot("retry.attempt") {
+    println!("Total retry attempts: {}", snap.count);
 }
 ```

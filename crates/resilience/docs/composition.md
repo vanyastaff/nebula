@@ -1,315 +1,245 @@
 # nebula-resilience — Composition
 
-`LayerBuilder` and `ResilienceChain` let you compose individual resilience patterns into
-an ordered middleware pipeline without writing boilerplate. Each layer wraps the next;
-the innermost layer calls the actual operation.
+`PipelineBuilder` and `ResiliencePipeline` let you compose individual resilience patterns
+into an ordered middleware pipeline. Steps are applied in the order added: first added
+= outermost (wraps all subsequent steps).
 
 ---
 
 ## Table of Contents
 
-- [Recommended Layer Order](#recommended-layer-order)
-- [LayerBuilder API](#layerbuilder-api)
-- [ResilienceChain Execution](#resiliencechain-execution)
-- [Built-in Layers](#built-in-layers)
-- [Custom Layers](#custom-layers)
-- [Cancellation Propagation](#cancellation-propagation)
-- [Layer Internals](#layer-internals)
+- [Recommended Step Order](#recommended-step-order)
+- [PipelineBuilder API](#pipelinebuilder-api)
+- [ResiliencePipeline Execution](#resiliencepipeline-execution)
+- [Step Interactions](#step-interactions)
+- [Layer Order Warning](#layer-order-warning)
 - [Examples](#examples)
 
 ---
 
-## Recommended Layer Order
-
-When composing patterns, add them to `LayerBuilder` in this order:
+## Recommended Step Order
 
 ```
-with_timeout → with_bulkhead → with_circuit_breaker → with_retry
+timeout → retry → circuit_breaker → bulkhead
 ```
 
 Why this order:
-- `timeout` enforces the total budget from the outermost position.
-- `bulkhead` rejects immediately when at capacity, before spending circuit-breaker state.
-- `circuit_breaker` fails-fast when the dependency is unhealthy.
-- `retry` is innermost so each attempt is individually circuit-checked and bulkhead-counted.
+- `timeout` as outermost enforces a **single deadline across all retry attempts**.
+- `retry` sits inside timeout so each attempt consumes from the same budget.
+- `circuit_breaker` is checked per attempt — a tripped breaker stops retrying early
+  via the bail mechanism (non-Operation errors are not retried).
+- `bulkhead` is innermost — concurrency is capped per individual attempt.
 
-See [PATTERNS.md](PATTERNS.md) for the full rationale.
+> **Note**: placing `timeout` *inside* `retry` gives each attempt its own independent
+> deadline. `build()` emits a `tracing::warn!` if this ordering is detected.
 
 ---
 
-## LayerBuilder API
-
-`LayerBuilder<T>` is generic over the successful return type `T`. All builder methods
-return `Self` and are marked `#[must_use]`.
+## PipelineBuilder API
 
 ```rust
-use nebula_resilience::compose::LayerBuilder;
+use nebula_resilience::{ResiliencePipeline, CallError};
+use nebula_resilience::retry::{RetryConfig, BackoffConfig};
+use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+use nebula_resilience::bulkhead::{Bulkhead, BulkheadConfig};
 use std::sync::Arc;
 use std::time::Duration;
 
-let chain = LayerBuilder::new()
-    .with_timeout(Duration::from_secs(5))
-    .with_bulkhead(Arc::new(bulkhead))
-    .with_circuit_breaker(Arc::new(breaker))
-    .with_retry_exponential(3, Duration::from_millis(100))
+let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
+    failure_threshold: 5,
+    reset_timeout: Duration::from_secs(30),
+    ..Default::default()
+})?);
+
+let bh = Arc::new(Bulkhead::new(20));
+
+let pipeline = ResiliencePipeline::<MyError>::builder()
+    .timeout(Duration::from_secs(10))
+    .retry(
+        RetryConfig::new(3)?
+            .backoff(BackoffConfig::exponential_default())
+            .retry_if(|e: &MyError| e.is_transient()),
+    )
+    .circuit_breaker(cb)
+    .bulkhead(bh)
     .build();
 ```
 
 ### Builder methods
 
 ```rust
-impl<T: Send + 'static> LayerBuilder<T> {
-    pub fn new() -> Self
+impl<E: Send + 'static> PipelineBuilder<E> {
+    pub const fn new() -> Self
 
-    // Add a hard deadline.
-    pub fn with_timeout(self, duration: Duration) -> Self
+    /// Add a hard deadline (outermost if first).
+    #[must_use]
+    pub fn timeout(self, d: Duration) -> Self
 
-    // Add retry with a pre-built RetryPolicyConfig.
-    pub fn with_retry(self, config: RetryPolicyConfig) -> Self
+    /// Add a retry step with explicit config.
+    #[must_use]
+    pub fn retry(self, config: RetryConfig<E>) -> Self
 
-    // Add retry with exponential backoff (shorthand).
-    pub fn with_retry_exponential(self, max_attempts: usize, base_delay: Duration) -> Self
+    /// Add a circuit breaker step. Takes Arc so it can be shared / inspected externally.
+    #[must_use]
+    pub fn circuit_breaker(self, cb: Arc<CircuitBreaker>) -> Self
 
-    // Add retry with fixed delay (shorthand).
-    pub fn with_retry_fixed(self, max_attempts: usize, delay: Duration) -> Self
+    /// Add a bulkhead step. Takes Arc so it can be shared.
+    #[must_use]
+    pub fn bulkhead(self, bh: Arc<Bulkhead>) -> Self
 
-    // Add an Arc<CircuitBreaker> as a layer.
-    pub fn with_circuit_breaker(self, circuit_breaker: Arc<CircuitBreaker>) -> Self
-
-    // Add an Arc<Bulkhead> as a layer.
-    pub fn with_bulkhead(self, bulkhead: Arc<Bulkhead>) -> Self
-
-    // Add any custom ResilienceLayer implementation.
-    pub fn with_layer(self, layer: Arc<dyn ResilienceLayer<T> + Send + Sync>) -> Self
-
-    // Consume the builder and return an Arc<dyn LayerStack<T>>.
-    pub fn build(self) -> ResilienceChain<T>
+    /// Consume the builder and return the pipeline.
+    /// Emits tracing::warn! if timeout is inside retry.
+    #[must_use]
+    pub fn build(self) -> ResiliencePipeline<E>
 }
-```
-
-### `RetryPolicyConfig` shorthand constructors
-
-When using `with_retry()` directly:
-
-```rust
-use nebula_resilience::policy::RetryPolicyConfig;
-use std::time::Duration;
-
-// Exponential: base 100ms, 2x multiplier, 30s cap, with jitter
-let config = RetryPolicyConfig::exponential(3, Duration::from_millis(100));
-
-// Fixed: always 200ms, no jitter
-let config = RetryPolicyConfig::fixed(5, Duration::from_millis(200));
 ```
 
 ---
 
-## ResilienceChain Execution
-
-`build()` returns a `ResilienceChain<T>`:
+## ResiliencePipeline Execution
 
 ```rust
-pub type ResilienceChain<T> = Arc<dyn LayerStack<T> + Send + Sync>;
+impl<E: Send + 'static> ResiliencePipeline<E> {
+    pub const fn builder() -> PipelineBuilder<E>;
+
+    pub async fn call<T, F>(&self, f: F) -> Result<T, CallError<E>>
+    where
+        T: Send + 'static,
+        F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>>
+            + Clone + Send + Sync + 'static;
+}
 ```
 
-Execution via the `LayerStack<T>` trait:
-
-```rust
-// Without cancellation
-let result: ResilienceResult<T> = chain.execute(&boxed_operation).await;
-
-// With cooperative cancellation
-let result: ResilienceResult<T> = chain
-    .execute_with_cancellation(&boxed_operation, Some(&cancellation_context))
-    .await;
-```
-
-For closure-based callers, wrap with `BoxedOperation`:
-
-```rust
-use nebula_resilience::compose::BoxedOperation;
-
-let op = BoxedOperation::new(move || async { Ok::<_, ResilienceError>("result") });
-let result = chain.execute(&op).await;
-```
+`call()` accepts a factory closure `F` (not a single future) because some steps (retry,
+circuit breaker) must be able to invoke the operation multiple times.
 
 ---
 
-## Built-in Layers
+## Step Interactions
 
-### `TimeoutLayer`
+### Retry and non-Operation errors
 
-Wraps inner execution in `tokio::time::timeout`. Returns `ResilienceError::Timeout`
-with the configured duration on expiry.
+The retry step uses a **bail mechanism**: if an inner step returns a non-Operation
+`CallError` (e.g. `CircuitOpen`, `BulkheadFull`), the error is stashed and retrying
+stops immediately. This avoids hammering a tripped circuit breaker with rapid retries.
 
-### `RetryLayer`
+```
+retry step receives:
+  Ok(v)              → return Ok(v)
+  Err(Operation(e))  → retry_if(e)? sleep, try again : return Err(Operation(e))
+  Err(CircuitOpen)   → stop retrying, return Err(CircuitOpen)
+  Err(BulkheadFull)  → stop retrying, return Err(BulkheadFull)
+  Err(Timeout)       → stop retrying, return Err(Timeout)
+```
 
-Reads `RetryPolicyConfig.delay_for_attempt(attempt)` to compute per-attempt delay.
-Checks `ResilienceError::is_retryable()` to decide whether to continue. Stops when
-attempt count reaches `max_attempts` or the error is non-retryable, returning
-`ResilienceError::RetryLimitExceeded`.
+### `CircuitBreaker` and `Bulkhead` unwrapping
 
-Respects cooperative cancellation: while sleeping between attempts, if the
-`CancellationContext` token fires, the layer returns `ResilienceError::Cancelled`
-immediately via `tokio::select!`.
-
-### `CircuitBreakerLayer`
-
-Calls `circuit_breaker.can_execute()` before delegating. Records success or failure
-after each attempt. Works with any `CircuitBreaker<N, M>` (type-erased via `Arc`).
-
-### `BulkheadLayer`
-
-Calls `bulkhead.acquire()` to take a semaphore permit before delegating. The permit
-is released via RAII after the inner layer returns — whether success or error.
+These steps call the remaining pipeline through an `unwrap_inner` shim that maps
+`Ok(v)` and `Err(Operation(e))` to the `Result<T, E>` their `.call()` methods expect.
+Any other `CallError` variant inside a `CircuitBreaker` or `Bulkhead` step is
+**unreachable** in a correctly ordered pipeline (timeout and retry must be outside).
 
 ---
 
-## Custom Layers
+## Layer Order Warning
 
-Implement `ResilienceLayer<T>` to add your own middleware:
+`build()` inspects step positions and warns via `tracing::warn!` if timeout appears
+after retry in the step list:
 
 ```rust
-use async_trait::async_trait;
-use nebula_resilience::compose::{BoxedOperation, LayerStack, ResilienceLayer};
-use nebula_resilience::{ResilienceError, ResilienceResult};
-use nebula_resilience::core::CancellationContext;
-
-pub struct LoggingLayer {
-    operation_name: &'static str,
-}
-
-#[async_trait]
-impl<T: Send + 'static> ResilienceLayer<T> for LoggingLayer {
-    async fn apply(
-        &self,
-        operation: &BoxedOperation<T>,
-        next: &(dyn LayerStack<T> + Send + Sync),
-        cancellation: Option<&CancellationContext>,
-    ) -> ResilienceResult<T> {
-        tracing::info!(op = self.operation_name, "starting");
-        let result = next.execute_with_cancellation(operation, cancellation).await;
-        match &result {
-            Ok(_) => tracing::info!(op = self.operation_name, "succeeded"),
-            Err(e) => tracing::warn!(op = self.operation_name, error = %e, "failed"),
-        }
-        result
-    }
-
-    fn name(&self) -> &'static str {
-        "logging"
-    }
-}
-
-// Register with the builder:
-let chain = LayerBuilder::new()
-    .with_layer(Arc::new(LoggingLayer { operation_name: "db_query" }))
-    .with_retry_exponential(3, Duration::from_millis(50))
+// This emits a warning at build time
+let pipeline = ResiliencePipeline::<&str>::builder()
+    .retry(RetryConfig::new(3)?.backoff(BackoffConfig::Fixed(Duration::from_millis(50))))
+    .timeout(Duration::from_secs(5))  // ← inside retry: each attempt gets its own 5s
     .build();
 ```
 
----
-
-## Cancellation Propagation
-
-Every layer receives an `Option<&CancellationContext>` and must propagate it to
-`next.execute_with_cancellation(op, cancellation)`. Built-in layers all forward the
-context. If a cancellation fires:
-
-1. `RetryLayer` cancels the inter-attempt sleep and returns `ResilienceError::Cancelled`.
-2. `TerminalLayer` (innermost) checks the token before executing and returns
-   `ResilienceError::Cancelled` if already cancelled.
-3. `TimeoutLayer` races the timeout future against the inner execution; a cancelled
-   inner future races against the timeout as normal.
-
-Obtain a `CancellationContext` from a `tokio_util::sync::CancellationToken`:
-
-```rust
-use nebula_resilience::core::CancellationContext;
-use tokio_util::sync::CancellationToken;
-
-let token = CancellationToken::new();
-let ctx = CancellationContext::from_token(token.clone());
-
-// On shutdown:
-token.cancel();
 ```
-
----
-
-## Layer Internals
-
-The stack is built by `LayerBuilder::build()` in reverse order so that layers added
-first are outermost:
-
-```rust
-let mut stack: Arc<dyn LayerStack<T>> = Arc::new(TerminalLayer);
-
-for layer in self.layers.into_iter().rev() {
-    stack = Arc::new(ComposedStack { layer, next: stack });
-}
+WARN ResiliencePipeline: timeout is inside retry (each attempt gets its own timeout).
+     Move timeout before retry for a single deadline across all attempts.
 ```
-
-`ComposedStack` delegates to `layer.apply(op, next, cancellation)`, which in turn
-forwards to the remaining `next` stack. `TerminalLayer` is always the last element and
-calls `BoxedOperation::execute()` directly.
 
 ---
 
 ## Examples
 
-### HTTP client with full production stack
+### Minimal (retry only)
 
 ```rust
-use nebula_resilience::{
-    CircuitBreaker, CircuitBreakerConfig, ResilienceError,
-    patterns::bulkhead::{Bulkhead, BulkheadConfig},
-};
-use nebula_resilience::compose::LayerBuilder;
+let pipeline = ResiliencePipeline::<MyError>::builder()
+    .retry(RetryConfig::new(3)?.backoff(BackoffConfig::Fixed(Duration::from_millis(50))))
+    .build();
+
+let result = pipeline.call(|| Box::pin(async { Ok::<u32, MyError>(42) })).await;
+```
+
+### Full production stack
+
+```rust
+use nebula_resilience::{ResiliencePipeline, CallError};
+use nebula_resilience::retry::{RetryConfig, BackoffConfig};
+use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+use nebula_resilience::bulkhead::Bulkhead;
 use std::sync::Arc;
 use std::time::Duration;
 
-let breaker = Arc::new(
-    CircuitBreaker::new(CircuitBreakerConfig::<5, 30_000>::new())?,
-);
-
-let bulkhead = Arc::new(Bulkhead::with_config(BulkheadConfig {
-    max_concurrency: 20,
+let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
+    failure_threshold: 5,
+    reset_timeout: Duration::from_secs(30),
     ..Default::default()
-}));
+})?);
 
-let chain = LayerBuilder::new()
-    .with_timeout(Duration::from_secs(10))
-    .with_bulkhead(bulkhead)
-    .with_circuit_breaker(breaker)
-    .with_retry_exponential(3, Duration::from_millis(200))
+let bh = Arc::new(Bulkhead::new(20));
+
+let pipeline = ResiliencePipeline::<reqwest::Error>::builder()
+    .timeout(Duration::from_secs(10))
+    .retry(
+        RetryConfig::new(3)?
+            .backoff(BackoffConfig::exponential_default())
+            .retry_if(|e: &reqwest::Error| e.is_timeout() || e.is_connect()),
+    )
+    .circuit_breaker(cb)
+    .bulkhead(bh)
     .build();
 
-let response = chain.execute(|| async {
-    // Perform HTTP request
-    Ok::<_, ResilienceError>(http_client.get("https://api.example.com/data").await?)
-}).await?;
+let response = pipeline.call(|| Box::pin(async {
+    http_client.get("https://api.example.com/data").send().await
+})).await?;
 ```
 
-### Sharing a chain arc across concurrent tasks
+### Sharing a pipeline across concurrent tasks
 
-`ResilienceChain<T>` is `Arc<dyn LayerStack<T>>`. Clone the arc to share across tasks:
+`ResiliencePipeline` is `Clone` (internal state is `Arc`):
 
 ```rust
-let chain = Arc::new(/* ... */);
+let pipeline = Arc::new(
+    ResiliencePipeline::<MyError>::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+);
 
 for _ in 0..16 {
-    let chain = chain.clone();
+    let pipeline = pipeline.clone();
     tokio::spawn(async move {
-        let _ = chain.execute(|| async { Ok::<_, ResilienceError>(42) }).await;
+        let _ = pipeline.call(|| Box::pin(async { Ok::<_, MyError>(42) })).await;
     });
 }
 ```
 
-### Minimal chain (retry only)
+### Observing events with `RecordingSink` (testing)
 
 ```rust
-let chain = LayerBuilder::<String>::new()
-    .with_retry_fixed(3, Duration::from_millis(50))
-    .build();
+use nebula_resilience::sink::RecordingSink;
+use nebula_resilience::circuit_breaker::CircuitBreaker;
+use std::sync::Arc;
+
+let sink = Arc::new(RecordingSink::new());
+let cb = Arc::new(
+    CircuitBreaker::with_sink(CircuitBreakerConfig::default(), sink.clone())?
+);
+
+// ... run pipeline ...
+
+assert!(sink.has_state_change(CircuitState::Open));
+assert_eq!(sink.count("retry_attempt"), 3);
 ```

@@ -14,354 +14,225 @@ Complete public API reference. All types live in `nebula_resilience` unless note
 - [Timeout](#timeout)
 - [Fallback](#fallback)
 - [Hedge](#hedge)
+- [Load Shed](#load-shed)
 - [Gate](#gate)
-- [Manager](#manager)
-- [Policy](#policy)
-- [Composition](#composition)
-- [Observability](#observability)
-- [Prelude](#prelude)
+- [Pipeline](#pipeline)
+- [Sink / Events](#sink--events)
+- [Observability Hooks](#observability-hooks)
+- [Signals](#signals)
+- [Policy Source](#policy-source)
+- [Cancellation](#cancellation)
+- [Prelude / Re-exports](#prelude--re-exports)
 
 ---
 
 ## Core Types
 
-### `ResilienceError`
+### `CallError<E>`
 
-Rich error enum. Every variant is `#[non_exhaustive]`.
+Returned by all resilience operations. `E` is the caller's own error type.
 
 ```rust
-#[non_exhaustive]
-pub enum ResilienceError {
-    Timeout {
-        duration: Duration,
-        context: Option<String>,
-    },
-    CircuitBreakerOpen {
-        state: String,
-        retry_after: Option<Duration>,
-    },
-    BulkheadFull {
-        max_concurrency: usize,
-        queued: usize,
-    },
-    RateLimitExceeded {
-        retry_after: Option<Duration>,
-        limit: f64,
-        current: f64,
-    },
-    RetryLimitExceeded {
-        attempts: usize,
-        last_error: Option<Box<ResilienceError>>,
-    },
-    FallbackFailed {
-        reason: String,
-        original_error: Option<Box<ResilienceError>>,
-    },
-    Cancelled {
-        reason: Option<String>,
-    },
-    InvalidConfig {
-        message: String,
-    },
-    Custom {
-        message: String,
-        retryable: bool,
-        source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
+pub enum CallError<E> {
+    /// The operation returned an error (possibly after retries).
+    Operation(E),
+    /// Circuit breaker is open — request rejected immediately.
+    CircuitOpen,
+    /// Bulkhead is at capacity — request rejected.
+    BulkheadFull,
+    /// Timeout elapsed before the operation completed.
+    Timeout(Duration),
+    /// All retry attempts exhausted.
+    RetriesExhausted { attempts: u32, last: E },
+    /// Operation was cancelled.
+    Cancelled { reason: Option<String> },
+    /// Load shed — system is overloaded, request rejected.
+    LoadShed,
+    /// Rate limit exceeded.
+    RateLimited,
 }
-```
 
-**Factory constructors:**
+impl<E> CallError<E> {
+    /// True only if this is a `Cancelled` variant.
+    pub const fn is_cancellation(&self) -> bool;
 
-```rust
-ResilienceError::timeout(duration: Duration) -> Self
-ResilienceError::circuit_breaker_open(state: impl Into<String>) -> Self
-ResilienceError::bulkhead_full(max: usize) -> Self
-ResilienceError::rate_limit_exceeded(retry_after: Option<Duration>) -> Self
-ResilienceError::retry_limit_exceeded(attempts: usize) -> Self
-ResilienceError::retry_limit_exceeded_with_cause(attempts: usize, last: ResilienceError) -> Self
-ResilienceError::cancelled() -> Self
-ResilienceError::invalid_config(message: impl Into<String>) -> Self
-ResilienceError::custom(message: impl Into<String>) -> Self
-```
+    /// All pattern errors return false — operation retryability is predicate-driven.
+    pub const fn is_retriable(&self) -> bool;
 
-**Classification methods:**
-
-| Method | Return | Notes |
-|--------|--------|-------|
-| `classify()` | `ErrorClass` | `Transient` \| `ResourceExhaustion` \| `Permanent` \| `Configuration` \| `Unknown` |
-| `is_retryable()` | `bool` | `true` for `Transient` and `ResourceExhaustion` |
-| `is_terminal()` | `bool` | `true` for `Permanent` and `Configuration` |
-| `retry_after()` | `Option<Duration>` | Hint from `CircuitBreakerOpen` and `RateLimitExceeded` |
-
----
-
-### `ResilienceResult<T>`
-
-```rust
-pub type ResilienceResult<T> = Result<T, ResilienceError>;
-```
-
----
-
-### `ErrorClass`
-
-```rust
-pub enum ErrorClass {
-    Transient,
-    ResourceExhaustion,
-    Permanent,
-    Configuration,
-    Unknown,
+    /// Map the inner operation error, leaving pattern errors unchanged.
+    pub fn map_operation<F, E2>(self, f: F) -> CallError<E2>
+    where F: FnOnce(E) -> E2;
 }
 ```
 
 ---
 
-### `Retryable`
+### `ConfigError`
+
+Returned by pattern constructors when configuration is invalid.
 
 ```rust
-pub trait Retryable {
-    fn is_retryable(&self) -> bool;
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("invalid resilience config: {message}")]
+pub struct ConfigError {
+    pub field: &'static str,
+    pub message: String,
+}
+
+impl ConfigError {
+    pub fn new(field: &'static str, message: impl Into<String>) -> Self;
 }
 ```
 
-Blanket impls are provided for `std::io::Error`, and optionally for `reqwest::Error`
-and `sqlx::Error` via feature flags.
+---
+
+### `CallResult<T, E>`
+
+```rust
+pub type CallResult<T, E> = Result<T, CallError<E>>;
+```
 
 ---
 
 ## Circuit Breaker
 
-### `CircuitBreakerConfig<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>`
+### `CircuitBreakerConfig`
+
+Plain struct, `Serialize` / `Deserialize`, `Default`.
 
 ```rust
-pub struct CircuitBreakerConfig<
-    const FAILURE_THRESHOLD: usize = 5,
-    const RESET_TIMEOUT_MS: u64 = 30_000,
-> {
-    pub half_open_max_operations: usize,  // default: 3
-    pub count_timeouts: bool,             // default: true
-    pub min_operations: usize,            // default: 10
-    pub failure_rate_threshold: f64,      // default: 0.6
-    pub sliding_window_ms: u64,          // default: 60_000
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CircuitBreakerConfig {
+    pub failure_threshold: u32,         // Min: 1. Default: 5
+    pub reset_timeout: Duration,         // Default: 30s
+    pub half_open_max_ops: u32,          // Default: 1
+    pub min_operations: u32,             // Default: 5
+    pub failure_rate_threshold: f64,     // 0.0..=1.0, validated but not yet used. Default: 0.5
+    pub sliding_window: Duration,        // Default: 60s
+    pub count_timeouts_as_failures: bool,// Default: true
 }
-```
 
-Builder methods (each returns `Self`, all `#[must_use]`):
-
-```rust
-config.with_half_open_limit(n: usize) -> Self
-config.with_min_operations(n: usize) -> Self
-config.with_count_timeouts(v: bool) -> Self
-config.with_failure_rate_threshold(rate: f64) -> Self
-config.with_sliding_window(ms: u64) -> Self
-```
-
-Preset constructors:
-
-```rust
-CircuitBreakerConfig::standard_config()  // 5 failures, 30 s
-CircuitBreakerConfig::fast_config()      // 3 failures, 10 s
-CircuitBreakerConfig::slow_config()      // 10 failures, 60 s
+impl CircuitBreakerConfig {
+    /// Validate. Called internally by CircuitBreaker::new().
+    pub fn validate(&self) -> Result<(), ConfigError>;
+}
 ```
 
 ---
 
-### `CircuitBreaker<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>`
+### `CircuitBreaker`
 
 ```rust
-impl<const F: usize, const R: u64> CircuitBreaker<F, R> {
-    pub fn new(config: CircuitBreakerConfig<F, R>) -> ResilienceResult<Self>;
+impl CircuitBreaker {
+    pub fn new(config: CircuitBreakerConfig) -> Result<Self, ConfigError>;
 
-    pub async fn execute<T, E, Fut, FutFn>(
-        &self,
-        operation: FutFn,
-    ) -> Result<T, E>
+    /// New with custom sink for observability.
+    pub fn with_sink(config: CircuitBreakerConfig, sink: Arc<dyn MetricsSink>)
+        -> Result<Self, ConfigError>;
+
+    /// Execute the operation through the circuit breaker.
+    pub async fn call<T, E, F, Fut>(&self, f: F) -> Result<T, CallError<E>>
     where
-        FutFn: Fn() -> Fut,
-        Fut: Future<Output = Result<T, E>>,
-        E: From<ResilienceError>;
+        F: Fn() -> Fut + Send + Sync,
+        Fut: Future<Output = Result<T, E>> + Send,
+        T: Send;
 
+    /// Manually record an outcome (for use with non-closure-based callers).
+    pub fn record_outcome(&self, outcome: Outcome);
+
+    /// Current circuit state.
     pub fn state(&self) -> CircuitState;
-    pub fn stats(&self) -> CircuitBreakerStats;
-    pub fn reset(&self);
 }
 ```
 
-### `CircuitState`
+### `Outcome`
 
 ```rust
-pub enum CircuitState {
-    Closed,
-    Open,
-    HalfOpen,
+#[derive(Debug, Clone, Copy)]
+pub enum Outcome {
+    Success,
+    Failure,
+    Timeout,
 }
-```
-
-### `CircuitBreakerStats`
-
-```rust
-pub struct CircuitBreakerStats {
-    pub state: CircuitState,
-    pub failure_count: usize,
-    pub success_count: usize,
-    pub last_failure_time: Option<Instant>,
-    pub last_state_change: Instant,
-}
-```
-
-Preset type aliases:
-
-```rust
-pub type StandardCircuitBreaker = CircuitBreaker<5, 30_000>;
-pub type FastCircuitBreaker     = CircuitBreaker<3, 10_000>;
-pub type SlowCircuitBreaker     = CircuitBreaker<10, 60_000>;
 ```
 
 ---
 
 ## Retry
 
-### Backoff policies
-
-All policies implement `BackoffPolicy` (sealed):
+### `BackoffConfig`
 
 ```rust
-pub trait BackoffPolicy: Send + Sync + 'static {
-    fn calculate_delay(&self, attempt: usize) -> Duration;
-    fn max_delay(&self) -> Duration;
-    fn policy_name(&self) -> &'static str;
+#[derive(Debug, Clone)]
+pub enum BackoffConfig {
+    Fixed(Duration),
+    Linear { base: Duration, max: Duration },
+    Exponential { base: Duration, multiplier: f64, max: Duration },
+}
+
+impl BackoffConfig {
+    /// Standard exponential: 100ms base, 2× multiplier, 30s cap.
+    pub const fn exponential_default() -> Self;
 }
 ```
 
-| Type | Const generics | Delay formula |
-|------|---------------|---------------|
-| `FixedDelay<DELAY_MS>` | `DELAY_MS: u64` | `DELAY_MS` always |
-| `ExponentialBackoff<BASE_MS, MULTIPLIER_X10, MAX_MS>` | all `u64` | `base * (mult/10)^attempt`, capped at `MAX_MS` |
-| `LinearBackoff<STEP_MS, MAX_MS>` | all `u64` | `STEP_MS * attempt`, capped at `MAX_MS` |
-| `CustomBackoff` | — | user-provided `fn(usize) -> Duration` |
-
 ---
 
-### Retry conditions
-
-All conditions implement `RetryCondition` (sealed):
-
-| Type | Const generics | Behaviour |
-|------|---------------|-----------|
-| `ConservativeCondition<N>` | `N: usize` | retry only `Transient` errors; stop after `N` attempts |
-| `AggressiveCondition<N>` | `N: usize` | retry `Transient` and `ResourceExhaustion`; stop after `N` |
-| `TimeBasedCondition<MAX_MS>` | `MAX_MS: u64` | retry until cumulative elapsed exceeds `MAX_MS` |
-
----
-
-### `JitterPolicy`
+### `JitterConfig`
 
 ```rust
-pub enum JitterPolicy {
+#[derive(Debug, Clone, Default)]
+pub enum JitterConfig {
+    #[default]
     None,
-    Full,   // random in [0, delay]
-    Equal,  // delay/2 + random in [0, delay/2]
+    /// Add a random fraction up to `factor` (0.0–1.0) of the delay.
+    Full { factor: f64 },
 }
 ```
 
 ---
 
-### `RetryConfig<B, C>`
+### `RetryConfig<E>`
 
 ```rust
-pub struct RetryConfig<B: BackoffPolicy, C: RetryCondition> {
-    backoff: B,
-    condition: C,
-    jitter: JitterPolicy,
-}
+impl<E: Send + 'static> RetryConfig<E> {
+    /// Create with `max_attempts`. Returns `Err(ConfigError)` if 0.
+    pub fn new(max_attempts: u32) -> Result<Self, ConfigError>;
 
-impl<B, C> RetryConfig<B, C> {
-    pub fn new(backoff: B, condition: C) -> Self;
-    pub fn with_jitter(self, policy: JitterPolicy) -> Self;
+    /// Set backoff strategy.
+    pub fn backoff(self, config: BackoffConfig) -> Self;
+
+    /// Set jitter.
+    pub fn jitter(self, config: JitterConfig) -> Self;
+
+    /// Set a predicate controlling which errors are retried.
+    /// By default all errors are retried.
+    pub fn retry_if(self, predicate: impl Fn(&E) -> bool + Send + Sync + 'static) -> Self;
 }
 ```
 
 ---
 
-### `RetryStrategy<B, C, MAX_ATTEMPTS>`
+### Free functions
 
 ```rust
-impl<B, C, const MAX_ATTEMPTS: usize> RetryStrategy<B, C, MAX_ATTEMPTS> {
-    pub fn new(config: RetryConfig<B, C>) -> ResilienceResult<Self>;
+/// Retry `f` up to 3 times with exponential_default() backoff, retrying all errors.
+pub async fn retry<T, E, F, Fut>(f: F) -> Result<T, CallError<E>>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    E: Send + 'static;
 
-    /// Execute and return (value, stats) on success, RetryFailure on exhaustion.
-    pub async fn execute<T, E, Fut, FutFn>(
-        &self,
-        operation: FutFn,
-    ) -> RetryExecutionResult<T, E>
-    where
-        FutFn: Fn() -> Fut,
-        Fut: Future<Output = Result<T, E>>,
-        E: Retryable + Clone;
-
-    /// Same as execute() with a ResilienceError error type.
-    pub async fn execute_resilient<T, Fut, FutFn>(
-        &self,
-        operation: FutFn,
-    ) -> RetryExecutionResult<T, ResilienceError>
-    where …;
-
-    /// Same but honours cooperative cancellation via CancellationContext.
-    pub async fn execute_resilient_with_cancellation<T, Fut, FutFn>(
-        &self,
-        operation: FutFn,
-        cancellation: &CancellationContext,
-    ) -> RetryExecutionResult<T, ResilienceError>
-    where …;
-
-    pub fn stats(&self) -> &RetryStats;
-}
-
-pub type RetryExecutionResult<T, E> = Result<(T, RetryStats), RetryFailure<E>>;
-```
-
----
-
-### `RetryStats`
-
-```rust
-pub struct RetryStats {
-    pub attempts: usize,
-    pub total_duration: Duration,
-    pub delays: Vec<Duration>,
-}
-```
-
----
-
-### `RetryFailure<E>`
-
-```rust
-pub struct RetryFailure<E> {
-    pub error: E,
-    pub stats: RetryStats,
-}
-
-impl<E> RetryFailure<E> {
-    pub fn into_parts(self) -> (E, RetryStats);
-}
-```
-
----
-
-### Convenience constructors
-
-```rust
-// ExponentialBackoff, ConservativeCondition<N>
-pub fn exponential_retry<const N: usize>() -> ResilienceResult<RetryStrategy<…>>;
-
-// FixedDelay<DELAY_MS>, ConservativeCondition<N>
-pub fn fixed_retry<const DELAY_MS: u64, const N: usize>() -> ResilienceResult<RetryStrategy<…>>;
-
-// ExponentialBackoff, AggressiveCondition<N>
-pub fn aggressive_retry<const N: usize>() -> ResilienceResult<RetryStrategy<…>>;
+/// Retry `f` using explicit `config`.
+pub async fn retry_with<T, E, F, Fut>(
+    config: RetryConfig<E>,
+    f: F,
+) -> Result<T, CallError<E>>
+where
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<T, E>> + Send,
+    T: Send + 'static,
+    E: Send + 'static;
 ```
 
 ---
@@ -372,9 +243,9 @@ pub fn aggressive_retry<const N: usize>() -> ResilienceResult<RetryStrategy<…>
 
 ```rust
 pub struct BulkheadConfig {
-    pub max_concurrency: usize,           // default: 10
-    pub queue_size: usize,                // default: 100
-    pub timeout: Option<Duration>,        // default: Some(30s)
+    pub max_concurrency: usize,     // Default: 10
+    pub queue_size: usize,          // Default: 100
+    pub timeout: Option<Duration>,  // Default: Some(30s)
 }
 ```
 
@@ -387,33 +258,16 @@ impl Bulkhead {
     pub fn new(max_concurrency: usize) -> Self;
     pub fn with_config(config: BulkheadConfig) -> Self;
 
-    pub async fn execute<T, E, Fut, FutFn>(
-        &self,
-        operation: FutFn,
-    ) -> Result<T, E>
+    pub async fn call<T, E, F, Fut>(&self, f: F) -> Result<T, CallError<E>>
     where
-        FutFn: Fn() -> Fut,
-        Fut: Future<Output = Result<T, E>>,
-        E: From<ResilienceError>;
-
-    pub fn try_execute<T, E, Fut, FutFn>(&self, operation: FutFn) -> Option<…>;
+        F: Fn() -> Fut + Send + Sync,
+        Fut: Future<Output = Result<T, E>> + Send,
+        T: Send;
 
     pub fn active_operations(&self) -> usize;
     pub fn available_permits(&self) -> usize;
     pub fn max_concurrency(&self) -> usize;
     pub fn is_at_capacity(&self) -> bool;
-    pub fn stats(&self) -> BulkheadStats;
-}
-```
-
-### `BulkheadStats`
-
-```rust
-pub struct BulkheadStats {
-    pub active: usize,
-    pub waiting: usize,
-    pub available: usize,
-    pub max_concurrency: usize,
 }
 ```
 
@@ -421,27 +275,42 @@ pub struct BulkheadStats {
 
 ## Rate Limiter
 
+### `RateLimiter` trait
+
 ```rust
-pub struct RateLimiterConfig {
-    pub rate: f64,              // tokens per second
-    pub burst: usize,           // maximum token bucket size
-    pub window: Duration,       // replenishment window
-}
+#[allow(async_fn_in_trait)]
+pub trait RateLimiter: Send + Sync {
+    async fn acquire(&self) -> Result<(), CallError<()>>;
 
-impl RateLimiter {
-    pub fn new(config: RateLimiterConfig) -> ResilienceResult<Self>;
-
-    pub async fn execute<T, E, Fut, FutFn>(
-        &self,
-        operation: FutFn,
-    ) -> Result<T, E>
+    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
-        FutFn: Fn() -> Fut,
-        Fut: Future<Output = Result<T, E>>,
-        E: From<ResilienceError>;
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
+        T: Send;
 
-    pub fn try_execute<T, E, Fut, FutFn>(&self, operation: FutFn) -> Option<…>;
-    pub fn available_tokens(&self) -> f64;
+    async fn current_rate(&self) -> f64;
+    async fn reset(&self);
+}
+```
+
+### Implementations
+
+| Type | Algorithm | Constructor |
+|------|-----------|-------------|
+| `TokenBucket` | Token bucket | `TokenBucket::new(capacity: usize, refill_rate: f64)` |
+| `LeakyBucket` | Leaky bucket | `LeakyBucket::new(capacity: usize, leak_rate: f64)` |
+| `SlidingWindow` | Sliding time window | `SlidingWindow::new(max_requests: usize, window: Duration)` |
+| `AdaptiveRateLimiter` | Error-rate adaptive | `AdaptiveRateLimiter::new(base_rate: f64)` |
+
+### `AnyRateLimiter`
+
+Object-safe boxed rate limiter:
+
+```rust
+pub struct AnyRateLimiter(Arc<dyn RateLimiter>);
+
+impl AnyRateLimiter {
+    pub fn new(limiter: impl RateLimiter + 'static) -> Self;
 }
 ```
 
@@ -450,17 +319,32 @@ impl RateLimiter {
 ## Timeout
 
 ```rust
-/// Applies a hard deadline to an async future.
-///
-/// Returns `ResilienceError::Timeout` if the future does not complete within
-/// `duration`. Otherwise returns the inner result unchanged.
-pub async fn timeout<T, E, Fut>(
+/// Hard deadline. Returns Err(CallError::Timeout) on expiry.
+pub async fn timeout_fn<T, E, Fut>(
+    duration: Duration,
+    future: Fut,
+) -> Result<T, CallError<E>>
+where
+    Fut: Future<Output = Result<T, E>>;
+
+/// Same but wraps timeout error in the original error type via From.
+pub async fn timeout_with_original_error<T, E, Fut>(
     duration: Duration,
     future: Fut,
 ) -> Result<T, E>
 where
     Fut: Future<Output = Result<T, E>>,
-    E: From<ResilienceError>;
+    E: From<CallError<E>>;
+
+pub struct TimeoutExecutor {
+    pub duration: Duration,
+}
+
+impl TimeoutExecutor {
+    pub fn new(duration: Duration) -> Self;
+    pub async fn call<T, E, F, Fut>(&self, f: F) -> Result<T, CallError<E>>
+    where …;
+}
 ```
 
 ---
@@ -473,53 +357,21 @@ where
 #[async_trait]
 pub trait FallbackStrategy<T>: Send + Sync {
     async fn fallback(&self, error: ResilienceError) -> ResilienceResult<T>;
-
-    /// Default: fallback for all errors except `InvalidConfig`.
-    fn should_fallback(&self, error: &ResilienceError) -> bool { … }
+    fn should_fallback(&self, error: &ResilienceError) -> bool { true }
 }
 ```
 
-### Built-in implementations
+### `ValueFallback<T>`
 
-| Type | Behaviour |
-|------|-----------|
-| `ValueFallback<T>` | Returns a cloned constant value. |
-| `FunctionFallback<T, F, Fut>` | Calls a closure `F: Fn(ResilienceError) -> Fut`. |
-| `CacheFallback<T>` | Returns last cached successful value within a TTL. |
-| `ChainedFallback<T>` | Tries strategies in order; returns first success. |
+Returns a cloned constant value:
 
 ```rust
-// ValueFallback
 let fallback = ValueFallback::new("default".to_string());
-
-// FunctionFallback
-let fallback = FunctionFallback::new(|err| async move {
-    tracing::warn!(%err, "falling back");
-    Ok("degraded".to_string())
-});
-
-// CacheFallback
-let fallback = CacheFallback::<String>::new(Duration::from_secs(60));
-fallback.update("last known good".to_string()).await;
-
-// ChainedFallback
-let fallback = ChainedFallback::new(vec![
-    Arc::new(ValueFallback::new("static".to_string())),
-]);
 ```
 
-### Top-level helper
+### `AnyStringFallbackStrategy`
 
-```rust
-pub async fn execute_with_fallback<T, Fut, FutFn, FS>(
-    operation: FutFn,
-    fallback: &FS,
-) -> ResilienceResult<T>
-where
-    FutFn: Fn() -> Fut,
-    Fut: Future<Output = ResilienceResult<T>>,
-    FS: FallbackStrategy<T>;
-```
+Type-erased fallback over `String` errors.
 
 ---
 
@@ -529,10 +381,10 @@ where
 
 ```rust
 pub struct HedgeConfig {
-    pub hedge_delay: Duration,       // default: 50 ms
-    pub max_hedges: usize,           // default: 2
-    pub exponential_backoff: bool,   // default: true
-    pub backoff_multiplier: f64,     // default: 2.0
+    pub hedge_delay: Duration,       // Default: 50ms
+    pub max_hedges: usize,           // Default: 2
+    pub exponential_backoff: bool,   // Default: true
+    pub backoff_multiplier: f64,     // Default: 2.0
 }
 ```
 
@@ -542,27 +394,39 @@ pub struct HedgeConfig {
 impl HedgeExecutor {
     pub fn new(config: HedgeConfig) -> Self;
 
-    pub async fn execute<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
+    pub async fn execute<T, F, Fut>(&self, operation: F) -> Result<T, CallError<()>>
     where
         F: Fn() -> Fut + Send + Sync,
-        Fut: Future<Output = ResilienceResult<T>> + Send,
+        Fut: Future<Output = Result<T, ()>> + Send,
         T: Send;
 }
 ```
 
-### `AdaptiveHedgeExecutor`
+---
 
-Adjusts `hedge_delay` based on observed p50/p95 latency statistics. Activates hedging
-after a `warmup_requests` window. Configuration:
+## Load Shed
 
 ```rust
-pub struct AdaptiveHedgeConfig {
-    pub initial_delay: Duration,
-    pub max_delay: Duration,
-    pub min_delay: Duration,
-    pub percentile: f64,         // e.g. 0.95
-    pub warmup_requests: usize,
-}
+/// Reject immediately when `should_shed()` returns true.
+///
+/// Returns Err(CallError::LoadShed) if shed, otherwise executes f().
+pub async fn load_shed<T, E, S, F>(
+    should_shed: S,
+    f: F,
+) -> Result<T, CallError<E>>
+where
+    S: Fn() -> bool,
+    F: FnOnce() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
+```
+
+Integrate with `LoadSignal` for adaptive decisions:
+
+```rust
+let signal: Arc<dyn LoadSignal> = …;
+let result = load_shed(
+    || signal.load_factor() > 0.9,
+    || Box::pin(do_work()),
+).await;
 ```
 
 ---
@@ -572,295 +436,228 @@ pub struct AdaptiveHedgeConfig {
 See [gate.md](gate.md) for full usage guide.
 
 ```rust
-pub struct Gate { /* ... */ }
-pub struct GateGuard { /* ... */ }
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("gate is closed — new enter() calls are rejected")]
-pub struct GateClosed;
+pub struct Gate;  // Clone — all clones share the same underlying state
 
 impl Gate {
     pub fn new() -> Self;
     pub fn enter(&self) -> Result<GateGuard, GateClosed>;
     pub async fn close(&self);
-    pub async fn close_with_timeout(&self, timeout: Duration) -> bool;
     pub fn is_closed(&self) -> bool;
 }
 
-impl Drop for GateGuard {
-    fn drop(&mut self); // returns one permit to the semaphore
-}
+pub struct GateGuard;  // RAII; returns one permit on drop
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+#[error("gate is closed — new enter() calls are rejected")]
+pub struct GateClosed;
 ```
 
 ---
 
-## Manager
-
-### `Service` trait
-
-```rust
-pub trait Service: Send + Sync + 'static {
-    const NAME: &'static str;
-    type Category: ServiceCategory;
-
-    fn name() -> &'static str { Self::NAME }
-    fn category_name() -> &'static str { Self::Category::name() }
-}
-```
-
-### `Operation` trait
-
-```rust
-pub trait Operation: Send + Sync + 'static {
-    const NAME: &'static str;
-    const IDEMPOTENT: bool = false;
-}
-```
-
-### `RetryableOperation<T>`
-
-Object-safe trait used internally for type erasure:
-
-```rust
-#[async_trait]
-pub trait RetryableOperation<T>: Send + Sync {
-    async fn execute(&self) -> ResilienceResult<T>;
-}
-```
-
-### `ResilienceManager`
-
-```rust
-impl ResilienceManager {
-    pub fn new() -> Self;
-    pub fn with_config(config: ResilienceConfig) -> Self;
-
-    /// Register a named policy for service S.
-    pub async fn register_service<S: Service>(&self, policy: ResiliencePolicy);
-
-    /// Execute operation for typed service S.
-    pub async fn execute_typed<S, T, E, Fut, FutFn>(
-        &self,
-        operation: FutFn,
-    ) -> Result<T, E>
-    where
-        S: Service,
-        FutFn: Fn() -> Fut + Send,
-        Fut: Future<Output = Result<T, E>> + Send,
-        E: From<ResilienceError> + Send;
-
-    /// Execute operation for dynamically named service.
-    pub async fn execute<T, E, Fut, FutFn>(
-        &self,
-        service_name: &str,
-        operation: FutFn,
-    ) -> Result<T, E>
-    where …;
-
-    /// Execute with cooperative cancellation.
-    pub async fn execute_with_cancellation<T, E, Fut, FutFn>(
-        &self,
-        service_name: &str,
-        operation: FutFn,
-        cancellation: &CancellationContext,
-    ) -> Result<T, E>
-    where …;
-
-    pub fn service_count(&self) -> usize;
-    pub fn total_executions(&self) -> u64;
-}
-```
-
----
-
-## Policy
-
-### `RetryPolicyConfig`
-
-Serialisable retry configuration (does not use const generics — suitable for dynamic
-config loading):
-
-```rust
-pub struct RetryPolicyConfig {
-    pub max_attempts: usize,      // default: 3
-    pub base_delay_ms: u64,       // default: 100
-    pub max_delay_ms: u64,        // default: 30_000
-    pub multiplier_x10: u64,      // default: 20 (= 2.0x)
-    pub use_jitter: bool,         // default: true
-}
-
-impl RetryPolicyConfig {
-    pub const fn exponential(max_attempts: usize, base_delay: Duration) -> Self;
-    pub const fn fixed(max_attempts: usize, delay: Duration) -> Self;
-    pub fn delay_for_attempt(&self, attempt: usize) -> Option<Duration>;
-}
-```
-
-### `ResiliencePolicy`
-
-```rust
-pub struct ResiliencePolicy {
-    pub name: String,
-    pub retry: Option<RetryPolicyConfig>,
-    pub circuit_breaker: Option<CircuitBreakerConfig>,
-    pub bulkhead: Option<BulkheadConfig>,
-    pub metadata: PolicyMetadata,
-}
-```
-
-### `PolicyMetadata`
-
-```rust
-pub struct PolicyMetadata {
-    pub display_name: String,
-    pub description: Option<String>,
-    pub tags: Vec<String>,
-    pub created_at: std::time::SystemTime,
-}
-```
-
----
-
-## Composition
+## Pipeline
 
 See [composition.md](composition.md) for full guide.
 
 ```rust
-// LayerBuilder fluent API
-let chain: ResilienceChain<String> = LayerBuilder::new()
-    .with_timeout(Duration::from_secs(5))
-    .with_bulkhead(max_concurrency)
-    .with_circuit_breaker(breaker)
-    .with_retry_exponential(3, Duration::from_millis(100))
-    .build();
+pub struct PipelineBuilder<E: 'static> { … }
 
-// Execute
-let result: ResilienceResult<String> = chain.execute(|| async {
-    Ok("response".to_string())
-}).await;
+impl<E: Send + 'static> PipelineBuilder<E> {
+    pub const fn new() -> Self;
 
-// Execute with cancellation
-let result = chain.execute_with_cancellation(
-    || async { Ok("response".to_string()) },
-    Some(&cancellation),
-).await;
+    #[must_use] pub fn timeout(self, d: Duration) -> Self;
+    #[must_use] pub fn retry(self, config: RetryConfig<E>) -> Self;
+    #[must_use] pub fn circuit_breaker(self, cb: Arc<CircuitBreaker>) -> Self;
+    #[must_use] pub fn bulkhead(self, bh: Arc<Bulkhead>) -> Self;
+
+    /// Emits tracing::warn! if timeout is inside retry.
+    #[must_use] pub fn build(self) -> ResiliencePipeline<E>;
+}
+
+pub struct ResiliencePipeline<E: 'static> { … }
+
+impl<E: Send + 'static> ResiliencePipeline<E> {
+    pub const fn builder() -> PipelineBuilder<E>;
+
+    pub async fn call<T, F>(&self, f: F) -> Result<T, CallError<E>>
+    where
+        T: Send + 'static,
+        F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>>
+            + Clone + Send + Sync + 'static;
+}
 ```
 
 ---
 
-## Observability
+## Sink / Events
 
 See [observability.md](observability.md) for full guide.
 
-### `MetricsCollector`
-
 ```rust
-impl MetricsCollector {
-    pub fn new(enabled: bool) -> Self;
-    pub fn record(&self, name: impl Into<String>, value: f64);
-    pub fn increment(&self, name: impl Into<String>);
-    pub fn record_duration(&self, name: impl Into<String>, duration: Duration);
-    pub fn start_timer(&self, name: impl Into<String>) -> MetricTimer;
-    pub fn snapshot(&self, name: &str) -> Option<MetricSnapshot>;
-    pub fn all_snapshots(&self) -> HashMap<String, MetricSnapshot>;
-    pub fn reset(&self, name: &str);
-    pub fn clear(&self);
+pub trait MetricsSink: Send + Sync {
+    fn record(&self, event: ResilienceEvent);
 }
+
+pub struct NoopSink;    // default, zero cost
+pub struct RecordingSink;
+
+impl RecordingSink {
+    pub fn new() -> Self;
+    pub fn events(&self) -> Vec<ResilienceEvent>;
+    pub fn count(&self, kind: &str) -> usize;
+    pub fn has_state_change(&self, to: CircuitState) -> bool;
+}
+
+pub enum ResilienceEvent {
+    CircuitStateChanged { from: CircuitState, to: CircuitState },
+    RetryAttempt { attempt: u32, will_retry: bool },
+    BulkheadRejected,
+    TimeoutElapsed { duration: Duration },
+    HedgeFired { hedge_number: u32 },
+    RateLimitExceeded,
+    LoadShed,
+}
+
+pub enum CircuitState { Closed, Open, HalfOpen }
 ```
 
-### `MetricSnapshot`
+---
 
-```rust
-pub struct MetricSnapshot {
-    pub count: u64,
-    pub sum: f64,
-    pub min: f64,
-    pub max: f64,
-    pub mean: f64,
-}
-```
+## Observability Hooks
 
-### `MetricKind`
-
-```rust
-pub enum MetricKind {
-    Counter,
-    Gauge,
-    Histogram,
-}
-```
-
-### Hooks
+Legacy hook system for `tracing`-based observability. Separate from `MetricsSink`.
 
 ```rust
 pub trait ObservabilityHook: Send + Sync {
     fn on_event(&self, event: &PatternEvent);
 }
 
-pub struct ObservabilityHooks {
-    hooks: Vec<Arc<dyn ObservabilityHook>>,
-}
+pub struct ObservabilityHooks { … }
 
 impl ObservabilityHooks {
     pub fn new() -> Self;
     pub fn add(&mut self, hook: Arc<dyn ObservabilityHook>);
     pub fn emit(&self, event: PatternEvent);
+    pub fn hook_count(&self) -> usize;
 }
-```
 
-Built-in hooks: `LoggingHook` (log level configurable), `MetricsHook` (forwards to
-`MetricsCollector`).
-
-### Typed events
-
-```rust
-pub struct Event<C: EventCategory> {
+pub struct PatternEvent {
+    pub pattern: String,
     pub operation: String,
     pub duration: Option<Duration>,
-    pub attempt: Option<usize>,
-    pub max_attempts: Option<usize>,
-    pub context: Option<String>,
-    _marker: PhantomData<C>,
+    pub success: bool,
+    pub error: Option<String>,
+    pub metadata: HashMap<String, String>,
 }
+
+/// Typed event with compile-time category.
+pub struct Event<C: EventCategory> { … }
 
 impl<C: EventCategory> Event<C> {
     pub fn new(operation: impl Into<String>) -> Self;
     pub fn with_duration(self, d: Duration) -> Self;
-    pub fn with_attempt(self, n: usize) -> Self;
-    pub fn with_max_attempts(self, n: usize) -> Self;
-    pub fn with_context(self, ctx: impl Into<String>) -> Self;
+    pub fn with_error(self, error: impl Into<String>) -> Self;
+    pub fn with_context(self, key: impl Into<String>, value: impl Into<String>) -> Self;
+    pub fn category(&self) -> &'static str;
+    pub fn is_error(&self) -> bool;
 }
 ```
 
-Event categories:
+Event category markers (sealed):
 
-| Type | `name()` |
-|------|---------|
-| `RetryEventCategory` | `"retry"` |
-| `CircuitBreakerEventCategory` | `"circuit_breaker"` |
-| `BulkheadEventCategory` | `"bulkhead"` |
-| `TimeoutEventCategory` | `"timeout"` |
-| `RateLimiterEventCategory` | `"rate_limiter"` |
+| Type | `name()` | Default log level |
+|------|---------|------------------|
+| `RetryEventCategory` | `"retry"` | `Info` |
+| `CircuitBreakerEventCategory` | `"circuit_breaker"` | `Warn` |
+| `BulkheadEventCategory` | `"bulkhead"` | `Info` |
+| `TimeoutEventCategory` | `"timeout"` | `Warn` |
+| `RateLimiterEventCategory` | `"rate_limiter"` | `Info` |
+
+Built-in hooks: `LoggingHook` (configurable `LogLevel`), `MetricsHook` (forwards to `MetricsCollector`).
 
 ---
 
-## Prelude
+## Signals
 
 ```rust
-use nebula_resilience::prelude::*;
+pub trait LoadSignal: Send + Sync {
+    fn load_factor(&self) -> f64;   // 0.0 idle .. 1.0 saturated
+    fn error_rate(&self) -> f64;    // 0.0..1.0
+    fn p99_latency(&self) -> Duration;
+}
+
+pub struct ConstantLoad {
+    pub factor: f64,
+    pub error_rate: f64,
+    pub p99_latency: Duration,
+}
+
+impl ConstantLoad {
+    pub const fn idle() -> Self;      // 0% load, 0% errors, 5ms latency
+    pub const fn saturated() -> Self; // 100% load, 50% errors, 2s latency
+}
 ```
 
-Re-exports:
+---
 
-- `ResilienceError`, `ResilienceResult`
-- `CircuitBreaker`, `CircuitBreakerConfig`, `CircuitState`
-- `RetryStrategy`, `RetryStats`, `RetryFailure`, `JitterPolicy`
-- `ExponentialBackoff`, `FixedDelay`, `LinearBackoff`
-- `ConservativeCondition`, `AggressiveCondition`
+## Policy Source
+
+```rust
+pub trait PolicySource<C: Clone>: Send + Sync {
+    fn current(&self) -> C;
+}
+
+// Blanket impl — any Clone + Send + Sync value is a static PolicySource.
+impl<C: Clone + Send + Sync> PolicySource<C> for C { … }
+```
+
+---
+
+## Cancellation
+
+```rust
+pub struct CancellationContext { … }
+
+impl CancellationContext {
+    pub fn from_token(token: tokio_util::sync::CancellationToken) -> Self;
+    pub fn is_cancelled(&self) -> bool;
+}
+
+pub struct ShutdownCoordinator { … }
+
+impl ShutdownCoordinator {
+    pub fn new() -> Self;
+    pub fn token(&self) -> CancellationContext;
+    pub fn shutdown(&self);
+    pub async fn wait(&self);
+}
+```
+
+---
+
+## Prelude / Re-exports
+
+`use nebula_resilience::*;` provides:
+
+- `CallError<E>`, `CallResult<T, E>`, `ConfigError`
+- `ResilienceError`, `ErrorClass`, `ErrorContext`
+- `ResilienceResult<T>`, `ResultExt`
+- `CancellationContext`, `CancellableFuture`, `CancellationExt`, `ShutdownCoordinator`
+- `PolicySource`
+- `LoadSignal`, `ConstantLoad`
+- `MetricKind`, `MetricSnapshot`, `MetricsCollector`, `Metrics`
 - `Bulkhead`, `BulkheadConfig`
-- `timeout`
-- `Gate`, `GateGuard`, `GateClosed`
-- `LayerBuilder`
-- `ResilienceManager`, `ResiliencePolicy`
-- `Retryable`
-- `exponential_retry`, `fixed_retry`, `aggressive_retry`
+- `CircuitBreaker`, `CircuitBreakerConfig`, `Outcome`
+- `FallbackStrategy`, `ValueFallback`, `AnyStringFallbackStrategy`
+- `HedgeConfig`, `HedgeExecutor`
+- `load_shed`
+- `AdaptiveRateLimiter`, `AnyRateLimiter`, `LeakyBucket`, `RateLimiter`, `SlidingWindow`, `TokenBucket`
+- `BackoffConfig`, `JitterConfig`, `RetryConfig`, `retry`, `retry_with`
+- `TimeoutExecutor`, `timeout_fn`, `timeout_with_original_error`
+- `BulkheadEventCategory`, `CircuitBreakerEventCategory`, `Event`, `EventCategory`
+- `LogLevel`, `LoggingHook`, `Metric`, `MetricsHook`, `ObservabilityHook`, `ObservabilityHooks`
+- `PatternEvent`, `RateLimiterEventCategory`, `RetryEventCategory`, `TimeoutEventCategory`
+- `CircuitState`, `MetricsSink`, `NoopSink`, `RecordingSink`, `ResilienceEvent`
+- `PatternCategory`, `PatternSpanGuard`, `SpanGuard`, `create_span`, `record_error`, `record_success`
+- `Gate`, `GateClosed`, `GateGuard`
+- `PipelineBuilder`, `ResiliencePipeline`
