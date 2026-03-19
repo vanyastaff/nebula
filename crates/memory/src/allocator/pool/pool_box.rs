@@ -4,7 +4,7 @@ use core::alloc::Layout;
 use core::ptr::{self, NonNull};
 
 use super::PoolAllocator;
-use crate::allocator::{AllocError, Allocator};
+use crate::allocator::{Allocator, MemoryError};
 
 /// RAII smart pointer for pool-allocated values
 ///
@@ -18,7 +18,7 @@ pub struct PoolBox<T> {
 impl<T> PoolBox<T> {
     /// Creates a new `PoolBox` by allocating from the given pool
     #[must_use = "allocated value must be used"]
-    pub fn new_in(value: T, allocator: &PoolAllocator) -> Result<Self, AllocError> {
+    pub fn new_in(value: T, allocator: &PoolAllocator) -> Result<Self, MemoryError> {
         let layout = Layout::new::<T>();
 
         // SAFETY: Pool allocation and initialization sequence.
@@ -35,7 +35,7 @@ impl<T> PoolBox<T> {
 
             // typed_ptr is non-null (from successful allocation), but use explicit check
             let ptr_non_null = NonNull::new(typed_ptr)
-                .ok_or_else(|| AllocError::allocation_failed(layout.size(), layout.align()))?;
+                .ok_or_else(|| MemoryError::allocation_failed(layout.size(), layout.align()))?;
 
             // Convert reference to NonNull (references are always non-null)
             let allocator_non_null = NonNull::from(allocator);

@@ -32,9 +32,6 @@ pub use stats::PoolStats;
 pub use thread_safe::ThreadSafePool;
 pub use ttl::TtlPool;
 
-/// Type alias for ROADMAP compatibility - `PooledObject` is same as `PooledValue`
-pub type PooledObject<'a, T> = PooledValue<'a, T>;
-
 /// Configuration for object pools
 #[derive(Debug, Clone)]
 pub struct PoolConfig {

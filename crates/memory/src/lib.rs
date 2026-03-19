@@ -93,10 +93,10 @@ pub mod budget;
 #[cfg(feature = "cache")]
 #[cfg_attr(docsrs, doc(cfg(feature = "cache")))]
 pub mod cache;
-pub mod core;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod extensions;
+pub mod foundation;
 #[cfg(feature = "monitoring")]
 #[cfg_attr(docsrs, doc(cfg(feature = "monitoring")))]
 pub mod monitoring;
@@ -112,24 +112,22 @@ pub mod syscalls;
 pub mod utils;
 
 // Re-export core types for convenience
-pub use crate::core::MemoryConfig;
-pub use crate::error::{MemoryError, MemoryResult, Result};
+pub use crate::error::{MemoryError, MemoryResult};
+pub use crate::foundation::MemoryConfig;
 
 // Public API exports
 pub mod prelude {
     //! Convenient re-exports of commonly used types and traits.
 
     // Core types
-    pub use crate::core::MemoryConfig;
-    pub use crate::core::traits::{MemoryManager, MemoryUsage, Resettable};
+    pub use crate::foundation::MemoryConfig;
+    pub use crate::foundation::traits::{MemoryUsage, Resettable};
 
     // Error types (standalone!)
-    pub use crate::error::{MemoryError, MemoryResult, Result};
+    pub use crate::error::{MemoryError, MemoryResult};
 
     // Allocator types
-    pub use crate::allocator::{
-        AllocError, AllocResult, Allocator, GlobalAllocatorManager, TypedAllocator,
-    };
+    pub use crate::allocator::{Allocator, GlobalAllocatorManager, TypedAllocator};
     #[cfg(feature = "monitoring")]
     pub use crate::allocator::{MonitoredAllocator, MonitoredConfig};
 
@@ -152,55 +150,18 @@ pub mod prelude {
     pub use crate::utils::CheckedArithmetic;
 }
 
-// Re-export allocator types at crate root for convenience
-pub use crate::allocator::{AllocError, AllocResult};
-
-#[cfg(feature = "logging")]
-use nebula_log::{debug, info};
-
-/// Initialize the nebula-memory system with default configuration.
+/// Initialize the nebula-memory system.
 ///
-/// This should be called once at application startup to set up
-/// global memory management components.
+/// # Deprecation
 ///
-/// # Examples
-///
-/// ```rust
-/// fn main() -> nebula_memory::MemoryResult<()> {
-///     nebula_memory::init()?;
-///
-///     // Your application code here
-///
-///     Ok(())
-/// }
-/// ```
+/// The global allocator manager is now lazily initialized on first access.
+/// This function is no longer needed and will be removed in a future version.
+#[deprecated(
+    since = "0.2.0",
+    note = "GlobalAllocatorManager is now lazily initialized; this call is no longer needed"
+)]
 pub fn init() -> MemoryResult<()> {
-    #[cfg(feature = "logging")]
-    {
-        debug!("Initializing nebula-memory system");
-    }
-
-    // Initialize global allocator manager
-    crate::allocator::GlobalAllocatorManager::init().map_err(MemoryError::initialization_failed)?;
-
-    #[cfg(feature = "logging")]
-    {
-        info!("nebula-memory system initialized successfully");
-    }
-
-    Ok(())
-}
-
-/// Shutdown the nebula-memory system and cleanup resources.
-///
-/// This should be called before application exit to ensure
-/// proper cleanup of global resources.
-pub fn shutdown() -> MemoryResult<()> {
-    #[cfg(feature = "logging")]
-    {
-        debug!("Shutting down nebula-memory system");
-        info!("nebula-memory system shutdown complete");
-    }
-
+    // Force lazy initialization
+    let _ = crate::allocator::GlobalAllocatorManager::get();
     Ok(())
 }
