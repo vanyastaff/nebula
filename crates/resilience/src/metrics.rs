@@ -98,7 +98,7 @@ impl MetricsCollector {
 }
 
 /// Individual metric
-pub(super) struct Metric {
+pub struct Metric {
     count: AtomicU64,
     sum: AtomicU64,
     min: AtomicU64,

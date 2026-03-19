@@ -5,7 +5,7 @@
 )]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use nebula_resilience::observability::{ObservabilityHook, ObservabilityHooks, PatternEvent};
+use nebula_resilience::hooks::{ObservabilityHook, ObservabilityHooks, PatternEvent};
 use std::hint::black_box;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -130,7 +130,6 @@ mod tests {
     #[derive(Debug, PartialEq)]
     enum MyErr {
         Timeout,
-        NotFound,
     }
 
     #[test]

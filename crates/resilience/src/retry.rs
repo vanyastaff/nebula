@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::{
     CallError,
-    observability::sink::{MetricsSink, NoopSink, ResilienceEvent},
+    sink::{MetricsSink, NoopSink, ResilienceEvent},
 };
 
 // ── Backoff ───────────────────────────────────────────────────────────────────
@@ -268,6 +268,11 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 
+    fn fail_twice(counter: &AtomicU32) -> Result<u32, &'static str> {
+        let n = counter.fetch_add(1, Ordering::SeqCst);
+        if n < 2 { Err("fail") } else { Ok(99) }
+    }
+
     #[tokio::test]
     async fn retries_up_to_max_attempts() {
         let counter = Arc::new(AtomicU32::new(0));
@@ -302,10 +307,7 @@ mod tests {
 
         let result: Result<u32, CallError<&str>> = retry_with(config, || {
             let c = c.clone();
-            Box::pin(async move {
-                let n = c.fetch_add(1, Ordering::SeqCst);
-                if n < 2 { Err("fail") } else { Ok(99u32) }
-            })
+            Box::pin(async move { fail_twice(&c) })
         })
         .await;
 
@@ -313,16 +315,17 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 
+    #[derive(Debug)]
+    enum MyErr {
+        #[allow(dead_code)]
+        Transient,
+        Permanent,
+    }
+
     #[tokio::test]
     async fn retry_if_predicate_stops_on_permanent_error() {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
-
-        #[derive(Debug)]
-        enum MyErr {
-            Transient,
-            Permanent,
-        }
 
         let config = RetryConfig::new(5)
             .unwrap()

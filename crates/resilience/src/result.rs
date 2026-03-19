@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use super::error::{ErrorClass, ResilienceError};
+use crate::error::{ErrorClass, ResilienceError};
 
 /// Result type for resilience operations
 pub type ResilienceResult<T> = Result<T, ResilienceError>;
@@ -103,14 +103,14 @@ where
 #[macro_export]
 macro_rules! resilience_bail {
     ($msg:literal) => {
-        return Err($crate::core::ResilienceError::Custom {
+        return Err($crate::error::ResilienceError::Custom {
             message: $msg.to_string(),
             retryable: false,
             source: None,
         })
     };
     ($fmt:expr, $($arg:tt)*) => {
-        return Err($crate::core::ResilienceError::Custom {
+        return Err($crate::error::ResilienceError::Custom {
             message: format!($fmt, $($arg)*),
             retryable: false,
             source: None,

@@ -12,7 +12,7 @@ use tokio::time::{Instant, sleep};
 
 use crate::{
     CallError,
-    observability::sink::{MetricsSink, NoopSink, ResilienceEvent},
+    sink::{MetricsSink, NoopSink, ResilienceEvent},
 };
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -318,7 +318,7 @@ impl LatencyTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CallError, RecordingSink};
+    use crate::RecordingSink;
 
     #[tokio::test]
     async fn returns_first_success() {

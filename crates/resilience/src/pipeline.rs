@@ -14,11 +14,9 @@ use std::time::Duration;
 
 use crate::{
     CallError,
-    patterns::{
-        bulkhead::Bulkhead,
-        circuit_breaker::CircuitBreaker,
-        retry::{RetryConfig, retry_with},
-    },
+    bulkhead::Bulkhead,
+    circuit_breaker::CircuitBreaker,
+    retry::{RetryConfig, retry_with},
 };
 
 // ── Steps ─────────────────────────────────────────────────────────────────────
@@ -298,7 +296,7 @@ fn map_retry_result<T, E: Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CallError, patterns::retry::BackoffConfig};
+    use crate::{CallError, retry::BackoffConfig};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 

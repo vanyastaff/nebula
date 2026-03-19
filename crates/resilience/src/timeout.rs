@@ -7,7 +7,7 @@ use tokio::time::timeout as tokio_timeout;
 
 use crate::{
     CallError,
-    observability::sink::{MetricsSink, NoopSink, ResilienceEvent},
+    sink::{MetricsSink, NoopSink, ResilienceEvent},
 };
 
 /// Execute `future` with a timeout.

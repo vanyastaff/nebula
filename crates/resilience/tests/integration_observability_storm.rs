@@ -1,8 +1,6 @@
 //! Integration tests validating observability behavior under failure storms.
 
-use nebula_resilience::observability::{
-    MetricsHook, ObservabilityHook, ObservabilityHooks, PatternEvent,
-};
+use nebula_resilience::hooks::{MetricsHook, ObservabilityHook, ObservabilityHooks, PatternEvent};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;

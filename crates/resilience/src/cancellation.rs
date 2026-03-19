@@ -9,8 +9,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::error::ResilienceError;
-use crate::core::result::ResilienceResult;
+use crate::error::ResilienceError;
+use crate::result::ResilienceResult;
 
 /// Cancellation-aware operation wrapper
 ///

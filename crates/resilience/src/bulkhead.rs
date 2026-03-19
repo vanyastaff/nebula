@@ -7,7 +7,7 @@ use tokio::sync::Semaphore;
 
 use crate::{
     CallError, ConfigError,
-    observability::sink::{MetricsSink, NoopSink, ResilienceEvent},
+    sink::{MetricsSink, NoopSink, ResilienceEvent},
 };
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -257,11 +257,6 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_when_queue_full() {
-        let bh = Bulkhead::new(BulkheadConfig {
-            max_concurrency: 1,
-            queue_size: 0, // validate requires >= 1, so use 1 but saturate it
-            timeout: None,
-        });
         // queue_size=0 is invalid, use 1 with saturation
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
@@ -271,7 +266,7 @@ mod tests {
         .unwrap();
 
         // Hold the only permit
-        let _permit = bh.acquire::<&str>().await.unwrap();
+        let permit = bh.acquire::<&str>().await.unwrap();
         // Queue one waiter
         let bh2 = bh.clone();
         let waiter = tokio::spawn(async move { bh2.acquire::<&str>().await });
@@ -281,7 +276,7 @@ mod tests {
         let err = bh.acquire::<&str>().await.unwrap_err();
         assert!(matches!(err, CallError::BulkheadFull));
 
-        drop(_permit);
+        drop(permit);
         waiter.await.unwrap().unwrap(); // the queued one succeeds
     }
 
