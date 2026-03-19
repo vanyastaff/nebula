@@ -12,38 +12,21 @@ use crate::{
 
 /// Execute `future` with a timeout.
 ///
-/// # Errors
-///
-/// Returns `Err(CallError::Timeout(duration))` if `future` does not complete in time.
-pub async fn timeout<T, F>(duration: Duration, future: F) -> Result<T, CallError<()>>
-where
-    F: Future<Output = T>,
-{
-    tokio_timeout(duration, future)
-        .await
-        .map_err(|_| CallError::Timeout(duration))
-}
-
-/// Execute `future` (which returns `Result<T, E>`) with a timeout and a metrics sink.
-///
-/// - Operation success -> `Ok(T)`
-/// - Operation error  -> `Err(CallError::Operation(e))`
-/// - Timeout elapsed  -> `Err(CallError::Timeout(duration))` + emits `TimeoutElapsed`
+/// - Operation success  -> `Ok(T)`
+/// - Operation error    -> `Err(CallError::Operation(e))`
+/// - Timeout elapsed    -> `Err(CallError::Timeout(duration))`
 ///
 /// # Errors
 ///
 /// Returns `Err(CallError::Timeout)` on timeout or `Err(CallError::Operation)` on operation error.
-pub async fn timeout_with_original_error<T, E, F>(
-    duration: Duration,
-    future: F,
-) -> Result<T, CallError<E>>
+pub async fn timeout<T, E, F>(duration: Duration, future: F) -> Result<T, CallError<E>>
 where
     F: Future<Output = Result<T, E>>,
 {
     timeout_with_sink(duration, future, &NoopSink).await
 }
 
-/// Like [`timeout_with_original_error`] but emits [`ResilienceEvent::TimeoutElapsed`] via `sink`.
+/// Like [`timeout`] but emits [`ResilienceEvent::TimeoutElapsed`] via `sink`.
 ///
 /// # Errors
 ///
@@ -102,70 +85,25 @@ impl TimeoutExecutor {
     }
 }
 
-// ── Timeout policies (kept for compatibility) ─────────────────────────────────
-
-/// Marker trait for timeout policies.
-pub trait TimeoutPolicy: Send + Sync + 'static {
-    /// Policy name for observability.
-    fn name() -> &'static str;
-    /// Default timeout for this policy.
-    fn default_timeout() -> Duration;
-}
-
-/// Strict timeout policy — fails fast on timeout.
-#[derive(Debug, Clone, Copy)]
-pub struct StrictPolicy;
-
-impl TimeoutPolicy for StrictPolicy {
-    fn name() -> &'static str {
-        "strict"
-    }
-    fn default_timeout() -> Duration {
-        Duration::from_secs(5)
-    }
-}
-
-/// Lenient timeout policy — longer timeouts for slow operations.
-#[derive(Debug, Clone, Copy)]
-pub struct LenientPolicy;
-
-impl TimeoutPolicy for LenientPolicy {
-    fn name() -> &'static str {
-        "lenient"
-    }
-    fn default_timeout() -> Duration {
-        Duration::from_mins(1)
-    }
-}
-
-/// Adaptive timeout policy — adjusts based on operation type.
-#[derive(Debug, Clone, Copy)]
-pub struct AdaptivePolicy;
-
-impl TimeoutPolicy for AdaptivePolicy {
-    fn name() -> &'static str {
-        "adaptive"
-    }
-    fn default_timeout() -> Duration {
-        Duration::from_secs(30)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{CallError, RecordingSink};
 
     #[tokio::test]
-    async fn test_timeout_success() {
-        let result = timeout(Duration::from_millis(100), async { "success" }).await;
+    async fn timeout_success() {
+        let result = timeout(Duration::from_millis(100), async {
+            Ok::<_, &str>("success")
+        })
+        .await;
         assert_eq!(result.unwrap(), "success");
     }
 
     #[tokio::test]
-    async fn test_timeout_exceeded() {
-        let result = timeout(Duration::from_millis(10), async {
+    async fn timeout_exceeded() {
+        let result: Result<(), CallError<&str>> = timeout(Duration::from_millis(10), async {
             tokio::time::sleep(Duration::from_millis(100)).await;
+            Ok(())
         })
         .await;
 
@@ -173,22 +111,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_timeout_with_original_error_success() {
-        let result =
-            timeout_with_original_error(Duration::from_millis(100), async { Ok::<_, &str>("ok") })
-                .await;
-        assert_eq!(result.unwrap(), "ok");
-    }
-
-    #[tokio::test]
-    async fn test_timeout_with_original_error_timeout_exceeded() {
-        let result = timeout_with_original_error(Duration::from_millis(10), async {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            Err::<&str, &str>("unreachable")
+    async fn timeout_operation_error() {
+        let result = timeout(Duration::from_millis(100), async {
+            Err::<(), &str>("fail")
         })
         .await;
 
-        assert!(matches!(result, Err(CallError::Timeout(d)) if d == Duration::from_millis(10)));
+        assert!(matches!(result, Err(CallError::Operation("fail"))));
     }
 
     #[tokio::test]

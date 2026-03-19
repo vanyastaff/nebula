@@ -46,15 +46,19 @@ impl BackoffConfig {
         }
     }
 
+    /// Compute the delay for the given zero-based attempt number.
+    ///
+    /// Useful for integrators building custom retry loops outside of [`retry_with`].
     // Reason: u128 millis cast to f64 for exponential math, f64 result cast to u64 for Duration,
     // and u32 attempt cast to i32 for powi are all acceptable within configured retry bounds.
+    #[must_use]
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::cast_possible_wrap
     )]
-    pub(crate) fn delay_for(&self, attempt: u32) -> Duration {
+    pub fn delay_for(&self, attempt: u32) -> Duration {
         match self {
             Self::Fixed(d) => *d,
             Self::Linear { base, max } => (*base * attempt).min(*max),

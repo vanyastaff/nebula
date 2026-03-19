@@ -12,7 +12,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 #[cfg(feature = "governor")]
 use nebula_resilience::rate_limiter::GovernorRateLimiter;
 use nebula_resilience::{
-    AdaptiveRateLimiter, LeakyBucket, RateLimiter, ResilienceError, SlidingWindow, TokenBucket,
+    AdaptiveRateLimiter, CallError, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket,
 };
 use std::hint::black_box;
 use std::sync::Arc;
@@ -24,7 +24,7 @@ fn rate_limiter_acquire(c: &mut Criterion) {
     for &rate in &[100, 1000, 10000] {
         group.bench_with_input(BenchmarkId::new("token_bucket", rate), &rate, |b, &rate| {
             let rt = tokio::runtime::Runtime::new().unwrap();
-            let limiter = Arc::new(TokenBucket::new(rate, rate as f64));
+            let limiter = Arc::new(TokenBucket::new(rate, rate as f64).unwrap());
 
             b.to_async(&rt).iter(|| {
                 let limiter = Arc::clone(&limiter);
@@ -86,13 +86,13 @@ fn rate_limiter_execute(c: &mut Criterion) {
     // TokenBucket execute
     group.bench_function("token_bucket_1000rps", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let limiter = Arc::new(TokenBucket::new(1000, 1000.0));
+        let limiter = Arc::new(TokenBucket::new(1000, 1000.0).unwrap());
 
         b.to_async(&rt).iter(|| {
             let limiter = Arc::clone(&limiter);
             async move {
                 let result = limiter
-                    .execute(|| async { Ok::<_, ResilienceError>(black_box(42)) })
+                    .execute(|| async { Ok::<_, CallError<()>>(black_box(42)) })
                     .await;
                 black_box(result)
             }
@@ -112,7 +112,7 @@ fn rate_limiter_execute(c: &mut Criterion) {
             let limiter = Arc::clone(&limiter);
             async move {
                 let result = limiter
-                    .execute(|| async { Ok::<_, ResilienceError>(black_box(42)) })
+                    .execute(|| async { Ok::<_, CallError<()>>(black_box(42)) })
                     .await;
                 black_box(result)
             }
@@ -129,7 +129,7 @@ fn rate_limiter_execute(c: &mut Criterion) {
             let limiter = Arc::clone(&limiter);
             async move {
                 let result = limiter
-                    .execute(|| async { Ok::<_, ResilienceError>(black_box(42)) })
+                    .execute(|| async { Ok::<_, CallError<()>>(black_box(42)) })
                     .await;
                 black_box(result)
             }
@@ -144,7 +144,7 @@ fn rate_limiter_current_rate(c: &mut Criterion) {
 
     group.bench_function("token_bucket", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let limiter = TokenBucket::new(1000, 1000.0);
+        let limiter = TokenBucket::new(1000, 1000.0).unwrap();
 
         b.to_async(&rt)
             .iter(|| async { black_box(limiter.current_rate().await) });
@@ -173,7 +173,7 @@ fn rate_limiter_contention(c: &mut Criterion) {
             &num_tasks,
             |b, &num_tasks| {
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                let limiter = Arc::new(TokenBucket::new(10000, 10000.0));
+                let limiter = Arc::new(TokenBucket::new(10000, 10000.0).unwrap());
 
                 b.to_async(&rt).iter(|| {
                     let limiter = Arc::clone(&limiter);

@@ -5,7 +5,7 @@
 )]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use nebula_resilience::ResilienceError;
+use nebula_resilience::CallError;
 use nebula_resilience::fallback::{
     ChainFallback, FallbackOperation, FallbackStrategy, ValueFallback,
 };
@@ -24,7 +24,7 @@ fn fallback_execute_overhead(c: &mut Criterion) {
             let operation = Arc::clone(&operation);
             async move {
                 let result = operation
-                    .execute(|| async { Ok::<_, ResilienceError>("primary".to_string()) })
+                    .execute(|| async { Ok::<_, CallError<&str>>("primary".to_string()) })
                     .await;
                 black_box(result)
             }
@@ -40,7 +40,7 @@ fn fallback_execute_overhead(c: &mut Criterion) {
             let operation = Arc::clone(&operation);
             async move {
                 let result = operation
-                    .execute(|| async { Err::<String, _>(ResilienceError::custom("boom")) })
+                    .execute(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
                     .await;
                 black_box(result)
             }
@@ -51,7 +51,7 @@ fn fallback_execute_overhead(c: &mut Criterion) {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let chain = Arc::new(
             ChainFallback::new().add(Arc::new(ValueFallback::new("chain-fallback".to_string()))
-                as Arc<dyn FallbackStrategy<String>>),
+                as Arc<dyn FallbackStrategy<String, &str>>),
         );
         let operation = Arc::new(FallbackOperation::new(chain));
 
@@ -59,7 +59,7 @@ fn fallback_execute_overhead(c: &mut Criterion) {
             let operation = Arc::clone(&operation);
             async move {
                 let result = operation
-                    .execute(|| async { Err::<String, _>(ResilienceError::custom("boom")) })
+                    .execute(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
                     .await;
                 black_box(result)
             }
@@ -91,7 +91,7 @@ fn fallback_contention(c: &mut Criterion) {
                             handles.push(tokio::spawn(async move {
                                 operation
                                     .execute(|| async {
-                                        Err::<String, _>(ResilienceError::custom("boom"))
+                                        Err::<String, CallError<&str>>(CallError::LoadShed)
                                     })
                                     .await
                             }));

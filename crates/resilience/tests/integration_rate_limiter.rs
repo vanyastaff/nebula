@@ -6,7 +6,7 @@ use std::time::Duration;
 
 #[tokio::test]
 async fn test_token_bucket_rate_limiting() {
-    let limiter = TokenBucket::new(10, 10.0); // 10 capacity, 10 req/s
+    let limiter = TokenBucket::new(10, 10.0).unwrap();
 
     // Should allow burst
     for _ in 0..10 {
@@ -68,20 +68,10 @@ async fn test_adaptive_rate_limiter_adjusts() {
 }
 
 #[tokio::test]
-async fn test_any_rate_limiter_factory() {
-    let token_bucket = AnyRateLimiter::token_bucket(TokenBucket::new(100, 10.0));
-    let leaky = AnyRateLimiter::leaky_bucket(LeakyBucket::new(100, 10.0));
-
-    // Both should work through the wrapper
-    assert!(token_bucket.acquire().await.is_ok());
-    assert!(leaky.acquire().await.is_ok());
-}
-
-#[tokio::test]
 async fn test_concurrent_rate_limiting() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let limiter = Arc::new(TokenBucket::new(10, 50.0)); // 10 capacity, 50 req/s
+    let limiter = Arc::new(TokenBucket::new(10, 50.0).unwrap());
     let success_count = Arc::new(AtomicUsize::new(0));
     let reject_count = Arc::new(AtomicUsize::new(0));
 

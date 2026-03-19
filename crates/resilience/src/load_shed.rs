@@ -31,15 +31,13 @@ mod tests {
 
     #[tokio::test]
     async fn load_shed_rejects_when_signaled() {
-        let result: Result<u32, CallError<()>> =
-            load_shed(|| true, || async { Ok(1u32) }).await;
+        let result: Result<u32, CallError<()>> = load_shed(|| true, || async { Ok(1u32) }).await;
         assert!(matches!(result, Err(CallError::LoadShed)));
     }
 
     #[tokio::test]
     async fn load_shed_passes_through_when_not_signaled() {
-        let result: Result<u32, CallError<()>> =
-            load_shed(|| false, || async { Ok(42u32) }).await;
+        let result: Result<u32, CallError<()>> = load_shed(|| false, || async { Ok(42u32) }).await;
         assert_eq!(result.unwrap(), 42);
     }
 

@@ -1,11 +1,10 @@
 //! Benchmarks for timeout pattern overhead and cancellation latency
 //!
 //! Measures:
-//! - Success-path wrapper overhead for `timeout_fn`
+//! - Success-path wrapper overhead for `timeout`
 //! - Cancellation-path latency when timeout expires
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use futures::future::pending;
 use nebula_resilience::timeout_fn;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -29,7 +28,7 @@ fn timeout_wrapper_overhead(c: &mut Criterion) {
         b.to_async(&rt).iter(|| async {
             let result = timeout_fn(timeout_duration, async {
                 tokio::task::yield_now().await;
-                black_box(42_u64)
+                Ok::<_, &str>(black_box(42_u64))
             })
             .await;
             black_box(result)
@@ -50,7 +49,11 @@ fn timeout_cancellation_latency(c: &mut Criterion) {
 
         b.to_async(&rt).iter(|| async {
             let start = Instant::now();
-            let result = timeout_fn(timeout_duration, pending::<()>()).await;
+            let result = timeout_fn(
+                timeout_duration,
+                futures::future::pending::<Result<(), &str>>(),
+            )
+            .await;
             let elapsed = start.elapsed();
             let overshoot = elapsed.saturating_sub(timeout_duration);
             black_box((result.is_err(), elapsed, overshoot))
@@ -63,7 +66,11 @@ fn timeout_cancellation_latency(c: &mut Criterion) {
 
         b.to_async(&rt).iter(|| async {
             let start = Instant::now();
-            let result = timeout_fn(timeout_duration, pending::<()>()).await;
+            let result = timeout_fn(
+                timeout_duration,
+                futures::future::pending::<Result<(), &str>>(),
+            )
+            .await;
             let elapsed = start.elapsed();
             let overshoot = elapsed.saturating_sub(timeout_duration);
             black_box((result.is_err(), elapsed, overshoot))

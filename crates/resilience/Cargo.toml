@@ -70,6 +70,3 @@ harness = false
 name = "fallback"
 harness = false
 
-[[bench]]
-name = "observability"
-harness = false

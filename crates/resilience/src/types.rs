@@ -64,19 +64,43 @@ impl<E: std::error::Error + 'static> std::error::Error for CallError<E> {
 }
 
 impl<E> CallError<E> {
-    /// Returns true only if the error class suggests a retry might succeed.
+    /// Returns true if the error class suggests a retry might succeed.
     ///
-    /// Note: `Operation` is never automatically retriable — the caller must
-    /// supply a predicate via `RetryConfig::retry_if` to classify their errors.
+    /// `Timeout`, `RateLimited`, and `BulkheadFull` are considered retriable because
+    /// they represent transient resource pressure, not permanent failures.
+    ///
+    /// `Operation` is never automatically retriable — the caller must supply a predicate
+    /// via `RetryConfig::retry_if` to classify their own errors.
     #[must_use]
     pub const fn is_retriable(&self) -> bool {
-        false // all pattern errors are non-retriable; operation retryability is predicate-driven
+        matches!(
+            self,
+            Self::Timeout(_) | Self::RateLimited | Self::BulkheadFull
+        )
     }
 
     /// Returns true if the error represents a cancellation.
     #[must_use]
     pub const fn is_cancellation(&self) -> bool {
         matches!(self, Self::Cancelled { .. })
+    }
+
+    /// Extract the inner operation error, if this is an `Operation` or `RetriesExhausted` variant.
+    #[must_use]
+    pub fn into_operation(self) -> Option<E> {
+        match self {
+            Self::Operation(e) | Self::RetriesExhausted { last: e, .. } => Some(e),
+            _ => None,
+        }
+    }
+
+    /// Reference to the inner operation error, if this is an `Operation` or `RetriesExhausted` variant.
+    #[must_use]
+    pub const fn operation(&self) -> Option<&E> {
+        match self {
+            Self::Operation(e) | Self::RetriesExhausted { last: e, .. } => Some(e),
+            _ => None,
+        }
     }
 
     /// Map the inner operation error, leaving pattern errors unchanged.
@@ -120,6 +144,45 @@ impl ConfigError {
     }
 }
 
+/// Fieldless discriminant of [`CallError`] for dispatch without matching on data.
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum CallErrorKind {
+    /// [`CallError::Operation`]
+    Operation,
+    /// [`CallError::CircuitOpen`]
+    CircuitOpen,
+    /// [`CallError::BulkheadFull`]
+    BulkheadFull,
+    /// [`CallError::Timeout`]
+    Timeout,
+    /// [`CallError::RetriesExhausted`]
+    RetriesExhausted,
+    /// [`CallError::Cancelled`]
+    Cancelled,
+    /// [`CallError::LoadShed`]
+    LoadShed,
+    /// [`CallError::RateLimited`]
+    RateLimited,
+}
+
+impl<E> CallError<E> {
+    /// Returns the fieldless discriminant of this error.
+    #[must_use]
+    pub const fn kind(&self) -> CallErrorKind {
+        match self {
+            Self::Operation(_) => CallErrorKind::Operation,
+            Self::CircuitOpen => CallErrorKind::CircuitOpen,
+            Self::BulkheadFull => CallErrorKind::BulkheadFull,
+            Self::Timeout(_) => CallErrorKind::Timeout,
+            Self::RetriesExhausted { .. } => CallErrorKind::RetriesExhausted,
+            Self::Cancelled { .. } => CallErrorKind::Cancelled,
+            Self::LoadShed => CallErrorKind::LoadShed,
+            Self::RateLimited => CallErrorKind::RateLimited,
+        }
+    }
+}
+
 /// Convenience alias.
 pub type CallResult<T, E> = Result<T, CallError<E>>;
 
@@ -133,22 +196,33 @@ mod tests {
     }
 
     #[test]
-    fn call_error_is_retriable_for_operation() {
+    fn operation_is_not_retriable() {
         let e: CallError<MyErr> = CallError::Operation(MyErr::Timeout);
-        assert!(!e.is_retriable()); // CallError::Operation is never auto-retriable
+        assert!(!e.is_retriable());
     }
 
     #[test]
-    fn call_error_is_retriable_for_circuit_open() {
+    fn circuit_open_is_not_retriable() {
         let e: CallError<MyErr> = CallError::CircuitOpen;
-        assert!(!e.is_retriable()); // CB open — don't retry
+        assert!(!e.is_retriable());
     }
 
     #[test]
-    fn call_error_map_operation() {
-        let e: CallError<MyErr> = CallError::Operation(MyErr::Timeout);
-        let mapped: CallError<String> = e.map_operation(|e| format!("{e:?}"));
-        assert!(matches!(mapped, CallError::Operation(s) if s == "Timeout"));
+    fn timeout_is_retriable() {
+        let e: CallError<MyErr> = CallError::Timeout(std::time::Duration::from_secs(1));
+        assert!(e.is_retriable());
+    }
+
+    #[test]
+    fn rate_limited_is_retriable() {
+        let e: CallError<MyErr> = CallError::RateLimited;
+        assert!(e.is_retriable());
+    }
+
+    #[test]
+    fn bulkhead_full_is_retriable() {
+        let e: CallError<MyErr> = CallError::BulkheadFull;
+        assert!(e.is_retriable());
     }
 
     #[test]
@@ -157,5 +231,45 @@ mod tests {
             reason: Some("shutdown".into()),
         };
         assert!(!e.is_retriable());
+    }
+
+    #[test]
+    fn map_operation_preserves_inner_error() {
+        let e: CallError<MyErr> = CallError::Operation(MyErr::Timeout);
+        let mapped: CallError<String> = e.map_operation(|e| format!("{e:?}"));
+        assert!(matches!(mapped, CallError::Operation(s) if s == "Timeout"));
+    }
+
+    #[test]
+    fn into_operation_extracts_inner() {
+        let e: CallError<MyErr> = CallError::Operation(MyErr::Timeout);
+        assert_eq!(e.into_operation(), Some(MyErr::Timeout));
+    }
+
+    #[test]
+    fn into_operation_returns_none_for_pattern_errors() {
+        let e: CallError<MyErr> = CallError::CircuitOpen;
+        assert_eq!(e.into_operation(), None);
+    }
+
+    #[test]
+    fn operation_ref_extracts_inner() {
+        let e: CallError<MyErr> = CallError::RetriesExhausted {
+            attempts: 3,
+            last: MyErr::Timeout,
+        };
+        assert_eq!(e.operation(), Some(&MyErr::Timeout));
+    }
+
+    #[test]
+    fn kind_returns_correct_discriminant() {
+        assert_eq!(
+            CallError::<MyErr>::CircuitOpen.kind(),
+            CallErrorKind::CircuitOpen
+        );
+        assert_eq!(
+            CallError::Operation(MyErr::Timeout).kind(),
+            CallErrorKind::Operation
+        );
     }
 }

@@ -1,7 +1,7 @@
 //! `ResiliencePipeline` — compose multiple resilience patterns into a single call chain.
 //!
 //! Recommended layer order (outermost → innermost):
-//! `timeout → retry → circuit_breaker → bulkhead`
+//! `load_shed → rate_limiter → timeout → retry → circuit_breaker → bulkhead`
 //!
 //! Layers are applied in the order added: first added = outermost.
 
@@ -19,6 +19,13 @@ use crate::{
     retry::{RetryConfig, retry_with},
 };
 
+/// Async predicate for rate limiting — returns `Ok(())` or `Err(CallError::RateLimited)`.
+pub type RateLimitCheck =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CallError<()>>> + Send>> + Send + Sync>;
+
+/// Predicate for load shedding — returns `true` to shed the request.
+pub type LoadShedPredicate = Arc<dyn Fn() -> bool + Send + Sync>;
+
 // ── Steps ─────────────────────────────────────────────────────────────────────
 
 enum Step<E: 'static> {
@@ -26,6 +33,8 @@ enum Step<E: 'static> {
     Retry(RetryConfig<E>),
     CircuitBreaker(Arc<CircuitBreaker>),
     Bulkhead(Arc<Bulkhead>),
+    RateLimiter(RateLimitCheck),
+    LoadShed(LoadShedPredicate),
 }
 
 // ── Builder ───────────────────────────────────────────────────────────────────
@@ -76,6 +85,34 @@ impl<E: Send + 'static> PipelineBuilder<E> {
         self
     }
 
+    /// Add a rate limiter step.
+    ///
+    /// The `check` closure is called before each operation to acquire a permit.
+    /// Use it to bridge any `RateLimiter` implementation:
+    ///
+    /// ```rust,ignore
+    /// let rl = Arc::new(TokenBucket::new(100, 10.0).unwrap());
+    /// builder.rate_limiter({
+    ///     let rl = Arc::clone(&rl);
+    ///     Arc::new(move || {
+    ///         let rl = Arc::clone(&rl);
+    ///         Box::pin(async move { rl.acquire().await })
+    ///     })
+    /// })
+    /// ```
+    #[must_use]
+    pub fn rate_limiter(mut self, check: RateLimitCheck) -> Self {
+        self.steps.push(Step::RateLimiter(check));
+        self
+    }
+
+    /// Add a load shedding step. The predicate returns `true` to shed the request.
+    #[must_use]
+    pub fn load_shed(mut self, predicate: LoadShedPredicate) -> Self {
+        self.steps.push(Step::LoadShed(predicate));
+        self
+    }
+
     /// Build the pipeline, emitting a tracing warning if layer order is suboptimal.
     #[must_use]
     pub fn build(self) -> ResiliencePipeline<E> {
@@ -94,6 +131,8 @@ fn validate_order<E>(steps: &[Step<E>]) {
             Step::Retry(_) => "retry",
             Step::CircuitBreaker(_) => "circuit_breaker",
             Step::Bulkhead(_) => "bulkhead",
+            Step::RateLimiter(_) => "rate_limiter",
+            Step::LoadShed(_) => "load_shed",
         })
         .collect();
 
@@ -179,6 +218,17 @@ where
                 let bh = Arc::clone(bh);
                 bh.call(move || run_inner_unwrapped(steps, idx, f, "Bulkhead"))
                     .await
+            }
+            Step::RateLimiter(check) => {
+                check().await.map_err(|_| CallError::RateLimited)?;
+                run_steps(steps, idx + 1, f).await
+            }
+            Step::LoadShed(predicate) => {
+                if predicate() {
+                    Err(CallError::LoadShed)
+                } else {
+                    run_steps(steps, idx + 1, f).await
+                }
             }
         }
     })

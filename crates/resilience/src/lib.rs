@@ -74,17 +74,12 @@
 
 // Core types
 pub mod cancellation;
-mod error;
-mod metrics;
 pub mod policy_source;
-mod result;
 pub mod signals;
 pub mod types;
 
 // Observability
-pub mod hooks;
 pub mod sink;
-pub mod spans;
 
 // Patterns
 pub mod bulkhead;
@@ -99,58 +94,41 @@ pub mod timeout;
 // Infrastructure
 pub mod clock;
 pub mod gate;
-pub mod helpers;
 pub mod pipeline;
-pub mod retryable;
 
 // ── Re-exports: core types ──────────────────────────────────────────────────
 
-pub use error::{CircuitBreakerOpenState, ErrorClass, ErrorContext, ResilienceError};
-pub use metrics::{MetricKind, MetricSnapshot, Metrics, MetricsCollector};
 pub use policy_source::PolicySource;
-pub use result::{ResilienceResult, ResultExt};
 pub use signals::{ConstantLoad, LoadSignal};
-pub use types::{CallError, CallResult, ConfigError};
+pub use types::{CallError, CallErrorKind, CallResult, ConfigError};
 
-pub use cancellation::{
-    CancellableFuture, CancellationContext, CancellationExt, ShutdownCoordinator,
-};
+pub use cancellation::{CancellableFuture, CancellationContext, CancellationExt};
 
 // ── Re-exports: patterns ────────────────────────────────────────────────────
 
 pub use bulkhead::{Bulkhead, BulkheadConfig};
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
-pub use fallback::{ErrorCategory, FallbackStrategy, ValueFallback};
+pub use fallback::{FallbackStrategy, ValueFallback};
 pub use hedge::{HedgeConfig, HedgeExecutor};
 pub use load_shed::load_shed;
-pub use rate_limiter::{
-    AdaptiveRateLimiter, AnyRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket,
-};
+pub use rate_limiter::{AdaptiveRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket};
 pub use retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
-pub use timeout::{TimeoutExecutor, timeout as timeout_fn, timeout_with_original_error};
+pub use timeout::{TimeoutExecutor, timeout, timeout as timeout_fn};
 
 // ── Re-exports: observability ───────────────────────────────────────────────
 
-pub use hooks::{
-    BulkheadEventCategory, CircuitBreakerEventCategory, Event, EventCategory, LogLevel,
-    LoggingHook, Metric, MetricsHook, ObservabilityHook, ObservabilityHooks, PatternEvent,
-    RateLimiterEventCategory, RetryEventCategory, TimeoutEventCategory, metrics as hook_metrics,
-};
 pub use sink::{CircuitState, MetricsSink, NoopSink, RecordingSink, ResilienceEvent};
-pub use spans::{
-    PatternCategory, PatternSpanGuard, SpanGuard, create_span, record_error, record_success,
-};
 
 // ── Re-exports: infrastructure ──────────────────────────────────────────────
 
 pub use gate::{Gate, GateClosed, GateGuard};
-pub use pipeline::{PipelineBuilder, ResiliencePipeline};
+pub use pipeline::{LoadShedPredicate, PipelineBuilder, RateLimitCheck, ResiliencePipeline};
 
 /// Functional resilience API — convenience functions for simple cases.
 pub mod resilience {
     pub use crate::load_shed::load_shed;
     pub use crate::retry::{retry, retry_with};
-    pub use crate::timeout::timeout_with_original_error as with_timeout;
+    pub use crate::timeout::timeout as with_timeout;
 }
 
 /// Type-level constants for common configurations.

@@ -21,14 +21,8 @@ pub struct CircuitBreakerConfig {
     pub reset_timeout: Duration,
     /// Max concurrent probe operations allowed in `HalfOpen` state. Default: 1.
     pub half_open_max_ops: u32,
-    /// Minimum number of operations required before the failure rate can trip the breaker. Default: 5.
+    /// Minimum number of operations required before failures can trip the breaker. Default: 5.
     pub min_operations: u32,
-    /// Reserved: rate-based tripping is not yet implemented.
-    ///
-    /// This field is validated (must be 0.0..=1.0) but **not used** by `record_outcome()`.
-    /// The circuit opens based on the absolute `failure_threshold` count only.
-    /// Default: 0.5.
-    pub failure_rate_threshold: f64,
     /// Sliding window for failure counting. Default: 60s.
     pub sliding_window: Duration,
     /// Whether timeouts count as failures. Default: true.
@@ -42,7 +36,6 @@ impl Default for CircuitBreakerConfig {
             reset_timeout: Duration::from_secs(30),
             half_open_max_ops: 1,
             min_operations: 5,
-            failure_rate_threshold: 0.5,
             sliding_window: Duration::from_secs(60),
             count_timeouts_as_failures: true,
         }
@@ -54,8 +47,7 @@ impl CircuitBreakerConfig {
     ///
     /// # Errors
     ///
-    /// Returns `Err(ConfigError)` if `failure_threshold` is 0, `reset_timeout` is zero,
-    /// or `failure_rate_threshold` is outside 0.0..=1.0.
+    /// Returns `Err(ConfigError)` if `failure_threshold` is 0 or `reset_timeout` is zero.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.failure_threshold == 0 {
             return Err(ConfigError::new("failure_threshold", "must be >= 1"));
@@ -63,11 +55,8 @@ impl CircuitBreakerConfig {
         if self.reset_timeout.is_zero() {
             return Err(ConfigError::new("reset_timeout", "must be > 0"));
         }
-        if !(0.0..=1.0).contains(&self.failure_rate_threshold) {
-            return Err(ConfigError::new(
-                "failure_rate_threshold",
-                "must be 0.0..=1.0",
-            ));
+        if self.half_open_max_ops == 0 {
+            return Err(ConfigError::new("half_open_max_ops", "must be >= 1"));
         }
         Ok(())
     }
@@ -124,6 +113,8 @@ struct InnerState {
     state: State,
     failures: u32,
     total: u32,
+    /// Number of active probe operations in `HalfOpen` state.
+    half_open_probes: u32,
 }
 
 impl CircuitBreaker {
@@ -140,6 +131,7 @@ impl CircuitBreaker {
                 state: State::Closed,
                 failures: 0,
                 total: 0,
+                half_open_probes: 0,
             }),
             clock: Arc::new(SystemClock),
             sink: Arc::new(NoopSink),
@@ -183,11 +175,20 @@ impl CircuitBreaker {
     ///
     /// # Errors
     ///
-    /// Returns `Err(CallError::CircuitOpen)` when the circuit is open.
+    /// Returns `Err(CallError::CircuitOpen)` when the circuit is open
+    /// or the half-open probe limit has been reached.
     pub fn can_execute<E>(&self) -> Result<(), CallError<E>> {
         let mut inner = self.state.lock();
         match inner.state {
-            State::Closed | State::HalfOpen => Ok(()),
+            State::Closed => Ok(()),
+            State::HalfOpen => {
+                if inner.half_open_probes >= self.config.half_open_max_ops {
+                    Err(CallError::CircuitOpen)
+                } else {
+                    inner.half_open_probes = inner.half_open_probes.saturating_add(1);
+                    Ok(())
+                }
+            }
             State::Open { opened_at } => {
                 let elapsed = self.clock.now().duration_since(opened_at);
                 if elapsed >= self.config.reset_timeout {
@@ -195,6 +196,7 @@ impl CircuitBreaker {
                     inner.state = State::HalfOpen;
                     inner.failures = 0;
                     inner.total = 0;
+                    inner.half_open_probes = 1; // this call is the first probe
                     drop(inner);
                     self.sink.record(ResilienceEvent::CircuitStateChanged {
                         from: prev,
@@ -209,6 +211,10 @@ impl CircuitBreaker {
     }
 
     /// Record an operation outcome directly (useful when driving the CB from external code).
+    ///
+    /// In the Closed state, each success decrements the failure counter by one ("leaky bucket"
+    /// forgiveness). This means that interleaved successes slowly erase past failures,
+    /// preventing the breaker from tripping on intermittent errors.
     // Reason: the lock guard is held intentionally across the entire match to ensure
     // atomic state transitions — dropping early would create a TOCTOU window.
     #[allow(clippy::significant_drop_tightening)]
@@ -222,6 +228,7 @@ impl CircuitBreaker {
                     inner.state = State::Closed;
                     inner.failures = 0;
                     inner.total = 0;
+                    inner.half_open_probes = 0;
                     self.sink.record(ResilienceEvent::CircuitStateChanged {
                         from: prev,
                         to: CircuitState::Closed,
@@ -237,7 +244,19 @@ impl CircuitBreaker {
                 }
                 inner.failures = inner.failures.saturating_add(1);
                 inner.total = inner.total.saturating_add(1);
-                if inner.failures >= self.config.failure_threshold
+
+                if inner.state == State::HalfOpen {
+                    // Any failure in HalfOpen sends us back to Open.
+                    let prev = to_circuit_state(inner.state);
+                    inner.state = State::Open {
+                        opened_at: self.clock.now(),
+                    };
+                    inner.half_open_probes = 0;
+                    self.sink.record(ResilienceEvent::CircuitStateChanged {
+                        from: prev,
+                        to: CircuitState::Open,
+                    });
+                } else if inner.failures >= self.config.failure_threshold
                     && inner.total >= self.config.min_operations
                 {
                     let prev = to_circuit_state(inner.state);
@@ -266,15 +285,6 @@ impl CircuitBreaker {
             failures: inner.failures,
             total: inner.total,
         }
-    }
-
-    /// Alias for `new()` — backward compat with manager.rs.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(ConfigError)` if configuration is invalid.
-    pub fn with_config(config: CircuitBreakerConfig) -> Result<Self, ConfigError> {
-        Self::new(config)
     }
 }
 
@@ -310,7 +320,6 @@ mod tests {
             reset_timeout: Duration::from_millis(100),
             half_open_max_ops: 1,
             min_operations: 1,
-            failure_rate_threshold: 0.5,
             sliding_window: Duration::from_secs(60),
             count_timeouts_as_failures: true,
         }
@@ -332,11 +341,9 @@ mod tests {
     #[tokio::test]
     async fn cancelled_does_not_trip_breaker() {
         let cb = CircuitBreaker::new(default_config()).unwrap();
-        // Simulate cancellation errors — should NOT count as failures
         for _ in 0..10 {
             cb.record_outcome(Outcome::Cancelled);
         }
-        // Breaker should still be closed
         let result = cb.call::<u32, &str>(|| Box::pin(async { Ok(42) })).await;
         assert_eq!(result.unwrap(), 42);
     }
@@ -362,5 +369,65 @@ mod tests {
             ..default_config()
         });
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn half_open_enforces_max_probes() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            half_open_max_ops: 1,
+            ..default_config()
+        })
+        .unwrap();
+
+        // Trip the breaker
+        for _ in 0..3 {
+            cb.record_outcome(Outcome::Failure);
+        }
+        assert_eq!(cb.circuit_state(), CS::Open);
+
+        // Wait for reset timeout
+        tokio::time::sleep(Duration::from_millis(110)).await;
+
+        // First probe should succeed (transitions to HalfOpen)
+        assert!(cb.can_execute::<&str>().is_ok());
+        assert_eq!(cb.circuit_state(), CS::HalfOpen);
+
+        // Second probe should be rejected (max_probes=1 reached)
+        assert!(matches!(
+            cb.can_execute::<&str>(),
+            Err(CallError::CircuitOpen)
+        ));
+
+        // After the probe succeeds, breaker closes and allows new calls
+        cb.record_outcome(Outcome::Success);
+        assert_eq!(cb.circuit_state(), CS::Closed);
+        assert!(cb.can_execute::<&str>().is_ok());
+    }
+
+    #[tokio::test]
+    async fn half_open_failure_reopens_breaker() {
+        let sink = RecordingSink::new();
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            half_open_max_ops: 1,
+            ..default_config()
+        })
+        .unwrap()
+        .with_sink(sink.clone());
+
+        // Trip the breaker
+        for _ in 0..3 {
+            cb.record_outcome(Outcome::Failure);
+        }
+
+        // Wait for reset timeout
+        tokio::time::sleep(Duration::from_millis(110)).await;
+
+        // Enter HalfOpen
+        assert!(cb.can_execute::<&str>().is_ok());
+        assert_eq!(cb.circuit_state(), CS::HalfOpen);
+
+        // Probe fails → back to Open
+        cb.record_outcome(Outcome::Failure);
+        assert_eq!(cb.circuit_state(), CS::Open);
     }
 }

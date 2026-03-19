@@ -1,11 +1,12 @@
 //! Fallback strategies for graceful degradation.
 //!
 //! Provides fallback mechanisms to maintain service availability when primary operations fail.
+//! All strategies operate on [`CallError<E>`] — the same error type used by every other pattern.
 //!
 //! # Example
 //!
 //! ```rust
-//! use nebula_resilience::patterns::fallback::ValueFallback;
+//! use nebula_resilience::fallback::ValueFallback;
 //!
 //! // Return a default value on failure
 //! let fallback = ValueFallback::new("default response".to_string());
@@ -17,26 +18,27 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::{ResilienceError, ResilienceResult};
+use crate::types::{CallError, CallErrorKind};
 
 // =============================================================================
 // FALLBACK STRATEGY TRAIT
 // =============================================================================
 
-/// Fallback strategy trait.
+/// Fallback strategy trait, generic over both the value and error type.
 ///
 /// Implement this trait to define custom fallback behavior.
-pub trait FallbackStrategy<T>: Send + Sync {
-    /// Execute fallback logic
+pub trait FallbackStrategy<T, E>: Send + Sync {
+    /// Execute fallback logic, returning either a recovered value or the error.
     fn fallback<'a>(
         &'a self,
-        error: ResilienceError,
-    ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>>;
+        error: CallError<E>,
+    ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send + 'a>>;
 
-    /// Check if fallback should be attempted for this error
-    fn should_fallback(&self, error: &ResilienceError) -> bool {
-        // Default: fallback for all errors except InvalidConfig
-        !matches!(error, ResilienceError::InvalidConfig { .. })
+    /// Check if fallback should be attempted for this error.
+    ///
+    /// Default: attempt fallback for all errors.
+    fn should_fallback(&self, _error: &CallError<E>) -> bool {
+        true
     }
 }
 
@@ -62,21 +64,21 @@ impl<T: Clone + Send + Sync> ValueFallback<T> {
     }
 }
 
-impl<T: Clone + Send + Sync> FallbackStrategy<T> for ValueFallback<T> {
+impl<T: Clone + Send + Sync, E> FallbackStrategy<T, E> for ValueFallback<T> {
     fn fallback<'a>(
         &'a self,
-        _error: ResilienceError,
-    ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
+        _error: CallError<E>,
+    ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send + 'a>> {
         let value = self.value.clone();
         Box::pin(async move { Ok(value) })
     }
 }
 
-/// Function fallback
+/// Function fallback — executes a closure to produce a fallback value.
 pub struct FunctionFallback<T, F, Fut>
 where
-    F: Fn(ResilienceError) -> Fut + Send + Sync,
-    Fut: Future<Output = ResilienceResult<T>> + Send,
+    F: Fn(CallError<()>) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<T, CallError<()>>> + Send,
 {
     function: F,
     _phantom: std::marker::PhantomData<T>,
@@ -84,10 +86,10 @@ where
 
 impl<T, F, Fut> FunctionFallback<T, F, Fut>
 where
-    F: Fn(ResilienceError) -> Fut + Send + Sync,
-    Fut: Future<Output = ResilienceResult<T>> + Send,
+    F: Fn(CallError<()>) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<T, CallError<()>>> + Send,
 {
-    /// Create new function fallback
+    /// Create new function fallback.
     pub const fn new(function: F) -> Self {
         Self {
             function,
@@ -96,17 +98,25 @@ where
     }
 }
 
-impl<T, F, Fut> FallbackStrategy<T> for FunctionFallback<T, F, Fut>
+impl<T, E, F, Fut> FallbackStrategy<T, E> for FunctionFallback<T, F, Fut>
 where
     T: Send + Sync + 'static,
-    F: Fn(ResilienceError) -> Fut + Send + Sync,
-    Fut: Future<Output = ResilienceResult<T>> + Send,
+    F: Fn(CallError<()>) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<T, CallError<()>>> + Send,
 {
     fn fallback<'a>(
         &'a self,
-        error: ResilienceError,
-    ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
-        Box::pin((self.function)(error))
+        error: CallError<E>,
+    ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send + 'a>> {
+        // Strip the operation error to pass a type-erased CallError<()>
+        let erased = error.map_operation(|_| ());
+        Box::pin(async move {
+            (self.function)(erased).await.map_err(|e| {
+                e.map_operation(|()| {
+                    unreachable!("FunctionFallback returned Operation(()) which is meaningless")
+                })
+            })
+        })
     }
 }
 
@@ -116,7 +126,7 @@ struct CacheEntry<T> {
     updated_at: std::time::Instant,
 }
 
-/// Cache fallback - returns cached value on error
+/// Cache fallback — returns a previously cached value on error.
 pub struct CacheFallback<T: Clone + Send + Sync> {
     cache: Arc<RwLock<Option<CacheEntry<T>>>>,
     ttl: Option<std::time::Duration>,
@@ -130,7 +140,7 @@ impl<T: Clone + Send + Sync> Default for CacheFallback<T> {
 }
 
 impl<T: Clone + Send + Sync> CacheFallback<T> {
-    /// Create new cache fallback
+    /// Create new cache fallback.
     pub fn new() -> Self {
         Self {
             cache: Arc::new(RwLock::new(None)),
@@ -139,7 +149,7 @@ impl<T: Clone + Send + Sync> CacheFallback<T> {
         }
     }
 
-    /// Set TTL for cached value
+    /// Set TTL for cached value.
     #[must_use = "builder methods must be chained or built"]
     pub const fn with_ttl(mut self, ttl: std::time::Duration) -> Self {
         self.ttl = Some(ttl);
@@ -149,68 +159,63 @@ impl<T: Clone + Send + Sync> CacheFallback<T> {
     /// Allow serving stale cached value when TTL is exceeded.
     ///
     /// When enabled, expired cache entries can still be returned during fallback
-    /// instead of failing closed with `FallbackFailed`.
+    /// instead of propagating the original error.
     #[must_use = "builder methods must be chained or built"]
     pub const fn with_stale_if_error(mut self, enabled: bool) -> Self {
         self.stale_if_error = enabled;
         self
     }
 
-    /// Update cached value
+    /// Update cached value.
     pub async fn update(&self, value: T) {
         *self.cache.write().await = Some(CacheEntry {
             value,
             updated_at: std::time::Instant::now(),
         });
     }
-
 }
 
-impl<T: Clone + Send + Sync + 'static> FallbackStrategy<T> for CacheFallback<T> {
+impl<T: Clone + Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
+    for CacheFallback<T>
+{
     fn fallback<'a>(
         &'a self,
-        _error: ResilienceError,
-    ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
+        error: CallError<E>,
+    ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send + 'a>> {
         Box::pin(async move {
             let guard = self.cache.read().await;
-            guard.as_ref().map_or_else(
-                || {
-                    Err(ResilienceError::FallbackFailed {
-                        reason: "No cached value available".to_string(),
-                        original_error: None,
-                    })
-                },
-                |entry| {
-                    let expired = self
-                        .ttl
-                        .is_some_and(|ttl| entry.updated_at.elapsed() >= ttl);
-                    if expired && !self.stale_if_error {
-                        Err(ResilienceError::FallbackFailed {
-                            reason: "Cache expired".to_string(),
-                            original_error: None,
-                        })
-                    } else {
-                        Ok(entry.value.clone())
-                    }
-                },
-            )
+            let Some(entry) = guard.as_ref() else {
+                drop(guard);
+                return Err(error);
+            };
+            let expired = self
+                .ttl
+                .is_some_and(|ttl| entry.updated_at.elapsed() >= ttl);
+            if expired && !self.stale_if_error {
+                drop(guard);
+                Err(error)
+            } else {
+                let value = entry.value.clone();
+                drop(guard);
+                Ok(value)
+            }
         })
     }
 }
 
-/// Chain fallback - tries multiple fallbacks in sequence
-pub struct ChainFallback<T> {
-    fallbacks: Vec<Arc<dyn FallbackStrategy<T>>>,
+/// Chain fallback — tries multiple fallbacks in sequence.
+pub struct ChainFallback<T, E> {
+    fallbacks: Vec<Arc<dyn FallbackStrategy<T, E>>>,
 }
 
-impl<T> Default for ChainFallback<T> {
+impl<T, E> Default for ChainFallback<T, E> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T> ChainFallback<T> {
-    /// Create new chain fallback
+impl<T, E> ChainFallback<T, E> {
+    /// Create new chain fallback.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -222,17 +227,17 @@ impl<T> ChainFallback<T> {
     // Reason: `add` is a builder method, not the `Add` trait operator.
     #[allow(clippy::should_implement_trait)]
     #[must_use = "builder methods must be chained or built"]
-    pub fn add(mut self, fallback: Arc<dyn FallbackStrategy<T>>) -> Self {
+    pub fn add(mut self, fallback: Arc<dyn FallbackStrategy<T, E>>) -> Self {
         self.fallbacks.push(fallback);
         self
     }
 }
 
-impl<T: Send + Sync + 'static> FallbackStrategy<T> for ChainFallback<T> {
+impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E> for ChainFallback<T, E> {
     fn fallback<'a>(
         &'a self,
-        error: ResilienceError,
-    ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
+        error: CallError<E>,
+    ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send + 'a>> {
         Box::pin(async move {
             let mut last_error = error;
 
@@ -250,56 +255,20 @@ impl<T: Send + Sync + 'static> FallbackStrategy<T> for ChainFallback<T> {
     }
 }
 
-/// Category key for [`PriorityFallback`] dispatch.
-///
-/// Derived from a [`ResilienceError`] via [`From`]. Using a typed enum instead
-/// of a `&str` means that adding a new `ResilienceError` variant forces a
-/// conscious update to `From<&ResilienceError>` — the compiler won't let it
-/// silently fall through to `Other`.
-#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
-#[non_exhaustive]
-pub enum ErrorCategory {
-    /// [`ResilienceError::Timeout`]
-    Timeout,
-    /// [`ResilienceError::CircuitBreakerOpen`]
-    CircuitBreaker,
-    /// [`ResilienceError::BulkheadFull`]
-    Bulkhead,
-    /// [`ResilienceError::RetryLimitExceeded`]
-    Retry,
-    /// [`ResilienceError::RateLimitExceeded`]
-    RateLimit,
-    /// Any other error variant
-    Other,
+/// Priority fallback — selects fallback based on error kind.
+pub struct PriorityFallback<T, E> {
+    fallbacks: HashMap<CallErrorKind, Arc<dyn FallbackStrategy<T, E>>>,
+    default: Option<Arc<dyn FallbackStrategy<T, E>>>,
 }
 
-impl From<&ResilienceError> for ErrorCategory {
-    fn from(error: &ResilienceError) -> Self {
-        match error {
-            ResilienceError::Timeout { .. } => Self::Timeout,
-            ResilienceError::CircuitBreakerOpen { .. } => Self::CircuitBreaker,
-            ResilienceError::BulkheadFull { .. } => Self::Bulkhead,
-            ResilienceError::RetryLimitExceeded { .. } => Self::Retry,
-            ResilienceError::RateLimitExceeded { .. } => Self::RateLimit,
-            _ => Self::Other,
-        }
-    }
-}
-
-/// Priority fallback - selects fallback based on error category
-pub struct PriorityFallback<T> {
-    fallbacks: HashMap<ErrorCategory, Arc<dyn FallbackStrategy<T>>>,
-    default: Option<Arc<dyn FallbackStrategy<T>>>,
-}
-
-impl<T> Default for PriorityFallback<T> {
+impl<T, E> Default for PriorityFallback<T, E> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T> PriorityFallback<T> {
-    /// Create new priority fallback
+impl<T, E> PriorityFallback<T, E> {
+    /// Create new priority fallback.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -308,34 +277,36 @@ impl<T> PriorityFallback<T> {
         }
     }
 
-    /// Register a fallback for a specific error category.
+    /// Register a fallback for a specific error kind.
     #[must_use = "builder methods must be chained or built"]
     pub fn register(
         mut self,
-        category: ErrorCategory,
-        fallback: Arc<dyn FallbackStrategy<T>>,
+        kind: CallErrorKind,
+        fallback: Arc<dyn FallbackStrategy<T, E>>,
     ) -> Self {
-        self.fallbacks.insert(category, fallback);
+        self.fallbacks.insert(kind, fallback);
         self
     }
 
-    /// Set default fallback
+    /// Set default fallback.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_default(mut self, fallback: Arc<dyn FallbackStrategy<T>>) -> Self {
+    pub fn with_default(mut self, fallback: Arc<dyn FallbackStrategy<T, E>>) -> Self {
         self.default = Some(fallback);
         self
     }
 }
 
-impl<T: Send + Sync + 'static> FallbackStrategy<T> for PriorityFallback<T> {
+impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
+    for PriorityFallback<T, E>
+{
     fn fallback<'a>(
         &'a self,
-        error: ResilienceError,
-    ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
+        error: CallError<E>,
+    ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send + 'a>> {
         Box::pin(async move {
-            let category = ErrorCategory::from(&error);
+            let kind = error.kind();
 
-            if let Some(fallback) = self.fallbacks.get(&category) {
+            if let Some(fallback) = self.fallbacks.get(&kind) {
                 return fallback.fallback(error).await;
             }
 
@@ -348,14 +319,14 @@ impl<T: Send + Sync + 'static> FallbackStrategy<T> for PriorityFallback<T> {
     }
 }
 
-/// Fallback with operation - combines primary and fallback operations
-pub struct FallbackOperation<T> {
-    fallback_strategy: Arc<dyn FallbackStrategy<T>>,
+/// Fallback with operation — combines primary and fallback operations.
+pub struct FallbackOperation<T, E> {
+    fallback_strategy: Arc<dyn FallbackStrategy<T, E>>,
 }
 
-impl<T> FallbackOperation<T> {
-    /// Create new fallback operation
-    pub fn new(fallback_strategy: Arc<dyn FallbackStrategy<T>>) -> Self {
+impl<T, E> FallbackOperation<T, E> {
+    /// Create new fallback operation.
+    pub fn new(fallback_strategy: Arc<dyn FallbackStrategy<T, E>>) -> Self {
         Self { fallback_strategy }
     }
 
@@ -365,10 +336,10 @@ impl<T> FallbackOperation<T> {
     ///
     /// Returns the fallback strategy's error if both the operation and fallback fail,
     /// or the original error if the fallback strategy declines to handle it.
-    pub async fn execute<F, Fut>(&self, operation: F) -> ResilienceResult<T>
+    pub async fn execute<F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         F: FnOnce() -> Fut,
-        Fut: Future<Output = ResilienceResult<T>>,
+        Fut: Future<Output = Result<T, CallError<E>>>,
         T: Send + Sync,
     {
         match operation().await {
@@ -394,19 +365,14 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::ResilienceError;
+    use crate::CallError;
 
-    fn timeout_error() -> ResilienceError {
-        ResilienceError::Timeout {
-            duration: Duration::from_secs(1),
-            context: None,
-        }
+    fn timeout_error() -> CallError<&'static str> {
+        CallError::Timeout(Duration::from_secs(1))
     }
 
-    fn config_error() -> ResilienceError {
-        ResilienceError::InvalidConfig {
-            message: "bad".to_string(),
-        }
+    fn cancelled_error() -> CallError<&'static str> {
+        CallError::Cancelled { reason: None }
     }
 
     // -----------------------------------------------------------------------
@@ -422,14 +388,8 @@ mod tests {
 
     #[test]
     fn value_fallback_should_fallback_true_for_timeout() {
-        let fb = ValueFallback::new(0u32);
+        let fb = ValueFallback::<u32>::new(0u32);
         assert!(fb.should_fallback(&timeout_error()));
-    }
-
-    #[test]
-    fn value_fallback_should_fallback_false_for_invalid_config() {
-        let fb = ValueFallback::new(0u32);
-        assert!(!fb.should_fallback(&config_error()));
     }
 
     // -----------------------------------------------------------------------
@@ -439,15 +399,17 @@ mod tests {
     #[tokio::test]
     async fn cache_fallback_returns_error_when_empty() {
         let fb: CacheFallback<String> = CacheFallback::new();
-        let result = fb.fallback(timeout_error()).await;
-        assert!(matches!(result, Err(ResilienceError::FallbackFailed { .. })));
+        let result: Result<String, CallError<&str>> = fb
+            .fallback(CallError::Timeout(Duration::from_secs(1)))
+            .await;
+        assert!(matches!(result, Err(CallError::Timeout(_))));
     }
 
     #[tokio::test]
     async fn cache_fallback_returns_cached_value() {
         let fb = CacheFallback::new();
         fb.update("hello".to_string()).await;
-        let result = fb.fallback(timeout_error()).await;
+        let result: Result<String, CallError<&str>> = fb.fallback(timeout_error()).await;
         assert_eq!(result.unwrap(), "hello");
     }
 
@@ -456,8 +418,8 @@ mod tests {
         let fb = CacheFallback::new().with_ttl(Duration::from_millis(1));
         fb.update("stale".to_string()).await;
         tokio::time::sleep(Duration::from_millis(5)).await;
-        let result = fb.fallback(timeout_error()).await;
-        assert!(matches!(result, Err(ResilienceError::FallbackFailed { .. })));
+        let result: Result<String, CallError<&str>> = fb.fallback(timeout_error()).await;
+        assert!(matches!(result, Err(CallError::Timeout(_))));
     }
 
     #[tokio::test]
@@ -467,7 +429,7 @@ mod tests {
             .with_stale_if_error(true);
         fb.update("stale".to_string()).await;
         tokio::time::sleep(Duration::from_millis(5)).await;
-        let result = fb.fallback(timeout_error()).await;
+        let result: Result<String, CallError<&str>> = fb.fallback(timeout_error()).await;
         assert_eq!(result.unwrap(), "stale");
     }
 
@@ -477,12 +439,11 @@ mod tests {
 
     #[tokio::test]
     async fn chain_fallback_tries_in_order_and_returns_first_success() {
-        // First fallback always fails, second always succeeds.
-        let first: Arc<dyn FallbackStrategy<u32>> = Arc::new(FunctionFallback::new(
-            |_err| async { Err(ResilienceError::FallbackFailed { reason: "first".to_string(), original_error: None }) },
-        ));
-        let second: Arc<dyn FallbackStrategy<u32>> =
-            Arc::new(ValueFallback::new(99u32));
+        let first: Arc<dyn FallbackStrategy<u32, &str>> =
+            Arc::new(FunctionFallback::new(|_err| async {
+                Err(CallError::Cancelled { reason: None })
+            }));
+        let second: Arc<dyn FallbackStrategy<u32, &str>> = Arc::new(ValueFallback::new(99u32));
 
         let chain = ChainFallback::new().add(first).add(second);
         let result = chain.fallback(timeout_error()).await;
@@ -491,50 +452,51 @@ mod tests {
 
     #[tokio::test]
     async fn chain_fallback_returns_last_error_when_all_fail() {
-        let failing: Arc<dyn FallbackStrategy<u32>> = Arc::new(FunctionFallback::new(
-            |_err| async { Err(ResilienceError::FallbackFailed { reason: "fail".to_string(), original_error: None }) },
-        ));
+        let failing: Arc<dyn FallbackStrategy<u32, &str>> =
+            Arc::new(FunctionFallback::new(|_err| async {
+                Err(CallError::Cancelled {
+                    reason: Some("fail".into()),
+                })
+            }));
         let chain = ChainFallback::new()
             .add(Arc::clone(&failing))
             .add(Arc::clone(&failing));
         let result = chain.fallback(timeout_error()).await;
-        assert!(matches!(result, Err(ResilienceError::FallbackFailed { .. })));
+        assert!(matches!(result, Err(CallError::Cancelled { .. })));
     }
 
     // -----------------------------------------------------------------------
-    // PriorityFallback / ErrorCategory
+    // PriorityFallback / CallErrorKind
     // -----------------------------------------------------------------------
 
     #[test]
-    fn error_category_from_timeout() {
-        assert_eq!(ErrorCategory::from(&timeout_error()), ErrorCategory::Timeout);
+    fn error_kind_from_timeout() {
+        assert_eq!(timeout_error().kind(), CallErrorKind::Timeout);
     }
 
     #[test]
-    fn error_category_from_config_error_is_other() {
-        assert_eq!(ErrorCategory::from(&config_error()), ErrorCategory::Other);
+    fn error_kind_from_cancelled() {
+        assert_eq!(cancelled_error().kind(), CallErrorKind::Cancelled);
     }
 
     #[tokio::test]
-    async fn priority_fallback_dispatches_to_matching_category() {
-        let timeout_fb: Arc<dyn FallbackStrategy<u32>> =
-            Arc::new(ValueFallback::new(1u32));
-        let default_fb: Arc<dyn FallbackStrategy<u32>> =
-            Arc::new(ValueFallback::new(0u32));
+    async fn priority_fallback_dispatches_to_matching_kind() {
+        let timeout_fb: Arc<dyn FallbackStrategy<u32, &str>> = Arc::new(ValueFallback::new(1u32));
+        let default_fb: Arc<dyn FallbackStrategy<u32, &str>> = Arc::new(ValueFallback::new(0u32));
 
         let pf = PriorityFallback::new()
-            .register(ErrorCategory::Timeout, timeout_fb)
+            .register(CallErrorKind::Timeout, timeout_fb)
             .with_default(default_fb);
 
         // Timeout → registered handler
         assert_eq!(pf.fallback(timeout_error()).await.unwrap(), 1);
         // Other error → default
-        assert_eq!(pf.fallback(config_error()).await.unwrap(), 0);
+        assert_eq!(pf.fallback(cancelled_error()).await.unwrap(), 0);
     }
 
     #[tokio::test]
     async fn priority_fallback_returns_error_when_no_match_and_no_default() {
-        let pf: PriorityFallback<u32> = PriorityFallback::new();
+        let pf: PriorityFallback<u32, &str> = PriorityFallback::new();
         let result = pf.fallback(timeout_error()).await;
         assert!(result.is_err());
     }
@@ -545,28 +507,19 @@ mod tests {
 
     #[tokio::test]
     async fn fallback_operation_returns_primary_result_on_success() {
-        let op = FallbackOperation::new(Arc::new(ValueFallback::new(0u32)));
+        let op: FallbackOperation<u32, &str> =
+            FallbackOperation::new(Arc::new(ValueFallback::new(0u32)));
         let result = op.execute(|| async { Ok(42u32) }).await;
         assert_eq!(result.unwrap(), 42);
     }
 
     #[tokio::test]
     async fn fallback_operation_invokes_fallback_on_error() {
-        let op = FallbackOperation::new(Arc::new(ValueFallback::new(99u32)));
+        let op: FallbackOperation<u32, &str> =
+            FallbackOperation::new(Arc::new(ValueFallback::new(99u32)));
         let result = op
             .execute(|| async { Err::<u32, _>(timeout_error()) })
             .await;
         assert_eq!(result.unwrap(), 99);
     }
-
-    #[tokio::test]
-    async fn fallback_operation_skips_fallback_for_invalid_config() {
-        let op = FallbackOperation::new(Arc::new(ValueFallback::new(99u32)));
-        let result = op
-            .execute(|| async { Err::<u32, _>(config_error()) })
-            .await;
-        // should_fallback returns false for InvalidConfig → original error returned
-        assert!(matches!(result, Err(ResilienceError::InvalidConfig { .. })));
-    }
 }
-

@@ -299,17 +299,6 @@ impl Error {
     }
 }
 
-impl nebula_resilience::retryable::Retryable for Error {
-    fn is_retryable(&self) -> bool {
-        Error::is_retryable(self)
-    }
-
-    fn retry_delay(&self) -> std::time::Duration {
-        self.retry_after()
-            .unwrap_or(std::time::Duration::from_millis(100))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

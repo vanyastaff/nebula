@@ -13,7 +13,7 @@
 //! ```
 //! use nebula_resilience::rate_limiter::TokenBucket;
 //!
-//! let limiter = TokenBucket::new(100, 10.0); // 100 capacity, 10 req/sec
+//! let limiter = TokenBucket::new(100, 10.0).unwrap();
 //! ```
 
 use std::collections::VecDeque;
@@ -25,10 +25,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::{Mutex, RwLock};
 
-use crate::{
-    CallError,
-    sink::{MetricsSink, NoopSink, ResilienceEvent},
-};
+use crate::CallError;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TRAIT
@@ -67,22 +64,17 @@ struct TokenBucketState {
     last_refill: Instant,
 }
 
-/// Token bucket rate limiter
+/// Token bucket rate limiter.
 ///
 /// Classic token bucket algorithm with configurable capacity and refill rate.
 /// Tokens are added at a constant rate and consumed by operations.
-///
-/// # Security
-///
-/// - Maximum capacity limited to 100,000 to prevent memory exhaustion
-/// - Refill rate clamped between 0.001 and 10,000 req/sec
 ///
 /// # Examples
 ///
 /// ```
 /// use nebula_resilience::rate_limiter::TokenBucket;
 ///
-/// let limiter = TokenBucket::new(100, 10.0); // 100 capacity, 10 req/sec
+/// let limiter = TokenBucket::new(100, 10.0).unwrap();
 /// ```
 pub struct TokenBucket {
     /// Maximum tokens in bucket
@@ -106,23 +98,33 @@ impl fmt::Debug for TokenBucket {
 }
 
 impl TokenBucket {
-    /// Create new token bucket with validation
+    /// Create new token bucket.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ConfigError)` if `capacity` is 0 or > 100,000,
+    /// or `refill_rate` is outside 0.001..=10,000.0.
     // Reason: usize capacity cast to f64 for token tracking — acceptable for rate limiting.
     #[allow(clippy::cast_precision_loss)]
-    #[must_use]
-    pub fn new(capacity: usize, refill_rate: f64) -> Self {
-        let safe_capacity = capacity.min(100_000);
-        let safe_refill_rate = refill_rate.clamp(0.001, 10_000.0);
-
-        Self {
-            capacity: safe_capacity,
+    pub fn new(capacity: usize, refill_rate: f64) -> Result<Self, crate::ConfigError> {
+        if capacity == 0 || capacity > 100_000 {
+            return Err(crate::ConfigError::new("capacity", "must be 1..=100,000"));
+        }
+        if !(0.001..=10_000.0).contains(&refill_rate) {
+            return Err(crate::ConfigError::new(
+                "refill_rate",
+                "must be 0.001..=10,000.0",
+            ));
+        }
+        Ok(Self {
+            capacity,
             state: Mutex::new(TokenBucketState {
-                tokens: safe_capacity as f64,
+                tokens: capacity as f64,
                 last_refill: Instant::now(),
             }),
-            refill_rate: safe_refill_rate,
-            burst_size: safe_capacity,
-        }
+            refill_rate,
+            burst_size: capacity,
+        })
     }
 
     /// Set burst size
@@ -382,12 +384,18 @@ pub struct AdaptiveRateLimiter {
 }
 
 impl AdaptiveRateLimiter {
-    /// Create new adaptive rate limiter
+    /// Create new adaptive rate limiter.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `initial_rate` produces an invalid `TokenBucket` configuration
+    /// (rate must be within 0.001..=10,000 and the derived capacity must be 1..=100,000).
     // Reason: f64 rates cast to usize for token bucket capacity — acceptable for rate limiting.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     #[must_use]
     pub fn new(initial_rate: f64, min_rate: f64, max_rate: f64) -> Self {
-        let token_bucket = TokenBucket::new(initial_rate as usize, initial_rate);
+        let token_bucket = TokenBucket::new(initial_rate.max(1.0) as usize, initial_rate)
+            .expect("AdaptiveRateLimiter: initial_rate must produce valid TokenBucket config");
 
         Self {
             state: Arc::new(RwLock::new(AdaptiveState {
@@ -428,7 +436,9 @@ impl AdaptiveRateLimiter {
                 state.current_rate = (state.current_rate * 1.1).min(self.max_rate);
             }
 
-            let new_limiter = TokenBucket::new(state.current_rate as usize, state.current_rate);
+            let new_limiter =
+                TokenBucket::new(state.current_rate.max(1.0) as usize, state.current_rate)
+                    .expect("adjusted rate is clamped to min/max bounds");
             state.inner = Arc::new(new_limiter);
             self.atomic_rate
                 .store(state.current_rate.to_bits(), Ordering::Release);
@@ -495,10 +505,10 @@ impl RateLimiter for AdaptiveRateLimiter {
         state.error_count = 0;
         state.last_stats_reset = Instant::now();
         state.current_rate = state.initial_rate;
-        state.inner = Arc::new(TokenBucket::new(
-            state.initial_rate as usize,
-            state.initial_rate,
-        ));
+        state.inner = Arc::new(
+            TokenBucket::new(state.initial_rate.max(1.0) as usize, state.initial_rate)
+                .expect("initial_rate produced valid config at construction"),
+        );
         self.atomic_rate
             .store(state.initial_rate.to_bits(), Ordering::Release);
     }
@@ -628,138 +638,14 @@ mod governor_impl {
 #[cfg(feature = "governor")]
 pub use governor_impl::GovernorRateLimiter;
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ANY RATE LIMITER (enum dispatch)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Enum wrapper for dyn-compatible rate limiters.
-///
-/// The `Governor` variant is only available when the `governor` feature is enabled.
-#[derive(Clone)]
-pub enum AnyRateLimiterInner {
-    /// Token bucket rate limiter
-    TokenBucket(Arc<TokenBucket>),
-    /// Leaky bucket rate limiter
-    LeakyBucket(Arc<LeakyBucket>),
-    /// Sliding window rate limiter
-    SlidingWindow(Arc<SlidingWindow>),
-    /// Adaptive rate limiter
-    Adaptive(Arc<AdaptiveRateLimiter>),
-    /// Governor-based GCRA rate limiter (production-grade).
-    /// Requires the `governor` feature.
-    #[cfg(feature = "governor")]
-    Governor(Arc<GovernorRateLimiter>),
-}
-
-/// Rate limiter with an injectable [`MetricsSink`] for observability.
-#[derive(Clone)]
-pub struct AnyRateLimiter {
-    inner: AnyRateLimiterInner,
-    sink: Arc<dyn MetricsSink>,
-}
-
-impl AnyRateLimiter {
-    /// Wrap a `TokenBucket`.
-    pub fn token_bucket(l: TokenBucket) -> Self {
-        Self {
-            inner: AnyRateLimiterInner::TokenBucket(Arc::new(l)),
-            sink: Arc::new(NoopSink),
-        }
-    }
-    /// Wrap a `LeakyBucket`.
-    pub fn leaky_bucket(l: LeakyBucket) -> Self {
-        Self {
-            inner: AnyRateLimiterInner::LeakyBucket(Arc::new(l)),
-            sink: Arc::new(NoopSink),
-        }
-    }
-    /// Wrap a `SlidingWindow`.
-    #[must_use]
-    pub fn sliding_window(l: SlidingWindow) -> Self {
-        Self {
-            inner: AnyRateLimiterInner::SlidingWindow(Arc::new(l)),
-            sink: Arc::new(NoopSink),
-        }
-    }
-    /// Wrap an `AdaptiveRateLimiter`.
-    pub fn adaptive(l: AdaptiveRateLimiter) -> Self {
-        Self {
-            inner: AnyRateLimiterInner::Adaptive(Arc::new(l)),
-            sink: Arc::new(NoopSink),
-        }
-    }
-    #[cfg(feature = "governor")]
-    /// Wrap a `GovernorRateLimiter`.
-    pub fn governor(l: GovernorRateLimiter) -> Self {
-        Self {
-            inner: AnyRateLimiterInner::Governor(Arc::new(l)),
-            sink: Arc::new(NoopSink),
-        }
-    }
-
-    /// Inject a metrics sink.
-    #[must_use]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
-        self.sink = Arc::new(sink);
-        self
-    }
-}
-
-macro_rules! dispatch_inner {
-    ($inner:expr, $method:ident $(, $arg:expr)*) => {
-        match $inner {
-            AnyRateLimiterInner::TokenBucket(l)   => l.$method($($arg),*).await,
-            AnyRateLimiterInner::LeakyBucket(l)   => l.$method($($arg),*).await,
-            AnyRateLimiterInner::SlidingWindow(l) => l.$method($($arg),*).await,
-            AnyRateLimiterInner::Adaptive(l)      => l.$method($($arg),*).await,
-            #[cfg(feature = "governor")]
-            AnyRateLimiterInner::Governor(l)      => l.$method($($arg),*).await,
-        }
-    };
-}
-
-impl RateLimiter for AnyRateLimiter {
-    async fn acquire(&self) -> Result<(), CallError<()>> {
-        let result = dispatch_inner!(&self.inner, acquire);
-        if result.is_err() {
-            self.sink.record(ResilienceEvent::RateLimitExceeded);
-        }
-        result
-    }
-
-    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
-    where
-        F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = Result<T, E>> + Send,
-        T: Send,
-    {
-        self.acquire().await.map_err(|_| CallError::RateLimited)?;
-        operation().await.map_err(CallError::Operation)
-    }
-
-    async fn current_rate(&self) -> f64 {
-        dispatch_inner!(&self.inner, current_rate)
-    }
-
-    async fn reset(&self) {
-        dispatch_inner!(&self.inner, reset);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RecordingSink;
 
     #[tokio::test]
-    async fn emits_rate_limit_exceeded_event() {
-        let sink = RecordingSink::new();
-        let limiter =
-            AnyRateLimiter::token_bucket(TokenBucket::new(1, 0.001)).with_sink(sink.clone());
-
-        assert!(limiter.acquire().await.is_ok()); // first — succeeds (1 token)
-        let _ = limiter.acquire().await; // second — rate limited
-
-        assert!(sink.count("rate_limit_exceeded") > 0);
+    async fn token_bucket_respects_capacity() {
+        let limiter = TokenBucket::new(1, 0.001).unwrap();
+        assert!(limiter.acquire().await.is_ok());
+        assert!(limiter.acquire().await.is_err());
     }
 }

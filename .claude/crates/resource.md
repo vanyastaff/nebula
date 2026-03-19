@@ -22,5 +22,4 @@ Resource lifecycle management — pooling, health checks, autoscaling, hooks, an
 ## Relations
 - Depends on nebula-core, nebula-telemetry (re-exports CallRecord types), nebula-eventbus. Peer with nebula-credential.
 
-<!-- reviewed: 2026-03-19 -->
-<!-- fmt-only change: stress.rs import order and line width reformatted by cargo fmt -->
+<!-- reviewed: 2026-03-19 (removed Retryable impl, updated CircuitBreakerConfig usage after resilience API review) -->

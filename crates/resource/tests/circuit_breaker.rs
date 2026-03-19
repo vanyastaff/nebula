@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use nebula_core::{ResourceKey, resource_key};
 use nebula_resilience::CircuitBreakerConfig;
-use nebula_resilience::retryable::Retryable;
 use nebula_resource::context::Context;
 use nebula_resource::error::Error;
 use nebula_resource::events::{EventBus, ResourceEvent};
@@ -108,11 +107,6 @@ async fn create_breaker_opens_and_reports_retryability() {
         }
     ));
     assert!(err.is_retryable());
-    assert_eq!(Retryable::is_retryable(&err), err.is_retryable());
-    assert_eq!(
-        Retryable::retry_delay(&err),
-        err.retry_after().unwrap_or(Duration::from_millis(100))
-    );
 }
 
 #[tokio::test]

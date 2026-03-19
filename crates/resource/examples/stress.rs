@@ -404,8 +404,7 @@ async fn flaky_resource() {
             resilience: PoolResiliencePolicy {
                 create_breaker: Some(CircuitBreakerConfig {
                     min_operations: 3,
-                    half_open_max_operations: 1,
-                    failure_rate_threshold: 0.4,
+                    half_open_max_ops: 1,
                     ..Default::default()
                 }),
                 ..Default::default()
