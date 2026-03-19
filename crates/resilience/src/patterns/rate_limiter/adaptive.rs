@@ -1,17 +1,17 @@
 //! Adaptive rate limiter that adjusts based on error rates
 
-use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::{AnyRateLimiter, RateLimiter, TokenBucket};
+use super::{RateLimiter, TokenBucket};
 use crate::ResilienceResult;
 
 /// Mutable state behind a single lock.
 struct AdaptiveState {
-    inner: AnyRateLimiter,
+    inner: Arc<TokenBucket>,
     success_count: usize,
     error_count: usize,
     last_stats_reset: Instant,
@@ -25,6 +25,9 @@ struct AdaptiveState {
 /// - Low error rate (<1%) → increase rate
 pub struct AdaptiveRateLimiter {
     state: Arc<RwLock<AdaptiveState>>,
+    /// Lock-free copy of `current_rate` for cheap reads without taking the lock.
+    /// Stored as `f64::to_bits()` / read via `f64::from_bits()`.
+    atomic_rate: AtomicU64,
     stats_window: Duration,
     min_rate: f64,
     max_rate: f64,
@@ -38,12 +41,13 @@ impl AdaptiveRateLimiter {
 
         Self {
             state: Arc::new(RwLock::new(AdaptiveState {
-                inner: AnyRateLimiter::TokenBucket(Arc::new(token_bucket)),
+                inner: Arc::new(token_bucket),
                 success_count: 0,
                 error_count: 0,
                 last_stats_reset: Instant::now(),
                 current_rate: initial_rate,
             })),
+            atomic_rate: AtomicU64::new(initial_rate.to_bits()),
             stats_window: Duration::from_mins(1),
             min_rate,
             max_rate,
@@ -67,7 +71,9 @@ impl AdaptiveRateLimiter {
             }
 
             let new_limiter = TokenBucket::new(state.current_rate as usize, state.current_rate);
-            state.inner = AnyRateLimiter::TokenBucket(Arc::new(new_limiter));
+            state.inner = Arc::new(new_limiter);
+            self.atomic_rate
+                .store(state.current_rate.to_bits(), Ordering::Release);
         }
 
         state.success_count = 0;
@@ -92,7 +98,6 @@ impl AdaptiveRateLimiter {
     }
 }
 
-#[async_trait]
 impl RateLimiter for AdaptiveRateLimiter {
     async fn acquire(&self) -> ResilienceResult<()> {
         let limiter = {
@@ -121,7 +126,7 @@ impl RateLimiter for AdaptiveRateLimiter {
     }
 
     async fn current_rate(&self) -> f64 {
-        self.state.read().current_rate
+        f64::from_bits(self.atomic_rate.load(Ordering::Acquire))
     }
 
     async fn reset(&self) {

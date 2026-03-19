@@ -8,25 +8,25 @@
     reason = "Composition benchmark scenarios require deeply nested async setup and execution"
 )]
 
-use async_trait::async_trait;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::{
     BoxedOperation, LayerBuilder, LayerStack, ResilienceError, ResilienceLayer, RetryableOperation,
 };
+use std::future::Future;
 use std::hint::black_box;
+use std::pin::Pin;
 use std::sync::Arc;
 
 struct NoopLayer;
 
-#[async_trait]
 impl ResilienceLayer<u64> for NoopLayer {
-    async fn apply(
-        &self,
-        operation: &BoxedOperation<u64>,
-        next: &(dyn LayerStack<u64> + Send + Sync),
-        _cancellation: Option<&nebula_resilience::core::CancellationContext>,
-    ) -> Result<u64, ResilienceError> {
-        next.execute(operation).await
+    fn apply<'a>(
+        &'a self,
+        operation: &'a BoxedOperation<u64>,
+        next: &'a (dyn LayerStack<u64> + Send + Sync),
+        _cancellation: Option<&'a nebula_resilience::core::CancellationContext>,
+    ) -> Pin<Box<dyn Future<Output = Result<u64, ResilienceError>> + Send + 'a>> {
+        next.execute(operation)
     }
 
     fn name(&self) -> &'static str {

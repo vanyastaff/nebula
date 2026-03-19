@@ -43,8 +43,12 @@ pub trait ResilienceConfig: Send + Sync + Serialize + for<'de> Deserialize<'de> 
 /// Common configuration parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommonConfig {
-    /// Operation timeout
-    #[serde(with = "humantime_serde")]
+    /// Operation timeout.
+    ///
+    /// Serialized as a human-readable string (e.g. `"30s"`) when the
+    /// `humantime` feature is enabled; otherwise as milliseconds via serde's
+    /// default `Duration` representation.
+    #[cfg_attr(feature = "humantime", serde(with = "humantime_serde"))]
     pub timeout: Option<Duration>,
 
     /// Enable metrics collection

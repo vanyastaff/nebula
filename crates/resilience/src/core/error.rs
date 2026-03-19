@@ -1,7 +1,29 @@
 //! Error types for resilience operations
 
+use std::fmt;
 use std::time::Duration;
 use thiserror::Error;
+
+/// The state of a circuit breaker when it rejects an operation.
+///
+/// Defined in `core` to avoid a circular dependency between `core::error` and
+/// `patterns::circuit_breaker`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CircuitBreakerOpenState {
+    /// Circuit is fully open — all operations are rejected.
+    Open,
+    /// Circuit is in half-open state but the probe limit is reached.
+    HalfOpen,
+}
+
+impl fmt::Display for CircuitBreakerOpenState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Open => f.write_str("open"),
+            Self::HalfOpen => f.write_str("half-open"),
+        }
+    }
+}
 
 // ResilienceError can be converted to other error types as needed
 // by implementing From traits in consuming crates
@@ -9,6 +31,7 @@ use thiserror::Error;
 /// Core resilience errors
 #[derive(Debug, Error)]
 #[must_use = "ResilienceError should be returned or handled"]
+#[non_exhaustive]
 pub enum ResilienceError {
     /// Operation timed out
     #[error("Operation timed out after {duration:?}{}", context.as_ref().map(|c| format!(" - {c}")).unwrap_or_default())]
@@ -22,8 +45,8 @@ pub enum ResilienceError {
     /// Circuit breaker is open
     #[error("Circuit breaker is {state}{}", retry_after.map(|d| format!(" (retry after {d:?})")).unwrap_or_default())]
     CircuitBreakerOpen {
-        /// Current circuit breaker state
-        state: String,
+        /// Current circuit breaker state (always `Open` or `HalfOpen`)
+        state: CircuitBreakerOpenState,
         /// Time until next retry attempt
         retry_after: Option<Duration>,
     },
@@ -101,7 +124,7 @@ impl Clone for ResilienceError {
                 context: context.clone(),
             },
             Self::CircuitBreakerOpen { state, retry_after } => Self::CircuitBreakerOpen {
-                state: state.clone(),
+                state: *state,
                 retry_after: *retry_after,
             },
             Self::BulkheadFull {
@@ -155,6 +178,7 @@ impl Clone for ResilienceError {
 
 /// Error classification for decision making
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ErrorClass {
     /// Transient errors that should be retried
     Transient,
@@ -187,9 +211,9 @@ impl ResilienceError {
     }
 
     /// Create a circuit breaker open error
-    pub fn circuit_breaker_open(state: impl Into<String>) -> Self {
+    pub fn circuit_breaker_open(state: CircuitBreakerOpenState) -> Self {
         Self::CircuitBreakerOpen {
-            state: state.into(),
+            state,
             retry_after: None,
         }
     }
@@ -333,7 +357,7 @@ mod tests {
             ErrorClass::Transient
         );
         assert_eq!(
-            ResilienceError::circuit_breaker_open("open").classify(),
+            ResilienceError::circuit_breaker_open(CircuitBreakerOpenState::Open).classify(),
             ErrorClass::ResourceExhaustion
         );
         assert_eq!(

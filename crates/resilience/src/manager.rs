@@ -25,6 +25,7 @@
 
 use std::future::Future;
 use std::marker::PhantomData;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -228,21 +229,19 @@ impl<S: Service> ServiceMetrics<S> {
 ///
 /// This trait allows operations to be called multiple times for retry scenarios
 /// while maintaining proper async semantics and error handling.
-#[async_trait::async_trait]
-pub trait RetryableOperation<T> {
+pub trait RetryableOperation<T>: Send + Sync {
     /// Execute the operation
-    async fn execute(&self) -> ResilienceResult<T>;
+    fn execute<'a>(&'a self) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>>;
 }
 
 /// Implement `RetryableOperation` for async closures that can be called multiple times
-#[async_trait::async_trait]
 impl<F, Fut, T> RetryableOperation<T> for F
 where
     F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = ResilienceResult<T>> + Send,
+    Fut: Future<Output = ResilienceResult<T>> + Send + 'static,
 {
-    async fn execute(&self) -> ResilienceResult<T> {
-        self().await
+    fn execute<'a>(&'a self) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
+        Box::pin(self())
     }
 }
 

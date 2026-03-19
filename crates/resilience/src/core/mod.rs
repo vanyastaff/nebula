@@ -39,10 +39,11 @@ pub use dynamic::{
     BulkheadConfigBuilder, CircuitBreakerConfigBuilder, DynamicConfig, DynamicConfigBuilder,
     DynamicConfigurable, ResiliencePresets, RetryConfigBuilder,
 };
-pub use error::{ErrorClass, ErrorContext, ResilienceError};
+pub use error::{CircuitBreakerOpenState, ErrorClass, ErrorContext, ResilienceError};
 pub use metrics::{MetricKind, MetricSnapshot, Metrics, MetricsCollector};
 pub use result::{ResilienceResult, ResultExt};
 pub use traits::{
+    CanExecute, ExecuteGuard, FromResilienceError, PatternHealth,
     Executable, HealthCheck, PatternMetrics, ResiliencePattern, Retryable,
     circuit_states::{Closed, HalfOpen, Open, StateTransition, TypestateCircuitState},
 };

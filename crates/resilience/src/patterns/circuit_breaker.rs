@@ -10,7 +10,7 @@
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::core::{
-    ResilienceError, ResilienceResult,
+    CircuitBreakerOpenState, ResilienceError, ResilienceResult,
     cancellation::CancellationContext,
     config::{ConfigError, ConfigResult, ResilienceConfig},
     traits::PatternMetrics,
@@ -282,6 +282,11 @@ pub struct CircuitBreaker<const FAILURE_THRESHOLD: usize = 5, const RESET_TIMEOU
     /// Atomic state for lock-free fast-path: 0=Closed, 1=Open, 2=HalfOpen.
     /// Lives outside the RwLock so the closed-state fast path never acquires a lock.
     atomic_state: Arc<AtomicU8>,
+    /// Total operations executed — incremented outside the write lock to reduce contention.
+    atomic_total_ops: AtomicU64,
+    /// Consecutive failures in current Closed cycle — reset on success, incremented on failure.
+    /// Stored outside the lock so `stats()` can read without write-lock acquisition.
+    atomic_failure_count: AtomicUsize,
 }
 
 impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64> std::fmt::Debug
@@ -301,11 +306,9 @@ struct CircuitBreakerInner<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_M
     /// Shared atomic state — also stored on the outer `CircuitBreaker`.
     /// Updated here (under write lock) so both copies stay in sync.
     atomic_state: Arc<AtomicU8>,
-    failure_count: usize,
     last_failure_time: Option<Instant>,
     half_open_operations: usize,
     sliding_window: SlidingWindow,
-    total_operations: u64,
     last_state_change: Instant,
 }
 
@@ -361,16 +364,16 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
             config,
             state: State::Closed,
             atomic_state: Arc::clone(&atomic_state),
-            failure_count: 0,
             last_failure_time: None,
             half_open_operations: 0,
-            total_operations: 0,
             last_state_change: Instant::now(),
         };
 
         Ok(Self {
             inner: Arc::new(RwLock::new(inner)),
             atomic_state,
+            atomic_total_ops: AtomicU64::new(0),
+            atomic_failure_count: AtomicUsize::new(0),
         })
     }
 
@@ -486,7 +489,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
             };
 
             return Err(ResilienceError::CircuitBreakerOpen {
-                state: "open".to_string(),
+                state: CircuitBreakerOpenState::Open,
                 retry_after: reset_timeout,
             });
         }
@@ -498,9 +501,11 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
         let duration = start_time.elapsed();
         tracing::debug!(?duration, "Operation completed");
 
+        // total_operations is outside the lock — increment unconditionally.
+        self.atomic_total_ops.fetch_add(1, Ordering::Relaxed);
+
         // Record the result and potentially transition states
         let mut inner = self.inner.write().await;
-        inner.total_operations += 1;
 
         match result {
             Ok(ref _value) => {
@@ -542,7 +547,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
         match inner.state {
             State::Closed => {
                 // Reset failure count on success in closed state
-                inner.failure_count = 0;
+                self.atomic_failure_count.store(0, Ordering::Relaxed);
                 inner.last_failure_time = None;
             }
             State::HalfOpen => {
@@ -552,7 +557,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
                 if inner.half_open_operations >= inner.config.half_open_max_operations {
                     info!("Circuit breaker transitioning from half-open to closed");
                     inner.set_state(State::Closed);
-                    inner.failure_count = 0;
+                    self.atomic_failure_count.store(0, Ordering::Relaxed);
                     inner.half_open_operations = 0;
                 }
             }
@@ -567,7 +572,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
         &self,
         inner: &mut CircuitBreakerInner<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>,
     ) {
-        inner.failure_count += 1;
+        self.atomic_failure_count.fetch_add(1, Ordering::Relaxed);
         inner.last_failure_time = Some(Instant::now());
 
         match inner.state {
@@ -579,7 +584,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
                     && failure_rate >= inner.config.failure_rate_threshold
                 {
                     warn!(
-                        failure_count = inner.failure_count,
+                        failure_count = self.atomic_failure_count.load(Ordering::Relaxed),
                         failure_rate = failure_rate,
                         operation_count = operation_count,
                         "Circuit breaker opening"
@@ -665,10 +670,10 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
 
         CircuitBreakerStats {
             state: inner.state,
-            failure_count: inner.failure_count,
+            failure_count: self.atomic_failure_count.load(Ordering::Relaxed),
             last_failure_time: inner.last_failure_time,
             half_open_operations: inner.half_open_operations,
-            total_operations: inner.total_operations,
+            total_operations: self.atomic_total_ops.load(Ordering::Relaxed),
             failure_rate,
             operation_count,
         }
@@ -680,7 +685,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
         info!("Manually resetting circuit breaker");
 
         inner.set_state(State::Closed);
-        inner.failure_count = 0;
+        self.atomic_failure_count.store(0, Ordering::Relaxed);
         inner.last_failure_time = None;
         inner.half_open_operations = 0;
     }
@@ -721,7 +726,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
                     Ok(())
                 } else {
                     Err(ResilienceError::CircuitBreakerOpen {
-                        state: "half-open (limit reached)".to_string(),
+                        state: CircuitBreakerOpenState::HalfOpen,
                         retry_after: None,
                     })
                 }
@@ -765,7 +770,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
                     Some(Duration::ZERO)
                 };
                 Err(ResilienceError::CircuitBreakerOpen {
-                    state: "open".to_string(),
+                    state: CircuitBreakerOpenState::Open,
                     retry_after,
                 })
             }
@@ -774,20 +779,18 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
 
     /// Record a successful operation
     pub async fn record_success(&self) {
+        self.atomic_total_ops.fetch_add(1, Ordering::Relaxed);
         let mut inner = self.inner.write().await;
-        inner.total_operations += 1;
         inner.sliding_window.record_operation(false);
         self.record_success_inner(&mut inner);
-        drop(inner);
     }
 
     /// Record a failed operation
     pub async fn record_failure(&self) {
+        self.atomic_total_ops.fetch_add(1, Ordering::Relaxed);
         let mut inner = self.inner.write().await;
-        inner.total_operations += 1;
         inner.sliding_window.record_operation(true);
         self.record_failure_inner(&mut inner);
-        drop(inner);
     }
 }
 

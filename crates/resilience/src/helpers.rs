@@ -22,14 +22,14 @@ macro_rules! log_result {
     ($result:expr, $operation:expr, $description:expr) => {
         match &$result {
             Ok(_value) => {
-                info!(
+                tracing::info!(
                     operation = $operation,
                     description = $description,
                     "Operation succeeded"
                 );
             }
             Err(err) => {
-                warn!(
+                tracing::warn!(
                     operation = $operation,
                     description = $description,
                     error = %err,
@@ -42,7 +42,7 @@ macro_rules! log_result {
     ($result:expr, $operation:expr, $description:expr, value = $value_expr:expr) => {
         match &$result {
             Ok(value) => {
-                info!(
+                tracing::info!(
                     operation = $operation,
                     description = $description,
                     result = %$value_expr(value),
@@ -50,7 +50,7 @@ macro_rules! log_result {
                 );
             }
             Err(err) => {
-                warn!(
+                tracing::warn!(
                     operation = $operation,
                     description = $description,
                     error = %err,
@@ -118,14 +118,14 @@ macro_rules! print_result {
 #[macro_export]
 macro_rules! execute_logged {
     ($operation:expr, $description:expr, $future:expr) => {{
-        info!(operation = $operation, description = $description, "Starting operation");
+        tracing::info!(operation = $operation, description = $description, "Starting operation");
         let start = std::time::Instant::now();
         let result = $future.await;
         let elapsed = start.elapsed();
 
         match &result {
             Ok(_) => {
-                info!(
+                tracing::info!(
                     operation = $operation,
                     description = $description,
                     elapsed = ?elapsed,
@@ -133,7 +133,7 @@ macro_rules! execute_logged {
                 );
             }
             Err(err) => {
-                warn!(
+                tracing::warn!(
                     operation = $operation,
                     description = $description,
                     elapsed = ?elapsed,

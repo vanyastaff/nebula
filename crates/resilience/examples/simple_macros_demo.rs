@@ -3,6 +3,7 @@
 use std::time::Duration;
 use tokio::time::sleep;
 
+use nebula_log::info;
 use nebula_resilience::prelude::*;
 use nebula_resilience::{log_result, print_result};
 

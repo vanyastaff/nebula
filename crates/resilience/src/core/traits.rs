@@ -526,6 +526,120 @@ pub fn timeout<const MS: u64>() -> TimeoutConfig<MS> {
     TimeoutConfig::new(MS)
 }
 
+// =============================================================================
+// INTEGRATION TRAITS (6.2)
+// =============================================================================
+
+/// Lightweight guard-check trait.
+///
+/// Implement on any pattern that can be asked "may I execute right now?"
+/// without requiring full [`ResiliencePattern`] semantics.
+///
+/// Circuit breakers, bulkheads, and rate limiters all implement this.
+pub trait CanExecute: Send + Sync {
+    /// Returns `Ok(())` if the pattern allows execution, or an error with
+    /// details about why the request is being rejected.
+    fn can_execute(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = ResilienceResult<()>> + Send + '_>>;
+}
+
+/// Lightweight health query trait.
+///
+/// A thinner alternative to [`ResiliencePattern::is_healthy`] for contexts
+/// where only a pass/fail health signal is needed.
+pub trait PatternHealth: Send + Sync {
+    /// `true` if the pattern is healthy and able to allow traffic.
+    fn is_healthy(&self) -> bool;
+
+    /// Human-readable status string.
+    fn health_status(&self) -> &'static str {
+        if self.is_healthy() { "healthy" } else { "degraded" }
+    }
+}
+
+/// RAII guard that records an operation's outcome when dropped.
+///
+/// Acquire via [`RecordOutcome::guard`]. On drop, [`ExecuteGuard::success`] or
+/// [`ExecuteGuard::failure`] is used to commit the recorded outcome; if neither
+/// was called, the guard records a failure (conservative default).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let mut guard = cb.guard();
+/// let result = operation().await;
+/// if result.is_ok() { guard.success(); } else { guard.failure(); }
+/// drop(guard); // records the outcome
+/// ```
+pub struct ExecuteGuard<'a> {
+    record_fn: Box<dyn FnMut(bool) + Send + 'a>,
+    outcome: bool,
+}
+
+impl<'a> ExecuteGuard<'a> {
+    /// Create a new guard with a callback invoked on drop.
+    ///
+    /// The callback receives `true` for success, `false` for failure.
+    pub fn new(record_fn: impl FnMut(bool) + Send + 'a) -> Self {
+        Self {
+            record_fn: Box::new(record_fn),
+            outcome: false, // conservative default: failure
+        }
+    }
+
+    /// Mark the guarded operation as successful.
+    pub fn success(&mut self) {
+        self.outcome = true;
+    }
+
+    /// Mark the guarded operation as failed.
+    pub fn failure(&mut self) {
+        self.outcome = false;
+    }
+}
+
+impl Drop for ExecuteGuard<'_> {
+    fn drop(&mut self) {
+        (self.record_fn)(self.outcome);
+    }
+}
+
+// =============================================================================
+// ERROR BRIDGE TRAIT (6.6)
+// =============================================================================
+
+/// Bridge trait that lets user-defined error types be constructed from a
+/// [`ResilienceError`].
+///
+/// Implement this to enable ergonomic `?`-based error propagation in
+/// operations that return your own error type:
+///
+/// ```rust,ignore
+/// #[derive(Debug)]
+/// enum AppError {
+///     Resilience(ResilienceError),
+///     Io(std::io::Error),
+/// }
+///
+/// impl FromResilienceError for AppError {
+///     fn from_resilience_error(e: ResilienceError) -> Self {
+///         Self::Resilience(e)
+///     }
+/// }
+///
+/// // Enables: `resilience_result?` inside `-> Result<T, AppError>` functions
+/// impl From<ResilienceError> for AppError {
+///     fn from(e: ResilienceError) -> Self {
+///         AppError::from_resilience_error(e)
+///     }
+/// }
+/// ```
+pub trait FromResilienceError: Sized {
+    /// Construct `Self` from a [`ResilienceError`].
+    fn from_resilience_error(error: ResilienceError) -> Self;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,6 +1,5 @@
 //! Token bucket rate limiter implementation
 
-use async_trait::async_trait;
 use parking_lot::Mutex;
 use std::fmt;
 use std::future::Future;
@@ -81,7 +80,6 @@ impl TokenBucket {
     }
 }
 
-#[async_trait]
 impl RateLimiter for TokenBucket {
     async fn acquire(&self) -> ResilienceResult<()> {
         let mut state = self.state.lock();

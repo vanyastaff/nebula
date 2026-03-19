@@ -36,7 +36,11 @@ async fn test_fault_injection_function_fallback_receives_original_error() {
 
     let operation = FallbackOperation::new(fallback);
     let result = operation
-        .execute(|| async { Err::<String, _>(ResilienceError::circuit_breaker_open("open")) })
+        .execute(|| async {
+            Err::<String, _>(ResilienceError::circuit_breaker_open(
+                nebula_resilience::CircuitBreakerOpenState::Open,
+            ))
+        })
         .await;
 
     assert!(result.is_ok());

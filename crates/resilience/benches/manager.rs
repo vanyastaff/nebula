@@ -7,7 +7,7 @@
 //! - Concurrent access patterns
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use nebula_resilience::prelude::PolicyBuilder;
+use nebula_resilience::PolicyBuilder;
 use nebula_resilience::{ResilienceError, ResilienceManager, ResiliencePolicy};
 use std::hint::black_box;
 use std::sync::Arc;

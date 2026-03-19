@@ -5,14 +5,15 @@
 //! - LeakyBucket throughput
 //! - SlidingWindow throughput
 //! - AdaptiveRateLimiter throughput
-//! - GovernorRateLimiter throughput (GCRA)
+//! - GovernorRateLimiter throughput (GCRA, requires `governor` feature)
 //! - Comparison between different algorithms
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::{
     AdaptiveRateLimiter, LeakyBucket, RateLimiter, ResilienceError, SlidingWindow, TokenBucket,
-    patterns::GovernorRateLimiter,
 };
+#[cfg(feature = "governor")]
+use nebula_resilience::patterns::GovernorRateLimiter;
 use std::hint::black_box;
 use std::sync::Arc;
 
@@ -62,7 +63,8 @@ fn rate_limiter_acquire(c: &mut Criterion) {
         );
     }
 
-    // GovernorRateLimiter
+    // GovernorRateLimiter (requires `governor` feature)
+    #[cfg(feature = "governor")]
     for &rate in &[100, 1000, 10000] {
         group.bench_with_input(BenchmarkId::new("governor", rate), &rate, |b, &rate| {
             let rt = tokio::runtime::Runtime::new().unwrap();
@@ -117,7 +119,8 @@ fn rate_limiter_execute(c: &mut Criterion) {
         });
     });
 
-    // GovernorRateLimiter execute
+    // GovernorRateLimiter execute (requires `governor` feature)
+    #[cfg(feature = "governor")]
     group.bench_function("governor_1000rps", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let limiter = Arc::new(GovernorRateLimiter::new(1000.0, 1000));
@@ -190,6 +193,8 @@ fn rate_limiter_contention(c: &mut Criterion) {
             },
         );
 
+        // GovernorRateLimiter concurrent (requires `governor` feature)
+        #[cfg(feature = "governor")]
         group.bench_with_input(
             BenchmarkId::new("governor_concurrent_acquire", num_tasks),
             &num_tasks,

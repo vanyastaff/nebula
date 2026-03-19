@@ -1,6 +1,5 @@
 //! Governor-based GCRA rate limiter implementation
 
-use async_trait::async_trait;
 use governor::clock::Clock;
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter as GovernorLimiter};
 use std::future::Future;
@@ -90,7 +89,6 @@ impl GovernorRateLimiter {
     }
 }
 
-#[async_trait]
 impl RateLimiter for GovernorRateLimiter {
     async fn acquire(&self) -> ResilienceResult<()> {
         match self.limiter.check() {

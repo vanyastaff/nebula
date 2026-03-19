@@ -11,9 +11,20 @@ repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
 
+[features]
+## Enables the `GovernorRateLimiter` (GCRA algorithm) and the
+## `AnyRateLimiter::Governor` variant.  Pulls in the `governor` crate.
+governor = ["dep:governor"]
+
+## Enables `serde`-based human-readable Duration serialization via
+## `humantime-serde` (e.g. "30s", "1m 30s").  Affects `CommonConfig`.
+humantime = ["dep:humantime-serde"]
+
+## Convenience bundle: enables all optional features.
+full = ["governor", "humantime"]
+
 [dependencies]
 # Async and concurrency
-async-trait = "0.1"
 futures = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 
@@ -25,8 +36,8 @@ thiserror = { workspace = true }
 # Utilities
 parking_lot = { workspace = true, features = ["arc_lock", "serde"] }
 dashmap = { workspace = true }
-humantime-serde = "1.1.1"
-governor = "0.10"
+humantime-serde = { version = "1.1.1", optional = true }
+governor = { version = "0.10", optional = true }
 tokio-util = { workspace = true, features = ["rt"] }
 fastrand = "2.3"
 tracing = { workspace = true }
@@ -41,6 +52,10 @@ criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 rand = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+loom = "0.7"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [[bench]]
 name = "circuit_breaker"

@@ -23,6 +23,8 @@ pub use timeout::{timeout, timeout_with_original_error};
 
 // Rate limiter exports
 pub use rate_limiter::{
-    AdaptiveRateLimiter, AnyRateLimiter, GovernorRateLimiter, LeakyBucket, RateLimiter,
+    AdaptiveRateLimiter, AnyRateLimiter, LeakyBucket, RateLimiter,
     SlidingWindow, TokenBucket,
 };
+#[cfg(feature = "governor")]
+pub use rate_limiter::GovernorRateLimiter;

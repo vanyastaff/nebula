@@ -2,6 +2,7 @@
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
+use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -173,47 +174,65 @@ impl AdaptiveHedgeExecutor {
     }
 }
 
-/// Latency tracker for adaptive hedging
+/// Latency tracker for adaptive hedging.
+///
+/// Uses a ring buffer (`VecDeque`) paired with a sorted frequency map (`BTreeMap`) so
+/// that `percentile()` runs in O(n) with no allocation instead of O(n log n) + O(n) clone.
 struct LatencyTracker {
-    samples: Vec<Duration>,
+    /// Ordered ring of recorded durations (oldest at front).
+    ring: VecDeque<Duration>,
     max_samples: usize,
-    current_index: usize,
+    /// nanos → number of samples with that value. Kept in sync with `ring`.
+    sorted: BTreeMap<u64, usize>,
 }
 
 impl LatencyTracker {
     fn new(max_samples: usize) -> Self {
         Self {
-            samples: Vec::with_capacity(max_samples),
+            ring: VecDeque::with_capacity(max_samples),
             max_samples,
-            current_index: 0,
+            sorted: BTreeMap::new(),
         }
     }
 
     fn record(&mut self, latency: Duration) {
-        if self.samples.len() < self.max_samples {
-            self.samples.push(latency);
-        } else {
-            self.samples[self.current_index] = latency;
-            self.current_index = (self.current_index + 1) % self.max_samples;
+        if self.ring.len() == self.max_samples {
+            if let Some(oldest) = self.ring.pop_front() {
+                let key = oldest.as_nanos() as u64;
+                if let Some(c) = self.sorted.get_mut(&key) {
+                    if *c <= 1 {
+                        self.sorted.remove(&key);
+                    } else {
+                        *c -= 1;
+                    }
+                }
+            }
         }
+
+        *self.sorted.entry(latency.as_nanos() as u64).or_insert(0) += 1;
+        self.ring.push_back(latency);
     }
 
     fn percentile(&self, p: f64) -> Option<Duration> {
-        if self.samples.is_empty() {
+        if self.ring.is_empty() || !p.is_finite() {
             return None;
         }
-
-        if !p.is_finite() {
-            return None;
-        }
-
-        let mut sorted = self.samples.clone();
-        sorted.sort();
 
         let percentile = p.clamp(0.0, 1.0);
-        let max_index = sorted.len().saturating_sub(1);
-        let index = (((sorted.len() as f64 - 1.0) * percentile) as usize).min(max_index);
-        Some(sorted[index])
+        let target = ((self.ring.len() as f64 - 1.0) * percentile) as usize;
+        let mut accumulated = 0usize;
+
+        for (&nanos, &cnt) in &self.sorted {
+            accumulated += cnt;
+            if accumulated > target {
+                return Some(Duration::from_nanos(nanos));
+            }
+        }
+
+        self.sorted
+            .keys()
+            .next_back()
+            .map(|&nanos| Duration::from_nanos(nanos))
     }
 }
 

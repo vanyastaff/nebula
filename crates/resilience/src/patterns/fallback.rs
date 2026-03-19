@@ -11,9 +11,9 @@
 //! let fallback = ValueFallback::new("default response".to_string());
 //! ```
 
-use async_trait::async_trait;
 use std::collections::HashMap;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -26,10 +26,12 @@ use crate::{ResilienceError, ResilienceResult};
 /// Fallback strategy trait.
 ///
 /// Implement this trait to define custom fallback behavior.
-#[async_trait]
 pub trait FallbackStrategy<T>: Send + Sync {
     /// Execute fallback logic
-    async fn fallback(&self, error: ResilienceError) -> ResilienceResult<T>;
+    fn fallback<'a>(
+        &'a self,
+        error: ResilienceError,
+    ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>>;
 
     /// Check if fallback should be attempted for this error
     fn should_fallback(&self, error: &ResilienceError) -> bool {
@@ -60,10 +62,13 @@ impl<T: Clone + Send + Sync> ValueFallback<T> {
     }
 }
 
-#[async_trait]
 impl<T: Clone + Send + Sync> FallbackStrategy<T> for ValueFallback<T> {
-    async fn fallback(&self, _error: ResilienceError) -> ResilienceResult<T> {
-        Ok(self.value.clone())
+    fn fallback<'a>(
+        &'a self,
+        _error: ResilienceError,
+    ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
+        let value = self.value.clone();
+        Box::pin(async move { Ok(value) })
     }
 }
 
@@ -91,15 +96,17 @@ where
     }
 }
 
-#[async_trait]
 impl<T, F, Fut> FallbackStrategy<T> for FunctionFallback<T, F, Fut>
 where
-    T: Send + Sync,
+    T: Send + Sync + 'static,
     F: Fn(ResilienceError) -> Fut + Send + Sync,
     Fut: Future<Output = ResilienceResult<T>> + Send,
 {
-    async fn fallback(&self, error: ResilienceError) -> ResilienceResult<T> {
-        (self.function)(error).await
+    fn fallback<'a>(
+        &'a self,
+        error: ResilienceError,
+    ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
+        Box::pin((self.function)(error))
     }
 }
 
@@ -162,36 +169,40 @@ impl<T: Clone + Send + Sync> CacheFallback<T> {
     }
 }
 
-#[async_trait]
-impl<T: Clone + Send + Sync> FallbackStrategy<T> for CacheFallback<T> {
-    async fn fallback(&self, _error: ResilienceError) -> ResilienceResult<T> {
-        if !self.is_valid().await {
-            if self.stale_if_error {
-                let cached_value = self.cache.read().await.clone();
-                if let Some(value) = cached_value {
-                    return Ok(value);
+impl<T: Clone + Send + Sync + 'static> FallbackStrategy<T> for CacheFallback<T> {
+    fn fallback<'a>(
+        &'a self,
+        _error: ResilienceError,
+    ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
+        Box::pin(async move {
+            if !self.is_valid().await {
+                if self.stale_if_error {
+                    let cached_value = self.cache.read().await.clone();
+                    if let Some(value) = cached_value {
+                        return Ok(value);
+                    }
+
+                    return Err(ResilienceError::FallbackFailed {
+                        reason: "Cache expired and no stale value available".to_string(),
+                        original_error: None,
+                    });
                 }
 
                 return Err(ResilienceError::FallbackFailed {
-                    reason: "Cache expired and no stale value available".to_string(),
+                    reason: "Cache expired".to_string(),
                     original_error: None,
                 });
             }
 
-            return Err(ResilienceError::FallbackFailed {
-                reason: "Cache expired".to_string(),
-                original_error: None,
-            });
-        }
-
-        self.cache
-            .read()
-            .await
-            .clone()
-            .ok_or_else(|| ResilienceError::FallbackFailed {
-                reason: "No cached value available".to_string(),
-                original_error: None,
-            })
+            self.cache
+                .read()
+                .await
+                .clone()
+                .ok_or_else(|| ResilienceError::FallbackFailed {
+                    reason: "No cached value available".to_string(),
+                    original_error: None,
+                })
+        })
     }
 }
 
@@ -223,21 +234,25 @@ impl<T> ChainFallback<T> {
     }
 }
 
-#[async_trait]
-impl<T: Send + Sync> FallbackStrategy<T> for ChainFallback<T> {
-    async fn fallback(&self, error: ResilienceError) -> ResilienceResult<T> {
-        let mut last_error = error;
+impl<T: Send + Sync + 'static> FallbackStrategy<T> for ChainFallback<T> {
+    fn fallback<'a>(
+        &'a self,
+        error: ResilienceError,
+    ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut last_error = error;
 
-        for fallback in &self.fallbacks {
-            if fallback.should_fallback(&last_error) {
-                match fallback.fallback(last_error.clone()).await {
-                    Ok(value) => return Ok(value),
-                    Err(e) => last_error = e,
+            for fallback in &self.fallbacks {
+                if fallback.should_fallback(&last_error) {
+                    match fallback.fallback(last_error.clone()).await {
+                        Ok(value) => return Ok(value),
+                        Err(e) => last_error = e,
+                    }
                 }
             }
-        }
 
-        Err(last_error)
+            Err(last_error)
+        })
     }
 }
 
@@ -278,27 +293,31 @@ impl<T> PriorityFallback<T> {
     }
 }
 
-#[async_trait]
-impl<T: Send + Sync> FallbackStrategy<T> for PriorityFallback<T> {
-    async fn fallback(&self, error: ResilienceError) -> ResilienceResult<T> {
-        let error_type = match &error {
-            ResilienceError::Timeout { .. } => "timeout",
-            ResilienceError::CircuitBreakerOpen { .. } => "circuit_breaker",
-            ResilienceError::BulkheadFull { .. } => "bulkhead",
-            ResilienceError::RetryLimitExceeded { .. } => "retry",
-            ResilienceError::RateLimitExceeded { .. } => "rate_limit",
-            _ => "other",
-        };
+impl<T: Send + Sync + 'static> FallbackStrategy<T> for PriorityFallback<T> {
+    fn fallback<'a>(
+        &'a self,
+        error: ResilienceError,
+    ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
+        Box::pin(async move {
+            let error_type = match &error {
+                ResilienceError::Timeout { .. } => "timeout",
+                ResilienceError::CircuitBreakerOpen { .. } => "circuit_breaker",
+                ResilienceError::BulkheadFull { .. } => "bulkhead",
+                ResilienceError::RetryLimitExceeded { .. } => "retry",
+                ResilienceError::RateLimitExceeded { .. } => "rate_limit",
+                _ => "other",
+            };
 
-        if let Some(fallback) = self.fallbacks.get(error_type) {
-            return fallback.fallback(error).await;
-        }
+            if let Some(fallback) = self.fallbacks.get(error_type) {
+                return fallback.fallback(error).await;
+            }
 
-        if let Some(default) = &self.default {
-            return default.fallback(error).await;
-        }
+            if let Some(default) = &self.default {
+                return default.fallback(error).await;
+            }
 
-        Err(error)
+            Err(error)
+        })
     }
 }
 
@@ -315,14 +334,16 @@ pub enum AnyStringFallbackStrategy {
     Priority(Arc<PriorityFallback<String>>),
 }
 
-#[async_trait]
 impl FallbackStrategy<String> for AnyStringFallbackStrategy {
-    async fn fallback(&self, error: ResilienceError) -> ResilienceResult<String> {
+    fn fallback<'a>(
+        &'a self,
+        error: ResilienceError,
+    ) -> Pin<Box<dyn Future<Output = ResilienceResult<String>> + Send + 'a>> {
         match self {
-            Self::Value(strategy) => strategy.fallback(error).await,
-            Self::Cache(strategy) => strategy.fallback(error).await,
-            Self::Chain(strategy) => strategy.fallback(error).await,
-            Self::Priority(strategy) => strategy.fallback(error).await,
+            Self::Value(strategy) => strategy.fallback(error),
+            Self::Cache(strategy) => strategy.fallback(error),
+            Self::Chain(strategy) => strategy.fallback(error),
+            Self::Priority(strategy) => strategy.fallback(error),
         }
     }
 

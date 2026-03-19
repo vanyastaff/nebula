@@ -1,6 +1,5 @@
 //! Leaky bucket rate limiter implementation
 
-use async_trait::async_trait;
 use parking_lot::Mutex;
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -42,7 +41,6 @@ impl LeakyBucket {
     }
 }
 
-#[async_trait]
 impl RateLimiter for LeakyBucket {
     async fn acquire(&self) -> ResilienceResult<()> {
         let mut state = self.state.lock();

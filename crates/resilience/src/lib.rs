@@ -205,6 +205,7 @@
 #![deny(unsafe_code)]
 
 // Core modules with advanced type system features
+pub mod clock;
 pub mod core;
 pub mod gate;
 pub mod helpers;
@@ -220,6 +221,7 @@ mod compose;
 // Re-exports from core with type safety
 pub use core::{
     // Error handling and results
+    CircuitBreakerOpenState,
     ResilienceError,
     ResilienceResult,
 
@@ -252,6 +254,12 @@ pub use core::{
         // Type-state circuit breaker states (compile-time state tracking)
         circuit_states::{Closed, HalfOpen, Open, StateTransition, TypestateCircuitState},
         timeout,
+        // Integration traits
+        CanExecute,
+        ExecuteGuard,
+        PatternHealth,
+        // Error bridge
+        FromResilienceError,
     },
 
     // Type-safe newtypes
@@ -326,7 +334,10 @@ pub use patterns::{
 };
 
 // High-level abstractions
-pub use compose::{BoxedOperation, LayerBuilder, LayerStack, ResilienceChain, ResilienceLayer};
+pub use compose::{
+    BoxedOperation, FallbackLayer, HedgeLayer, LayerBuilder, LayerStack, RateLimiterLayer,
+    ResilienceChain, ResilienceLayer,
+};
 pub use gate::{Gate, GateClosed, GateGuard};
 pub use manager::{
     PolicyBuilder, ResilienceManager, RetryableOperation, UnTypedServiceMetrics as ServiceMetrics,
@@ -350,56 +361,16 @@ pub use policy::{PolicyMetadata, ResiliencePolicy};
 /// let retry = exponential_retry::<3>().unwrap();
 /// ```
 pub mod prelude {
-    // Core error and result types
+    // Errors and results
     pub use crate::core::{ResilienceError, ResilienceResult};
 
-    // Configuration with type safety
-    pub use crate::core::{
-        ConfigError, ConfigResult, ResilienceConfig,
-        traits::{Config, ConfigExt, TimeoutConfig, Validated},
-    };
-
-    // Advanced trait system
-    pub use crate::core::traits::{
-        Executable, HealthCheck, HealthStatus, PatternMetrics, ResiliencePattern, Retryable,
-    };
-
-    // Type-safe newtypes (from rust_advanced_types.md patterns)
-    pub use crate::core::types::{
-        DurationExt, FailureThreshold, MaxConcurrency, RateLimit, ResilienceResultExt, RetryCount,
-        Timeout,
-    };
-
-    // Advanced type system features
-    pub use crate::core::advanced::{
-        Aggressive,
-        Balanced,
-        Complete,
-        ComposedPolicy,
-        Conservative,
-        // Const-validated configs
-        ConstValidated,
-        // Typestate pattern (use TypestatePolicyBuilder for compile-time validation)
-        PolicyBuilder as TypestatePolicyBuilder,
-        // Strategy markers (ZST)
-        Strategy,
-        StrategyConfig,
-        Unconfigured,
-        ValidatedRetryConfig,
-        WithCircuitBreaker,
-        WithRetry,
-    };
-
-    // Runtime policy builder (use PolicyBuilder for runtime configuration)
-    pub use crate::manager::PolicyBuilder;
-
-    // Type-safe circuit breaker
+    // Circuit breaker
     pub use crate::patterns::circuit_breaker::{
         CircuitBreaker, CircuitBreakerConfig, CircuitBreakerStats, FastCircuitBreaker,
         SlowCircuitBreaker, StandardCircuitBreaker, fast_config, slow_config, standard_config,
     };
 
-    // Advanced retry strategies
+    // Retry strategies
     pub use crate::patterns::retry::{
         AggressiveCondition, AggressiveRetry, BackoffPolicy, ConservativeCondition,
         ExponentialBackoff, FixedDelay, JitterPolicy, LinearBackoff, QuickRetry, RetryCondition,
@@ -407,24 +378,19 @@ pub mod prelude {
         fixed_retry, retry,
     };
 
-    // Other essential patterns
+    // Other patterns
     pub use crate::patterns::{
         bulkhead::{Bulkhead, BulkheadConfig},
         timeout::timeout as timeout_fn,
     };
 
-    // High-level abstractions
-    pub use crate::{ResilienceChain, ResilienceManager, ResiliencePolicy};
+    // Composition and management
+    pub use crate::{LayerBuilder, PolicyBuilder, ResilienceChain, ResilienceManager, ResiliencePolicy};
 
     // Gate / graceful-shutdown barrier
     pub use crate::gate::{Gate, GateClosed, GateGuard};
 
-    // Re-export nebula ecosystem for convenience
-    pub use nebula_config::ConfigSource;
-    pub use nebula_log::{debug, error, info, warn};
-    pub use serde_json::Value;
-
-    // Standard library re-exports for convenience
+    // Standard library
     pub use std::time::Duration;
 }
 
@@ -446,9 +412,10 @@ pub mod prelude {
 ///     });
 /// ```
 pub mod builder {
-    use crate::prelude::{
-        AggressiveCondition, BackoffPolicy, CircuitBreakerConfig, ConservativeCondition,
-        ExponentialBackoff, FixedDelay, RetryConfig, StandardRetry,
+    use crate::patterns::circuit_breaker::CircuitBreakerConfig;
+    use crate::patterns::retry::{
+        AggressiveCondition, BackoffPolicy, ConservativeCondition, ExponentialBackoff, FixedDelay,
+        RetryConfig, StandardRetry,
     };
     use std::marker::PhantomData;
 
@@ -588,10 +555,9 @@ pub mod constants {
 
 /// Utility functions for type-safe resilience patterns
 pub mod utils {
-    use crate::prelude::{
-        AggressiveRetry, ConfigResult, FastCircuitBreaker, QuickRetry, SlowCircuitBreaker,
-        StandardCircuitBreaker, StandardRetry, aggressive_retry, exponential_retry, fixed_retry,
-    };
+    use crate::core::config::ConfigResult;
+    use crate::patterns::circuit_breaker::{FastCircuitBreaker, SlowCircuitBreaker, StandardCircuitBreaker};
+    use crate::patterns::retry::{AggressiveRetry, QuickRetry, StandardRetry, aggressive_retry, exponential_retry, fixed_retry};
 
     /// Create a standard resilience setup for HTTP clients
     pub fn http_resilience() -> ConfigResult<(StandardCircuitBreaker, StandardRetry)> {

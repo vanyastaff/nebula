@@ -1,6 +1,5 @@
 //! Sliding window rate limiter implementation
 
-use async_trait::async_trait;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -50,7 +49,6 @@ impl SlidingWindow {
     }
 }
 
-#[async_trait]
 impl RateLimiter for SlidingWindow {
     async fn acquire(&self) -> ResilienceResult<()> {
         let now = Instant::now();
