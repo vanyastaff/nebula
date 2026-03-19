@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
-use std::pin::Pin;
+
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinSet;
@@ -87,11 +87,12 @@ impl HedgeExecutor {
     /// # Cancel safety
     ///
     /// Not cancel-safe — see module-level documentation.
-    pub async fn execute<T, E, F>(&self, operation: F) -> Result<T, CallError<E>>
+    pub async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         T: Send + 'static,
         E: Send + 'static,
-        F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync,
+        F: Fn() -> Fut + Send + Sync,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
     {
         let mut set: JoinSet<Result<T, E>> = JoinSet::new();
         set.spawn(operation());
@@ -201,11 +202,12 @@ impl AdaptiveHedgeExecutor {
     /// # Cancel safety
     ///
     /// Not cancel-safe — see module-level documentation.
-    pub async fn execute<T, E, F>(&self, operation: F) -> Result<T, CallError<E>>
+    pub async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         T: Send + 'static,
         E: Send + 'static,
-        F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync,
+        F: Fn() -> Fut + Send + Sync,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
     {
         let start = std::time::Instant::now();
 

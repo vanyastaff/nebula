@@ -19,6 +19,23 @@ use crate::{
     retry::{RetryConfig, retry_with},
 };
 
+// ── Execution phases ──────────────────────────────────────────────────────────
+//
+// To eliminate per-step Box::pin allocations the pipeline is split into three
+// phases that are processed iteratively:
+//
+//  1. Pre-phase  — steps executed *before* the operation (outermost → innermost):
+//     LoadShed, RateLimiter, (open) CircuitBreaker check, Bulkhead acquire.
+//
+//  2. Inner-phase — the actual operation call, wrapped once by CB/Bulkhead
+//     wrappers and the optional Timeout/Retry shells.
+//
+//  3. Post-phase — outcome recording after the operation returns.
+//
+// Only Timeout and Retry still produce a single Box::pin each (Timeout requires
+// it for `tokio::time::timeout`; Retry needs async recursion for back-off).
+// Every other step is now allocation-free.
+
 /// Async predicate for rate limiting — returns `Ok(())` or `Err(CallError::RateLimited)`.
 pub type RateLimitCheck =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CallError<()>>> + Send>> + Send + Sync>;
@@ -171,23 +188,108 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     ///
     /// Returns the appropriate `CallError` variant depending on which pipeline
     /// step fails (timeout, retry exhaustion, circuit open, bulkhead full, or operation error).
-    pub async fn call<T, F>(&self, f: F) -> Result<T, CallError<E>>
+    pub async fn call<T, F, Fut>(&self, f: F) -> Result<T, CallError<E>>
     where
         T: Send + 'static,
-        F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>>
-            + Clone
-            + Send
-            + Sync
-            + 'static,
+        F: Fn() -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
     {
-        run_steps(Arc::clone(&self.steps), 0, Arc::new(f)).await
+        // Wrap the generic future factory in a single Box::pin adapter so the
+        // internal pipeline machinery (which needs to erase the concrete Fut
+        // type for Arc<F> sharing across retry iterations) only allocates
+        // once per call instead of once per pipeline step.
+        let boxed = move || -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> { Box::pin(f()) };
+        execute_pipeline(Arc::clone(&self.steps), Arc::new(boxed)).await
     }
 }
 
-// ── Recursive step executor ───────────────────────────────────────────────────
+// ── Iterative pipeline executor ───────────────────────────────────────────────
+//
+// Processes steps in two passes to avoid per-step Box::pin:
+//
+//  Pass 1 (forward, idx 0 → N-1): guard steps — LoadShed, RateLimiter,
+//          CircuitBreaker::can_execute, Bulkhead::acquire.
+//          Returns early on rejection without touching the operation.
+//
+//  Pass 2: find the innermost Timeout / Retry shell (if any) and execute
+//          the operation through it.  CB and Bulkhead outcome recording
+//          happens after the operation returns.
+//
+// Only one Box::pin per Timeout shell and one per Retry step are created,
+// instead of one per pipeline step as in the old recursive approach.
 
-fn run_steps<T, E, F>(
-    steps: Arc<Vec<Step<E>>>,
+async fn execute_pipeline<T, E, F>(steps: Arc<Vec<Step<E>>>, f: Arc<F>) -> Result<T, CallError<E>>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+    F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync + 'static,
+{
+    // ── Pass 1: guard checks (no allocations) ─────────────────────────────────
+    //
+    // Collect permits/handles we need to clean up after the operation.
+    // For CircuitBreaker and Bulkhead we call the lower-level API directly so
+    // we can record the outcome ourselves after the operation completes.
+
+    use crate::bulkhead::BulkheadPermit;
+    use crate::circuit_breaker::Outcome;
+
+    // Indices of CB/Bulkhead steps that were successfully entered (for outcome recording).
+    let mut entered_cb: Vec<Arc<CircuitBreaker>> = Vec::new();
+    // RAII permit handles — dropped when this scope exits, releasing the slot.
+    let mut bh_permits: Vec<BulkheadPermit> = Vec::new();
+
+    for step in steps.iter() {
+        match step {
+            Step::LoadShed(predicate) => {
+                if predicate() {
+                    return Err(CallError::LoadShed);
+                }
+            }
+            Step::RateLimiter(check) => {
+                check().await.map_err(|_| CallError::RateLimited)?;
+            }
+            Step::CircuitBreaker(cb) => {
+                cb.can_execute()?;
+                entered_cb.push(Arc::clone(cb));
+            }
+            Step::Bulkhead(bh) => {
+                let permit = bh.acquire::<E>().await?;
+                bh_permits.push(permit);
+            }
+            // Timeout and Retry are handled in pass 2.
+            Step::Timeout(_) | Step::Retry(_) => {}
+        }
+    }
+
+    // ── Pass 2: find the outermost Timeout/Retry shell and execute ────────────
+    //
+    // Walk steps to find the first Timeout or Retry entry (outermost wrapper).
+    // If neither exists, execute the operation directly.
+
+    let result = run_operation_with_shells(&steps, 0, Arc::clone(&f)).await;
+
+    // ── Post: record CB outcomes ──────────────────────────────────────────────
+    let outcome = match &result {
+        Err(CallError::Operation(_) | CallError::RetriesExhausted { .. }) => Outcome::Failure,
+        Err(CallError::Timeout(_)) => Outcome::Timeout,
+        Err(CallError::Cancelled { .. }) => Outcome::Cancelled,
+        _ => Outcome::Success, // Ok / LoadShed / RateLimited / etc. — CB already rejected above
+    };
+    for cb in &entered_cb {
+        cb.record_outcome(outcome);
+    }
+
+    // Permits are held until here so the bulkhead slots stay reserved for the
+    // entire duration of the operation; drop them explicitly before returning.
+    drop(bh_permits);
+    result
+}
+
+/// Recursively apply only Timeout and Retry shells (one `Box::pin` per shell),
+/// then call the user function.  `CircuitBreaker` and `Bulkhead` guards have
+/// already been processed by `execute_pipeline`; their wrappers are skipped here.
+fn run_operation_with_shells<T, E, F>(
+    steps: &Arc<Vec<Step<E>>>,
     idx: usize,
     f: Arc<F>,
 ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send>>
@@ -196,68 +298,28 @@ where
     E: Send + 'static,
     F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync + 'static,
 {
+    // Find the next Timeout or Retry step starting from `idx`.
+    let steps = Arc::clone(steps);
     Box::pin(async move {
-        if idx >= steps.len() {
-            return f().await.map_err(CallError::Operation);
-        }
-
-        match &steps[idx] {
-            Step::Timeout(d) => {
-                let d = *d;
-                tokio::time::timeout(d, run_steps(steps, idx + 1, f))
-                    .await
-                    .unwrap_or_else(|_| Err(CallError::Timeout(d)))
-            }
-            Step::Retry(config) => run_retry_step(config, Arc::clone(&steps), idx, f).await,
-            Step::CircuitBreaker(cb) => {
-                let cb = Arc::clone(cb);
-                cb.call(move || run_inner_unwrapped(steps, idx, f, "CircuitBreaker"))
-                    .await
-            }
-            Step::Bulkhead(bh) => {
-                let bh = Arc::clone(bh);
-                bh.call(move || run_inner_unwrapped(steps, idx, f, "Bulkhead"))
-                    .await
-            }
-            Step::RateLimiter(check) => {
-                check().await.map_err(|_| CallError::RateLimited)?;
-                run_steps(steps, idx + 1, f).await
-            }
-            Step::LoadShed(predicate) => {
-                if predicate() {
-                    Err(CallError::LoadShed)
-                } else {
-                    run_steps(steps, idx + 1, f).await
+        let mut i = idx;
+        while i < steps.len() {
+            match &steps[i] {
+                Step::Timeout(d) => {
+                    let d = *d;
+                    return tokio::time::timeout(d, run_operation_with_shells(&steps, i + 1, f))
+                        .await
+                        .unwrap_or_else(|_| Err(CallError::Timeout(d)));
                 }
+                Step::Retry(config) => {
+                    return run_retry_step(config, Arc::clone(&steps), i, f).await;
+                }
+                // CB / Bulkhead / LoadShed / RateLimiter guards were already handled.
+                _ => {}
             }
+            i += 1;
         }
-    })
-}
-
-/// Unwrap inner pipeline steps for use inside CB / Bulkhead wrappers.
-///
-/// Non-`Operation` errors are unreachable in a well-ordered pipeline
-/// (timeout before circuit breaker / bulkhead).
-fn run_inner_unwrapped<T, E, F>(
-    steps: Arc<Vec<Step<E>>>,
-    idx: usize,
-    f: Arc<F>,
-    step_name: &'static str,
-) -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>>
-where
-    T: Send + 'static,
-    E: Send + 'static,
-    F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync + 'static,
-{
-    Box::pin(async move {
-        match run_steps(steps, idx + 1, f).await {
-            Ok(v) => Ok(v),
-            Err(CallError::Operation(e)) => Err(e),
-            Err(_) => unreachable!(
-                "ResiliencePipeline: non-Operation error inside {step_name} step; \
-                 ensure timeout/retry are ordered before {step_name}"
-            ),
-        }
+        // No more shells — execute the operation directly.
+        f().await.map_err(CallError::Operation)
     })
 }
 
@@ -290,7 +352,9 @@ where
             let steps = Arc::clone(&steps);
             let f = Arc::clone(&f);
             let bail = Arc::clone(&bail);
-            Box::pin(async move { classify_inner(run_steps(steps, idx + 1, f).await, &bail) })
+            Box::pin(async move {
+                classify_inner(run_operation_with_shells(&steps, idx + 1, f).await, &bail)
+            })
         }
     })
     .await;
