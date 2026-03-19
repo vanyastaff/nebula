@@ -14,9 +14,10 @@ Standard `nebula_*` metric naming via typed `MetricName` structs, Prometheus tex
 - `PrometheusExporter` outputs Prometheus text format with `# HELP` / `# TYPE` metadata and per-bucket histogram lines.
 
 ## Traps
-- Forgetting `LabelAllowlist` means unbounded label cardinality (e.g., per-user metric dimensions) — OOM in production.
-- `snapshot()` function returns Prometheus text format — call `content_type()` for the correct `Content-Type` header.
-- The `metrics` crate macros (used in `nebula-resource`) require `&str`, so pass `METRIC.as_str()` not the `MetricName` directly.
+- `LabelAllowlist::default()` is deny-all — strips all labels. Use `LabelAllowlist::only([...])` to allow specific keys, or `LabelAllowlist::all()` in tests.
+- `snapshot()` returns Prometheus text format — call `content_type()` for the correct `Content-Type` header.
+- `MetricsRegistry` methods take `&str`, so pass `METRIC.as_str()` not the `MetricName` directly.
+- `TelemetryAdapter` was deleted — use `MetricsRegistry` directly with naming constants.
 
 ## Relations
 - Re-exports `Counter`, `Gauge`, `Histogram`, `MetricsRegistry` from nebula-telemetry. Used by nebula-api for the `/metrics` endpoint.
