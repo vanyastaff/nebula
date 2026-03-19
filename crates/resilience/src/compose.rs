@@ -30,9 +30,10 @@ use crate::{
     ResilienceError, ResilienceResult,
     core::CancellationContext,
     manager::RetryableOperation,
+    observability::sink::CircuitState,
     patterns::{
         bulkhead::Bulkhead,
-        circuit_breaker::CircuitBreaker,
+        circuit_breaker::{CircuitBreaker, Outcome as CircuitOutcome},
         fallback::FallbackStrategy,
         hedge::HedgeConfig,
         rate_limiter::{AnyRateLimiter, RateLimiter},
@@ -286,15 +287,20 @@ impl<T: Send + Sync + 'static> ResilienceLayer<T> for CircuitBreakerLayer {
         cancellation: Option<&'a CancellationContext>,
     ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
         Box::pin(async move {
-            self.circuit_breaker.can_execute().await?;
+            // Check if circuit is open
+            if self.circuit_breaker.circuit_state() == CircuitState::Open {
+                return Err(ResilienceError::circuit_breaker_open(
+                    crate::CircuitBreakerOpenState::Open,
+                ));
+            }
 
             let result = next
                 .execute_with_cancellation(operation, cancellation)
                 .await;
 
             match &result {
-                Ok(_) => self.circuit_breaker.record_success().await,
-                Err(_e) => self.circuit_breaker.record_failure().await,
+                Ok(_) => self.circuit_breaker.record_outcome(CircuitOutcome::Success),
+                Err(_e) => self.circuit_breaker.record_outcome(CircuitOutcome::Failure),
             }
 
             result

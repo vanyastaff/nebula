@@ -43,7 +43,7 @@ use crate::{
     },
     patterns::{
         bulkhead::{Bulkhead, BulkheadConfig, BulkheadStats},
-        circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerStats},
+        circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerStats, Outcome as CircuitOutcome},
         timeout::timeout,
     },
     policy::{ResiliencePolicy, RetryPolicyConfig},
@@ -609,7 +609,12 @@ impl ResilienceManager {
 
         // Check circuit breaker first
         if let Some(ref breaker) = circuit_breaker {
-            breaker.can_execute().await?;
+            use crate::observability::sink::CircuitState;
+            if breaker.circuit_state() == CircuitState::Open {
+                return Err(crate::ResilienceError::circuit_breaker_open(
+                    crate::CircuitBreakerOpenState::Open,
+                ));
+            }
         }
 
         // Acquire bulkhead permit if configured
@@ -644,8 +649,8 @@ impl ResilienceManager {
         // Update circuit breaker based on result
         if let Some(breaker) = circuit_breaker {
             match &result {
-                Ok(_) => breaker.record_success().await,
-                Err(_e) => breaker.record_failure().await,
+                Ok(_) => breaker.record_outcome(CircuitOutcome::Success),
+                Err(_e) => breaker.record_outcome(CircuitOutcome::Failure),
             }
         }
 
@@ -815,7 +820,7 @@ impl ResilienceManager {
 
         // Collect circuit breaker stats (lock-free read)
         let circuit_breaker = match self.circuit_breakers.get(service) {
-            Some(cb) => Some(cb.value().stats().await),
+            Some(cb) => Some(cb.value().stats()),
             None => None,
         };
 

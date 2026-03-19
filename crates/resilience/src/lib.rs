@@ -270,20 +270,8 @@ pub use core::{
 pub use patterns::{
     // Other patterns (maintained for compatibility)
     bulkhead::{Bulkhead, BulkheadConfig},
-    // Type-safe circuit breaker
-    circuit_breaker::{
-        CircuitBreaker,
-        CircuitBreakerConfig,
-        CircuitBreakerStats,
-        FastCircuitBreaker,
-        SlowCircuitBreaker,
-        StandardCircuitBreaker,
-        // Circuit state enum for runtime state checking
-        State as CircuitState,
-        fast_config,
-        slow_config,
-        standard_config,
-    },
+    // Circuit breaker
+    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome as CircuitOutcome},
 
     fallback::{AnyStringFallbackStrategy, FallbackStrategy, ValueFallback},
     hedge::{HedgeConfig, HedgeExecutor},
@@ -366,10 +354,7 @@ pub mod prelude {
     pub use crate::core::{ResilienceError, ResilienceResult};
 
     // Circuit breaker
-    pub use crate::patterns::circuit_breaker::{
-        CircuitBreaker, CircuitBreakerConfig, CircuitBreakerStats, FastCircuitBreaker,
-        SlowCircuitBreaker, StandardCircuitBreaker, fast_config, slow_config, standard_config,
-    };
+    pub use crate::patterns::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 
     // Retry strategies
     pub use crate::patterns::retry::{
@@ -395,150 +380,7 @@ pub mod prelude {
     pub use std::time::Duration;
 }
 
-/// Advanced configuration builder with type safety
-///
-/// This module provides builder patterns that leverage the Rust type system
-/// to ensure configuration validity at compile time.
-///
-/// # Example
-///
-/// ```rust
-/// use nebula_resilience::builder::*;
-///
-/// // Create a resilience builder with compile-time configuration
-/// let builder = ResilienceBuilder::new()
-///     .with_circuit_breaker::<5, 30_000>(|config| {
-///         config.with_half_open_limit(3)
-///               .with_min_operations(10)
-///     });
-/// ```
-pub mod builder {
-    use crate::patterns::circuit_breaker::CircuitBreakerConfig;
-    use crate::patterns::retry::{
-        AggressiveCondition, BackoffPolicy, ConservativeCondition, ExponentialBackoff, FixedDelay,
-        RetryConfig, StandardRetry,
-    };
-    use std::marker::PhantomData;
-
-    /// Type-safe resilience builder
-    pub struct ResilienceBuilder<CB = (), R = ()> {
-        circuit_breaker: CB,
-        retry: R,
-        _marker: PhantomData<(CB, R)>,
-    }
-
-    impl ResilienceBuilder<(), ()> {
-        /// Create a new resilience builder
-        #[must_use]
-        pub const fn new() -> Self {
-            Self {
-                circuit_breaker: (),
-                retry: (),
-                _marker: PhantomData,
-            }
-        }
-    }
-
-    impl<CB, R> ResilienceBuilder<CB, R> {
-        /// Add circuit breaker with compile-time configuration
-        pub fn with_circuit_breaker<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>(
-            self,
-            config_fn: impl FnOnce(
-                CircuitBreakerConfig<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>,
-            )
-                -> CircuitBreakerConfig<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>,
-        ) -> ResilienceBuilder<CircuitBreakerConfig<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>, R>
-        {
-            let config = config_fn(CircuitBreakerConfig::new());
-            ResilienceBuilder {
-                circuit_breaker: config,
-                retry: self.retry,
-                _marker: PhantomData,
-            }
-        }
-
-        /// Add retry strategy with compile-time configuration
-        pub fn with_retry<const MAX_ATTEMPTS: usize>(
-            self,
-            config_fn: impl FnOnce(RetryBuilder<MAX_ATTEMPTS>) -> StandardRetry,
-        ) -> ResilienceBuilder<CB, StandardRetry> {
-            let config = config_fn(RetryBuilder::new());
-            ResilienceBuilder {
-                circuit_breaker: self.circuit_breaker,
-                retry: config,
-                _marker: PhantomData,
-            }
-        }
-    }
-
-    /// Retry configuration builder with type safety
-    pub struct RetryBuilder<const MAX_ATTEMPTS: usize> {
-        _marker: PhantomData<()>,
-    }
-
-    impl<const MAX_ATTEMPTS: usize> RetryBuilder<MAX_ATTEMPTS> {
-        /// Create new retry builder
-        #[must_use]
-        pub const fn new() -> Self {
-            Self {
-                _marker: PhantomData,
-            }
-        }
-
-        /// Configure exponential backoff
-        #[must_use]
-        pub fn exponential_backoff<const BASE_DELAY_MS: u64, const MULTIPLIER_X10: u64>(
-            self,
-        ) -> PartialRetryConfig<ExponentialBackoff<BASE_DELAY_MS, MULTIPLIER_X10>, MAX_ATTEMPTS>
-        {
-            PartialRetryConfig {
-                backoff: ExponentialBackoff::default(),
-                _marker: PhantomData,
-            }
-        }
-
-        /// Configure fixed delay
-        #[must_use]
-        pub fn fixed_delay<const DELAY_MS: u64>(
-            self,
-        ) -> PartialRetryConfig<FixedDelay<DELAY_MS>, MAX_ATTEMPTS> {
-            PartialRetryConfig {
-                backoff: FixedDelay::default(),
-                _marker: PhantomData,
-            }
-        }
-    }
-
-    /// Partial retry configuration for method chaining
-    pub struct PartialRetryConfig<B: BackoffPolicy, const MAX_ATTEMPTS: usize> {
-        backoff: B,
-        _marker: PhantomData<()>,
-    }
-
-    impl<B: BackoffPolicy, const MAX_ATTEMPTS: usize> PartialRetryConfig<B, MAX_ATTEMPTS> {
-        /// Use conservative retry condition
-        pub fn conservative_condition(self) -> RetryConfig<B, ConservativeCondition<MAX_ATTEMPTS>> {
-            RetryConfig::new(self.backoff, ConservativeCondition::new())
-        }
-
-        /// Use aggressive retry condition
-        pub fn aggressive_condition(self) -> RetryConfig<B, AggressiveCondition<MAX_ATTEMPTS>> {
-            RetryConfig::new(self.backoff, AggressiveCondition::new())
-        }
-
-        /// Use time-based retry condition
-        pub fn time_based_condition<const MAX_DURATION_MS: u64>(
-            self,
-        ) -> RetryConfig<B, crate::patterns::retry::TimeBasedCondition<MAX_DURATION_MS>> {
-            RetryConfig::new(
-                self.backoff,
-                crate::patterns::retry::TimeBasedCondition::new(MAX_ATTEMPTS),
-            )
-        }
-    }
-
-    // Note: with_jitter and with_max_duration are already defined on RetryConfig in retry.rs
-}
+// builder module removed — superseded by ResiliencePipeline
 
 /// Type-level constants for common configurations.
 pub mod constants {
@@ -554,84 +396,7 @@ pub mod constants {
     pub const DEFAULT_RATE_LIMIT: f64 = 100.0;
 }
 
-/// Utility functions for type-safe resilience patterns
-pub mod utils {
-    use crate::core::config::ConfigResult;
-    use crate::patterns::circuit_breaker::{FastCircuitBreaker, SlowCircuitBreaker, StandardCircuitBreaker};
-    use crate::patterns::retry::{AggressiveRetry, QuickRetry, StandardRetry, aggressive_retry, exponential_retry, fixed_retry};
-
-    /// Create a standard resilience setup for HTTP clients
-    pub fn http_resilience() -> ConfigResult<(StandardCircuitBreaker, StandardRetry)> {
-        let breaker = StandardCircuitBreaker::default();
-        let retry = exponential_retry::<3>()?;
-        Ok((breaker, retry))
-    }
-
-    /// Create a fast-fail setup for real-time operations
-    pub fn realtime_resilience() -> ConfigResult<(FastCircuitBreaker, QuickRetry)> {
-        let breaker = FastCircuitBreaker::default();
-        let retry = fixed_retry::<50, 2>()?;
-        Ok((breaker, retry))
-    }
-
-    /// Create a resilient setup for batch operations
-    pub fn batch_resilience() -> ConfigResult<(SlowCircuitBreaker, AggressiveRetry)> {
-        let breaker = SlowCircuitBreaker::default();
-        let retry = aggressive_retry::<5>()?;
-        Ok((breaker, retry))
-    }
-}
+// utils module removed — superseded by ResiliencePipeline functional API
 
 /// Library version with compile-time embedding
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_configurations() {
-        // Test that configurations can be created
-        let _fast_cb = fast_config();
-        let _standard_cb = standard_config();
-        let _slow_cb = slow_config();
-    }
-
-    #[tokio::test]
-    async fn test_prelude_imports() {
-        use crate::prelude::*;
-
-        // Should be able to create standard configurations
-        let _breaker = StandardCircuitBreaker::default();
-        let _retry = exponential_retry::<3>().expect("Should create retry strategy");
-    }
-
-    #[tokio::test]
-    async fn test_utility_functions() {
-        let (breaker, retry) = utils::http_resilience().expect("Should create HTTP resilience");
-
-        // Test that they work together
-        let result = breaker
-            .execute(|| async {
-                retry
-                    .execute_resilient(|| async { Ok::<_, ResilienceError>("success") })
-                    .await
-                    .map_err(|failure| failure.error)
-            })
-            .await;
-
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_builder_pattern() {
-        use crate::builder::*;
-
-        let _builder = ResilienceBuilder::new()
-            .with_circuit_breaker::<5, 30_000>(|config| config.with_half_open_limit(3));
-        // .with_retry::<3>(|retry| {
-        //     retry.exponential_backoff::<100, 20>()
-        //          .conservative_condition()
-        // });
-    }
-}

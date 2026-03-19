@@ -411,10 +411,7 @@ impl<T: Config + Clone> ConfigExt<T> for T {
 }
 
 /// Implement sealed trait for standard types
-impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64> sealed::Sealed
-    for super::super::patterns::circuit_breaker::CircuitBreaker<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>
-{
-}
+impl sealed::Sealed for super::super::patterns::circuit_breaker::CircuitBreaker {}
 impl sealed::Sealed for super::super::patterns::bulkhead::Bulkhead {}
 
 /// Default implementation of Retryable for `ResilienceError`

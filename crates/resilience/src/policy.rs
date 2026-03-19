@@ -105,6 +105,7 @@ pub struct ResiliencePolicy {
     /// Retry strategy configuration
     pub retry: Option<RetryPolicyConfig>,
     /// Circuit breaker configuration
+    #[serde(skip)]
     pub circuit_breaker: Option<CircuitBreakerConfig>,
     /// Bulkhead configuration
     pub bulkhead: Option<BulkheadConfig>,
@@ -394,7 +395,7 @@ impl ResilienceConfig for ResiliencePolicy {
 
         // Validate circuit breaker
         if let Some(cb) = &self.circuit_breaker {
-            cb.validate()?;
+            cb.validate().map_err(|e| ConfigError::validation(&e.message))?;
         }
 
         // Validate bulkhead
