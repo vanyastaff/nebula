@@ -31,6 +31,9 @@ const DEFAULT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct AsyncPooledValue<T: Poolable> {
     value: Option<T>,
     return_tx: mpsc::UnboundedSender<T>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    // _permit is dropped when this value is dropped, releasing the semaphore slot
+    // so the next waiter (acquire/try_acquire) can proceed.
 }
 
 impl<T: Poolable> AsyncPooledValue<T> {
@@ -40,6 +43,9 @@ impl<T: Poolable> AsyncPooledValue<T> {
         #[cfg(feature = "tracing")]
         trace!("Detaching value from pool");
 
+        // The permit is still held (and released when self drops via Drop),
+        // which is correct for a detached value: the capacity slot stays
+        // consumed until the caller is done with the value.
         self.value.take().expect("Value already detached")
     }
 }
@@ -68,9 +74,13 @@ impl<T: Poolable> Drop for AsyncPooledValue<T> {
             trace!("Returning value to pool");
 
             // ✅ SAFE: Channel send always succeeds (unbounded)
-            // Objects are guaranteed to be returned to pool
+            // Objects are guaranteed to be returned to pool.
+            // The _permit is dropped AFTER the send, so the semaphore
+            // slot is released after the object is queued for return.
             let _ = self.return_tx.send(value);
         }
+        // _permit is dropped here, releasing the semaphore slot
+        // and allowing the next waiter to proceed.
     }
 }
 
@@ -145,7 +155,7 @@ impl<T: Poolable> AsyncPool<T> {
 
         let config = PoolConfig {
             initial_capacity: capacity,
-            max_capacity: Some(capacity * 2),
+            max_capacity: Some(capacity),
             validate_on_return: true,
             ..Default::default()
         };
@@ -160,6 +170,7 @@ impl<T: Poolable> AsyncPool<T> {
         F: Fn() -> T + Send + Sync + 'static,
     {
         let initial_capacity = config.initial_capacity;
+        let config_max_capacity = config.max_capacity;
 
         #[cfg(feature = "tracing")]
         debug!(
@@ -223,10 +234,14 @@ impl<T: Poolable> AsyncPool<T> {
             debug!("Pool return processor terminated");
         });
 
+        // The semaphore capacity equals max_capacity (or initial_capacity if unbounded).
+        // Each outstanding acquired value holds one permit, preventing over-acquisition.
+        let max_permits = config_max_capacity.unwrap_or(initial_capacity);
+
         Self {
             inner,
             return_tx,
-            semaphore: Arc::new(Semaphore::new(initial_capacity)),
+            semaphore: Arc::new(Semaphore::new(max_permits)),
             shutdown,
             default_timeout: DEFAULT_ACQUIRE_TIMEOUT,
         }
@@ -283,9 +298,11 @@ impl<T: Poolable> AsyncPool<T> {
 
     /// Internal acquire implementation without timeout
     async fn acquire_inner(&self) -> MemoryResult<AsyncPooledValue<T>> {
-        // Wait for available permit (with cancellation support)
-        let _permit = tokio::select! {
-            permit = self.semaphore.acquire() => {
+        // Acquire an owned permit (stored in the returned value).
+        // The permit is held as long as the AsyncPooledValue is alive,
+        // ensuring at most `max_capacity` values are outstanding at once.
+        let permit = tokio::select! {
+            permit = Arc::clone(&self.semaphore).acquire_owned() => {
                 permit.map_err(|_| MemoryError::InvalidState {
                     reason: "semaphore closed".into(),
                 })?
@@ -302,39 +319,56 @@ impl<T: Poolable> AsyncPool<T> {
 
         let mut inner = self.inner.lock().await;
 
-        // Try to get from pool
+        // Fast path: reuse an existing object from the pool
         if let Some(obj) = inner.objects.pop() {
             #[cfg(feature = "tracing")]
             trace!(pool_size = inner.objects.len(), "Acquired object from pool");
 
-            drop(inner); // Release lock
+            drop(inner); // Release lock before returning
             return Ok(AsyncPooledValue {
                 value: Some(obj),
                 return_tx: self.return_tx.clone(),
+                _permit: permit,
             });
         }
 
-        // Create new object if under max capacity
-        if let Some(max_cap) = inner.config.max_capacity
-            && inner.total_created >= max_cap
-        {
-            #[cfg(feature = "tracing")]
-            warn!(
-                total_created = inner.total_created,
-                max_capacity = max_cap,
-                "Pool exhausted"
-            );
+        // Slow path: pool temporarily empty because the background task hasn't yet
+        // processed a returned object from the channel.
+        //
+        // Only create a new object if we are still under max_capacity.  When
+        // total_created == max_capacity the semaphore already guarantees there are
+        // exactly max_capacity live objects; the pool vector is just momentarily empty
+        // because the background channel hasn't flushed yet.  In that case we yield
+        // repeatedly until the background task places an object back in the pool.
+        if let Some(max_cap) = inner.config.max_capacity {
+            if inner.total_created >= max_cap {
+                drop(inner); // release lock so background task can acquire it
 
-            return Err(MemoryError::pool_exhausted(
-                "async_pool",
-                inner.total_created,
-            ));
+                // Spin-yield until the background task returns an object.
+                // Each yield_now() gives other tasks (including the background processor)
+                // a chance to run.
+                let obj = loop {
+                    tokio::task::yield_now().await;
+                    let mut guard = self.inner.lock().await;
+                    if let Some(obj) = guard.objects.pop() {
+                        break obj;
+                    }
+                    // Guard dropped here, background task gets another chance.
+                };
+
+                return Ok(AsyncPooledValue {
+                    value: Some(obj),
+                    return_tx: self.return_tx.clone(),
+                    _permit: permit,
+                });
+            }
         }
 
+        // Under max_capacity: create a fresh object.
         #[cfg(feature = "tracing")]
         debug!(
             total_created = inner.total_created,
-            "Creating new pool object"
+            "Creating new pool object (pool temporarily empty)"
         );
 
         let obj = (inner.factory)();
@@ -345,12 +379,13 @@ impl<T: Poolable> AsyncPool<T> {
         Ok(AsyncPooledValue {
             value: Some(obj),
             return_tx: self.return_tx.clone(),
+            _permit: permit,
         })
     }
 
     /// Try to acquire object without waiting
     ///
-    /// Returns `None` if no objects are immediately available.
+    /// Returns `None` if no objects are immediately available or pool is at capacity.
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn try_acquire(&self) -> Option<AsyncPooledValue<T>> {
         // Check for shutdown
@@ -360,15 +395,19 @@ impl<T: Poolable> AsyncPool<T> {
             return None;
         }
 
-        // Try to acquire permit without waiting
-        if self.semaphore.try_acquire().is_err() {
-            #[cfg(feature = "tracing")]
-            trace!("No permits available for try_acquire");
-            return None;
-        }
+        // Try to acquire an owned permit without waiting
+        let permit = match Arc::clone(&self.semaphore).try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                #[cfg(feature = "tracing")]
+                trace!("No permits available for try_acquire");
+                return None;
+            }
+        };
 
         let mut inner = self.inner.lock().await;
 
+        // Fast path: reuse existing object
         if let Some(obj) = inner.objects.pop() {
             #[cfg(feature = "tracing")]
             trace!(
@@ -380,16 +419,19 @@ impl<T: Poolable> AsyncPool<T> {
             return Some(AsyncPooledValue {
                 value: Some(obj),
                 return_tx: self.return_tx.clone(),
+                _permit: permit,
             });
         }
 
-        // Create new if possible
-        if let Some(max_cap) = inner.config.max_capacity
-            && inner.total_created >= max_cap
-        {
-            #[cfg(feature = "tracing")]
-            trace!("Pool at max capacity, try_acquire failed");
-            return None;
+        // Slow path: pool temporarily empty.
+        // For try_acquire (non-blocking) we cannot wait, so if we are at max capacity
+        // return None instead of creating a surplus object.
+        if let Some(max_cap) = inner.config.max_capacity {
+            if inner.total_created >= max_cap {
+                #[cfg(feature = "tracing")]
+                trace!("Pool temporarily empty and at max capacity, try_acquire returns None");
+                return None;
+            }
         }
 
         let obj = (inner.factory)();
@@ -406,6 +448,7 @@ impl<T: Poolable> AsyncPool<T> {
         Some(AsyncPooledValue {
             value: Some(obj),
             return_tx: self.return_tx.clone(),
+            _permit: permit,
         })
     }
 
