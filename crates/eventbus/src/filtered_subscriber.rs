@@ -62,9 +62,4 @@ impl<E: Clone + Send> FilteredSubscriber<E> {
     pub fn is_closed(&self) -> bool {
         self.inner.is_closed()
     }
-
-    /// Closes this subscription handle.
-    pub fn close(self) {
-        self.inner.close();
-    }
 }

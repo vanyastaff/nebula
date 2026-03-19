@@ -10,7 +10,6 @@ pub use crate::EventBusRegistry;
 pub use crate::EventBusRegistryStats;
 pub use crate::EventBusStats;
 pub use crate::EventFilter;
-pub use crate::EventSubscriber;
 pub use crate::FilteredSubscriber;
 pub use crate::PublishOutcome;
 pub use crate::ScopedEvent;

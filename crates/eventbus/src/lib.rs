@@ -124,6 +124,3 @@ pub use scope::ScopedEvent;
 pub use scope::SubscriptionScope;
 pub use stats::EventBusStats;
 pub use subscriber::Subscriber;
-
-/// Alias for [`Subscriber`]; matches INTERACTIONS/ARCHITECTURE naming.
-pub type EventSubscriber<E> = Subscriber<E>;

@@ -12,11 +12,7 @@ use tokio::sync::broadcast;
 /// ## Drop Behavior
 ///
 /// When a `Subscriber` is dropped, the underlying channel automatically decrements the subscriber count.
-/// No explicit unsubscribe is needed — the subscription ends when the subscriber is dropped or
-/// [`close()`](Self::close) is called.
-///
-/// **Note:** [`close()`](Self::close) is semantically equivalent to dropping the subscriber.
-/// It exists for clarity when you want to explicitly signal subscription termination.
+/// No explicit unsubscribe is needed — the subscription ends when the subscriber is dropped.
 ///
 /// ## Lag Recovery
 ///
@@ -107,7 +103,4 @@ impl<E: Clone + Send> Subscriber<E> {
     pub fn is_closed(&self) -> bool {
         self.receiver.is_closed()
     }
-
-    /// Closes this subscription handle by consuming it.
-    pub fn close(self) {}
 }

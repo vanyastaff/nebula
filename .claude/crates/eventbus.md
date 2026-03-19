@@ -13,10 +13,14 @@ Generic typed pub/sub event bus — transport infrastructure only, no domain eve
 - `FilteredSubscriber` + `EventFilter` for predicate-based selective subscription.
 - `SubscriptionScope` + `ScopedEvent` for targeted subscriptions (e.g., listen only for a specific workflow's events).
 
+## API
+- `emit()` — non-blocking emit (always). Formerly `send()`.
+- `emit_awaited()` — async emit respecting `Block` policy. Formerly `send_async()`.
+- Old aliases (`send`, `send_async`, `emit_async`, `EventSubscriber`, `Subscriber::close()`, `FilteredSubscriber::close()`) removed.
+
 ## Traps
 - Slow subscribers don't block producers — they lag and auto-skip to the latest event. Check `Subscriber::lagged_count()` after receive to detect missed events.
 - Dropping `Subscriber` auto-decrements count — no explicit close needed.
-- `EventSubscriber<E>` is just a type alias for `Subscriber<E>`.
 
 ## Relations
 - No nebula deps. Used by nebula-telemetry (wraps it for `ExecutionEvent`), nebula-resource.
