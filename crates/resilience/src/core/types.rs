@@ -35,6 +35,34 @@ pub enum CallError<E> {
     RateLimited,
 }
 
+impl<E: std::fmt::Display> std::fmt::Display for CallError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Operation(e) => write!(f, "operation error: {e}"),
+            Self::CircuitOpen => write!(f, "circuit breaker is open"),
+            Self::BulkheadFull => write!(f, "bulkhead is at capacity"),
+            Self::Timeout(d) => write!(f, "operation timed out after {d:?}"),
+            Self::RetriesExhausted { attempts, last } => {
+                write!(f, "operation failed after {attempts} attempt(s): {last}")
+            }
+            Self::Cancelled { reason: Some(r) } => write!(f, "operation cancelled: {r}"),
+            Self::Cancelled { reason: None } => write!(f, "operation cancelled"),
+            Self::LoadShed => write!(f, "request load-shed due to overload"),
+            Self::RateLimited => write!(f, "rate limit exceeded"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for CallError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Operation(e) => Some(e),
+            Self::RetriesExhausted { last, .. } => Some(last),
+            _ => None,
+        }
+    }
+}
+
 impl<E> CallError<E> {
     /// Returns true only if the error class suggests a retry might succeed.
     ///

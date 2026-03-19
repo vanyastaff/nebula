@@ -120,7 +120,7 @@
 )]
 #![expect(
     clippy::new_without_default,
-    reason = "const fn new() cannot be called from Default trait"
+    reason = "PipelineBuilder::new() is const fn and cannot be called from Default::default()"
 )]
 // Pre-existing pedantic lints suppressed in legacy code — these files are not being rewritten
 #![expect(

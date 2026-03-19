@@ -113,17 +113,17 @@ impl HedgeExecutor {
 
                 // Prefer completed handles
                 () = async {}, if ready_idx.is_some() => {
-                    let idx = ready_idx.unwrap();
+                    let Some(idx) = ready_idx else { continue };
                     match handles.remove(idx).await {
                         Ok(Ok(v)) => {
                             abort_all(&mut handles);
                             return Ok(v);
                         }
                         Ok(Err(e)) => {
-                            last_err = Some(e);
                             if handles.is_empty() && hedges_sent >= self.config.max_hedges {
-                                return Err(CallError::Operation(last_err.take().unwrap()));
+                                return Err(CallError::Operation(e));
                             }
+                            last_err = Some(e);
                         }
                         Err(_) => {}
                     }

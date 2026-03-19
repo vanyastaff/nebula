@@ -23,7 +23,11 @@ pub struct CircuitBreakerConfig {
     pub half_open_max_ops: u32,
     /// Minimum number of operations required before the failure rate can trip the breaker. Default: 5.
     pub min_operations: u32,
-    /// Failure rate (0.0..=1.0) that triggers opening. Default: 0.5.
+    /// Reserved: rate-based tripping is not yet implemented.
+    ///
+    /// This field is validated (must be 0.0..=1.0) but **not used** by `record_outcome()`.
+    /// The circuit opens based on the absolute `failure_threshold` count only.
+    /// Default: 0.5.
     pub failure_rate_threshold: f64,
     /// Sliding window for failure counting. Default: 60s.
     pub sliding_window: Duration,

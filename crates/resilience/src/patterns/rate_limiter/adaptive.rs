@@ -130,16 +130,17 @@ impl RateLimiter for AdaptiveRateLimiter {
     }
 
     async fn reset(&self) {
+        // Reset stats and snapshot the current inner limiter atomically under a single write lock.
+        // Splitting into read-then-write would be a TOCTOU: a concurrent record_error() could
+        // install a new inner bucket between the two lock acquisitions.
         let limiter = {
-            let state = self.state.read();
+            let mut state = self.state.write();
+            state.success_count = 0;
+            state.error_count = 0;
+            state.last_stats_reset = Instant::now();
             state.inner.clone()
         };
 
         limiter.reset().await;
-
-        let mut state = self.state.write();
-        state.success_count = 0;
-        state.error_count = 0;
-        state.last_stats_reset = Instant::now();
     }
 }

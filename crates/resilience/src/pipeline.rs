@@ -7,7 +7,9 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use crate::{
@@ -181,7 +183,7 @@ where
                     .jitter(config.jitter.clone())
                     .retry_if(move |e: &Option<E>| {
                         // Stop if bail is set (non-operation error occurred)
-                        e.is_some() && bail_check.lock().unwrap().is_none()
+                        e.is_some() && bail_check.lock().is_none()
                     });
 
                 let result = retry_with(inner_config, {
@@ -197,7 +199,8 @@ where
                                 Ok(v) => Ok(v),
                                 Err(CallError::Operation(e)) => Err(Some(e)),
                                 Err(other) => {
-                                    *bail.lock().unwrap() = Some(other);
+                                    let mut guard = bail.lock();
+                                    *guard = Some(other);
                                     Err(None) // signals bail to retry_if
                                 }
                             }
@@ -217,7 +220,7 @@ where
                         | CallError::Operation(None),
                     ) => {
                         // Non-operation error caused early termination — recover from bail
-                        Err(bail.lock().unwrap().take().unwrap_or(CallError::Cancelled { reason: None }))
+                        Err({ let mut g = bail.lock(); g.take() }.unwrap_or(CallError::Cancelled { reason: None }))
                     }
                     Err(CallError::Operation(Some(e))) => Err(CallError::Operation(e)),
                     Err(CallError::CircuitOpen) => Err(CallError::CircuitOpen),

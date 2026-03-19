@@ -61,39 +61,6 @@ macro_rules! log_result {
     };
 }
 
-/// Print the result of an operation
-///
-/// # Examples
-///
-/// ```rust,no_run
-/// use nebula_resilience::{print_result, ResilienceError};
-///
-/// async fn example() {
-///     let result: Result<i32, ResilienceError> = Ok(42);
-///     print_result!(result, "Operation completed");
-/// }
-/// ```
-#[macro_export]
-macro_rules! print_result {
-    ($result:expr, $fmt:expr $(, $arg:expr)*) => {
-        match &$result {
-            Ok(_value) => {
-                println!(concat!("[OK] ", $fmt) $(, $arg)*);
-            }
-            Err(err) => {
-                println!(concat!("[ERR] ", $fmt, " - Error: {}") $(, $arg)*, err);
-            }
-        }
-    };
-
-    (short $result:expr) => {
-        match &$result {
-            Ok(_) => print!("[OK]"),
-            Err(_) => print!("[ERR]"),
-        }
-    };
-}
-
 /// Execute an operation with automatic logging
 ///
 /// This combines execution and logging into a single expression.
@@ -229,9 +196,6 @@ mod tests {
 
     #[test]
     fn test_macros_compile() {
-        let result: Result<i32, String> = Ok(42);
-        print_result!(short result);
-
         let fixed_policy = policy! {
             name: "fixed",
             timeout: Duration::from_secs(1),

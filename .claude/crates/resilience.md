@@ -21,7 +21,7 @@ Fault-tolerance patterns — circuit breaker, retry, bulkhead, rate limiter, tim
 - `PolicySource<C>` + `LoadSignal` + `ConstantLoad` for adaptive policy configuration.
 
 ## Traps
-- **`failure_rate_threshold` is ignored in CB tripping**: the circuit breaker opens based on absolute `failure_threshold` count, not rate. Downstream tests that relied on rate-based tripping must be updated to use `failure_threshold`.
+- **`failure_rate_threshold` is ignored in CB tripping**: the circuit breaker opens based on absolute `failure_threshold` count, not rate. Doc comment on the field now says "Reserved — not used". Downstream tests that relied on rate-based tripping must be updated to use `failure_threshold`.
 - **Successes decrement failure count**: `record_outcome(Success)` does `failures.saturating_sub(1)` when Closed, so alternating F/S patterns may never accumulate enough failures to trip the breaker.
 - **`CallError::map_operation`**: use `.map_operation(f)` to transform the inner error type `E`.
 - **`#![expect]` suppressions in lib.rs**: pre-existing pedantic lints in legacy files are suppressed via crate-level expects. New files must be clippy-clean independently.
@@ -30,4 +30,4 @@ Fault-tolerance patterns — circuit breaker, retry, bulkhead, rate limiter, tim
 ## Relations
 - No nebula deps. Used by nebula-resource, nebula-credential, nebula-engine for external call resilience.
 
-<!-- reviewed: 2026-03-18 -->
+<!-- reviewed: 2026-03-19 -->
