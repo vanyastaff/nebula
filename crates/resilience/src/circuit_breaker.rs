@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::{
     CallError, ConfigError,
     clock::{Clock, SystemClock},
-    observability::sink::{CircuitState, MetricsSink, NoopSink, ResilienceEvent},
+    sink::{CircuitState, MetricsSink, NoopSink, ResilienceEvent},
 };
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -300,7 +300,7 @@ const fn to_circuit_state(s: State) -> CircuitState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::observability::sink::CircuitState as CS;
+    use crate::sink::CircuitState as CS;
     use crate::{CallError, RecordingSink};
     use std::time::Duration;
 

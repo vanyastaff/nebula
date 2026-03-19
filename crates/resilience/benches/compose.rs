@@ -8,11 +8,9 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::{
     ResiliencePipeline,
-    patterns::{
-        bulkhead::{Bulkhead, BulkheadConfig},
-        circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
-        retry::{BackoffConfig, RetryConfig},
-    },
+    bulkhead::{Bulkhead, BulkheadConfig},
+    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
+    retry::{BackoffConfig, RetryConfig},
 };
 use std::hint::black_box;
 use std::sync::Arc;

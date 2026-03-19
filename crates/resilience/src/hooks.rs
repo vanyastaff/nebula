@@ -558,7 +558,7 @@ impl ObservabilityHook for LoggingHook {
 
 /// Metrics hook that records events as metrics
 pub struct MetricsHook {
-    collector: crate::core::MetricsCollector,
+    collector: crate::MetricsCollector,
 }
 
 impl MetricsHook {
@@ -566,13 +566,13 @@ impl MetricsHook {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            collector: crate::core::MetricsCollector::new(true),
+            collector: crate::MetricsCollector::new(true),
         }
     }
 
     /// Get a snapshot of all metrics
     #[must_use]
-    pub fn metrics(&self) -> std::collections::HashMap<String, crate::core::MetricSnapshot> {
+    pub fn metrics(&self) -> std::collections::HashMap<String, crate::MetricSnapshot> {
         self.collector.all_metrics()
     }
 }

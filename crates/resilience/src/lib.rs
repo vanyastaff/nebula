@@ -7,7 +7,7 @@
 //!
 //! ```rust,no_run
 //! use nebula_resilience::{ResiliencePipeline, CallError};
-//! use nebula_resilience::patterns::retry::{RetryConfig, BackoffConfig};
+//! use nebula_resilience::retry::{RetryConfig, BackoffConfig};
 //! use std::time::Duration;
 //!
 //! #[tokio::main]
@@ -27,7 +27,7 @@
 //! # Circuit Breaker
 //!
 //! ```rust,no_run
-//! use nebula_resilience::patterns::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+//! use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 //! use std::time::Duration;
 //!
 //! #[tokio::main]
@@ -48,7 +48,7 @@
 //! # Retry
 //!
 //! ```rust,no_run
-//! use nebula_resilience::patterns::retry::{RetryConfig, BackoffConfig, retry_with};
+//! use nebula_resilience::retry::{RetryConfig, BackoffConfig, retry_with};
 //! use nebula_resilience::CallError;
 //! use std::time::Duration;
 //!
@@ -70,68 +70,87 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
-// Modules
+// ── Modules (flat) ──────────────────────────────────────────────────────────
+
+// Core types
+pub mod cancellation;
+mod error;
+mod metrics;
+pub mod policy_source;
+mod result;
+pub mod signals;
+pub mod types;
+
+// Observability
+pub mod hooks;
+pub mod sink;
+pub mod spans;
+
+// Patterns
+pub mod bulkhead;
+pub mod circuit_breaker;
+pub mod fallback;
+pub mod hedge;
+pub mod load_shed;
+pub mod rate_limiter;
+pub mod retry;
+pub mod timeout;
+
+// Infrastructure
 pub mod clock;
-pub mod core;
 pub mod gate;
 pub mod helpers;
-pub mod observability;
-pub mod patterns;
 pub mod pipeline;
 pub mod retryable;
 
-// ── Re-exports from core ─────────────────────────────────────────────────────
+// ── Re-exports: core types ──────────────────────────────────────────────────
 
-pub use core::{
-    // Error types
-    CircuitBreakerOpenState,
-    // Policy source
-    ConstantLoad,
-    ErrorClass,
-    ErrorContext,
-    LoadSignal,
-    // Metrics
-    MetricKind,
-    MetricSnapshot,
-    Metrics,
-    MetricsCollector,
+pub use error::{CircuitBreakerOpenState, ErrorClass, ErrorContext, ResilienceError};
+pub use metrics::{MetricKind, MetricSnapshot, Metrics, MetricsCollector};
+pub use policy_source::PolicySource;
+pub use result::{ResilienceResult, ResultExt};
+pub use signals::{ConstantLoad, LoadSignal};
+pub use types::{CallError, CallResult, ConfigError};
 
-    PolicySource,
-
-    ResilienceError,
-    ResilienceResult,
-
-    // Core error and result types
-    types::{CallError, CallResult, ConfigError},
+pub use cancellation::{
+    CancellableFuture, CancellationContext, CancellationExt, ShutdownCoordinator,
 };
 
-// ── Re-exports from patterns ─────────────────────────────────────────────────
+// ── Re-exports: patterns ────────────────────────────────────────────────────
 
-pub use patterns::{
-    bulkhead::{Bulkhead, BulkheadConfig},
-    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome},
-    fallback::{AnyStringFallbackStrategy, FallbackStrategy, ValueFallback},
-    hedge::{HedgeConfig, HedgeExecutor},
-    load_shed::load_shed,
-    rate_limiter::{
-        AdaptiveRateLimiter, AnyRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket,
-    },
-    retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with},
-    timeout::{TimeoutExecutor, timeout as timeout_fn, timeout_with_original_error},
+pub use bulkhead::{Bulkhead, BulkheadConfig};
+pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
+pub use fallback::{AnyStringFallbackStrategy, FallbackStrategy, ValueFallback};
+pub use hedge::{HedgeConfig, HedgeExecutor};
+pub use load_shed::load_shed;
+pub use rate_limiter::{
+    AdaptiveRateLimiter, AnyRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket,
+};
+pub use retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
+pub use timeout::{TimeoutExecutor, timeout as timeout_fn, timeout_with_original_error};
+
+// ── Re-exports: observability ───────────────────────────────────────────────
+
+pub use hooks::{
+    BulkheadEventCategory, CircuitBreakerEventCategory, Event, EventCategory, LogLevel,
+    LoggingHook, Metric, MetricsHook, ObservabilityHook, ObservabilityHooks, PatternEvent,
+    RateLimiterEventCategory, RetryEventCategory, TimeoutEventCategory, metrics as hook_metrics,
+};
+pub use sink::{CircuitState, MetricsSink, NoopSink, RecordingSink, ResilienceEvent};
+pub use spans::{
+    PatternCategory, PatternSpanGuard, SpanGuard, create_span, record_error, record_success,
 };
 
-// ── Other re-exports ─────────────────────────────────────────────────────────
+// ── Re-exports: infrastructure ──────────────────────────────────────────────
 
 pub use gate::{Gate, GateClosed, GateGuard};
-pub use observability::sink::CircuitState;
-pub use observability::{MetricsSink, NoopSink, RecordingSink, ResilienceEvent};
 pub use pipeline::{PipelineBuilder, ResiliencePipeline};
 
 /// Functional resilience API — convenience functions for simple cases.
 pub mod resilience {
-    pub use crate::patterns::load_shed::load_shed;
-    pub use crate::patterns::retry::{retry, retry_with};
-    pub use crate::patterns::timeout::timeout_with_original_error as with_timeout;
+    pub use crate::load_shed::load_shed;
+    pub use crate::retry::{retry, retry_with};
+    pub use crate::timeout::timeout_with_original_error as with_timeout;
 }
 
 /// Type-level constants for common configurations.
