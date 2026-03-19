@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// A state in the circuit breaker state machine.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CircuitState {
     /// Normal operation — requests pass through.
     Closed,
@@ -22,17 +22,30 @@ pub enum CircuitState {
 pub enum ResilienceEvent {
     /// Circuit breaker transitioned between states.
     CircuitStateChanged {
+        /// Previous circuit state.
         from: CircuitState,
+        /// New circuit state.
         to: CircuitState,
     },
     /// A retry attempt was made.
-    RetryAttempt { attempt: u32, will_retry: bool },
+    RetryAttempt {
+        /// 1-based attempt number.
+        attempt: u32,
+        /// Whether another attempt will follow.
+        will_retry: bool,
+    },
     /// A bulkhead rejected a request (at capacity).
     BulkheadRejected,
     /// A timeout elapsed.
-    TimeoutElapsed { duration: Duration },
+    TimeoutElapsed {
+        /// Configured timeout duration.
+        duration: Duration,
+    },
     /// A hedge request was fired.
-    HedgeFired { hedge_number: u32 },
+    HedgeFired {
+        /// 1-based hedge request number.
+        hedge_number: u32,
+    },
     /// A rate limit was exceeded.
     RateLimitExceeded,
     /// Load shed — request rejected due to overload.
@@ -60,16 +73,19 @@ pub struct RecordingSink {
 
 impl RecordingSink {
     /// Create a new empty recording sink.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Returns a snapshot of all recorded events.
+    #[must_use]
     pub fn events(&self) -> Vec<ResilienceEvent> {
         self.events.lock().unwrap().clone()
     }
 
     /// Count events matching a given kind string.
+    #[must_use]
     pub fn count(&self, kind: &str) -> usize {
         self.events()
             .iter()
@@ -78,6 +94,7 @@ impl RecordingSink {
     }
 
     /// Returns true if a `CircuitStateChanged` event to `to` was recorded.
+    #[must_use]
     pub fn has_state_change(&self, to: CircuitState) -> bool {
         self.events()
             .iter()
@@ -91,7 +108,7 @@ impl MetricsSink for RecordingSink {
     }
 }
 
-fn event_kind(e: &ResilienceEvent) -> &'static str {
+const fn event_kind(e: &ResilienceEvent) -> &'static str {
     match e {
         ResilienceEvent::CircuitStateChanged { .. } => "circuit_state_changed",
         ResilienceEvent::RetryAttempt { .. } => "retry_attempt",

@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use crate::{
     CallError,
-    clock::{Clock, SystemClock},
     observability::sink::{MetricsSink, NoopSink, ResilienceEvent},
 };
 
@@ -19,18 +18,27 @@ pub enum BackoffConfig {
     /// Same delay between every attempt.
     Fixed(Duration),
     /// Linearly increasing delay, capped at `max`.
-    Linear { base: Duration, max: Duration },
+    Linear {
+        /// Base delay for the first retry.
+        base: Duration,
+        /// Maximum delay cap.
+        max: Duration,
+    },
     /// Exponentially increasing delay, capped at `max`.
     Exponential {
+        /// Base delay for the first retry.
         base: Duration,
+        /// Multiplier applied each attempt.
         multiplier: f64,
+        /// Maximum delay cap.
         max: Duration,
     },
 }
 
 impl BackoffConfig {
     /// Standard exponential backoff: 100ms base, 2× multiplier, 30s cap.
-    pub fn exponential_default() -> Self {
+    #[must_use]
+    pub const fn exponential_default() -> Self {
         Self::Exponential {
             base: Duration::from_millis(100),
             multiplier: 2.0,
@@ -63,10 +71,20 @@ pub enum JitterConfig {
     #[default]
     None,
     /// Add a random fraction up to `factor` of the delay.
-    Full { factor: f64 },
+    Full {
+        /// Maximum jitter fraction (0.0–1.0).
+        factor: f64,
+    },
 }
 
 // ── RetryConfig ───────────────────────────────────────────────────────────────
+
+/// Configuration for the retry pattern.
+///
+/// By default retries all errors up to `max_attempts`.
+/// Use [`retry_if`](RetryConfig::retry_if) to restrict retries to specific error classes.
+/// Type alias for the retry predicate closure.
+type RetryPredicate<E> = Box<dyn Fn(&E) -> bool + Send + Sync>;
 
 /// Configuration for the retry pattern.
 ///
@@ -79,15 +97,15 @@ pub struct RetryConfig<E = ()> {
     pub backoff: BackoffConfig,
     /// Optional jitter applied to backoff delays.
     pub jitter: JitterConfig,
-    predicate: Option<Box<dyn Fn(&E) -> bool + Send + Sync>>,
+    predicate: Option<RetryPredicate<E>>,
     sink: Arc<dyn MetricsSink>,
-    clock: Arc<dyn Clock>,
 }
 
 impl<E: 'static> RetryConfig<E> {
     /// Create a retry config that retries all errors up to `max_attempts` times.
     ///
     /// `E` is inferred from the closure passed to [`retry_with`].
+    #[must_use]
     pub fn new(max_attempts: u32) -> Self {
         Self {
             max_attempts,
@@ -95,17 +113,19 @@ impl<E: 'static> RetryConfig<E> {
             jitter: JitterConfig::None,
             predicate: None,
             sink: Arc::new(NoopSink),
-            clock: Arc::new(SystemClock),
         }
     }
+
     /// Set the backoff strategy.
-    pub fn backoff(mut self, backoff: BackoffConfig) -> Self {
+    #[must_use]
+    pub const fn backoff(mut self, backoff: BackoffConfig) -> Self {
         self.backoff = backoff;
         self
     }
 
     /// Set jitter.
-    pub fn jitter(mut self, jitter: JitterConfig) -> Self {
+    #[must_use]
+    pub const fn jitter(mut self, jitter: JitterConfig) -> Self {
         self.jitter = jitter;
         self
     }
@@ -113,6 +133,7 @@ impl<E: 'static> RetryConfig<E> {
     /// Only retry when this predicate returns `true`.
     ///
     /// Without a predicate, all errors are retried.
+    #[must_use]
     pub fn retry_if<F>(mut self, f: F) -> Self
     where
         F: Fn(&E) -> bool + Send + Sync + 'static,
@@ -122,13 +143,14 @@ impl<E: 'static> RetryConfig<E> {
     }
 
     /// Inject a metrics sink.
+    #[must_use]
     pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }
 
     fn should_retry(&self, err: &E) -> bool {
-        self.predicate.as_ref().map_or(true, |p| p(err))
+        self.predicate.as_ref().is_none_or(|p| p(err))
     }
 }
 

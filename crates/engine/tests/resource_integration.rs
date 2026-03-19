@@ -22,7 +22,7 @@ use nebula_core::ActionKey;
 use nebula_engine::WorkflowEngine;
 use nebula_execution::context::ExecutionBudget;
 use nebula_resource::resource::{Config, Resource};
-use nebula_resource::{Context as ResourceContext, Manager, PoolConfig};
+use nebula_resource::{Context as ResourceContext, Manager, PoolConfig, PoolSizing};
 use nebula_runtime::registry::ActionRegistry;
 use nebula_runtime::{ActionExecutor, InProcessSandbox};
 use nebula_runtime::{ActionRuntime, DataPassingPolicy};
@@ -177,8 +177,7 @@ async fn full_resource_lifecycle_with_stats_and_shutdown() {
             MockResource,
             MockConfig,
             PoolConfig {
-                min_size: 0,
-                max_size: 2,
+                sizing: PoolSizing { min_size: 0, max_size: 2 },
                 ..Default::default()
             },
         )

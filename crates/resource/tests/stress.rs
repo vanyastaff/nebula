@@ -380,9 +380,9 @@ async fn flaky_resource() {
             acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
             resilience: PoolResiliencePolicy {
                 create_breaker: Some(CircuitBreakerConfig {
-                    min_operations: 3,
-                    half_open_max_operations: 1,
-                    failure_rate_threshold: 0.4, // срабатывает при >40% ошибок
+                    min_operations: 2,
+                    failure_threshold: 1, // срабатывает после 1 ошибки из 2+ операций
+                    half_open_max_ops: 1,
                     ..Default::default()
                 }),
                 ..Default::default()

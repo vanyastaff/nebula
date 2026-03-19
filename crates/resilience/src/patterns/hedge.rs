@@ -61,6 +61,7 @@ impl HedgeExecutor {
     }
 
     /// Inject a metrics sink.
+    #[must_use]
     pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
@@ -70,6 +71,7 @@ impl HedgeExecutor {
     ///
     /// - Returns the first `Ok(T)` result, aborting remaining requests.
     /// - Returns the last `Err` if all attempts fail.
+    #[allow(clippy::excessive_nesting)]
     pub async fn execute<T, E, F>(&self, operation: F) -> Result<T, CallError<E>>
     where
         T: Send + 'static,
@@ -90,6 +92,7 @@ impl HedgeExecutor {
             // If no more hedges allowed, just wait for all remaining handles
             if hedges_sent >= self.config.max_hedges {
                 // Poll remaining handles in order
+                #[allow(clippy::iter_with_drain)]
                 for handle in handles.drain(..) {
                     match handle.await {
                         Ok(Ok(v)) => return Ok(v),
@@ -103,13 +106,13 @@ impl HedgeExecutor {
             }
 
             // Check if any in-flight handle is ready, or fire a hedge after the delay
-            let ready_idx = poll_first_ready(&mut handles).await;
+            let ready_idx = poll_first_ready(&handles);
 
             tokio::select! {
                 biased;
 
                 // Prefer completed handles
-                _ = async {}, if ready_idx.is_some() => {
+                () = async {}, if ready_idx.is_some() => {
                     let idx = ready_idx.unwrap();
                     match handles.remove(idx).await {
                         Ok(Ok(v)) => {
@@ -146,8 +149,8 @@ impl HedgeExecutor {
 }
 
 /// Returns the index of the first handle that is `is_finished()`, or `None`.
-async fn poll_first_ready<T, E>(handles: &[JoinHandle<Result<T, E>>]) -> Option<usize> {
-    handles.iter().position(|h| h.is_finished())
+fn poll_first_ready<T, E>(handles: &[JoinHandle<Result<T, E>>]) -> Option<usize> {
+    handles.iter().position(JoinHandle::is_finished)
 }
 
 /// Abort all handles in the list.
@@ -247,15 +250,15 @@ impl LatencyTracker {
     }
 
     fn record(&mut self, latency: Duration) {
-        if self.ring.len() == self.max_samples {
-            if let Some(oldest) = self.ring.pop_front() {
-                let key = oldest.as_nanos() as u64;
-                if let Some(c) = self.sorted.get_mut(&key) {
-                    if *c <= 1 {
-                        self.sorted.remove(&key);
-                    } else {
-                        *c -= 1;
-                    }
+        if self.ring.len() == self.max_samples
+            && let Some(oldest) = self.ring.pop_front()
+        {
+            let key = oldest.as_nanos() as u64;
+            if let Some(c) = self.sorted.get_mut(&key) {
+                if *c <= 1 {
+                    self.sorted.remove(&key);
+                } else {
+                    *c -= 1;
                 }
             }
         }

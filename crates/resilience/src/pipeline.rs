@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use crate::{
     CallError,
-    observability::sink::{MetricsSink, NoopSink},
     patterns::{
         bulkhead::Bulkhead,
         circuit_breaker::CircuitBreaker,
@@ -34,49 +33,48 @@ enum Step<E: 'static> {
 /// Builder for [`ResiliencePipeline`].
 pub struct PipelineBuilder<E: 'static> {
     steps: Vec<Step<E>>,
-    sink: Arc<dyn MetricsSink>,
 }
 
 impl<E: Send + 'static> PipelineBuilder<E> {
     /// Create a new builder.
-    pub fn new() -> Self {
-        Self { steps: Vec::new(), sink: Arc::new(NoopSink) }
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { steps: Vec::new() }
     }
 
     /// Add a timeout step (outermost wrapper if added first).
+    #[must_use]
     pub fn timeout(mut self, d: Duration) -> Self {
         self.steps.push(Step::Timeout(d));
         self
     }
 
     /// Add a retry step.
+    #[must_use]
     pub fn retry(mut self, config: RetryConfig<E>) -> Self {
         self.steps.push(Step::Retry(config));
         self
     }
 
     /// Add a circuit breaker step.
+    #[must_use]
     pub fn circuit_breaker(mut self, cb: Arc<CircuitBreaker>) -> Self {
         self.steps.push(Step::CircuitBreaker(cb));
         self
     }
 
     /// Add a bulkhead step.
+    #[must_use]
     pub fn bulkhead(mut self, bh: Arc<Bulkhead>) -> Self {
         self.steps.push(Step::Bulkhead(bh));
         self
     }
 
-    /// Inject a shared metrics sink.
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
-        self.sink = Arc::new(sink);
-        self
-    }
-
     /// Build the pipeline, emitting a tracing warning if layer order is suboptimal.
+    #[must_use]
     pub fn build(self) -> ResiliencePipeline<E> {
         validate_order(&self.steps);
-        ResiliencePipeline { steps: Arc::new(self.steps), sink: self.sink }
+        ResiliencePipeline { steps: Arc::new(self.steps) }
     }
 }
 
@@ -94,13 +92,13 @@ fn validate_order<E>(steps: &[Step<E>]) {
     let retry_pos = names.iter().position(|&n| n == "retry");
     let timeout_pos = names.iter().position(|&n| n == "timeout");
 
-    if let (Some(r), Some(t)) = (retry_pos, timeout_pos) {
-        if t > r {
-            tracing::warn!(
-                "ResiliencePipeline: timeout is inside retry (each attempt gets its own timeout). \
-                 Move timeout before retry for a single deadline across all attempts."
-            );
-        }
+    if let (Some(r), Some(t)) = (retry_pos, timeout_pos)
+        && t > r
+    {
+        tracing::warn!(
+            "ResiliencePipeline: timeout is inside retry (each attempt gets its own timeout). \
+             Move timeout before retry for a single deadline across all attempts."
+        );
     }
 }
 
@@ -111,12 +109,12 @@ fn validate_order<E>(steps: &[Step<E>]) {
 /// Build via [`ResiliencePipeline::builder()`].
 pub struct ResiliencePipeline<E: 'static> {
     steps: Arc<Vec<Step<E>>>,
-    sink: Arc<dyn MetricsSink>,
 }
 
 impl<E: Send + 'static> ResiliencePipeline<E> {
     /// Create a new builder.
-    pub fn builder() -> PipelineBuilder<E> {
+    #[must_use]
+    pub const fn builder() -> PipelineBuilder<E> {
         PipelineBuilder::new()
     }
 
@@ -136,6 +134,7 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
 
 // ── Recursive step executor ───────────────────────────────────────────────────
 
+#[allow(clippy::excessive_nesting)]
 fn run_steps<T, E, F>(
     steps: Arc<Vec<Step<E>>>,
     idx: usize,
@@ -155,10 +154,9 @@ where
             // ── Timeout ───────────────────────────────────────────────────────
             Step::Timeout(d) => {
                 let d = *d;
-                match tokio::time::timeout(d, run_steps(steps, idx + 1, f)).await {
-                    Ok(res) => res,
-                    Err(_) => Err(CallError::Timeout(d)),
-                }
+                tokio::time::timeout(d, run_steps(steps, idx + 1, f))
+                    .await
+                    .unwrap_or_else(|_| Err(CallError::Timeout(d)))
             }
 
             // ── Retry ─────────────────────────────────────────────────────────
@@ -214,8 +212,10 @@ where
                     Err(CallError::RetriesExhausted { attempts, last: Some(e) }) => {
                         Err(CallError::RetriesExhausted { attempts, last: e })
                     }
-                    Err(CallError::RetriesExhausted { last: None, .. })
-                    | Err(CallError::Operation(None)) => {
+                    Err(
+                        CallError::RetriesExhausted { last: None, .. }
+                        | CallError::Operation(None),
+                    ) => {
                         // Non-operation error caused early termination — recover from bail
                         Err(bail.lock().unwrap().take().unwrap_or(CallError::Cancelled { reason: None }))
                     }
@@ -239,8 +239,6 @@ where
                         match run_steps(steps, idx + 1, f).await {
                             Ok(v) => Ok(v),
                             Err(CallError::Operation(e)) => Err(e),
-                            // For non-operation errors inside CB, surface them via Operation.
-                            // This is a limitation of the simplified pipeline.
                             // Non-Operation errors are unreachable in a well-ordered pipeline
                             // (timeout before circuit_breaker). Panic with a clear message.
                             Err(_) => unreachable!(

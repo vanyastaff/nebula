@@ -18,9 +18,17 @@ pub enum CallError<E> {
     /// Timeout elapsed before the operation completed.
     Timeout(Duration),
     /// All retry attempts exhausted; contains the last operation error.
-    RetriesExhausted { attempts: u32, last: E },
+    RetriesExhausted {
+        /// Total number of attempts made.
+        attempts: u32,
+        /// Last error returned by the operation.
+        last: E,
+    },
     /// Operation was cancelled via `CancellationContext`.
-    Cancelled { reason: Option<String> },
+    Cancelled {
+        /// Optional human-readable reason for cancellation.
+        reason: Option<String>,
+    },
     /// Load shed — system is overloaded, request rejected without queuing.
     LoadShed,
     /// Rate limit exceeded.
@@ -32,11 +40,14 @@ impl<E> CallError<E> {
     ///
     /// Note: `Operation` is never automatically retriable — the caller must
     /// supply a predicate via `RetryConfig::retry_if` to classify their errors.
-    pub fn is_retriable(&self) -> bool {
+    #[must_use]
+    pub const fn is_retriable(&self) -> bool {
         false // all pattern errors are non-retriable; operation retryability is predicate-driven
     }
 
-    pub fn is_cancellation(&self) -> bool {
+    /// Returns true if the error represents a cancellation.
+    #[must_use]
+    pub const fn is_cancellation(&self) -> bool {
         matches!(self, Self::Cancelled { .. })
     }
 
@@ -65,11 +76,14 @@ impl<E> CallError<E> {
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("invalid resilience config: {message}")]
 pub struct ConfigError {
+    /// Name of the invalid configuration field.
     pub field: &'static str,
+    /// Human-readable description of the validation error.
     pub message: String,
 }
 
 impl ConfigError {
+    /// Create a new configuration error.
     pub fn new(field: &'static str, message: impl Into<String>) -> Self {
         Self {
             field,

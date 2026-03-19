@@ -137,7 +137,7 @@ impl TriggerCtx {
 
     /// Get the tenant ID if present
     pub fn tenant_id(&self) -> Option<&str> {
-        self.base.tenant_id.as_deref()
+        self.base.tenant_id()
     }
 
     /// Create a child cancellation token, or a new root token if none is set.

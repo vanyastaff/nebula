@@ -13,7 +13,7 @@ use crate::{
 // ── Config ────────────────────────────────────────────────────────────────────
 
 /// Configuration for the circuit breaker pattern.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CircuitBreakerConfig {
     /// Number of failures before opening the circuit. Min: 1.
     pub failure_threshold: u32,
@@ -163,7 +163,8 @@ impl CircuitBreaker {
         result.map_err(CallError::Operation)
     }
 
-    fn can_execute<E>(&self) -> Result<(), CallError<E>> {
+    /// Check if the circuit allows execution. Returns `Err(CallError::CircuitOpen)` when open.
+    pub fn can_execute<E>(&self) -> Result<(), CallError<E>> {
         let mut inner = self.state.lock();
         match inner.state {
             State::Closed => Ok(()),

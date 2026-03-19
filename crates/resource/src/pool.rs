@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use nebula_core::{ExecutionId, WorkflowId};
-use nebula_resilience::{CircuitBreaker, CircuitState, Gate, ResilienceError};
+use nebula_resilience::{CircuitBreaker, CircuitState, Gate, Outcome as CircuitOutcome};
 use parking_lot::Mutex;
 use tokio::sync::{Semaphore, TryAcquireError};
 use tokio_util::sync::CancellationToken;
@@ -403,24 +403,14 @@ impl<R: Resource> Pool<R> {
 
         let create_breaker = inner.resilience.as_ref().and_then(|r| r.create_breaker.as_ref());
         if let Some(cb) = create_breaker
-            && let Err(err) = cb.can_execute().await
+            && cb.can_execute::<Error>().is_err()
         {
-            return match err {
-                ResilienceError::CircuitBreakerOpen { retry_after, .. } => {
-                    let retry_after = retry_after.unwrap_or_default();
-                    Self::emit_breaker_open(inner, "create", retry_after);
-                    Err(Error::CircuitBreakerOpen {
-                        resource_key: inner.resource_key.clone(),
-                        operation: "create",
-                        retry_after: Some(retry_after),
-                    })
-                }
-                other => Err(Error::Internal {
-                    resource_key: inner.resource_key.clone(),
-                    message: format!("create breaker check failed: {other}"),
-                    source: None,
-                }),
-            };
+            Self::emit_breaker_open(inner, "create", Duration::ZERO);
+            return Err(Error::CircuitBreakerOpen {
+                resource_key: inner.resource_key.clone(),
+                operation: "create",
+                retry_after: None,
+            });
         }
 
         // Pop from the idle queue.  For valid (non-expired) entries the full
@@ -533,8 +523,7 @@ impl<R: Resource> Pool<R> {
                         inner.resilience.as_ref().and_then(|r| r.create_breaker.as_ref()),
                         "create",
                         create_result.is_ok(),
-                    )
-                    .await;
+                    );
                     let instance = create_result?;
                     break (instance, Instant::now(), None);
                 }
@@ -817,11 +806,9 @@ impl<R: Resource> Pool<R> {
 
         let recycle_breaker = inner.resilience.as_ref().and_then(|r| r.recycle_breaker.as_ref());
         if let Some(cb) = recycle_breaker
-            && let Err(ResilienceError::CircuitBreakerOpen { retry_after, .. }) =
-                cb.can_execute().await
+            && cb.can_execute::<Error>().is_err()
         {
-            let retry_after = retry_after.unwrap_or_default();
-            Self::emit_breaker_open(inner, "recycle", retry_after);
+            Self::emit_breaker_open(inner, "recycle", Duration::ZERO);
             skip_recycle = true;
         }
 
@@ -842,8 +829,7 @@ impl<R: Resource> Pool<R> {
                 inner.resilience.as_ref().and_then(|r| r.recycle_breaker.as_ref()),
                 "recycle",
                 recycle_result.is_ok(),
-            )
-            .await;
+            );
         }
 
         // Check shutdown under the same lock that pushes to idle to prevent a
@@ -931,49 +917,24 @@ impl<R: Resource> Pool<R> {
         });
     }
 
-    async fn breaker_retry_after(cb: &CircuitBreaker) -> Duration {
-        // `can_execute()` is called a second time solely to extract the
-        // `retry_after` hint from the CircuitBreakerOpen error. The breaker is
-        // already Open at this point (we just called `record_failure()`), so
-        // the call is cheap (no contention). If CircuitBreaker ever exposes a
-        // direct `retry_after()` accessor, prefer that instead.
-        cb.can_execute()
-            .await
-            .err()
-            .and_then(|e| match e {
-                ResilienceError::CircuitBreakerOpen { retry_after, .. } => retry_after,
-                _ => None,
-            })
-            .unwrap_or_default()
-    }
-
-    async fn breaker_record_success(
-        inner: &PoolInner<R>,
-        cb: &CircuitBreaker,
-        operation: &'static str,
-    ) {
-        let was_half_open = matches!(cb.state().await, CircuitState::HalfOpen);
-        cb.record_success().await;
+    fn breaker_record_success(inner: &PoolInner<R>, cb: &CircuitBreaker, operation: &'static str) {
+        let was_half_open = matches!(cb.circuit_state(), CircuitState::HalfOpen);
+        cb.record_outcome(CircuitOutcome::Success);
         // A successful probe from HalfOpen always transitions to Closed per
-        // circuit-breaker contract — no need for a third state() call.
+        // circuit-breaker contract — no need for a second state() call.
         if was_half_open {
             Self::emit_breaker_closed(inner, operation);
         }
     }
 
-    async fn breaker_record_failure(
-        inner: &PoolInner<R>,
-        cb: &CircuitBreaker,
-        operation: &'static str,
-    ) {
-        cb.record_failure().await;
-        if matches!(cb.state().await, CircuitState::Open) {
-            let retry_after = Self::breaker_retry_after(cb).await;
-            Self::emit_breaker_open(inner, operation, retry_after);
+    fn breaker_record_failure(inner: &PoolInner<R>, cb: &CircuitBreaker, operation: &'static str) {
+        cb.record_outcome(CircuitOutcome::Failure);
+        if matches!(cb.circuit_state(), CircuitState::Open) {
+            Self::emit_breaker_open(inner, operation, Duration::ZERO);
         }
     }
 
-    async fn maybe_record_breaker_result(
+    fn maybe_record_breaker_result(
         inner: &PoolInner<R>,
         breaker: Option<&CircuitBreaker>,
         operation: &'static str,
@@ -984,9 +945,9 @@ impl<R: Resource> Pool<R> {
         };
 
         if success {
-            Self::breaker_record_success(inner, cb, operation).await;
+            Self::breaker_record_success(inner, cb, operation);
         } else {
-            Self::breaker_record_failure(inner, cb, operation).await;
+            Self::breaker_record_failure(inner, cb, operation);
         }
     }
 

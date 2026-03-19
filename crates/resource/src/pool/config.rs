@@ -348,8 +348,8 @@ impl PoolResiliencePolicy {
     #[must_use]
     pub fn standard() -> Self {
         Self {
-            create_breaker: Some(nebula_resilience::standard_config()),
-            recycle_breaker: Some(nebula_resilience::standard_config()),
+            create_breaker: Some(CircuitBreakerConfig::default()),
+            recycle_breaker: Some(CircuitBreakerConfig::default()),
             ..Default::default()
         }
     }
@@ -360,7 +360,7 @@ impl PoolResiliencePolicy {
     #[must_use]
     pub fn persistent_connection() -> Self {
         Self {
-            create_breaker: Some(nebula_resilience::standard_config()),
+            create_breaker: Some(CircuitBreakerConfig::default()),
             create_retry: Some(RetryConfig::default()),
             ..Default::default()
         }
@@ -370,7 +370,7 @@ impl PoolResiliencePolicy {
     #[must_use]
     pub fn singleton() -> Self {
         Self {
-            create_breaker: Some(nebula_resilience::standard_config()),
+            create_breaker: Some(CircuitBreakerConfig::default()),
             create_retry: Some(RetryConfig { max_attempts: 5, ..RetryConfig::default() }),
             ..Default::default()
         }

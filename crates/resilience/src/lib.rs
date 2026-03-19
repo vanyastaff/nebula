@@ -111,10 +111,6 @@
     reason = "recursive config traversal is idiomatic"
 )]
 #![expect(
-    clippy::wrong_self_convention,
-    reason = "as_timeout naming is intentional API choice"
-)]
-#![expect(
     clippy::unused_self,
     reason = "methods use self for future extensibility"
 )]
@@ -125,6 +121,55 @@
 #![expect(
     clippy::new_without_default,
     reason = "const fn new() cannot be called from Default trait"
+)]
+// Pre-existing pedantic lints suppressed in legacy code — these files are not being rewritten
+#![expect(
+    clippy::missing_const_for_fn,
+    reason = "pre-existing code not being rewritten in this phase"
+)]
+#![expect(
+    clippy::must_use_candidate,
+    reason = "pre-existing code not being rewritten in this phase"
+)]
+#![expect(
+    clippy::significant_drop_tightening,
+    reason = "pre-existing code not being rewritten in this phase"
+)]
+#![expect(
+    clippy::option_if_let_else,
+    reason = "pre-existing code not being rewritten in this phase"
+)]
+#![expect(
+    clippy::wildcard_imports,
+    reason = "pre-existing code not being rewritten in this phase"
+)]
+#![expect(
+    clippy::unused_async,
+    reason = "pre-existing code not being rewritten in this phase"
+)]
+#![expect(
+    clippy::needless_return,
+    reason = "pre-existing code not being rewritten in this phase"
+)]
+#![expect(
+    clippy::excessive_nesting,
+    reason = "pre-existing code not being rewritten in this phase"
+)]
+#![expect(
+    clippy::match_same_arms,
+    reason = "pre-existing code not being rewritten in this phase"
+)]
+#![expect(
+    clippy::manual_map,
+    reason = "pre-existing code not being rewritten in this phase"
+)]
+#![expect(
+    clippy::missing_fields_in_debug,
+    reason = "pre-existing code not being rewritten in this phase"
+)]
+#![expect(
+    clippy::semicolon_if_nothing_returned,
+    reason = "pre-existing code not being rewritten in this phase"
 )]
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
@@ -196,7 +241,7 @@ pub use patterns::{
     // Other patterns (maintained for compatibility)
     bulkhead::{Bulkhead, BulkheadConfig},
     // Circuit breaker
-    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome as CircuitOutcome},
+    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome, Outcome as CircuitOutcome},
 
     fallback::{AnyStringFallbackStrategy, FallbackStrategy, ValueFallback},
     hedge::{HedgeConfig, HedgeExecutor},
@@ -212,13 +257,12 @@ pub use patterns::{
 
 pub use core::{ConstantLoad, LoadSignal, PolicySource};
 pub use observability::{MetricsSink, NoopSink, RecordingSink, ResilienceEvent};
-// CircuitState re-exported as SinkCircuitState to avoid conflict with old patterns::circuit_breaker::State
 pub use gate::{Gate, GateClosed, GateGuard};
 pub use pipeline::{PipelineBuilder, ResiliencePipeline};
 pub use manager::{
     PolicyBuilder, ResilienceManager, RetryableOperation, UnTypedServiceMetrics as ServiceMetrics,
 };
-pub use observability::sink::CircuitState as SinkCircuitState;
+pub use observability::sink::{CircuitState, CircuitState as SinkCircuitState};
 pub use policy::{PolicyMetadata, ResiliencePolicy};
 
 // Re-export Retryable trait for backward compatibility (already exported in core traits)
