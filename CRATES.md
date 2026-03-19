@@ -44,6 +44,7 @@ Internal dependencies (other `nebula-*` crates) for each workspace member.
 - **`nebula-log`** — no internal dependencies
 - **`nebula-resilience`** — no internal dependencies
 - **`nebula-system`** — no internal dependencies
+- **`nebula-macros`** — no internal dependencies
 - **`nebula-validator`** — no internal dependencies
 
 ### Crates with internal deps
@@ -61,7 +62,7 @@ Depends on: `nebula-core`, `nebula-parameter`
 Depends on: `nebula-log`, `nebula-validator`
 
 **`nebula-credential`**
-Depends on: `nebula-core`, `nebula-log`, `nebula-parameter`, `nebula-eventbus`, `nebula-storage`
+Depends on: `nebula-core`, `nebula-log`, `nebula-parameter`, `nebula-eventbus`
 
 **`nebula-engine`**
 Depends on: `nebula-core`, `nebula-action`, `nebula-expression`, `nebula-plugin`, `nebula-parameter`, `nebula-workflow`, `nebula-execution`, `nebula-resource`, `nebula-runtime`, `nebula-metrics`, `nebula-telemetry`
@@ -72,11 +73,8 @@ Depends on: `nebula-core`, `nebula-workflow`, `nebula-action`
 **`nebula-expression`**
 Depends on: `nebula-core`, `nebula-log`, `nebula-memory`
 
-**`nebula-macros`**
-Depends on: `nebula-validator`
-
 **`nebula-memory`**
-Depends on: `nebula-core`, `nebula-system`
+Depends on: `nebula-core`, `nebula-log`, `nebula-system`
 
 **`nebula-metrics`**
 Depends on: `nebula-eventbus`, `nebula-telemetry`
@@ -88,7 +86,7 @@ Depends on: `nebula-validator`
 Depends on: `nebula-core`, `nebula-action`, `nebula-credential`, `nebula-resource`
 
 **`nebula-resource`**
-Depends on: `nebula-core`, `nebula-eventbus`, `nebula-metrics`, `nebula-telemetry`, `nebula-resilience`, `nebula-parameter`
+Depends on: `nebula-core`, `nebula-eventbus`, `nebula-metrics`, `nebula-telemetry`, `nebula-resilience`
 
 **`nebula-runtime`**
 Depends on: `nebula-core`, `nebula-action`, `nebula-plugin`, `nebula-metrics`, `nebula-telemetry`
