@@ -321,7 +321,7 @@ macro_rules! dyn_allocator {
 ///
 /// // Stack allocator
 /// let alloc = allocator!(stack 4096)?;
-/// # Ok::<(), nebula_memory::AllocError>(())
+/// # Ok::<(), nebula_memory::MemoryError>(())
 /// ```
 #[macro_export]
 macro_rules! allocator {
@@ -392,7 +392,7 @@ macro_rules! allocator {
 ///
 /// // Allocate array
 /// let ptr = unsafe { alloc!(allocator, [u32; 10]) }?;
-/// # Ok::<(), nebula_memory::AllocError>(())
+/// # Ok::<(), nebula_memory::MemoryError>(())
 /// ```
 #[macro_export]
 macro_rules! alloc {
@@ -442,7 +442,7 @@ macro_rules! alloc {
 /// // Deallocate array
 /// let arr_ptr = unsafe { alloc!(allocator, [u32; 10]) }?;
 /// unsafe { dealloc!(allocator, arr_ptr, [u32; 10]) };
-/// # Ok::<(), nebula_memory::AllocError>(())
+/// # Ok::<(), nebula_memory::MemoryError>(())
 /// ```
 #[macro_export]
 macro_rules! dealloc {
@@ -485,7 +485,7 @@ macro_rules! dealloc {
 /// })?;
 ///
 /// assert_eq!(result, 42);
-/// # Ok::<(), nebula_memory::AllocError>(())
+/// # Ok::<(), nebula_memory::MemoryError>(())
 /// ```
 #[macro_export]
 macro_rules! with_allocator {
@@ -536,7 +536,7 @@ macro_rules! with_allocator {
 ///
 /// assert_eq!(result, 42);
 /// // All allocations from the scope are now freed
-/// # Ok::<(), nebula_memory::AllocError>(())
+/// # Ok::<(), nebula_memory::MemoryError>(())
 /// ```
 #[macro_export]
 macro_rules! memory_scope {

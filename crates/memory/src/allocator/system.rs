@@ -24,7 +24,9 @@ use core::ptr::NonNull;
 // Import System allocator
 use std::alloc::System;
 
-use super::{AllocError, AllocResult, Allocator, BulkAllocator, MemoryUsage, ThreadSafeAllocator};
+use super::{
+    Allocator, BulkAllocator, MemoryError, MemoryResult, MemoryUsage, ThreadSafeAllocator,
+};
 
 /// Wrapper for the system's default allocator
 ///
@@ -91,7 +93,7 @@ unsafe impl Allocator for SystemAllocator {
     /// - `layout.size()` when rounded to align doesn't overflow isize
     /// - Returned pointer must be deallocated with same layout
     #[inline]
-    unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+    unsafe fn allocate(&self, layout: Layout) -> MemoryResult<NonNull<[u8]>> {
         if layout.size() == 0 {
             // Handle zero-sized allocations by returning a well-aligned dangling pointer
             let ptr = NonNull::<u8>::dangling();
@@ -107,7 +109,7 @@ unsafe impl Allocator for SystemAllocator {
         // Use explicit null check instead of new_unchecked
         NonNull::new(ptr)
             .map(|non_null| NonNull::slice_from_raw_parts(non_null, layout.size()))
-            .ok_or_else(|| AllocError::allocation_failed(layout.size(), layout.align()))
+            .ok_or_else(|| MemoryError::allocation_failed(layout.size(), layout.align()))
     }
 
     /// # Safety
@@ -142,7 +144,7 @@ unsafe impl Allocator for SystemAllocator {
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         // Try to use system realloc if alignment requirements match
         if old_layout.align() == new_layout.align()
             && old_layout.size() > 0

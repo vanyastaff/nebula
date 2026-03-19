@@ -22,9 +22,10 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 use super::{PoolConfig, PoolStats};
 use crate::allocator::{
-    AllocError, AllocResult, Allocator, AllocatorStats, MemoryUsage, Resettable, StatisticsProvider,
+    Allocator, AllocatorStats, MemoryError, MemoryResult, MemoryUsage, Resettable,
+    StatisticsProvider,
 };
-use crate::core::SyncUnsafeCell;
+use crate::foundation::SyncUnsafeCell;
 use crate::utils::{Backoff, align_up, atomic_max, is_power_of_two};
 
 /// Pool allocator for fixed-size blocks
@@ -109,25 +110,25 @@ impl PoolAllocator {
         block_align: usize,
         block_count: usize,
         config: PoolConfig,
-    ) -> AllocResult<Self> {
+    ) -> MemoryResult<Self> {
         // Validate parameters
         if block_size < core::mem::size_of::<*mut u8>() {
-            return Err(AllocError::invalid_layout("block size too small"));
+            return Err(MemoryError::invalid_layout("block size too small"));
         }
 
         if !is_power_of_two(block_align) {
-            return Err(AllocError::invalid_alignment(block_align));
+            return Err(MemoryError::invalid_alignment(block_align));
         }
 
         if block_count == 0 {
-            return Err(AllocError::invalid_layout("invalid layout"));
+            return Err(MemoryError::invalid_layout("invalid layout"));
         }
 
         // Calculate total memory needed
         let aligned_block_size = align_up(block_size, block_align);
         let total_size = aligned_block_size
             .checked_mul(block_count)
-            .ok_or_else(|| AllocError::size_overflow("block size calculation"))?;
+            .ok_or_else(|| MemoryError::size_overflow("block size calculation"))?;
 
         // Allocate memory buffer
         let mut vec = vec![0u8; total_size];
@@ -180,7 +181,7 @@ impl PoolAllocator {
     }
 
     /// Creates a new pool allocator with default configuration
-    pub fn new(block_size: usize, block_align: usize, block_count: usize) -> AllocResult<Self> {
+    pub fn new(block_size: usize, block_align: usize, block_count: usize) -> MemoryResult<Self> {
         Self::with_config(block_size, block_align, block_count, PoolConfig::default())
     }
 
@@ -188,7 +189,7 @@ impl PoolAllocator {
     ///
     /// This is a convenience method that automatically determines the
     /// appropriate block size and alignment for the given type.
-    pub fn for_type<T>(block_count: usize) -> AllocResult<Self> {
+    pub fn for_type<T>(block_count: usize) -> MemoryResult<Self> {
         let layout = Layout::new::<T>();
         // Ensure minimum size for free list pointer
         let min_size = core::mem::size_of::<*mut u8>();
@@ -197,7 +198,7 @@ impl PoolAllocator {
     }
 
     /// Creates a pool allocator from a layout
-    pub fn for_layout(layout: Layout, block_count: usize) -> AllocResult<Self> {
+    pub fn for_layout(layout: Layout, block_count: usize) -> MemoryResult<Self> {
         Self::new(layout.size(), layout.align(), block_count)
     }
 
@@ -206,7 +207,7 @@ impl PoolAllocator {
         block_size: usize,
         block_align: usize,
         block_count: usize,
-    ) -> AllocResult<Self> {
+    ) -> MemoryResult<Self> {
         Self::with_config(
             block_size,
             block_align,
@@ -216,7 +217,7 @@ impl PoolAllocator {
     }
 
     /// Creates a pool allocator with debug config - optimized for debugging
-    pub fn debug(block_size: usize, block_align: usize, block_count: usize) -> AllocResult<Self> {
+    pub fn debug(block_size: usize, block_align: usize, block_count: usize) -> MemoryResult<Self> {
         Self::with_config(block_size, block_align, block_count, PoolConfig::debug())
     }
 
@@ -225,7 +226,7 @@ impl PoolAllocator {
         block_size: usize,
         block_align: usize,
         block_count: usize,
-    ) -> AllocResult<Self> {
+    ) -> MemoryResult<Self> {
         Self::with_config(
             block_size,
             block_align,
@@ -235,7 +236,7 @@ impl PoolAllocator {
     }
 
     /// Creates a production pool for a specific type
-    pub fn production_for_type<T>(block_count: usize) -> AllocResult<Self> {
+    pub fn production_for_type<T>(block_count: usize) -> MemoryResult<Self> {
         let layout = Layout::new::<T>();
         let min_size = core::mem::size_of::<*mut u8>();
         let actual_size = core::cmp::max(layout.size(), min_size);
@@ -243,7 +244,7 @@ impl PoolAllocator {
     }
 
     /// Creates a debug pool for a specific type
-    pub fn debug_for_type<T>(block_count: usize) -> AllocResult<Self> {
+    pub fn debug_for_type<T>(block_count: usize) -> MemoryResult<Self> {
         let layout = Layout::new::<T>();
         let min_size = core::mem::size_of::<*mut u8>();
         let actual_size = core::cmp::max(layout.size(), min_size);
@@ -251,22 +252,22 @@ impl PoolAllocator {
     }
 
     /// Creates a tiny pool (16 blocks) - for testing or minimal use
-    pub fn tiny<T>() -> AllocResult<Self> {
+    pub fn tiny<T>() -> MemoryResult<Self> {
         Self::for_type::<T>(16)
     }
 
     /// Creates a small pool (64 blocks) - for common use
-    pub fn small<T>() -> AllocResult<Self> {
+    pub fn small<T>() -> MemoryResult<Self> {
         Self::for_type::<T>(64)
     }
 
     /// Creates a medium pool (256 blocks) - for standard applications
-    pub fn medium<T>() -> AllocResult<Self> {
+    pub fn medium<T>() -> MemoryResult<Self> {
         Self::for_type::<T>(256)
     }
 
     /// Creates a large pool (1024 blocks) - for heavy workloads
-    pub fn large<T>() -> AllocResult<Self> {
+    pub fn large<T>() -> MemoryResult<Self> {
         Self::for_type::<T>(1024)
     }
 
@@ -501,10 +502,10 @@ unsafe impl Allocator for PoolAllocator {
     /// - `layout.size()` <= `block_size` and `layout.align()` <= `block_align`
     /// - Returned pointer not used after allocator reset/drop
     /// - Pool allocator only supports fixed-size allocations
-    unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+    unsafe fn allocate(&self, layout: Layout) -> MemoryResult<NonNull<[u8]>> {
         // Check if the requested layout matches our pool configuration
         if layout.size() > self.block_size || layout.align() > self.block_align {
-            return Err(AllocError::invalid_layout(
+            return Err(MemoryError::invalid_layout(
                 "layout exceeds pool configuration",
             ));
         }
@@ -519,7 +520,10 @@ unsafe impl Allocator for PoolAllocator {
         if let Some(ptr) = self.try_allocate_block() {
             Ok(NonNull::slice_from_raw_parts(ptr, layout.size()))
         } else {
-            Err(AllocError::allocation_failed(layout.size(), layout.align()))
+            Err(MemoryError::allocation_failed(
+                layout.size(),
+                layout.align(),
+            ))
         }
     }
 
@@ -551,10 +555,10 @@ unsafe impl Allocator for PoolAllocator {
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
-    ) -> AllocResult<NonNull<[u8]>> {
+    ) -> MemoryResult<NonNull<[u8]>> {
         // Pool allocator can only handle allocations of the configured size
         if new_layout.size() > self.block_size || new_layout.align() > self.block_align {
-            return Err(AllocError::invalid_layout(
+            return Err(MemoryError::invalid_layout(
                 "new layout exceeds pool configuration",
             ));
         }

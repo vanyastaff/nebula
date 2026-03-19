@@ -136,7 +136,7 @@ impl MemoryConfig {
         self.allocator
             .validate()
             .map_err(|e| MemoryError::InvalidConfig {
-                reason: format!("allocator: {e}"),
+                reason: format!("allocator: {e}").into_boxed_str(),
             })?;
 
         #[cfg(feature = "pool")]
@@ -144,7 +144,7 @@ impl MemoryConfig {
             self.pool
                 .validate()
                 .map_err(|e| MemoryError::InvalidConfig {
-                    reason: format!("pool: {e}"),
+                    reason: format!("pool: {e}").into_boxed_str(),
                 })?;
         }
 
@@ -153,7 +153,7 @@ impl MemoryConfig {
             self.arena
                 .validate()
                 .map_err(|e| MemoryError::InvalidConfig {
-                    reason: format!("arena: {e}"),
+                    reason: format!("arena: {e}").into_boxed_str(),
                 })?;
         }
 
@@ -162,7 +162,7 @@ impl MemoryConfig {
             self.cache
                 .validate()
                 .map_err(|e| MemoryError::InvalidConfig {
-                    reason: format!("cache: {e}"),
+                    reason: format!("cache: {e}").into_boxed_str(),
                 })?;
         }
 
@@ -171,7 +171,7 @@ impl MemoryConfig {
             self.budget
                 .validate()
                 .map_err(|e| MemoryError::InvalidConfig {
-                    reason: format!("budget: {e}"),
+                    reason: format!("budget: {e}").into_boxed_str(),
                 })?;
         }
 

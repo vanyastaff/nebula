@@ -118,19 +118,19 @@ impl MemoryReservation {
         
         if *claimed {
             return Err(MemoryError::InvalidOperation {
-                reason: "Reservation has already been claimed".to_string(),
+                reason: "Reservation has already been claimed".into(),
             });
         }
         
         if *canceled {
             return Err(MemoryError::InvalidOperation {
-                reason: "Reservation has been canceled".to_string(),
+                reason: "Reservation has been canceled".into(),
             });
         }
         
         if self.is_expired() {
             return Err(MemoryError::InvalidOperation {
-                reason: "Reservation has expired".to_string(),
+                reason: "Reservation has expired".into(),
             });
         }
         
@@ -154,13 +154,13 @@ impl MemoryReservation {
         
         if *claimed {
             return Err(MemoryError::InvalidOperation {
-                reason: "Cannot cancel a claimed reservation".to_string(),
+                reason: "Cannot cancel a claimed reservation".into(),
             });
         }
         
         if *canceled {
             return Err(MemoryError::InvalidOperation {
-                reason: "Reservation has already been canceled".to_string(),
+                reason: "Reservation has already been canceled".into(),
             });
         }
         

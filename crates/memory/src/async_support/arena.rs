@@ -293,7 +293,7 @@ impl AsyncArena {
             warn!("Attempted to allocate from shut down arena");
 
             return Err(MemoryError::InvalidState {
-                reason: "arena is shut down".to_string(),
+                reason: "arena is shut down".into(),
             });
         }
 
@@ -331,7 +331,7 @@ impl AsyncArena {
             }
             _ = self.shutdown.cancelled() => {
                 Err(MemoryError::InvalidState {
-                    reason: "arena is shut down".to_string(),
+                    reason: "arena is shut down".into(),
                 })
             }
         }
@@ -368,7 +368,7 @@ impl AsyncArena {
             warn!("Attempted to allocate slice from shut down arena");
 
             return Err(MemoryError::InvalidState {
-                reason: "arena is shut down".to_string(),
+                reason: "arena is shut down".into(),
             });
         }
 
@@ -389,7 +389,7 @@ impl AsyncArena {
                 }
                 _ = self.shutdown.cancelled() => {
                     Err(MemoryError::InvalidState {
-                        reason: "arena is shut down".to_string(),
+                        reason: "arena is shut down".into(),
                     })
                 }
             }
@@ -425,7 +425,7 @@ impl AsyncArena {
             warn!("Attempted to allocate string from shut down arena");
 
             return Err(MemoryError::InvalidState {
-                reason: "arena is shut down".to_string(),
+                reason: "arena is shut down".into(),
             });
         }
 
@@ -446,7 +446,7 @@ impl AsyncArena {
                 }
                 _ = self.shutdown.cancelled() => {
                     Err(MemoryError::InvalidState {
-                        reason: "arena is shut down".to_string(),
+                        reason: "arena is shut down".into(),
                     })
                 }
             }
@@ -473,7 +473,7 @@ impl AsyncArena {
             warn!("Attempted to reset shut down arena");
 
             return Err(MemoryError::InvalidState {
-                reason: "arena is shut down".to_string(),
+                reason: "arena is shut down".into(),
             });
         }
 
@@ -491,7 +491,7 @@ impl AsyncArena {
             }
             _ = self.shutdown.cancelled() => {
                 Err(MemoryError::InvalidState {
-                    reason: "arena is shut down".to_string(),
+                    reason: "arena is shut down".into(),
                 })
             }
         }

@@ -4,7 +4,7 @@
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use nebula_memory::allocator::{Allocator, BumpAllocator, PoolAllocator, PoolConfig};
-use nebula_memory::core::traits::Resettable;
+use nebula_memory::foundation::traits::Resettable;
 use std::alloc::Layout;
 use std::hint::black_box;
 

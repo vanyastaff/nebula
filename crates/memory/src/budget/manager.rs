@@ -85,7 +85,7 @@ impl GlobalBudgetManager {
     pub fn initialize(config: BudgetConfig) -> MemoryResult<()> {
         if config.name != "global" {
             return Err(MemoryError::InvalidConfig {
-                reason: "Global budget manager must have name 'global'".to_string(),
+                reason: "Global budget manager must have name 'global'".into(),
             });
         }
         
