@@ -40,4 +40,4 @@ Fault-tolerance patterns — circuit breaker, retry, bulkhead, rate limiter, tim
 - **`run_steps` refactored**: Retry arm extracted to `run_retry_step`, CB/Bulkhead inner bodies to `run_inner_unwrapped`, result mapping to `classify_inner` + `map_retry_result`. All private helpers in `pipeline.rs`.
 - **All 18 crate-level `#![expect(clippy::...)]` removed** — each warning fixed at source or locally `#[allow]`-ed with a `// Reason:` comment.
 
-<!-- reviewed: 2026-03-19 (flat structure) -->
+<!-- reviewed: 2026-03-19 (flat structure, docs/resilience/*.md rewritten to match current API) -->
