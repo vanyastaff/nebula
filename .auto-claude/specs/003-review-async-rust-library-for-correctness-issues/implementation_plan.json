@@ -1,0 +1,401 @@
+{
+  "feature": "Adversarial Code Review of Nebula-Resilience Async Library",
+  "workflow_type": "investigation",
+  "workflow_rationale": "This is a code review and analysis task focused on discovering correctness issues, edge cases, and performance traps in existing async Rust code. The goal is to produce a structured review report with findings, not to modify the code. Investigation workflow fits because we are analyzing existing code to identify issues (similar to root cause analysis in debugging).",
+  "phases": [
+    {
+      "id": "phase-1-context-loading",
+      "name": "Context Loading",
+      "type": "investigation",
+      "description": "Load project context files to understand existing constraints, known issues, and architectural decisions before reviewing code",
+      "depends_on": [],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-1-1",
+          "description": "Read project context files to understand resilience crate constraints",
+          "service": "resilience",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "files_to_read": [
+            ".claude/ROOT.md",
+            ".claude/decisions.md",
+            ".claude/pitfalls.md",
+            ".claude/crates/resilience.md"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Verify understanding of: (1) CallError<E> as sole error type, (2) benches/compose.rs is untouchable contract, (3) zero internal nebula deps, (4) known traps from context files"
+          },
+          "status": "completed",
+          "notes": "Successfully read all project context files. Confirmed understanding of: (1) CallError<E> as sole error type with no ResilienceError, (2) benches/compose.rs is untouchable API contract, (3) zero internal nebula deps - fully standalone, (4) key traps: leaky bucket forgiveness in CB, TokenBucket burst_size behavior, RateLimiter not dyn-compatible, RetryFailure unwrapping in CB, half_open_max_ops enforcement",
+          "updated_at": "2026-03-19T10:29:33.950290+00:00"
+        },
+        {
+          "id": "subtask-1-2",
+          "description": "Read Cargo.toml and examine dependency structure",
+          "service": "resilience",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "files_to_read": [
+            "crates/resilience/Cargo.toml"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Verify: (1) No internal nebula crate dependencies, (2) tokio is primary async runtime, (3) feature flags are understood"
+          },
+          "status": "completed",
+          "notes": "Successfully analyzed nebula-resilience Cargo.toml. Verified: (1) Zero internal nebula dependencies - fully standalone crate (line 45 explicitly states this), (2) tokio is primary async runtime with sync and time features, (3) Feature flags understood: governor (GCRA rate limiter), humantime (human-readable durations), full (convenience bundle). Notable dependencies: parking_lot (fast locks), dashmap (concurrent HashMap), fastrand (RNG), loom v0.7 (concurrency testing for detecting race conditions). All verification criteria met.",
+          "updated_at": "2026-03-19T10:32:19.407975+00:00"
+        }
+      ]
+    },
+    {
+      "id": "phase-2-code-review",
+      "name": "Code Review Execution",
+      "type": "investigation",
+      "description": "Systematic adversarial review of nebula-resilience source code across all priority areas (correctness, edge cases, performance, API design, documentation)",
+      "depends_on": [
+        "phase-1-context-loading"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-2-1",
+          "description": "Review public API surface (lib.rs) for missing bounds, leaky abstractions, and inconsistent patterns",
+          "service": "resilience",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "files_to_read": [
+            "crates/resilience/src/lib.rs"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Check for: (1) Missing Send/Sync bounds on public futures, (2) Missing #[must_use] on builders/futures, (3) Leaky implementation details in public API, (4) Non-chainable builder methods"
+          },
+          "expected_output": "List of API design findings with severity ratings (bug/footgun/improvement)",
+          "status": "completed",
+          "notes": "Successfully reviewed public API surface for nebula-resilience crate. Found 1 footgun: missing #[must_use] on 12 public async functions (retry_with, retry, timeout, timeout_with_sink, CircuitBreaker::call, Bulkhead::call, Bulkhead::acquire, ResiliencePipeline::call, HedgeExecutor::execute, AdaptiveHedgeExecutor::execute, TimeoutExecutor::call, FallbackOperation::execute). POSITIVE FINDINGS: All builder patterns are consistent and properly marked #[must_use], all Send/Sync bounds are correct, no leaky abstractions, no non-chainable builders. API design is excellent overall.",
+          "updated_at": "2026-03-19T10:35:12.951233+00:00"
+        },
+        {
+          "id": "subtask-2-2",
+          "description": "Review concurrency primitives (circuit breaker, bulkhead, rate limiter) for race conditions and atomic ordering issues",
+          "service": "resilience",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "files_to_read": [
+            "crates/resilience/src/circuit_breaker.rs",
+            "crates/resilience/src/bulkhead.rs",
+            "crates/resilience/src/rate_limiter.rs",
+            "crates/resilience/src/load_shed.rs"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Trace concurrent execution paths. Check for: (1) Incorrect atomic orderings (Relaxed vs Acquire vs Release), (2) Locks held across .await points, (3) Arc/Mutex/RwLock deadlock potential, (4) Pin/Unpin soundness issues, (5) State machine logic errors"
+          },
+          "expected_output": "List of correctness bugs (Priority 1) with concrete triggering scenarios",
+          "status": "completed",
+          "notes": "Successfully completed comprehensive review of all concurrency primitives (circuit breaker, bulkhead, rate limiter, gate, load shed). Analyzed 1,865 lines of concurrent code. FINDINGS: Zero critical bugs found. Code is production-ready with excellent concurrency safety: (1) No locks held across .await points ✅, (2) Correct atomic orderings (Release-Acquire pairs) ✅, (3) No TOCTOU races ✅, (4) No deadlock potential ✅, (5) Sound state machine logic ✅. Gate implementation includes loom tests for exhaustive verification. Minor observation: Bulkhead uses AcqRel where Release would suffice (conservative, not a bug). Detailed review document created at subtask-2-2-review.md.",
+          "updated_at": "2026-03-19T12:04:02.548865+00:00"
+        },
+        {
+          "id": "subtask-2-3",
+          "description": "Analyze edge cases (empty inputs, zero timeouts, overflow, all-fail scenarios, drop mid-operation)",
+          "service": "resilience",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "files_to_read": [
+            "crates/resilience/src/retry.rs",
+            "crates/resilience/src/timeout.rs",
+            "crates/resilience/src/circuit_breaker.rs",
+            "crates/resilience/src/rate_limiter.rs"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "For each public function, test boundary conditions: (1) Empty/zero inputs, (2) Integer overflow in retry counts/delays, (3) All retries fail simultaneously, (4) Drop mid-operation behavior, (5) Division by zero in backoff calculations"
+          },
+          "expected_output": "List of semantic edge case findings (Priority 2) with triggering scenarios",
+          "status": "completed",
+          "notes": "Successfully completed edge case analysis across retry.rs, timeout.rs, circuit_breaker.rs, and rate_limiter.rs (~1,500 lines). CRITICAL BUG FOUND: CircuitBreaker half_open_probes counter leak on future drop (cancel safety violation causing permanent service degradation). 3 footguns identified: (1) min_operations=0 validation missing, (2) SlidingWindow zero duration disables rate limiting, (3) LeakyBucket no input validation. Positive findings: retry.rs and timeout.rs handle all edge cases correctly with proper validation and saturating arithmetic. Detailed analysis document created at subtask-2-3-edge-case-analysis.md with concrete triggering scenarios and suggested fixes.",
+          "updated_at": "2026-03-19T12:08:00.710263+00:00"
+        },
+        {
+          "id": "subtask-2-4",
+          "description": "Review cancel safety (future drop behavior, resource leaks, state consistency)",
+          "service": "resilience",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "files_to_read": [
+            "crates/resilience/src/circuit_breaker.rs",
+            "crates/resilience/src/retry.rs",
+            "crates/resilience/src/timeout.rs",
+            "crates/resilience/src/pipeline.rs",
+            "crates/resilience/src/cancellation.rs"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "For each async function: (1) Is it safe to drop the future mid-execution?, (2) Are there leaked resources (tasks, locks, file handles)?, (3) Does in-progress state become inconsistent?, (4) Should it be marked !Unpin or have drop guards?"
+          },
+          "expected_output": "List of cancel safety violations (Priority 1 if bugs, Priority 5 if just missing docs)",
+          "status": "completed",
+          "notes": "Successfully completed comprehensive cancel safety analysis of nebula-resilience crate. Reviewed 15+ async functions across 8 modules (retry, timeout, circuit_breaker, bulkhead, hedge, pipeline, fallback, cancellation). FINDINGS: (1) CircuitBreaker probe counter leak already reported in subtask-2-3, (2) NEW CRITICAL: HedgeExecutor spawned tasks leak on future drop - tasks continue running in background (documented but still a resource leak), (3) FOOTGUN: Pipeline retry step Arc<Mutex> pattern is correct but complex, (4) DOCUMENTATION GAPS: 12 public async functions missing cancel safety docs, BulkheadPermit RAII behavior undocumented. POSITIVE: 11/15 functions (73%) are cancel-safe. Most functions correctly avoid locks across await points and use RAII for cleanup. Detailed analysis with triggering scenarios and fixes documented in subtask-2-4-cancel-safety-analysis.md. Key recommendation: Add scopeguard::defer to HedgeExecutor to abort tasks on all exit paths.",
+          "updated_at": "2026-03-19T12:12:01.257376+00:00"
+        },
+        {
+          "id": "subtask-2-5",
+          "description": "Detect performance traps (allocations on hot paths, lock contention, sequential awaits)",
+          "service": "resilience",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "files_to_read": [
+            "crates/resilience/src/retry.rs",
+            "crates/resilience/src/pipeline.rs",
+            "crates/resilience/src/circuit_breaker.rs",
+            "crates/resilience/src/bulkhead.rs",
+            "crates/resilience/src/fallback.rs"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Check for: (1) Box::new in retry loops, (2) Box<dyn Future> where generics suffice, (3) String allocations in error paths, (4) Multiple .await calls that could use join!/select!, (5) Locks held across .await points, (6) Hidden O(n²) complexity"
+          },
+          "expected_output": "List of performance trap findings (Priority 3) with impact under load",
+          "status": "completed",
+          "notes": "Completed performance trap detection review. Identified 6 major performance issues: (1) Box<dyn Future> allocations in retry/pipeline APIs instead of generics, (2) Recursive Box::pin allocations in pipeline steps, (3) TokenBucket re-allocation in AdaptiveRateLimiter on every rate adjustment, (4) VecDeque linear cleanup in SlidingWindow rate limiter, (5) String allocations in cancellation error paths, (6) Latency tracker maintaining BTreeMap and VecDeque with O(n) operations. All findings documented with specific locations and impact assessment.",
+          "updated_at": "2026-03-19T12:14:40.961302+00:00"
+        },
+        {
+          "id": "subtask-2-6",
+          "description": "Review documentation gaps (panic conditions, cancel safety, drop behavior, thread safety)",
+          "service": "resilience",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "files_to_read": [
+            "crates/resilience/src/lib.rs",
+            "crates/resilience/src/circuit_breaker.rs",
+            "crates/resilience/src/retry.rs",
+            "crates/resilience/src/timeout.rs",
+            "crates/resilience/src/pipeline.rs",
+            "crates/resilience/src/types.rs"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "For each public type/function, check docs for: (1) # Panics section, (2) # Cancel Safety section, (3) # Drop Behavior section, (4) # Thread Safety / Send/Sync guarantees, (5) # Examples for complex APIs"
+          },
+          "expected_output": "List of documentation gap findings (Priority 5) with suggested doc additions",
+          "status": "completed",
+          "notes": "Successfully completed documentation gaps analysis. Reviewed all public types and async functions across 12+ source files. FINDINGS: 26 documentation gaps across 5 categories - (1) 15 async functions missing '# Cancel Safety' sections, (2) 0 functions panic but this guarantee not documented, (3) 4 types missing '# Drop Behavior' docs (BulkheadPermit, GateGuard, JoinSet usage, Pipeline Arc behavior), (4) 4 types missing '# Thread Safety' docs (CircuitBreaker, Bulkhead, RateLimiter trait, RetryConfig predicate), (5) 3 complex APIs missing examples (ResiliencePipeline advanced ordering, AdaptiveRateLimiter usage, CancellationContext integration). POSITIVE FINDINGS: Code quality is excellent (5/5) - zero panic paths, correct Send/Sync bounds, RAII patterns work correctly. All findings are Priority 5 (improvement) affecting developer experience only, not correctness. Detailed analysis with suggested documentation additions created at subtask-2-6-documentation-gaps.md.",
+          "updated_at": "2026-03-19T12:20:15.000000+00:00"
+        }
+      ]
+    },
+    {
+      "id": "phase-3-document-findings",
+      "name": "Document Findings",
+      "type": "implementation",
+      "description": "Create comprehensive review report with all findings, severity ratings, triggering scenarios, and suggested fixes",
+      "depends_on": [
+        "phase-2-code-review"
+      ],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-3-1",
+          "description": "Create review_findings.md with executive summary and detailed findings (max 6)",
+          "service": "resilience",
+          "files_to_modify": [],
+          "files_to_create": [
+            ".auto-claude/specs/003-review-async-rust-library-for-correctness-issues/review_findings.md"
+          ],
+          "patterns_from": [],
+          "verification": {
+            "type": "manual",
+            "instructions": "Verify report includes: (1) Executive summary, (2) Finding count and severity distribution, (3) Each finding has: severity, location, issue description, triggering scenario (code), impact, suggested fix (code), why it matters, (4) Conclusion (issues found OR 'code is correct' statement), (5) Maximum 6 findings total, (6) No duplicates of .claude/crates/resilience.md known issues"
+          },
+          "status": "pending",
+          "notes": "Use the Finding Documentation Template from spec.md. Focus on highest impact findings only."
+        }
+      ]
+    },
+    {
+      "id": "phase-4-validation",
+      "name": "Validation",
+      "type": "integration",
+      "description": "Verify crate still compiles and all tests pass (no code was modified during review)",
+      "depends_on": [
+        "phase-3-document-findings"
+      ],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-4-1",
+          "description": "Run validation commands to ensure crate integrity",
+          "service": "resilience",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "command",
+            "commands": [
+              "cargo check -p nebula-resilience",
+              "cargo nextest run -p nebula-resilience",
+              "cargo clippy -p nebula-resilience -- -D warnings",
+              "cargo bench --no-run -p nebula-resilience",
+              "cargo test -p nebula-resilience --doc"
+            ],
+            "expected": "All commands succeed - crate unchanged by review"
+          },
+          "status": "pending",
+          "notes": "Sanity check that review didn't accidentally modify any code"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_phases": 4,
+    "total_subtasks": 10,
+    "services_involved": [
+      "resilience"
+    ],
+    "parallelism": {
+      "max_parallel_phases": 1,
+      "parallel_groups": [],
+      "recommended_workers": 1,
+      "speedup_estimate": "Sequential execution required - review phases build on each other",
+      "reasoning": "Phase 1 must complete before Phase 2 (need context before reviewing). Phase 2 subtasks could theoretically run in parallel but are better done sequentially to maintain mental model of codebase. Phase 3 depends on Phase 2 completion. Phase 4 is final validation."
+    },
+    "startup_command": "source auto-claude/.venv/bin/activate && python auto-claude/run.py --spec 003 --parallel 1"
+  },
+  "verification_strategy": {
+    "risk_level": "low",
+    "skip_validation": false,
+    "test_creation_phase": "none",
+    "test_types_required": [],
+    "security_scanning_required": false,
+    "staging_deployment_required": false,
+    "acceptance_criteria": [
+      "All critical modules reviewed (lib, retry, timeout, circuit, compose)",
+      "Maximum 6 findings documented with severity, scenario, impact, and fix",
+      "No style/formatting nitpicks included",
+      "No vague 'could be a problem' statements - all findings have concrete scenarios",
+      "Cross-referenced .claude/crates/resilience.md to avoid duplicating known issues",
+      "If zero findings, explicit 'code is correct' statement present",
+      "All validation commands pass (compile, test, clippy, bench, doc-test)"
+    ],
+    "verification_steps": [
+      {
+        "name": "Crate Compiles",
+        "command": "cargo check -p nebula-resilience",
+        "expected_outcome": "Success",
+        "type": "command",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Tests Pass",
+        "command": "cargo nextest run -p nebula-resilience",
+        "expected_outcome": "All tests pass",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Clippy Clean",
+        "command": "cargo clippy -p nebula-resilience -- -D warnings",
+        "expected_outcome": "No warnings",
+        "type": "command",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Benchmark Contract Builds",
+        "command": "cargo bench --no-run -p nebula-resilience",
+        "expected_outcome": "Builds successfully",
+        "type": "command",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Doc Tests Pass",
+        "command": "cargo test -p nebula-resilience --doc",
+        "expected_outcome": "All doc tests pass",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      }
+    ],
+    "reasoning": "Code review produces a report only - no code modifications. Validation ensures crate is still in good state and review findings are accurate. Low risk since no code changes are made."
+  },
+  "qa_acceptance": {
+    "unit_tests": {
+      "required": true,
+      "commands": [
+        "cargo nextest run -p nebula-resilience"
+      ],
+      "minimum_coverage": null
+    },
+    "integration_tests": {
+      "required": false,
+      "commands": [],
+      "services_to_test": []
+    },
+    "e2e_tests": {
+      "required": false,
+      "commands": [],
+      "flows": []
+    },
+    "browser_verification": {
+      "required": false,
+      "pages": []
+    },
+    "database_verification": {
+      "required": false,
+      "checks": []
+    },
+    "review_completeness": {
+      "required": true,
+      "modules_reviewed": [
+        "lib.rs (Public API)",
+        "retry.rs",
+        "timeout.rs",
+        "circuit_breaker.rs",
+        "bulkhead.rs",
+        "rate_limiter.rs",
+        "load_shed.rs",
+        "hedge.rs",
+        "pipeline.rs",
+        "fallback.rs",
+        "cancellation.rs"
+      ],
+      "finding_quality_checks": [
+        "Total findings ≤ 6",
+        "All findings have severity label (bug/footgun/improvement)",
+        "All findings have concrete triggering scenario",
+        "All findings have suggested fix",
+        "No duplicates of .claude/crates/resilience.md known issues",
+        "No style/formatting nitpicks"
+      ]
+    }
+  },
+  "qa_signoff": null,
+  "status": "in_progress",
+  "planStatus": "in_progress",
+  "xstateState": "coding",
+  "executionPhase": "coding",
+  "updated_at": "2026-03-19T12:17:48.401Z",
+  "lastEvent": {
+    "eventId": "ba7bb323-d5b7-49c2-9be8-c12fac586612",
+    "sequence": 0,
+    "type": "PLANNING_COMPLETE",
+    "timestamp": "2026-03-19T10:28:43.150309+00:00"
+  },
+  "last_updated": "2026-03-19T12:14:40.961302+00:00"
+}
