@@ -38,6 +38,6 @@ When reviewing code (own or others'), verify each category:
 - [ ] No unbounded collections growing without limit
 
 ## Hygiene
-- [ ] `cargo fmt && cargo clippy --workspace -- -D warnings && cargo test --workspace` passes
+- [ ] `cargo fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace` passes
 - [ ] Commit messages follow conventional commits
 - [ ] `.claude/crates/{name}.md` updated if invariants/decisions/traps changed

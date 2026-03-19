@@ -33,9 +33,20 @@ Last updated: **2026-03-18**
 ## Key Commands
 
 ```bash
-cargo fmt && cargo clippy --workspace -- -D warnings && cargo test --workspace
-cargo bench --no-run -p nebula-resilience   # verify compose API compiles
-bash .claude/validate.sh                    # check context file token budgets
+# Fast local check (use this by default)
+cargo fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace
+
+# Single crate (fastest iteration)
+cargo nextest run -p nebula-<crate>
+
+# Full validation (before PR)
+cargo fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace && cargo test --workspace --doc && cargo deny check
+
+# Compose API contract
+cargo bench --no-run -p nebula-resilience
+
+# Context file budgets
+bash .claude/validate.sh
 ```
 
 ---

@@ -48,5 +48,5 @@ All PRs must pass: `fmt` → `clippy` → `check` → `test` (nextest) → `doc`
 
 Before pushing, run locally:
 ```bash
-cargo fmt && cargo clippy --workspace -- -D warnings && cargo test --workspace
+cargo fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace
 ```

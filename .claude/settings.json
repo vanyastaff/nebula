@@ -11,7 +11,7 @@
           {
             "type": "command",
             "command": "bash .claude/hooks/verify-rust.sh",
-            "timeout": 120
+            "timeout": 300
           }
         ]
       }
