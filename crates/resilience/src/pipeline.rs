@@ -15,7 +15,7 @@ use std::time::Duration;
 use crate::{
     CallError,
     bulkhead::Bulkhead,
-    circuit_breaker::CircuitBreaker,
+    circuit_breaker::{CircuitBreaker, Outcome, ProbeGuard},
     retry::{RetryConfig, retry_with},
 };
 
@@ -210,14 +210,23 @@ where
             }
             Step::Retry(config) => run_retry_step(config, Arc::clone(&steps), idx, f).await,
             Step::CircuitBreaker(cb) => {
-                let cb = Arc::clone(cb);
-                cb.call(move || run_inner_unwrapped(steps, idx, f, "CircuitBreaker"))
-                    .await
+                cb.can_execute()?;
+                let guard = ProbeGuard(cb);
+                let result = run_steps(Arc::clone(&steps), idx + 1, Arc::clone(&f)).await;
+                // Defuse guard — record the real outcome instead.
+                std::mem::forget(guard);
+                match &result {
+                    Ok(_) => cb.record_outcome(Outcome::Success),
+                    Err(CallError::Operation(_)) => cb.record_outcome(Outcome::Failure),
+                    // Non-operation errors (rate limit, load shed, etc.) from inner
+                    // steps are not the downstream's fault — don't count them.
+                    Err(_) => cb.record_outcome(Outcome::Cancelled),
+                }
+                result
             }
             Step::Bulkhead(bh) => {
-                let bh = Arc::clone(bh);
-                bh.call(move || run_inner_unwrapped(steps, idx, f, "Bulkhead"))
-                    .await
+                let _permit = bh.acquire().await?;
+                run_steps(steps, idx + 1, f).await
             }
             Step::RateLimiter(check) => {
                 check().await.map_err(|_| CallError::RateLimited)?;
@@ -230,33 +239,6 @@ where
                     run_steps(steps, idx + 1, f).await
                 }
             }
-        }
-    })
-}
-
-/// Unwrap inner pipeline steps for use inside CB / Bulkhead wrappers.
-///
-/// Non-`Operation` errors are unreachable in a well-ordered pipeline
-/// (timeout before circuit breaker / bulkhead).
-fn run_inner_unwrapped<T, E, F>(
-    steps: Arc<Vec<Step<E>>>,
-    idx: usize,
-    f: Arc<F>,
-    step_name: &'static str,
-) -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>>
-where
-    T: Send + 'static,
-    E: Send + 'static,
-    F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync + 'static,
-{
-    Box::pin(async move {
-        match run_steps(steps, idx + 1, f).await {
-            Ok(v) => Ok(v),
-            Err(CallError::Operation(e)) => Err(e),
-            Err(_) => unreachable!(
-                "ResiliencePipeline: non-Operation error inside {step_name} step; \
-                 ensure timeout/retry are ordered before {step_name}"
-            ),
         }
     })
 }
@@ -426,5 +408,27 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(CallError::Timeout(_))));
+    }
+
+    #[tokio::test]
+    async fn pipeline_rate_limiter_inside_cb_does_not_panic() {
+        use crate::circuit_breaker::CircuitBreakerConfig;
+
+        let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default()).unwrap());
+
+        // Rate limiter that always rejects
+        let rl: RateLimitCheck = Arc::new(|| Box::pin(async { Err(CallError::RateLimited) }));
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .circuit_breaker(cb)
+            .rate_limiter(rl)
+            .build();
+
+        let result = pipeline
+            .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
+            .await;
+
+        // Should return RateLimited, not panic
+        assert!(matches!(result, Err(CallError::RateLimited)));
     }
 }

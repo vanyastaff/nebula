@@ -61,7 +61,7 @@ impl BackoffConfig {
     pub fn delay_for(&self, attempt: u32) -> Duration {
         match self {
             Self::Fixed(d) => *d,
-            Self::Linear { base, max } => (*base * attempt).min(*max),
+            Self::Linear { base, max } => (*base * attempt.max(1)).min(*max),
             Self::Exponential {
                 base,
                 multiplier,

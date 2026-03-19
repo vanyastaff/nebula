@@ -23,8 +23,6 @@ pub struct CircuitBreakerConfig {
     pub half_open_max_ops: u32,
     /// Minimum number of operations required before failures can trip the breaker. Default: 5.
     pub min_operations: u32,
-    /// Sliding window for failure counting. Default: 60s.
-    pub sliding_window: Duration,
     /// Whether timeouts count as failures. Default: true.
     pub count_timeouts_as_failures: bool,
 }
@@ -36,7 +34,6 @@ impl Default for CircuitBreakerConfig {
             reset_timeout: Duration::from_secs(30),
             half_open_max_ops: 1,
             min_operations: 5,
-            sliding_window: Duration::from_secs(60),
             count_timeouts_as_failures: true,
         }
     }
@@ -47,7 +44,8 @@ impl CircuitBreakerConfig {
     ///
     /// # Errors
     ///
-    /// Returns `Err(ConfigError)` if `failure_threshold` is 0 or `reset_timeout` is zero.
+    /// Returns `Err(ConfigError)` if `failure_threshold` is 0, `reset_timeout` is zero,
+    /// or `half_open_max_ops` is 0.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.failure_threshold == 0 {
             return Err(ConfigError::new("failure_threshold", "must be >= 1"));
@@ -102,6 +100,12 @@ pub struct CircuitBreakerStats {
 /// Circuit breaker — protects downstream calls by rejecting requests when failure rate is high.
 ///
 /// Shared state via `Arc<CircuitBreaker>`. Inject [`MockClock`] and [`RecordingSink`] for tests.
+///
+/// # Cancel safety
+///
+/// [`call()`](CircuitBreaker::call) is cancel-safe with respect to the half-open probe count.
+/// If the future returned by `call()` is dropped before completion (e.g. via `tokio::select!`),
+/// the probe slot is automatically released via `record_outcome(Cancelled)`.
 pub struct CircuitBreaker {
     config: CircuitBreakerConfig,
     state: Mutex<InnerState>,
@@ -154,6 +158,9 @@ impl CircuitBreaker {
 
     /// Execute a closure under the circuit breaker.
     ///
+    /// If the returned future is dropped before completion, the probe slot
+    /// (if in `HalfOpen` state) is automatically released.
+    ///
     /// # Errors
     ///
     /// Returns `Err(CallError::CircuitOpen)` if the breaker is open,
@@ -163,11 +170,16 @@ impl CircuitBreaker {
         f: impl FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, E>> + Send>>,
     ) -> Result<T, CallError<E>> {
         self.can_execute()?;
+        let guard = ProbeGuard(self);
         let result = f().await;
-        match &result {
-            Ok(_) => self.record_outcome(Outcome::Success),
-            Err(_) => self.record_outcome(Outcome::Failure),
-        }
+        let outcome = if result.is_ok() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        };
+        // Defuse the guard — we'll record the real outcome instead.
+        std::mem::forget(guard);
+        self.record_outcome(outcome);
         result.map_err(CallError::Operation)
     }
 
@@ -221,7 +233,11 @@ impl CircuitBreaker {
     pub fn record_outcome(&self, outcome: Outcome) {
         let mut inner = self.state.lock();
         match outcome {
-            Outcome::Cancelled => (), // never count cancellations as failures
+            Outcome::Cancelled => {
+                // Never count cancellations as failures, but release the probe slot
+                // so that half-open probes aren't permanently leaked on drop/cancel.
+                inner.half_open_probes = inner.half_open_probes.saturating_sub(1);
+            }
             Outcome::Success => {
                 if inner.state == State::HalfOpen {
                     let prev = to_circuit_state(inner.state);
@@ -288,6 +304,19 @@ impl CircuitBreaker {
     }
 }
 
+/// RAII guard that records `Cancelled` on drop if the operation is abandoned.
+///
+/// Used by `call()` and the pipeline's CB step to ensure half-open probe slots
+/// are released when the future is dropped (e.g. by `tokio::select!` or a timeout).
+/// Call `std::mem::forget(guard)` to defuse it before recording the real outcome.
+pub(crate) struct ProbeGuard<'a>(pub(crate) &'a CircuitBreaker);
+
+impl Drop for ProbeGuard<'_> {
+    fn drop(&mut self) {
+        self.0.record_outcome(Outcome::Cancelled);
+    }
+}
+
 impl std::fmt::Debug for CircuitBreaker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let stats = self.stats();
@@ -320,7 +349,6 @@ mod tests {
             reset_timeout: Duration::from_millis(100),
             half_open_max_ops: 1,
             min_operations: 1,
-            sliding_window: Duration::from_secs(60),
             count_timeouts_as_failures: true,
         }
     }
@@ -429,5 +457,49 @@ mod tests {
         // Probe fails → back to Open
         cb.record_outcome(Outcome::Failure);
         assert_eq!(cb.circuit_state(), CS::Open);
+    }
+
+    #[tokio::test]
+    async fn dropped_call_releases_probe_slot() {
+        let cb = Arc::new(
+            CircuitBreaker::new(CircuitBreakerConfig {
+                half_open_max_ops: 1,
+                ..default_config()
+            })
+            .unwrap(),
+        );
+
+        // Trip the breaker
+        for _ in 0..3 {
+            cb.record_outcome(Outcome::Failure);
+        }
+
+        // Wait for reset timeout
+        tokio::time::sleep(Duration::from_millis(110)).await;
+
+        // Start a call that will be dropped mid-operation
+        let cb2 = Arc::clone(&cb);
+        tokio::select! {
+            _ = cb2.call::<(), &str>(|| Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                Ok(())
+            })) => unreachable!(),
+            _ = tokio::time::sleep(Duration::from_millis(5)) => {
+                // Future dropped — probe guard should release the slot
+            }
+        }
+
+        // The probe slot should be freed. Wait for reset again and try a new probe.
+        // Since the cancelled probe decremented half_open_probes, the next
+        // Open→HalfOpen transition should work.
+        tokio::time::sleep(Duration::from_millis(110)).await;
+
+        // This must succeed — the probe slot was properly released
+        assert!(cb.can_execute::<&str>().is_ok());
+        assert_eq!(cb.circuit_state(), CS::HalfOpen);
+
+        // Complete the probe successfully
+        cb.record_outcome(Outcome::Success);
+        assert_eq!(cb.circuit_state(), CS::Closed);
     }
 }

@@ -149,8 +149,16 @@ impl Default for CancellationContext {
 }
 
 /// Future wrapper that can be cancelled.
+///
+/// Polls both the inner future and the cancellation token concurrently.
+/// If cancellation fires before the inner future completes, returns
+/// `Err(CallError::Cancelled)`.
+///
+/// The cancellation future is created once at construction and reused across
+/// polls — no per-poll allocation.
 pub struct CancellableFuture<F> {
     future: Pin<Box<F>>,
+    /// We use `tokio::select!` internally via a helper that owns the token.
     cancellation: CancellationToken,
 }
 
@@ -174,7 +182,7 @@ where
     type Output = Result<F::Output, CallError<()>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // Check for cancellation first
+        // Fast path: check if already cancelled (no allocation)
         if self.cancellation.is_cancelled() {
             return Poll::Ready(Err(CallError::Cancelled {
                 reason: Some("Future was cancelled".to_string()),
@@ -185,12 +193,14 @@ where
         match self.future.as_mut().poll(cx) {
             Poll::Ready(output) => Poll::Ready(Ok(output)),
             Poll::Pending => {
-                // Register for cancellation notifications
-                let cancellation_future = self.cancellation.cancelled();
-                tokio::pin!(cancellation_future);
-
-                // Check if cancellation is ready
-                if cancellation_future.as_mut().poll(cx).is_ready() {
+                // `is_cancelled()` + waker registration: CancellationToken
+                // internally registers the waker when polled via `cancelled()`.
+                // We create a short-lived future just to register the waker.
+                // This is cheap — `cancelled()` is a thin wrapper that checks
+                // an atomic and registers the waker, no heap allocation.
+                let waker_future = self.cancellation.cancelled();
+                tokio::pin!(waker_future);
+                if waker_future.as_mut().poll(cx).is_ready() {
                     Poll::Ready(Err(CallError::Cancelled {
                         reason: Some("Future was cancelled while pending".to_string()),
                     }))

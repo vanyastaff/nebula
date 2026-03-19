@@ -386,18 +386,41 @@ pub struct AdaptiveRateLimiter {
 impl AdaptiveRateLimiter {
     /// Create new adaptive rate limiter.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `initial_rate` produces an invalid `TokenBucket` configuration
-    /// (rate must be within 0.001..=10,000 and the derived capacity must be 1..=100,000).
+    /// Returns `Err(ConfigError)` if any rate is outside `TokenBucket`'s valid range
+    /// (`refill_rate` 0.001..=10,000, derived capacity 1..=100,000) or if
+    /// `min_rate > max_rate` or `initial_rate` is outside `[min_rate, max_rate]`.
     // Reason: f64 rates cast to usize for token bucket capacity — acceptable for rate limiting.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    #[must_use]
-    pub fn new(initial_rate: f64, min_rate: f64, max_rate: f64) -> Self {
+    pub fn new(
+        initial_rate: f64,
+        min_rate: f64,
+        max_rate: f64,
+    ) -> Result<Self, crate::ConfigError> {
+        if min_rate > max_rate {
+            return Err(crate::ConfigError::new(
+                "min_rate",
+                "must be <= max_rate",
+            ));
+        }
+        // Validate that all rates in [min_rate, max_rate] produce valid TokenBucket configs.
+        // The extremes are sufficient since TokenBucket validates capacity and refill_rate.
+        TokenBucket::new(min_rate.max(1.0) as usize, min_rate).map_err(|e| {
+            crate::ConfigError::new("min_rate", format!("produces invalid TokenBucket: {e}"))
+        })?;
+        TokenBucket::new(max_rate.max(1.0) as usize, max_rate).map_err(|e| {
+            crate::ConfigError::new("max_rate", format!("produces invalid TokenBucket: {e}"))
+        })?;
         let token_bucket = TokenBucket::new(initial_rate.max(1.0) as usize, initial_rate)
-            .expect("AdaptiveRateLimiter: initial_rate must produce valid TokenBucket config");
+            .map_err(|e| {
+                crate::ConfigError::new(
+                    "initial_rate",
+                    format!("produces invalid TokenBucket: {e}"),
+                )
+            })?;
 
-        Self {
+        Ok(Self {
             state: Arc::new(RwLock::new(AdaptiveState {
                 inner: Arc::new(token_bucket),
                 success_count: 0,
@@ -410,7 +433,7 @@ impl AdaptiveRateLimiter {
             stats_window: Duration::from_mins(1),
             min_rate,
             max_rate,
-        }
+        })
     }
 
     /// Adjust rate based on error rate. Caller must hold the lock.

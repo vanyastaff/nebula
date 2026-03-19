@@ -106,7 +106,7 @@ fn rate_limiter_execute(c: &mut Criterion) {
             1000.0,  // initial_rate
             100.0,   // min_rate
             10000.0, // max_rate
-        ));
+        ).unwrap());
 
         b.to_async(&rt).iter(|| {
             let limiter = Arc::clone(&limiter);

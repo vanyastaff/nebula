@@ -44,7 +44,7 @@ async fn test_sliding_window_accuracy() {
 async fn test_adaptive_rate_limiter_adjusts() {
     use std::sync::Arc;
 
-    let limiter = Arc::new(AdaptiveRateLimiter::new(100.0, 10.0, 1000.0));
+    let limiter = Arc::new(AdaptiveRateLimiter::new(100.0, 10.0, 1000.0).unwrap());
 
     // Test basic functionality without waiting for stats window
     // Just verify that record_success and record_error don't panic

@@ -168,6 +168,13 @@ impl Bulkhead {
             return Err(CallError::BulkheadFull);
         }
 
+        // RAII guard: if this future is dropped while waiting for a permit,
+        // decrement waiting_count so the queue slot isn't permanently leaked.
+        let wait_guard = WaitCountGuard {
+            count: &self.waiting_count,
+            armed: true,
+        };
+
         // Wait for a permit (with optional timeout)
         let result = if let Some(timeout_dur) = self.config.timeout {
             match tokio::time::timeout(timeout_dur, Arc::clone(&self.semaphore).acquire_owned())
@@ -185,8 +192,27 @@ impl Bulkhead {
                 .map_err(|_| CallError::BulkheadFull)
         };
 
+        // Defuse the guard — we'll decrement manually.
+        std::mem::forget(wait_guard);
         self.waiting_count.fetch_sub(1, Ordering::AcqRel);
         result
+    }
+}
+
+/// RAII guard that decrements `waiting_count` on drop.
+///
+/// Prevents the queue counter from leaking when the `acquire_permit` future
+/// is dropped mid-wait (e.g. by `tokio::select!` or a pipeline timeout).
+struct WaitCountGuard<'a> {
+    count: &'a AtomicUsize,
+    armed: bool,
+}
+
+impl Drop for WaitCountGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.count.fetch_sub(1, Ordering::AcqRel);
+        }
     }
 }
 

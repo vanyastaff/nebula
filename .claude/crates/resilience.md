@@ -35,16 +35,20 @@ Fault-tolerance patterns — circuit breaker, retry, bulkhead, rate limiter, tim
 - `ErrorCategory` (fallback.rs — replaced by `CallErrorKind`)
 - `CircuitBreaker::with_config()` (redundant alias for `new()`)
 - `failure_rate_threshold` field from `CircuitBreakerConfig`
+- `sliding_window` field from `CircuitBreakerConfig` (was never used by `record_outcome()`)
 
 ## Traps
 - **Successes decrement failure count**: `record_outcome(Success)` does `failures.saturating_sub(1)` when Closed ("leaky bucket" forgiveness).
-- **`TokenBucket::burst_size`** caps refill (not `capacity`). If `with_burst()` is used, the burst cap differs from the initial capacity.
-- **`CallError::map_operation`**: use `.map_operation(f)` to transform the inner error type `E`.
+- **CB `call()` is cancel-safe**: dropped futures release probe slots via `ProbeGuard` RAII. `record_outcome(Cancelled)` decrements `half_open_probes`.
+- **Pipeline CB/Bulkhead use low-level APIs**: `can_execute()` + `record_outcome()` / `acquire()` instead of `call()`, so inner non-Operation errors (RateLimited, LoadShed) propagate correctly instead of panicking.
+- **`FunctionFallback` erases `Operation(E)`**: closure receives `CallError<()>`. If it returns `Operation(())`, that is mapped to `Cancelled` (not a panic).
+- **`AdaptiveRateLimiter::new()` returns `Result`**: validates min/max rates against `TokenBucket` constraints.
 - **`RateLimiter` trait is not dyn-compatible** (uses `async_fn_in_trait`). Pipeline uses `RateLimitCheck` closure instead.
+- **`TokenBucket::burst_size`** caps refill (not `capacity`). If `with_burst()` is used, the burst cap differs from the initial capacity.
 
 ## Relations
 - Zero internal nebula deps (fully standalone). Used by nebula-resource for pool resilience (`CircuitBreaker`, `Gate`, `CircuitBreakerConfig`).
 - `CircuitState` is `Copy`.
 - `PipelineBuilder<E>` implements `Default`.
 
-<!-- reviewed: 2026-03-19 (major API review: error unification, dead code removal, CB fixes, pipeline expansion) -->
+<!-- reviewed: 2026-03-19 (adversarial review fixes: probe leak guard, pipeline unreachable, sliding_window removal, FunctionFallback safety, AdaptiveRateLimiter validation) -->

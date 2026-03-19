@@ -104,18 +104,43 @@ where
     F: Fn(CallError<()>) -> Fut + Send + Sync,
     Fut: Future<Output = Result<T, CallError<()>>> + Send,
 {
+    /// Execute the fallback function.
+    ///
+    /// The original `Operation(E)` error is erased to `Operation(())` before being
+    /// passed to the closure. If the closure returns `Err(CallError::Operation(()))`,
+    /// it is mapped to `Err(CallError::Cancelled)` since `Operation(())` carries
+    /// no meaningful payload.
+    /// The original `Operation(E)` is erased to `Operation(())` before being passed
+    /// to the closure — the closure cannot inspect the caller's error type. If the
+    /// closure returns `Err(CallError::Operation(()))`, it is converted to
+    /// `Err(CallError::Cancelled)` since the original `E` cannot be reconstructed.
     fn fallback<'a>(
         &'a self,
         error: CallError<E>,
     ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send + 'a>> {
-        // Strip the operation error to pass a type-erased CallError<()>
         let erased = error.map_operation(|_| ());
         Box::pin(async move {
-            (self.function)(erased).await.map_err(|e| {
-                e.map_operation(|()| {
-                    unreachable!("FunctionFallback returned Operation(()) which is meaningless")
-                })
-            })
+            match (self.function)(erased).await {
+                Ok(value) => Ok(value),
+                Err(CallError::Operation(())) => Err(CallError::Cancelled {
+                    reason: Some(
+                        "fallback returned Operation(()) — original error was erased".into(),
+                    ),
+                }),
+                Err(CallError::RetriesExhausted { .. }) => Err(CallError::Cancelled {
+                    reason: Some(
+                        "fallback returned RetriesExhausted(()) — original error was erased"
+                            .into(),
+                    ),
+                }),
+                // All fieldless variants convert directly.
+                Err(CallError::CircuitOpen) => Err(CallError::CircuitOpen),
+                Err(CallError::BulkheadFull) => Err(CallError::BulkheadFull),
+                Err(CallError::Timeout(d)) => Err(CallError::Timeout(d)),
+                Err(CallError::Cancelled { reason }) => Err(CallError::Cancelled { reason }),
+                Err(CallError::LoadShed) => Err(CallError::LoadShed),
+                Err(CallError::RateLimited) => Err(CallError::RateLimited),
+            }
         })
     }
 }
@@ -204,6 +229,11 @@ impl<T: Clone + Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
 }
 
 /// Chain fallback — tries multiple fallbacks in sequence.
+///
+/// Each strategy's [`should_fallback()`](FallbackStrategy::should_fallback) is checked
+/// before calling [`fallback()`](FallbackStrategy::fallback). If a strategy declines
+/// (returns `false`), the **same error** is passed unchanged to the next strategy in the
+/// chain — the declining strategy does not get to modify or wrap the error.
 pub struct ChainFallback<T, E> {
     fallbacks: Vec<Arc<dyn FallbackStrategy<T, E>>>,
 }
