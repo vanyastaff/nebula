@@ -290,14 +290,14 @@ docker-compose.override.yml
 # AI TOOLS & AGENTS — не отслеживать
 # ============================================================================
 
-# Agent/IDE config and data
-.claude/
+# Agent/IDE config and data (local-only settings; context docs are tracked)
+.claude/settings.local.json
+.claude/summaries/
 .agent/
 .cursor/
 .codex/
 .junie/
 .specify/
-.claudeignore
 .cursorrules
 .aider*
 
@@ -305,9 +305,6 @@ docker-compose.override.yml
 # Custom project skills (e.g. nebula-layer-dependency-guard) are intentionally tracked.
 .agents/skills/aif/
 .agents/skills/aif-*/
-
-# Project docs for AI
-CLAUDE.md
 
 # AI-generated and temp
 **/ai-generated/

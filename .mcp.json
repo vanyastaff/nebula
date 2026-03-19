@@ -1,98 +1,47 @@
 {
   "mcpServers": {
-    "github": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-github"
-      ],
-      "env": {
-        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
-      }
-    },
-    "postgres": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-postgres"
-      ],
-      "env": {
-        "DATABASE_URL": "${DATABASE_URL}"
-      }
-    },
-    "playwright": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@playwright/mcp@latest"
-      ]
+    "sequential-thinking": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-sequential-thinking"]
     },
     "filesystem": {
       "command": "cmd",
-      "args": [
-        "/c",
-        "npx",
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "${workspaceFolder}"
-      ]
+      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\vanya\\RustroverProjects\\nebula"]
     },
-    "sequential-thinking": {
+    "memory": {
       "command": "cmd",
-      "args": [
-        "/c",
-        "npx",
-        "-y",
-        "@modelcontextprotocol/server-sequential-thinking"
-      ]
+      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-memory"]
     },
-    "context7": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp"]
+    "deepwiki": {
+      "type": "http",
+      "url": "https://mcp.deepwiki.com/mcp"
+    },
+    "github": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+      }
     },
     "serena": {
       "command": "uvx",
       "args": [
-        "--from", "git+https://github.com/oraios/serena",
-        "serena", "start-mcp-server",
+        "serena@0.9.1",
+        "start-mcp-server",
         "--context", "ide",
-        "--project", "${workspaceFolder}"
+        "--project", "C:\\Users\\vanya\\RustroverProjects\\nebula"
       ]
     },
-    "memory": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    "cratesio": {
+      "type": "http",
+      "url": "https://cratesio-mcp.fly.dev/"
     },
-    "knowledge-graph": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    "rust-docs": {
+      "command": "rust-docs-mcp"
     },
-    "drift": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "drift-mcp"]
-    },
-    "chunkhound": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "chunkhound-mcp", "${workspaceFolder}"]
-    },
-    "semgrep": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "semgrep-mcp"]
-    },
-    "ast-grep": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@ast-grep/mcp"]
-    },
-    "vibe-check-mcp": {
-      "command": "npx",
-      "args": ["-y", "@pv-bhat/vibe-check-mcp", "start", "--stdio"]
+    "rust-cargo": {
+      "command": "rust-mcp-server",
+      "args": ["--workspace", "C:\\Users\\vanya\\RustroverProjects\\nebula"]
     }
   }
 }

@@ -35,7 +35,7 @@ encoding: "utf-8"
 # line ending convention to use when writing source files.
 # Possible values: unset (use global setting), "lf", "crlf", or "native" (platform default)
 # This does not affect Serena's own files (e.g. memories and configuration files), which always use native line endings.
-line_ending:
+line_ending: lf
 
 # The language backend to use for this project.
 # If not set, the global setting from serena_config.yml is used.
@@ -50,7 +50,11 @@ ignore_all_files_in_gitignore: true
 # list of additional paths to ignore in this project.
 # Same syntax as gitignore, so you can use * and **.
 # Note: global ignored_paths from serena_config.yml are also applied additively.
-ignored_paths: []
+ignored_paths:
+  # stale parameter docs — ground truth is src/schema.rs + src/providers.rs (see CLAUDE.md)
+  - "docs/crates/parameter/**"
+  # untracked plans directories
+  - "crates/*/plans/**"
 
 # whether the project is in read-only mode
 # If set to true, all editing tools will be disabled and attempts to use them will result in an error
@@ -122,13 +126,60 @@ default_modes:
 
 # initial prompt for the project. It will always be given to the LLM upon activating the project
 # (contrary to the memories, which are loaded on demand).
-initial_prompt: ""
+initial_prompt: |
+  Nebula is a 26-crate Rust workspace — a modular DAG-based workflow automation engine (like n8n/Zapier).
+  Workflows are graphs of composable actions with built-in retries/error handling, extensible via plugins.
+
+  Layer order (strict one-way deps enforced by cargo-deny):
+    Infra → Core → Business → Exec → API
+
+  Cross-cutting (importable at any layer):
+    nebula-config       — configuration loading, hot-reload
+    nebula-log          — structured logging (wraps tracing)
+    nebula-resilience   — circuit breaker, retry, rate limiting (const-generic)
+    nebula-eventbus     — pub/sub for cross-crate notifications
+    nebula-metrics      — metrics collection/export
+    nebula-telemetry    — distributed tracing
+    nebula-system       — cross-platform utilities, memory pressure
+
+  Core layer:
+    nebula-core         — shared IDs (ExecutionId, WorkflowId, NodeId…), scope system, shared traits
+    nebula-validator    — validation combinators (Rule, Condition, Validator)
+    nebula-parameter    — parameter schema (Field enum, providers API); ground truth: src/schema.rs
+    nebula-expression   — expression evaluation on serde_json::Value
+    nebula-memory       — arenas, LRU/TTL caching, memory pressure detection
+    nebula-workflow     — workflow definition types, DAG model
+    nebula-execution    — execution state machine types
+
+  Business logic layer:
+    nebula-credential   — AES-256-GCM credential storage, manager, rotation, protocols
+    nebula-resource     — resource lifecycle, pooling, health, credential binding
+    nebula-action       — Action trait, Context, subtypes (StatelessAction, StatefulAction…)
+    nebula-plugin       — plugin discovery, dynamic loading
+
+  Execution layer:
+    nebula-engine       — DAG scheduler, orchestration, node dispatch
+    nebula-runtime      — trigger management, MemoryQueue, InProcessSandbox
+
+  Infrastructure + API layer:
+    nebula-storage      — storage abstraction; MemoryStorage + PostgresStorage
+    nebula-api          — REST + WebSocket server (axum)
+    nebula-webhook      — inbound webhook ingestion
+    nebula-sdk          — action/plugin author SDK (re-exports core crates)
+    nebula-macros       — proc-macros: #[node], #[action], validation derive
+
+  Architectural invariants:
+  - serde_json::Value is the universal data type; dates=ISO-8601, binary=base64
+  - nebula-core stays small — only safe to add new ID types; changing traits cascades everywhere
+  - Credentials always encrypted; CredentialAccessor injected via Context, never a global lookup
+  - EventBus for all cross-crate signals — never add direct imports as a workaround
+  - docs/crates/parameter/ is permanently stale; src/schema.rs + src/providers.rs are ground truth
 
 # time budget (seconds) per tool call for the retrieval of additional symbol information
 # such as docstrings or parameter information.
 # This overrides the corresponding setting in the global configuration; see the documentation there.
 # If null or missing, use the setting from the global configuration.
-symbol_info_budget:
+symbol_info_budget: 8  # rust-analyzer on 26-crate workspace can be slow
 
 # list of regex patterns which, when matched, mark a memory entry as read‑only.
 # Extends the list from the global configuration, merging the two lists.
