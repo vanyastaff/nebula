@@ -103,4 +103,15 @@ impl<E: Clone + Send> Subscriber<E> {
     pub fn is_closed(&self) -> bool {
         self.receiver.is_closed()
     }
+
+    /// Converts this subscriber into a [`Stream`](futures_core::Stream).
+    ///
+    /// The stream yields events until the bus is closed. Lagged events are
+    /// skipped automatically (same semantics as [`recv()`](Self::recv)).
+    pub fn into_stream(self) -> crate::stream::SubscriberStream<E>
+    where
+        E: 'static,
+    {
+        crate::stream::SubscriberStream::new(self.receiver, self.lagged_count)
+    }
 }

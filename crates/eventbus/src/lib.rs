@@ -111,6 +111,7 @@ pub mod prelude;
 mod registry;
 mod scope;
 mod stats;
+mod stream;
 mod subscriber;
 
 pub use bus::EventBus;
@@ -123,4 +124,6 @@ pub use registry::EventBusRegistryStats;
 pub use scope::ScopedEvent;
 pub use scope::SubscriptionScope;
 pub use stats::EventBusStats;
+pub use stream::FilteredStream;
+pub use stream::SubscriberStream;
 pub use subscriber::Subscriber;

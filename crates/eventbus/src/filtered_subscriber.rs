@@ -62,4 +62,13 @@ impl<E: Clone + Send> FilteredSubscriber<E> {
     pub fn is_closed(&self) -> bool {
         self.inner.is_closed()
     }
+
+    /// Converts this filtered subscriber into a [`Stream`](futures_core::Stream)
+    /// that only yields events matching the filter.
+    pub fn into_stream(self) -> crate::stream::FilteredStream<E>
+    where
+        E: 'static,
+    {
+        crate::stream::FilteredStream::new(self.inner.into_stream(), self.filter)
+    }
 }
