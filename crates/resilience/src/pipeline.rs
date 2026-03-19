@@ -178,7 +178,7 @@ where
                 // Build an inner RetryConfig<Option<E>>:
                 // - Same max_attempts and backoff as the original config
                 // - retry_if: retry Some(e) (operation errors), stop on None (bail)
-                let inner_config = RetryConfig::<Option<E>>::new(config.max_attempts)
+                let inner_config = RetryConfig::<Option<E>>::new_unchecked(config.max_attempts)
                     .backoff(config.backoff.clone())
                     .jitter(config.jitter.clone())
                     .retry_if(move |e: &Option<E>| {
@@ -291,7 +291,7 @@ mod tests {
 
         let pipeline = ResiliencePipeline::<&str>::builder()
             .timeout(Duration::from_secs(5))
-            .retry(RetryConfig::new(3).backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
+            .retry(RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
             .build();
 
         let result = pipeline
@@ -312,7 +312,7 @@ mod tests {
     async fn pipeline_warns_on_bad_layer_order() {
         // timeout INSIDE retry is suboptimal — just verify build() succeeds
         let _pipeline = ResiliencePipeline::<&str>::builder()
-            .retry(RetryConfig::new(2).backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
+            .retry(RetryConfig::new(2).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
             .timeout(Duration::from_secs(1))
             .build();
     }
@@ -320,7 +320,7 @@ mod tests {
     #[tokio::test]
     async fn pipeline_returns_ok_on_success() {
         let pipeline = ResiliencePipeline::<&str>::builder()
-            .retry(RetryConfig::new(3).backoff(BackoffConfig::Fixed(Duration::ZERO)))
+            .retry(RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::ZERO)))
             .build();
 
         let result = pipeline.call(|| Box::pin(async { Ok::<u32, &str>(42) })).await;

@@ -547,11 +547,11 @@ impl LoggingHook {
 impl ObservabilityHook for LoggingHook {
     fn on_event(&self, event: &PatternEvent) {
         match self.level {
-            LogLevel::Error => nebula_log::error!("{}", event),
-            LogLevel::Warn => nebula_log::warn!("{}", event),
-            LogLevel::Info => nebula_log::info!("{}", event),
-            LogLevel::Debug => nebula_log::debug!("{}", event),
-            LogLevel::Trace => nebula_log::debug!("{}", event),
+            LogLevel::Error => tracing::error!("{}", event),
+            LogLevel::Warn => tracing::warn!("{}", event),
+            LogLevel::Info => tracing::info!("{}", event),
+            LogLevel::Debug => tracing::debug!("{}", event),
+            LogLevel::Trace => tracing::trace!("{}", event),
         }
     }
 }

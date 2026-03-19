@@ -170,7 +170,7 @@ impl RateLimiter for AnyRateLimiter {
     }
 
     async fn reset(&self) {
-        dispatch_inner!(&self.inner, reset)
+        dispatch_inner!(&self.inner, reset);
     }
 }
 

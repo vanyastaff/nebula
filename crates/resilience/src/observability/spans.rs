@@ -16,7 +16,7 @@
 //! span.success(); // or span.failure(&error)
 //! ```
 
-use nebula_log::{debug, error, info, warn};
+use tracing::{debug, error, info, warn};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};

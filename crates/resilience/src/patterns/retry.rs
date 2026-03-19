@@ -104,16 +104,26 @@ pub struct RetryConfig<E = ()> {
 impl<E: 'static> RetryConfig<E> {
     /// Create a retry config that retries all errors up to `max_attempts` times.
     ///
+    /// `max_attempts` must be at least 1 (the initial attempt counts).
     /// `E` is inferred from the closure passed to [`retry_with`].
-    #[must_use]
-    pub fn new(max_attempts: u32) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ConfigError)` if `max_attempts` is 0.
+    pub fn new(max_attempts: u32) -> Result<Self, crate::ConfigError> {
+        if max_attempts == 0 {
+            return Err(crate::ConfigError::new(
+                "max_attempts",
+                "must be >= 1",
+            ));
+        }
+        Ok(Self {
             max_attempts,
             backoff: BackoffConfig::Fixed(Duration::ZERO),
             jitter: JitterConfig::None,
             predicate: None,
             sink: Arc::new(NoopSink),
-        }
+        })
     }
 
     /// Set the backoff strategy.
@@ -147,6 +157,17 @@ impl<E: 'static> RetryConfig<E> {
     pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
+    }
+
+    /// Internal constructor that skips validation — caller guarantees `max_attempts >= 1`.
+    pub(crate) fn new_unchecked(max_attempts: u32) -> Self {
+        Self {
+            max_attempts,
+            backoff: BackoffConfig::Fixed(Duration::ZERO),
+            jitter: JitterConfig::None,
+            predicate: None,
+            sink: Arc::new(NoopSink),
+        }
     }
 
     fn should_retry(&self, err: &E) -> bool {
@@ -207,12 +228,17 @@ where
 }
 
 /// Convenience: retry up to `n` times with no backoff.
+///
+/// # Panics
+///
+/// Panics if `n` is 0 (use [`retry_with`] with [`RetryConfig::new`] for fallible construction).
 pub async fn retry<T, E, F>(n: u32, f: F) -> Result<T, CallError<E>>
 where
     E: 'static,
     F: FnMut() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>>,
 {
-    retry_with(RetryConfig::<E>::new(n), f).await
+    let config = RetryConfig::<E>::new(n).expect("retry() requires n >= 1; use retry_with() for fallible config");
+    retry_with(config, f).await
 }
 
 #[cfg(test)]
@@ -227,7 +253,7 @@ mod tests {
     async fn retries_up_to_max_attempts() {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
-        let config = RetryConfig::new(3).backoff(BackoffConfig::Fixed(Duration::from_millis(1)));
+        let config = RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1)));
 
         let result: Result<(), CallError<&str>> = retry_with(config, || {
             let c = c.clone();
@@ -249,7 +275,7 @@ mod tests {
     async fn stops_on_success() {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
-        let config = RetryConfig::new(5).backoff(BackoffConfig::Fixed(Duration::from_millis(1)));
+        let config = RetryConfig::new(5).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1)));
 
         let result: Result<u32, CallError<&str>> = retry_with(config, || {
             let c = c.clone();
@@ -276,6 +302,7 @@ mod tests {
         }
 
         let config = RetryConfig::new(5)
+            .unwrap()
             .backoff(BackoffConfig::Fixed(Duration::from_millis(1)))
             .retry_if(|e: &MyErr| matches!(e, MyErr::Transient));
 
@@ -297,6 +324,7 @@ mod tests {
     async fn emits_retry_attempt_events() {
         let sink = RecordingSink::new();
         let config = RetryConfig::new(3)
+            .unwrap()
             .backoff(BackoffConfig::Fixed(Duration::from_millis(1)))
             .with_sink(sink.clone());
 

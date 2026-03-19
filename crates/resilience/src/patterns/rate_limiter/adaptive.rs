@@ -16,6 +16,7 @@ struct AdaptiveState {
     error_count: usize,
     last_stats_reset: Instant,
     current_rate: f64,
+    initial_rate: f64,
 }
 
 /// Adaptive rate limiter that adjusts based on error rates
@@ -46,6 +47,7 @@ impl AdaptiveRateLimiter {
                 error_count: 0,
                 last_stats_reset: Instant::now(),
                 current_rate: initial_rate,
+                initial_rate,
             })),
             atomic_rate: AtomicU64::new(initial_rate.to_bits()),
             stats_window: Duration::from_mins(1),
@@ -130,17 +132,17 @@ impl RateLimiter for AdaptiveRateLimiter {
     }
 
     async fn reset(&self) {
-        // Reset stats and snapshot the current inner limiter atomically under a single write lock.
-        // Splitting into read-then-write would be a TOCTOU: a concurrent record_error() could
-        // install a new inner bucket between the two lock acquisitions.
-        let limiter = {
-            let mut state = self.state.write();
-            state.success_count = 0;
-            state.error_count = 0;
-            state.last_stats_reset = Instant::now();
-            state.inner.clone()
-        };
-
-        limiter.reset().await;
+        // Reset stats, rate, and inner limiter atomically under a single write lock.
+        let mut state = self.state.write();
+        state.success_count = 0;
+        state.error_count = 0;
+        state.last_stats_reset = Instant::now();
+        state.current_rate = state.initial_rate;
+        state.inner = Arc::new(TokenBucket::new(
+            state.initial_rate as usize,
+            state.initial_rate,
+        ));
+        self.atomic_rate
+            .store(state.initial_rate.to_bits(), Ordering::Release);
     }
 }

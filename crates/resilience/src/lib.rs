@@ -14,7 +14,7 @@
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let pipeline = ResiliencePipeline::<&str>::builder()
 //!         .timeout(Duration::from_secs(5))
-//!         .retry(RetryConfig::new(3).backoff(BackoffConfig::Fixed(Duration::from_millis(100))))
+//!         .retry(RetryConfig::new(3)?.backoff(BackoffConfig::Fixed(Duration::from_millis(100))))
 //!         .build();
 //!
 //!     let result = pipeline.call(|| Box::pin(async {
@@ -54,7 +54,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let config = RetryConfig::<&str>::new(3)
+//!     let config = RetryConfig::<&str>::new(3)?
 //!         .backoff(BackoffConfig::Fixed(Duration::from_millis(50)));
 //!
 //!     let result: Result<u32, CallError<&str>> = retry_with(config, || Box::pin(async {
@@ -65,7 +65,6 @@
 //! ```
 
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::perf)]
-// Pedantic lints suppressed crate-wide — expect will warn if no longer needed
 #![expect(
     clippy::module_name_repetitions,
     reason = "pattern types repeat module name by design"
@@ -107,14 +106,6 @@
     reason = "usize to i64/i32 casts never exceed range"
 )]
 #![expect(
-    clippy::self_only_used_in_recursion,
-    reason = "recursive config traversal is idiomatic"
-)]
-#![expect(
-    clippy::unused_self,
-    reason = "methods use self for future extensibility"
-)]
-#![expect(
     clippy::should_implement_trait,
     reason = "FallbackChain::add is builder-style, not Add trait"
 )]
@@ -122,7 +113,6 @@
     clippy::new_without_default,
     reason = "PipelineBuilder::new() is const fn and cannot be called from Default::default()"
 )]
-// Pre-existing pedantic lints suppressed in legacy code — these files are not being rewritten
 #![expect(
     clippy::missing_const_for_fn,
     reason = "pre-existing code not being rewritten in this phase"
@@ -136,22 +126,6 @@
     reason = "pre-existing code not being rewritten in this phase"
 )]
 #![expect(
-    clippy::option_if_let_else,
-    reason = "pre-existing code not being rewritten in this phase"
-)]
-#![expect(
-    clippy::wildcard_imports,
-    reason = "pre-existing code not being rewritten in this phase"
-)]
-#![expect(
-    clippy::unused_async,
-    reason = "pre-existing code not being rewritten in this phase"
-)]
-#![expect(
-    clippy::needless_return,
-    reason = "pre-existing code not being rewritten in this phase"
-)]
-#![expect(
     clippy::excessive_nesting,
     reason = "pre-existing code not being rewritten in this phase"
 )]
@@ -160,157 +134,59 @@
     reason = "pre-existing code not being rewritten in this phase"
 )]
 #![expect(
-    clippy::manual_map,
-    reason = "pre-existing code not being rewritten in this phase"
-)]
-#![expect(
     clippy::missing_fields_in_debug,
-    reason = "pre-existing code not being rewritten in this phase"
-)]
-#![expect(
-    clippy::semicolon_if_nothing_returned,
     reason = "pre-existing code not being rewritten in this phase"
 )]
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
-// Core modules with advanced type system features
+// Modules
 pub mod clock;
 pub mod core;
 pub mod gate;
 pub mod helpers;
-mod manager;
 pub mod observability;
 pub mod patterns;
-mod policy;
+pub mod pipeline;
 pub mod retryable;
 
-// High-level composition and management
-pub mod pipeline;
+// ── Re-exports from core ─────────────────────────────────────────────────────
 
-// Re-exports from core with type safety
 pub use core::{
-    // Error handling and results
-    CircuitBreakerOpenState,
-    ResilienceError,
-    ResilienceResult,
+    // Error types
+    CircuitBreakerOpenState, ErrorClass, ErrorContext, ResilienceError, ResilienceResult,
 
-    // Advanced type system features
-    advanced::{
-        Aggressive, Balanced, Complete, ComposedPolicy, Conservative, ConstValidated,
-        PolicyBuilder as TypestatePolicyBuilder, Strategy, StrategyConfig, Unconfigured,
-        ValidatedRetryConfig, WithCircuitBreaker, WithRetry,
-    },
+    // Metrics
+    MetricKind, MetricSnapshot, Metrics, MetricsCollector,
 
-    // Configuration types
-    config::{ConfigResult, ResilienceConfig},
-
-    // Advanced trait system
-    traits::{
-        // Integration traits
-        CanExecute,
-        // Configuration validation
-        Config,
-        ConfigExt,
-        Executable,
-        ExecuteGuard,
-        // Error bridge
-        FromResilienceError,
-        MetricValue,
-        PatternHealth,
-        PatternMetrics,
-        // Type-safe traits with GATs
-        ResiliencePattern,
-        // Retry traits with const generics
-        Retryable as CoreRetryable,
-        StandardMetrics,
-        // Zero-cost timeout configuration
-        TimeoutConfig,
-        Validated,
-        // Type-state circuit breaker states (compile-time state tracking)
-        circuit_states::{Closed, HalfOpen, Open, StateTransition, TypestateCircuitState},
-        timeout,
-    },
+    // Policy source
+    ConstantLoad, LoadSignal, PolicySource,
 
     // Core error and result types
     types::{CallError, CallResult, ConfigError},
 };
 
-// Re-exports from patterns with advanced features
-pub use patterns::{
-    // Other patterns (maintained for compatibility)
-    bulkhead::{Bulkhead, BulkheadConfig},
-    // Circuit breaker
-    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome, Outcome as CircuitOutcome},
+// ── Re-exports from patterns ─────────────────────────────────────────────────
 
+pub use patterns::{
+    bulkhead::{Bulkhead, BulkheadConfig},
+    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome},
     fallback::{AnyStringFallbackStrategy, FallbackStrategy, ValueFallback},
     hedge::{HedgeConfig, HedgeExecutor},
+    load_shed::load_shed,
     rate_limiter::{
         AdaptiveRateLimiter, AnyRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket,
     },
-    // Retry
     retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with},
-
     timeout::{TimeoutExecutor, timeout as timeout_fn, timeout_with_original_error},
-    load_shed::load_shed,
 };
 
-pub use core::{ConstantLoad, LoadSignal, PolicySource};
-pub use observability::{MetricsSink, NoopSink, RecordingSink, ResilienceEvent};
+// ── Other re-exports ─────────────────────────────────────────────────────────
+
 pub use gate::{Gate, GateClosed, GateGuard};
+pub use observability::sink::CircuitState;
+pub use observability::{MetricsSink, NoopSink, RecordingSink, ResilienceEvent};
 pub use pipeline::{PipelineBuilder, ResiliencePipeline};
-pub use manager::{
-    PolicyBuilder, ResilienceManager, RetryableOperation, UnTypedServiceMetrics as ServiceMetrics,
-};
-pub use observability::sink::{CircuitState, CircuitState as SinkCircuitState};
-pub use policy::{PolicyMetadata, ResiliencePolicy};
-
-// Re-export Retryable trait for backward compatibility (already exported in core traits)
-
-/// Prelude module with the most commonly used types and traits
-///
-/// This module provides a convenient way to import the most frequently used
-/// types and traits from the nebula-resilience crate with advanced type safety features.
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use nebula_resilience::prelude::*;
-/// use std::time::Duration;
-///
-/// // Circuit breaker with default settings
-/// let cb = CircuitBreaker::new(CircuitBreakerConfig::default()).unwrap();
-/// // Retry: 3 attempts with 50ms fixed backoff
-/// let config = RetryConfig::<&str>::new(3).backoff(BackoffConfig::Fixed(Duration::from_millis(50)));
-/// ```
-pub mod prelude {
-    // Errors and results
-    pub use crate::core::{ResilienceError, ResilienceResult};
-
-    // Circuit breaker
-    pub use crate::patterns::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
-
-    // Retry
-    pub use crate::patterns::retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
-
-    // Other patterns
-    pub use crate::patterns::{
-        bulkhead::{Bulkhead, BulkheadConfig},
-        timeout::timeout as timeout_fn,
-    };
-
-    // Composition and management
-    pub use crate::{PolicyBuilder, ResilienceManager, ResiliencePolicy};
-    pub use crate::pipeline::{PipelineBuilder, ResiliencePipeline};
-
-    // Gate / graceful-shutdown barrier
-    pub use crate::gate::{Gate, GateClosed, GateGuard};
-
-    // Standard library
-    pub use std::time::Duration;
-}
-
-// builder module removed — superseded by ResiliencePipeline
 
 /// Functional resilience API — convenience functions for simple cases.
 pub mod resilience {
@@ -332,8 +208,6 @@ pub mod constants {
     /// Default rate limit (requests per second).
     pub const DEFAULT_RATE_LIMIT: f64 = 100.0;
 }
-
-// utils module removed — superseded by ResiliencePipeline functional API
 
 /// Library version with compile-time embedding
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

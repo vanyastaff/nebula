@@ -87,7 +87,7 @@ impl RateLimiter for TokenBucket {
         let now = Instant::now();
         let elapsed = now.duration_since(state.last_refill).as_secs_f64();
         let tokens_to_add = elapsed * self.refill_rate;
-        state.tokens = (state.tokens + tokens_to_add).min(self.capacity as f64);
+        state.tokens = (state.tokens + tokens_to_add).min(self.burst_size as f64);
         state.last_refill = now;
 
         if state.tokens >= 1.0 {

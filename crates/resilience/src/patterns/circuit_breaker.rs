@@ -196,7 +196,7 @@ impl CircuitBreaker {
     pub fn record_outcome(&self, outcome: Outcome) {
         let mut inner = self.state.lock();
         match outcome {
-            Outcome::Cancelled => return, // never count cancellations as failures
+            Outcome::Cancelled => (), // never count cancellations as failures
             Outcome::Success => {
                 if inner.state == State::HalfOpen {
                     let prev = to_circuit_state(inner.state);
@@ -216,8 +216,8 @@ impl CircuitBreaker {
                 if matches!(outcome, Outcome::Timeout) && !self.config.count_timeouts_as_failures {
                     return;
                 }
-                inner.failures += 1;
-                inner.total += 1;
+                inner.failures = inner.failures.saturating_add(1);
+                inner.total = inner.total.saturating_add(1);
                 if inner.failures >= self.config.failure_threshold
                     && inner.total >= self.config.min_operations
                 {

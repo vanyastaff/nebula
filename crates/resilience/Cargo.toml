@@ -42,10 +42,7 @@ tokio-util = { workspace = true, features = ["rt"] }
 fastrand = "2.3"
 tracing = { workspace = true }
 
-# Internal crates
-nebula-config = { path = "../config" }
-nebula-core = { path = "../core" }
-nebula-log = { path = "../log" }
+# No internal nebula deps — this crate is fully standalone
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
@@ -63,10 +60,6 @@ harness = false
 
 [[bench]]
 name = "rate_limiter"
-harness = false
-
-[[bench]]
-name = "manager"
 harness = false
 
 [[bench]]

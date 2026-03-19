@@ -19,7 +19,8 @@
 //! assert!(t1.duration_since(t0) >= Duration::from_secs(5));
 //! ```
 
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // =============================================================================
@@ -91,13 +92,13 @@ impl MockClock {
     ///
     /// All clones of this `MockClock` will observe the new time immediately.
     pub fn advance(&self, duration: Duration) {
-        self.inner.lock().unwrap().offset += duration;
+        self.inner.lock().offset += duration;
     }
 
     /// Returns the total virtual time elapsed since this clock was created.
     #[must_use]
     pub fn elapsed(&self) -> Duration {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock();
         inner.base.elapsed() + inner.offset
     }
 }
@@ -110,7 +111,7 @@ impl Default for MockClock {
 
 impl Clock for MockClock {
     fn now(&self) -> Instant {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock();
         // `Instant` can't be constructed from thin air on stable Rust, so we
         // express the virtual time as `base + real_elapsed + offset`.
         // `base.elapsed()` accounts for real time already; `offset` is the
