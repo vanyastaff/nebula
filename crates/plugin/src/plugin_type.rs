@@ -8,7 +8,6 @@ use crate::PluginError;
 use crate::plugin::Plugin;
 use crate::versions::PluginVersions;
 
-
 /// Wraps either a single plugin instance or a multi-version container.
 pub enum PluginType {
     /// A single, non-versioned plugin.

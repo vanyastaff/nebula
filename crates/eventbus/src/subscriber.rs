@@ -12,11 +12,7 @@ use tokio::sync::broadcast;
 /// ## Drop Behavior
 ///
 /// When a `Subscriber` is dropped, the underlying channel automatically decrements the subscriber count.
-/// No explicit unsubscribe is needed — the subscription ends when the subscriber is dropped or
-/// [`close()`](Self::close) is called.
-///
-/// **Note:** [`close()`](Self::close) is semantically equivalent to dropping the subscriber.
-/// It exists for clarity when you want to explicitly signal subscription termination.
+/// No explicit unsubscribe is needed — the subscription ends when the subscriber is dropped.
 ///
 /// ## Lag Recovery
 ///
@@ -108,6 +104,14 @@ impl<E: Clone + Send> Subscriber<E> {
         self.receiver.is_closed()
     }
 
-    /// Closes this subscription handle by consuming it.
-    pub fn close(self) {}
+    /// Converts this subscriber into a [`Stream`](futures_core::Stream).
+    ///
+    /// The stream yields events until the bus is closed. Lagged events are
+    /// skipped automatically (same semantics as [`recv()`](Self::recv)).
+    pub fn into_stream(self) -> crate::stream::SubscriberStream<E>
+    where
+        E: 'static,
+    {
+        crate::stream::SubscriberStream::new(self.receiver, self.lagged_count)
+    }
 }

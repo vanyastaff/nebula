@@ -156,7 +156,10 @@ pub struct PoolSizing {
 
 impl Default for PoolSizing {
     fn default() -> Self {
-        Self { min_size: 1, max_size: 10 }
+        Self {
+            min_size: 1,
+            max_size: 10,
+        }
     }
 }
 
@@ -167,13 +170,19 @@ impl PoolSizing {
     /// TCP control channel.
     #[must_use]
     pub fn singleton() -> Self {
-        Self { min_size: 1, max_size: 1 }
+        Self {
+            min_size: 1,
+            max_size: 1,
+        }
     }
 
     /// Fixed-range pool with explicit limits.
     #[must_use]
     pub fn fixed(min: usize, max: usize) -> Self {
-        Self { min_size: min, max_size: max }
+        Self {
+            min_size: min,
+            max_size: max,
+        }
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
@@ -275,7 +284,10 @@ impl PoolAcquire {
     /// Create an acquire config for a shared (clone-based) pool.
     #[must_use]
     pub fn shared() -> Self {
-        Self { sharing_mode: PoolSharingMode::Shared, ..Self::default() }
+        Self {
+            sharing_mode: PoolSharingMode::Shared,
+            ..Self::default()
+        }
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
@@ -371,7 +383,10 @@ impl PoolResiliencePolicy {
     pub fn singleton() -> Self {
         Self {
             create_breaker: Some(CircuitBreakerConfig::default()),
-            create_retry: Some(RetryConfig { max_attempts: 5, ..RetryConfig::default() }),
+            create_retry: Some(RetryConfig {
+                max_attempts: 5,
+                ..RetryConfig::default()
+            }),
             ..Default::default()
         }
     }

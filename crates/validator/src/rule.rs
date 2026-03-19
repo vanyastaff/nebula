@@ -117,9 +117,8 @@ fn cached_regex(pattern: &str) -> Result<regex::Regex, ValidationError> {
             return Ok(re.clone());
         }
     }
-    let re = regex::Regex::new(pattern).map_err(|e| {
-        ValidationError::new("invalid_pattern", format!("invalid regex: {e}"))
-    })?;
+    let re = regex::Regex::new(pattern)
+        .map_err(|e| ValidationError::new("invalid_pattern", format!("invalid regex: {e}")))?;
     let mut cache = REGEX_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     cache.entry(pattern.to_owned()).or_insert(re.clone());
     Ok(re)
@@ -596,11 +595,10 @@ impl Rule {
                     Err(errors.into_iter().next().unwrap())
                 } else {
                     let count = errors.len();
-                    Err(ValidationError::new(
-                        "all_failed",
-                        format!("{count} of the rules failed"),
+                    Err(
+                        ValidationError::new("all_failed", format!("{count} of the rules failed"))
+                            .with_nested(errors),
                     )
-                    .with_nested(errors))
                 }
             }
             Self::Any { rules } => {
@@ -615,11 +613,10 @@ impl Rule {
                     }
                 }
                 let count = errors.len();
-                Err(ValidationError::new(
-                    "any_failed",
-                    format!("All {count} alternatives failed"),
+                Err(
+                    ValidationError::new("any_failed", format!("All {count} alternatives failed"))
+                        .with_nested(errors),
                 )
-                .with_nested(errors))
             }
             Self::Not { inner } => match inner.validate_value(value) {
                 Ok(()) => Err(ValidationError::new("not_failed", "negated rule passed")),
@@ -685,9 +682,7 @@ impl Rule {
             Self::Matches { field, pattern } => values
                 .get(field)
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|string| {
-                    cached_regex(pattern).is_ok_and(|re| re.is_match(string))
-                }),
+                .is_some_and(|string| cached_regex(pattern).is_ok_and(|re| re.is_match(string))),
             Self::In {
                 field,
                 values: candidates,

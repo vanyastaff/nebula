@@ -5,13 +5,13 @@
 //! ```
 
 pub use crate::action::Action;
-pub use crate::dependency::ActionDependencies;
 pub use crate::authoring::{FnStatelessAction, stateless_fn};
 pub use crate::capability::{
     ActionLogLevel, ActionLogger, CredentialAccessor, ExecutionEmitter, ResourceAccessor,
     TriggerScheduler,
 };
 pub use crate::context::{ActionContext, Context, TriggerContext};
+pub use crate::dependency::ActionDependencies;
 pub use crate::error::ActionError;
 pub use crate::execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 pub use crate::metadata::{ActionMetadata, MetadataCompatibilityError};

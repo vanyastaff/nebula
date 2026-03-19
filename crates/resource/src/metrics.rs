@@ -22,7 +22,7 @@ use nebula_metrics::naming::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::events::{EventBus, EventSubscriber, ResourceEvent};
+use crate::events::{EventBus, ResourceEvent, Subscriber};
 
 /// Background metrics collector that subscribes to an [`EventBus`]
 /// and records counters/histograms via the `metrics` crate.
@@ -36,7 +36,7 @@ use crate::events::{EventBus, EventSubscriber, ResourceEvent};
 /// tokio::spawn(collector.run(cancel));
 /// ```
 pub struct MetricsCollector {
-    subscriber: EventSubscriber<ResourceEvent>,
+    subscriber: Subscriber<ResourceEvent>,
 }
 
 const MAX_RESOURCE_LABEL_CARDINALITY: usize = 128;

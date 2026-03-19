@@ -11,7 +11,6 @@ use proptest::prelude::*;
 mod scope_helpers;
 use scope_helpers::*;
 
-
 // ---------------------------------------------------------------------------
 // Strategy: generate arbitrary Scope values with parent chains
 // ---------------------------------------------------------------------------

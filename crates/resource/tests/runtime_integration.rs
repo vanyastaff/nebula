@@ -2,14 +2,14 @@
 //!
 //! These tests capture lifecycle and failure semantics runtime depends on.
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::quarantine::QuarantineReason;
 
 mod scope_helpers;
-use scope_helpers::*;
 use nebula_resource::{
     Context, ErrorCategory, ExecutionId, HealthState, Manager, PoolConfig, Resource, WorkflowId,
 };
+use scope_helpers::*;
 
 #[derive(Debug, Clone)]
 struct TestConfig;

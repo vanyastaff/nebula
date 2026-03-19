@@ -197,7 +197,10 @@ impl AutoScaler {
             }
         });
 
-        AutoScalerHandle { cancel: self.cancel.clone(), handle: task }
+        AutoScalerHandle {
+            cancel: self.cancel.clone(),
+            handle: task,
+        }
     }
 
     /// Cancel the background auto-scaler task (fire-and-forget).

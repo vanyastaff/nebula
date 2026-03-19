@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -63,8 +63,14 @@ fn ctx() -> Context {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stress_50_tasks_random_acquire_release() {
     let pool_config = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 10 },
-        acquire: PoolAcquire { timeout: Duration::from_secs(10), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 10,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(10),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let pool = Arc::new(Pool::new(StressResource::new(), StressConfig, pool_config).unwrap());

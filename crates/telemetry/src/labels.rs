@@ -201,10 +201,8 @@ impl LabelInterner {
     pub fn filter_label_set(&self, labels: &LabelSet, allowed_keys: &[&str]) -> LabelSet {
         // Intern the allowed keys so that we compare Spur ↔ Spur (integers).
         let allowed: Vec<Spur> = allowed_keys.iter().map(|k| self.intern(k)).collect();
-        let pairs: Vec<(LabelKey, LabelValue)> = labels
-            .iter()
-            .filter(|(k, _)| allowed.contains(k))
-            .collect();
+        let pairs: Vec<(LabelKey, LabelValue)> =
+            labels.iter().filter(|(k, _)| allowed.contains(k)).collect();
         // Already sorted because the source LabelSet is sorted.
         LabelSet { pairs }
     }

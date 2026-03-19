@@ -85,7 +85,7 @@ impl Lifecycle {
             // Can be discarded immediately (Terminated) without going through
             // Initializing if it is never needed (e.g. pool shrinks on startup).
             (Created, Initializing) => true,
-            (Created, Failed) => true,     // setup failed before init started
+            (Created, Failed) => true, // setup failed before init started
             (Created, Terminated) => true, // discarded before use
 
             // Initializing: Resource::create is in progress.
@@ -116,11 +116,11 @@ impl Lifecycle {
             // Maintenance: validation (is_reusable) is running.
             // Cleanup: idle_timeout or max_lifetime expired; evict directly.
             (Idle, InUse) => true,
-            (Idle, Ready) => true,      // validated by is_reusable
+            (Idle, Ready) => true, // validated by is_reusable
             (Idle, Maintenance) => true,
-            (Idle, Draining) => true,   // shutdown while idle
-            (Idle, Cleanup) => true,    // idle/lifetime timeout
-            (Idle, Failed) => true,     // health check failed while idle
+            (Idle, Draining) => true, // shutdown while idle
+            (Idle, Cleanup) => true,  // idle/lifetime timeout
+            (Idle, Failed) => true,   // health check failed while idle
 
             // Maintenance: is_reusable or recycle running in the background.
             // Returns to Ready on success, or Cleanup/Failed on error.

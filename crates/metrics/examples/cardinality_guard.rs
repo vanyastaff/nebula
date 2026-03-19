@@ -38,7 +38,7 @@ fn main() {
         ("action_type", "http.request"),
         ("status", "success"),
         ("execution_id", "550e8400-e29b-41d4-a716-446655440000"), // high cardinality!
-        ("workflow_id", "wf-123456"),                              // high cardinality!
+        ("workflow_id", "wf-123456"),                             // high cardinality!
     ]);
 
     println!("Raw labels ({} keys):", raw_labels.len());
@@ -95,7 +95,10 @@ fn main() {
 
     // With a generous window (5 min) fresh series survive.
     reg3.retain_recent(Duration::from_secs(300));
-    println!("\nActive series preserved by retain_recent: {}", reg3.metric_count()); // 1
+    println!(
+        "\nActive series preserved by retain_recent: {}",
+        reg3.metric_count()
+    ); // 1
 
     println!("\n=== Summary ===");
     println!("LabelAllowlist strips unsafe keys at record-time (static guard)");

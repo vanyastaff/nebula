@@ -4009,8 +4009,11 @@ name = "nebula-eventbus"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "futures-core",
+ "parking_lot",
  "pretty_assertions",
  "tokio",
+ "tokio-stream",
  "tracing",
  "tracing-subscriber",
 ]
@@ -7249,6 +7252,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

@@ -117,7 +117,10 @@ impl TriggerCtx {
 
     /// Check if the operation is cancelled.
     pub fn is_cancelled(&self) -> bool {
-        self.base.cancellation.as_ref().is_some_and(|t| t.is_cancelled())
+        self.base
+            .cancellation
+            .as_ref()
+            .is_some_and(|t| t.is_cancelled())
     }
 
     /// Get the workflow ID

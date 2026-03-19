@@ -205,10 +205,11 @@ where
         }
 
         let count = errors.len();
-        Err(
-            ValidationError::new("any_of_failed", format!("All {count} validators in any_of failed"))
-                .with_nested(errors.into_iter().collect()),
+        Err(ValidationError::new(
+            "any_of_failed",
+            format!("All {count} validators in any_of failed"),
         )
+        .with_nested(errors.into_iter().collect()))
     }
 }
 

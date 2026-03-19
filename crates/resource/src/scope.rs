@@ -228,7 +228,11 @@ impl Scope {
         if value.is_empty() {
             return Err("custom scope value must not be empty".to_string());
         }
-        Ok(Self::Custom { key, value, parent: None })
+        Ok(Self::Custom {
+            key,
+            value,
+            parent: None,
+        })
     }
 
     /// Try to create a custom scope with an explicit parent.
@@ -249,7 +253,11 @@ impl Scope {
         if value.is_empty() {
             return Err("custom scope value must not be empty".to_string());
         }
-        Ok(Self::Custom { key, value, parent: Some(Box::new(parent)) })
+        Ok(Self::Custom {
+            key,
+            value,
+            parent: Some(Box::new(parent)),
+        })
     }
 
     /// Get the scope hierarchy level (lower numbers = broader scope)
@@ -262,7 +270,9 @@ impl Scope {
             Self::Execution { .. } => 3,
             Self::Action { .. } => 4,
             // Custom level is parent level + 1, or 1 when parentless (orthogonal).
-            Self::Custom { parent: Some(p), .. } => p.hierarchy_level().saturating_add(1),
+            Self::Custom {
+                parent: Some(p), ..
+            } => p.hierarchy_level().saturating_add(1),
             Self::Custom { parent: None, .. } => 1,
         }
     }
@@ -380,15 +390,23 @@ impl Scope {
             // hierarchically (resource_parent.contains(caller_parent)).
             // Deny-by-default when the resource has a parent but the caller does not.
             (
-                Self::Custom { key: k1, value: v1, parent: p1 },
-                Self::Custom { key: k2, value: v2, parent: p2 },
+                Self::Custom {
+                    key: k1,
+                    value: v1,
+                    parent: p1,
+                },
+                Self::Custom {
+                    key: k2,
+                    value: v2,
+                    parent: p2,
+                },
             ) => {
                 if k1 != k2 || v1 != v2 {
                     return false;
                 }
                 match (p1, p2) {
-                    (None, _) => true,           // no parent constraint on resource side
-                    (Some(_), None) => false,    // resource requires a parent, caller has none
+                    (None, _) => true,                       // no parent constraint on resource side
+                    (Some(_), None) => false, // resource requires a parent, caller has none
                     (Some(rp), Some(cp)) => rp.contains(cp), // delegate to parent chain
                 }
             }
@@ -407,8 +425,16 @@ impl Scope {
             Self::Workflow { workflow_id, .. } => format!("workflow:{workflow_id}"),
             Self::Execution { execution_id, .. } => format!("execution:{execution_id}"),
             Self::Action { action_id, .. } => format!("action:{action_id}"),
-            Self::Custom { key, value, parent: None } => format!("custom:{key}={value}"),
-            Self::Custom { key, value, parent: Some(p) } => {
+            Self::Custom {
+                key,
+                value,
+                parent: None,
+            } => format!("custom:{key}={value}"),
+            Self::Custom {
+                key,
+                value,
+                parent: Some(p),
+            } => {
                 format!("custom:{key}={value}@{}", p.scope_key())
             }
         }
@@ -419,24 +445,24 @@ impl Scope {
     pub fn description(&self) -> Cow<'static, str> {
         match self {
             Self::Global => "Global scope (shared across all workflows and tenants)".into(),
-            Self::Tenant { tenant_id } => {
-                format!("Tenant scope (tenant: {tenant_id})").into()
-            }
+            Self::Tenant { tenant_id } => format!("Tenant scope (tenant: {tenant_id})").into(),
             Self::Workflow { workflow_id, .. } => {
                 format!("Workflow scope (workflow: {workflow_id})").into()
             }
             Self::Execution { execution_id, .. } => {
                 format!("Execution scope (execution: {execution_id})").into()
             }
-            Self::Action { action_id, .. } => {
-                format!("Action scope (action: {action_id})").into()
-            }
-            Self::Custom { key, value, parent: None } => {
-                format!("Custom scope ({key}={value})").into()
-            }
-            Self::Custom { key, value, parent: Some(p) } => {
-                format!("Custom scope ({key}={value}) within {}", p.description()).into()
-            }
+            Self::Action { action_id, .. } => format!("Action scope (action: {action_id})").into(),
+            Self::Custom {
+                key,
+                value,
+                parent: None,
+            } => format!("Custom scope ({key}={value})").into(),
+            Self::Custom {
+                key,
+                value,
+                parent: Some(p),
+            } => format!("Custom scope ({key}={value}) within {}", p.description()).into(),
         }
     }
 }
@@ -705,8 +731,7 @@ mod tests {
             Scope::try_custom_with_parent("env", "prod", parent_a.clone()).unwrap();
 
         // Caller at same custom scope (within the same tenant)
-        let caller_same =
-            Scope::try_custom_with_parent("env", "prod", parent_a.clone()).unwrap();
+        let caller_same = Scope::try_custom_with_parent("env", "prod", parent_a.clone()).unwrap();
         assert!(resource_scope.contains(&caller_same));
 
         // Caller at a narrower scope within the same tenant (workflow level)
@@ -749,12 +774,9 @@ mod tests {
             Scope::try_custom_with_parent("env", "prod", Scope::try_tenant("a").unwrap()).unwrap();
         assert_eq!(c_with_tenant.hierarchy_level(), 2); // tenant(1) + 1
 
-        let c_with_workflow = Scope::try_custom_with_parent(
-            "env",
-            "prod",
-            Scope::try_workflow("wf").unwrap(),
-        )
-        .unwrap();
+        let c_with_workflow =
+            Scope::try_custom_with_parent("env", "prod", Scope::try_workflow("wf").unwrap())
+                .unwrap();
         assert_eq!(c_with_workflow.hierarchy_level(), 3); // workflow(2) + 1
     }
 }

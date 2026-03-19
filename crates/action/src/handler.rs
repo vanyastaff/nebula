@@ -137,7 +137,11 @@ mod tests {
     impl AddAction {
         fn new() -> Self {
             Self {
-                meta: ActionMetadata::new(nebula_core::action_key!("math.add"), "Add", "Adds two numbers"),
+                meta: ActionMetadata::new(
+                    nebula_core::action_key!("math.add"),
+                    "Add",
+                    "Adds two numbers",
+                ),
             }
         }
     }

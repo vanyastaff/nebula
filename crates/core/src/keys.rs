@@ -63,7 +63,10 @@ macro_rules! resource_key {
 #[macro_export]
 macro_rules! action_key {
     ($s:literal) => {{
-        const _: () = assert!($crate::ActionKey::is_valid_key_const($s), "invalid action key literal");
+        const _: () = assert!(
+            $crate::ActionKey::is_valid_key_const($s),
+            "invalid action key literal"
+        );
         $crate::ActionKey::new($s).unwrap()
     }};
 }
@@ -72,7 +75,10 @@ macro_rules! action_key {
 #[macro_export]
 macro_rules! credential_key {
     ($s:literal) => {{
-        const _: () = assert!($crate::CredentialKey::is_valid_key_const($s), "invalid credential key literal");
+        const _: () = assert!(
+            $crate::CredentialKey::is_valid_key_const($s),
+            "invalid credential key literal"
+        );
         $crate::CredentialKey::new($s).unwrap()
     }};
 }
@@ -81,7 +87,10 @@ macro_rules! credential_key {
 #[macro_export]
 macro_rules! plugin_key {
     ($s:literal) => {{
-        const _: () = assert!($crate::PluginKey::is_valid_key_const($s), "invalid plugin key literal");
+        const _: () = assert!(
+            $crate::PluginKey::is_valid_key_const($s),
+            "invalid plugin key literal"
+        );
         $crate::PluginKey::new($s).unwrap()
     }};
 }
@@ -90,7 +99,10 @@ macro_rules! plugin_key {
 #[macro_export]
 macro_rules! parameter_key {
     ($s:literal) => {{
-        const _: () = assert!($crate::ParameterKey::is_valid_key_const($s), "invalid parameter key literal");
+        const _: () = assert!(
+            $crate::ParameterKey::is_valid_key_const($s),
+            "invalid parameter key literal"
+        );
         $crate::ParameterKey::new($s).unwrap()
     }};
 }
@@ -110,12 +122,21 @@ mod tests {
         let valid = ["postgres", "my-db", "http.request", "v2_api", "a"];
         for s in valid {
             assert!(ResourceKey::is_valid_key_const(s), "{s:?} should be valid");
-            assert!(ResourceKey::new(s).is_ok(), "{s:?} const=true but new() failed");
+            assert!(
+                ResourceKey::new(s).is_ok(),
+                "{s:?} const=true but new() failed"
+            );
         }
         let invalid = ["", "bad_", "a--b", "bad!", "my key"];
         for s in invalid {
-            assert!(!ResourceKey::is_valid_key_const(s), "{s:?} should be invalid");
-            assert!(CredentialKey::new(s).is_err(), "{s:?} const=false but new() succeeded");
+            assert!(
+                !ResourceKey::is_valid_key_const(s),
+                "{s:?} should be invalid"
+            );
+            assert!(
+                CredentialKey::new(s).is_err(),
+                "{s:?} const=false but new() succeeded"
+            );
         }
     }
 }

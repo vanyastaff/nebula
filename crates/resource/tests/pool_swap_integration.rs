@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::PoolConfig;
@@ -65,8 +65,14 @@ async fn config_reload_swaps_to_new_pool_while_old_drains() {
             VersionedResource::new("v1", Arc::clone(&cleanup_count)),
             TestConfig,
             PoolConfig {
-                sizing: PoolSizing { min_size: 0, max_size: 4 },
-                acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+                sizing: PoolSizing {
+                    min_size: 0,
+                    max_size: 4,
+                },
+                acquire: PoolAcquire {
+                    timeout: Duration::from_secs(1),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )
@@ -88,8 +94,14 @@ async fn config_reload_swaps_to_new_pool_while_old_drains() {
             VersionedResource::new("v2", Arc::clone(&cleanup_count)),
             TestConfig,
             PoolConfig {
-                sizing: PoolSizing { min_size: 0, max_size: 4 },
-                acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+                sizing: PoolSizing {
+                    min_size: 0,
+                    max_size: 4,
+                },
+                acquire: PoolAcquire {
+                    timeout: Duration::from_secs(1),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )

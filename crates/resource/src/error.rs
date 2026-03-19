@@ -294,8 +294,7 @@ impl Error {
             | Self::PoolExhausted { resource_key, .. }
             | Self::DependencyFailure { resource_key, .. }
             | Self::InvalidStateTransition { resource_key, .. }
-            | Self::Internal { resource_key, .. }
-            => Some(resource_key),
+            | Self::Internal { resource_key, .. } => Some(resource_key),
         }
     }
 }

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::autoscale::AutoScalePolicy;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
@@ -23,7 +23,9 @@ use nebula_resource::pool::{Pool, PoolConfig};
 use nebula_resource::quarantine::QuarantineReason;
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
-use nebula_resource::{ExecutionId, Manager, ManagerBuilder, PoolAcquire, PoolLifetime, PoolSizing, WorkflowId};
+use nebula_resource::{
+    ExecutionId, Manager, ManagerBuilder, PoolAcquire, PoolLifetime, PoolSizing, WorkflowId,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -40,13 +42,19 @@ fn ctx() -> Context {
 
 fn pool_config() -> PoolConfig {
     PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 5 },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 5,
+        },
         lifetime: PoolLifetime {
             idle_timeout: Duration::from_secs(600),
             max_lifetime: Duration::from_secs(3600),
             ..Default::default()
         },
-        acquire: PoolAcquire { timeout: Duration::from_secs(2), ..Default::default() },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(2),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -444,13 +452,19 @@ async fn pool_stats_have_latency_percentiles() {
 #[tokio::test]
 async fn pool_stats_percentiles_reflect_latency_distribution() {
     let cfg = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 1 },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 1,
+        },
         lifetime: PoolLifetime {
             idle_timeout: Duration::from_secs(600),
             max_lifetime: Duration::from_secs(3600),
             ..Default::default()
         },
-        acquire: PoolAcquire { timeout: Duration::from_secs(5), ..Default::default() },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(5),
+            ..Default::default()
+        },
         ..Default::default()
     };
 

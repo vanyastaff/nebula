@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resilience::CircuitBreakerConfig;
 use nebula_resilience::retryable::Retryable;
 use nebula_resource::context::Context;
@@ -65,14 +65,27 @@ impl Resource for FailingCreateResource {
 
 #[tokio::test]
 async fn create_breaker_opens_and_reports_retryability() {
-    let breaker_cfg = CircuitBreakerConfig { min_operations: 5, half_open_max_ops: 1, ..Default::default() };
+    let breaker_cfg = CircuitBreakerConfig {
+        min_operations: 5,
+        half_open_max_ops: 1,
+        ..Default::default()
+    };
     let pool = Pool::new(
         FailingCreateResource::new(1000),
         TestConfig,
         PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 1 },
-            acquire: PoolAcquire { timeout: Duration::from_millis(200), ..Default::default() },
-            resilience: PoolResiliencePolicy { create_breaker: Some(breaker_cfg), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 1,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            resilience: PoolResiliencePolicy {
+                create_breaker: Some(breaker_cfg),
+                ..Default::default()
+            },
             ..Default::default()
         },
     )
@@ -104,7 +117,11 @@ async fn create_breaker_opens_and_reports_retryability() {
 
 #[tokio::test]
 async fn create_breaker_half_open_probe_then_close_emits_events() {
-    let breaker_cfg = CircuitBreakerConfig { min_operations: 5, half_open_max_ops: 1, ..Default::default() };
+    let breaker_cfg = CircuitBreakerConfig {
+        min_operations: 5,
+        half_open_max_ops: 1,
+        ..Default::default()
+    };
     let bus = Arc::new(EventBus::new(128));
     let mut sub = bus.subscribe();
 
@@ -112,9 +129,18 @@ async fn create_breaker_half_open_probe_then_close_emits_events() {
         FailingCreateResource::new(5),
         TestConfig,
         PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 1 },
-            acquire: PoolAcquire { timeout: Duration::from_millis(200), ..Default::default() },
-            resilience: PoolResiliencePolicy { create_breaker: Some(breaker_cfg), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 1,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            resilience: PoolResiliencePolicy {
+                create_breaker: Some(breaker_cfg),
+                ..Default::default()
+            },
             ..Default::default()
         },
         Some(Arc::clone(&bus)),
@@ -195,15 +221,28 @@ impl Resource for RecycleCountingResource {
 
 #[tokio::test]
 async fn recycle_breaker_open_skips_recycle_call() {
-    let breaker_cfg = CircuitBreakerConfig { min_operations: 1, failure_threshold: 1, ..Default::default() };
+    let breaker_cfg = CircuitBreakerConfig {
+        min_operations: 1,
+        failure_threshold: 1,
+        ..Default::default()
+    };
     let recycle_calls = Arc::new(AtomicU32::new(0));
     let pool = Pool::new(
         RecycleCountingResource::new(Arc::clone(&recycle_calls)),
         TestConfig,
         PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 1 },
-            acquire: PoolAcquire { timeout: Duration::from_millis(500), ..Default::default() },
-            resilience: PoolResiliencePolicy { recycle_breaker: Some(breaker_cfg), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 1,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_millis(500),
+                ..Default::default()
+            },
+            resilience: PoolResiliencePolicy {
+                recycle_breaker: Some(breaker_cfg),
+                ..Default::default()
+            },
             ..Default::default()
         },
     )
@@ -237,14 +276,24 @@ async fn create_and_recycle_breakers_are_independent() {
     // Open the recycle breaker (min_operations=1 → opens after the very first
     // failed recycle). The create_breaker is absent, so the create path is
     // never gated. A subsequent acquire must still succeed.
-    let recycle_cfg = CircuitBreakerConfig { min_operations: 1, failure_threshold: 1, ..Default::default() };
+    let recycle_cfg = CircuitBreakerConfig {
+        min_operations: 1,
+        failure_threshold: 1,
+        ..Default::default()
+    };
     let recycle_calls = Arc::new(AtomicU32::new(0));
     let pool = Pool::new(
         RecycleCountingResource::new(Arc::clone(&recycle_calls)),
         TestConfig,
         PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 2 },
-            acquire: PoolAcquire { timeout: Duration::from_millis(500), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 2,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_millis(500),
+                ..Default::default()
+            },
             resilience: PoolResiliencePolicy {
                 recycle_breaker: Some(recycle_cfg), // create_breaker intentionally absent — create path must stay open.
                 ..Default::default()

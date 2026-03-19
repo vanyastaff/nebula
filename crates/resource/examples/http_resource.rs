@@ -169,8 +169,7 @@ const HTTP_RESOURCE_KEY: &str = "http.client";
 
 fn http_resource_key() -> ResourceKey {
     static KEY: LazyLock<ResourceKey> = LazyLock::new(|| {
-        ResourceKey::try_from(HTTP_RESOURCE_KEY)
-            .expect("HttpResource uses a valid resource key")
+        ResourceKey::try_from(HTTP_RESOURCE_KEY).expect("HttpResource uses a valid resource key")
     });
     KEY.clone()
 }
