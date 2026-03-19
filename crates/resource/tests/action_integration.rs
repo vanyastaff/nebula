@@ -5,11 +5,14 @@
 
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 
 mod scope_helpers;
+use nebula_resource::{
+    Context, ErrorCategory, ExecutionId, Manager, PoolAcquire, PoolConfig, PoolSizing, Resource,
+    WorkflowId,
+};
 use scope_helpers::*;
-use nebula_resource::{Context, ErrorCategory, ExecutionId, Manager, PoolAcquire, PoolConfig, PoolSizing, Resource, WorkflowId};
 
 #[derive(Debug, Clone)]
 struct TestConfig;
@@ -98,8 +101,14 @@ async fn action_pool_exhaustion_maps_to_retryable_category_contract() {
             EchoResource,
             TestConfig,
             PoolConfig {
-                sizing: PoolSizing { min_size: 0, max_size: 1 },
-                acquire: PoolAcquire { timeout: Duration::from_millis(30), ..Default::default() },
+                sizing: PoolSizing {
+                    min_size: 0,
+                    max_size: 1,
+                },
+                acquire: PoolAcquire {
+                    timeout: Duration::from_millis(30),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )

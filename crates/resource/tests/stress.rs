@@ -17,18 +17,17 @@
 
 use std::{
     sync::{
-        atomic::{AtomicU32, AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
 
-use nebula_resource::{
-    Config, Context, Error, ExecutionId, Manager, Pool, PoolAcquire,
-    PoolConfig, PoolLifetime, PoolResiliencePolicy, PoolSizing, Resource,
-    Result, Scope, WorkflowId,
-};
 use nebula_core::ResourceKey;
+use nebula_resource::{
+    Config, Context, Error, ExecutionId, Manager, Pool, PoolAcquire, PoolConfig, PoolLifetime,
+    PoolResiliencePolicy, PoolSizing, Resource, Result, Scope, WorkflowId,
+};
 use tokio::sync::Barrier;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -200,8 +199,14 @@ async fn concurrent_acquire() {
         },
         FastConfig { id: "w" },
         PoolConfig {
-            sizing: PoolSizing { min_size: 5, max_size: POOL_SIZE },
-            acquire: PoolAcquire { timeout: Duration::from_secs(5), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 5,
+                max_size: POOL_SIZE,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(5),
+                ..Default::default()
+            },
             ..Default::default()
         },
     )
@@ -248,7 +253,10 @@ async fn concurrent_acquire() {
     println!("  Elapsed:      {:.2?}", elapsed);
     println!("  Total ops:    {ops}");
     println!("  Errors:       {errs}");
-    println!("  Throughput:   {:.0} ops/sec", ops as f64 / elapsed.as_secs_f64());
+    println!(
+        "  Throughput:   {:.0} ops/sec",
+        ops as f64 / elapsed.as_secs_f64()
+    );
     println!("  Created:      {}", stats.created);
     println!("  Destroyed:    {}", stats.destroyed);
     if let Some(lat) = &stats.acquire_latency {
@@ -285,8 +293,14 @@ async fn contended_small_pool() {
         },
         FastConfig { id: "c" },
         PoolConfig {
-            sizing: PoolSizing { min_size: POOL_SIZE, max_size: POOL_SIZE },
-            acquire: PoolAcquire { timeout: Duration::from_secs(30), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: POOL_SIZE,
+                max_size: POOL_SIZE,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(30),
+                ..Default::default()
+            },
             ..Default::default()
         },
     )
@@ -316,7 +330,10 @@ async fn contended_small_pool() {
                         let mut prev = max_c.load(Ordering::Relaxed);
                         while c > prev {
                             match max_c.compare_exchange(
-                                prev, c, Ordering::Relaxed, Ordering::Relaxed,
+                                prev,
+                                c,
+                                Ordering::Relaxed,
+                                Ordering::Relaxed,
                             ) {
                                 Ok(_) => break,
                                 Err(x) => prev = x,
@@ -347,7 +364,10 @@ async fn contended_small_pool() {
     println!("  Acquired:        {acq}");
     println!("  Timed out:       {to}");
     println!("  Max concurrent:  {max_c} (pool size = {POOL_SIZE})");
-    println!("  Theoretical min: {:.2?}", Duration::from_millis(HOLD_MS * WORKERS as u64 / POOL_SIZE as u64));
+    println!(
+        "  Theoretical min: {:.2?}",
+        Duration::from_millis(HOLD_MS * WORKERS as u64 / POOL_SIZE as u64)
+    );
 
     assert!(
         max_c <= POOL_SIZE as u32,
@@ -376,8 +396,14 @@ async fn flaky_resource() {
         },
         FastConfig { id: "f" },
         PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 5 },
-            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 5,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
             resilience: PoolResiliencePolicy {
                 create_breaker: Some(CircuitBreakerConfig {
                     min_operations: 2,
@@ -411,8 +437,10 @@ async fn flaky_resource() {
         }
         if i % 5 == 0 {
             let stats = pool.stats();
-            print!("  [{i:2}] succ={successes} fail={failures} breaker_open={breaker_open} idle={} active={}\r",
-                stats.idle, stats.active);
+            print!(
+                "  [{i:2}] succ={successes} fail={failures} breaker_open={breaker_open} idle={} active={}\r",
+                stats.idle, stats.active
+            );
         }
     }
     println!();
@@ -447,13 +475,19 @@ async fn reconnect_storm() {
         },
         FastConfig { id: "m" },
         PoolConfig {
-            sizing: PoolSizing { min_size: 2, max_size: 10 },
+            sizing: PoolSizing {
+                min_size: 2,
+                max_size: 10,
+            },
             lifetime: PoolLifetime {
                 validation_interval: Duration::from_millis(10),
                 maintenance_interval: Some(Duration::from_millis(20)),
                 ..Default::default()
             },
-            acquire: PoolAcquire { timeout: Duration::from_secs(2), ..Default::default() },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(2),
+                ..Default::default()
+            },
             ..Default::default()
         },
     )
@@ -508,7 +542,10 @@ async fn reconnect_storm() {
     println!("  Total ops:      {ops}");
     println!("  Errors:         {errs}");
     println!("  Total created:  {total_created}  (инстансы пересоздавались по TTL)");
-    println!("  Throughput:     {:.0} ops/sec", ops as f64 / elapsed.as_secs_f64());
+    println!(
+        "  Throughput:     {:.0} ops/sec",
+        ops as f64 / elapsed.as_secs_f64()
+    );
     if let Some(lat) = &stats.acquire_latency {
         println!("  Latency p99:    {}ms", lat.p99_ms);
     }
@@ -526,8 +563,8 @@ async fn reconnect_storm() {
 async fn acquire_under_pressure() {
     print_separator("5. acquire_under_pressure — adaptive backpressure + shed нагрузки");
 
-    use nebula_resource::pool::AdaptiveBackpressurePolicy;
     use nebula_resource::PoolBackpressurePolicy;
+    use nebula_resource::pool::AdaptiveBackpressurePolicy;
 
     const POOL_SIZE: usize = 5;
     const HOLD_MS: u64 = 20;
@@ -540,7 +577,10 @@ async fn acquire_under_pressure() {
         },
         FastConfig { id: "p" },
         PoolConfig {
-            sizing: PoolSizing { min_size: POOL_SIZE, max_size: POOL_SIZE },
+            sizing: PoolSizing {
+                min_size: POOL_SIZE,
+                max_size: POOL_SIZE,
+            },
             acquire: PoolAcquire {
                 timeout: Duration::from_secs(5),
                 backpressure: Some(PoolBackpressurePolicy::Adaptive(
@@ -568,8 +608,14 @@ async fn acquire_under_pressure() {
     let (high_ok, high_shed) = run_load_phase(&pool, 50, HOLD_MS, Duration::from_millis(500)).await;
     println!("  → ok={high_ok} shed={high_shed}");
 
-    assert!(low_shed == 0 || low_shed < low_ok / 10, "при низкой нагрузке shed должен быть минимальным");
-    assert!(high_shed > 0, "при высокой нагрузке adaptive должен начать shed");
+    assert!(
+        low_shed == 0 || low_shed < low_ok / 10,
+        "при низкой нагрузке shed должен быть минимальным"
+    );
+    assert!(
+        high_shed > 0,
+        "при высокой нагрузке adaptive должен начать shed"
+    );
 
     println!("  Adaptive backpressure работает: low_shed={low_shed}, high_shed={high_shed}");
 }
@@ -637,18 +683,23 @@ async fn multi_scope_isolation() {
     for &tenant in TENANTS {
         let key = format!("resource.{tenant}");
         let created = Arc::new(AtomicU32::new(0));
-        manager.register_scoped(
-            FastResource {
-                key: ResourceKey::try_from(key.as_str()).unwrap(),
-                created,
-            },
-            FastConfig { id: "t" },
-            PoolConfig {
-                sizing: PoolSizing { min_size: 2, max_size: 10 },
-                ..Default::default()
-            },
-            Scope::try_tenant(tenant).unwrap(),
-        ).unwrap();
+        manager
+            .register_scoped(
+                FastResource {
+                    key: ResourceKey::try_from(key.as_str()).unwrap(),
+                    created,
+                },
+                FastConfig { id: "t" },
+                PoolConfig {
+                    sizing: PoolSizing {
+                        min_size: 2,
+                        max_size: 10,
+                    },
+                    ..Default::default()
+                },
+                Scope::try_tenant(tenant).unwrap(),
+            )
+            .unwrap();
     }
 
     let barrier = Arc::new(Barrier::new(TENANTS.len() * WORKERS_PER_TENANT));
@@ -679,7 +730,8 @@ async fn multi_scope_isolation() {
                             Ok(guard) => {
                                 // Проверяем что инстанс принадлежит правильному tenant'у
                                 let inst = guard.as_any().downcast_ref::<String>().unwrap();
-                                if !inst.contains('t') { // все инстансы содержат 't' из FastConfig id
+                                if !inst.contains('t') {
+                                    // все инстансы содержат 't' из FastConfig id
                                     cross_errors.fetch_add(1, Ordering::Relaxed);
                                 }
                                 total_ok.fetch_add(1, Ordering::Relaxed);
@@ -702,10 +754,16 @@ async fn multi_scope_isolation() {
 
     println!("  Total ops:           {ok}");
     println!("  Cross-tenant errors: {cross_errs}");
-    println!("  Expected ops:        {}", TENANTS.len() * WORKERS_PER_TENANT * OPS_PER_WORKER);
+    println!(
+        "  Expected ops:        {}",
+        TENANTS.len() * WORKERS_PER_TENANT * OPS_PER_WORKER
+    );
 
     assert_eq!(cross_errs, 0, "изоляция tenant'ов нарушена");
-    assert_eq!(ok, (TENANTS.len() * WORKERS_PER_TENANT * OPS_PER_WORKER) as u64);
+    assert_eq!(
+        ok,
+        (TENANTS.len() * WORKERS_PER_TENANT * OPS_PER_WORKER) as u64
+    );
 }
 
 // ─── 7. rapid_shutdown — shutdown пока активны acquire'ы ─────────────────────
@@ -725,8 +783,14 @@ async fn rapid_shutdown() {
         },
         FastConfig { id: "s" },
         PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 10 },
-            acquire: PoolAcquire { timeout: Duration::from_secs(5), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 10,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(5),
+                ..Default::default()
+            },
             ..Default::default()
         },
     )
@@ -781,7 +845,11 @@ async fn rapid_shutdown() {
     println!("  Cancelled:  {can}  (отклонены shutdown'ом)");
 
     assert_eq!(s, WORKERS as u64);
-    assert_eq!(c + can, WORKERS as u64, "все воркеры должны завершиться (ok или cancelled)");
+    assert_eq!(
+        c + can,
+        WORKERS as u64,
+        "все воркеры должны завершиться (ok или cancelled)"
+    );
 
     // Пул должен быть закрыт — новый acquire должен упасть
     let post_shutdown = pool.acquire(&ctx()).await;
@@ -789,7 +857,10 @@ async fn rapid_shutdown() {
         post_shutdown.is_err(),
         "после shutdown acquire должен вернуть ошибку"
     );
-    println!("  Post-shutdown acquire: {:?} ✓", post_shutdown.unwrap_err());
+    println!(
+        "  Post-shutdown acquire: {:?} ✓",
+        post_shutdown.unwrap_err()
+    );
 }
 
 // ─── 8. throughput_report — итоговый отчёт ───────────────────────────────────
@@ -799,8 +870,8 @@ async fn throughput_report() {
     print_separator("8. throughput_report — измерение throughput при разных размерах пула");
 
     let configs: &[(usize, usize, &str)] = &[
-        (1,  1,   "pool=1  workers=1   (baseline)"),
-        (4,  8,   "pool=4  workers=8   (2x contention)"),
+        (1, 1, "pool=1  workers=1   (baseline)"),
+        (4, 8, "pool=4  workers=8   (2x contention)"),
         (10, 100, "pool=10 workers=100 (10x contention)"),
         (50, 100, "pool=50 workers=100 (2x contention)"),
     ];
@@ -814,11 +885,18 @@ async fn throughput_report() {
             },
             FastConfig { id: "b" },
             PoolConfig {
-                sizing: PoolSizing { min_size: pool_size, max_size: pool_size },
-                acquire: PoolAcquire { timeout: Duration::from_secs(10), ..Default::default() },
+                sizing: PoolSizing {
+                    min_size: pool_size,
+                    max_size: pool_size,
+                },
+                acquire: PoolAcquire {
+                    timeout: Duration::from_secs(10),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // прогрев
         for _ in 0..pool_size {
@@ -830,35 +908,43 @@ async fn throughput_report() {
         let start = Instant::now();
         const MEASURE_MS: u64 = 500;
 
-        let handles: Vec<_> = (0..workers).map(|_| {
-            let pool = pool.clone();
-            let ops = Arc::clone(&ops_total);
-            let mut stop_rx = stop_rx.clone();
-            tokio::spawn(async move {
-                let acquire_ctx = ctx();
-                loop {
-                    tokio::select! {
-                        _ = stop_rx.changed() => break,
-                        res = pool.acquire(&acquire_ctx) => {
-                            if res.is_ok() {
-                                ops.fetch_add(1, Ordering::Relaxed);
-                                tokio::task::yield_now().await;
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                let pool = pool.clone();
+                let ops = Arc::clone(&ops_total);
+                let mut stop_rx = stop_rx.clone();
+                tokio::spawn(async move {
+                    let acquire_ctx = ctx();
+                    loop {
+                        tokio::select! {
+                            _ = stop_rx.changed() => break,
+                            res = pool.acquire(&acquire_ctx) => {
+                                if res.is_ok() {
+                                    ops.fetch_add(1, Ordering::Relaxed);
+                                    tokio::task::yield_now().await;
+                                }
                             }
                         }
                     }
-                }
+                })
             })
-        }).collect();
+            .collect();
 
         tokio::time::sleep(Duration::from_millis(MEASURE_MS)).await;
         let _ = stop_tx.send(true);
-        for h in handles { h.await.unwrap(); }
+        for h in handles {
+            h.await.unwrap();
+        }
 
         let elapsed = start.elapsed();
         let ops = ops_total.load(Ordering::Relaxed);
         let throughput = ops as f64 / elapsed.as_secs_f64();
         let stats = pool.stats();
-        let p99 = stats.acquire_latency.as_ref().map(|l| l.p99_ms).unwrap_or(0);
+        let p99 = stats
+            .acquire_latency
+            .as_ref()
+            .map(|l| l.p99_ms)
+            .unwrap_or(0);
 
         println!("  {label}");
         println!("    throughput: {throughput:.0} ops/sec  p99: {p99}ms  ops: {ops}");

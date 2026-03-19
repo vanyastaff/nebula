@@ -12,7 +12,7 @@ use nebula_core::ResourceKey;
 
 use crate::context::Context;
 use crate::events::EventBus;
-use crate::hooks::{HookEvent, HOOKS_INLINE};
+use crate::hooks::{HOOKS_INLINE, HookEvent};
 
 // ---------------------------------------------------------------------------
 // Type-erased guard

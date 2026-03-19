@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -59,8 +59,14 @@ fn ctx() -> Context {
 #[tokio::test(flavor = "multi_thread")]
 async fn acquire_cancelled_mid_wait_no_slot_leak() {
     let pool_config = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 1 },
-        acquire: PoolAcquire { timeout: Duration::from_secs(30), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 1,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(30),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let pool = Pool::new(SimpleResource::new(), TestConfig, pool_config).unwrap();

@@ -226,6 +226,9 @@ mod tests {
         let val = guard.leak();
         assert_eq!(val, 99);
         assert!(!drop_called.load(Ordering::SeqCst), "on_drop must NOT fire");
-        assert!(!detach_called.load(Ordering::SeqCst), "on_detach must NOT fire");
+        assert!(
+            !detach_called.load(Ordering::SeqCst),
+            "on_detach must NOT fire"
+        );
     }
 }

@@ -9,7 +9,6 @@ use nebula_resource::Scope;
 mod scope_helpers;
 use scope_helpers::*;
 
-
 // ---------------------------------------------------------------------------
 // 1. Global scope
 // ---------------------------------------------------------------------------
@@ -336,7 +335,7 @@ mod manager_scope_tests {
 
     use std::time::Duration;
 
-    use nebula_core::{resource_key, ResourceKey};
+    use nebula_core::{ResourceKey, resource_key};
     use nebula_resource::Manager;
     use nebula_resource::context::Context;
     use nebula_resource::error::Result;
@@ -367,8 +366,14 @@ mod manager_scope_tests {
 
     fn pool_config() -> PoolConfig {
         PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 2 },
-            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 2,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -429,11 +434,7 @@ mod manager_scope_tests {
         )
         .unwrap();
 
-        let ctx_wf2 = Context::new(
-            scope_workflow("wf2"),
-            WorkflowId::new(),
-            ExecutionId::new(),
-        );
+        let ctx_wf2 = Context::new(scope_workflow("wf2"), WorkflowId::new(), ExecutionId::new());
         let key = resource_key!("cache");
         let err = mgr
             .acquire(&key, &ctx_wf2)
@@ -469,11 +470,7 @@ mod manager_scope_tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
 
         // From workflow scope
-        let ctx_wf = Context::new(
-            scope_workflow("wf1"),
-            WorkflowId::new(),
-            ExecutionId::new(),
-        );
+        let ctx_wf = Context::new(scope_workflow("wf1"), WorkflowId::new(), ExecutionId::new());
         let _g2 = mgr
             .acquire(&key, &ctx_wf)
             .await

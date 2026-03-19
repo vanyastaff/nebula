@@ -4225,7 +4225,6 @@ dependencies = [
  "dashmap",
  "hdrhistogram",
  "im",
- "metrics",
  "mockall",
  "moka",
  "nebula-core",

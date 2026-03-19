@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::events::{EventBus, ResourceEvent};
 use nebula_resource::manager::ManagerBuilder;
 use nebula_resource::pool::{PoolAcquire, PoolConfig, PoolLifetime, PoolSizing};

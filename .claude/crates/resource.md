@@ -22,5 +22,8 @@ Resource lifecycle management — pooling, health checks, autoscaling, hooks, an
 ## Relations
 - Depends on nebula-core, nebula-telemetry (re-exports CallRecord types), nebula-eventbus. Peer with nebula-credential.
 - Metric constants from nebula-metrics use typed `MetricName` (e.g. `RESOURCE_CREATE.as_str()`) — not raw `&str`.
+- `MetricsCollector` records into `Arc<MetricsRegistry>` (nebula-telemetry), not the `metrics` crate facade. Constructor requires both `&EventBus` and `Arc<MetricsRegistry>`.
+- Cardinality guard (`seen_labels: DashSet<String>`) is per-instance, not global static — safe for parallel tests.
+- Gauges use `i64`: health state maps to 100/50/0, pool waiters cast via `as i64`.
 
 <!-- reviewed: 2026-03-19 -->
