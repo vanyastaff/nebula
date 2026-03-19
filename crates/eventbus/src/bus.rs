@@ -155,6 +155,8 @@ impl<E: Clone + Send> EventBus<E> {
     {
         let deadline = tokio::time::Instant::now() + timeout;
         let mut event = Some(event);
+        let mut backoff = std::time::Duration::from_micros(50);
+        const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_millis(1);
 
         loop {
             if self.sender.receiver_count() == 0 {
@@ -175,7 +177,8 @@ impl<E: Clone + Send> EventBus<E> {
                 return PublishOutcome::DroppedTimeout;
             }
 
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(MAX_BACKOFF);
         }
     }
 
@@ -484,5 +487,47 @@ mod tests {
         assert!(bus.pending_len() <= bus.buffer_size());
         let stats = bus.stats();
         assert_eq!(stats.sent_count, 10_000);
+    }
+
+    #[tokio::test]
+    async fn subscriber_into_stream_yields_events() {
+        let bus = EventBus::<TestEvent>::new(16);
+        let sub = bus.subscribe();
+        bus.emit(TestEvent(1));
+        bus.emit(TestEvent(2));
+
+        let mut stream = sub.into_stream();
+        let e1 = tokio_stream::StreamExt::next(&mut stream).await;
+        let e2 = tokio_stream::StreamExt::next(&mut stream).await;
+        assert_eq!(e1, Some(TestEvent(1)));
+        assert_eq!(e2, Some(TestEvent(2)));
+    }
+
+    #[tokio::test]
+    async fn subscriber_stream_ends_on_bus_drop() {
+        let bus = EventBus::<TestEvent>::new(16);
+        let sub = bus.subscribe();
+        drop(bus);
+
+        let mut stream = sub.into_stream();
+        let result = tokio_stream::StreamExt::next(&mut stream).await;
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn filtered_stream_only_yields_matching() {
+        let bus = EventBus::<TestEvent>::new(16);
+        let filtered = bus.subscribe_filtered(EventFilter::custom(|e: &TestEvent| e.0 > 5));
+
+        bus.emit(TestEvent(1));
+        bus.emit(TestEvent(10));
+        bus.emit(TestEvent(3));
+        bus.emit(TestEvent(20));
+
+        let mut stream = filtered.into_stream();
+        let e1 = tokio_stream::StreamExt::next(&mut stream).await;
+        let e2 = tokio_stream::StreamExt::next(&mut stream).await;
+        assert_eq!(e1, Some(TestEvent(10)));
+        assert_eq!(e2, Some(TestEvent(20)));
     }
 }
