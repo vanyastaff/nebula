@@ -120,7 +120,7 @@ pub use cancellation::{
 
 pub use bulkhead::{Bulkhead, BulkheadConfig};
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
-pub use fallback::{AnyStringFallbackStrategy, FallbackStrategy, ValueFallback};
+pub use fallback::{ErrorCategory, FallbackStrategy, ValueFallback};
 pub use hedge::{HedgeConfig, HedgeExecutor};
 pub use load_shed::load_shed;
 pub use rate_limiter::{

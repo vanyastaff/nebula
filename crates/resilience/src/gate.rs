@@ -77,9 +77,9 @@ struct GateInner {
 
 /// Returned by [`Gate::enter`]. Releases one permit back to the gate on drop.
 ///
-/// Logs a `WARN`-level message if the guard is dropped while the gate is
-/// already closing (indicating that the caller entered the gate during or
-/// after shutdown initiated — a sign of a race in the caller).
+/// Dropping a guard while `close()` is in progress is fully legitimate: the
+/// guard was acquired before shutdown started, and dropping it unblocks
+/// [`Gate::close`].
 pub struct GateGuard {
     inner: Arc<GateInner>,
 }
@@ -100,6 +100,13 @@ impl Drop for GateGuard {
 ///   [`Err(GateClosed)`](GateClosed) if the gate is already closing.
 /// - [`close()`](Gate::close) — mark the gate as closing and asynchronously
 ///   wait until all outstanding guards have been dropped.
+///
+/// # Drop behaviour
+///
+/// Dropping a `Gate` without calling `close()` does **not** cancel or await
+/// outstanding guards. The guards remain live until they are dropped by their
+/// respective owners. Call `close().await` explicitly during shutdown to ensure
+/// all work has finished before proceeding.
 #[derive(Clone)]
 pub struct Gate {
     inner: Arc<GateInner>,
@@ -157,6 +164,13 @@ impl Gate {
         //   return Err.
         // - If close() runs after we read closing=false, the guard is valid and
         //   was legitimately created before shutdown; close() will wait for it.
+        //
+        // Happens-before note: `close()` stores `closing = true` with
+        // `Ordering::Release`. The `Ordering::Acquire` load below synchronises
+        // with that store, so any guard created before `closing` becomes visible
+        // is fully committed. `Semaphore::try_acquire` itself uses Tokio's
+        // internal acquire ordering, which provides the same guarantee for the
+        // permit slot.
         let permit = self.inner.sem.try_acquire().map_err(|_| GateClosed)?;
 
         if self.inner.closing.load(Ordering::Acquire) {

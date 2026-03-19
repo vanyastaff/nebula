@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use nebula_resilience::ResilienceError;
 use nebula_resilience::fallback::{
-    CacheFallback, ChainFallback, FallbackOperation, FallbackStrategy, FunctionFallback,
-    PriorityFallback, ValueFallback,
+    CacheFallback, ChainFallback, ErrorCategory, FallbackOperation, FallbackStrategy,
+    FunctionFallback, PriorityFallback, ValueFallback,
 };
 
 #[tokio::test]
@@ -157,7 +157,7 @@ async fn test_fault_injection_priority_fallback_routes_by_error_type() {
     let priority = Arc::new(
         PriorityFallback::new()
             .register(
-                "timeout",
+                ErrorCategory::Timeout,
                 timeout_fallback as Arc<dyn FallbackStrategy<String>>,
             )
             .with_default(default_fallback as Arc<dyn FallbackStrategy<String>>),
@@ -181,7 +181,7 @@ async fn test_fault_injection_priority_fallback_routes_by_error_type() {
 async fn test_fault_injection_priority_fallback_without_default_returns_original_error() {
     let timeout_fallback = Arc::new(ValueFallback::new("timeout-route".to_string()));
     let priority = Arc::new(PriorityFallback::new().register(
-        "timeout",
+        ErrorCategory::Timeout,
         timeout_fallback as Arc<dyn FallbackStrategy<String>>,
     ));
     let operation = FallbackOperation::new(priority);
