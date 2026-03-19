@@ -237,11 +237,17 @@ pub use core::{
 
     // Advanced trait system
     traits::{
+        // Integration traits
+        CanExecute,
         // Configuration validation
         Config,
         ConfigExt,
         Executable,
+        ExecuteGuard,
+        // Error bridge
+        FromResilienceError,
         MetricValue,
+        PatternHealth,
         PatternMetrics,
         // Type-safe traits with GATs
         ResiliencePattern,
@@ -254,12 +260,6 @@ pub use core::{
         // Type-state circuit breaker states (compile-time state tracking)
         circuit_states::{Closed, HalfOpen, Open, StateTransition, TypestateCircuitState},
         timeout,
-        // Integration traits
-        CanExecute,
-        ExecuteGuard,
-        PatternHealth,
-        // Error bridge
-        FromResilienceError,
     },
 
     // Core error and result types
@@ -278,44 +278,10 @@ pub use patterns::{
     rate_limiter::{
         AdaptiveRateLimiter, AnyRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket,
     },
-    // Advanced retry strategies
-    retry::{
-        AggressiveCondition,
-        AggressiveRetry,
-        // Backoff policies with compile-time validation
-        BackoffPolicy,
-        ConservativeCondition,
-        CustomBackoff,
+    // Retry
+    retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with},
 
-        ExponentialBackoff,
-        FixedDelay,
-        // Jitter policies
-        JitterPolicy,
-
-        LinearBackoff,
-        QuickRetry,
-        // Retry conditions with type safety
-        RetryCondition,
-        RetryConfig,
-        RetryStats,
-
-        // Type-safe retry strategy with const generics
-        RetryStrategy,
-        // Convenience aliases
-        StandardRetry,
-        TimeBasedCondition,
-
-        TimeConstrainedRetry,
-
-        aggressive_retry,
-        // Helper functions
-        exponential_retry,
-        fixed_retry,
-        retry,
-        retry_with_backoff,
-    },
-
-    timeout::{timeout as timeout_fn, timeout_with_original_error},
+    timeout::{TimeoutExecutor, timeout as timeout_fn, timeout_with_original_error},
 };
 
 // High-level abstractions
@@ -323,14 +289,14 @@ pub use compose::{
     BoxedOperation, FallbackLayer, HedgeLayer, LayerBuilder, LayerStack, RateLimiterLayer,
     ResilienceChain, ResilienceLayer,
 };
-pub use core::{PolicySource, LoadSignal, ConstantLoad};
+pub use core::{ConstantLoad, LoadSignal, PolicySource};
 pub use observability::{MetricsSink, NoopSink, RecordingSink, ResilienceEvent};
 // CircuitState re-exported as SinkCircuitState to avoid conflict with old patterns::circuit_breaker::State
-pub use observability::sink::CircuitState as SinkCircuitState;
 pub use gate::{Gate, GateClosed, GateGuard};
 pub use manager::{
     PolicyBuilder, ResilienceManager, RetryableOperation, UnTypedServiceMetrics as ServiceMetrics,
 };
+pub use observability::sink::CircuitState as SinkCircuitState;
 pub use policy::{PolicyMetadata, ResiliencePolicy};
 
 // Re-export Retryable trait for backward compatibility (already exported in core traits)
@@ -356,13 +322,8 @@ pub mod prelude {
     // Circuit breaker
     pub use crate::patterns::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 
-    // Retry strategies
-    pub use crate::patterns::retry::{
-        AggressiveCondition, AggressiveRetry, BackoffPolicy, ConservativeCondition,
-        ExponentialBackoff, FixedDelay, JitterPolicy, LinearBackoff, QuickRetry, RetryCondition,
-        RetryConfig, RetryStats, RetryStrategy, StandardRetry, aggressive_retry, exponential_retry,
-        fixed_retry, retry,
-    };
+    // Retry
+    pub use crate::patterns::retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
 
     // Other patterns
     pub use crate::patterns::{
@@ -371,7 +332,9 @@ pub mod prelude {
     };
 
     // Composition and management
-    pub use crate::{LayerBuilder, PolicyBuilder, ResilienceChain, ResilienceManager, ResiliencePolicy};
+    pub use crate::{
+        LayerBuilder, PolicyBuilder, ResilienceChain, ResilienceManager, ResiliencePolicy,
+    };
 
     // Gate / graceful-shutdown barrier
     pub use crate::gate::{Gate, GateClosed, GateGuard};

@@ -1,101 +1,102 @@
-//! Timeout management for async operations
-//!
-//! This module provides timeout functionality for limiting operation duration.
+//! Timeout pattern — wraps futures with a deadline, returning `CallError::Timeout`.
 
 use futures::Future;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::{Timeout, timeout as tokio_timeout};
+use tokio::time::timeout as tokio_timeout;
 
-use crate::{ResilienceError, ResilienceResult};
+use crate::{
+    CallError,
+    observability::sink::{MetricsSink, NoopSink, ResilienceEvent},
+};
 
-// =============================================================================
-// TIMEOUT FUNCTIONS
-// =============================================================================
-
-/// Execute a future with a timeout
+/// Execute `future` with a timeout.
 ///
-/// This is the primary timeout wrapper for all I/O operations.
-///
-/// # Arguments
-///
-/// * `duration` - Maximum time to wait for the operation
-/// * `future` - The async operation to execute
-///
-/// # Returns
-///
-/// * `Ok(T)` - Operation completed successfully within timeout
-/// * `Err(ResilienceError::Timeout)` - Operation exceeded the timeout
-///
-/// # Examples
-///
-/// ```rust
-/// use nebula_resilience::timeout_fn;
-/// use std::time::Duration;
-///
-/// async fn example() -> Result<(), Box<dyn std::error::Error>> {
-///     let result = timeout_fn(
-///         Duration::from_secs(30),
-///         async { /* your async operation */ }
-///     ).await?;
-///
-///     Ok(())
-/// }
-/// ```
-pub async fn timeout<T, F>(duration: Duration, future: F) -> ResilienceResult<T>
+/// Returns `Err(CallError::Timeout(duration))` if `future` does not complete in time.
+pub async fn timeout<T, F>(duration: Duration, future: F) -> Result<T, CallError<()>>
 where
     F: Future<Output = T>,
 {
     tokio_timeout(duration, future)
         .await
-        .map_err(|_| ResilienceError::timeout(duration))
+        .map_err(|_| CallError::Timeout(duration))
 }
 
-/// Create a timeout-aware future without executing it
+/// Execute `future` (which returns `Result<T, E>`) with a timeout and a metrics sink.
 ///
-/// Useful when you need to pass the timeout-wrapped future to other functions.
-pub fn with_timeout<T, F>(duration: Duration, future: F) -> Timeout<F>
-where
-    F: Future<Output = T>,
-{
-    tokio_timeout(duration, future)
-}
-
-/// Execute a future with a timeout, converting errors to `ResilienceError`
-///
-/// This variant converts both timeout and operation errors into `ResilienceError`.
+/// - Operation success → `Ok(T)`
+/// - Operation error  → `Err(CallError::Operation(e))`
+/// - Timeout elapsed  → `Err(CallError::Timeout(duration))` + emits `TimeoutElapsed`
 pub async fn timeout_with_original_error<T, E, F>(
     duration: Duration,
     future: F,
-) -> Result<T, ResilienceError>
+) -> Result<T, CallError<E>>
 where
     F: Future<Output = Result<T, E>>,
-    E: std::fmt::Display,
+{
+    timeout_with_sink(duration, future, &NoopSink).await
+}
+
+/// Like [`timeout_with_original_error`] but emits [`ResilienceEvent::TimeoutElapsed`] via `sink`.
+pub async fn timeout_with_sink<T, E, F>(
+    duration: Duration,
+    future: F,
+    sink: &dyn MetricsSink,
+) -> Result<T, CallError<E>>
+where
+    F: Future<Output = Result<T, E>>,
 {
     match tokio_timeout(duration, future).await {
-        Ok(Ok(result)) => Ok(result),
-        Ok(Err(e)) => Err(ResilienceError::Custom {
-            message: format!("Operation failed: {e}"),
-            retryable: false,
-            source: None,
-        }),
-        Err(_) => Err(ResilienceError::timeout(duration)),
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(CallError::Operation(e)),
+        Err(_) => {
+            sink.record(ResilienceEvent::TimeoutElapsed { duration });
+            Err(CallError::Timeout(duration))
+        }
     }
 }
 
-// =============================================================================
-// TIMEOUT POLICIES
-// =============================================================================
+/// A timeout executor with an injectable [`MetricsSink`].
+pub struct TimeoutExecutor {
+    duration: Duration,
+    sink: Arc<dyn MetricsSink>,
+}
+
+impl TimeoutExecutor {
+    /// Create a new executor with the given duration and a noop sink.
+    pub fn new(duration: Duration) -> Self {
+        Self {
+            duration,
+            sink: Arc::new(NoopSink),
+        }
+    }
+
+    /// Inject a metrics sink.
+    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+        self.sink = Arc::new(sink);
+        self
+    }
+
+    /// Execute `future` within the configured timeout.
+    pub async fn call<T, E, F>(&self, future: F) -> Result<T, CallError<E>>
+    where
+        F: Future<Output = Result<T, E>>,
+    {
+        timeout_with_sink(self.duration, future, self.sink.as_ref()).await
+    }
+}
+
+// ── Timeout policies (kept for compatibility) ─────────────────────────────────
 
 /// Marker trait for timeout policies.
 pub trait TimeoutPolicy: Send + Sync + 'static {
     /// Policy name for observability.
     fn name() -> &'static str;
-
     /// Default timeout for this policy.
     fn default_timeout() -> Duration;
 }
 
-/// Strict timeout policy - fails fast on timeout.
+/// Strict timeout policy — fails fast on timeout.
 #[derive(Debug, Clone, Copy)]
 pub struct StrictPolicy;
 
@@ -108,7 +109,7 @@ impl TimeoutPolicy for StrictPolicy {
     }
 }
 
-/// Lenient timeout policy - longer timeouts for slow operations.
+/// Lenient timeout policy — longer timeouts for slow operations.
 #[derive(Debug, Clone, Copy)]
 pub struct LenientPolicy;
 
@@ -121,7 +122,7 @@ impl TimeoutPolicy for LenientPolicy {
     }
 }
 
-/// Adaptive timeout policy - adjusts based on operation type.
+/// Adaptive timeout policy — adjusts based on operation type.
 #[derive(Debug, Clone, Copy)]
 pub struct AdaptivePolicy;
 
@@ -137,12 +138,11 @@ impl TimeoutPolicy for AdaptivePolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{CallError, RecordingSink};
 
     #[tokio::test]
     async fn test_timeout_success() {
         let result = timeout(Duration::from_millis(100), async { "success" }).await;
-
-        assert!(result.is_ok());
         assert_eq!(result.unwrap(), "success");
     }
 
@@ -150,60 +150,60 @@ mod tests {
     async fn test_timeout_exceeded() {
         let result = timeout(Duration::from_millis(10), async {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            "should not reach here"
         })
         .await;
 
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ResilienceError::Timeout { duration, .. } => {
-                assert_eq!(duration, Duration::from_millis(10));
-            }
-            _ => panic!("Expected timeout error"),
-        }
+        assert!(matches!(result, Err(CallError::Timeout(d)) if d == Duration::from_millis(10)));
     }
 
     #[tokio::test]
     async fn test_timeout_with_original_error_success() {
-        let result = timeout_with_original_error(Duration::from_millis(100), async {
-            Ok::<&str, &str>("success")
-        })
-        .await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "success");
-    }
-
-    #[tokio::test]
-    async fn test_timeout_with_original_error_operation_failure() {
-        let result = timeout_with_original_error(Duration::from_millis(100), async {
-            Err::<&str, &str>("operation failed")
-        })
-        .await;
-
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ResilienceError::Custom { message, .. } => {
-                assert!(message.contains("operation failed"));
-            }
-            other => panic!("Expected Custom error, got: {other:?}"),
-        }
+        let result =
+            timeout_with_original_error(Duration::from_millis(100), async { Ok::<_, &str>("ok") })
+                .await;
+        assert_eq!(result.unwrap(), "ok");
     }
 
     #[tokio::test]
     async fn test_timeout_with_original_error_timeout_exceeded() {
         let result = timeout_with_original_error(Duration::from_millis(10), async {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            Err::<&str, &str>("should not reach here")
+            Err::<&str, &str>("unreachable")
         })
         .await;
 
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ResilienceError::Timeout { duration, .. } => {
-                assert_eq!(duration, Duration::from_millis(10));
-            }
-            other => panic!("Expected Timeout error, got: {other:?}"),
-        }
+        assert!(matches!(result, Err(CallError::Timeout(d)) if d == Duration::from_millis(10)));
+    }
+
+    #[tokio::test]
+    async fn emits_timeout_elapsed_event() {
+        let sink = RecordingSink::new();
+        let result = timeout_with_sink(
+            Duration::from_millis(10),
+            async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Err::<(), &str>("unreachable")
+            },
+            &sink,
+        )
+        .await;
+
+        assert!(matches!(result, Err(CallError::Timeout(_))));
+        assert_eq!(sink.count("timeout_elapsed"), 1);
+    }
+
+    #[tokio::test]
+    async fn executor_emits_timeout_event() {
+        let sink = RecordingSink::new();
+        let executor = TimeoutExecutor::new(Duration::from_millis(10)).with_sink(sink.clone());
+
+        let _ = executor
+            .call(async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Err::<(), &str>("unreachable")
+            })
+            .await;
+
+        assert_eq!(sink.count("timeout_elapsed"), 1);
     }
 }

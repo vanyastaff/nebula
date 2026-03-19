@@ -182,17 +182,18 @@ impl<T: Send + Sync + 'static> ResilienceLayer<T> for TimeoutLayer {
     ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
         let duration = self.duration;
         Box::pin(async move {
-            timeout(
+            match timeout(
                 duration,
                 next.execute_with_cancellation(operation, cancellation),
             )
             .await
-            .unwrap_or_else(|_| {
-                Err(ResilienceError::Timeout {
+            {
+                Ok(res) => res,
+                Err(_) => Err(ResilienceError::Timeout {
                     duration,
                     context: Some("Layer timeout".to_string()),
-                })
-            })
+                }),
+            }
         })
     }
 
