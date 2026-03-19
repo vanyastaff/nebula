@@ -1,13 +1,20 @@
 //! Hedge request pattern — fires duplicate requests after a delay, returns the first success.
 //!
-//! Losing futures are aborted via `JoinHandle::abort()` when the first result arrives.
+//! Losing tasks are aborted via `JoinSet::abort_all()` when the first success arrives.
+//!
+//! # Cancel safety
+//!
+//! `HedgeExecutor::execute` is **not cancel-safe**. If the returned future is dropped,
+//! already-spawned `tokio::spawn` tasks continue running in the background until they
+//! complete or are individually aborted. This is intentional: the hedge pattern assumes
+//! speculative work is cheap to abandon at the infrastructure level.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::task::JoinHandle;
+use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep};
 
 use crate::{
@@ -75,18 +82,19 @@ impl HedgeExecutor {
     /// # Errors
     ///
     /// Returns `Err(CallError::Operation)` if all attempts (including hedges) fail,
-    /// or `Err(CallError::Cancelled)` if all tasks were cancelled.
-    #[allow(clippy::excessive_nesting)]
+    /// or `Err(CallError::Cancelled)` if all tasks were cancelled or panicked.
+    ///
+    /// # Cancel safety
+    ///
+    /// Not cancel-safe — see module-level documentation.
     pub async fn execute<T, E, F>(&self, operation: F) -> Result<T, CallError<E>>
     where
         T: Send + 'static,
         E: Send + 'static,
         F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync,
     {
-        let mut handles: Vec<JoinHandle<Result<T, E>>> = Vec::new();
-
-        // Launch first request
-        handles.push(tokio::spawn(operation()));
+        let mut set: JoinSet<Result<T, E>> = JoinSet::new();
+        set.spawn(operation());
 
         let mut hedge_delay = self.config.hedge_delay;
         let mut hedges_sent = 0usize;
@@ -94,53 +102,35 @@ impl HedgeExecutor {
         let mut last_err: Option<E> = None;
 
         loop {
-            // If no more hedges allowed, just wait for all remaining handles
-            if hedges_sent >= self.config.max_hedges {
-                // Poll remaining handles in order
-                #[allow(clippy::iter_with_drain)]
-                for handle in handles.drain(..) {
-                    match handle.await {
-                        Ok(Ok(v)) => return Ok(v),
-                        Ok(Err(e)) => last_err = Some(e),
-                        Err(_join_err) => {} // task panicked/cancelled
-                    }
-                }
-                return Err(
-                    last_err.map_or(CallError::Cancelled { reason: None }, CallError::Operation)
-                );
-            }
-
-            // Check if any in-flight handle is ready, or fire a hedge after the delay
-            let ready_idx = poll_first_ready(&handles);
-
             tokio::select! {
                 biased;
 
-                // Prefer completed handles
-                () = async {}, if ready_idx.is_some() => {
-                    let Some(idx) = ready_idx else { continue };
-                    match handles.remove(idx).await {
+                // First completed task wins; join_next() returns the earliest ready.
+                // Guard prevents polling an empty JoinSet on every iteration while
+                // waiting for the delay to fire the next hedge.
+                Some(join_result) = set.join_next(), if !set.is_empty() => {
+                    match join_result {
                         Ok(Ok(v)) => {
-                            abort_all(&mut handles);
+                            set.abort_all();
                             return Ok(v);
                         }
-                        Ok(Err(e)) => {
-                            if handles.is_empty() && hedges_sent >= self.config.max_hedges {
-                                return Err(CallError::Operation(e));
-                            }
-                            last_err = Some(e);
-                        }
-                        Err(_) => {}
+                        Ok(Err(e)) => last_err = Some(e),
+                        Err(_) => {} // task panicked or was aborted
+                    }
+                    if set.is_empty() && hedges_sent >= self.config.max_hedges {
+                        return Err(
+                            last_err.map_or(CallError::Cancelled { reason: None }, CallError::Operation)
+                        );
                     }
                 }
 
-                () = &mut delay => {
-                    // Fire hedge
+                // Fire the next hedge after the configured delay.
+                () = &mut delay, if hedges_sent < self.config.max_hedges => {
                     // Reason: max_hedges is a small config value, never exceeds u32.
                     #[allow(clippy::cast_possible_truncation)]
                     let hedge_num = (hedges_sent + 1) as u32;
                     self.sink.record(ResilienceEvent::HedgeFired { hedge_number: hedge_num });
-                    handles.push(tokio::spawn(operation()));
+                    set.spawn(operation());
                     hedges_sent += 1;
 
                     if self.config.exponential_backoff {
@@ -155,24 +145,13 @@ impl HedgeExecutor {
     }
 }
 
-/// Returns the index of the first handle that is `is_finished()`, or `None`.
-fn poll_first_ready<T, E>(handles: &[JoinHandle<Result<T, E>>]) -> Option<usize> {
-    handles.iter().position(JoinHandle::is_finished)
-}
-
-/// Abort all handles in the list.
-fn abort_all<T, E>(handles: &mut Vec<JoinHandle<Result<T, E>>>) {
-    for h in handles.drain(..) {
-        h.abort();
-    }
-}
-
 // ── AdaptiveHedgeExecutor ─────────────────────────────────────────────────────
 
 /// Hedge executor that adjusts delay based on observed latency percentiles.
 pub struct AdaptiveHedgeExecutor {
     base_config: HedgeConfig,
-    latency_tracker: Arc<tokio::sync::Mutex<LatencyTracker>>,
+    // RwLock: percentile() only needs a shared ref; write lock taken only for record().
+    latency_tracker: Arc<tokio::sync::RwLock<LatencyTracker>>,
     target_percentile: f64,
     sink: Arc<dyn MetricsSink>,
 }
@@ -183,7 +162,7 @@ impl AdaptiveHedgeExecutor {
     pub fn new(config: HedgeConfig) -> Self {
         Self {
             base_config: config,
-            latency_tracker: Arc::new(tokio::sync::Mutex::new(LatencyTracker::new(1000))),
+            latency_tracker: Arc::new(tokio::sync::RwLock::new(LatencyTracker::new(1000))),
             target_percentile: 0.95,
             sink: Arc::new(NoopSink),
         }
@@ -218,6 +197,10 @@ impl AdaptiveHedgeExecutor {
     ///
     /// Returns `Err(CallError::Operation)` if all attempts fail,
     /// or `Err(CallError::Cancelled)` if all tasks were cancelled.
+    ///
+    /// # Cancel safety
+    ///
+    /// Not cancel-safe — see module-level documentation.
     pub async fn execute<T, E, F>(&self, operation: F) -> Result<T, CallError<E>>
     where
         T: Send + 'static,
@@ -227,7 +210,7 @@ impl AdaptiveHedgeExecutor {
         let start = std::time::Instant::now();
 
         let hedge_delay = {
-            let tracker = self.latency_tracker.lock().await;
+            let tracker = self.latency_tracker.read().await;
             tracker
                 .percentile(self.target_percentile)
                 .unwrap_or(self.base_config.hedge_delay)
@@ -243,17 +226,19 @@ impl AdaptiveHedgeExecutor {
         };
         let result = executor.execute(operation).await;
 
-        self.latency_tracker.lock().await.record(start.elapsed());
+        self.latency_tracker.write().await.record(start.elapsed());
         result
     }
 }
 
 // ── LatencyTracker ────────────────────────────────────────────────────────────
 
-/// Ring-buffer latency tracker with O(n) percentile computation.
+/// Ring-buffer latency tracker with O(log n) insert and O(n) percentile computation.
 struct LatencyTracker {
     ring: VecDeque<Duration>,
     max_samples: usize,
+    /// Sorted map of nanosecond durations → occurrence count.
+    /// Used to walk from smallest to largest for percentile computation.
     sorted: BTreeMap<u64, usize>,
 }
 
@@ -308,6 +293,8 @@ impl LatencyTracker {
                 return Some(Duration::from_nanos(nanos));
             }
         }
+        // Unreachable in practice: total accumulated == ring.len() > target for any valid p.
+        // Present as a safe fallback for floating-point edge cases.
         self.sorted
             .keys()
             .next_back()
