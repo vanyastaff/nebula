@@ -282,15 +282,19 @@ impl MemoryBudget {
         let mut used = self.used.lock();
         let config = self.config.read();
 
-        // Check if we can allocate
-        let new_used = *used + size;
         let effective_limit = config.effective_limit();
 
+        // Check for overflow before allocation
+        let new_used = used
+            .checked_add(size)
+            .ok_or_else(|| MemoryError::allocation_failed(size, effective_limit))?;
+
+        // Check if we can allocate
         if new_used > effective_limit {
             let mut stats = self.stats.lock();
             stats.failed += 1;
 
-            return Err(MemoryError::allocation_failed(0, 1));
+            return Err(MemoryError::allocation_failed(size, effective_limit));
         }
 
         // Update parent budget if needed

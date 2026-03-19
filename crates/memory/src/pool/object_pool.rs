@@ -353,6 +353,10 @@ impl<T: Poolable> ObjectPool<T> {
     pub fn should_optimize_memory(&self) -> bool {
         // Check against pressure threshold from config
         if let Some(max) = self.config.max_capacity {
+            // Guard against division by zero
+            if max == 0 {
+                return false; // Zero-capacity pool never needs optimization
+            }
             let len = self.objects.borrow().len();
             let usage_percent = (len * 100) / max;
             usage_percent >= self.config.pressure_threshold as usize
