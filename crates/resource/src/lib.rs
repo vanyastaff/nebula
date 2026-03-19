@@ -91,8 +91,8 @@ pub use nebula_telemetry::{
 
 pub use autoscale::{AutoScalePolicy, AutoScaler, AutoScalerHandle};
 pub use events::{
-    BackPressurePolicy, CleanupReason, EventBus, EventBusStats, EventFilter, EventSubscriber,
-    QuarantineTrigger, ResourceEvent, ScopedEvent, ScopedSubscriber, SubscriptionScope,
+    BackPressurePolicy, CleanupReason, EventBus, EventBusStats, EventFilter, QuarantineTrigger,
+    ResourceEvent, ScopedEvent, ScopedSubscriber, Subscriber, SubscriptionScope,
 };
 pub use health::{
     HealthCheckConfig, HealthCheckable, HealthChecker, HealthRecord, HealthStage, HealthState,
@@ -136,8 +136,8 @@ pub mod prelude {
 
     pub use crate::autoscale::AutoScalePolicy;
     pub use crate::events::{
-        BackPressurePolicy, EventBus, EventBusStats, EventFilter, EventSubscriber,
-        QuarantineTrigger, ResourceEvent, ScopedEvent, ScopedSubscriber, SubscriptionScope,
+        BackPressurePolicy, EventBus, EventBusStats, EventFilter, QuarantineTrigger,
+        ResourceEvent, ScopedEvent, ScopedSubscriber, Subscriber, SubscriptionScope,
     };
     pub use crate::health::{HealthCheckable, HealthState, HealthStatus, ResourceHealthAdapter};
     pub use crate::hooks::{HookEvent, HookFilter, HookRegistry, HookResult, ResourceHook};

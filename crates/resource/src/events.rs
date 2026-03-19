@@ -10,8 +10,8 @@ use crate::scope::Scope;
 use nebula_core::ResourceKey;
 
 pub use nebula_eventbus::{
-    BackPressurePolicy, EventBusStats, EventFilter, EventSubscriber, FilteredSubscriber,
-    PublishOutcome, ScopedEvent, SubscriptionScope,
+    BackPressurePolicy, EventBusStats, EventFilter, FilteredSubscriber, PublishOutcome,
+    ScopedEvent, Subscriber, SubscriptionScope,
 };
 
 /// Resource lifecycle event bus (wrapper around `nebula_eventbus::EventBus<ResourceEvent>`).
@@ -41,13 +41,13 @@ impl EventBus {
     }
 
     /// Sends an event asynchronously (may block or timeout depending on policy).
-    pub async fn emit_async(&self, event: ResourceEvent) -> PublishOutcome {
-        self.0.emit_async(event).await
+    pub async fn emit_awaited(&self, event: ResourceEvent) -> PublishOutcome {
+        self.0.emit_awaited(event).await
     }
 
     /// Returns a new subscriber that receives clones of emitted events.
     #[must_use]
-    pub fn subscribe(&self) -> EventSubscriber<ResourceEvent> {
+    pub fn subscribe(&self) -> Subscriber<ResourceEvent> {
         self.0.subscribe()
     }
 
@@ -422,7 +422,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn block_policy_emit_async_succeeds_with_subscriber() {
+    async fn block_policy_emit_awaited_succeeds_with_subscriber() {
         let bus = EventBus::with_policy(
             4,
             BackPressurePolicy::Block {
@@ -432,7 +432,7 @@ mod tests {
         let mut sub = bus.subscribe();
 
         let key = resource_key!("y");
-        bus.emit_async(ResourceEvent::Created {
+        bus.emit_awaited(ResourceEvent::Created {
             resource_key: key,
             scope: Scope::Global,
         })
@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn block_policy_emit_async_drops_after_timeout_no_receivers() {
+    async fn block_policy_emit_awaited_drops_after_timeout_no_receivers() {
         let bus = EventBus::with_policy(
             4,
             BackPressurePolicy::Block {
@@ -452,7 +452,7 @@ mod tests {
         );
 
         let key = resource_key!("z");
-        bus.emit_async(ResourceEvent::Created {
+        bus.emit_awaited(ResourceEvent::Created {
             resource_key: key,
             scope: Scope::Global,
         })
