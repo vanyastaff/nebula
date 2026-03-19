@@ -182,14 +182,17 @@ impl<T: Send + Sync + 'static> ResilienceLayer<T> for TimeoutLayer {
     ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
         let duration = self.duration;
         Box::pin(async move {
-            timeout(duration, next.execute_with_cancellation(operation, cancellation))
-                .await
-                .unwrap_or_else(|_| {
-                    Err(ResilienceError::Timeout {
-                        duration,
-                        context: Some("Layer timeout".to_string()),
-                    })
+            timeout(
+                duration,
+                next.execute_with_cancellation(operation, cancellation),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(ResilienceError::Timeout {
+                    duration,
+                    context: Some("Layer timeout".to_string()),
                 })
+            })
         })
     }
 
@@ -331,7 +334,11 @@ impl<T: Send + Sync + 'static> ResilienceLayer<T> for BulkheadLayer {
         cancellation: Option<&'a CancellationContext>,
     ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
         Box::pin(async move {
-            let _permit = self.bulkhead.acquire().await?;
+            let _permit = self
+                .bulkhead
+                .acquire::<()>()
+                .await
+                .map_err(|_| ResilienceError::bulkhead_full(self.bulkhead.max_concurrency()))?;
             next.execute_with_cancellation(operation, cancellation)
                 .await
         })
@@ -362,7 +369,8 @@ impl<T: Send + Sync + 'static> ResilienceLayer<T> for RateLimiterLayer {
     ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
         Box::pin(async move {
             self.limiter.acquire().await?;
-            next.execute_with_cancellation(operation, cancellation).await
+            next.execute_with_cancellation(operation, cancellation)
+                .await
         })
     }
 
@@ -390,7 +398,10 @@ impl<T: Send + Sync + 'static> ResilienceLayer<T> for FallbackLayer<T> {
         cancellation: Option<&'a CancellationContext>,
     ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
         Box::pin(async move {
-            match next.execute_with_cancellation(operation, cancellation).await {
+            match next
+                .execute_with_cancellation(operation, cancellation)
+                .await
+            {
                 Ok(value) => Ok(value),
                 Err(error) => {
                     if self.strategy.should_fallback(&error) {

@@ -43,7 +43,9 @@ use crate::{
     },
     patterns::{
         bulkhead::{Bulkhead, BulkheadConfig, BulkheadStats},
-        circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerStats, Outcome as CircuitOutcome},
+        circuit_breaker::{
+            CircuitBreaker, CircuitBreakerConfig, CircuitBreakerStats, Outcome as CircuitOutcome,
+        },
         timeout::timeout,
     },
     policy::{ResiliencePolicy, RetryPolicyConfig},
@@ -486,7 +488,7 @@ impl ResilienceManager {
         let bulkhead = policy
             .bulkhead
             .as_ref()
-            .map(|config| Arc::new(Bulkhead::with_config(config.clone())));
+            .and_then(|config| Bulkhead::new(config.clone()).ok().map(Arc::new));
 
         match circuit_breaker {
             Some(cb) => {
@@ -619,7 +621,12 @@ impl ResilienceManager {
 
         // Acquire bulkhead permit if configured
         let _bulkhead_permit = if let Some(ref bulkhead) = bulkhead {
-            Some(bulkhead.acquire().await?)
+            Some(
+                bulkhead
+                    .acquire::<()>()
+                    .await
+                    .map_err(|_| ResilienceError::bulkhead_full(bulkhead.max_concurrency()))?,
+            )
         } else {
             None
         };

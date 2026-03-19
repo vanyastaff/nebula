@@ -108,6 +108,7 @@ pub struct ResiliencePolicy {
     #[serde(skip)]
     pub circuit_breaker: Option<CircuitBreakerConfig>,
     /// Bulkhead configuration
+    #[serde(skip)]
     pub bulkhead: Option<BulkheadConfig>,
     /// Policy metadata
     pub metadata: PolicyMetadata,
@@ -395,12 +396,15 @@ impl ResilienceConfig for ResiliencePolicy {
 
         // Validate circuit breaker
         if let Some(cb) = &self.circuit_breaker {
-            cb.validate().map_err(|e| ConfigError::validation(&e.message))?;
+            cb.validate()
+                .map_err(|e| ConfigError::validation(&e.message))?;
         }
 
         // Validate bulkhead
         if let Some(bulkhead) = &self.bulkhead {
-            bulkhead.validate()?;
+            bulkhead
+                .validate()
+                .map_err(|e| ConfigError::validation(&e.message))?;
         }
 
         // Validate metadata
