@@ -25,3 +25,5 @@ Generic typed pub/sub event bus — transport infrastructure only, no domain eve
 
 ## Relations
 - No nebula deps. Used by nebula-telemetry (wraps it for `ExecutionEvent`), nebula-resource.
+
+<!-- reviewed: 2026-03-19 -->
