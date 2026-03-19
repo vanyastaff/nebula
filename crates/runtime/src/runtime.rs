@@ -9,9 +9,7 @@ use std::time::Instant;
 use crate::sandbox::SandboxRunner;
 use nebula_action::ActionContext;
 use nebula_action::result::ActionResult;
-use nebula_metrics::naming::{
-    NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,
-};
+use nebula_metrics::naming::{ACTION_DURATION, ACTION_EXECUTIONS, ACTION_FAILURES};
 use nebula_telemetry::TelemetryService;
 use nebula_telemetry::event::{EventBus, ExecutionEvent};
 use nebula_telemetry::metrics::MetricsRegistry;
@@ -116,9 +114,9 @@ impl ActionRuntime {
         });
 
         let started = Instant::now();
-        let action_counter = self.metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL);
-        let error_counter = self.metrics.counter(NEBULA_ACTION_FAILURES_TOTAL);
-        let duration_hist = self.metrics.histogram(NEBULA_ACTION_DURATION_SECONDS);
+        let action_counter = self.metrics.counter(ACTION_EXECUTIONS.as_str());
+        let error_counter = self.metrics.counter(ACTION_FAILURES.as_str());
+        let duration_hist = self.metrics.histogram(ACTION_DURATION.as_str());
 
         // TODO: Restore isolation level logic once ActionMetadata has capabilities/isolation
         let result = handler.execute(input, &context).await;
@@ -424,8 +422,8 @@ mod tests {
         assert!(matches!(event2, ExecutionEvent::NodeCompleted { .. }));
 
         // Metrics should be recorded.
-        assert_eq!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get(), 1);
-        assert_eq!(metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).get(), 0);
+        assert_eq!(metrics.counter(ACTION_EXECUTIONS.as_str()).get(), 1);
+        assert_eq!(metrics.counter(ACTION_FAILURES.as_str()).get(), 0);
     }
 
     #[tokio::test]

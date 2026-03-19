@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nebula_metrics::filter::LabelAllowlist;
-use nebula_metrics::naming::NEBULA_ACTION_EXECUTIONS_TOTAL;
+use nebula_metrics::naming::ACTION_EXECUTIONS;
 use nebula_telemetry::metrics::MetricsRegistry;
 
 fn main() {
@@ -37,7 +37,7 @@ fn main() {
         ("action_type", "http.request"),
         ("status", "success"),
         ("execution_id", "550e8400-e29b-41d4-a716-446655440000"), // high cardinality!
-        ("workflow_id", "wf-123456"),                              // high cardinality!
+        ("workflow_id", "wf-123456"),                             // high cardinality!
     ]);
 
     println!("Raw labels ({} keys):", raw_labels.len());
@@ -54,12 +54,12 @@ fn main() {
 
     // Record with the safe set — no cardinality explosion.
     registry
-        .counter_labeled(NEBULA_ACTION_EXECUTIONS_TOTAL, &safe_labels)
+        .counter_labeled(ACTION_EXECUTIONS.as_str(), &safe_labels)
         .inc_by(42);
     println!(
         "\naction_executions with safe labels = {}",
         registry
-            .counter_labeled(NEBULA_ACTION_EXECUTIONS_TOTAL, &safe_labels)
+            .counter_labeled(ACTION_EXECUTIONS.as_str(), &safe_labels)
             .get()
     );
 

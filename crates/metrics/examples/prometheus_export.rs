@@ -12,9 +12,8 @@ use std::sync::Arc;
 
 use nebula_metrics::export::prometheus;
 use nebula_metrics::naming::{
-    NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_FAILURES_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL, NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS,
+    ACTION_DURATION, ACTION_EXECUTIONS, ACTION_FAILURES, WORKFLOW_EXECUTION_DURATION,
+    WORKFLOW_EXECUTIONS_COMPLETED, WORKFLOW_EXECUTIONS_FAILED, WORKFLOW_EXECUTIONS_STARTED,
 };
 use nebula_telemetry::metrics::MetricsRegistry;
 
@@ -24,18 +23,16 @@ fn main() {
     // ── Simulate workflow executions ──────────────────────────────────────────
 
     registry
-        .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
+        .counter(WORKFLOW_EXECUTIONS_STARTED.as_str())
         .inc_by(5);
     registry
-        .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
+        .counter(WORKFLOW_EXECUTIONS_COMPLETED.as_str())
         .inc_by(4);
-    registry
-        .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
-        .inc();
+    registry.counter(WORKFLOW_EXECUTIONS_FAILED.as_str()).inc();
 
     for &secs in &[0.12, 0.35, 0.78, 1.45, 3.20] {
         registry
-            .histogram(NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS)
+            .histogram(WORKFLOW_EXECUTION_DURATION.as_str())
             .observe(secs);
     }
 
@@ -48,27 +45,27 @@ fn main() {
     let math_ok = interner.label_set(&[("action_type", "math.add"), ("status", "success")]);
 
     registry
-        .counter_labeled(NEBULA_ACTION_EXECUTIONS_TOTAL, &http_ok)
+        .counter_labeled(ACTION_EXECUTIONS.as_str(), &http_ok)
         .inc_by(120);
     registry
-        .counter_labeled(NEBULA_ACTION_EXECUTIONS_TOTAL, &http_err)
+        .counter_labeled(ACTION_EXECUTIONS.as_str(), &http_err)
         .inc_by(8);
     registry
-        .counter_labeled(NEBULA_ACTION_EXECUTIONS_TOTAL, &math_ok)
+        .counter_labeled(ACTION_EXECUTIONS.as_str(), &math_ok)
         .inc_by(55);
 
     registry
-        .counter_labeled(NEBULA_ACTION_FAILURES_TOTAL, &http_err)
+        .counter_labeled(ACTION_FAILURES.as_str(), &http_err)
         .inc_by(8);
 
     for &ms in &[45.0_f64, 112.0, 230.0, 890.0, 2100.0, 4500.0] {
         registry
-            .histogram_labeled(NEBULA_ACTION_DURATION_SECONDS, &http_ok)
+            .histogram_labeled(ACTION_DURATION.as_str(), &http_ok)
             .observe(ms / 1000.0);
     }
     for &ms in &[15.0_f64, 20.0, 18.0] {
         registry
-            .histogram_labeled(NEBULA_ACTION_DURATION_SECONDS, &math_ok)
+            .histogram_labeled(ACTION_DURATION.as_str(), &math_ok)
             .observe(ms / 1000.0);
     }
 

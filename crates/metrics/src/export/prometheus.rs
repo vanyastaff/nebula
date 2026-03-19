@@ -15,20 +15,7 @@ use std::sync::Arc;
 use nebula_telemetry::labels::LabelInterner;
 use nebula_telemetry::metrics::MetricsRegistry;
 
-use crate::naming::{
-    NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,
-    NEBULA_EVENTBUS_DROP_RATIO_PPM, NEBULA_EVENTBUS_DROPPED, NEBULA_EVENTBUS_SENT,
-    NEBULA_EVENTBUS_SUBSCRIBERS, NEBULA_RESOURCE_ACQUIRE_TOTAL,
-    NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS, NEBULA_RESOURCE_CLEANUP_TOTAL,
-    NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL, NEBULA_RESOURCE_CREATE_TOTAL,
-    NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL, NEBULA_RESOURCE_ERROR_TOTAL,
-    NEBULA_RESOURCE_HEALTH_STATE, NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL,
-    NEBULA_RESOURCE_POOL_WAITERS, NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL,
-    NEBULA_RESOURCE_QUARANTINE_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL,
-    NEBULA_RESOURCE_USAGE_DURATION_SECONDS, NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS,
-    NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
-};
+use crate::naming::{ALL_METRICS, MetricName};
 
 /// Prometheus exposition format version (text-based).
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
@@ -40,53 +27,14 @@ const DEFAULT_BUCKETS: &[f64] = &[
 
 // ── Static metric descriptors ─────────────────────────────────────────────────
 
-fn counter_help(name: &str) -> &'static str {
-    match name {
-        NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL => "Total workflow executions started.",
-        NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL => {
-            "Total workflow executions completed successfully."
-        }
-        NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL => "Total workflow executions failed.",
-        NEBULA_ACTION_EXECUTIONS_TOTAL => "Total action executions.",
-        NEBULA_ACTION_FAILURES_TOTAL => "Total action failures.",
-        NEBULA_RESOURCE_CREATE_TOTAL => "Total resource instances created.",
-        NEBULA_RESOURCE_ACQUIRE_TOTAL => "Total resource acquisitions.",
-        NEBULA_RESOURCE_RELEASE_TOTAL => "Total resource releases.",
-        NEBULA_RESOURCE_CLEANUP_TOTAL => "Total resource cleanups.",
-        NEBULA_RESOURCE_ERROR_TOTAL => "Total resource errors.",
-        NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL => "Total pool exhaustion events.",
-        NEBULA_RESOURCE_QUARANTINE_TOTAL => "Total resources quarantined.",
-        NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL => "Total resources released from quarantine.",
-        NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL => "Total config reloads.",
-        NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL => "Total credential rotations applied.",
-        _ => "Custom counter.",
-    }
+/// Look up a well-known metric by its Prometheus name string.
+fn lookup_metric(name: &str) -> Option<MetricName> {
+    ALL_METRICS.iter().find(|m| m.as_str() == name).copied()
 }
 
-fn gauge_help(name: &str) -> &'static str {
-    match name {
-        NEBULA_RESOURCE_HEALTH_STATE => {
-            "Resource health state (1=healthy, 0.5=degraded, 0=unhealthy)."
-        }
-        NEBULA_RESOURCE_POOL_WAITERS => "Number of waiters when pool exhausted.",
-        NEBULA_EVENTBUS_SENT => "EventBus sent events snapshot.",
-        NEBULA_EVENTBUS_DROPPED => "EventBus dropped events snapshot.",
-        NEBULA_EVENTBUS_SUBSCRIBERS => "EventBus active subscribers snapshot.",
-        NEBULA_EVENTBUS_DROP_RATIO_PPM => "EventBus drop ratio in parts-per-million.",
-        _ => "Custom gauge.",
-    }
-}
-
-fn histogram_help(name: &str) -> &'static str {
-    match name {
-        NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS => "Workflow execution duration in seconds.",
-        NEBULA_ACTION_DURATION_SECONDS => "Action execution duration in seconds.",
-        NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS => {
-            "Wait time before resource acquisition in seconds."
-        }
-        NEBULA_RESOURCE_USAGE_DURATION_SECONDS => "Resource usage duration in seconds.",
-        _ => "Custom histogram.",
-    }
+/// Return the HELP text for a metric, falling back to a generic message.
+fn metric_help(name: &str) -> &'static str {
+    lookup_metric(name).map_or("Custom metric.", |m| m.help())
 }
 
 // ── Label rendering ───────────────────────────────────────────────────────────
@@ -138,7 +86,7 @@ pub fn snapshot(registry: &MetricsRegistry) -> String {
             .push((key.labels, counter));
     }
     for (name, entries) in &counter_families {
-        let _ = writeln!(out, "# HELP {name} {}", counter_help(name));
+        let _ = writeln!(out, "# HELP {name} {}", metric_help(name));
         let _ = writeln!(out, "# TYPE {name} counter");
         for (labels, counter) in entries {
             let label_str = render_labels(labels, interner);
@@ -156,7 +104,7 @@ pub fn snapshot(registry: &MetricsRegistry) -> String {
             .push((key.labels, gauge));
     }
     for (name, entries) in &gauge_families {
-        let _ = writeln!(out, "# HELP {name} {}", gauge_help(name));
+        let _ = writeln!(out, "# HELP {name} {}", metric_help(name));
         let _ = writeln!(out, "# TYPE {name} gauge");
         for (labels, gauge) in entries {
             let label_str = render_labels(labels, interner);
@@ -174,7 +122,7 @@ pub fn snapshot(registry: &MetricsRegistry) -> String {
             .push((key.labels, histogram));
     }
     for (name, entries) in &histogram_families {
-        let _ = writeln!(out, "# HELP {name} {}", histogram_help(name));
+        let _ = writeln!(out, "# HELP {name} {}", metric_help(name));
         let _ = writeln!(out, "# TYPE {name} histogram");
         for (labels, hist) in entries {
             let count = hist.count();

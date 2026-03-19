@@ -1,18 +1,24 @@
 # nebula-metrics
-Standard `nebula_*` metric naming constants, TelemetryAdapter, Prometheus text export, and label safety guards.
+Standard `nebula_*` metric naming via typed `MetricName` structs, Prometheus text export, and label safety guards.
 
 ## Invariants
-- In-memory metric primitives (`Counter`, `Gauge`, `Histogram`, `MetricsRegistry`) live in nebula-telemetry. This crate adds naming, a thin adapter, and export.
+- In-memory metric primitives (`Counter`, `Gauge`, `Histogram`, `MetricsRegistry`) live in nebula-telemetry. This crate adds naming, export, and label filtering.
+- All 27 well-known metrics are defined as `MetricName` constants in `naming.rs` with name, kind, and help text.
+- `ALL_METRICS` array contains every well-known metric — used by the Prometheus exporter for HELP text lookup.
 
 ## Key Decisions
-- All metric name constants follow the `NEBULA_*` naming convention (e.g. `NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL`).
-- `TelemetryAdapter` wraps `MetricsRegistry` and records using the standard names — use this instead of raw registry calls.
+- Metric name constants use short names without `NEBULA_` prefix (e.g. `WORKFLOW_EXECUTIONS_STARTED`, not `NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL`). The string value retains the full `nebula_*` Prometheus name.
+- `MetricName` is `Copy` — pass `.as_str()` when calling registry methods that take `&str`.
+- `MetricKind` enum (`Counter`, `Gauge`, `Histogram`) enables type-aware processing.
 - `LabelAllowlist` strips high-cardinality label keys before they reach the registry — **always configure this in production** to prevent cardinality explosion.
 - `PrometheusExporter` outputs Prometheus text format with `# HELP` / `# TYPE` metadata and per-bucket histogram lines.
 
 ## Traps
-- Forgetting `LabelAllowlist` means unbounded label cardinality (e.g., per-user metric dimensions) → OOM in production.
+- Forgetting `LabelAllowlist` means unbounded label cardinality (e.g., per-user metric dimensions) — OOM in production.
 - `snapshot()` function returns Prometheus text format — call `content_type()` for the correct `Content-Type` header.
+- The `metrics` crate macros (used in `nebula-resource`) require `&str`, so pass `METRIC.as_str()` not the `MetricName` directly.
 
 ## Relations
 - Re-exports `Counter`, `Gauge`, `Histogram`, `MetricsRegistry` from nebula-telemetry. Used by nebula-api for the `/metrics` endpoint.
+
+<!-- reviewed: 2026-03-19 -->

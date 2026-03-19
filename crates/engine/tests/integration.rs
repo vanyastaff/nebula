@@ -20,8 +20,8 @@ use nebula_engine::WorkflowEngine;
 use nebula_execution::ExecutionStatus;
 use nebula_execution::context::ExecutionBudget;
 use nebula_metrics::naming::{
-    NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
+    ACTION_EXECUTIONS, WORKFLOW_EXECUTIONS_COMPLETED, WORKFLOW_EXECUTIONS_FAILED,
+    WORKFLOW_EXECUTIONS_STARTED,
 };
 use nebula_runtime::registry::ActionRegistry;
 use nebula_runtime::{ActionExecutor, InProcessSandbox};
@@ -236,7 +236,7 @@ async fn engine_with_telemetry_service_wires_bus_and_metrics() {
         .unwrap();
 
     // Metrics are updated regardless of subscribers; bus only counts delivered events.
-    assert!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get() >= 1);
+    assert!(metrics.counter(ACTION_EXECUTIONS.as_str()).get() >= 1);
 }
 
 fn meta(key: ActionKey) -> ActionMetadata {
@@ -521,19 +521,14 @@ async fn telemetry_covers_full_lifecycle() {
     );
 
     // Metrics should reflect the execution
+    assert!(metrics.counter(WORKFLOW_EXECUTIONS_STARTED.as_str()).get() > 0);
     assert!(
         metrics
-            .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
+            .counter(WORKFLOW_EXECUTIONS_COMPLETED.as_str())
             .get()
             > 0
     );
-    assert!(
-        metrics
-            .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
-            .get()
-            > 0
-    );
-    assert!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get() >= 2);
+    assert!(metrics.counter(ACTION_EXECUTIONS.as_str()).get() >= 2);
 }
 
 /// Verify that execution with many parallel nodes works with concurrency control.
@@ -634,20 +629,16 @@ async fn metrics_accurate_on_failure() {
 
     assert!(result.is_failure());
     assert_eq!(
-        metrics
-            .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
-            .get(),
+        metrics.counter(WORKFLOW_EXECUTIONS_STARTED.as_str()).get(),
+        1
+    );
+    assert_eq!(
+        metrics.counter(WORKFLOW_EXECUTIONS_FAILED.as_str()).get(),
         1
     );
     assert_eq!(
         metrics
-            .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
-            .get(),
-        1
-    );
-    assert_eq!(
-        metrics
-            .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
+            .counter(WORKFLOW_EXECUTIONS_COMPLETED.as_str())
             .get(),
         0
     );

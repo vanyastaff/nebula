@@ -12,13 +12,10 @@ use dashmap::DashSet;
 use nebula_core::ResourceKey;
 
 use nebula_metrics::naming::{
-    NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
-    NEBULA_RESOURCE_CIRCUIT_BREAKER_CLOSED_TOTAL, NEBULA_RESOURCE_CIRCUIT_BREAKER_OPENED_TOTAL,
-    NEBULA_RESOURCE_CLEANUP_TOTAL, NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
-    NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
-    NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
-    NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
-    NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
+    RESOURCE_ACQUIRE, RESOURCE_ACQUIRE_WAIT_DURATION, RESOURCE_CIRCUIT_BREAKER_CLOSED,
+    RESOURCE_CIRCUIT_BREAKER_OPENED, RESOURCE_CLEANUP, RESOURCE_CONFIG_RELOADED, RESOURCE_CREATE,
+    RESOURCE_ERROR, RESOURCE_HEALTH_STATE, RESOURCE_POOL_EXHAUSTED, RESOURCE_POOL_WAITERS,
+    RESOURCE_QUARANTINE, RESOURCE_QUARANTINE_RELEASED, RESOURCE_RELEASE, RESOURCE_USAGE_DURATION,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -75,17 +72,17 @@ impl MetricsCollector {
         match event {
             ResourceEvent::Created { resource_key, .. } => {
                 let id = Self::resource_label(resource_key);
-                metrics::counter!(NEBULA_RESOURCE_CREATE_TOTAL, "resource_id" => id).increment(1);
+                metrics::counter!(RESOURCE_CREATE.as_str(), "resource_id" => id).increment(1);
             }
             ResourceEvent::Acquired {
                 resource_key,
                 wait_duration,
             } => {
                 let id = Self::resource_label(resource_key);
-                metrics::counter!(NEBULA_RESOURCE_ACQUIRE_TOTAL, "resource_id" => id.clone())
+                metrics::counter!(RESOURCE_ACQUIRE.as_str(), "resource_id" => id.clone())
                     .increment(1);
                 metrics::histogram!(
-                    NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
+                    RESOURCE_ACQUIRE_WAIT_DURATION.as_str(),
                     "resource_id" => id
                 )
                 .record(wait_duration.as_secs_f64());
@@ -95,21 +92,21 @@ impl MetricsCollector {
                 usage_duration,
             } => {
                 let id = Self::resource_label(resource_key);
-                metrics::counter!(NEBULA_RESOURCE_RELEASE_TOTAL, "resource_id" => id.clone())
+                metrics::counter!(RESOURCE_RELEASE.as_str(), "resource_id" => id.clone())
                     .increment(1);
                 metrics::histogram!(
-                    NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
+                    RESOURCE_USAGE_DURATION.as_str(),
                     "resource_id" => id
                 )
                 .record(usage_duration.as_secs_f64());
             }
             ResourceEvent::CleanedUp { resource_key, .. } => {
                 let id = Self::resource_label(resource_key);
-                metrics::counter!(NEBULA_RESOURCE_CLEANUP_TOTAL, "resource_id" => id).increment(1);
+                metrics::counter!(RESOURCE_CLEANUP.as_str(), "resource_id" => id).increment(1);
             }
             ResourceEvent::Error { resource_key, .. } => {
                 let id = Self::resource_label(resource_key);
-                metrics::counter!(NEBULA_RESOURCE_ERROR_TOTAL, "resource_id" => id).increment(1);
+                metrics::counter!(RESOURCE_ERROR.as_str(), "resource_id" => id).increment(1);
             }
             ResourceEvent::HealthChanged {
                 resource_key, to, ..
@@ -124,7 +121,7 @@ impl MetricsCollector {
                     crate::health::HealthState::Unknown => 0.5,
                 };
                 metrics::gauge!(
-                    NEBULA_RESOURCE_HEALTH_STATE,
+                    RESOURCE_HEALTH_STATE.as_str(),
                     "resource_id" => id
                 )
                 .set(score);
@@ -135,12 +132,12 @@ impl MetricsCollector {
             } => {
                 let id = Self::resource_label(resource_key);
                 metrics::counter!(
-                    NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL,
+                    RESOURCE_POOL_EXHAUSTED.as_str(),
                     "resource_id" => id.clone()
                 )
                 .increment(1);
                 metrics::gauge!(
-                    NEBULA_RESOURCE_POOL_WAITERS,
+                    RESOURCE_POOL_WAITERS.as_str(),
                     "resource_id" => id
                 )
                 .set(*waiters as f64);
@@ -148,7 +145,7 @@ impl MetricsCollector {
             ResourceEvent::Quarantined { resource_key, .. } => {
                 let id = Self::resource_label(resource_key);
                 metrics::counter!(
-                    NEBULA_RESOURCE_QUARANTINE_TOTAL,
+                    RESOURCE_QUARANTINE.as_str(),
                     "resource_id" => id
                 )
                 .increment(1);
@@ -156,7 +153,7 @@ impl MetricsCollector {
             ResourceEvent::QuarantineReleased { resource_key, .. } => {
                 let id = Self::resource_label(resource_key);
                 metrics::counter!(
-                    NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL,
+                    RESOURCE_QUARANTINE_RELEASED.as_str(),
                     "resource_id" => id
                 )
                 .increment(1);
@@ -164,7 +161,7 @@ impl MetricsCollector {
             ResourceEvent::ConfigReloaded { resource_key, .. } => {
                 let id = Self::resource_label(resource_key);
                 metrics::counter!(
-                    NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
+                    RESOURCE_CONFIG_RELOADED.as_str(),
                     "resource_id" => id
                 )
                 .increment(1);
@@ -173,7 +170,7 @@ impl MetricsCollector {
                 // A rejected reload is an error condition — count it alongside other errors
                 // so dashboards surface it without needing a separate panel.
                 let id = Self::resource_label(resource_key);
-                metrics::counter!(NEBULA_RESOURCE_ERROR_TOTAL, "resource_id" => id).increment(1);
+                metrics::counter!(RESOURCE_ERROR.as_str(), "resource_id" => id).increment(1);
             }
             ResourceEvent::CircuitBreakerOpen {
                 resource_key,
@@ -182,7 +179,7 @@ impl MetricsCollector {
             } => {
                 let id = Self::resource_label(resource_key);
                 metrics::counter!(
-                    NEBULA_RESOURCE_CIRCUIT_BREAKER_OPENED_TOTAL,
+                    RESOURCE_CIRCUIT_BREAKER_OPENED.as_str(),
                     "resource_id" => id,
                     "operation" => *operation,
                 )
@@ -194,7 +191,7 @@ impl MetricsCollector {
             } => {
                 let id = Self::resource_label(resource_key);
                 metrics::counter!(
-                    NEBULA_RESOURCE_CIRCUIT_BREAKER_CLOSED_TOTAL,
+                    RESOURCE_CIRCUIT_BREAKER_CLOSED.as_str(),
                     "resource_id" => id,
                     "operation" => *operation,
                 )

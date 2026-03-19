@@ -6,9 +6,7 @@
 //! Unified metric naming and export adapters for the Nebula workflow engine.
 //!
 //! This crate provides:
-//! - **[`naming`]** — standard `nebula_*` metric name constants
-//! - **[`TelemetryAdapter`]** — adapter over `nebula-telemetry::MetricsRegistry` that records
-//!   using those names
+//! - **[`naming`]** — typed [`MetricName`] constants with kind and help metadata
 //! - **[`snapshot`]** — Prometheus text-format export with `# HELP`, `# TYPE` metadata
 //!   and per-bucket histogram output
 //! - **[`filter::LabelAllowlist`]** — allowlist that strips high-cardinality label keys
@@ -16,7 +14,7 @@
 //! - **[`prelude`]** — convenience re-exports for common types
 //!
 //! In-memory primitives (Counter, Gauge, Histogram) remain in `nebula-telemetry`; this crate
-//! adds naming convention, a thin adapter, Prometheus text export, and label safety guards.
+//! adds naming convention, Prometheus text export, and label safety guards.
 
 pub mod export;
 pub mod filter;
@@ -27,18 +25,14 @@ pub mod prelude;
 pub use export::prometheus::{PrometheusExporter, content_type, snapshot};
 pub use filter::LabelAllowlist;
 pub use naming::{
-    NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,
-    NEBULA_EVENTBUS_DROP_RATIO_PPM, NEBULA_EVENTBUS_DROPPED, NEBULA_EVENTBUS_SENT,
-    NEBULA_EVENTBUS_SUBSCRIBERS, NEBULA_RESOURCE_ACQUIRE_TOTAL,
-    NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS, NEBULA_RESOURCE_CLEANUP_TOTAL,
-    NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL, NEBULA_RESOURCE_CREATE_TOTAL,
-    NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL, NEBULA_RESOURCE_ERROR_TOTAL,
-    NEBULA_RESOURCE_HEALTH_STATE, NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL,
-    NEBULA_RESOURCE_POOL_WAITERS, NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL,
-    NEBULA_RESOURCE_QUARANTINE_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL,
-    NEBULA_RESOURCE_USAGE_DURATION_SECONDS, NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS,
-    NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
+    ACTION_DURATION, ACTION_EXECUTIONS, ACTION_FAILURES, ALL_METRICS, EVENTBUS_DROP_RATIO_PPM,
+    EVENTBUS_DROPPED, EVENTBUS_SENT, EVENTBUS_SUBSCRIBERS, MetricKind, MetricName,
+    RESOURCE_ACQUIRE, RESOURCE_ACQUIRE_WAIT_DURATION, RESOURCE_CIRCUIT_BREAKER_CLOSED,
+    RESOURCE_CIRCUIT_BREAKER_OPENED, RESOURCE_CLEANUP, RESOURCE_CONFIG_RELOADED, RESOURCE_CREATE,
+    RESOURCE_CREDENTIAL_ROTATED, RESOURCE_ERROR, RESOURCE_HEALTH_STATE, RESOURCE_POOL_EXHAUSTED,
+    RESOURCE_POOL_WAITERS, RESOURCE_QUARANTINE, RESOURCE_QUARANTINE_RELEASED, RESOURCE_RELEASE,
+    RESOURCE_USAGE_DURATION, WORKFLOW_EXECUTION_DURATION, WORKFLOW_EXECUTIONS_COMPLETED,
+    WORKFLOW_EXECUTIONS_FAILED, WORKFLOW_EXECUTIONS_STARTED,
 };
 
 // Re-export for convenience so callers can use nebula_metrics::Counter etc.

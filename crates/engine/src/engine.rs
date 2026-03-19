@@ -20,8 +20,8 @@ use nebula_execution::context::ExecutionBudget;
 use nebula_execution::plan::ExecutionPlan;
 use nebula_execution::state::ExecutionState;
 use nebula_metrics::naming::{
-    NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
+    WORKFLOW_EXECUTION_DURATION, WORKFLOW_EXECUTIONS_COMPLETED, WORKFLOW_EXECUTIONS_FAILED,
+    WORKFLOW_EXECUTIONS_STARTED,
 };
 use nebula_runtime::ActionRuntime;
 use nebula_telemetry::TelemetryService;
@@ -156,7 +156,7 @@ impl WorkflowEngine {
             trace_context: None,
         });
         self.metrics
-            .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
+            .counter(WORKFLOW_EXECUTIONS_STARTED.as_str())
             .inc();
 
         // 7. Build node lookup map
@@ -471,7 +471,7 @@ impl WorkflowEngine {
                     trace_context: None,
                 });
                 self.metrics
-                    .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
+                    .counter(WORKFLOW_EXECUTIONS_COMPLETED.as_str())
                     .inc();
             }
             ExecutionStatus::Failed => {
@@ -485,7 +485,7 @@ impl WorkflowEngine {
                     trace_context: None,
                 });
                 self.metrics
-                    .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
+                    .counter(WORKFLOW_EXECUTIONS_FAILED.as_str())
                     .inc();
             }
             ExecutionStatus::Cancelled => {
@@ -498,7 +498,7 @@ impl WorkflowEngine {
         }
 
         self.metrics
-            .histogram(NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS)
+            .histogram(WORKFLOW_EXECUTION_DURATION.as_str())
             .observe(elapsed.as_secs_f64());
     }
 }
@@ -1188,15 +1188,10 @@ mod tests {
         }
         assert!(event_count >= 3);
 
+        assert!(metrics.counter(WORKFLOW_EXECUTIONS_STARTED.as_str()).get() > 0);
         assert!(
             metrics
-                .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
-                .get()
-                > 0
-        );
-        assert!(
-            metrics
-                .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
+                .counter(WORKFLOW_EXECUTIONS_COMPLETED.as_str())
                 .get()
                 > 0
         );
@@ -1220,18 +1215,8 @@ mod tests {
             .unwrap();
 
         assert!(result.is_failure());
-        assert!(
-            metrics
-                .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
-                .get()
-                > 0
-        );
-        assert!(
-            metrics
-                .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
-                .get()
-                > 0
-        );
+        assert!(metrics.counter(WORKFLOW_EXECUTIONS_STARTED.as_str()).get() > 0);
+        assert!(metrics.counter(WORKFLOW_EXECUTIONS_FAILED.as_str()).get() > 0);
     }
 
     #[tokio::test]

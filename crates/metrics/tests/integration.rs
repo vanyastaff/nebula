@@ -1,22 +1,19 @@
 use std::sync::Arc;
 
-use nebula_metrics::naming::{
-    NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
-    NEBULA_RESOURCE_CREATE_TOTAL,
-};
+use nebula_metrics::naming::{ACTION_EXECUTIONS, RESOURCE_ACQUIRE_WAIT_DURATION, RESOURCE_CREATE};
 use nebula_metrics::{LabelAllowlist, MetricsRegistry, snapshot};
 
 #[test]
 fn resource_metrics_round_trip_via_registry() {
     let registry = Arc::new(MetricsRegistry::new());
 
-    registry.counter(NEBULA_RESOURCE_CREATE_TOTAL).inc();
+    registry.counter(RESOURCE_CREATE.as_str()).inc();
     registry
-        .histogram(NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS)
+        .histogram(RESOURCE_ACQUIRE_WAIT_DURATION.as_str())
         .observe(0.5);
 
-    assert_eq!(registry.counter(NEBULA_RESOURCE_CREATE_TOTAL).get(), 1);
-    let hist = registry.histogram(NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS);
+    assert_eq!(registry.counter(RESOURCE_CREATE.as_str()).get(), 1);
+    let hist = registry.histogram(RESOURCE_ACQUIRE_WAIT_DURATION.as_str());
     assert_eq!(hist.count(), 1);
     assert!((hist.sum() - 0.5).abs() < f64::EPSILON);
 }
@@ -34,7 +31,7 @@ fn labeled_metrics_round_trip_to_prometheus_export() {
     assert_eq!(safe.len(), 1);
 
     registry
-        .counter_labeled(NEBULA_ACTION_EXECUTIONS_TOTAL, &safe)
+        .counter_labeled(ACTION_EXECUTIONS.as_str(), &safe)
         .inc_by(10);
 
     let out = snapshot(&registry);
@@ -42,10 +39,7 @@ fn labeled_metrics_round_trip_to_prometheus_export() {
         out.contains(r#"action_type="http.request""#),
         "allowed label present:\n{out}"
     );
-    assert!(
-        !out.contains("execution_id"),
-        "filtered key absent:\n{out}"
-    );
+    assert!(!out.contains("execution_id"), "filtered key absent:\n{out}");
 }
 
 #[test]
@@ -55,11 +49,9 @@ fn mixed_labeled_and_unlabeled_metrics_export() {
         .interner()
         .label_set(&[("action_type", "http.request")]);
 
+    registry.counter(ACTION_EXECUTIONS.as_str()).inc_by(5);
     registry
-        .counter(NEBULA_ACTION_EXECUTIONS_TOTAL)
-        .inc_by(5);
-    registry
-        .counter_labeled(NEBULA_ACTION_EXECUTIONS_TOTAL, &labels)
+        .counter_labeled(ACTION_EXECUTIONS.as_str(), &labels)
         .inc_by(10);
 
     let out = snapshot(&registry);
