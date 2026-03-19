@@ -18,14 +18,12 @@
 //! In-memory primitives (Counter, Gauge, Histogram) remain in `nebula-telemetry`; this crate
 //! adds naming convention, a thin adapter, Prometheus text export, and label safety guards.
 
-pub mod adapter;
 pub mod export;
 pub mod filter;
 pub mod naming;
 /// Convenience re-exports.
 pub mod prelude;
 
-pub use adapter::TelemetryAdapter;
 pub use export::prometheus::{PrometheusExporter, content_type, snapshot};
 pub use filter::LabelAllowlist;
 pub use naming::{

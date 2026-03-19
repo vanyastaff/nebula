@@ -90,31 +90,6 @@ pub const NEBULA_EVENTBUS_SUBSCRIBERS: &str = "nebula_eventbus_subscribers";
 /// Gauge: snapshot drop ratio (`0.0..=1.0`) scaled by 1_000_000.
 pub const NEBULA_EVENTBUS_DROP_RATIO_PPM: &str = "nebula_eventbus_drop_ratio_ppm";
 
-// ---------------------------------------------------------------------------
-// Legacy names (for backward compatibility during migration)
-// ---------------------------------------------------------------------------
-
-/// Legacy: use [`NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL`].
-pub const LEGACY_EXECUTIONS_STARTED_TOTAL: &str = "executions_started_total";
-
-/// Legacy: use [`NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL`].
-pub const LEGACY_EXECUTIONS_COMPLETED_TOTAL: &str = "executions_completed_total";
-
-/// Legacy: use [`NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL`].
-pub const LEGACY_EXECUTIONS_FAILED_TOTAL: &str = "executions_failed_total";
-
-/// Legacy: use [`NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS`].
-pub const LEGACY_EXECUTION_DURATION_SECONDS: &str = "execution_duration_seconds";
-
-/// Legacy: use [`NEBULA_ACTION_EXECUTIONS_TOTAL`].
-pub const LEGACY_ACTIONS_EXECUTED_TOTAL: &str = "actions_executed_total";
-
-/// Legacy: use [`NEBULA_ACTION_FAILURES_TOTAL`].
-pub const LEGACY_ACTIONS_FAILED_TOTAL: &str = "actions_failed_total";
-
-/// Legacy: use [`NEBULA_ACTION_DURATION_SECONDS`].
-pub const LEGACY_ACTION_DURATION_SECONDS: &str = "action_duration_seconds";
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -147,6 +122,60 @@ mod tests {
         NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
     ];
+
+    use super::*;
+
+    fn assert_naming_convention(names: &[&str], prefix: &str) {
+        let mut unique = HashSet::new();
+        for name in names {
+            assert!(!name.is_empty(), "constant must not be empty");
+            assert!(name.starts_with(prefix), "{name} must start with {prefix}");
+            assert!(
+                name.chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'),
+                "{name} contains invalid chars"
+            );
+            assert!(unique.insert(*name), "{name} is duplicated");
+        }
+    }
+
+    #[test]
+    fn workflow_constants_follow_naming_convention() {
+        assert_naming_convention(
+            &[
+                NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
+                NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
+                NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL,
+                NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS,
+            ],
+            "nebula_workflow_",
+        );
+    }
+
+    #[test]
+    fn action_constants_follow_naming_convention() {
+        assert_naming_convention(
+            &[
+                NEBULA_ACTION_EXECUTIONS_TOTAL,
+                NEBULA_ACTION_FAILURES_TOTAL,
+                NEBULA_ACTION_DURATION_SECONDS,
+            ],
+            "nebula_action_",
+        );
+    }
+
+    #[test]
+    fn eventbus_constants_follow_naming_convention() {
+        assert_naming_convention(
+            &[
+                NEBULA_EVENTBUS_SENT,
+                NEBULA_EVENTBUS_DROPPED,
+                NEBULA_EVENTBUS_SUBSCRIBERS,
+                NEBULA_EVENTBUS_DROP_RATIO_PPM,
+            ],
+            "nebula_eventbus_",
+        );
+    }
 
     #[test]
     fn resource_constants_are_accessible_unique_and_registry_safe() {

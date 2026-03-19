@@ -391,6 +391,157 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_escapes_quotes_in_label_values() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let labels = registry
+            .interner()
+            .label_set(&[("path", "/api?foo=\"bar\"")]);
+        registry
+            .counter_labeled("nebula_action_executions_total", &labels)
+            .inc();
+
+        let out = snapshot(&registry);
+        assert!(
+            out.contains(r#"nebula_action_executions_total{path="/api?foo=\"bar\""} 1"#),
+            "escaped quotes:\n{out}"
+        );
+    }
+
+    #[test]
+    fn snapshot_escapes_backslashes_in_label_values() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let labels = registry
+            .interner()
+            .label_set(&[("path", "C:\\Users\\test")]);
+        registry
+            .counter_labeled("nebula_action_executions_total", &labels)
+            .inc();
+
+        let out = snapshot(&registry);
+        assert!(
+            out.contains(r#"nebula_action_executions_total{path="C:\\Users\\test"} 1"#),
+            "escaped backslashes:\n{out}"
+        );
+    }
+
+    #[test]
+    fn snapshot_escapes_quotes_and_backslashes_together() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let labels = registry
+            .interner()
+            .label_set(&[("val", r#"say \"hello\""#)]);
+        registry
+            .counter_labeled("nebula_action_executions_total", &labels)
+            .inc();
+
+        let out = snapshot(&registry);
+        assert!(
+            out.contains(r#"nebula_action_executions_total{val="say \\\"hello\\\""} 1"#),
+            "mixed escaping:\n{out}"
+        );
+    }
+
+    #[test]
+    fn snapshot_renders_labeled_histogram_with_bucket_labels() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let labels = registry
+            .interner()
+            .label_set(&[("action_type", "http.request")]);
+        registry
+            .histogram_labeled("nebula_action_duration_seconds", &labels)
+            .observe(0.5);
+
+        let out = snapshot(&registry);
+        assert!(
+            out.contains(
+                r#"nebula_action_duration_seconds_bucket{action_type="http.request",le="0.5"}"#
+            ),
+            "labeled bucket:\n{out}"
+        );
+        assert!(
+            out.contains(
+                r#"nebula_action_duration_seconds_bucket{action_type="http.request",le="+Inf"}"#
+            ),
+            "labeled +Inf:\n{out}"
+        );
+        assert!(
+            out.contains(r#"nebula_action_duration_seconds_sum{action_type="http.request"}"#),
+            "labeled sum:\n{out}"
+        );
+        assert!(
+            out.contains(r#"nebula_action_duration_seconds_count{action_type="http.request"}"#),
+            "labeled count:\n{out}"
+        );
+    }
+
+    #[test]
+    fn snapshot_renders_labeled_gauge() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let labels = registry
+            .interner()
+            .label_set(&[("resource_type", "database")]);
+        registry
+            .gauge_labeled("nebula_resource_health_state", &labels)
+            .set(1);
+
+        let out = snapshot(&registry);
+        assert!(
+            out.contains(r#"nebula_resource_health_state{resource_type="database"} 1"#),
+            "labeled gauge:\n{out}"
+        );
+    }
+
+    #[test]
+    fn content_type_returns_prometheus_exposition_format() {
+        assert_eq!(
+            super::content_type(),
+            "text/plain; version=0.0.4; charset=utf-8"
+        );
+    }
+
+    #[test]
+    fn exporter_content_type_returns_prometheus_exposition_format() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let exporter = PrometheusExporter::new(registry);
+        assert_eq!(
+            exporter.content_type(),
+            "text/plain; version=0.0.4; charset=utf-8"
+        );
+    }
+
+    #[test]
+    fn snapshot_renders_multiple_labeled_families_correctly() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let interner = registry.interner();
+        let labels = interner.label_set(&[("action_type", "http.request")]);
+
+        registry
+            .counter_labeled("nebula_action_executions_total", &labels)
+            .inc_by(10);
+        registry
+            .counter_labeled("nebula_action_failures_total", &labels)
+            .inc_by(2);
+
+        let out = snapshot(&registry);
+        assert!(
+            out.contains("# TYPE nebula_action_executions_total counter"),
+            "executions TYPE:\n{out}"
+        );
+        assert!(
+            out.contains("# TYPE nebula_action_failures_total counter"),
+            "failures TYPE:\n{out}"
+        );
+        assert!(
+            out.contains(r#"nebula_action_executions_total{action_type="http.request"} 10"#),
+            "executions value:\n{out}"
+        );
+        assert!(
+            out.contains(r#"nebula_action_failures_total{action_type="http.request"} 2"#),
+            "failures value:\n{out}"
+        );
+    }
+
+    #[test]
     fn exporter_wraps_registry() {
         let registry = Arc::new(MetricsRegistry::new());
         registry.counter("nebula_action_failures_total").inc_by(3);

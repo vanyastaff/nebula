@@ -4,9 +4,6 @@
 //! use nebula_metrics::prelude::*;
 //! ```
 
-// ── Adapter ─────────────────────────────────────────────────────────────────
-pub use crate::adapter::TelemetryAdapter;
-
 // ── Filter ───────────────────────────────────────────────────────────────────
 pub use crate::filter::LabelAllowlist;
 

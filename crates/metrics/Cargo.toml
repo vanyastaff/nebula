@@ -12,9 +12,7 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-nebula-eventbus = { path = "../eventbus" }
 nebula-telemetry = { path = "../telemetry" }
-thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

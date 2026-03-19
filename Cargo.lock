@@ -4155,10 +4155,8 @@ dependencies = [
 name = "nebula-metrics"
 version = "0.1.0"
 dependencies = [
- "nebula-eventbus",
  "nebula-telemetry",
  "pretty_assertions",
- "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
