@@ -125,10 +125,10 @@ impl Bulkhead {
     ///
     /// Returns `Err(CallError::BulkheadFull)` when the queue is full,
     /// or `Err(CallError::Operation)` if the operation itself fails.
-    pub async fn call<T, E>(
-        &self,
-        f: impl FnOnce() -> std::pin::Pin<Box<dyn Future<Output = Result<T, E>> + Send>>,
-    ) -> Result<T, CallError<E>> {
+    pub async fn call<T, E, Fut>(&self, f: impl FnOnce() -> Fut) -> Result<T, CallError<E>>
+    where
+        Fut: Future<Output = Result<T, E>> + Send,
+    {
         let _permit = self.acquire_permit().await?;
         f().await.map_err(CallError::Operation)
     }
@@ -277,7 +277,7 @@ mod tests {
     #[tokio::test]
     async fn call_succeeds_within_capacity() {
         let bh = Bulkhead::new(cfg(2)).unwrap();
-        let result = bh.call::<_, &str>(|| Box::pin(async { Ok("ok") })).await;
+        let result = bh.call::<_, &str, _>(|| Box::pin(async { Ok("ok") })).await;
         assert_eq!(result.unwrap(), "ok");
     }
 

@@ -184,9 +184,7 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Fast path: check if already cancelled (no allocation)
         if self.cancellation.is_cancelled() {
-            return Poll::Ready(Err(CallError::Cancelled {
-                reason: Some("Future was cancelled".to_string()),
-            }));
+            return Poll::Ready(Err(CallError::Cancelled { reason: None }));
         }
 
         // Poll the underlying future

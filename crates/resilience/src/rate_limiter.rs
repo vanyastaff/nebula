@@ -81,8 +81,9 @@ pub struct TokenBucket {
     capacity: usize,
     /// Mutable runtime state
     state: Mutex<TokenBucketState>,
-    /// Token refill rate per second
-    refill_rate: f64,
+    /// Token refill rate per second — stored atomically for lock-free reads
+    /// and updated in-place by `update_rate` to avoid re-allocation.
+    refill_rate: AtomicU64,
     /// Burst size
     burst_size: usize,
 }
@@ -122,7 +123,7 @@ impl TokenBucket {
                 tokens: capacity as f64,
                 last_refill: Instant::now(),
             }),
-            refill_rate,
+            refill_rate: AtomicU64::new(refill_rate.to_bits()),
             burst_size: capacity,
         })
     }
@@ -132,6 +133,15 @@ impl TokenBucket {
     pub const fn with_burst(mut self, burst_size: usize) -> Self {
         self.burst_size = burst_size;
         self
+    }
+
+    /// Update the refill rate in-place, avoiding a re-allocation.
+    ///
+    /// The new rate is applied on the next `acquire()` call.
+    /// `new_rate` is clamped to the same range accepted by `new()`.
+    pub fn update_rate(&self, new_rate: f64) {
+        let clamped = new_rate.clamp(0.001, 10_000.0);
+        self.refill_rate.store(clamped.to_bits(), Ordering::Release);
     }
 }
 
@@ -143,7 +153,8 @@ impl RateLimiter for TokenBucket {
 
         let now = Instant::now();
         let elapsed = now.duration_since(state.last_refill).as_secs_f64();
-        let tokens_to_add = elapsed * self.refill_rate;
+        let refill_rate = f64::from_bits(self.refill_rate.load(Ordering::Acquire));
+        let tokens_to_add = elapsed * refill_rate;
         state.tokens = (state.tokens + tokens_to_add).min(self.burst_size as f64);
         state.last_refill = now;
 
@@ -309,13 +320,35 @@ impl SlidingWindow {
             }
         }
     }
+
+    /// Eagerly drop all entries older than the window — called only when the
+    /// deque is at or above `max_requests` so the amortised cost per request
+    /// stays O(1) during steady-state traffic.
+    fn clean_old_requests_if_full(
+        requests: &mut VecDeque<Instant>,
+        now: Instant,
+        window_duration: Duration,
+        max_requests: usize,
+    ) {
+        if requests.len() >= max_requests {
+            Self::clean_old_requests_locked(requests, now, window_duration);
+        }
+    }
 }
 
 impl RateLimiter for SlidingWindow {
     async fn acquire(&self) -> Result<(), CallError<()>> {
         let now = Instant::now();
         let mut requests = self.requests.lock();
-        Self::clean_old_requests_locked(&mut requests, now, self.window_duration);
+
+        // Only run O(n) cleanup when the deque is full; otherwise a simple
+        // length check is sufficient and avoids scanning on every call.
+        Self::clean_old_requests_if_full(
+            &mut requests,
+            now,
+            self.window_duration,
+            self.max_requests,
+        );
 
         if requests.len() < self.max_requests {
             requests.push_back(now);
@@ -342,6 +375,7 @@ impl RateLimiter for SlidingWindow {
     async fn current_rate(&self) -> f64 {
         let now = Instant::now();
         let mut requests = self.requests.lock();
+        // Always do a full cleanup here so the reported count is accurate.
         Self::clean_old_requests_locked(&mut requests, now, self.window_duration);
         let len = requests.len() as f64;
         drop(requests);
@@ -459,10 +493,8 @@ impl AdaptiveRateLimiter {
                 state.current_rate = (state.current_rate * 1.1).min(self.max_rate);
             }
 
-            let new_limiter =
-                TokenBucket::new(state.current_rate.max(1.0) as usize, state.current_rate)
-                    .expect("adjusted rate is clamped to min/max bounds");
-            state.inner = Arc::new(new_limiter);
+            // Update the bucket in-place instead of allocating a new Arc<TokenBucket>.
+            state.inner.update_rate(state.current_rate);
             self.atomic_rate
                 .store(state.current_rate.to_bits(), Ordering::Release);
         }

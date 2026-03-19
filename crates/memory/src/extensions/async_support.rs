@@ -13,6 +13,8 @@ use std::{
     vec::Vec,
 };
 
+use pin_project::pin_project;
+
 use crate::error::MemoryResult;
 use crate::extensions::MemoryExtension;
 
@@ -303,8 +305,10 @@ pub trait Task: Future + Send + 'static {
 }
 
 /// A simple task implementation
+#[pin_project]
 pub struct SimpleTask<F, T> {
     name: &'static str,
+    #[pin]
     future: F,
     _phantom: core::marker::PhantomData<T>,
 }
@@ -341,17 +345,11 @@ where
 {
     type Output = T;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: Pin projection to poll inner future.
-        // - self is Pin<&mut Self>, guaranteed not to move
-        // - get_unchecked_mut accesses self.future field
-        // - future field is !Unpin (Box<dyn Future>)
-        // - Pin::new_unchecked safe because self's pin guarantee transfers to field
-        // - Not moving future out, only polling in place
-        unsafe {
-            let future = &mut self.as_mut().get_unchecked_mut().future;
-            Pin::new_unchecked(future).poll(cx)
-        }
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: pin-project generates safe projection code.
+        // The #[pin] attribute on the future field ensures proper structural pinning.
+        let this = self.project();
+        this.future.poll(cx)
     }
 }
 

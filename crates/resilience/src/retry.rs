@@ -1,7 +1,7 @@
 //! Retry pattern — unified API, predicate-based error classification.
 
 use std::future::Future;
-use std::pin::Pin;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -199,10 +199,11 @@ impl<E: 'static> RetryConfig<E> {
 /// # Panics
 ///
 /// Panics if `config.max_attempts` is 0 (this is prevented by [`RetryConfig::new`]).
-pub async fn retry_with<T, E, F>(config: RetryConfig<E>, mut f: F) -> Result<T, CallError<E>>
+pub async fn retry_with<T, E, F, Fut>(config: RetryConfig<E>, mut f: F) -> Result<T, CallError<E>>
 where
     E: 'static,
-    F: FnMut() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>>,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>> + Send,
 {
     let mut last_err: Option<E> = None;
 
@@ -254,10 +255,11 @@ where
 /// # Panics
 ///
 /// Panics if `n` is 0 (use [`retry_with`] with [`RetryConfig::new`] for fallible construction).
-pub async fn retry<T, E, F>(n: u32, f: F) -> Result<T, CallError<E>>
+pub async fn retry<T, E, F, Fut>(n: u32, f: F) -> Result<T, CallError<E>>
 where
     E: 'static,
-    F: FnMut() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>>,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>> + Send,
 {
     let config = RetryConfig::<E>::new(n)
         .expect("retry() requires n >= 1; use retry_with() for fallible config");

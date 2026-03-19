@@ -165,10 +165,10 @@ impl CircuitBreaker {
     ///
     /// Returns `Err(CallError::CircuitOpen)` if the breaker is open,
     /// or `Err(CallError::Operation)` if the operation itself fails.
-    pub async fn call<T, E>(
-        &self,
-        f: impl FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, E>> + Send>>,
-    ) -> Result<T, CallError<E>> {
+    pub async fn call<T, E, Fut>(&self, f: impl FnOnce() -> Fut) -> Result<T, CallError<E>>
+    where
+        Fut: std::future::Future<Output = Result<T, E>> + Send,
+    {
         self.can_execute()?;
         let guard = ProbeGuard(self);
         let result = f().await;
@@ -357,10 +357,10 @@ mod tests {
     async fn opens_after_failure_threshold() {
         let cb = CircuitBreaker::new(default_config()).unwrap();
         for _ in 0..3 {
-            let _ = cb.call::<(), _>(|| Box::pin(async { Err("fail") })).await;
+            let _ = cb.call::<(), _, _>(|| Box::pin(async { Err("fail") })).await;
         }
         let err: CallError<&str> = cb
-            .call::<(), _>(|| Box::pin(async { Ok(()) }))
+            .call::<(), _, _>(|| Box::pin(async { Ok(()) }))
             .await
             .unwrap_err();
         assert!(matches!(err, CallError::CircuitOpen));
@@ -372,7 +372,7 @@ mod tests {
         for _ in 0..10 {
             cb.record_outcome(Outcome::Cancelled);
         }
-        let result = cb.call::<u32, &str>(|| Box::pin(async { Ok(42) })).await;
+        let result = cb.call::<u32, &str, _>(|| Box::pin(async { Ok(42) })).await;
         assert_eq!(result.unwrap(), 42);
     }
 
@@ -384,7 +384,7 @@ mod tests {
             .with_sink(sink.clone());
         for _ in 0..3 {
             let _ = cb
-                .call::<(), &str>(|| Box::pin(async { Err("fail") }))
+                .call::<(), &str, _>(|| Box::pin(async { Err("fail") }))
                 .await;
         }
         assert!(sink.has_state_change(CS::Open));
@@ -480,9 +480,9 @@ mod tests {
         // Start a call that will be dropped mid-operation
         let cb2 = Arc::clone(&cb);
         tokio::select! {
-            _ = cb2.call::<(), &str>(|| Box::pin(async {
+            _ = cb2.call(|| Box::pin(async {
                 tokio::time::sleep(Duration::from_secs(10)).await;
-                Ok(())
+                Ok::<(), &str>(())
             })) => unreachable!(),
             _ = tokio::time::sleep(Duration::from_millis(5)) => {
                 // Future dropped — probe guard should release the slot
