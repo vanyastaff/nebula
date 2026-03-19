@@ -473,7 +473,7 @@ impl CredentialManager {
     /// trigger pool credential updates.
     pub fn rotation_subscriber(
         &self,
-    ) -> nebula_eventbus::EventSubscriber<crate::rotation::events::CredentialRotationEvent> {
+    ) -> nebula_eventbus::Subscriber<crate::rotation::events::CredentialRotationEvent> {
         self.rotation_bus.subscribe()
     }
 
