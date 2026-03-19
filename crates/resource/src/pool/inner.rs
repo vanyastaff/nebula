@@ -73,7 +73,6 @@ pub(super) struct PoolResilienceState {
     pub(super) recycle_breaker: Option<CircuitBreaker>,
 }
 
-
 impl PoolResilienceState {
     /// Build from a [`PoolResiliencePolicy`].
     ///
@@ -84,22 +83,29 @@ impl PoolResilienceState {
             return Ok(None);
         }
         let create_breaker = if let Some(cfg) = &policy.create_breaker {
-            Some(CircuitBreaker::new(cfg.clone()).map_err(|e| Error::Configuration {
-                message: format!("create_breaker config invalid: {e}"),
-                source: None,
-            })?)
+            Some(
+                CircuitBreaker::new(cfg.clone()).map_err(|e| Error::Configuration {
+                    message: format!("create_breaker config invalid: {e}"),
+                    source: None,
+                })?,
+            )
         } else {
             None
         };
         let recycle_breaker = if let Some(cfg) = &policy.recycle_breaker {
-            Some(CircuitBreaker::new(cfg.clone()).map_err(|e| Error::Configuration {
-                message: format!("recycle_breaker config invalid: {e}"),
-                source: None,
-            })?)
+            Some(
+                CircuitBreaker::new(cfg.clone()).map_err(|e| Error::Configuration {
+                    message: format!("recycle_breaker config invalid: {e}"),
+                    source: None,
+                })?,
+            )
         } else {
             None
         };
-        Ok(Some(Self { create_breaker, recycle_breaker }))
+        Ok(Some(Self {
+            create_breaker,
+            recycle_breaker,
+        }))
     }
 }
 
@@ -156,7 +162,10 @@ pub(super) struct Entry<T> {
     /// How many times this entry has been acquired.
     pub(super) acquire_count: usize,
     /// Current lifecycle state of this entry.
-    #[expect(dead_code, reason = "tracked for observability and future drain/shutdown logic")]
+    #[expect(
+        dead_code,
+        reason = "tracked for observability and future drain/shutdown logic"
+    )]
     pub(super) lifecycle: Lifecycle,
 }
 
@@ -257,5 +266,3 @@ pub(super) struct PoolInner<R: Resource> {
     /// Optional context enricher called immediately before `Resource::create()`.
     pub(super) context_enricher: Option<Arc<dyn Fn(Context) -> Context + Send + Sync>>,
 }
-
-

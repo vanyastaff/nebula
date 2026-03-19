@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -74,8 +74,14 @@ async fn manager_shutdown_phased_completes_under_inflight_load() {
             resource,
             TestConfig,
             PoolConfig {
-                sizing: PoolSizing { min_size: 0, max_size: 8 },
-                acquire: PoolAcquire { timeout: Duration::from_millis(100), ..Default::default() },
+                sizing: PoolSizing {
+                    min_size: 0,
+                    max_size: 8,
+                },
+                acquire: PoolAcquire {
+                    timeout: Duration::from_millis(100),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )
@@ -155,8 +161,14 @@ async fn pool_shutdown_does_not_hang_with_concurrent_acquires() {
             resource,
             TestConfig,
             PoolConfig {
-                sizing: PoolSizing { min_size: 0, max_size: 4 },
-                acquire: PoolAcquire { timeout: Duration::from_millis(60), ..Default::default() },
+                sizing: PoolSizing {
+                    min_size: 0,
+                    max_size: 4,
+                },
+                acquire: PoolAcquire {
+                    timeout: Duration::from_millis(60),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )

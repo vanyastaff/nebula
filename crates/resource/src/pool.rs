@@ -189,7 +189,14 @@ impl<R: Resource> Pool<R> {
         hooks: Option<Arc<HookRegistry>>,
         enricher: Arc<dyn Fn(Context) -> Context + Send + Sync>,
     ) -> Result<Self> {
-        Self::build_inner(resource, config, pool_config, event_bus, hooks, Some(enricher))
+        Self::build_inner(
+            resource,
+            config,
+            pool_config,
+            event_bus,
+            hooks,
+            Some(enricher),
+        )
     }
 
     /// Internal constructor that accepts all optional parameters.
@@ -401,7 +408,10 @@ impl<R: Resource> Pool<R> {
         // Acquire a permit according to configured backpressure policy.
         let permit = self.acquire_permit_with_policy().await?;
 
-        let create_breaker = inner.resilience.as_ref().and_then(|r| r.create_breaker.as_ref());
+        let create_breaker = inner
+            .resilience
+            .as_ref()
+            .and_then(|r| r.create_breaker.as_ref());
         if let Some(cb) = create_breaker
             && cb.can_execute::<Error>().is_err()
         {
@@ -476,8 +486,11 @@ impl<R: Resource> Pool<R> {
                         use std::task::{Context as TaskCtx, Poll, Waker};
                         let waker = Waker::noop();
                         let mut task_cx = TaskCtx::from_waker(waker);
-                        let mut fut =
-                            pin!(inner.resource.is_reusable_with_meta(&entry.instance, &inst_meta));
+                        let mut fut = pin!(
+                            inner
+                                .resource
+                                .is_reusable_with_meta(&entry.instance, &inst_meta)
+                        );
                         match fut.as_mut().poll(&mut task_cx) {
                             Poll::Ready(result) => Some(result),
                             Poll::Pending => None,
@@ -487,7 +500,10 @@ impl<R: Resource> Pool<R> {
                     let reusable = match sync_result {
                         Some(result) => result,
                         None => {
-                            inner.resource.is_reusable_with_meta(&entry.instance, &inst_meta).await
+                            inner
+                                .resource
+                                .is_reusable_with_meta(&entry.instance, &inst_meta)
+                                .await
                         }
                     };
                     match reusable {
@@ -520,7 +536,10 @@ impl<R: Resource> Pool<R> {
                     let create_result = Self::create_with_hooks_timed(inner, ctx).await;
                     Self::maybe_record_breaker_result(
                         inner,
-                        inner.resilience.as_ref().and_then(|r| r.create_breaker.as_ref()),
+                        inner
+                            .resilience
+                            .as_ref()
+                            .and_then(|r| r.create_breaker.as_ref()),
                         "create",
                         create_result.is_ok(),
                     );
@@ -568,9 +587,14 @@ impl<R: Resource> Pool<R> {
             let usage_duration = acquire_instant.elapsed();
             // Fast path: attempt sync return without spawning a task.
             // Falls back to async spawn when the fast path isn't applicable.
-            if let Some(inst) =
-                Self::try_return_sync(&pool.inner, inst, idle_since, entry_meta, usage_duration, tainted)
-            {
+            if let Some(inst) = Self::try_return_sync(
+                &pool.inner,
+                inst,
+                idle_since,
+                entry_meta,
+                usage_duration,
+                tainted,
+            ) {
                 drop(tokio::spawn(Self::return_instance(
                     pool,
                     inst,
@@ -587,7 +611,9 @@ impl<R: Resource> Pool<R> {
         {
             let inner_for_detach = Arc::clone(&self.inner);
             guard.set_detach_callback(move || {
-                inner_for_detach.active_count.fetch_sub(1, Ordering::Relaxed);
+                inner_for_detach
+                    .active_count
+                    .fetch_sub(1, Ordering::Relaxed);
                 inner_for_detach.semaphore.add_permits(1);
             });
         }
@@ -625,7 +651,10 @@ impl<R: Resource> Pool<R> {
         if inner.resource.is_broken(&inst) {
             return Some(inst);
         }
-        if inner.resilience.as_ref().is_some_and(|r| r.recycle_breaker.is_some())
+        if inner
+            .resilience
+            .as_ref()
+            .is_some_and(|r| r.recycle_breaker.is_some())
             || inner.hooks.is_some()
         {
             return Some(inst);
@@ -800,11 +829,18 @@ impl<R: Resource> Pool<R> {
         let mut skip_recycle = tainted;
 
         // Synchronous broken-check supersedes all other skip conditions.
-        if !skip_recycle && inner.resource.is_broken(inst_slot.as_ref().expect("instance must exist")) {
+        if !skip_recycle
+            && inner
+                .resource
+                .is_broken(inst_slot.as_ref().expect("instance must exist"))
+        {
             skip_recycle = true;
         }
 
-        let recycle_breaker = inner.resilience.as_ref().and_then(|r| r.recycle_breaker.as_ref());
+        let recycle_breaker = inner
+            .resilience
+            .as_ref()
+            .and_then(|r| r.recycle_breaker.as_ref());
         if let Some(cb) = recycle_breaker
             && cb.can_execute::<Error>().is_err()
         {
@@ -826,7 +862,10 @@ impl<R: Resource> Pool<R> {
             recycle_ok = recycle_result.is_ok();
             Self::maybe_record_breaker_result(
                 inner,
-                inner.resilience.as_ref().and_then(|r| r.recycle_breaker.as_ref()),
+                inner
+                    .resilience
+                    .as_ref()
+                    .and_then(|r| r.recycle_breaker.as_ref()),
                 "recycle",
                 recycle_result.is_ok(),
             );
@@ -1450,8 +1489,10 @@ where
     pub async fn acquire_shared(
         &self,
         ctx: &Context,
-    ) -> Result<(Guard<R::Instance, impl FnOnce(R::Instance, bool) + Send + 'static>, Duration)>
-    {
+    ) -> Result<(
+        Guard<R::Instance, impl FnOnce(R::Instance, bool) + Send + 'static>,
+        Duration,
+    )> {
         let start = Instant::now();
 
         // Fast path: peek at the idle queue (no pop) and clone the front instance.
@@ -1480,8 +1521,7 @@ where
         // Guard with a no-op drop — the shared clone is simply released when it
         // goes out of scope; the pool-resident original is unaffected.
         #[allow(clippy::type_complexity)]
-        let guard: Guard<R::Instance, fn(R::Instance, bool)> =
-            Guard::new(instance, |_, _| {});
+        let guard: Guard<R::Instance, fn(R::Instance, bool)> = Guard::new(instance, |_, _| {});
         Ok((guard, start.elapsed()))
     }
 }
@@ -1491,7 +1531,7 @@ mod tests {
     use super::*;
     use crate::resource::{Config, Resource};
     use crate::scope::Scope;
-    use nebula_core::{resource_key, ResourceKey};
+    use nebula_core::{ResourceKey, resource_key};
 
     // -- Test resource --
 
@@ -1553,7 +1593,10 @@ mod tests {
     fn test_pool_config_validation() {
         assert!(
             PoolConfig {
-                sizing: PoolSizing { max_size: 0, ..Default::default() },
+                sizing: PoolSizing {
+                    max_size: 0,
+                    ..Default::default()
+                },
                 ..Default::default()
             }
             .validate()
@@ -1561,15 +1604,10 @@ mod tests {
         );
         assert!(
             PoolConfig {
-                sizing: PoolSizing { min_size: 11, max_size: 10 },
-                ..Default::default()
-            }
-            .validate()
-            .is_err()
-        );
-        assert!(
-            PoolConfig {
-                acquire: PoolAcquire { timeout: Duration::ZERO, ..Default::default() },
+                sizing: PoolSizing {
+                    min_size: 11,
+                    max_size: 10
+                },
                 ..Default::default()
             }
             .validate()
@@ -1578,7 +1616,7 @@ mod tests {
         assert!(
             PoolConfig {
                 acquire: PoolAcquire {
-                    backpressure: Some(PoolBackpressurePolicy::BoundedWait { timeout: Duration::ZERO }),
+                    timeout: Duration::ZERO,
                     ..Default::default()
                 },
                 ..Default::default()
@@ -1589,10 +1627,9 @@ mod tests {
         assert!(
             PoolConfig {
                 acquire: PoolAcquire {
-                    backpressure: Some(PoolBackpressurePolicy::Adaptive(AdaptiveBackpressurePolicy {
-                        high_pressure_utilization: 1.2,
-                        ..Default::default()
-                    })),
+                    backpressure: Some(PoolBackpressurePolicy::BoundedWait {
+                        timeout: Duration::ZERO
+                    }),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -1602,7 +1639,15 @@ mod tests {
         );
         assert!(
             PoolConfig {
-                resilience: PoolResiliencePolicy { create_timeout: Some(Duration::ZERO), ..Default::default() },
+                acquire: PoolAcquire {
+                    backpressure: Some(PoolBackpressurePolicy::Adaptive(
+                        AdaptiveBackpressurePolicy {
+                            high_pressure_utilization: 1.2,
+                            ..Default::default()
+                        }
+                    )),
+                    ..Default::default()
+                },
                 ..Default::default()
             }
             .validate()
@@ -1610,7 +1655,21 @@ mod tests {
         );
         assert!(
             PoolConfig {
-                resilience: PoolResiliencePolicy { recycle_timeout: Some(Duration::ZERO), ..Default::default() },
+                resilience: PoolResiliencePolicy {
+                    create_timeout: Some(Duration::ZERO),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            PoolConfig {
+                resilience: PoolResiliencePolicy {
+                    recycle_timeout: Some(Duration::ZERO),
+                    ..Default::default()
+                },
                 ..Default::default()
             }
             .validate()
@@ -1625,7 +1684,10 @@ mod tests {
             TestResource,
             test_config(),
             PoolConfig {
-                sizing: PoolSizing { min_size: 0, max_size: 1 },
+                sizing: PoolSizing {
+                    min_size: 0,
+                    max_size: 1,
+                },
                 acquire: PoolAcquire {
                     timeout: Duration::from_secs(10),
                     backpressure: Some(PoolBackpressurePolicy::FailFast),
@@ -1654,7 +1716,10 @@ mod tests {
             TestResource,
             test_config(),
             PoolConfig {
-                sizing: PoolSizing { min_size: 0, max_size: 1 },
+                sizing: PoolSizing {
+                    min_size: 0,
+                    max_size: 1,
+                },
                 acquire: PoolAcquire {
                     timeout: Duration::from_secs(10),
                     backpressure: Some(PoolBackpressurePolicy::BoundedWait {
@@ -1685,7 +1750,10 @@ mod tests {
             TestResource,
             test_config(),
             PoolConfig {
-                sizing: PoolSizing { min_size: 0, max_size: 1 },
+                sizing: PoolSizing {
+                    min_size: 0,
+                    max_size: 1,
+                },
                 acquire: PoolAcquire {
                     timeout: Duration::from_secs(10),
                     backpressure: Some(PoolBackpressurePolicy::Adaptive(
@@ -1748,8 +1816,14 @@ mod tests {
     #[tokio::test]
     async fn pool_respects_max_size() {
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 2 },
-            acquire: PoolAcquire { timeout: Duration::from_millis(100), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 2,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_millis(100),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -1803,7 +1877,10 @@ mod tests {
             SlowResource,
             test_config(),
             PoolConfig {
-                sizing: PoolSizing { min_size: 0, max_size: 1 },
+                sizing: PoolSizing {
+                    min_size: 0,
+                    max_size: 1,
+                },
                 resilience: PoolResiliencePolicy {
                     create_timeout: Some(Duration::from_millis(10)),
                     ..Default::default()
@@ -1829,7 +1906,10 @@ mod tests {
             SlowResource,
             test_config(),
             PoolConfig {
-                sizing: PoolSizing { min_size: 0, max_size: 1 },
+                sizing: PoolSizing {
+                    min_size: 0,
+                    max_size: 1,
+                },
                 resilience: PoolResiliencePolicy {
                     recycle_timeout: Some(Duration::from_millis(10)),
                     ..Default::default()
@@ -1882,8 +1962,14 @@ mod tests {
     #[tokio::test]
     async fn exhausted_count_tracked() {
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 1 },
-            acquire: PoolAcquire { timeout: Duration::from_millis(50), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 1,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_millis(50),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -1906,8 +1992,14 @@ mod tests {
             fail_after: std::sync::atomic::AtomicU32::new(0),
         };
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 2 },
-            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 2,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(resource, test_config(), pool_config).unwrap();
@@ -1958,8 +2050,14 @@ mod tests {
     #[tokio::test]
     async fn recycle_failure_destroys_instance() {
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 2 },
-            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 2,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(RecycleFailResource, test_config(), pool_config).unwrap();
@@ -1981,8 +2079,14 @@ mod tests {
     #[tokio::test]
     async fn pool_recovers_after_recycle_failure() {
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 1 },
-            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 1,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(RecycleFailResource, test_config(), pool_config).unwrap();
@@ -2005,14 +2109,20 @@ mod tests {
     #[tokio::test]
     async fn maintain_evicts_expired_and_replenishes() {
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 2, max_size: 5 },
+            sizing: PoolSizing {
+                min_size: 2,
+                max_size: 5,
+            },
             lifetime: PoolLifetime {
                 idle_timeout: Duration::from_millis(50), // very short
                 max_lifetime: Duration::from_secs(3600),
                 validation_interval: Duration::from_secs(30),
                 maintenance_interval: None,
             },
-            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2041,14 +2151,20 @@ mod tests {
     #[tokio::test]
     async fn maintain_does_not_exceed_min_size() {
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 1, max_size: 5 },
+            sizing: PoolSizing {
+                min_size: 1,
+                max_size: 5,
+            },
             lifetime: PoolLifetime {
                 idle_timeout: Duration::from_secs(3600),
                 max_lifetime: Duration::from_secs(3600),
                 validation_interval: Duration::from_secs(30),
                 maintenance_interval: None,
             },
-            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2076,8 +2192,14 @@ mod tests {
     #[tokio::test]
     async fn concurrent_acquires_respect_max_size() {
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 5 },
-            acquire: PoolAcquire { timeout: Duration::from_millis(200), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 5,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2108,7 +2230,10 @@ mod tests {
     #[tokio::test]
     async fn acquire_after_shutdown_fails_immediately() {
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 2 },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 2,
+            },
             acquire: PoolAcquire {
                 timeout: Duration::from_secs(5), // long timeout
                 ..Default::default()
@@ -2135,8 +2260,14 @@ mod tests {
     #[tokio::test]
     async fn guard_dropped_after_shutdown_cleans_up() {
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 2 },
-            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 2,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2194,7 +2325,10 @@ mod tests {
             TestResource,
             test_config(),
             PoolConfig {
-                sizing: PoolSizing { min_size: 0, max_size: 2 },
+                sizing: PoolSizing {
+                    min_size: 0,
+                    max_size: 2,
+                },
                 ..Default::default()
             },
         )
@@ -2222,8 +2356,14 @@ mod tests {
             remaining_failures: std::sync::atomic::AtomicU32::new(1),
         };
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 1 },
-            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 1,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(resource, test_config(), pool_config).unwrap();
@@ -2243,8 +2383,14 @@ mod tests {
     #[tokio::test]
     async fn acquire_respects_cancellation() {
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 1 },
-            acquire: PoolAcquire { timeout: Duration::from_secs(10), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 1,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(10),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2284,12 +2430,18 @@ mod tests {
     #[tokio::test]
     async fn maintenance_task_replenishes_pool() {
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 2, max_size: 5 },
+            sizing: PoolSizing {
+                min_size: 2,
+                max_size: 5,
+            },
             lifetime: PoolLifetime {
                 maintenance_interval: Some(Duration::from_millis(50)),
                 ..Default::default()
             },
-            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2312,12 +2464,18 @@ mod tests {
     #[tokio::test]
     async fn maintenance_task_cancelled_on_shutdown() {
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 2, max_size: 5 },
+            sizing: PoolSizing {
+                min_size: 2,
+                max_size: 5,
+            },
             lifetime: PoolLifetime {
                 maintenance_interval: Some(Duration::from_millis(50)),
                 ..Default::default()
             },
-            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2336,12 +2494,18 @@ mod tests {
     #[tokio::test]
     async fn no_maintenance_task_when_interval_is_none() {
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 2, max_size: 5 },
+            sizing: PoolSizing {
+                min_size: 2,
+                max_size: 5,
+            },
             lifetime: PoolLifetime {
                 maintenance_interval: None, // explicitly None
                 ..Default::default()
             },
-            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
@@ -2393,7 +2557,10 @@ mod tests {
         }
 
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 3 },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 3,
+            },
             acquire: PoolAcquire {
                 timeout: Duration::from_secs(1),
                 strategy: PoolStrategy::Fifo,
@@ -2446,7 +2613,10 @@ mod tests {
         }
 
         let pool_config = PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 3 },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 3,
+            },
             acquire: PoolAcquire {
                 timeout: Duration::from_secs(1),
                 strategy: PoolStrategy::Lifo,
@@ -2477,5 +2647,4 @@ mod tests {
         let (g_next, _) = pool.acquire(&test_ctx()).await.unwrap();
         assert_eq!(*g_next, "inst-1", "LIFO should return newest idle first");
     }
-
 }

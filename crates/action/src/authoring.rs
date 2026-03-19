@@ -5,10 +5,8 @@
 use std::future::Future;
 use std::marker::PhantomData;
 
-use crate::{
-    Action, ActionError, ActionMetadata, ActionResult, Context, StatelessAction,
-};
 use crate::dependency::ActionDependencies;
+use crate::{Action, ActionError, ActionMetadata, ActionResult, Context, StatelessAction};
 
 /// Stateless action adapter backed by an async function/closure.
 ///
@@ -89,7 +87,11 @@ mod tests {
     #[tokio::test]
     async fn fn_stateless_action_executes_with_low_boilerplate() {
         let action = stateless_fn::<_, serde_json::Value, serde_json::Value>(
-            ActionMetadata::new(nebula_core::action_key!("example.fn"), "Fn", "Function-backed action"),
+            ActionMetadata::new(
+                nebula_core::action_key!("example.fn"),
+                "Fn",
+                "Function-backed action",
+            ),
             |input| async move { Ok(input) },
         );
 

@@ -50,6 +50,8 @@ tokio-util = "0.7.18"
 rayon = { version = "1.11.0" }
 async-trait = "0.1.89"
 futures = "0.3"
+futures-core = "0.3"
+tokio-stream = "0.1"
 
 # Serialization
 serde = { version = "1.0.228", features = ["derive", "rc"] }

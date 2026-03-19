@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -66,8 +66,14 @@ async fn concurrent_cancelled_acquires_do_not_leak_permits() {
             resource,
             TestConfig,
             PoolConfig {
-                sizing: PoolSizing { min_size: 0, max_size },
-                acquire: PoolAcquire { timeout: Duration::from_millis(200), ..Default::default() },
+                sizing: PoolSizing {
+                    min_size: 0,
+                    max_size,
+                },
+                acquire: PoolAcquire {
+                    timeout: Duration::from_millis(200),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )
@@ -121,8 +127,14 @@ async fn concurrent_acquire_release_cycles_preserve_pool_invariants() {
             resource,
             TestConfig,
             PoolConfig {
-                sizing: PoolSizing { min_size: 0, max_size },
-                acquire: PoolAcquire { timeout: Duration::from_millis(250), ..Default::default() },
+                sizing: PoolSizing {
+                    min_size: 0,
+                    max_size,
+                },
+                acquire: PoolAcquire {
+                    timeout: Duration::from_millis(250),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )

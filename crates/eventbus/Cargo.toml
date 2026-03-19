@@ -13,7 +13,9 @@ documentation.workspace = true
 
 [dependencies]
 tokio = { workspace = true, features = ["sync"] }
-tracing = { workspace = true }
+parking_lot = { workspace = true }
+futures-core = { workspace = true }
+tokio-stream = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

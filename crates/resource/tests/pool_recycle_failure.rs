@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -79,8 +79,14 @@ impl Resource for RecycleResource {
 async fn recycle_failure_destroys_instance() {
     let fail_flag = Arc::new(AtomicBool::new(true)); // always fail recycle
     let pool_config = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 2 },
-        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 2,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(1),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let pool = Pool::new(RecycleResource::new(fail_flag), TestConfig, pool_config).unwrap();
@@ -115,8 +121,14 @@ async fn recycle_failure_destroys_instance() {
 async fn recycle_failure_does_not_block_next_acquire() {
     let fail_flag = Arc::new(AtomicBool::new(true)); // recycle fails
     let pool_config = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 1 }, // only 1 slot!
-        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 1,
+        }, // only 1 slot!
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(1),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let resource = RecycleResource::new(fail_flag.clone());

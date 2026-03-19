@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::Manager;
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
@@ -21,8 +21,6 @@ use nebula_resource::{ExecutionId, PoolAcquire, PoolSizing, WorkflowId};
 
 mod scope_helpers;
 use scope_helpers::*;
-
-
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -147,8 +145,14 @@ impl Resource for OrderedResourceWithDep2 {
 
 fn pool_cfg() -> PoolConfig {
     PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 4 },
-        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 4,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(1),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }

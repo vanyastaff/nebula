@@ -11,10 +11,10 @@ use std::time::Duration;
 
 use nebula_core::ResourceKey;
 
+use super::guard::{AnyGuard, AnyGuardTrait};
 use crate::context::Context;
 use crate::error::Result;
 use crate::guard::Guard;
-use super::guard::{AnyGuard, AnyGuardTrait};
 use crate::pool::Pool;
 use crate::resource::Resource;
 use crate::scope::Scope;

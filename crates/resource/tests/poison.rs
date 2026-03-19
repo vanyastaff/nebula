@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::context::Context;
 use nebula_resource::error::Error;
 use nebula_resource::poison::{Poison, PoisonError};
@@ -98,8 +98,14 @@ async fn pool_acquire_returns_internal_when_state_poisoned() {
         TestResource,
         TestConfig,
         PoolConfig {
-            sizing: PoolSizing { min_size: 0, max_size: 1 },
-            acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+            sizing: PoolSizing {
+                min_size: 0,
+                max_size: 1,
+            },
+            acquire: PoolAcquire {
+                timeout: Duration::from_secs(1),
+                ..Default::default()
+            },
             ..Default::default()
         },
     )

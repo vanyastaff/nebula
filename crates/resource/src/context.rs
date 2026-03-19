@@ -37,9 +37,15 @@ impl TraceContext {
     /// Returns `None` when the `traceparent` key is absent or empty.
     #[must_use]
     pub fn from_headers(headers: &HashMap<String, String>) -> Option<Self> {
-        let traceparent = headers.get("traceparent").filter(|v| !v.is_empty())?.clone();
+        let traceparent = headers
+            .get("traceparent")
+            .filter(|v| !v.is_empty())?
+            .clone();
         let tracestate = headers.get("tracestate").filter(|v| !v.is_empty()).cloned();
-        Some(Self { traceparent, tracestate })
+        Some(Self {
+            traceparent,
+            tracestate,
+        })
     }
 
     /// Inject the trace context into an outbound header map.
@@ -169,8 +175,7 @@ impl Context {
     /// Used when the manager prepares the context before `Resource::create()` for resources
     /// that declare sub-resources via `ResourceDependencies`.
     pub(crate) fn inject_resource(&mut self, key: ResourceKey, handle: Arc<dyn Any + Send + Sync>) {
-        self.resolved_resources
-            .insert(key.to_string(), handle);
+        self.resolved_resources.insert(key.to_string(), handle);
     }
 
     /// Retrieve a resolved sub-resource pool handle for typed acquisition.
@@ -229,12 +234,21 @@ impl Context {
                 workflow_id,
                 tenant_id: Some(tenant_id),
             },
-            Scope::Execution { execution_id, workflow_id, .. } => Scope::Execution {
+            Scope::Execution {
+                execution_id,
+                workflow_id,
+                ..
+            } => Scope::Execution {
                 execution_id,
                 workflow_id,
                 tenant_id: Some(tenant_id),
             },
-            Scope::Action { action_id, execution_id, workflow_id, .. } => Scope::Action {
+            Scope::Action {
+                action_id,
+                execution_id,
+                workflow_id,
+                ..
+            } => Scope::Action {
                 action_id,
                 execution_id,
                 workflow_id,
@@ -315,7 +329,7 @@ where
 mod tests {
     use std::sync::Arc;
 
-    use nebula_core::{resource_key, ExecutionId, ResourceKey, WorkflowId};
+    use nebula_core::{ExecutionId, ResourceKey, WorkflowId, resource_key};
 
     use super::*;
 

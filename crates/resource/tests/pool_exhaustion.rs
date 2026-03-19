@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -36,8 +36,14 @@ fn ctx() -> Context {
 #[tokio::test]
 async fn pool_exhaustion_returns_error() {
     let pool_config = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 2 },
-        acquire: PoolAcquire { timeout: Duration::from_millis(200), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 2,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_millis(200),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let pool = Pool::new(TestResource, TestConfig, pool_config).unwrap();
@@ -67,8 +73,14 @@ async fn pool_exhaustion_returns_error() {
 #[tokio::test(start_paused = true)]
 async fn pool_reuses_after_drop() {
     let pool_config = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 1 },
-        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 1,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(1),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let pool = Pool::new(TestResource, TestConfig, pool_config).unwrap();
@@ -90,8 +102,14 @@ async fn pool_reuses_after_drop() {
 #[tokio::test]
 async fn pool_exhausted_error_is_retryable() {
     let pool_config = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 1 },
-        acquire: PoolAcquire { timeout: Duration::from_millis(100), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 1,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_millis(100),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let pool = Pool::new(TestResource, TestConfig, pool_config).unwrap();

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
-use nebula_core::{resource_key, ResourceKey};
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::context::Context;
 use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolConfig};
@@ -132,8 +132,14 @@ async fn invalid_idle_instance_replaced_on_acquire() {
     let create_count = Arc::new(AtomicU32::new(0));
 
     let pool_config = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 2 },
-        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 2,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(1),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let pool = Pool::new(
@@ -177,8 +183,14 @@ async fn all_idle_instances_invalid_creates_fresh() {
     let reject_all = Arc::new(AtomicBool::new(false));
 
     let pool_config = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 3 },
-        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 3,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(1),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let pool = Pool::new(
@@ -232,8 +244,14 @@ async fn is_valid_error_treated_as_invalid() {
     let create_count = Arc::new(AtomicU32::new(0));
 
     let pool_config = PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size: 2 },
-        acquire: PoolAcquire { timeout: Duration::from_secs(1), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size: 2,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(1),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let pool = Pool::new(

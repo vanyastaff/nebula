@@ -131,9 +131,9 @@ mod tests {
     #[test]
     fn all_passes_every_label() {
         let reg = registry();
-        let labels =
-            reg.interner()
-                .label_set(&[("action_type", "http.request"), ("execution_id", "uuid-1")]);
+        let labels = reg
+            .interner()
+            .label_set(&[("action_type", "http.request"), ("execution_id", "uuid-1")]);
         let filtered = LabelAllowlist::all().apply(&labels, reg.interner());
         assert_eq!(filtered.len(), 2);
     }

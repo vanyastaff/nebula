@@ -6,7 +6,9 @@ use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nebula_eventbus::{BackPressurePolicy, EventBus, EventBusRegistry, EventFilter};
+use nebula_eventbus::{
+    BackPressurePolicy, EventBus, EventBusRegistry, EventFilter, PublishOutcome,
+};
 use tokio::task;
 use tracing::debug;
 
@@ -620,13 +622,21 @@ async fn test_bus_dropped_while_subscriber_polling() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase 6: Block Policy Placeholder (TODO)
+// Phase 6: Block Policy
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
-#[ignore]
-async fn test_block_policy_not_yet_implemented() {
-    // TODO: Implement Block policy test when/if BackPressurePolicy::Block is integrated
-    // For now, this is a placeholder to document the future test case.
-    panic!("Block policy tests are not yet implemented in Phase 2");
+async fn test_block_policy_emit_awaited_succeeds() {
+    init_log();
+    let bus = Arc::new(EventBus::<TestEvent>::with_policy(
+        4,
+        BackPressurePolicy::Block {
+            timeout: std::time::Duration::from_millis(100),
+        },
+    ));
+    let mut sub = bus.subscribe();
+    let outcome = bus.emit_awaited(TestEvent { id: 1 }).await;
+    assert_eq!(outcome, PublishOutcome::Sent);
+    let event = sub.recv().await.expect("should receive");
+    assert_eq!(event, TestEvent { id: 1 });
 }

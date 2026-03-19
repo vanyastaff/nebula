@@ -29,7 +29,6 @@ pub use crate::foundation::{
     ValidateExt, ValidationError, ValidationErrors, ValidationMode, When,
 };
 
-
 // ============================================================================
 // PROOF TOKENS
 // ============================================================================

@@ -58,12 +58,12 @@
 pub mod action;
 /// Ergonomic authoring helpers for low-boilerplate actions.
 pub mod authoring;
-/// Declarative dependency declaration for actions.
-pub mod dependency;
 /// Capability interfaces injected into contexts (resources, credentials, logger).
 pub mod capability;
 /// Runtime context provided to actions during execution.
 pub mod context;
+/// Declarative dependency declaration for actions.
+pub mod dependency;
 /// Error types distinguishing retryable from fatal failures.
 pub mod error;
 /// Execution sub-traits (StatelessAction, etc.).
@@ -86,13 +86,13 @@ pub mod validation;
 // ── Public re-exports ───────────────────────────────────────────────────────
 
 pub use action::Action;
-pub use dependency::ActionDependencies;
 pub use authoring::{FnStatelessAction, stateless_fn};
 pub use capability::{
     ActionLogLevel, ActionLogger, CredentialAccessor, ExecutionEmitter, ResourceAccessor,
     TriggerScheduler,
 };
 pub use context::{ActionContext, Context, TriggerContext};
+pub use dependency::ActionDependencies;
 pub use error::ActionError;
 pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 pub use handler::{InternalHandler, StatelessActionAdapter};

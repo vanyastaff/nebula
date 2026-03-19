@@ -350,9 +350,7 @@ impl HealthChecker {
                 // Apply jitter: sleep for interval × (1 ± jitter_factor)
                 let jitter = {
                     use rand::RngExt as _;
-                    rand::rng().random_range(
-                        (1.0 - jitter_factor)..(1.0 + jitter_factor),
-                    )
+                    rand::rng().random_range((1.0 - jitter_factor)..(1.0 + jitter_factor))
                 };
                 let sleep_dur = current_interval.mul_f64(jitter.max(0.05));
 

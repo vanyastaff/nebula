@@ -85,16 +85,18 @@
 //!
 //! - [`EventBus`] - typed event broadcaster.
 //! - [`BackPressurePolicy`] - buffer saturation behavior.
-//! - [`PublishOutcome`] - explicit send result for control-flow decisions.
+//! - [`PublishOutcome`] - explicit emit result for control-flow decisions.
 //! - [`EventBusStats`] - observability counters for sent/dropped/subscribers.
 //! - [`EventBusRegistry`] - multi-bus isolation by key (e.g. per-tenant buses).
 //! - [`SubscriptionScope`] and [`ScopedEvent`] - scope metadata for targeted subscriptions.
 //! - [`EventFilter`] and [`FilteredSubscriber`] - predicate-based event selection.
+//! - [`SubscriberStream`] and [`FilteredStream`] - `futures_core::Stream` adapters via `into_stream()`.
 //! - [`prelude`] - convenience re-exports for common use.
 //!
 //! # Contract
 //!
-//! - **Non-blocking send by default** — producers never block on subscriber speed.
+//! - **Non-blocking emit by default** — `emit()` never blocks on subscriber speed.
+//! - **Async emit** — `emit_awaited()` respects `Block` back-pressure policy.
 //! - **Best-effort delivery** — no guarantee of delivery or global ordering.
 //! - **EventBusStats** — `sent_count`, `dropped_count`, `subscriber_count` for observability.
 
@@ -111,6 +113,7 @@ pub mod prelude;
 mod registry;
 mod scope;
 mod stats;
+mod stream;
 mod subscriber;
 
 pub use bus::EventBus;
@@ -123,7 +126,6 @@ pub use registry::EventBusRegistryStats;
 pub use scope::ScopedEvent;
 pub use scope::SubscriptionScope;
 pub use stats::EventBusStats;
+pub use stream::FilteredStream;
+pub use stream::SubscriberStream;
 pub use subscriber::Subscriber;
-
-/// Alias for [`Subscriber`]; matches INTERACTIONS/ARCHITECTURE naming.
-pub type EventSubscriber<E> = Subscriber<E>;
