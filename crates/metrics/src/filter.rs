@@ -15,11 +15,8 @@
 //! use std::sync::Arc;
 //! use nebula_telemetry::metrics::MetricsRegistry;
 //! use nebula_metrics::filter::LabelAllowlist;
-//! use nebula_metrics::adapter::TelemetryAdapter;
 //!
 //! let reg = Arc::new(MetricsRegistry::new());
-//! let adapter = TelemetryAdapter::new(Arc::clone(&reg));
-//!
 //! let allowlist = LabelAllowlist::only(["action_type", "status"]);
 //!
 //! // Safe: only low-cardinality keys pass.
@@ -56,11 +53,23 @@ enum AllowlistInner {
 impl LabelAllowlist {
     /// Allow **all** labels — no filtering applied.
     ///
-    /// Use this as a no-op default when you do not need cardinality protection.
+    /// Use this explicitly in tests or when cardinality is already bounded.
+    /// For production, prefer [`LabelAllowlist::only`] with an explicit key set.
     #[must_use]
     pub fn all() -> Self {
         Self {
             inner: AllowlistInner::All,
+        }
+    }
+
+    /// Allow **no** labels — the safe production default.
+    ///
+    /// All label keys are stripped. Use [`LabelAllowlist::only`] to selectively
+    /// allow specific low-cardinality keys.
+    #[must_use]
+    pub fn none() -> Self {
+        Self {
+            inner: AllowlistInner::Keys(Vec::new()),
         }
     }
 
@@ -111,8 +120,11 @@ impl LabelAllowlist {
 }
 
 impl Default for LabelAllowlist {
+    /// Returns [`LabelAllowlist::none`] — the safe default that strips all labels.
+    ///
+    /// Use [`LabelAllowlist::all`] explicitly if you want passthrough.
     fn default() -> Self {
-        Self::all()
+        Self::none()
     }
 }
 
@@ -175,7 +187,24 @@ mod tests {
     }
 
     #[test]
-    fn default_is_passthrough() {
-        assert!(LabelAllowlist::default().is_passthrough());
+    fn default_is_deny_all() {
+        let d = LabelAllowlist::default();
+        assert!(!d.is_passthrough());
+        let reg = registry();
+        let labels = reg
+            .interner()
+            .label_set(&[("key", "value")]);
+        let filtered = d.apply(&labels, reg.interner());
+        assert_eq!(filtered.len(), 0);
+    }
+
+    #[test]
+    fn none_strips_all_labels() {
+        let reg = registry();
+        let labels = reg
+            .interner()
+            .label_set(&[("a", "1"), ("b", "2")]);
+        let filtered = LabelAllowlist::none().apply(&labels, reg.interner());
+        assert_eq!(filtered.len(), 0);
     }
 }
