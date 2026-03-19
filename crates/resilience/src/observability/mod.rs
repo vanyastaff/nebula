@@ -25,6 +25,7 @@
 //! ```
 
 pub mod hooks;
+pub mod sink;
 pub mod spans;
 
 // Original exports
@@ -44,3 +45,6 @@ pub use hooks::{Metric, metrics};
 
 // Pattern spans
 pub use spans::{PatternCategory, PatternSpanGuard};
+
+// New MetricsSink API
+pub use sink::{CircuitState, MetricsSink, NoopSink, RecordingSink, ResilienceEvent};

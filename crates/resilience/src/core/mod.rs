@@ -18,7 +18,9 @@ pub mod config;
 pub mod dynamic;
 mod error;
 mod metrics;
+pub mod policy_source;
 mod result;
+pub mod signals;
 pub mod traits;
 pub mod types;
 
@@ -56,6 +58,8 @@ pub use advanced::{
 
 // Re-export core error and result types (ConfigError exported via lib.rs directly to avoid conflict)
 pub use types::{CallError, CallResult};
+pub use policy_source::PolicySource;
+pub use signals::{ConstantLoad, LoadSignal};
 
 // Re-export cancellation support
 pub use cancellation::{

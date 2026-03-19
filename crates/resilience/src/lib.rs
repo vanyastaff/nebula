@@ -335,6 +335,10 @@ pub use compose::{
     BoxedOperation, FallbackLayer, HedgeLayer, LayerBuilder, LayerStack, RateLimiterLayer,
     ResilienceChain, ResilienceLayer,
 };
+pub use core::{PolicySource, LoadSignal, ConstantLoad};
+pub use observability::{MetricsSink, NoopSink, RecordingSink, ResilienceEvent};
+// CircuitState re-exported as SinkCircuitState to avoid conflict with old patterns::circuit_breaker::State
+pub use observability::sink::CircuitState as SinkCircuitState;
 pub use gate::{Gate, GateClosed, GateGuard};
 pub use manager::{
     PolicyBuilder, ResilienceManager, RetryableOperation, UnTypedServiceMetrics as ServiceMetrics,
