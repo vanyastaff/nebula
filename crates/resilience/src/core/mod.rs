@@ -54,11 +54,8 @@ pub use advanced::{
     Strategy, StrategyConfig, Unconfigured, ValidatedRetryConfig, WithCircuitBreaker, WithRetry,
 };
 
-// Re-export type-safe newtypes
-pub use types::{
-    DurationExt, FailureThreshold, MaxConcurrency, RateLimit, ResilienceResultExt, RetryCount,
-    Timeout as TimeoutNewtype,
-};
+// Re-export core error and result types (ConfigError exported via lib.rs directly to avoid conflict)
+pub use types::{CallError, CallResult};
 
 // Re-export cancellation support
 pub use cancellation::{

@@ -232,8 +232,8 @@ pub use core::{
         ValidatedRetryConfig, WithCircuitBreaker, WithRetry,
     },
 
-    // Configuration types with const generics
-    config::{ConfigError, ConfigResult, ResilienceConfig},
+    // Configuration types
+    config::{ConfigResult, ResilienceConfig},
 
     // Advanced trait system
     traits::{
@@ -262,11 +262,8 @@ pub use core::{
         FromResilienceError,
     },
 
-    // Type-safe newtypes
-    types::{
-        DurationExt, FailureThreshold, MaxConcurrency, RateLimit, ResilienceResultExt, RetryCount,
-        Timeout as TimeoutNewtype,
-    },
+    // Core error and result types
+    types::{CallError, CallResult, ConfigError},
 };
 
 // Re-exports from patterns with advanced features
