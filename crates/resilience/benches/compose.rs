@@ -8,11 +8,9 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::{
     ResiliencePipeline,
-    patterns::{
-        bulkhead::{Bulkhead, BulkheadConfig},
-        circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
-        retry::{BackoffConfig, RetryConfig},
-    },
+    bulkhead::{Bulkhead, BulkheadConfig},
+    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
+    retry::{BackoffConfig, RetryConfig},
 };
 use std::hint::black_box;
 use std::sync::Arc;
@@ -27,16 +25,30 @@ fn build_pipeline_1step() -> ResiliencePipeline<&'static str> {
 fn build_pipeline_2step() -> ResiliencePipeline<&'static str> {
     ResiliencePipeline::builder()
         .timeout(Duration::from_secs(5))
-        .retry(RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
+        .retry(
+            RetryConfig::new(3)
+                .unwrap()
+                .backoff(BackoffConfig::Fixed(Duration::from_millis(1))),
+        )
         .build()
 }
 
 fn build_pipeline_4step() -> ResiliencePipeline<&'static str> {
     let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default()).unwrap());
-    let bh = Arc::new(Bulkhead::new(BulkheadConfig { max_concurrency: 64, ..Default::default() }).unwrap());
+    let bh = Arc::new(
+        Bulkhead::new(BulkheadConfig {
+            max_concurrency: 64,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
     ResiliencePipeline::builder()
         .timeout(Duration::from_secs(5))
-        .retry(RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::from_millis(1))))
+        .retry(
+            RetryConfig::new(3)
+                .unwrap()
+                .backoff(BackoffConfig::Fixed(Duration::from_millis(1))),
+        )
         .circuit_breaker(cb)
         .bulkhead(bh)
         .build()
@@ -67,7 +79,9 @@ fn pipeline_execute_overhead(c: &mut Criterion) {
             b.to_async(&rt).iter(|| {
                 let p = &pipeline;
                 async move {
-                    let result = p.call(|| Box::pin(async { Ok::<u64, &str>(black_box(42)) })).await;
+                    let result = p
+                        .call(|| Box::pin(async { Ok::<u64, &str>(black_box(42)) }))
+                        .await;
                     black_box(result)
                 }
             });
@@ -80,14 +94,20 @@ fn pipeline_execute_overhead(c: &mut Criterion) {
 fn pipeline_retry_path(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let pipeline = ResiliencePipeline::<&str>::builder()
-        .retry(RetryConfig::new(3).unwrap().backoff(BackoffConfig::Fixed(Duration::ZERO)))
+        .retry(
+            RetryConfig::new(3)
+                .unwrap()
+                .backoff(BackoffConfig::Fixed(Duration::ZERO)),
+        )
         .build();
 
     c.bench_function("pipeline/retry_success_first_attempt", |b| {
         b.to_async(&rt).iter(|| {
             let p = &pipeline;
             async move {
-                let result = p.call(|| Box::pin(async { Ok::<u64, &str>(black_box(1)) })).await;
+                let result = p
+                    .call(|| Box::pin(async { Ok::<u64, &str>(black_box(1)) }))
+                    .await;
                 black_box(result)
             }
         });

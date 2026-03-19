@@ -7,8 +7,13 @@ use crate::CallError;
 
 /// Shed load immediately when `should_shed()` returns `true`.
 ///
-/// - If `should_shed()` returns `true` → `Err(CallError::LoadShed)` without calling `f`.
-/// - Otherwise → executes `f()` and maps `Err(e)` to `Err(CallError::Operation(e))`.
+/// - If `should_shed()` returns `true` -> `Err(CallError::LoadShed)` without calling `f`.
+/// - Otherwise -> executes `f()` and maps `Err(e)` to `Err(CallError::Operation(e))`.
+///
+/// # Errors
+///
+/// Returns `Err(CallError::LoadShed)` when the shed predicate fires,
+/// or `Err(CallError::Operation)` if the operation itself fails.
 pub async fn load_shed<T, E, S, F>(should_shed: S, f: F) -> Result<T, CallError<E>>
 where
     S: Fn() -> bool,
@@ -30,8 +35,11 @@ mod tests {
     async fn load_shed_rejects_when_signaled() {
         let shed = Arc::new(AtomicBool::new(true));
         let s = shed.clone();
-        let result: Result<u32, CallError<()>> =
-            load_shed(move || s.load(Ordering::SeqCst), || Box::pin(async { Ok(1u32) })).await;
+        let result: Result<u32, CallError<()>> = load_shed(
+            move || s.load(Ordering::SeqCst),
+            || Box::pin(async { Ok(1u32) }),
+        )
+        .await;
         assert!(matches!(result, Err(CallError::LoadShed)));
     }
 

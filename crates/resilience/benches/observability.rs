@@ -5,7 +5,7 @@
 )]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use nebula_resilience::observability::{ObservabilityHook, ObservabilityHooks, PatternEvent};
+use nebula_resilience::hooks::{ObservabilityHook, ObservabilityHooks, PatternEvent};
 use std::hint::black_box;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,7 +36,7 @@ fn observability_emit_throughput(c: &mut Criterion) {
     group.bench_function("single_hook", |b| {
         let hooks = ObservabilityHooks::new().with_hook(Arc::new(CountingHook::default()));
         b.iter(|| {
-            hooks.emit(sample_event());
+            hooks.emit(&sample_event());
             black_box(())
         });
     });
@@ -48,7 +48,7 @@ fn observability_emit_throughput(c: &mut Criterion) {
         }
 
         b.iter(|| {
-            hooks.emit(sample_event());
+            hooks.emit(&sample_event());
             black_box(())
         });
     });
@@ -79,7 +79,7 @@ fn observability_emit_contention(c: &mut Criterion) {
                         for _ in 0..num_tasks {
                             let hooks = Arc::clone(&hooks);
                             handles.push(tokio::spawn(async move {
-                                hooks.emit(sample_event());
+                                hooks.emit(&sample_event());
                             }));
                         }
 

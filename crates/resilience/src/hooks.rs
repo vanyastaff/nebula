@@ -502,10 +502,10 @@ impl ObservabilityHooks {
         self
     }
 
-    /// Emit an event to all hooks
-    pub fn emit(&self, event: PatternEvent) {
+    /// Emit an event to all hooks.
+    pub fn emit(&self, event: &PatternEvent) {
         for hook in self.hooks.iter() {
-            hook.on_event(&event);
+            hook.on_event(event);
         }
     }
 
@@ -558,7 +558,7 @@ impl ObservabilityHook for LoggingHook {
 
 /// Metrics hook that records events as metrics
 pub struct MetricsHook {
-    collector: crate::core::MetricsCollector,
+    collector: crate::MetricsCollector,
 }
 
 impl MetricsHook {
@@ -566,13 +566,13 @@ impl MetricsHook {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            collector: crate::core::MetricsCollector::new(true),
+            collector: crate::MetricsCollector::new(true),
         }
     }
 
     /// Get a snapshot of all metrics
     #[must_use]
-    pub fn metrics(&self) -> std::collections::HashMap<String, crate::core::MetricSnapshot> {
+    pub fn metrics(&self) -> std::collections::HashMap<String, crate::MetricSnapshot> {
         self.collector.all_metrics()
     }
 }
@@ -649,12 +649,12 @@ mod tests {
             .with_hook(Arc::new(MetricsHook::new()))
             .with_hook(Arc::new(LoggingHook::new(LogLevel::Info)));
 
-        hooks.emit(PatternEvent::Started {
+        hooks.emit(&PatternEvent::Started {
             pattern: "test".to_string(),
             operation: "test_op".to_string(),
         });
 
-        hooks.emit(PatternEvent::Succeeded {
+        hooks.emit(&PatternEvent::Succeeded {
             pattern: "test".to_string(),
             operation: "test_op".to_string(),
             duration: Duration::from_millis(50),

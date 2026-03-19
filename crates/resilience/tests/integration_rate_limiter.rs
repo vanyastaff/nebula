@@ -1,6 +1,6 @@
 //! Integration tests for rate limiter patterns
 
-use nebula_resilience::patterns::rate_limiter::*;
+use nebula_resilience::rate_limiter::*;
 use std::sync::Arc;
 use std::time::Duration;
 

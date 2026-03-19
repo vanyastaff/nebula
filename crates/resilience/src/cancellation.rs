@@ -9,8 +9,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::error::ResilienceError;
-use crate::core::result::ResilienceResult;
+use crate::error::ResilienceError;
+use crate::result::ResilienceResult;
 
 /// Cancellation-aware operation wrapper
 ///
@@ -74,7 +74,7 @@ impl CancellationContext {
         self.reason.as_deref()
     }
 
-    /// Execute an operation with cancellation support
+    /// Execute an operation with cancellation support.
     ///
     /// This follows the pattern from .cursorrules:
     /// ```text
@@ -83,6 +83,11 @@ impl CancellationContext {
     ///     _ = shutdown.cancelled() => Err(Cancelled)
     /// }
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ResilienceError::Cancelled)` if the cancellation token fires
+    /// before the operation completes. Propagates any error returned by `operation`.
     #[tracing::instrument(skip(self, operation), fields(
         cancellation_reason = self.reason.as_deref().unwrap_or("none")
     ))]
@@ -105,7 +110,13 @@ impl CancellationContext {
         }
     }
 
-    /// Execute with timeout and cancellation
+    /// Execute with timeout and cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ResilienceError::Timeout)` if the operation exceeds `timeout`.
+    /// Returns `Err(ResilienceError::Cancelled)` if cancellation fires first.
+    /// Propagates any error returned by `operation`.
     #[tracing::instrument(skip(self, operation), fields(
         timeout_ms = timeout.as_millis(),
         cancellation_reason = self.reason.as_deref().unwrap_or("none")

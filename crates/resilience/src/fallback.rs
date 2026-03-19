@@ -176,22 +176,7 @@ impl<T: Clone + Send + Sync + 'static> FallbackStrategy<T> for CacheFallback<T> 
     ) -> Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send + 'a>> {
         Box::pin(async move {
             if !self.is_valid().await {
-                if self.stale_if_error {
-                    let cached_value = self.cache.read().await.clone();
-                    if let Some(value) = cached_value {
-                        return Ok(value);
-                    }
-
-                    return Err(ResilienceError::FallbackFailed {
-                        reason: "Cache expired and no stale value available".to_string(),
-                        original_error: None,
-                    });
-                }
-
-                return Err(ResilienceError::FallbackFailed {
-                    reason: "Cache expired".to_string(),
-                    original_error: None,
-                });
+                return self.stale_fallback().await;
             }
 
             self.cache
@@ -202,6 +187,26 @@ impl<T: Clone + Send + Sync + 'static> FallbackStrategy<T> for CacheFallback<T> 
                     reason: "No cached value available".to_string(),
                     original_error: None,
                 })
+        })
+    }
+}
+
+impl<T: Clone + Send + Sync> CacheFallback<T> {
+    /// Handle stale cache fallback when the cache is expired.
+    async fn stale_fallback(&self) -> ResilienceResult<T> {
+        if self.stale_if_error {
+            let cached_value = self.cache.read().await.clone();
+            if let Some(value) = cached_value {
+                return Ok(value);
+            }
+            return Err(ResilienceError::FallbackFailed {
+                reason: "Cache expired and no stale value available".to_string(),
+                original_error: None,
+            });
+        }
+        Err(ResilienceError::FallbackFailed {
+            reason: "Cache expired".to_string(),
+            original_error: None,
         })
     }
 }
@@ -226,7 +231,9 @@ impl<T> ChainFallback<T> {
         }
     }
 
-    /// Add a fallback to the chain
+    /// Add a fallback to the chain.
+    // Reason: `add` is a builder method, not the `Add` trait operator.
+    #[allow(clippy::should_implement_trait)]
     #[must_use = "builder methods must be chained or built"]
     pub fn add(mut self, fallback: Arc<dyn FallbackStrategy<T>>) -> Self {
         self.fallbacks.push(fallback);
@@ -368,7 +375,12 @@ impl<T> FallbackOperation<T> {
         Self { fallback_strategy }
     }
 
-    /// Execute with fallback
+    /// Execute with fallback.
+    ///
+    /// # Errors
+    ///
+    /// Returns the fallback strategy's error if both the operation and fallback fail,
+    /// or the original error if the fallback strategy declines to handle it.
     pub async fn execute<F, Fut>(&self, operation: F) -> ResilienceResult<T>
     where
         F: FnOnce() -> Fut,
