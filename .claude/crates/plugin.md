@@ -16,3 +16,5 @@ Plugin packaging unit — the user-visible integration bundle (e.g., Slack, HTTP
 
 ## Relations
 - Depends on nebula-core (re-exports `PluginKey`). Used by nebula-engine (re-exports `Plugin`, `PluginMetadata`, etc.), nebula-sdk.
+
+<!-- reviewed: 2026-03-19 -->

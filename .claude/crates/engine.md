@@ -17,3 +17,5 @@ Workflow execution orchestrator — DAG scheduler, level-by-level execution, nod
 
 ## Relations
 - Depends on nebula-workflow, nebula-execution, nebula-action, nebula-plugin, nebula-runtime. Used by nebula-api.
+
+<!-- reviewed: 2026-03-19 -->
