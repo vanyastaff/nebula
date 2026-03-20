@@ -6,6 +6,18 @@
 
 Центральный trait. Описывает lifecycle одного runtime instance — connection, client, process, session.
 
+### Why 5 associated types?
+
+Each associated type isolates a distinct concern. Collapsing any two creates coupling problems:
+
+| Type | Purpose | Why separate |
+|------|---------|-------------|
+| `Config` | Operational settings (timeouts, pool size) | Must be `Clone` + serializable for config diffing. Never contains secrets. Separate from `Credential` to allow independent rotation. |
+| `Runtime` | Internal instance managed by framework | The "real" resource. Pool/topology owns it. May differ from what callers see (e.g. Telegram: `BotRuntime` with broadcast channel vs `BotHandle` with send methods). |
+| `Lease` | Caller-facing handle via `ResourceHandle<R>` | Decouples caller API from internal structure. For Pool/Resident/Exclusive: `Lease = Runtime`. For Service: `Lease = Token` (restricted API). For Transport: `Lease = Session`. When associated type defaults stabilize: `type Lease = Self::Runtime`. |
+| `Error` | Typed error enum per resource | Each resource has domain-specific errors (PgError, HttpError). `ClassifyError` derive macro maps them to framework `ErrorKind` (transient/permanent/exhausted). Avoids one giant error enum. |
+| `Credential` | Secret data resolved by framework | Framework resolves via `CredentialStore` BEFORE `create()`. Resource author declares the type; framework handles lookup, caching, rotation. `()` for resources without secrets. Separation from `Config` enables independent credential rotation without instance recreation. |
+
 ```rust
 pub trait Resource: Send + Sync + 'static {
     /// Конфигурация ресурса. Operational settings: timeouts, pool size, application name.
@@ -417,6 +429,23 @@ pub trait CredentialCtx: Ctx {
     fn credential_store(&self) -> &dyn CredentialStore;
 }
 
+// ── Alignment with nebula-credential ─────────────────────────────────
+//
+// nebula-credential provides CredentialManager + CredentialProvider trait.
+// nebula-resource defines CredentialStore (object-safe via BoxFuture + downcast).
+// These are PEER crates at the Business Logic layer — no direct import between them.
+//
+// Integration path:
+//   1. nebula-credential's CredentialManager implements nebula-resource's CredentialStore.
+//   2. The adapter lives in the engine/platform layer (neither crate imports the other).
+//   3. CredentialStore::resolve_erased() returns Box<dyn Any> — the engine adapter
+//      calls CredentialManager::get() and boxes the result.
+//   4. Credential rotation events flow via EventBus<CredentialRotatedEvent> (nebula-eventbus),
+//      not via direct crate imports.
+//
+// This design keeps nebula-resource and nebula-credential independently testable
+// and avoids circular dependencies.
+
 // ── Credential rotation ──────────────────────────────────────────────
 //
 // При CredentialRotatedEvent (из nebula-eventbus):
@@ -582,11 +611,71 @@ pub struct BasicCtx {
 }
 ```
 
+### Ctx extension examples
+
+Extensions allow domain-specific data injection without modifying the Ctx trait:
+
+```rust
+// ── Define extension types ──────────────────────────────────────────
+pub struct TenantContext {
+    pub schema: String,
+    pub role:   String,
+}
+
+pub struct CorrelationId(pub String);
+
+// ── Engine populates extensions before execution ────────────────────
+let mut ext = Extensions::new();
+ext.insert(TenantContext { schema: "acme".into(), role: "app_user".into() });
+ext.insert(CorrelationId(format!("exec-{}", execution_id)));
+
+let ctx = BasicCtx {
+    scope: ScopeLevel::Execution { id: execution_id },
+    execution_id,
+    cancel: Some(cancel_token.clone()),
+    extensions: ext,
+};
+
+// ── Resource reads extensions in prepare() ──────────────────────────
+impl Resource for Postgres {
+    // ...
+    async fn prepare(
+        &self,
+        conn: &mut PgConnection,
+        ctx:  &dyn Ctx,
+    ) -> Result<(), PgError> {
+        // Multi-tenant: set search_path per execution
+        if let Some(tenant) = ctx.ext::<TenantContext>() {
+            conn.client.simple_query(
+                &format!("SET search_path TO {}", tenant.schema)
+            ).await.map_err(PgError::Query)?;
+        }
+        Ok(())
+    }
+}
+
+impl Resource for HttpClient {
+    // ...
+    async fn prepare(
+        &self,
+        client: &mut reqwest::Client,
+        ctx:    &dyn Ctx,
+    ) -> Result<(), HttpError> {
+        // Inject correlation ID into default headers
+        if let Some(corr) = ctx.ext::<CorrelationId>() {
+            // Note: reqwest::Client is immutable; real impl uses a wrapper
+            // that stores correlation_id and injects it per-request.
+        }
+        Ok(())
+    }
+}
+```
+
 ---
 
 ## Error
 
-Три категории ошибок + scope.
+Six error categories (exhaustive for resource lifecycle) + scope.
 
 ```rust
 #[derive(Debug)]
@@ -622,6 +711,18 @@ pub enum ErrorKind {
     /// Operation cancelled (CancellationToken).
     Cancelled,
 }
+
+// ── ErrorKind completeness ───────────────────────────────────────────
+// The 6 categories cover all resource lifecycle failure modes:
+//   Transient    — retry with backoff (network blip, timeout)
+//   Permanent    — never retry (auth failure, missing DB, invalid config)
+//   Exhausted    — quota/budget depleted, retry after cooldown (rate limit)
+//   Backpressure — pool/semaphore full, caller decides retry strategy
+//   NotFound     — resource key not in registry (programming error)
+//   Cancelled    — CancellationToken fired (graceful shutdown)
+//
+// Any resource error must map to exactly one of these. The ClassifyError
+// derive macro enforces this at compile time for all enum variants.
 
 /// Scope ошибки: весь ресурс или конкретная цель.
 #[derive(Debug, Clone, Default)]
