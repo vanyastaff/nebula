@@ -180,7 +180,9 @@ impl<T: Poolable> ThreadSafePool<T> {
 
         // Check if we can create new object (atomically reserve a slot)
         if let Some(max) = self.config.max_capacity {
-            let mut current = self.created_count.load(std::sync::atomic::Ordering::Acquire);
+            let mut current = self
+                .created_count
+                .load(std::sync::atomic::Ordering::Acquire);
 
             // Try to atomically reserve a slot for creation
             let slot_reserved = loop {
@@ -193,7 +195,7 @@ impl<T: Poolable> ThreadSafePool<T> {
                 match self.created_count.compare_exchange_weak(
                     current,
                     current + 1,
-                    std::sync::atomic::Ordering::AcqRel,  // Success: synchronize reservation
+                    std::sync::atomic::Ordering::AcqRel, // Success: synchronize reservation
                     std::sync::atomic::Ordering::Acquire, // Failure: reload current value
                 ) {
                     Ok(_) => {
@@ -249,7 +251,8 @@ impl<T: Poolable> ThreadSafePool<T> {
             }
         } else {
             // Unbounded pool - always increment
-            self.created_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.created_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
         // Create new object (slot has been reserved if pool is bounded)

@@ -6,4 +6,4 @@ mod postgres;
 
 pub use memory::{MemoryStorage, MemoryStorageTyped};
 #[cfg(feature = "postgres")]
-pub use postgres::{PostgresStorage, PostgresStorageConfig};
+pub use postgres::{PgWorkflowRepo, PostgresStorage, PostgresStorageConfig};
