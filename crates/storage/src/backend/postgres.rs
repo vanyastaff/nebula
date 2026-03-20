@@ -272,8 +272,15 @@ impl WorkflowRepo for PgWorkflowRepo {
         }
     }
 
-    async fn delete(&self, _id: WorkflowId) -> Result<bool, WorkflowRepoError> {
-        todo!()
+    async fn delete(&self, id: WorkflowId) -> Result<bool, WorkflowRepoError> {
+        let uuid = sqlx::types::Uuid::from_bytes(*id.get().as_bytes());
+        let result = sqlx::query("DELETE FROM workflows WHERE id = $1")
+            .bind(uuid)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| WorkflowRepoError::Connection(err.to_string()))?;
+
+        Ok(result.rows_affected() > 0)
     }
 
     async fn list(
