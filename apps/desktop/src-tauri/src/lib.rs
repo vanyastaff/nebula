@@ -9,7 +9,8 @@ use tauri_specta::{collect_commands, Builder};
 use commands::auth::{get_auth_state, sign_out, start_oauth};
 use commands::connection::{get_connection, set_connection};
 use commands::credentials::{
-    create_credential, delete_credential, get_credential, list_credentials, update_credential,
+    create_credential, delete_credential, get_credential, list_credentials, rotate_credential,
+    update_credential,
 };
 
 #[tauri::command]
@@ -32,6 +33,7 @@ pub fn run() {
         create_credential,
         update_credential,
         delete_credential,
+        rotate_credential,
     ]);
 
     #[cfg(debug_assertions)]

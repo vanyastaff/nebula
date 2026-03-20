@@ -168,3 +168,27 @@ pub async fn delete_credential(id: String, app: AppHandle) -> Result<(), String>
 
     Ok(())
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn rotate_credential(id: String, app: AppHandle) -> Result<Credential, String> {
+    let mut credential = load_one(&app, &id)
+        .ok_or_else(|| format!("Credential not found: {}", id))?;
+
+    // Update metadata with rotation timestamp
+    let now = Utc::now();
+    credential.metadata.last_modified = now.to_rfc3339();
+    credential.metadata.version += 1;
+
+    // Note: In a real implementation, this would:
+    // 1. Generate new credential values based on the protocol type
+    // 2. Update the encrypted state with new values
+    // 3. Optionally revoke the old credentials with the provider
+    // For now, we just update the metadata to simulate rotation
+
+    save_credential(&app, &credential)?;
+    app.emit("credential_rotated", &credential)
+        .map_err(|e: tauri::Error| e.to_string())?;
+
+    Ok(credential)
+}

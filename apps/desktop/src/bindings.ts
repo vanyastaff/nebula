@@ -107,4 +107,8 @@ export const commands = {
   async deleteCredential(id: string): Promise<void> {
     await TAURI_INVOKE<void>("delete_credential", { id });
   },
+
+  async rotateCredential(id: string): Promise<Credential> {
+    return await TAURI_INVOKE<Credential>("rotate_credential", { id });
+  },
 };

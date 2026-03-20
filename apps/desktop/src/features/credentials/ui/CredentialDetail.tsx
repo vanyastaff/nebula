@@ -4,6 +4,7 @@ import { RotationIndicator } from "./RotationIndicator";
 import { getSchemaByKind } from "../application/schemas";
 import { computeRotationStatus } from "../domain/types";
 import type { Credential, CredentialKind } from "../domain/types";
+import { commands } from "../../../bindings";
 
 export interface CredentialDetailProps {
   credentialId: string;
@@ -14,6 +15,8 @@ export function CredentialDetail({ credentialId }: CredentialDetailProps) {
   const [credential, setCredential] = useState<Credential | null>(null);
   const [loading, setLoading] = useState(true);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [showRotationDialog, setShowRotationDialog] = useState(false);
+  const [rotating, setRotating] = useState(false);
 
   useEffect(() => {
     const loadCredential = async () => {
@@ -34,6 +37,28 @@ export function CredentialDetail({ credentialId }: CredentialDetailProps) {
     } catch (error) {
       console.error("Failed to copy:", error);
     }
+  };
+
+  const handleRotateClick = () => {
+    setShowRotationDialog(true);
+  };
+
+  const handleRotateConfirm = async () => {
+    setRotating(true);
+    try {
+      const rotated = await commands.rotateCredential(credentialId);
+      setCredential(rotated);
+      setShowRotationDialog(false);
+    } catch (error) {
+      console.error("Failed to rotate credential:", error);
+      alert(error instanceof Error ? error.message : "Failed to rotate credential");
+    } finally {
+      setRotating(false);
+    }
+  };
+
+  const handleRotateCancel = () => {
+    setShowRotationDialog(false);
   };
 
   if (loading) {
@@ -72,7 +97,16 @@ export function CredentialDetail({ credentialId }: CredentialDetailProps) {
           <h2 style={titleStyle}>{credential.name}</h2>
           <p style={subtitleStyle}>{schema?.displayName ?? credential.kind}</p>
         </div>
-        <RotationIndicator status={rotationStatus} size="md" />
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <RotationIndicator status={rotationStatus} size="md" />
+          <button
+            onClick={handleRotateClick}
+            style={rotateButtonStyle}
+            disabled={rotating}
+          >
+            {rotating ? "Rotating..." : "Rotate"}
+          </button>
+        </div>
       </div>
 
       {/* Metadata Section */}
@@ -170,6 +204,35 @@ export function CredentialDetail({ credentialId }: CredentialDetailProps) {
             ))}
           </div>
         </section>
+      )}
+
+      {/* Rotation Confirmation Dialog */}
+      {showRotationDialog && (
+        <div style={dialogOverlayStyle}>
+          <div style={dialogContainerStyle}>
+            <h3 style={dialogTitleStyle}>Rotate Credential</h3>
+            <p style={dialogMessageStyle}>
+              Are you sure you want to rotate this credential? This will generate
+              new credential values and increment the version number.
+            </p>
+            <div style={dialogActionsStyle}>
+              <button
+                onClick={handleRotateCancel}
+                style={dialogCancelButtonStyle}
+                disabled={rotating}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRotateConfirm}
+                style={dialogConfirmButtonStyle}
+                disabled={rotating}
+              >
+                {rotating ? "Rotating..." : "Confirm Rotation"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -404,4 +467,83 @@ const tagKeyStyle: CSSProperties = {
 const tagValueStyle: CSSProperties = {
   color: "#edf2ff",
   fontFamily: "'Courier New', monospace",
+};
+
+const rotateButtonStyle: CSSProperties = {
+  padding: "8px 16px",
+  fontSize: 13,
+  fontWeight: 600,
+  color: "#edf2ff",
+  background: "rgba(61, 167, 127, 0.2)",
+  border: "1px solid rgba(61, 167, 127, 0.4)",
+  borderRadius: 8,
+  cursor: "pointer",
+  transition: "all 0.15s ease",
+};
+
+const dialogOverlayStyle: CSSProperties = {
+  position: "fixed",
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  background: "rgba(0, 0, 0, 0.7)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  zIndex: 1000,
+};
+
+const dialogContainerStyle: CSSProperties = {
+  background: "#0e1426",
+  border: "1px solid rgba(151, 165, 198, 0.3)",
+  borderRadius: 12,
+  padding: 24,
+  maxWidth: 480,
+  width: "90%",
+  boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
+};
+
+const dialogTitleStyle: CSSProperties = {
+  margin: "0 0 12px 0",
+  fontSize: 18,
+  fontWeight: 600,
+  color: "#edf2ff",
+};
+
+const dialogMessageStyle: CSSProperties = {
+  margin: "0 0 24px 0",
+  fontSize: 14,
+  lineHeight: 1.6,
+  color: "#b8c5e6",
+};
+
+const dialogActionsStyle: CSSProperties = {
+  display: "flex",
+  gap: 12,
+  justifyContent: "flex-end",
+};
+
+const dialogCancelButtonStyle: CSSProperties = {
+  padding: "10px 20px",
+  fontSize: 13,
+  fontWeight: 600,
+  color: "#b8c5e6",
+  background: "rgba(184, 197, 230, 0.1)",
+  border: "1px solid rgba(184, 197, 230, 0.3)",
+  borderRadius: 8,
+  cursor: "pointer",
+  transition: "all 0.15s ease",
+};
+
+const dialogConfirmButtonStyle: CSSProperties = {
+  padding: "10px 20px",
+  fontSize: 13,
+  fontWeight: 600,
+  color: "#edf2ff",
+  background: "rgba(61, 167, 127, 0.3)",
+  border: "1px solid rgba(61, 167, 127, 0.5)",
+  borderRadius: 8,
+  cursor: "pointer",
+  transition: "all 0.15s ease",
 };

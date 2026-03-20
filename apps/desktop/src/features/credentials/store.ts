@@ -69,6 +69,16 @@ export const useCredentialStore = create<CredentialState & CredentialActions>((s
           error: undefined,
         }));
       });
+
+      await listen<RawCredential>("credential_rotated", (event) => {
+        const rotatedCredential = toListItem(normalizeCredential(event.payload));
+        set((state) => ({
+          credentials: state.credentials.map((c) =>
+            c.id === rotatedCredential.id ? rotatedCredential : c
+          ),
+          error: undefined,
+        }));
+      });
     } catch (error) {
       set({ error: String(error), initialized: true });
     }
