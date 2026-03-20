@@ -123,7 +123,11 @@ function formatDate(date: Date | null): string {
   });
 }
 
-export function CredentialList() {
+export interface CredentialListProps {
+  onSelect?: (credentialId: string) => void;
+}
+
+export function CredentialList({ onSelect }: CredentialListProps) {
   const { credentials, selectedCredentialId, select } = useCredentialStore();
 
   const containerStyle: CSSProperties = {
@@ -297,7 +301,13 @@ export function CredentialList() {
               <tr
                 key={credential.id}
                 style={getRowStyle(credential.id)}
-                onClick={() => select(credential.id)}
+                onClick={() => {
+                  if (onSelect) {
+                    onSelect(credential.id);
+                  } else {
+                    select(credential.id);
+                  }
+                }}
                 onMouseEnter={(e) => {
                   if (credential.id !== selectedCredentialId) {
                     Object.assign(e.currentTarget.style, getRowHoverStyle());
