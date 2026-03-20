@@ -13,6 +13,8 @@ use sqlx::{Pool, Postgres};
 
 use crate::StorageError;
 use crate::storage::Storage;
+use crate::workflow_repo::{WorkflowRepo, WorkflowRepoError};
+use nebula_core::WorkflowId;
 
 /// Configuration for [`PostgresStorage`].
 #[derive(Clone, Debug)]
@@ -104,6 +106,20 @@ impl PostgresStorage {
             delete_sql: Arc::from(delete_sql),
             exists_sql: Arc::from(exists_sql),
         })
+    }
+}
+
+/// Postgres-backed workflow repository.
+#[derive(Clone)]
+pub struct PgWorkflowRepo {
+    pool: Pool<Postgres>,
+}
+
+impl PgWorkflowRepo {
+    /// Create a new [`PgWorkflowRepo`] from an existing connection pool.
+    #[must_use]
+    pub fn new(pool: Pool<Postgres>) -> Self {
+        Self { pool }
     }
 }
 
