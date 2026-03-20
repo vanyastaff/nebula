@@ -177,3 +177,163 @@ impl WorkflowRepo for InMemoryWorkflowRepo {
         Ok(rows.into_iter().skip(offset).take(limit).collect())
     }
 }
+
+/// Shared test suite for any [`WorkflowRepo`] implementation.
+///
+/// Call [`workflow_repo_tests!`] with a zero-arg async factory that returns an
+/// `impl WorkflowRepo`. Each test gets a fresh repo instance.
+#[cfg(test)]
+#[macro_export]
+macro_rules! workflow_repo_tests {
+    ($factory:expr) => {
+        use $crate::workflow_repo::{WorkflowRepo, WorkflowRepoError};
+        use nebula_core::WorkflowId;
+
+        #[tokio::test]
+        async fn save_and_get() {
+            let repo = $factory.await;
+            let id = WorkflowId::new();
+            let def = serde_json::json!({"name": "test-wf", "nodes": [1, 2, 3]});
+
+            repo.save(id, 0, def.clone()).await.expect("save v0");
+
+            let (version, got) = repo
+                .get_with_version(id)
+                .await
+                .expect("get")
+                .expect("should exist");
+            assert_eq!(version, 1);
+            assert_eq!(got, def);
+
+            // Also check get() default method
+            let got2 = repo.get(id).await.expect("get").expect("should exist");
+            assert_eq!(got2, def);
+
+            // Non-existent id returns None
+            let missing = repo.get(WorkflowId::new()).await.expect("get missing");
+            assert!(missing.is_none());
+
+            // cleanup
+            repo.delete(id).await.ok();
+        }
+
+        #[tokio::test]
+        async fn optimistic_concurrency() {
+            let repo = $factory.await;
+            let id = WorkflowId::new();
+            let def = serde_json::json!({"v": 0});
+
+            repo.save(id, 0, def.clone()).await.expect("save v0");
+
+            // Stale write with version 0 (actual is 1) must fail
+            let err = repo.save(id, 0, def.clone()).await.unwrap_err();
+            match err {
+                WorkflowRepoError::Conflict {
+                    expected_version,
+                    actual_version,
+                    ..
+                } => {
+                    assert_eq!(expected_version, 0);
+                    assert_eq!(actual_version, 1);
+                }
+                other => panic!("expected Conflict, got: {other}"),
+            }
+
+            // Correct version succeeds
+            repo.save(id, 1, serde_json::json!({"v": 1}))
+                .await
+                .expect("save v1");
+
+            // cleanup
+            repo.delete(id).await.ok();
+        }
+
+        #[tokio::test]
+        async fn delete_semantics() {
+            let repo = $factory.await;
+            let id = WorkflowId::new();
+
+            // Delete non-existent returns false
+            assert!(!repo.delete(id).await.expect("delete missing"));
+
+            // Delete existing returns true
+            repo.save(id, 0, serde_json::json!({})).await.expect("save");
+            assert!(repo.delete(id).await.expect("delete existing"));
+
+            // After delete, get returns None
+            assert!(repo.get(id).await.expect("get after delete").is_none());
+
+            // Double-delete returns false
+            assert!(!repo.delete(id).await.expect("double delete"));
+        }
+
+        #[tokio::test]
+        async fn list_ordering() {
+            let repo = $factory.await;
+            let ids: Vec<WorkflowId> = (0..5).map(|_| WorkflowId::new()).collect();
+            for (i, &id) in ids.iter().enumerate() {
+                repo.save(id, 0, serde_json::json!({"i": i}))
+                    .await
+                    .expect("save");
+            }
+
+            // Full list
+            let all = repo.list(0, 100).await.expect("list all");
+            assert!(all.len() >= 5);
+
+            // Pagination: pages should not overlap
+            let page1 = repo.list(0, 3).await.expect("page1");
+            let page2 = repo.list(3, 3).await.expect("page2");
+            assert_eq!(page1.len(), 3);
+            assert!(!page2.is_empty());
+            for (id, _) in &page1 {
+                assert!(!page2.iter().any(|(pid, _)| pid == id), "overlap detected");
+            }
+
+            // cleanup
+            for &id in &ids {
+                repo.delete(id).await.ok();
+            }
+        }
+
+        #[tokio::test]
+        async fn version_lifecycle() {
+            let repo = $factory.await;
+            let id = WorkflowId::new();
+
+            // v0 -> 1
+            repo.save(id, 0, serde_json::json!({"step": 0}))
+                .await
+                .expect("v0");
+            let (v, _) = repo.get_with_version(id).await.unwrap().unwrap();
+            assert_eq!(v, 1);
+
+            // v1 -> 2
+            repo.save(id, 1, serde_json::json!({"step": 1}))
+                .await
+                .expect("v1");
+            let (v, _) = repo.get_with_version(id).await.unwrap().unwrap();
+            assert_eq!(v, 2);
+
+            // v2 -> 3
+            repo.save(id, 2, serde_json::json!({"step": 2}))
+                .await
+                .expect("v2");
+            let (v, def) = repo.get_with_version(id).await.unwrap().unwrap();
+            assert_eq!(v, 3);
+            assert_eq!(def, serde_json::json!({"step": 2}));
+
+            // cleanup
+            repo.delete(id).await.ok();
+        }
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod in_memory {
+        workflow_repo_tests!(async { super::InMemoryWorkflowRepo::new() });
+    }
+}

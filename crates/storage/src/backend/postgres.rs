@@ -455,6 +455,16 @@ mod tests {
         repo.delete(id).await.ok();
     }
 
+    mod shared {
+        use crate::workflow_repo_tests;
+        workflow_repo_tests!(async {
+            let url = std::env::var("DATABASE_URL")
+                .expect("DATABASE_URL required for postgres shared tests");
+            let storage = super::PostgresStorage::new(url).await.expect("connect");
+            super::PgWorkflowRepo::new(storage.pool().clone())
+        });
+    }
+
     #[tokio::test]
     async fn postgres_get_set_delete_exists_roundtrip() {
         let Ok(url) = std::env::var("DATABASE_URL") else {
