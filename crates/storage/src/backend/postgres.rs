@@ -170,6 +170,45 @@ impl Storage for PostgresStorage {
     }
 }
 
+#[async_trait]
+impl WorkflowRepo for PgWorkflowRepo {
+    async fn get_with_version(
+        &self,
+        id: WorkflowId,
+    ) -> Result<Option<(u64, serde_json::Value)>, WorkflowRepoError> {
+        let row = sqlx::query_as::<_, (i64, Json<serde_json::Value>)>(
+            "SELECT version, definition FROM workflows WHERE id = $1",
+        )
+        .bind(sqlx::types::Uuid::from_bytes(*id.get().as_bytes()))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| WorkflowRepoError::Connection(err.to_string()))?;
+
+        Ok(row.map(|(version, definition)| (version as u64, definition.0)))
+    }
+
+    async fn save(
+        &self,
+        _id: WorkflowId,
+        _version: u64,
+        _definition: serde_json::Value,
+    ) -> Result<(), WorkflowRepoError> {
+        todo!()
+    }
+
+    async fn delete(&self, _id: WorkflowId) -> Result<bool, WorkflowRepoError> {
+        todo!()
+    }
+
+    async fn list(
+        &self,
+        _offset: usize,
+        _limit: usize,
+    ) -> Result<Vec<(WorkflowId, serde_json::Value)>, WorkflowRepoError> {
+        todo!()
+    }
+}
+
 #[cfg(all(test, feature = "postgres"))]
 mod tests {
     use super::*;
