@@ -247,7 +247,7 @@ mod tests {
         .await
         .expect("query columns");
 
-        assert_eq!(columns, vec!["key", "value", "updated_at"]);
+        assert_eq!(columns, vec!["key", "value", "created_at", "updated_at"]);
     }
 
     #[tokio::test]
