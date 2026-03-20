@@ -36,7 +36,7 @@ impl Default for PostgresStorageConfig {
                 .unwrap_or_else(|_| "postgres://nebula:nebula@localhost:5432/nebula".to_string()),
             table: "storage_kv".to_string(),
             max_connections: 10,
-            min_connections: 1,
+            min_connections: 2,
             connect_timeout: Duration::from_secs(5),
         }
     }
