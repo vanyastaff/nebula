@@ -133,13 +133,11 @@ impl PgWorkflowRepo {
         &self,
         uuid: sqlx::types::Uuid,
     ) -> Result<u64, WorkflowRepoError> {
-        let version = sqlx::query_scalar::<_, i64>(
-            "SELECT version FROM workflows WHERE id = $1",
-        )
-        .bind(uuid)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|err| WorkflowRepoError::Connection(err.to_string()))?;
+        let version = sqlx::query_scalar::<_, i64>("SELECT version FROM workflows WHERE id = $1")
+            .bind(uuid)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|err| WorkflowRepoError::Connection(err.to_string()))?;
 
         Ok(version as u64)
     }
@@ -220,20 +218,24 @@ impl WorkflowRepo for PgWorkflowRepo {
 
         if version == 0 {
             // New workflow: INSERT with version 1.
-            let result = sqlx::query(
-                "INSERT INTO workflows (id, version, definition) VALUES ($1, 1, $2)",
-            )
-            .bind(uuid)
-            .bind(json_def)
-            .execute(&self.pool)
-            .await;
+            let result =
+                sqlx::query("INSERT INTO workflows (id, version, definition) VALUES ($1, 1, $2)")
+                    .bind(uuid)
+                    .bind(json_def)
+                    .execute(&self.pool)
+                    .await;
 
             match result {
                 Ok(_) => Ok(()),
                 Err(sqlx::Error::Database(db_err)) if db_err.code().as_deref() == Some("23505") => {
                     // Unique violation — row already exists. Query current version for conflict.
                     let actual = self.query_current_version(uuid).await?;
-                    Err(WorkflowRepoError::conflict("workflow", id.to_string(), version, actual))
+                    Err(WorkflowRepoError::conflict(
+                        "workflow",
+                        id.to_string(),
+                        version,
+                        actual,
+                    ))
                 }
                 Err(err) => Err(WorkflowRepoError::Connection(err.to_string())),
             }
@@ -252,13 +254,12 @@ impl WorkflowRepo for PgWorkflowRepo {
 
             if result.rows_affected() == 0 {
                 // Either wrong version or row missing.
-                let row = sqlx::query_scalar::<_, i64>(
-                    "SELECT version FROM workflows WHERE id = $1",
-                )
-                .bind(uuid)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(|err| WorkflowRepoError::Connection(err.to_string()))?;
+                let row =
+                    sqlx::query_scalar::<_, i64>("SELECT version FROM workflows WHERE id = $1")
+                        .bind(uuid)
+                        .fetch_optional(&self.pool)
+                        .await
+                        .map_err(|err| WorkflowRepoError::Connection(err.to_string()))?;
 
                 match row {
                     Some(actual) => Err(WorkflowRepoError::conflict(
@@ -408,7 +409,9 @@ mod tests {
         let Some(repo) = pg_repo().await else { return };
         let ids: Vec<WorkflowId> = (0..3).map(|_| WorkflowId::new()).collect();
         for (i, &id) in ids.iter().enumerate() {
-            repo.save(id, 0, serde_json::json!({"i": i})).await.expect("save");
+            repo.save(id, 0, serde_json::json!({"i": i}))
+                .await
+                .expect("save");
         }
 
         // List all with large limit

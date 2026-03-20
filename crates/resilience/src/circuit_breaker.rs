@@ -357,7 +357,9 @@ mod tests {
     async fn opens_after_failure_threshold() {
         let cb = CircuitBreaker::new(default_config()).unwrap();
         for _ in 0..3 {
-            let _ = cb.call::<(), _, _>(|| Box::pin(async { Err("fail") })).await;
+            let _ = cb
+                .call::<(), _, _>(|| Box::pin(async { Err("fail") }))
+                .await;
         }
         let err: CallError<&str> = cb
             .call::<(), _, _>(|| Box::pin(async { Ok(()) }))
