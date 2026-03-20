@@ -433,10 +433,7 @@ impl AdaptiveRateLimiter {
         max_rate: f64,
     ) -> Result<Self, crate::ConfigError> {
         if min_rate > max_rate {
-            return Err(crate::ConfigError::new(
-                "min_rate",
-                "must be <= max_rate",
-            ));
+            return Err(crate::ConfigError::new("min_rate", "must be <= max_rate"));
         }
         // Validate that all rates in [min_rate, max_rate] produce valid TokenBucket configs.
         // The extremes are sufficient since TokenBucket validates capacity and refill_rate.
@@ -446,8 +443,8 @@ impl AdaptiveRateLimiter {
         TokenBucket::new(max_rate.max(1.0) as usize, max_rate).map_err(|e| {
             crate::ConfigError::new("max_rate", format!("produces invalid TokenBucket: {e}"))
         })?;
-        let token_bucket = TokenBucket::new(initial_rate.max(1.0) as usize, initial_rate)
-            .map_err(|e| {
+        let token_bucket =
+            TokenBucket::new(initial_rate.max(1.0) as usize, initial_rate).map_err(|e| {
                 crate::ConfigError::new(
                     "initial_rate",
                     format!("produces invalid TokenBucket: {e}"),

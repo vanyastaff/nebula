@@ -129,8 +129,7 @@ where
                 }),
                 Err(CallError::RetriesExhausted { .. }) => Err(CallError::Cancelled {
                     reason: Some(
-                        "fallback returned RetriesExhausted(()) — original error was erased"
-                            .into(),
+                        "fallback returned RetriesExhausted(()) — original error was erased".into(),
                     ),
                 }),
                 // All fieldless variants convert directly.
