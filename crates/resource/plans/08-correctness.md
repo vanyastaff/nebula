@@ -1,9 +1,10 @@
 # 08 — Correctness Amendments
 
-Список из 13 архитектурных проблем, выявленных при ревью планов 01–07.
+25 архитектурных проблем, выявленных при ревью планов 01–07.
+Часть I (#1–#13): первый раунд ревью. Часть II (#14–#25): второй раунд.
 Каждый раздел: **проблема → решение → что меняется** (ссылки на план-файл).
 
-Статусы: ✅ plan updated | 🔧 plan pending update
+Статусы: ✅ integrated into plan file | 🔧 pending integration
 
 ---
 
@@ -573,7 +574,7 @@ impl RecoveryWaiter<'_> {
 
 ---
 
-## #7 — Pool acquire: prepare() retry с тем же instance (07-implementation.md / pool/acquire.rs) ✅
+## #7 — Pool acquire: prepare() retry с тем же instance (07-implementation.md / pool/acquire.rs) 🔧
 
 **Проблема.** При retryable `prepare()` error тот же instance возвращается в pool и тут же
 выдаётся обратно тому же caller-у — 3 итерации одного и того же connection с одной и той
@@ -1132,7 +1133,7 @@ match pressure {
 
 # Часть II — Дополнительные проблемы (code review раунд 2)
 
-Найдены после ревью всех план-файлов. Нумерация продолжает предыдущий список (#14–#36).
+Найдены после ревью всех план-файлов. Нумерация продолжает предыдущий список (#14–#25).
 
 ---
 
@@ -1812,41 +1813,80 @@ impl ResourceConfig for PgResourceConfig {
 
 ## Сводная таблица изменений по план-файлам
 
-| # | Проблема | Файл для обновления | Тип изменения |
-|---|----------|---------------------|---------------|
-| 1 | ReleaseQueue silent drop | 03-infrastructure.md | Replace submit() + add ReleaseQueueMetrics |
-| 2 | HandleInner Deref panic | 03-infrastructure.md | Replace detach() return type + Deref unreachable! |
-| 3 | Credential design gap | 01-core.md | Add Credential trait + CredentialCtx + update Resource::create() |
-| 4 | Scope cross-tenant | 05-manager.md | Add ContainmentMode + ScopeResolver + strict default |
-| 5 | PoisonToken race | 03-infrastructure.md | Pass Arc<AtomicBool> to release_fn |
-| 6 | RecoveryGate todo | 04-recovery-resilience.md | Implement try_begin() CAS loop + update GateState |
-| 7 | Pool retry same instance | 07-implementation.md | Add blacklist to pool/acquire.rs spec |
-| 8 | Daemon infinite recreate | 02-topology.md | Add RecreateBudget to daemon::Config |
-| 9 | Config no rollback | 05-manager.md | Two-phase reload + ReloadResult |
-| 10 | Service drain no deadline | 05-manager.md | Drain watchdog in swap_runtime() |
-| 11 | Extensions TypeId collision | 01-core.md | Debug-mode name_index + warn on collision |
-| 12 | No audit trail | 05-manager.md | tracing audit span in acquire/release |
-| 13 | MemoryMonitor Mutex | 05-manager.md | AtomicU8 PressureSnapshot + background updater |
+| # | Проблема | Файл | Тип изменения | Статус |
+|---|----------|------|---------------|--------|
+| 1 | ReleaseQueue silent drop | 03-infrastructure.md | Replace submit() + add ReleaseQueueMetrics | ✅ |
+| 2 | HandleInner Deref panic | 03-infrastructure.md | Replace detach() return type + Deref unreachable! | ✅ |
+| 3 | Credential design gap | 01-core.md | Add Credential trait + CredentialCtx + update Resource::create() | ✅ |
+| 4 | Scope cross-tenant | 05-manager.md | Add ContainmentMode + ScopeResolver + strict default | ✅ |
+| 5 | PoisonToken race | 03-infrastructure.md | Pass Arc<AtomicBool> to release_fn | ✅ |
+| 6 | RecoveryGate todo | 04-recovery-resilience.md | Implement try_begin() CAS loop + update GateState | ✅ |
+| 7 | Pool retry same instance | 07-implementation.md | Add blacklist to pool/acquire.rs spec | 🔧 |
+| 8 | Daemon infinite recreate | 02-topology.md | Add RecreateBudget to daemon::Config | ✅ |
+| 9 | Config no rollback | 05-manager.md | Two-phase reload + ReloadResult | ✅ |
+| 10 | Service drain no deadline | 05-manager.md | Drain watchdog in swap_runtime() | ✅ |
+| 11 | Extensions TypeId collision | 01-core.md | Debug-mode name_index + warn on collision | ✅ |
+| 12 | No audit trail | 05-manager.md | tracing audit span in acquire/release | ✅ |
+| 13 | MemoryMonitor Mutex | 05-manager.md | AtomicU8 PressureSnapshot + background updater | ✅ |
+| 14 | ReleaseQueue workers Mutex | 03-infrastructure.md | N independent receivers, round-robin submit | ✅ |
+| 15 | Daemon mem::zeroed() UB | 02-topology.md | Option<R::Runtime> in daemon state | ✅ |
+| 16 | Cell<T> structurally broken | 03-infrastructure.md | ArcSwapOption<T> instead of ArcSwap<Option<T>> | ✅ |
+| 17 | RecoveryWaiter borrowed lifetime | 04-recovery-resilience.md | Arc clones instead of borrowed refs | ✅ |
+| 18 | Registry::get_typed borrow vs async | 05-manager.md | Return Arc<ManagedResource<R>> | ✅ |
+| 19 | CredentialStore not object-safe | 01-core.md | BoxFuture + resolve_erased type erasure | ✅ |
+| 20 | ScopeResolver not object-safe | 05-manager.md | BoxFuture return type | ✅ |
+| 21 | Transport no session limit | 02-topology.md | max_sessions + Semaphore | ✅ |
+| 22 | WatchdogHandle ticket leak | 04-recovery-resilience.md | Drop guard on RecoveryTicket | ✅ |
+| 23 | Resident::is_alive blocking I/O | 02-topology.md | Rename is_alive_sync + stale_after() | ✅ |
+| 24 | Manager::new() missing init | 05-manager.md | Initialize pressure_snapshot in new() | ✅ |
+| 25 | fingerprint() = 0 silent bypass | 01-core.md | Debug assertion + documentation | ✅ |
 
 ---
 
 ## Приоритеты реализации
 
-### Критические (блокируют v1)
-- **#4** Scope isolation — cross-tenant security risk.
-- **#1** ReleaseQueue — connection leak под нагрузкой.
-- **#3** Credential design — иначе все примеры остаются с `todo!()`.
-- **#6** RecoveryGate — core concurrency primitive не реализован.
+### Критические (блокируют v1) — security и data integrity
+- **#4** Scope isolation — cross-tenant security risk
+- **#1** ReleaseQueue — connection leak под нагрузкой
+- **#3** Credential design — иначе все примеры остаются с `todo!()`
+- **#6** RecoveryGate — core concurrency primitive не реализован
+- **#15** Daemon mem::zeroed() — UB на первом recreate
+- **#19** CredentialStore object-safety — `dyn CredentialStore` не скомпилируется
+- **#20** ScopeResolver object-safety — `Arc<dyn ScopeResolver>` не valid
 
-### Серьёзные (нужны в v1)
-- **#8** Daemon recreate budget — иначе infinite restart loop.
-- **#7** Pool retry blacklist — correctness issue под нагрузкой.
-- **#2** HandleInner Deref — framework bug potential.
-- **#5** PoisonToken race — connection leak под niche conditions.
+### Серьёзные (нужны в v1) — correctness под нагрузкой
+- **#8** Daemon recreate budget — infinite restart loop
+- **#7** Pool retry blacklist — correctness issue под нагрузкой
+- **#2** HandleInner Deref — framework bug potential
+- **#5** PoisonToken race — connection leak под niche conditions
+- **#14** ReleaseQueue workers — throughput 1/N от ожидаемого
+- **#16** Cell<T> — guard.is_some() всегда true (логическая ошибка)
+- **#17** RecoveryWaiter — не совместим с tokio::spawn (compile error)
+- **#22** WatchdogHandle ticket — gate навсегда stuck
 
-### Стоит включить (желательно в v1)
-- **#9** Config rollback — consistency под reload.
-- **#10** Service drain deadline — memory leak detection.
-- **#12** Audit trail — compliance.
-- **#13** MemoryMonitor — performance under load.
-- **#11** Extensions debug — DX для debugging.
+### Стоит включить (желательно в v1) — DX и operational safety
+- **#9** Config rollback — consistency под reload
+- **#10** Service drain deadline — memory leak detection
+- **#12** Audit trail — compliance
+- **#13** MemoryMonitor — performance under load
+- **#11** Extensions debug — DX для debugging
+- **#18** Registry::get_typed — async scope resolver ломает borrow
+- **#21** Transport sessions — session exhaustion без лимита
+- **#23** Resident is_alive — blocking I/O в async task
+- **#24** Manager::new() — missing field init
+- **#25** fingerprint() default — silent config stale bypass
+
+---
+
+## Примечания по интеграции
+
+24 из 25 amendments интегрированы в соответствующие план-файлы.
+
+**Не интегрирован:**
+- **#7** (Pool retry blacklist) — не добавлен в 07-implementation.md. Blacklist per-acquire-cycle
+  и `IdleQueue::checkout_excluding()` должны быть задокументированы в секции pool/acquire.rs.
+
+**Нет противоречий между amendments:**
+- #1 и #14 дополняют друг друга (двухуровневая очередь → N independent receivers).
+- #6, #17, #22 последовательно улучшают RecoveryGate (implement → fix lifetime → add Drop guard).
+- #3 и #19 последовательны (add CredentialStore → fix object-safety).

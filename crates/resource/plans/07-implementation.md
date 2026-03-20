@@ -1,5 +1,8 @@
 # 07 — Module Layout & Implementation Plan
 
+> **Status alignment:** resource stabilization is "Next Up" in active-work.md.
+> Engine execution is blocked on this crate stabilizing first.
+
 ---
 
 ## Module layout
@@ -141,6 +144,7 @@ nebula-resource/
     ├── release_queue.rs
     ├── scope_lookup.rs
     ├── config_reload.rs
+    ├── credential_rotation.rs
     └── shutdown_order.rs
 ```
 
@@ -199,31 +203,33 @@ Foundation. Всё остальное зависит от этого.
 1.  error.rs           Error, ErrorKind(6), ErrorScope
 2.  classify.rs        ClassifyError derive support
 3.  ctx.rs             Ctx trait, BasicCtx, Extensions (uses ScopeLevel from nebula-core)
-4.  resource.rs        Resource trait (type Config, Runtime, Lease, Error), ResourceConfig trait
-5.  metadata.rs        ResourceMetadata
-6.  cell.rs            Cell<T> (ArcSwap-based)
-7.  state.rs           AtomicRuntimeState
-8.  lease/guard.rs     LeaseGuard<L> (pool-internal only)
-9.  lease/poison.rs    PoisonToken
-10. lease/options.rs   AcquireOptions, AcquireIntent
-11. handle.rs          ResourceHandle<R>, HandleInner (3 variants: Owned/Guarded/Shared)
-12. release_queue.rs   ReleaseQueue + ReleaseQueueHandle (shared per ManagedResource)
+4.  resource.rs        Resource trait (type Config, Runtime, Lease, Error, Credential), ResourceConfig trait
+5.  credential.rs      Credential trait re-export, minimal bridge to nebula-credential
+6.  metadata.rs        ResourceMetadata
+7.  cell.rs            Cell<T> (ArcSwap-based)
+8.  state.rs           AtomicRuntimeState
+9.  lease/guard.rs     LeaseGuard<L> (pool-internal only)
+10. lease/poison.rs    PoisonToken
+11. lease/options.rs   AcquireOptions, AcquireIntent
+12. handle.rs          ResourceHandle<R>, HandleInner (3 variants: Owned/Guarded/Shared)
+13. release_queue.rs   ReleaseQueue + ReleaseQueueHandle (shared per ManagedResource)
 ```
 
-**Milestone:** `Error`, `Ctx`, `Resource` (with `type Lease`), `LeaseGuard`, `ResourceHandle` компилируются и тестируются.
+**Milestone:** `Error`, `Ctx`, `Resource` (with `type Lease`, `type Credential`), `LeaseGuard`, `ResourceHandle` компилируются и тестируются.
 
 ### Phase 2 — Topology traits (week 2-3)
 
 Семь trait-ов. Каждый — отдельный файл, отдельные тесты.
 
 ```
-13. topology/pooled.rs       Pooled (prepare, recycle, is_broken → BrokenCheck)
-14. topology/resident.rs     Resident (where Lease: Clone, is_alive, stale_after)
-15. topology/service.rs      Service (acquire_token → Lease, release_token)
-16. topology/transport.rs    Transport (open_session → Lease, close_session)
-17. topology/exclusive.rs    Exclusive (reset — framework-managed)
-18. topology/event_source.rs EventSource (type Subscription, subscribe, recv)
-19. topology/daemon.rs       Daemon (run with CancellationToken, on_stopped)
+14. topology/mod.rs           TopologyKind enum, re-exports
+15. topology/pooled.rs        Pooled (prepare, recycle, is_broken → BrokenCheck)
+16. topology/resident.rs      Resident (where Lease: Clone, is_alive, stale_after)
+17. topology/service.rs       Service (acquire_token → Lease, release_token)
+18. topology/transport.rs     Transport (open_session → Lease, close_session)
+19. topology/exclusive.rs     Exclusive (reset — framework-managed)
+20. topology/event_source.rs  EventSource (type Subscription, subscribe, recv)
+21. topology/daemon.rs        Daemon (run with CancellationToken, on_stopped)
 ```
 
 **Milestone:** все topology traits определены. Можно писать `impl Pooled for Postgres`.
@@ -234,12 +240,12 @@ Recovery primitives, cross-cutting integration.
 (ConnectionAware, InfraProvider deferred to v2.)
 
 ```
-20. recovery/gate.rs                RecoveryGate, GateState, RecoveryTicket
-21. recovery/group.rs               RecoveryGroup, RecoveryGroupRegistry
-22. recovery/watchdog.rs            WatchdogHandle, WatchdogConfig
-23. integration/resilience.rs       AcquireResilience + error mapping (← nebula-resilience)
-24. events.rs                       ResourceEvent + ScopedEvent impl (← nebula-eventbus)
-25. metrics.rs                      ResourceMetrics wrapper (← nebula-metrics + nebula-telemetry)
+22. recovery/gate.rs                RecoveryGate, GateState, RecoveryTicket
+23. recovery/group.rs               RecoveryGroup, RecoveryGroupRegistry
+24. recovery/watchdog.rs            WatchdogHandle, WatchdogConfig
+25. integration/resilience.rs       AcquireResilience + error mapping (← nebula-resilience)
+26. events.rs                       ResourceEvent + ScopedEvent impl (← nebula-eventbus)
+27. metrics.rs                      ResourceMetrics wrapper (← nebula-metrics + nebula-telemetry)
 ```
 
 **Milestone:** RecoveryGate CAS работает. AcquireResilience builds ResilienceChain. ResourceMetrics records counters.
@@ -280,8 +286,8 @@ Recovery primitives, cross-cutting integration.
     - config.rs               daemon::Config, RestartPolicy
     - runner.rs               run loop + restart (single CancellationToken from framework)
 
-35. runtime/mod.rs            TopologyRuntime<R> enum (7 variants), shared_runtime() → Option<Arc<R::Runtime>>
-36. runtime/managed.rs        ManagedResource<R> + AnyManagedResource trait (type erasure with as_any())
+35. runtime/mod.rs            TopologyRuntime<R> enum (7 variants), shared_runtime()
+36. runtime/managed.rs        ManagedResource<R> + AnyManagedResource trait (type erasure)
 ```
 
 **Milestone:** Pool lifecycle работает end-to-end. Можно `acquire<Postgres>()`.
@@ -304,9 +310,13 @@ Orchestration layer.
 44. integration/config.rs     AsyncConfigurable for Manager (← nebula-config, per-topology reload)
 45. integration/memory.rs     Adaptive pool sizing + lookup cache (← nebula-memory)
 46. scope.rs                  ResourceScope (capability-based access)
-47. dependency.rs             Dependencies trait, static arrays
+47. dependency.rs             Dependencies trait, static TypeId arrays
 48. health.rs                 HealthStatus, HealthChecker + EventBus publish
 ```
+
+**Dependencies:** Phase 5 requires Phase 4 (runtime implementations) and Phase 3 (recovery, events, metrics).
+`integration/config.rs` (44) depends on `TopologyRuntime::on_config_changed` (35).
+`manager/shutdown.rs` (43) depends on `ReleaseQueue` (13) and `recovery/gate.rs` (22).
 
 **Milestone:** Manager end-to-end. register → acquire → use → drop → recycle. All 7 topologies.
 
@@ -315,25 +325,26 @@ Orchestration layer.
 Macros, bridges, first resources.
 
 ```
-51. macros/derive_resource.rs    #[derive(Resource)] macro
-52. macros/derive_classify.rs    #[derive(ClassifyError)] macro
+49. macros/derive_resource.rs    #[derive(Resource)] macro
+50. macros/derive_classify.rs    #[derive(ClassifyError)] macro
 
-53. EventTrigger DX bridge       (in nebula-action crate, on_event uses R::Lease)
-54. ResourceAction bridge        (in nebula-action crate)
-55. ResourceContext impl          (ActionContext, TriggerContext)
+51. EventTrigger DX bridge       (in nebula-action crate, on_event uses R::Lease)
+52. ResourceAction bridge        (in nebula-action crate)
+53. ResourceContext impl          (ActionContext, TriggerContext)
 
-56. Plugin system integration    (PluginRegistry, Descriptors)
+54. Plugin system integration    (PluginRegistry, Descriptors)
 
-57. credential.rs                Credential integration bridge (Authenticate<C> — deferred design)
-
-58. First official resources:
+55. First official resources:
     - nebula-resource-postgres
     - nebula-resource-redis
     - nebula-resource-http
 
-59. Documentation
-60. Integration tests
+56. Documentation
+57. Integration tests
 ```
+
+Note: `credential.rs` moved to Phase 1 (item 5) as a core primitive.
+Authenticate<C> design deferred — credential rotation handled via EventBus<CredentialEvent> in integration/config.rs.
 
 **Milestone:** полная система. Plugin install → resource register → action acquire → workflow execution.
 
@@ -370,7 +381,8 @@ Integration tests (cross-module):
   - AcquireResilience: timeout → retry → circuit breaker → acquire
   - ResilienceError → resource::Error mapping
   - EventBus<ResourceEvent>: register → emit Registered, health change → emit HealthChanged
-  - Credential rotation: CredentialEvent::Rotated → pool stale → evict
+  - Credential rotation: CredentialEvent::Rotated → pool stale → evict at recycle
+  - Hot-reload: config change → TopologyRuntime::on_config_changed → verify per-topology strategy
   - Memory pressure: High → shrink idle, Critical → aggressive shrink
 
 Stress tests:
