@@ -123,8 +123,8 @@ where
     ///     }).await.unwrap();
     ///
     ///     // Second call returns cached Arc (just ref count increment)
-    ///     let cached = cache.get_or_compute("key", || async {
-    ///         panic!("Should not compute!");
+    ///     let cached = cache.get_or_compute::<_, _, std::io::Error>("key", || async {
+    ///         Ok::<_, std::io::Error>(panic!("Should not compute!"))
     ///     }).await.unwrap();
     ///
     ///     assert_eq!(*value, *cached);

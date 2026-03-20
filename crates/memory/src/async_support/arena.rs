@@ -137,7 +137,7 @@ impl<T> ArenaHandle<T> {
         trace!("Getting arena handle mutable reference");
 
         // Acquire write lock on arena
-        let mut guard = self.arena.write().await;
+        let guard = self.arena.write().await;
 
         // SAFETY: Creating mutable reference to arena-allocated value.
         // - ptr is valid (allocated in AsyncArena::alloc)

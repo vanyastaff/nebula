@@ -244,7 +244,12 @@ mod tests {
             logarithmic: false,
         };
 
-        let histogram = MemoryHistogram::new(config);
+        let mut histogram = MemoryHistogram::new(config);
+        // Populate with some data so percentiles can be computed
+        histogram.add_sample(100);
+        histogram.add_sample(200);
+        histogram.add_sample(500);
+        histogram.add_sample(800);
         let stats = HistogramStats::new(histogram);
 
         assert_eq!(stats.percentiles.len(), 4); // p50, p90, p95, p99

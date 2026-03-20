@@ -148,7 +148,7 @@ where
 
 impl<K, V, S> Poolable for std::collections::HashMap<K, V, S>
 where
-    K: Send + 'static,
+    K: Eq + std::hash::Hash + Send + 'static,
     V: Send + 'static,
     S: std::hash::BuildHasher + Send + 'static,
 {
@@ -168,9 +168,11 @@ where
 
     #[cfg(feature = "adaptive")]
     fn compress(&mut self) -> bool {
-        // Note: shrink_to_fit requires additional trait bounds on HashMap
-        // Returning false for now (no compression performed)
-        false
+        let old_capacity = self.capacity();
+        // Shrink the HashMap to fit its current contents with a small buffer
+        self.shrink_to_fit();
+        // Return true if we actually reduced capacity
+        self.capacity() < old_capacity
     }
 }
 
