@@ -75,6 +75,22 @@ impl PostgresStorage {
         .await
     }
 
+    /// Returns a reference to the underlying connection pool.
+    pub fn pool(&self) -> &Pool<Postgres> {
+        &self.pool
+    }
+
+    /// Run embedded SQLx migrations against the database.
+    ///
+    /// Uses `sqlx::migrate!()` which embeds migration files from the
+    /// `./migrations` directory at compile time.
+    pub async fn run_migrations(&self) -> Result<(), StorageError> {
+        sqlx::migrate!("./migrations")
+            .run(&self.pool)
+            .await
+            .map_err(|err| StorageError::Backend(err.to_string()))
+    }
+
     /// Create a new [`PostgresStorage`] using explicit configuration.
     pub async fn with_config(config: PostgresStorageConfig) -> Result<Self, StorageError> {
         let pool = PgPoolOptions::new()
