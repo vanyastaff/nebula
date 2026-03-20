@@ -1,14 +1,5 @@
 {
   "mcpServers": {
-    "serena": {
-      "command": "uvx",
-      "args": [
-        "serena@0.9.1",
-        "start-mcp-server",
-        "--context", "ide",
-        "--project", "C:\\Users\\vanya\\RustroverProjects\\nebula"
-      ]
-    },
     "cratesio": {
       "type": "http",
       "url": "https://cratesio-mcp.fly.dev/"

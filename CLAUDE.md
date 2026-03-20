@@ -30,6 +30,15 @@ Last updated: **2026-03-18**
 
 ---
 
+## Code Navigation
+
+Use code-review-graph MCP tools for code exploration.
+- Use `get_review_context_tool` before reviewing changes
+- Use `get_impact_radius_tool` to understand blast radius
+- Prefer graph queries over reading full files
+
+---
+
 ## Key Commands
 
 ```bash

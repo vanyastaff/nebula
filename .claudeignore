@@ -98,8 +98,7 @@ datasets/
 .gitattributes
 
 # GitHub specific
-.github/workflows/
-.github/ISSUE_TEMPLATE/
+.github/
 
 # Rust-specific large artifacts
 target/release/
@@ -128,3 +127,37 @@ tests/data/
 # Claude local settings (machine-specific)
 .claude/settings.local.json
 .claude/summaries/
+
+# Generated reports and reviews
+review_report.md
+coverage_checklist.md
+nul
+
+# Machine-specific MCP/AI config
+.mcp.json
+.serena/
+.code-review-graph/
+.auto-claude/
+.auto-claude-security.json
+.claude_settings.json
+
+# Deploy configs (Kubernetes/Docker — noise for Rust coding)
+deploy/
+
+# Database migrations (rarely needed during feature work)
+migrations/
+
+# Frontend apps (separate from Rust crates work)
+apps/
+
+# Vision/architecture docs (large, rarely needed mid-task)
+vision/
+
+# Changelog (auto-generated, large)
+CHANGELOG.md
+
+# Scripts (shell/PowerShell — not Rust source)
+scripts/
+
+# Worktrees
+.worktrees/
