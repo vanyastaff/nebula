@@ -30,6 +30,37 @@ export type ConnectionConfig = {
   remoteBaseUrl: string;
 };
 
+export type Credential = {
+  id: string;
+  name: string;
+  kind: string;
+  metadata: CredentialMetadata;
+  state: string;
+};
+
+export type CredentialMetadata = {
+  createdAt: string;
+  lastAccessed: string | null;
+  lastModified: string;
+  version: number;
+  expiresAt: string | null;
+  ttlSeconds: number | null;
+  tags: Record<string, string>;
+};
+
+export type CreateCredentialRequest = {
+  name: string;
+  kind: string;
+  state: string;
+  tags?: Record<string, string> | null;
+};
+
+export type UpdateCredentialRequest = {
+  name?: string | null;
+  state?: string | null;
+  tags?: Record<string, string> | null;
+};
+
 // Commands
 
 export const commands = {
@@ -55,5 +86,25 @@ export const commands = {
 
   async setConnection(config: ConnectionConfig): Promise<void> {
     await TAURI_INVOKE<void>("set_connection", { config });
+  },
+
+  async listCredentials(): Promise<Credential[]> {
+    return await TAURI_INVOKE<Credential[]>("list_credentials");
+  },
+
+  async getCredential(id: string): Promise<Credential> {
+    return await TAURI_INVOKE<Credential>("get_credential", { id });
+  },
+
+  async createCredential(request: CreateCredentialRequest): Promise<Credential> {
+    return await TAURI_INVOKE<Credential>("create_credential", { request });
+  },
+
+  async updateCredential(id: string, request: UpdateCredentialRequest): Promise<Credential> {
+    return await TAURI_INVOKE<Credential>("update_credential", { id, request });
+  },
+
+  async deleteCredential(id: string): Promise<void> {
+    await TAURI_INVOKE<void>("delete_credential", { id });
   },
 };
