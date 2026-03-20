@@ -231,6 +231,9 @@ deploy/.env
 secrets/
 credentials/
 
+# Exception: Allow source code for credentials feature
+!apps/desktop/src/features/credentials/
+
 # Configuration files that might contain secrets
 **/config/local.*
 **/config/secrets.*
