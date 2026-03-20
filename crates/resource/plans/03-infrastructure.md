@@ -189,7 +189,7 @@ let bot = ctx.resource::<TelegramBot>().await?;     // Service → Deref to Tele
 let ssh = ctx.resource::<Ssh>().await?;             // Transport → Deref to SshSession
 let kc  = ctx.resource::<KafkaConsumer>().await?;   // Exclusive → Deref to StreamConsumer
 
-// Deref → R::Lease → driver-specific API:
+// Deref → R::Lease → resource-specific API:
 db.query("SELECT 1", &[]).await?;
 bot.send_message(chat_id, "hi").await?;
 ssh.exec("ls -la").await?;

@@ -4,7 +4,46 @@
 
 ## RecoveryGate — thundering herd prevention
 
-Один probe, остальные ждут. CAS-based state machine.
+Infrastructure-level coordination: one probe attempt, all other callers wait.
+Prevents thundering herd when a shared backend goes down (e.g., Postgres primary).
+
+**CAS-based state machine** (via `ArcSwap::compare_and_swap`):
+
+```
+                  ┌──────────────────────────────────────────────┐
+                  │                                              │
+                  ▼                                              │
+            ┌──────────┐   try_begin() wins CAS    ┌────────────┴───┐
+     ──────►│   Idle   │──────────────────────────►│  InProgress    │
+            └──────────┘                            │ {attempt, t0}  │
+                  ▲                                 └───┬───────┬───┘
+                  │                                     │       │
+           resolve(ticket)                    fail_transient  fail_permanent
+                  │                                     │       │
+                  │           ┌──────────────┐          │       │
+                  │           │   Failed     │◄─────────┘       │
+                  │           │ {err, until, │                  │
+                  │           │  attempt}    │                  ▼
+                  │           └──────┬───────┘       ┌──────────────────┐
+                  │                  │               │ PermanentlyFailed│
+                  │     backoff expires +            │ {error}          │
+                  │     attempt < max                └──────────────────┘
+                  │          │                         ▲
+                  │          │  try_begin()             │ attempt >= max
+                  │          │  wins CAS               │
+                  │          └──► InProgress ───────────┘
+                  │                    │                (escalation)
+                  └────────────────────┘
+                       resolve(ticket)
+```
+
+**Key invariant:** Only ONE caller holds a `RecoveryTicket` at a time.
+All other callers receive `RecoveryWaiter` and block on `Notify`.
+
+**Correctness amendments integrated:**
+- **#6**: `try_begin()` fully implemented with CAS loop (was `todo!()`).
+- **#17**: `RecoveryWaiter` is `'static + Send` — holds `Arc` clones, not borrowed refs. Compatible with `tokio::spawn`.
+- **#22**: `RecoveryTicket` has a Drop guard — auto-fails with transient error if dropped without `resolve()`/`fail_*()`. Prevents gate from being permanently stuck in `InProgress`.
 
 ```rust
 /// Исправлено (#17): state и notify обёрнуты в Arc для clone в make_waiter().
@@ -501,20 +540,23 @@ Framework при InfraProvider:
 
 ## Resilience — use `nebula-resilience`, don't reimplement
 
-**Решение:** `nebula-resource` НЕ содержит собственных CircuitBreaker, RateLimiter, RetryPolicy, BulkheadSemaphore. Всё это уже есть в `nebula-resilience` (const-generic CircuitBreaker, RetryStrategy, RateLimiter trait impls, Bulkhead, LayerBuilder → ResilienceChain). Используем напрямую.
+**Решение:** `nebula-resource` НЕ содержит собственных CircuitBreaker, RateLimiter, RetryPolicy, BulkheadSemaphore. Всё это уже есть в `nebula-resilience` (`CircuitBreaker`, `RetryConfig`, `RateLimiter` trait impls, `Bulkhead`, `PipelineBuilder` → `ResiliencePipeline`). Используем напрямую.
 
-### RecoveryGate vs CircuitBreaker — разные задачи
+### RecoveryGate vs CircuitBreaker — different concerns, complementary
 
 | | RecoveryGate | CircuitBreaker |
 |---|---|---|
-| **Scope** | Весь backend (shared gate) | Одна операция / один resource |
-| **Семантика** | "Backend down, один probe recovers" | "Слишком много failures, stop calling" |
-| **State machine** | Idle → InProgress → Failed/Resolved | Closed → Open → HalfOpen → Closed |
-| **Координация** | Один winner пробует, остальные ждут | Каждый caller решает сам |
+| **Level** | Infrastructure (shared backend) | Operation (per-resource acquire) |
+| **Question** | "Is the backend alive at all?" | "Are too many operations failing?" |
+| **State machine** | Idle → InProgress → Failed/Idle | Closed → Open → HalfOpen → Closed |
+| **Coordination** | Single winner probes; all others wait | Each caller decides independently |
+| **Lives in** | `nebula-resource` (plan 04) | `nebula-resilience` (reused, not reimplemented) |
+| **Shared across** | Multiple resources on same backend (via `RecoveryGroup`) | Single `ManagedResource` |
+| **Trigger** | Watchdog or passive (acquire exhaustion) | Consecutive call failures |
 
-RecoveryGate — infrastructure-level координация (plan 04, оставляем).
-CircuitBreaker — operation-level protection (из `nebula-resilience`).
-Они дополняют друг друга:
+RecoveryGate is infrastructure-level coordination — "is the backend reachable?"
+CircuitBreaker is operation-level protection — "should I even try this call?"
+They complement each other in the acquire path:
 
 ```
 acquire() path — strict ordering:
@@ -558,7 +600,7 @@ Lives on `ManagedResource<R>`, NOT on topology config. Set via `RegistrationBuil
 Applied per-resource, wraps the topology-specific acquire operation.
 
 ```rust
-use nebula_resilience::compose::{LayerBuilder, ResilienceChain};
+use nebula_resilience::{PipelineBuilder, ResiliencePipeline};
 
 /// Конфигурация resilience для acquire path.
 pub struct AcquireResilience {
@@ -567,7 +609,7 @@ pub struct AcquireResilience {
     /// Retry transient create() failures.
     pub retry: Option<AcquireRetryConfig>,
     /// Circuit breaker: если N acquire подряд fail → stop trying.
-    /// Uses preset (const-generic CircuitBreaker requires compile-time values).
+    /// Uses preset (CircuitBreakerConfig, not const-generic).
     pub circuit_breaker: Option<AcquireCircuitBreakerPreset>,
 }
 
@@ -586,45 +628,81 @@ pub enum BackoffKind {
 
 /// Circuit breaker preset for acquire path.
 ///
-/// nebula-resilience CircuitBreaker uses const generics:
-///   CircuitBreaker<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
-/// Values must be known at compile time.
+/// Uses `CircuitBreakerConfig` from `nebula-resilience` (runtime config, not const generics).
 ///
-/// Three presets cover typical use cases:
-///   Standard (5 failures, 30s reset) — default for most resources.
-///   Fast (3 failures, 10s reset) — latency-sensitive (API calls).
-///   Slow (10 failures, 60s reset) — tolerant (batch, background).
+/// Three presets cover typical real-world resource patterns:
 ///
-/// For custom values: add a new type alias in nebula-resilience, or use
-/// dynamic builder (CircuitBreakerConfigBuilder) if added in future.
+///   **Standard** (5 failures, 30s reset) — databases, message brokers.
+///     Postgres, MySQL, Kafka, RabbitMQ. Moderate tolerance for transient failures.
+///
+///   **Fast** (3 failures, 10s reset) — low-latency caches and APIs.
+///     Redis, Memcached, HTTP APIs. Fail fast to avoid cascading latency.
+///
+///   **Slow** (10 failures, 60s reset) — high-latency or batch resources.
+///     SSH tunnels, SMTP, browser automation, LLM APIs. Tolerant because
+///     individual operations are inherently slow / flaky.
+///
+/// For custom values: use `CircuitBreakerConfig` directly.
 pub enum AcquireCircuitBreakerPreset {
-    /// 5 failures, 30s reset. Good default.
+    /// 5 failures, 30s reset. Postgres, Kafka, RabbitMQ.
     Standard,
-    /// 3 failures, 10s reset. Fail fast.
+    /// 3 failures, 10s reset. Redis, Memcached, HTTP APIs.
     Fast,
-    /// 10 failures, 60s reset. Tolerant.
+    /// 10 failures, 60s reset. SSH, SMTP, Browser, LLM.
     Slow,
 }
 
 impl AcquireResilience {
-    /// Собрать ResilienceChain из конфига.
-    /// Вызывается один раз при registration, хранится в ManagedResource.
-    pub fn build_chain<T: Send + 'static>(&self) -> Option<ResilienceChain<T>> {
-        let mut builder = LayerBuilder::<T>::new();
+    /// Build a `ResiliencePipeline` from config.
+    /// Called once at registration time, stored in `ManagedResource`.
+    ///
+    /// Uses `PipelineBuilder` from `nebula-resilience` — NOT custom retry/CB logic.
+    /// Layer order follows the recommended pipeline ordering:
+    /// timeout (outermost) → retry → circuit_breaker (innermost).
+    pub fn build_pipeline<E: Send + 'static>(&self) -> Option<ResiliencePipeline<E>> {
+        let mut builder = PipelineBuilder::<E>::new();
 
         if let Some(timeout) = self.timeout {
-            builder = builder.with_timeout(timeout);
+            builder = builder.timeout(timeout);
         }
         if let Some(ref retry) = self.retry {
-            builder = builder.with_retry_exponential(retry.max_attempts, retry.base_delay);
+            let config = RetryConfig::<E>::new(retry.max_attempts)
+                .expect("max_attempts > 0")
+                .backoff(match retry.backoff {
+                    BackoffKind::Exponential => BackoffConfig::Exponential {
+                        initial: retry.base_delay,
+                        max: retry.max_delay,
+                        multiplier: 2.0,
+                    },
+                    BackoffKind::Fixed  => BackoffConfig::Fixed(retry.base_delay),
+                    BackoffKind::Linear => BackoffConfig::Linear {
+                        initial: retry.base_delay,
+                        increment: retry.base_delay,
+                        max: retry.max_delay,
+                    },
+                });
+            builder = builder.retry(config);
         }
         if let Some(ref preset) = self.circuit_breaker {
-            let breaker: Arc<CircuitBreaker> = match preset {
-                AcquireCircuitBreakerPreset::Standard => Arc::new(StandardCircuitBreaker::default()),
-                AcquireCircuitBreakerPreset::Fast     => Arc::new(FastCircuitBreaker::default()),
-                AcquireCircuitBreakerPreset::Slow     => Arc::new(SlowCircuitBreaker::default()),
+            let config = match preset {
+                AcquireCircuitBreakerPreset::Standard => CircuitBreakerConfig {
+                    failure_threshold: 5,
+                    reset_timeout: Duration::from_secs(30),
+                    ..Default::default()
+                },
+                AcquireCircuitBreakerPreset::Fast => CircuitBreakerConfig {
+                    failure_threshold: 3,
+                    reset_timeout: Duration::from_secs(10),
+                    ..Default::default()
+                },
+                AcquireCircuitBreakerPreset::Slow => CircuitBreakerConfig {
+                    failure_threshold: 10,
+                    reset_timeout: Duration::from_secs(60),
+                    ..Default::default()
+                },
             };
-            builder = builder.with_circuit_breaker(breaker);
+            let breaker = CircuitBreaker::new(config).expect("valid CB config");
+            builder = builder.circuit_breaker(Arc::new(breaker));
         }
 
         Some(builder.build())
@@ -641,14 +719,14 @@ impl AcquireResilience {
 /// LLM resource хранит breaker внутри Runtime.
 pub struct LlmRuntime {
     client: reqwest::Client,
-    breaker: Arc<CircuitBreaker<5, 30_000>>,  // из nebula-resilience
-    rate_limiter: Arc<GovernorRateLimiter>,     // из nebula-resilience
+    breaker: Arc<CircuitBreaker>,          // из nebula-resilience
+    rate_limiter: Arc<GovernorRateLimiter>, // из nebula-resilience
 }
 
 impl LlmRuntime {
     pub async fn chat(&self, req: ChatRequest) -> Result<ChatResponse, LlmError> {
         self.rate_limiter.acquire().await.map_err(LlmError::RateLimited)?;
-        self.breaker.execute(|| self.do_chat(req)).await
+        self.breaker.call(|| Box::pin(self.do_chat(req))).await
             .map_err(LlmError::from_resilience)
     }
 }

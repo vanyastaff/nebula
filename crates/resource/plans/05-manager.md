@@ -1,5 +1,9 @@
 # 05 — Manager: registration, acquire, lifecycle orchestration
 
+Correctness amendments integrated: #4 (scope cross-tenant), #9 (config no rollback),
+#10 (service drain no deadline), #12 (audit trail), #13 (MemoryMonitor Mutex),
+#18 (Registry::get_typed async), #20 (ScopeResolver object-safe), #24 (pressure_snapshot init).
+
 ---
 
 ## Manager
@@ -85,7 +89,15 @@ impl Manager {
         self
     }
 
-    /// Single-tenant или development. Simplified containment (Organization contains ALL Projects).
+    /// Single-tenant or development deployments ONLY.
+    /// Simplified containment: Organization contains ALL Projects (no cross-tenant check).
+    ///
+    /// Use when:
+    /// - Single-tenant self-hosted deployment (one org, no isolation needed).
+    /// - Local development / integration tests.
+    ///
+    /// DO NOT use in multi-tenant production — resources from Org A would be
+    /// accessible to Org B. See amendment #4.
     pub fn with_simplified_scoping(mut self) -> Self {
         self.containment_mode = ContainmentMode::Simplified;
         self
@@ -131,6 +143,16 @@ impl Manager {
 ## Registration — typestate builder
 
 Invalid states не компилируются. Забыл config → compile error. Забыл topology → compile error.
+
+**Minimal registration (3 lines):**
+
+```rust
+// Simple case — config + topology + build. That's it.
+manager.register(Postgres).config(pg_config).id(id)
+    .pool(pool::Config::default()).build().await?;
+```
+
+**Full registration with all options:**
 
 ```rust
 // Usage:
@@ -321,7 +343,24 @@ manager.register(Postgres).config(cfg).id(id).pool(pool_cfg)
 
 ## Registry — type-erased, scope-aware lookup
 
-Two acquire paths: typed hot (zero allocation) и erased cold.
+**Scope resolution order** (most specific wins, with fallback):
+
+```
+Action(exec_id, node_id) → Execution(exec_id) → Workflow(wf_id) → Project(proj_id) → Organization(org_id) → Global
+```
+
+When `acquire()` is called with a request scope, the registry finds the most specific
+registered scope that is compatible. Example: resource registered at `Organization("acme")`,
+requested from `Execution("run-42")` within that org → matches if ScopeResolver confirms
+the execution belongs to that organization. If no compatible scope found → `Error::NotFound`.
+
+Two acquire paths: typed hot (Arc clone) и erased cold.
+
+> **Amendment #18:** `get_typed()` returns `Arc<ManagedResource<R>>` (not `&ref`) because
+> scope resolution is async (ScopeResolver). One Arc clone on hot path — acceptable.
+>
+> **Amendment #20:** `ScopeResolver::is_child_of` returns `BoxFuture` for object-safety
+> (`Arc<dyn ScopeResolver>` required by `CachedScopeResolver`).
 
 ```rust
 /// Type erasure trait. Every ManagedResource<R> implements this.
@@ -571,17 +610,21 @@ impl Manager {
 
 ## Config hot-reload — per-topology strategy, two-phase with rollback
 
+> **Amendment #9:** All Eager topologies use two-phase reload: create new → health check →
+> atomic swap. If create or health check fails → `ReloadResult::RolledBack`, old runtime
+> continues serving. No partial apply, no inconsistent state.
+
 Per-topology reload strategies:
 
-| Topology | Strategy | Safety |
-|----------|----------|--------|
-| Pool | **Lazy eviction** — update fingerprint, stale instances evicted at next recycle | Safe — no state change during create |
-| Resident | **Two-phase** — create new → health check → ArcSwap → destroy old | Rollback если create/check fails |
-| Service | **Two-phase + natural drain** — create new → health check → swap → old drains via Arc | Rollback + drain deadline watchdog |
-| Transport | **Two-phase** — create new → health check → swap → destroy old | Rollback |
-| Exclusive | **Two-phase** — create new → health check → swap (wait permit) | Rollback |
-| EventSource | **Two-phase** — resubscribe → verify → swap | Rollback |
-| Daemon | **Restart** — cancel → restart with new config | N/A |
+| Topology | Strategy | Hot-reload? | Safety |
+|----------|----------|-------------|--------|
+| Pool | **Lazy eviction** — update fingerprint, stale instances evicted at next recycle | ✅ Yes | Safe — no state change during create |
+| Resident | **Two-phase** — create new → health check → ArcSwap → destroy old | ✅ Yes | Rollback if create/check fails |
+| Service | **Two-phase + natural drain** — create new → health check → swap → old drains via Arc | ✅ Yes | Rollback + drain deadline watchdog (amendment #10) |
+| Transport | **Two-phase** — create new → health check → swap → destroy old | ✅ Yes | Rollback |
+| Exclusive | **Two-phase** — create new → health check → swap (wait permit) | ✅ Yes | Rollback |
+| EventSource | **Two-phase** — resubscribe → verify → swap | ✅ Yes | Rollback |
+| Daemon | **Restart** — cancel → restart with new config | ⚠️ Restart | Brief unavailability during restart |
 
 **Key invariant**: для всех Eager topologies — создать новый runtime ПЕРЕД уничтожением
 старого. Если create или health check fails → `ReloadResult::RolledBack`, старый runtime
@@ -667,6 +710,7 @@ match result {
     }
     ReloadResult::Skipped { .. } => {}
 }
+```
 
 ### Integration with `nebula-config`
 
@@ -801,6 +845,8 @@ pub struct service::Config {
 
 ## Audit trail — structured logging для resource access
 
+> **Amendment #12:** Added structured audit logging for compliance-sensitive resources.
+
 Автоматический audit log каждого acquire/release. Action author не делает ничего.
 
 ```rust
@@ -855,36 +901,52 @@ RUST_LOG=nebula_resource=debug
 
 ## ShutdownOrchestrator
 
-Graceful shutdown в обратном topological порядке.
+Graceful shutdown в обратном topological порядке. Three phases with configurable timeouts.
+
+**Dependency ordering:** if resource A depends on B, A shuts down BEFORE B.
+This ensures dependents finish before their dependencies are destroyed.
 
 ```rust
 pub struct ShutdownOrchestrator;
 
 impl ShutdownOrchestrator {
-    /// Shutdown all resources. Respects dependency order.
+    /// Phased graceful shutdown respecting dependency order.
     ///
-    /// 1. Cancel global CancellationToken (stops all Daemon tasks, maintenance loops).
-    /// 2. Build dependency graph from Dependencies trait.
-    /// 3. Reverse topological sort.
-    /// 4. Shutdown each resource in order.
-    /// 5. Each resource: shutdown() → drain in-flight → destroy all instances.
-    /// 6. Drain each resource's ReleaseQueue.
-    pub async fn shutdown(manager: &Manager, timeout: Duration) -> Result<()> {
-        // Signal all resources to stop accepting new work.
+    /// Phase 1 — DRAIN: Cancel global CancellationToken → stops Daemon tasks,
+    ///   maintenance loops, new acquire() calls rejected. Wait for in-flight
+    ///   guards to be released (up to drain_timeout).
+    ///
+    /// Phase 2 — CLEANUP: Build dependency graph → reverse topological sort.
+    ///   Shut down each resource in dependency-safe order:
+    ///   resource.shutdown() → drain ReleaseQueue → destroy all instances.
+    ///   Per-resource timeout = cleanup_timeout.
+    ///
+    /// Phase 3 — TERMINATE: Force-close any resources that didn't complete
+    ///   cleanup within terminate_timeout. Log leaked handles.
+    ///
+    /// NOTE (amendment #10): Service topology drain uses Arc refcount.
+    /// Leaked handles prevent old runtime destruction — watchdog logs warnings
+    /// but cannot force-drop Arc holders.
+    pub async fn shutdown(manager: &Manager, config: ShutdownConfig) -> Result<()> {
+        // Phase 1: Signal all resources to stop accepting new work.
         manager.cancel.cancel();
 
+        // Wait for in-flight to drain.
+        tokio::time::sleep(config.drain_timeout.min(Duration::from_secs(5))).await;
+
+        // Phase 2: Dependency-ordered cleanup.
         let order = manager.registry.reverse_topological_order();
 
         for resource_id in order {
             let result = tokio::time::timeout(
-                timeout,
+                config.cleanup_timeout,
                 manager.remove(resource_id),
             ).await;
 
             match result {
                 Ok(Ok(())) => tracing::info!(%resource_id, "resource shut down"),
                 Ok(Err(e)) => tracing::warn!(%resource_id, "shutdown error: {}", e),
-                Err(_)     => tracing::warn!(%resource_id, "shutdown timeout"),
+                Err(_)     => tracing::warn!(%resource_id, "shutdown timeout, forcing"),
             }
         }
 

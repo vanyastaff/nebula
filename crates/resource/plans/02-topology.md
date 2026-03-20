@@ -2,6 +2,14 @@
 
 Каждая topology определяет как организовать Runtime instances и какова семантика acquire/release.
 
+**Выбор topology:** Resource author выбирает ОДНУ primary topology при регистрации.
+Каждый target resource type маппится ровно на одну primary topology (см. [trait compatibility map](#trait-compatibility-map)).
+Гибриды (Service + EventSource + Daemon) используют secondary capabilities через builder.
+
+**Принцип минимальных trait bounds:** topology traits добавляют ТОЛЬКО методы,
+специфичные для конкретного паттерна доступа. Общие lifecycle-методы (`create`, `destroy`,
+`check`, `shutdown`) живут в базовом `Resource` trait.
+
 ---
 
 ## Pooled
@@ -235,6 +243,7 @@ pub mod pool {
 ## Resident
 
 Один Clone-able handle. Acquire = clone. Zero contention.
+Идеален для stateless/shared clients: HTTP, Redis multiplexed, Kafka producer, LLM API.
 
 ```rust
 pub trait Resident: Resource
@@ -321,6 +330,8 @@ is_alive_sync check (if stale_after configured):
 ## Service
 
 Long-running runtime + token-based access. Token = `Self::Lease` (единый source of truth).
+Для ресурсов с собственным background runtime, где callers получают lightweight handle.
+Примеры: Telegram Bot (token = bot handle + update receiver), WebSocket outbound (token = sender).
 
 ```rust
 pub trait Service: Resource {
@@ -383,6 +394,7 @@ impl Service for TelegramBot {
 ## Transport
 
 Один transport + N мультиплексированных sessions. Session = `Self::Lease`.
+Для протоколов с multiplexing: SSH (один TCP, N shell sessions), gRPC (один HTTP/2, N streams).
 
 ```rust
 pub trait Transport: Resource {
@@ -484,6 +496,8 @@ impl Transport for Ssh {
 ## Exclusive
 
 Один owner за раз. `Arc<Semaphore>(1)` + `OwnedSemaphorePermit`.
+Для ресурсов, которые не поддерживают concurrent access: Kafka Consumer (partition assignment),
+serial ports, single-writer databases.
 
 ```rust
 pub trait Exclusive: Resource {
@@ -539,6 +553,8 @@ release (Drop HandleInner::Shared → on_release):
 ## EventSource
 
 Incoming event stream. Subscribe/recv split — persistent subscription.
+Для ресурсов, генерирующих входящие события: Redis Pub/Sub, WebSocket inbound, message queues.
+**Не выдаётся через `ctx.resource::<R>()`** — используется внутри engine для EventTrigger loop.
 
 ```rust
 pub trait EventSource: Resource {
@@ -594,6 +610,8 @@ impl EventSource for RedisSubscriber {
 ## Daemon
 
 Background process. Lifecycle only — no acquire/release. Framework manages start/stop/restart.
+Для long-running background processes: polling loops, file watchers, queue consumers.
+**Не выдаётся через `ctx.resource::<R>()`** — framework управляет lifecycle автоматически.
 
 ```rust
 pub trait Daemon: Resource {
@@ -824,29 +842,75 @@ async try_recreate(state, resource, config, credential, ctx, budget):
 
 Resource может impl несколько topology traits (гибриды). Primary topology определяет acquire semantics. Secondary добавляют capabilities через `.also_event_source()`, `.also_daemon()` на builder.
 
-```
-                     PG   Redis-S  Redis-D  Redis-PS  Kafka-P  Kafka-C  SSH   WS    TG-Bot  Browser  LLM   HTTP
-Resource             ✓    ✓       ✓       ✓         ✓       ✓        ✓    ✓    ✓       ✓       ✓     ✓
-Pooled               ✓    ·       ✓       ·         ·       ·        ·    ·    ·       ✓       ·     ·
-  prepare()          ✓    ·       ✓       ·         ·       ·        ·    ·    ·       ✓       ·     ·
-  recycle()          ✓    ·       ✓       ·         ·       ·        ·    ·    ·       ✓       ·     ·
-Resident             ·    ✓       ·       ·         ✓       ·        ·    ·    ·       ·       ✓     ✓
-Service              ·    ·       ·       ·         ·       ·        ·    ✓    ✓       ·       ·     ·
-Transport            ·    ·       ·       ·         ·       ·        ✓    ·    ·       ·       ·     ·
-Exclusive            ·    ·       ·       ·         ·       ✓        ·    ·    ·       ·       ·     ·
-EventSource          ·    ·       ·       ✓         ·       ·        ·    ✓*   ✓*      ·       ·     ·
-Daemon               ·    ·       ·       ·         ·       ·        ·    ·    ✓       ·       ·     ·
+**Правило:** каждый target resource type маппится ровно на одну primary topology.
+Secondary traits (EventSource, Daemon) не меняют acquire semantics — добавляют capabilities.
 
-* WS и Telegram — гибриды: Service (primary) + EventSource + Daemon (secondary).
-  Registration: .service(cfg).also_event_source(es_cfg).also_daemon(d_cfg).build()
 ```
+                     PG   Redis-S  Redis-D  Redis-PS  Kafka-P  Kafka-C  SSH   WS    TG-Bot  Browser  LLM   HTTP  gRPC  SMTP
+Resource             ✓    ✓       ✓       ✓         ✓       ✓        ✓    ✓    ✓       ✓       ✓     ✓     ✓     ✓
+Pooled               ✓    ·       ✓       ·         ·       ·        ·    ·    ·       ✓       ·     ·     ·     ✓
+  prepare()          ✓    ·       ✓       ·         ·       ·        ·    ·    ·       ✓       ·     ·     ·     ·
+  recycle()          ✓    ·       ✓       ·         ·       ·        ·    ·    ·       ✓       ·     ·     ·     ·
+Resident             ·    ✓       ·       ·         ✓       ·        ·    ·    ·       ·       ✓     ✓     ✓     ·
+Service              ·    ·       ·       ·         ·       ·        ·    ✓    ✓       ·       ·     ·     ·     ·
+Transport            ·    ·       ·       ·         ·       ·        ✓    ·    ·       ·       ·     ·     ·     ·
+Exclusive            ·    ·       ·       ·         ·       ✓        ·    ·    ·       ·       ·     ·     ·     ·
+EventSource          ·    ·       ·       ✓         ·       ·        ·    ✓*   ✓*      ·       ·     ·     ·     ·
+Daemon               ·    ·       ·       ·         ·       ·        ·    ·    ✓*      ·       ·     ·     ·     ·
+
+* = secondary capability, not primary topology.
+```
+
+### Resource → Primary topology mapping
+
+Каждый ресурс имеет ровно одну primary topology:
+
+```
+Resource type    | Primary topology | Why
+-----------------|------------------|--------------------------------------------
+Postgres         | Pooled           | N interchangeable connections, per-tenant prepare
+Redis Shared     | Resident         | One multiplexed client, clone for each caller
+Redis Dedicated  | Pooled           | N dedicated connections, per-tenant SELECT db
+Redis Pub/Sub    | Resident         | One subscription client + EventSource secondary
+Kafka Producer   | Resident         | One producer, shared across callers
+Kafka Consumer   | Exclusive        | Partition assignment requires single owner
+SSH              | Transport        | One TCP connection, N multiplexed sessions
+WebSocket        | Service          | Long-running + Service tokens + EventSource + Daemon
+Telegram Bot     | Service          | Long-running + Service tokens + EventSource + Daemon
+Browser          | Pooled           | N browser instances, heavy recycle (~500ms)
+LLM API          | Resident         | Stateless HTTP client with rate-limiting
+HTTP Client      | Resident         | Stateless, clone-friendly
+gRPC             | Resident         | Shared channel (HTTP/2 multiplexed)
+SMTP             | Pooled           | N SMTP connections with session state
+```
+
+### Hybrid topologies (гибриды)
+
+Некоторые ресурсы комбинируют primary topology с secondary capabilities:
+
+**Telegram Bot = Service (primary) + EventSource + Daemon**
+- Service: `acquire_token()` → `TelegramBotHandle` (bot clone + update subscription)
+- EventSource: engine subscribes to updates for EventTrigger
+- Daemon: `run()` = polling loop (getUpdates)
+- Registration: `.service(cfg).also_event_source(es_cfg).also_daemon(d_cfg).build()`
+
+**WebSocket = Service (primary) + EventSource + Daemon**
+- Service: `acquire_token()` → `WsHandle` (mpsc::Sender clone for sending messages)
+- EventSource: engine subscribes to incoming messages
+- Daemon: `run()` = connection maintenance loop (reconnect on drop)
+- Registration: `.service(cfg).also_event_source(es_cfg).also_daemon(d_cfg).build()`
+
+**Redis Pub/Sub = Resident (primary) + EventSource**
+- Resident: shared client clone
+- EventSource: engine subscribes to pub/sub messages
+- Registration: `.resident(cfg).also_event_source(es_cfg).build()`
 
 ### Lease mapping per topology
 
 ```
 Topology     | Lease relationship   | HandleInner variant
 -------------|----------------------|--------------------
-Pool         | Lease = Runtime      | Guarded (owned + on_release callback)
+Pooled       | Lease = Runtime      | Guarded (owned + on_release callback)
 Resident     | Lease = Runtime      | Owned (clone, no callback)
 Service(C)   | Lease = Token        | Owned (clone, no callback)
 Service(T)   | Lease = Token        | Guarded (owned + on_release callback)

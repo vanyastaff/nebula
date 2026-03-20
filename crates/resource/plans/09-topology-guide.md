@@ -8,43 +8,130 @@ Topology кодифицирует эту природу. Framework знает к
 
 Неправильный выбор topology = либо waste ресурсов (Pool для stateless client), либо race conditions (Resident для stateful connection), либо deadlock (не Exclusive для single-owner resource).
 
+**Этот файл — standalone гайд.** Если вы реализуете новый ресурс, прочитайте только его. Decision tree → Quick-reference table → секция выбранной topology → примеры + анти-паттерны.
+
+---
+
+## Quick-reference: topology selection table
+
+Найдите ваш ресурс (или похожий) и используйте рекомендованную topology:
+
+| Resource type | Primary topology | Secondary | Rationale |
+|---|---|---|---|
+| **Postgres** | Pool | — | N interchangeable TCP connections, per-tenant prepare, server-side `max_connections` |
+| **Redis (shared/multiplexed)** | Resident | EventSource (if pub/sub) | One `fred::Client`, internal multiplexing, `Clone = Arc` |
+| **Redis (dedicated connections)** | Pool | — | N dedicated TCP connections, per-connection `SELECT db` |
+| **HTTP Client** (`reqwest`) | Resident | — | Stateless, internal connection pool, `Clone = Arc` |
+| **Telegram Bot** | Service | EventSource + Daemon | Long-lived bot + token handles + polling loop |
+| **SSH** | Transport | — | One TCP connection + N multiplexed shell sessions |
+| **WebSocket (outbound)** | Service | EventSource + Daemon | Long-lived connection + send handle tokens + incoming messages |
+| **Postgres** | Pool | — | Stateful TCP connections, expensive create, server-side limits |
+| **Kafka Producer** | Resident | — | One producer with internal buffer/batching, `Clone = Arc` |
+| **Kafka Consumer** | Exclusive | — | Partition assignment requires single owner, concurrent access = rebalance storm |
+| **gRPC** (`tonic::Channel`) | Resident | — | HTTP/2 multiplexed channel, internal load balancing, `Clone = Arc` |
+| **SMTP** | Pool | — | N SMTP connections, per-connection session state (EHLO, AUTH, STARTTLS) |
+| **Logger** (structured) | Resident | — | Shared logger handle, `Clone = Arc`, no per-caller state |
+| **Metric** (collector) | Resident | — | Shared metrics registry/client, `Clone = Arc`, append-only |
+| **Headless Browser** | Pool | — | N browser pages, heavy recycle (~500ms), per-page isolation |
+| **LLM API client** | Resident | — | Stateless HTTP wrapper + rate limiter, `Clone = Arc` |
+| **AMQP (RabbitMQ)** | Transport | — | One TCP connection + N channels |
+| **Serial Port** | Exclusive | — | Physical device, single writer |
+
 ---
 
 ## Дерево решений
 
+Следуйте дереву сверху вниз. Каждый вопрос — да/нет. Первое совпадение = ваша topology.
+
 ```
-Ресурс нуждается в acquire/release?
-│
-├─ НЕТ → фоновый процесс, просто бежит
-│        → Daemon
-│
-└─ ДА
+1. Ресурс нуждается в acquire/release?
+   (Могут ли actions запрашивать handle у framework?)
    │
-   ├─ Runtime клонируемый (Clone) И stateless?
-   │  │
-   │  ├─ ДА → один shared instance, callers получают clone
-   │  │       → Resident
-   │  │
-   │  └─ НЕТ
-   │     │
-   │     ├─ Одно соединение, много мультиплексированных сессий?
-   │     │  → Transport
-   │     │
-   │     ├─ Только один владелец в момент времени?
-   │     │  → Exclusive
-   │     │
-   │     ├─ Long-lived процесс + lightweight tokens для callers?
-   │     │  → Service
-   │     │
-   │     ├─ Входящий поток событий (subscribe/recv)?
-   │     │  → EventSource
-   │     │
-   │     └─ N взаимозаменяемых stateful instances?
-   │        → Pool
+   ├─ НЕТ → Callers не взаимодействуют напрямую.
+   │         Ресурс просто бежит в фоне (polling loop, scheduler, watcher).
+   │         ──→ Daemon
+   │         Примеры: Telegram polling loop, cron scheduler, metrics scraper.
    │
-   └─ Гибрид? (outbound API + incoming events)
-      → Service + EventSource на одном Resource struct
+   └─ ДА → Продолжай ↓
+      │
+      2. Runtime реализует Clone И clone дешёвый (Arc inside)?
+         │
+         ├─ ДА → Есть ли per-caller mutable state?
+         │        │
+         │        ├─ НЕТ → Один shared instance, callers получают clone.
+         │        │         ──→ Resident
+         │        │         Примеры: reqwest::Client, fred::Client, tonic::Channel,
+         │        │                  rdkafka::FutureProducer, logger handle, metrics client.
+         │        │
+         │        └─ ДА → Clone есть, но каждый caller меняет state?
+         │                 Это значит Clone бессмыслен для sharing.
+         │                 ──→ Переходи к вопросу 3
+         │
+         └─ НЕТ → Runtime НЕ Clone. Продолжай ↓
+            │
+            3. Это одно соединение с N мультиплексированными сессиями поверх?
+               (Один дорогой TCP/TLS handshake, много дешёвых logical channels)
+               │
+               ├─ ДА ──→ Transport
+               │         Примеры: SSH (1 TCP → N shell sessions),
+               │                  AMQP (1 TCP → N channels).
+               │
+               └─ НЕТ ↓
+                  │
+                  4. Только один владелец допустим в любой момент времени?
+                     (Concurrent access = corruption / rebalance / physical conflict)
+                     │
+                     ├─ ДА ──→ Exclusive
+                     │         Примеры: Kafka consumer (partition assignment),
+                     │                  serial port, file lock, GPIO pin.
+                     │
+                     └─ НЕТ ↓
+                        │
+                        5. Runtime = long-lived процесс, callers получают lightweight token/handle?
+                           (Runtime сам не Clone, но создаёт cheap tokens для callers)
+                           │
+                           ├─ ДА ──→ Service
+                           │         Примеры: Telegram Bot (bot handle + update rx),
+                           │                  WebSocket outbound (mpsc::Sender),
+                           │                  rate-limited API (semaphore permit).
+                           │
+                           └─ НЕТ ↓
+                              │
+                              6. N взаимозаменяемых stateful instances?
+                                 (Создание дорогое, instances независимы, нужен recycle между callers)
+                                 │
+                                 └─ ДА ──→ Pool
+                                           Примеры: Postgres connections, Redis dedicated,
+                                                    SMTP connections, browser pages.
 ```
+
+**Для входящих событий (incoming event stream):** добавьте `EventSource` как secondary capability
+к любой primary topology. EventSource НЕ является primary topology — он дополняет другую.
+
+**Для гибридов (outbound API + incoming events + background loop):**
+используйте primary topology + `.also_event_source()` + `.also_daemon()` на builder.
+
+---
+
+## Маппинг целевых ресурсов через дерево
+
+Для каждого ресурса из спецификации — путь через дерево:
+
+| Resource | Q1 acquire? | Q2 Clone? | Q3 multiplex? | Q4 single-owner? | Q5 long-lived+token? | Q6 pool? | → Topology |
+|---|---|---|---|---|---|---|---|
+| **Logger** | ДА | ДА (Arc) | — | — | — | — | **Resident** |
+| **Metric** | ДА | ДА (Arc) | — | — | — | — | **Resident** |
+| **HTTP** | ДА | ДА (Arc) | — | — | — | — | **Resident** |
+| **gRPC** | ДА | ДА (Arc) | — | — | — | — | **Resident** |
+| **Kafka Producer** | ДА | ДА (Arc) | — | — | — | — | **Resident** |
+| **Redis (shared)** | ДА | ДА (Arc) | — | — | — | — | **Resident** |
+| **SSH** | ДА | НЕТ | ДА (1 TCP → N sessions) | — | — | — | **Transport** |
+| **Kafka Consumer** | ДА | НЕТ | НЕТ | ДА (partitions) | — | — | **Exclusive** |
+| **Telegram Bot** | ДА | НЕТ | НЕТ | НЕТ | ДА (bot+tokens) | — | **Service** |
+| **WebSocket** | ДА | НЕТ | НЕТ | НЕТ | ДА (conn+handles) | — | **Service** |
+| **Postgres** | ДА | НЕТ | НЕТ | НЕТ | НЕТ | ДА | **Pool** |
+| **Redis (dedicated)** | ДА | НЕТ | НЕТ | НЕТ | НЕТ | ДА | **Pool** |
+| **SMTP** | ДА | НЕТ | НЕТ | НЕТ | НЕТ | ДА | **Pool** |
 
 ---
 
@@ -62,15 +149,15 @@ Runtime = stateful connection. Каждый instance независим и вз�
 - Нужен cleanup между использованиями: DISCARD ALL, UNWATCH, navigate blank.
 - Ограничение на стороне сервера: `max_connections` в Postgres, maxclients в Redis.
 
-### Примеры
+### Real-world примеры
 
-| Resource | Почему Pool | Create cost | Recycle |
-|---|---|---|---|
-| PostgreSQL | TCP connection, per-connection state (search_path, prepared stmts) | ~50ms (TCP + auth) | DISCARD ALL ~1ms |
-| MySQL | TCP connection, per-connection variables | ~30ms | RESET CONNECTION |
-| Redis Dedicated | TCP, per-connection SELECT db, WATCH state | ~10ms | UNWATCH + SELECT 0 |
-| Headless Browser Page | Chrome DevTools page in shared browser process | ~200ms | Clear cookies/storage ~500ms |
-| LDAP Connection | TCP + BIND | ~100ms | Unbind + rebind |
+| Resource | Почему Pool | Create cost | Recycle | Server-side limit |
+|---|---|---|---|---|
+| **PostgreSQL** | TCP connection, per-connection state (search_path, prepared stmts) | ~50ms (TCP + auth) | DISCARD ALL ~1ms | `max_connections` (default 100) |
+| **SMTP** | TCP + EHLO + AUTH + STARTTLS per connection, session state | ~100ms (TLS handshake) | RSET ~1ms | Varies by provider |
+| **Redis Dedicated** | TCP, per-connection SELECT db, WATCH state | ~10ms | UNWATCH + SELECT 0 ~1ms | `maxclients` (default 10000) |
+| **Headless Browser Page** | Chrome DevTools page in shared browser process | ~200ms | Clear cookies/storage ~500ms | Memory-bound |
+| **MySQL** | TCP connection, per-connection variables | ~30ms | RESET CONNECTION | `max_connections` |
 
 ### Как выглядит
 
@@ -127,6 +214,51 @@ impl Pooled for Postgres {
 }
 ```
 
+**SMTP пример:**
+
+```rust
+pub struct SmtpConnection;
+
+impl Resource for SmtpConnection {
+    type Config  = SmtpResourceConfig;
+    type Runtime = SmtpTransport;
+    type Lease   = SmtpTransport;      // = Runtime (Pool topology)
+    type Error   = SmtpError;
+    const KEY: ResourceKey = resource_key!("smtp");
+
+    async fn create(&self, config: &SmtpResourceConfig, ctx: &dyn Ctx) -> Result<SmtpTransport, SmtpError> {
+        let cred = todo!("credential integration — see deferred design");
+        let transport = lettre::AsyncSmtpTransport::<Tokio1Executor>::relay(&cred.host)?
+            .port(cred.port)
+            .credentials(Credentials::new(cred.username.clone(), cred.password.expose().to_string()))
+            .build();
+        Ok(SmtpTransport { inner: transport })
+    }
+
+    async fn check(&self, transport: &SmtpTransport) -> Result<(), SmtpError> {
+        transport.inner.test_connection().await.map_err(SmtpError::Connection)?;
+        Ok(())
+    }
+}
+
+impl Pooled for SmtpConnection {
+    fn is_broken(&self, transport: &SmtpTransport) -> BrokenCheck {
+        if transport.inner.is_closed() { BrokenCheck::Broken("closed".into()) }
+        else { BrokenCheck::Healthy }
+    }
+
+    async fn recycle(&self, transport: &SmtpTransport, _metrics: &InstanceMetrics)
+        -> Result<RecycleDecision, SmtpError>
+    {
+        // RSET clears any in-progress mail transaction.
+        match transport.inner.command(lettre::transport::smtp::commands::Rset).await {
+            Ok(_) => Ok(RecycleDecision::Keep),
+            Err(_) => Ok(RecycleDecision::Drop),
+        }
+    }
+}
+```
+
 ### Регистрация
 
 ```rust
@@ -145,10 +277,11 @@ manager.register(Postgres)
 
 ### Анти-паттерны
 
-- **Не делать Pool для stateless client** (reqwest::Client). Клон дешевле pool checkout. Используй Resident.
-- **Не делать Pool с max_size=1**. Это Exclusive с overhead pool machinery. Используй Exclusive.
-- **Не забывать recycle()**. Без recycle — state протекает между callers. Cross-tenant data leak.
-- **Не забывать prepare()**. Без prepare — tenant isolation manual, caller может забыть.
+- **❌ Pool для stateless client** (reqwest::Client). Clone дешевле pool checkout. → Используй **Resident**.
+- **❌ Pool с max_size=1**. Это Exclusive с overhead pool machinery. → Используй **Exclusive**.
+- **❌ Pool без recycle()**. Без recycle — state протекает между callers. Cross-tenant data leak.
+- **❌ Pool без prepare()**. Без prepare — tenant isolation manual, caller может забыть.
+- **❌ Pool для multiplexed protocol** (SSH, AMQP). Один TCP connection дешевле N connections. → Используй **Transport**.
 
 ---
 
@@ -166,15 +299,17 @@ Runtime = Clone, stateless или internally managed state. Один instance, �
 - Нет ограничения на количество concurrent callers.
 - Создание дорогое но одноразовое.
 
-### Примеры
+### Real-world примеры
 
-| Resource | Почему Resident | Что внутри Clone |
-|---|---|---|
-| reqwest::Client | HTTP/2 multiplexing, internal connection pool | Arc<ClientInner> |
-| fred::Client (Redis) | Multiplexed pipelining, internal reconnection | Arc<ClientInner> |
-| rdkafka::FutureProducer | Internal buffer, background thread sends batches | Arc<ProducerInner> |
-| tonic::Channel (gRPC) | HTTP/2 multiplexed, internal load balancing | Arc<Channel> |
-| LLM API client | HTTP client + rate limiter + usage tracker | Arc<...> |
+| Resource | Почему Resident | Что внутри Clone | Health check |
+|---|---|---|---|
+| **reqwest::Client** (HTTP) | HTTP/2 multiplexing, internal connection pool | Arc\<ClientInner\> | Нет (stateless) |
+| **fred::Client** (Redis shared) | Multiplexed pipelining, internal reconnection | Arc\<ClientInner\> | `is_connected()` every 15s |
+| **rdkafka::FutureProducer** (Kafka) | Internal buffer, background thread sends batches | Arc\<ProducerInner\> | `fetch_metadata()` via `check()` |
+| **tonic::Channel** (gRPC) | HTTP/2 multiplexed, internal load balancing | Arc\<Channel\> | Нет (internal reconnect) |
+| **Logger handle** | Shared structured logger, append-only | Arc\<LoggerInner\> | Нет (local) |
+| **Metrics client** | Shared metrics registry | Arc\<MetricsInner\> | Нет (local) |
+| **LLM API client** | HTTP client + rate limiter + usage tracker | Arc\<...\> | Нет (stateless) |
 
 ### Как выглядит
 
@@ -215,7 +350,6 @@ impl Resource for RedisShared {
     const KEY: ResourceKey = resource_key!("redis.shared");
 
     async fn create(&self, config: &RedisResourceConfig, ctx: &dyn Ctx) -> Result<fred::Client, RedisError> {
-        // Credential access — design deferred.
         let cred = todo!("credential integration — see deferred design");
         let client = fred::Client::new(/* from cred.host, cred.port, cred.password */);
         client.init().await?;
@@ -239,6 +373,32 @@ impl Resident for RedisShared {
 }
 ```
 
+**gRPC пример:**
+
+```rust
+pub struct GrpcChannel;
+
+impl Resource for GrpcChannel {
+    type Config  = GrpcConfig;
+    type Runtime = tonic::transport::Channel;
+    type Lease   = tonic::transport::Channel;  // Clone = Arc<Channel>
+    type Error   = GrpcError;
+    const KEY: ResourceKey = resource_key!("grpc.channel");
+
+    async fn create(&self, config: &GrpcConfig, _ctx: &dyn Ctx) -> Result<tonic::transport::Channel, GrpcError> {
+        let cred = todo!("credential integration — see deferred design");
+        tonic::transport::Channel::from_shared(cred.endpoint.clone())?
+            .connect_timeout(config.connect_timeout)
+            .connect().await
+            .map_err(GrpcError::Connect)
+    }
+}
+
+impl Resident for GrpcChannel {
+    // tonic::Channel handles reconnection internally. No stale_after needed.
+}
+```
+
 ### Регистрация
 
 ```rust
@@ -251,9 +411,10 @@ manager.register(RedisShared)
 
 ### Анти-паттерны
 
-- **Не делать Resident для stateful connection** (Postgres connection). Два caller-а одновременно пишут в один TCP socket → corrupt data.
-- **Не забывать stale_after для network clients**. Без check — clone-ы молча мертвы после network failure. fred.rs: broker disconnect → все clone-ы broken → is_alive() catches.
-- **Не делать Resident если Clone дорогой.** Clone должен быть O(1) Arc increment, не deep copy.
+- **❌ Resident для stateful connection** (Postgres connection). Два caller-а одновременно пишут в один TCP socket → corrupt data. → Используй **Pool**.
+- **❌ Resident без stale_after для network clients.** Без check — clone-ы молча мертвы после network failure. → Добавь `stale_after(Some(15s))` + `is_alive()`.
+- **❌ Resident если Clone дорогой.** Clone должен быть O(1) Arc increment, не deep copy.
+- **❌ Resident для dedicated (non-multiplexed) connections.** Если клиент НЕ мультиплексирует внутри (как `fred::Client` делает), каждый clone использует тот же TCP socket → contention. → Используй **Pool**.
 
 ---
 
@@ -270,14 +431,13 @@ manager.register(RedisShared)
 - Handle может быть Clone (cheap token) или tracked (semaphore permit).
 - Runtime обслуживает множество callers одновременно.
 
-### Примеры
+### Real-world примеры
 
-| Resource | Runtime | Token | TokenMode |
-|---|---|---|---|
-| Telegram Bot | Bot + polling loop | TelegramBotHandle (Bot.clone() + broadcast rx) | Cloned |
-| WebSocket (outbound) | WsRuntime (connection + background loop) | WsHandle (mpsc::Sender clone) | Cloned |
-| Rate-Limited API | HTTP client + semaphore | SemaphorePermit | Tracked |
-| gRPC Service | Server connection + stream manager | RequestHandle | Tracked |
+| Resource | Runtime | Token | TokenMode | Почему не другое |
+|---|---|---|---|---|
+| **Telegram Bot** | Bot + polling loop | TelegramBotHandle (Bot.clone() + broadcast rx) | Cloned | Runtime не Clone (polling state), но tokens cheap |
+| **WebSocket (outbound)** | WsRuntime (connection + background loop) | WsHandle (mpsc::Sender clone) | Cloned | Runtime не Clone (connection state), tokens = sender clone |
+| **Rate-Limited API** | HTTP client + semaphore | SemaphorePermit | Tracked | Нужен capacity control — permits limited |
 
 ### Как выглядит
 
@@ -292,7 +452,6 @@ impl Resource for TelegramBot {
     const KEY: ResourceKey = resource_key!("telegram.bot");
 
     async fn create(&self, config: &TelegramResourceConfig, ctx: &dyn Ctx) -> Result<TelegramBotRuntime, TelegramError> {
-        // Credential access — design deferred.
         let cred = todo!("credential integration — see deferred design");
         // Setup infrastructure ONLY. DO NOT start polling loop here.
         // Polling = Daemon::run(), started by framework.
@@ -305,15 +464,12 @@ impl Resource for TelegramBot {
     }
 
     async fn destroy(&self, runtime: TelegramBotRuntime) -> Result<(), TelegramError> {
-        // Framework cancels Daemon separately via CancellationToken.
         drop(runtime);
         Ok(())
     }
 }
 
 impl Service for TelegramBot {
-    // Lease = TelegramBotHandle (defined in Resource trait above).
-    // No separate `type Token` — Service uses Self::Lease.
     const TOKEN_MODE: TokenMode = TokenMode::Cloned;
 
     async fn acquire_token(&self, runtime: &TelegramBotRuntime, _ctx: &dyn Ctx)
@@ -336,8 +492,9 @@ impl Service for TelegramBot {
 
 ### Анти-паттерны
 
-- **Не путать Service с Resident.** Resident: `Runtime: Clone`, acquire = clone runtime. Service: Runtime не Clone, acquire = create token. Если runtime Clone — используй Resident (проще).
-- **Не делать Service если нет long-lived runtime.** Service подразумевает background process (polling, connection). Если runtime создаётся и уничтожается на каждый acquire — это Pool.
+- **❌ Service когда Runtime: Clone.** Resident проще — acquire = clone, нет token machinery. → Используй **Resident**.
+- **❌ Service без long-lived runtime.** Service подразумевает background process. Если runtime создаётся и уничтожается на каждый acquire — это **Pool**.
+- **❌ Service для request-response без background process.** Если нет polling loop / connection loop — зачем Service? Проверь: может быть **Pool** или **Resident**.
 
 ---
 
@@ -354,13 +511,13 @@ impl Service for TelegramBot {
 - AMQP: одно TCP connection, множество channels.
 - Session дешевле чем transport (ms vs seconds).
 
-### Примеры
+### Real-world примеры
 
-| Resource | Transport (одно) | Session (много) |
-|---|---|---|
-| SSH | TCP connection + auth handshake (~2s) | Spawned child process (~10ms) |
-| AMQP (RabbitMQ) | TCP connection + SASL auth | Channel (~1ms) |
-| HTTP/2 (raw) | TLS connection | Stream |
+| Resource | Transport (одно) | Session (много) | Transport cost | Session cost |
+|---|---|---|---|---|
+| **SSH** | TCP connection + auth handshake | Spawned child process | ~2s (TCP + key exchange + auth) | ~10ms |
+| **AMQP (RabbitMQ)** | TCP connection + SASL auth | Channel | ~500ms | ~1ms |
+| **HTTP/2 (raw)** | TLS connection | Stream | ~200ms | ~0ms |
 
 ### Как выглядит
 
@@ -375,7 +532,6 @@ impl Resource for Ssh {
     const KEY: ResourceKey = resource_key!("ssh");
 
     async fn create(&self, config: &SshResourceConfig, ctx: &dyn Ctx) -> Result<SshRuntime, SshError> {
-        // Credential access — design deferred.
         let cred = todo!("credential integration — see deferred design");
         let session = openssh::SessionBuilder::default()
             .host(&cred.host).port(cred.port).user(&cred.username)
@@ -386,9 +542,6 @@ impl Resource for Ssh {
 }
 
 impl Transport for Ssh {
-    // Lease = SshSession (defined in Resource trait above).
-    // No separate `type Session` — Transport uses Self::Lease.
-
     async fn open_session(&self, transport: &SshRuntime, _ctx: &dyn Ctx) -> Result<SshSession, SshError> {
         let child = transport.session.command("bash").spawn().await?;
         Ok(SshSession { child, opened_at: Instant::now() })
@@ -417,8 +570,9 @@ let output = ssh.exec("ls -la").await?;
 
 ### Анти-паттерны
 
-- **Не путать Transport с Pool.** Pool: N независимых connections. Transport: ОДНО connection + N sessions. Если каждый "session" = отдельный TCP connect — это Pool, не Transport.
-- **Не забывать keepalive().** Transport connection idle может быть closed сервером. Keepalive = periodic probe.
+- **❌ Transport когда каждый "session" = отдельный TCP connect.** Это **Pool**, не Transport. Transport = ОДНО connection + N sessions.
+- **❌ Transport без keepalive().** Transport connection idle может быть closed сервером. Keepalive = periodic probe. SSH: `sshd` drops after `ClientAliveInterval`.
+- **❌ Transport для HTTP/2 через tonic/reqwest.** Эти клиенты уже мультиплексируют внутри. → Используй **Resident** (tonic::Channel Clone = Arc).
 
 ---
 
@@ -435,14 +589,14 @@ let output = ssh.exec("ls -la").await?;
 - Не Clone (или Clone бессмыслен).
 - Reset между владельцами: commit offsets, flush buffers, release lock.
 
-### Примеры
+### Real-world примеры
 
-| Resource | Почему Exclusive | reset() |
-|---|---|---|
-| Kafka Consumer | Consumer group offsets, partition assignment. Два consumer-а = rebalance storm | commit offsets |
-| Serial Port | Physical device, one writer | flush buffers |
-| File Lock | flock(), один процесс | release lock |
-| Hardware device | GPIO pin, один controller | reset state |
+| Resource | Почему Exclusive | reset() | Что будет без Exclusive |
+|---|---|---|---|
+| **Kafka Consumer** | Consumer group offsets, partition assignment | commit offsets | Два consumer-а = rebalance storm, duplicate processing |
+| **Serial Port** | Physical device, one writer | flush buffers | Interleaved bytes on wire |
+| **File Lock** | flock(), один процесс | release lock | Lock contention, deadlock |
+| **Hardware device** | GPIO pin, один controller | reset state | Conflicting signals |
 
 ### Как выглядит
 
@@ -457,7 +611,6 @@ impl Resource for KafkaConsumer {
     const KEY: ResourceKey = resource_key!("kafka.consumer");
 
     async fn create(&self, config: &KafkaConsumerResourceConfig, ctx: &dyn Ctx) -> Result<StreamConsumer, KafkaError> {
-        // Credential access — design deferred.
         let cred = todo!("credential integration — see deferred design");
         let consumer: StreamConsumer = ClientConfig::new()
             .set("bootstrap.servers", &cred.brokers)
@@ -478,9 +631,9 @@ impl Exclusive for KafkaConsumer {
 
 ### Анти-паттерны
 
-- **Не делать Exclusive если можно Pool.** Exclusive = bottleneck. Один caller за раз. Если instances независимы — Pool даёт параллелизм.
-- **Не делать Exclusive с max_size > 1.** Exclusive = ровно один instance. Если нужно N exclusive instances — это Pool с per-instance locking (другая задача).
-- **Не забывать reset().** Без reset — следующий владелец наследует state предыдущего. Kafka: uncommitted offsets → duplicate processing.
+- **❌ Exclusive когда instances независимы.** Exclusive = bottleneck (один caller за раз). Если instances взаимозаменяемы → **Pool** даёт параллелизм.
+- **❌ Exclusive с Pool вместо.** Pool с max_size=1 ≈ Exclusive но с лишним overhead. → Используй **Exclusive** напрямую.
+- **❌ Exclusive без reset().** Без reset — следующий владелец наследует state предыдущего. Kafka: uncommitted offsets → duplicate processing.
 
 ---
 
@@ -488,7 +641,7 @@ impl Exclusive for KafkaConsumer {
 
 ### Когда
 
-Входящий поток событий. Runtime подписан на канал/topic. Callers вызывают recv() для получения следующего event.
+Входящий поток событий. Runtime подписан на канал/topic. Engine вызывает recv() для получения следующего event. **EventSource — secondary capability, не primary topology.** Всегда комбинируется с другой primary topology.
 
 ### Признаки
 
@@ -497,17 +650,13 @@ impl Exclusive for KafkaConsumer {
 - recv() блокирует до получения event.
 - Callers не отправляют — только получают.
 
-### Примеры
+### Real-world примеры
 
-| Resource | Что слушает | Event type |
-|---|---|---|
-| Redis Pub/Sub | Channels, patterns | PubSubMessage { channel, payload } |
-| Telegram Bot (inbound) | Polling loop → updates | TelegramUpdate { kind, chat_id, text } |
-| WebSocket (inbound) | WS connection → messages | WsMessage { payload } |
-| Kafka Consumer* | Topics → records | ConsumerRecord { topic, key, value } |
-| NATS Subscriber | Subjects | NatsMessage { subject, payload } |
-
-*Kafka Consumer может быть и Exclusive (если нужен offset control), и EventSource (если просто слушать).
+| Resource | Primary topology | Что слушает | Event type |
+|---|---|---|---|
+| **Redis Pub/Sub** | Resident | Channels, patterns | PubSubMessage { channel, payload } |
+| **Telegram Bot (inbound)** | Service | Polling loop → updates | TelegramUpdate { kind, chat_id, text } |
+| **WebSocket (inbound)** | Service | WS connection → messages | WsMessage { payload } |
 
 ### Как выглядит
 
@@ -522,14 +671,12 @@ impl Resource for RedisSubscriber {
     const KEY: ResourceKey = resource_key!("redis.subscriber");
 
     async fn create(&self, config: &RedisSubscriberConfig, ctx: &dyn Ctx) -> Result<RedisPubSubRuntime, RedisError> {
-        // Credential access — design deferred.
         let cred = todo!("credential integration — see deferred design");
         let subscriber = fred::SubscriberClient::new(/* from cred */);
         subscriber.init().await?;
         for ch in &config.channels {
             subscriber.subscribe(ch).await?;
         }
-        // Background task: subscriber → broadcast channel
         let (tx, _) = broadcast::channel(config.buffer_size);
         // ... spawn forward task ...
         Ok(RedisPubSubRuntime { subscriber, message_tx: tx })
@@ -583,8 +730,9 @@ impl EventTrigger for OrderEventTrigger {
 
 ### Анти-паттерны
 
-- **Не путать EventSource с Resident.** Resident: callers отправляют requests. EventSource: callers получают events. Если ресурс и отправляет и получает — гибрид Service + EventSource.
-- **Не делать EventSource для request-response.** Если caller отправляет запрос и ждёт ответ — это не event stream, это Service или Pool.
+- **❌ EventSource как primary topology.** EventSource дополняет другую topology. Всегда нужна primary (Resident, Service, etc.).
+- **❌ EventSource для request-response.** Если caller отправляет запрос и ждёт ответ — это не event stream. → **Service** или **Pool**.
+- **❌ Путать EventSource с Resident.** Resident: callers отправляют requests. EventSource: callers получают events. Гибрид → Service + EventSource.
 
 ---
 
@@ -592,7 +740,7 @@ impl EventTrigger for OrderEventTrigger {
 
 ### Когда
 
-Фоновый процесс. Нет acquire/release. Framework только стартует, мониторит, рестартует при crash. Callers не взаимодействуют напрямую.
+Фоновый процесс. Нет acquire/release. Framework только стартует, мониторит, рестартует при crash. Callers не взаимодействуют напрямую. **Daemon — secondary capability.** Обычно комбинируется с Service или EventSource.
 
 ### Признаки
 
@@ -601,14 +749,14 @@ impl EventTrigger for OrderEventTrigger {
 - Framework управляет lifecycle: start, stop, restart on crash.
 - Побочные эффекты через другие каналы (EventBus, database writes, metrics).
 
-### Примеры
+### Real-world примеры
 
-| Resource | Что делает | Почему Daemon |
-|---|---|---|
-| Telegram dispatcher | Polling loop → broadcast updates | Нет direct API. Events через broadcast channel |
-| Cron scheduler | Periodic task execution | Нет acquire. Запускает tasks по расписанию |
-| Metrics collector | Periodic scrape → push to storage | Нет acquire. Background scrape loop |
-| Log rotator | Periodic log file rotation | Нет acquire. Background maintenance |
+| Resource | Что делает | Primary topology | Почему Daemon secondary |
+|---|---|---|---|
+| **Telegram dispatcher** | Polling loop → broadcast updates | Service | Daemon manages polling lifecycle |
+| **WebSocket connection** | Maintain connection + reconnect | Service | Daemon manages reconnect loop |
+| **Cron scheduler** | Periodic task execution | — (standalone) | Нет acquire, pure background |
+| **Metrics collector** | Periodic scrape → push to storage | — (standalone) | Нет acquire, pure background |
 
 ### Как выглядит
 
@@ -642,8 +790,9 @@ impl Daemon for TelegramBot { ... }
 
 ### Анти-паттерны
 
-- **Не делать Daemon если callers нуждаются в API.** Если есть send_message(), query(), exec() — это Service или Pool, не Daemon.
-- **Daemon — не замена для background task внутри другой topology.** Pool maintenance loop — внутренняя деталь Pool, не Daemon. Daemon — отдельный standalone процесс.
+- **❌ Daemon если callers нуждаются в API.** Если есть `send_message()`, `query()`, `exec()` — это **Service** или **Pool**, не Daemon.
+- **❌ Daemon как замена background task внутри другой topology.** Pool maintenance loop — внутренняя деталь Pool, не Daemon. Daemon — отдельный standalone или secondary capability.
+- **❌ Daemon без CancellationToken check.** `run()` ОБЯЗАН проверять `cancel`. Без проверки — framework не может остановить daemon gracefully.
 
 ---
 
@@ -651,12 +800,12 @@ impl Daemon for TelegramBot { ... }
 
 Некоторые ресурсы реализуют несколько topology одновременно:
 
-| Resource | Topologies | Почему |
-|---|---|---|
-| Telegram Bot | Service + EventSource + Daemon | Отправка (Service) + приём (EventSource) + polling lifecycle (Daemon) |
-| WebSocket | Service + EventSource | Отправка (Service token = WsHandle) + приём (EventSource recv) |
-| Redis Shared + Subscriber | Resident (shared) + EventSource (subscriber) | Два отдельных Resource struct-а, один backend |
-| Kafka Producer + Consumer | Resident (producer) + Exclusive (consumer) | Два отдельных Resource struct-а, один backend |
+| Resource | Primary | Secondary | Почему |
+|---|---|---|---|
+| **Telegram Bot** | Service | EventSource + Daemon | Отправка (Service) + приём (EventSource) + polling lifecycle (Daemon) |
+| **WebSocket** | Service | EventSource + Daemon | Отправка (Service token = WsHandle) + приём (EventSource recv) + connection loop (Daemon) |
+| **Redis Shared + Subscriber** | Resident | EventSource | Shared client (Resident) + pub/sub messages (EventSource) |
+| **Kafka Producer + Consumer** | — | — | Два отдельных Resource struct-а: Resident (producer) + Exclusive (consumer) |
 
 Гибриды на одном Resource struct регистрируются через secondary topologies:
 
@@ -679,10 +828,10 @@ manager.register(TelegramBot)
 
 | Topology | Runtime Clone? | Callers одновременно | Acquire cost | State между callers | Use case |
 |---|---|---|---|---|---|
-| **Pool** | нет | N (до max_size) | Checkout/create | Изолирован (recycle) | DB connections, browser pages |
-| **Resident** | да | Unlimited | Clone (~0) | Shared | HTTP clients, multiplexed clients |
-| **Service** | нет (runtime), да (token) | Unlimited (Cloned) или limited (Tracked) | Token create | Нет per-caller state | Bots, managed APIs |
+| **Pool** | нет | N (до max_size) | Checkout/create | Изолирован (recycle) | DB connections, browser pages, SMTP |
+| **Resident** | да | Unlimited | Clone (~0) | Shared | HTTP clients, multiplexed clients, loggers, metrics |
+| **Service** | нет (runtime), да (token) | Unlimited (Cloned) или limited (Tracked) | Token create | Нет per-caller state | Bots, managed APIs, WebSocket |
 | **Transport** | нет | N sessions | Open session | Per-session | SSH, AMQP |
 | **Exclusive** | нет | 1 | Lock acquire | Reset between | Kafka consumer, serial port |
-| **EventSource** | нет | N listeners | Subscribe | Нет | Pub/Sub, incoming streams |
-| **Daemon** | — | 0 (no acquire) | — | — | Background processes |
+| **EventSource** | — (secondary) | N listeners | Subscribe | Нет | Pub/Sub, incoming streams |
+| **Daemon** | — (secondary) | 0 (no acquire) | — | — | Background processes, polling loops |
