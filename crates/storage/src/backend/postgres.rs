@@ -202,4 +202,114 @@ mod tests {
         assert!(!storage.exists(&key).await.expect("exists false"));
         assert_eq!(storage.get(&key).await.expect("get none"), None);
     }
+
+    #[tokio::test]
+    async fn run_migrations_is_idempotent() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+
+        let storage = PostgresStorage::new(url).await.expect("connect");
+        storage.run_migrations().await.expect("first migration run");
+        storage
+            .run_migrations()
+            .await
+            .expect("second migration run should be idempotent");
+    }
+
+    #[tokio::test]
+    async fn migrations_create_storage_kv_table() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+
+        let storage = PostgresStorage::new(url).await.expect("connect");
+        storage.run_migrations().await.expect("migrations");
+
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_name = 'storage_kv'
+            )",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .expect("query information_schema");
+
+        assert!(exists, "storage_kv table should exist after migrations");
+
+        // Verify expected columns
+        let columns: Vec<String> = sqlx::query_scalar(
+            "SELECT column_name::text FROM information_schema.columns
+             WHERE table_name = 'storage_kv' ORDER BY ordinal_position",
+        )
+        .fetch_all(storage.pool())
+        .await
+        .expect("query columns");
+
+        assert_eq!(columns, vec!["key", "value", "updated_at"]);
+    }
+
+    #[tokio::test]
+    async fn migrations_create_workflows_table() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+
+        let storage = PostgresStorage::new(url).await.expect("connect");
+        storage.run_migrations().await.expect("migrations");
+
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_name = 'workflows'
+            )",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .expect("query information_schema");
+
+        assert!(exists, "workflows table should exist after migrations");
+
+        let columns: Vec<String> = sqlx::query_scalar(
+            "SELECT column_name::text FROM information_schema.columns
+             WHERE table_name = 'workflows' ORDER BY ordinal_position",
+        )
+        .fetch_all(storage.pool())
+        .await
+        .expect("query columns");
+
+        assert_eq!(
+            columns,
+            vec!["id", "version", "definition", "created_at", "updated_at"]
+        );
+    }
+
+    #[tokio::test]
+    async fn crud_roundtrip_after_migrations() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+
+        let storage = PostgresStorage::new(url).await.expect("connect");
+        storage.run_migrations().await.expect("migrations");
+
+        let key = "storage:test:post_migration".to_string();
+        let value = serde_json::json!({"migrated": true, "count": 42});
+
+        // Clean up any leftover from previous test runs
+        let _ = storage.delete(&key).await;
+
+        storage.set(&key, &value).await.expect("set");
+        assert!(storage.exists(&key).await.expect("exists"));
+        assert_eq!(storage.get(&key).await.expect("get"), Some(value));
+
+        // Update in place (upsert)
+        let updated = serde_json::json!({"migrated": true, "count": 99});
+        storage.set(&key, &updated).await.expect("upsert");
+        assert_eq!(storage.get(&key).await.expect("get updated"), Some(updated));
+
+        storage.delete(&key).await.expect("delete");
+        assert!(!storage.exists(&key).await.expect("exists after delete"));
+    }
 }
