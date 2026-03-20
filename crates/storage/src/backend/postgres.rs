@@ -285,10 +285,22 @@ impl WorkflowRepo for PgWorkflowRepo {
 
     async fn list(
         &self,
-        _offset: usize,
-        _limit: usize,
+        offset: usize,
+        limit: usize,
     ) -> Result<Vec<(WorkflowId, serde_json::Value)>, WorkflowRepoError> {
-        todo!()
+        let rows = sqlx::query_as::<_, (sqlx::types::Uuid, Json<serde_json::Value>)>(
+            "SELECT id, definition FROM workflows ORDER BY created_at, id LIMIT $1 OFFSET $2",
+        )
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| WorkflowRepoError::Connection(err.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(uuid, definition)| (WorkflowId::from_bytes(*uuid.as_bytes()), definition.0))
+            .collect())
     }
 }
 
