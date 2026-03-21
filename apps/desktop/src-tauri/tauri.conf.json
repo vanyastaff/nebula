@@ -16,11 +16,23 @@
         "title": "Nebula Desktop",
         "width": 1280,
         "height": 800,
-        "resizable": true
+        "resizable": true,
+        "decorations": false,
+        "visible": false
+      },
+      {
+        "label": "splashscreen",
+        "title": "Nebula",
+        "width": 400,
+        "height": 300,
+        "resizable": false,
+        "decorations": false,
+        "center": true,
+        "alwaysOnTop": true
       }
     ],
     "security": {
-      "csp": "default-src 'self' customprotocol: asset: http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost http://localhost:5678 http://127.0.0.1:5678 tauri://localhost http://tauri.localhost; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none';",
+      "csp": "default-src 'self' customprotocol: asset: http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost http://localhost:5678 http://127.0.0.1:5678 http://localhost:* http://127.0.0.1:* tauri://localhost http://tauri.localhost; img-src 'self' asset: http://asset.localhost data: blob: https://*.googleusercontent.com https://avatars.githubusercontent.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none';",
       "devCsp": null
     }
   },
