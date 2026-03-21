@@ -1,13 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
 import { ErrorBoundary } from "../components/ErrorBoundary";
-import { ThemeProvider } from "../lib/theme";
-import { AppRouter } from "../lib/router";
-import { SplashScreen } from "../features/splash/SplashScreen";
-import { useSettingsStore } from "../stores/settingsStore";
 import { useAuthStore } from "../features/auth/store";
 import { useConnectionStore } from "../features/connection/store";
+import { SplashScreen } from "../features/splash/SplashScreen";
+import { AppRouter } from "../lib/router";
+import { ThemeProvider } from "../lib/theme";
 import { useAppStore } from "../stores/appStore";
+import { useSettingsStore } from "../stores/settingsStore";
 
 const queryClient = new QueryClient({
   defaultOptions: {

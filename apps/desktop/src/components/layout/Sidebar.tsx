@@ -1,12 +1,5 @@
-import { useNavigate, useLocation } from "react-router";
-import {
-  LayoutDashboard,
-  KeyRound,
-  Settings,
-  PanelLeftClose,
-  PanelLeft,
-  User,
-} from "lucide-react";
+import { KeyRound, LayoutDashboard, PanelLeft, PanelLeftClose, Settings, User } from "lucide-react";
+import { useLocation, useNavigate } from "react-router";
 import { useSettingsStore } from "../../stores/settingsStore";
 
 interface NavItem {
@@ -61,9 +54,7 @@ export function Sidebar() {
           title="User"
         >
           <User size={20} />
-          {!sidebarCollapsed && (
-            <span className="truncate text-sm">Account</span>
-          )}
+          {!sidebarCollapsed && <span className="truncate text-sm">Account</span>}
         </button>
 
         <button

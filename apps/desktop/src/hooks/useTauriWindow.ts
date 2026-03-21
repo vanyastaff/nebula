@@ -1,5 +1,5 @@
-import { useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useCallback } from "react";
 
 interface UseTauriWindowReturn {
   minimize: () => Promise<void>;

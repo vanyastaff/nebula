@@ -1,4 +1,4 @@
-import { type HTMLAttributes, forwardRef, type ReactNode } from "react";
+import { type HTMLAttributes, type ReactNode, forwardRef } from "react";
 
 interface CardProps extends HTMLAttributes<HTMLDivElement> {
   header?: ReactNode;

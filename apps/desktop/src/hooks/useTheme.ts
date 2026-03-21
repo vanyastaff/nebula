@@ -1,4 +1,4 @@
-import { useThemeStore, type ThemeMode } from "../lib/theme";
+import { type ThemeMode, useThemeStore } from "../lib/theme";
 
 interface UseThemeReturn {
   theme: ThemeMode;

@@ -1,9 +1,9 @@
-import { useTranslation } from "react-i18next";
 import { Github } from "lucide-react";
-import { useNavigate, useLocation } from "react-router";
 import { useEffect } from "react";
-import { Card } from "../../components/ui/Card";
+import { useTranslation } from "react-i18next";
+import { useLocation, useNavigate } from "react-router";
 import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
 import { useAuthStore } from "./store";
 
 /** Google icon – Lucide doesn't ship one, so we inline a small SVG. */
@@ -44,9 +44,7 @@ export function LoginPage() {
         {/* Branding */}
         <div className="mb-6 text-center">
           <h1 className="text-2xl font-bold text-[var(--text-primary)]">Nebula</h1>
-          <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            {t("dashboard.welcome")}
-          </p>
+          <p className="mt-1 text-sm text-[var(--text-secondary)]">{t("dashboard.welcome")}</p>
         </div>
 
         {/* Error */}

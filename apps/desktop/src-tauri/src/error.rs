@@ -9,10 +9,13 @@ pub enum AppError {
     Network(String),
     #[error("Keyring error: {0}")]
     Keyring(String),
+    #[allow(dead_code)]
     #[error("Store error: {0}")]
     Store(String),
+    #[allow(dead_code)]
     #[error("Window error: {0}")]
     Window(String),
+    #[allow(dead_code)]
     #[error("Config error: {0}")]
     Config(String),
 }

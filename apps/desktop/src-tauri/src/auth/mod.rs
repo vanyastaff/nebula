@@ -48,7 +48,7 @@ pub async fn login(provider: &str, app: &AppHandle) -> Result<AuthState, AppErro
     // Start localhost callback server
     let (port, callback_handle) = server::start_callback_server()
         .await
-        .map_err(|e| AppError::Auth(e))?;
+        .map_err(AppError::Auth)?;
 
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
     let state_token = pkce::generate_verifier(); // reuse as random state
@@ -103,7 +103,7 @@ pub async fn login(provider: &str, app: &AppHandle) -> Result<AuthState, AppErro
     // Fetch user profile
     let auth_user = oauth::fetch_user_profile(oauth_provider, &tokens.access_token)
         .await
-        .map_err(|e| AppError::Network(e))?;
+        .map_err(AppError::Network)?;
 
     let user_profile = auth_user_to_profile(&auth_user);
 
@@ -143,7 +143,7 @@ pub async fn get_user(provider: &str) -> Result<UserProfile, AppError> {
     let access_token = keyring::get_access_token().await?;
     let auth_user = oauth::fetch_user_profile(oauth_provider, &access_token)
         .await
-        .map_err(|e| AppError::Network(e))?;
+        .map_err(AppError::Network)?;
 
     Ok(auth_user_to_profile(&auth_user))
 }
@@ -216,7 +216,7 @@ pub async fn handle_deep_link_callback(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body: serde_json::Value = response.json().await.unwrap_or(serde_json::json!({}));
+        let body: serde_json::Value = response.json().await.unwrap_or_default();
         let detail = body
             .get("message")
             .or_else(|| body.get("error"))

@@ -1,8 +1,8 @@
 import { useTranslation } from "react-i18next";
-import { Card } from "../../components/ui/Card";
-import { Button } from "../../components/ui/Button";
 import { Avatar } from "../../components/ui/Avatar";
-import { useSettingsStore, type Theme, type Locale } from "../../stores/settingsStore";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { type Locale, type Theme, useSettingsStore } from "../../stores/settingsStore";
 import { useAuthStore } from "../auth/store";
 
 export function SettingsPage() {
@@ -25,9 +25,7 @@ export function SettingsPage() {
 
   return (
     <div className="p-6">
-      <h1 className="mb-6 text-2xl font-bold text-[var(--text-primary)]">
-        {t("settings.title")}
-      </h1>
+      <h1 className="mb-6 text-2xl font-bold text-[var(--text-primary)]">{t("settings.title")}</h1>
 
       <div className="flex flex-col gap-4">
         {/* Appearance Section */}
@@ -35,9 +33,9 @@ export function SettingsPage() {
           <div className="space-y-4">
             {/* Theme */}
             <div>
-              <label className="mb-2 block text-sm font-medium text-[var(--text-primary)]">
+              <span className="mb-2 block text-sm font-medium text-[var(--text-primary)]">
                 {t("settings.theme")}
-              </label>
+              </span>
               <div className="flex gap-2">
                 <Button
                   variant={theme === "light" ? "primary" : "secondary"}
@@ -68,9 +66,9 @@ export function SettingsPage() {
         {/* Language Section */}
         <Card header={t("settings.language")}>
           <div>
-            <label className="mb-2 block text-sm font-medium text-[var(--text-primary)]">
+            <span className="mb-2 block text-sm font-medium text-[var(--text-primary)]">
               {t("settings.selectLanguage")}
-            </label>
+            </span>
             <div className="flex gap-2">
               <Button
                 variant={locale === "en" ? "primary" : "secondary"}

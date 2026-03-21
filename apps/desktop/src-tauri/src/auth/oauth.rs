@@ -91,9 +91,12 @@ fn urlencoding(s: &str) -> String {
 #[derive(Debug, Deserialize)]
 pub struct TokenResponse {
     pub access_token: String,
+    #[allow(dead_code)]
     pub token_type: Option<String>,
     pub refresh_token: Option<String>,
+    #[allow(dead_code)]
     pub expires_in: Option<u64>,
+    #[allow(dead_code)]
     pub scope: Option<String>,
 }
 

@@ -1,6 +1,6 @@
-import { createBrowserRouter, RouterProvider, useParams } from "react-router";
-import { AppShell } from "../../components/layout/AppShell";
+import { RouterProvider, createBrowserRouter, useParams } from "react-router";
 import { AuthGuard } from "../../components/auth/AuthGuard";
+import { AppShell } from "../../components/layout/AppShell";
 import { LoginPage } from "../../features/auth/LoginPage";
 
 // --- Page placeholders (until credential feature modules are migrated) ---
@@ -44,9 +44,7 @@ function CredentialFormPage() {
   const { id } = useParams<{ id?: string }>();
   return (
     <div className="p-6">
-      <h1 className="text-2xl font-bold">
-        {id ? "Edit Credential" : "New Credential"}
-      </h1>
+      <h1 className="text-2xl font-bold">{id ? "Edit Credential" : "New Credential"}</h1>
     </div>
   );
 }

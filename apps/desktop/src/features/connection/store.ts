@@ -36,50 +36,48 @@ function normalize(url: string): string {
   return url.trim().replace(/\/+$/, "");
 }
 
-export const useConnectionStore = create<ConnectionState & ConnectionActions>(
-  (set, get) => ({
-    config: DEFAULT,
-    activeBaseUrl: DEFAULT.localBaseUrl,
-    initialized: false,
+export const useConnectionStore = create<ConnectionState & ConnectionActions>((set, get) => ({
+  config: DEFAULT,
+  activeBaseUrl: DEFAULT.localBaseUrl,
+  initialized: false,
 
-    initialize: async () => {
-      const raw = await commands.getConnection();
-      const config: ConnectionConfig = {
-        mode: raw.mode as ConnectionMode,
-        localBaseUrl: raw.localBaseUrl,
-        remoteBaseUrl: raw.remoteBaseUrl,
-      };
-      set({ config, activeBaseUrl: active(config), initialized: true });
-    },
+  initialize: async () => {
+    const raw = await commands.getConnection();
+    const config: ConnectionConfig = {
+      mode: raw.mode as ConnectionMode,
+      localBaseUrl: raw.localBaseUrl,
+      remoteBaseUrl: raw.remoteBaseUrl,
+    };
+    set({ config, activeBaseUrl: active(config), initialized: true });
+  },
 
-    setMode: async (mode) => {
-      const config = { ...get().config, mode };
-      await commands.setConnection({
-        mode,
-        localBaseUrl: config.localBaseUrl,
-        remoteBaseUrl: config.remoteBaseUrl,
-      });
-      set({ config, activeBaseUrl: active(config) });
-    },
+  setMode: async (mode) => {
+    const config = { ...get().config, mode };
+    await commands.setConnection({
+      mode,
+      localBaseUrl: config.localBaseUrl,
+      remoteBaseUrl: config.remoteBaseUrl,
+    });
+    set({ config, activeBaseUrl: active(config) });
+  },
 
-    setLocalBaseUrl: async (url) => {
-      const config = { ...get().config, localBaseUrl: normalize(url) };
-      await commands.setConnection({
-        mode: config.mode,
-        localBaseUrl: config.localBaseUrl,
-        remoteBaseUrl: config.remoteBaseUrl,
-      });
-      set({ config, activeBaseUrl: active(config) });
-    },
+  setLocalBaseUrl: async (url) => {
+    const config = { ...get().config, localBaseUrl: normalize(url) };
+    await commands.setConnection({
+      mode: config.mode,
+      localBaseUrl: config.localBaseUrl,
+      remoteBaseUrl: config.remoteBaseUrl,
+    });
+    set({ config, activeBaseUrl: active(config) });
+  },
 
-    setRemoteBaseUrl: async (url) => {
-      const config = { ...get().config, remoteBaseUrl: normalize(url) };
-      await commands.setConnection({
-        mode: config.mode,
-        localBaseUrl: config.localBaseUrl,
-        remoteBaseUrl: config.remoteBaseUrl,
-      });
-      set({ config, activeBaseUrl: active(config) });
-    },
-  })
-);
+  setRemoteBaseUrl: async (url) => {
+    const config = { ...get().config, remoteBaseUrl: normalize(url) };
+    await commands.setConnection({
+      mode: config.mode,
+      localBaseUrl: config.localBaseUrl,
+      remoteBaseUrl: config.remoteBaseUrl,
+    });
+    set({ config, activeBaseUrl: active(config) });
+  },
+}));

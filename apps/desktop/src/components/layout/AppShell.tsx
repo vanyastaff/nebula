@@ -1,7 +1,7 @@
 import { Outlet } from "react-router";
-import { Titlebar } from "./Titlebar";
-import { Sidebar } from "./Sidebar";
 import { ErrorBoundary } from "../ErrorBoundary";
+import { Sidebar } from "./Sidebar";
+import { Titlebar } from "./Titlebar";
 
 export function AppShell() {
   return (

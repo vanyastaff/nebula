@@ -35,11 +35,11 @@ const Avatar = forwardRef<HTMLDivElement, AvatarProps>(
       >
         {showImage ? (
           <img
+            {...props}
             src={src}
             alt={alt ?? name}
             className="h-full w-full object-cover"
             onError={() => setImgError(true)}
-            {...props}
           />
         ) : (
           <span aria-hidden="true">{getInitials(name)}</span>

@@ -1,10 +1,7 @@
 import { useAuthStore } from "../../features/auth/store";
 import { useConnectionStore } from "../../features/connection/store";
 
-export async function apiFetch(
-  path: string,
-  init?: RequestInit
-): Promise<Response> {
+export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const { accessToken } = useAuthStore.getState();
   const { activeBaseUrl } = useConnectionStore.getState();
 

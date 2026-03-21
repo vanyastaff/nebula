@@ -11,18 +11,12 @@ export function DashboardPage() {
 
   return (
     <div className="p-6">
-      <h1 className="mb-6 text-2xl font-bold text-[var(--text-primary)]">
-        {t("dashboard.title")}
-      </h1>
+      <h1 className="mb-6 text-2xl font-bold text-[var(--text-primary)]">{t("dashboard.title")}</h1>
 
       {/* Welcome Card */}
       <Card className="mb-6">
-        <h2 className="mb-2 text-xl font-semibold text-[var(--text-primary)]">
-          {greeting}
-        </h2>
-        <p className="text-[var(--text-secondary)]">
-          {t("dashboard.subtitle")}
-        </p>
+        <h2 className="mb-2 text-xl font-semibold text-[var(--text-primary)]">{greeting}</h2>
+        <p className="text-[var(--text-secondary)]">{t("dashboard.subtitle")}</p>
       </Card>
 
       {/* Quick Actions Cards */}
@@ -34,9 +28,7 @@ export function DashboardPage() {
         </Card>
 
         <Card header={t("dashboard.recentWorkflows")}>
-          <p className="text-sm text-[var(--text-secondary)]">
-            {t("dashboard.noWorkflows")}
-          </p>
+          <p className="text-sm text-[var(--text-secondary)]">{t("dashboard.noWorkflows")}</p>
         </Card>
 
         <Card header={t("dashboard.systemStatus")}>

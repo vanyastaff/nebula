@@ -1,6 +1,6 @@
-import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
-import { commands, type AuthState as RawAuthState, type UserProfile } from "../../bindings";
+import { create } from "zustand";
+import { type AuthState as RawAuthState, type UserProfile, commands } from "../../bindings";
 
 // Mirror the Rust AuthState shape
 export type AuthStatus = "signed_out" | "authorizing" | "signed_in";
@@ -51,7 +51,13 @@ export const useAuthStore = create<AuthState & AuthActions>((set) => ({
   logout: async () => {
     try {
       await commands.authLogout();
-      set({ status: "signed_out", accessToken: "", user: undefined, provider: undefined, error: undefined });
+      set({
+        status: "signed_out",
+        accessToken: "",
+        user: undefined,
+        provider: undefined,
+        error: undefined,
+      });
     } catch (e) {
       set({ error: String(e) });
     }
