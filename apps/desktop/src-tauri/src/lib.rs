@@ -17,10 +17,23 @@ fn get_api_profile() -> String {
     std::env::var("NEBULA_API_PROFILE").unwrap_or_else(|_| "local".to_string())
 }
 
+#[tauri::command]
+#[specta::specta]
+async fn close_splashscreen(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(splashscreen) = app.get_webview_window("splashscreen") {
+        splashscreen.close().map_err(|e| e.to_string())?;
+    }
+    if let Some(main_window) = app.get_webview_window("main") {
+        main_window.show().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
         get_api_profile,
+        close_splashscreen,
         get_auth_state,
         auth_login,
         auth_logout,
@@ -40,6 +53,8 @@ pub fn run() {
         .expect("Failed to export TypeScript bindings");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
