@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router";
 import { Button } from "../../components/ui/Button";
+import { WorkflowCanvas } from "./ui/WorkflowCanvas";
 
 export function WorkflowEditorPage() {
   const { t } = useTranslation();
@@ -8,7 +9,7 @@ export function WorkflowEditorPage() {
   const { id } = useParams<{ id: string }>();
 
   return (
-    <div className="p-6">
+    <div className="p-6" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--text-primary)]">
           {id ? t("workflows.edit") : t("workflows.new")}
@@ -17,8 +18,8 @@ export function WorkflowEditorPage() {
           {t("common.back")}
         </Button>
       </div>
-      <div className="text-[var(--text-secondary)]">
-        {t("workflows.editorPlaceholder")}
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <WorkflowCanvas />
       </div>
     </div>
   );
