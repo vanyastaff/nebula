@@ -1,4 +1,4 @@
-import { KeyRound, LayoutDashboard, PanelLeft, PanelLeftClose, Settings, User } from "lucide-react";
+import { KeyRound, LayoutDashboard, PanelLeft, PanelLeftClose, Settings, User, Workflow } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -11,6 +11,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { labelKey: "nav.dashboard", icon: LayoutDashboard, path: "/" },
+  { labelKey: "nav.workflows", icon: Workflow, path: "/workflows" },
   { labelKey: "nav.credentials", icon: KeyRound, path: "/credentials" },
   { labelKey: "nav.settings", icon: Settings, path: "/settings" },
 ];
