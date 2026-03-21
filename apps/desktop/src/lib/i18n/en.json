@@ -88,6 +88,17 @@
     "restore": "Restore",
     "close": "Close"
   },
+  "sidebar": {
+    "account": "Account",
+    "user": "User",
+    "expand": "Expand sidebar",
+    "collapse": "Collapse sidebar"
+  },
+  "errorBoundary": {
+    "title": "Something went wrong",
+    "fallbackMessage": "An unexpected error occurred.",
+    "tryAgain": "Try Again"
+  },
   "errors": {
     "generic": "An unexpected error occurred",
     "network": "Network error. Please check your connection.",

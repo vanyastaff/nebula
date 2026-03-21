@@ -1,3 +1,4 @@
+import i18next from "i18next";
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
 interface ErrorBoundaryProps {
@@ -42,10 +43,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       <div className="flex min-h-[200px] flex-col items-center justify-center gap-4 p-8">
         <div className="text-center">
           <h2 className="mb-2 text-lg font-semibold text-[var(--text-primary)]">
-            Something went wrong
+            {i18next.t("errorBoundary.title")}
           </h2>
           <p className="max-w-md text-sm text-[var(--text-secondary)]">
-            {this.state.error?.message ?? "An unexpected error occurred."}
+            {this.state.error?.message ?? i18next.t("errorBoundary.fallbackMessage")}
           </p>
         </div>
         <button
@@ -53,7 +54,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           onClick={this.handleRetry}
           className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:ring-offset-2"
         >
-          Try Again
+          {i18next.t("errorBoundary.tryAgain")}
         </button>
       </div>
     );
