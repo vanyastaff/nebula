@@ -34,7 +34,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
-    "@tailwindcss/vite": "^4.1.8",
+    "@tailwindcss/vite": "^4.2.2",
     "@tauri-apps/cli": "^2.9.6",
     "@types/react": "^19.1.4",
     "@types/react-dom": "^19.1.5",
