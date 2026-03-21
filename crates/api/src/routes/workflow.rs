@@ -21,4 +21,8 @@ pub fn router() -> Router<AppState> {
             "/workflows/{id}/activate",
             post(handlers::activate_workflow),
         )
+        .route(
+            "/workflows/{id}/execute",
+            post(handlers::execute_workflow),
+        )
 }

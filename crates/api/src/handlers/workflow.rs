@@ -3,7 +3,8 @@
 use crate::{
     errors::{ApiError, ApiResult},
     models::{
-        CreateWorkflowRequest, ListWorkflowsResponse, UpdateWorkflowRequest, WorkflowResponse,
+        CreateWorkflowRequest, ExecutionResponse, ListWorkflowsResponse, StartExecutionRequest,
+        UpdateWorkflowRequest, WorkflowResponse,
     },
     state::AppState,
 };
@@ -434,4 +435,23 @@ pub async fn activate_workflow(
         created_at,
         updated_at,
     }))
+}
+
+/// Execute workflow (enqueue and return 202 Accepted)
+/// POST /api/v1/workflows/:id/execute
+pub async fn execute_workflow(
+    State(_state): State<AppState>,
+    Path(id): Path<String>,
+    Json(_payload): Json<StartExecutionRequest>,
+) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
+    // Parse workflow ID
+    let workflow_id = WorkflowId::parse(&id)
+        .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {}", e)))?;
+
+    // TODO: Validate workflow exists, enqueue execution, return 202
+    // This should NOT wait for execution to complete!
+    Err(ApiError::Internal(format!(
+        "Execution for workflow {} not implemented yet",
+        workflow_id
+    )))
 }
