@@ -243,7 +243,10 @@ async fn test_error_format_rfc9457() {
 
     // Verify RFC 9457 structure for validation errors
     assert!(problem["type"].is_string());
-    assert_eq!(problem["type"], "https://nebula.dev/problems/validation-error");
+    assert_eq!(
+        problem["type"],
+        "https://nebula.dev/problems/validation-error"
+    );
     assert!(problem["title"].is_string());
     assert_eq!(problem["title"], "Validation Error");
     assert!(problem["status"].is_number());
@@ -1298,10 +1301,12 @@ async fn test_execution_cancel_already_completed() {
     let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     // Check that the detail field contains the error message
-    assert!(error["detail"]
-        .as_str()
-        .unwrap()
-        .contains("Cannot cancel execution"));
+    assert!(
+        error["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Cannot cancel execution")
+    );
 }
 
 #[tokio::test]
@@ -1334,4 +1339,3 @@ async fn test_execution_get_invalid_id() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
-
