@@ -4,11 +4,17 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { Button } from "../../components/ui/Button";
 import { WorkflowCanvas } from "./ui/WorkflowCanvas";
 import { NodePalette } from "./ui/NodePalette";
+import { NodeConfigPanel } from "./ui/NodeConfigPanel";
+import { useWorkflowStore } from "./store";
 
 export function WorkflowEditorPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
+
+  // Get selected node from store
+  const nodes = useWorkflowStore((state) => state.canvas.workflow.nodes);
+  const selectedNode = nodes.find((n) => n.selected);
 
   return (
     <div className="p-6" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
@@ -29,6 +35,17 @@ export function WorkflowEditorPage() {
             <WorkflowCanvas />
           </ReactFlowProvider>
         </div>
+        {selectedNode && (
+          <div style={{ width: 350, flexShrink: 0 }}>
+            <NodeConfigPanel
+              node={selectedNode}
+              onClose={() => {
+                // Deselect node by updating its selected state
+                useWorkflowStore.getState().updateNode(selectedNode.id, { selected: false });
+              }}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
