@@ -16,7 +16,7 @@ use commands::credentials::{
 };
 use commands::workflows::{
     create_workflow, delete_workflow, get_workflow, list_plugin_actions, list_workflows,
-    update_workflow,
+    load_workflow_from_file, save_workflow_to_file, update_workflow,
 };
 
 #[tauri::command]
@@ -61,6 +61,8 @@ pub fn run() {
         update_workflow,
         delete_workflow,
         list_plugin_actions,
+        save_workflow_to_file,
+        load_workflow_from_file,
     ]);
 
     #[cfg(debug_assertions)]
@@ -78,6 +80,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();

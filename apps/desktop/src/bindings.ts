@@ -143,6 +143,22 @@ async deleteWorkflow(id: string) : Promise<Result<null, string>> {
 },
 async listPluginActions() : Promise<PluginAction[]> {
     return await TAURI_INVOKE("list_plugin_actions");
+},
+async saveWorkflowToFile(id: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_workflow_to_file", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async loadWorkflowFromFile() : Promise<Result<Workflow, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_workflow_from_file") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 

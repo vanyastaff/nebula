@@ -53,6 +53,8 @@ interface WorkflowActions {
   loadWorkflow: (workflow: Workflow) => void;
   clearCanvas: () => void;
   saveCanvasToWorkflow: () => Promise<void>;
+  saveToFile: (id: string) => Promise<string>;
+  loadFromFile: () => Promise<void>;
 }
 
 export const useWorkflowStore = create<WorkflowState & WorkflowActions>((set, get) => ({
@@ -346,6 +348,38 @@ export const useWorkflowStore = create<WorkflowState & WorkflowActions>((set, ge
         serverUrl: null,
       });
       set((s) => ({ canvas: { ...s.canvas, isDirty: false } }));
+    } catch (error) {
+      set({ error: String(error) });
+      throw error;
+    }
+  },
+
+  saveToFile: async (id: string) => {
+    try {
+      const result = await commands.saveWorkflowToFile(id);
+      if (result.status === "ok") {
+        set({ error: undefined });
+        return result.data;
+      }
+      set({ error: result.error });
+      throw new Error(result.error);
+    } catch (error) {
+      set({ error: String(error) });
+      throw error;
+    }
+  },
+
+  loadFromFile: async () => {
+    try {
+      const result = await commands.loadWorkflowFromFile();
+      if (result.status === "ok") {
+        const workflow = normalizeWorkflow(result.data);
+        get().loadWorkflow(workflow);
+        set({ error: undefined });
+      } else {
+        set({ error: result.error });
+        throw new Error(result.error);
+      }
     } catch (error) {
       set({ error: String(error) });
       throw error;

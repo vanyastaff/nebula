@@ -1,6 +1,8 @@
 use chrono::Utc;
 use serde_json::json;
-use tauri::{AppHandle, Emitter};
+use std::fs;
+use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_store::StoreExt;
 
 use crate::types::{
@@ -315,4 +317,79 @@ fn get_available_plugins() -> Vec<PluginAction> {
 #[specta::specta]
 pub async fn list_plugin_actions() -> Vec<PluginAction> {
     get_available_plugins()
+}
+
+/// Save a workflow to a local file via file dialog
+#[tauri::command]
+#[specta::specta]
+pub async fn save_workflow_to_file(id: String, app: AppHandle) -> Result<String, String> {
+    // Load the workflow from store
+    let workflow = load_one(&app, &id)
+        .ok_or_else(|| format!("Workflow not found: {}", id))?;
+
+    // Get the main window for the file dialog parent
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+
+    // Show save file dialog
+    let file_path = app
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_title("Save Workflow")
+        .add_filter("Nebula Workflow", &["json"])
+        .set_file_name(&format!("{}.json", workflow.name))
+        .blocking_save_file();
+
+    // If user selected a file path, write the workflow JSON
+    if let Some(path) = file_path {
+        let json = serde_json::to_string_pretty(&workflow)
+            .map_err(|e| format!("Failed to serialize workflow: {}", e))?;
+
+        let path_ref = path.as_path()
+            .ok_or_else(|| "Invalid file path".to_string())?;
+
+        fs::write(path_ref, json)
+            .map_err(|e| format!("Failed to write file: {}", e))?;
+
+        Ok(path.to_string())
+    } else {
+        Err("Save cancelled by user".to_string())
+    }
+}
+
+/// Load a workflow from a local file via file dialog
+#[tauri::command]
+#[specta::specta]
+pub async fn load_workflow_from_file(app: AppHandle) -> Result<Workflow, String> {
+    // Get the main window for the file dialog parent
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+
+    // Show open file dialog
+    let file_path = app
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_title("Load Workflow")
+        .add_filter("Nebula Workflow", &["json"])
+        .blocking_pick_file();
+
+    // If user selected a file path, read and parse the workflow JSON
+    if let Some(path) = file_path {
+        let path_ref = path.as_path()
+            .ok_or_else(|| "Invalid file path".to_string())?;
+
+        let json = fs::read_to_string(path_ref)
+            .map_err(|e| format!("Failed to read file: {}", e))?;
+
+        let workflow: Workflow = serde_json::from_str(&json)
+            .map_err(|e| format!("Failed to parse workflow JSON: {}", e))?;
+
+        Ok(workflow)
+    } else {
+        Err("Load cancelled by user".to_string())
+    }
 }
