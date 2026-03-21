@@ -66,6 +66,7 @@ pub struct CredentialMetadata {
     pub last_modified: String,
     pub version: u32,
     pub expires_at: Option<String>,
+    #[specta(type = Option<u32>)]
     pub ttl_seconds: Option<u64>,
     pub tags: HashMap<String, String>,
 }
