@@ -352,3 +352,106 @@ export const useWorkflowStore = create<WorkflowState & WorkflowActions>((set, ge
     }
   },
 }));
+
+/**
+ * Serialize canvas state to WorkflowDefinition format.
+ *
+ * This function converts the visual canvas representation to the Nebula
+ * WorkflowDefinition format compatible with the Rust execution engine.
+ * It maps UI nodes to NodeDefinitions and edges to Connections.
+ *
+ * Used for:
+ * - Deploying workflows to remote Nebula servers
+ * - Exporting workflows to JSON files
+ * - Validating workflow structure before execution
+ *
+ * @param workflow - The workflow from canvas state
+ * @returns WorkflowDefinition-compatible object matching Rust format
+ */
+export function serializeToWorkflowDefinition(workflow: Workflow): Record<string, unknown> {
+  // Convert nodes to NodeDefinition format
+  const nodes = workflow.nodes.map((node) => ({
+    id: node.id,
+    name: node.data.label,
+    action_key: node.data.actionType,
+    interface_version: null, // Could be extracted from plugin metadata if available
+    parameters: convertParametersToParamValues(node.data.parameters),
+    retry_policy: null, // Future: could be added to node configuration
+    timeout: null, // Future: could be added to node configuration
+    description: null,
+  }));
+
+  // Convert edges to Connection format
+  const connections = workflow.edges.map((edge) => ({
+    id: edge.id,
+    from_node: edge.source,
+    from_port: edge.sourcePort,
+    to_node: edge.target,
+    to_port: edge.targetPort,
+  }));
+
+  // Build WorkflowDefinition structure matching Rust format
+  return {
+    id: workflow.id,
+    name: workflow.name,
+    description: workflow.metadata.description,
+    version: {
+      major: workflow.metadata.version,
+      minor: 0,
+      patch: 0,
+    },
+    nodes,
+    connections,
+    variables: {}, // Future: workflow-level variables
+    config: {
+      timeout: null,
+      max_parallel_nodes: 10,
+      checkpointing: {
+        enabled: true,
+        interval: null,
+      },
+      retry_policy: null,
+    },
+    tags: Object.keys(workflow.metadata.tags),
+    created_at: workflow.metadata.createdAt.toISOString(),
+    updated_at: workflow.metadata.lastModified.toISOString(),
+  };
+}
+
+/**
+ * Convert UI parameters to ParamValue format.
+ *
+ * Maps from the UI's simple key-value parameters to the Rust
+ * ParamValue enum format which supports literals, expressions,
+ * templates, and references.
+ *
+ * Current implementation treats all values as literals. Future
+ * enhancements could detect expressions (e.g., starting with '=')
+ * or references (e.g., containing node output paths).
+ *
+ * @param parameters - Raw parameter object from UI
+ * @returns HashMap-compatible object with ParamValue format
+ */
+function convertParametersToParamValues(
+  parameters: Record<string, unknown>,
+): Record<string, { type: string; value?: unknown; expr?: string }> {
+  const result: Record<string, { type: string; value?: unknown; expr?: string }> = {};
+
+  for (const [key, value] of Object.entries(parameters)) {
+    // Check if value is an expression (starts with '=')
+    if (typeof value === "string" && value.startsWith("=")) {
+      result[key] = {
+        type: "expression",
+        expr: value.slice(1), // Remove the '=' prefix
+      };
+    } else {
+      // Default: treat as literal value
+      result[key] = {
+        type: "literal",
+        value,
+      };
+    }
+  }
+
+  return result;
+}
