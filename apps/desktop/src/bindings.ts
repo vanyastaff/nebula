@@ -37,16 +37,28 @@ export const commands = {
     return await TAURI_INVOKE<string>("get_api_profile");
   },
 
+  async closeSplashscreen(): Promise<void> {
+    await TAURI_INVOKE<void>("close_splashscreen");
+  },
+
   async getAuthState(): Promise<AuthState> {
     return await TAURI_INVOKE<AuthState>("get_auth_state");
   },
 
-  async startOAuth(provider: string, apiBaseUrl: string): Promise<void> {
-    await TAURI_INVOKE<void>("start_oauth", { provider, apiBaseUrl });
+  async authLogin(provider: string): Promise<AuthState> {
+    return await TAURI_INVOKE<AuthState>("auth_login", { provider });
   },
 
-  async signOut(): Promise<void> {
-    await TAURI_INVOKE<void>("sign_out");
+  async authLogout(): Promise<void> {
+    await TAURI_INVOKE<void>("auth_logout");
+  },
+
+  async authGetUser(provider: string): Promise<UserProfile> {
+    return await TAURI_INVOKE<UserProfile>("auth_get_user", { provider });
+  },
+
+  async authRefreshToken(provider: string): Promise<AuthState> {
+    return await TAURI_INVOKE<AuthState>("auth_refresh_token", { provider });
   },
 
   async getConnection(): Promise<ConnectionConfig> {

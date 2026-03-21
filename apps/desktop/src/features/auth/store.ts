@@ -17,8 +17,10 @@ interface AuthState {
 
 interface AuthActions {
   initialize: () => Promise<void>;
-  startOAuth: (provider: string, apiBaseUrl: string) => Promise<void>;
-  signOut: () => Promise<void>;
+  login: (provider: string) => Promise<void>;
+  logout: () => Promise<void>;
+  checkAuth: (provider: string) => Promise<UserProfile | null>;
+  refreshToken: (provider: string) => Promise<void>;
 }
 
 export const useAuthStore = create<AuthState & AuthActions>((set) => ({
@@ -31,17 +33,47 @@ export const useAuthStore = create<AuthState & AuthActions>((set) => ({
     set({ ...normalize(raw), initialized: true });
 
     // Rust emits this event whenever auth state changes
-    await listen<typeof raw>("auth_state_changed", (event) => {
+    await listen<RawAuthState>("auth_state_changed", (event) => {
       set(normalize(event.payload));
     });
   },
 
-  startOAuth: async (provider, apiBaseUrl) => {
-    await commands.startOAuth(provider, apiBaseUrl);
+  login: async (provider) => {
+    set({ status: "authorizing", error: undefined });
+    try {
+      const raw = await commands.authLogin(provider);
+      set(normalize(raw));
+    } catch (e) {
+      set({ status: "signed_out", error: String(e) });
+    }
   },
 
-  signOut: async () => {
-    await commands.signOut();
+  logout: async () => {
+    try {
+      await commands.authLogout();
+      set({ status: "signed_out", accessToken: "", user: undefined, provider: undefined, error: undefined });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  checkAuth: async (provider) => {
+    try {
+      const user = await commands.authGetUser(provider);
+      set({ user });
+      return user;
+    } catch {
+      return null;
+    }
+  },
+
+  refreshToken: async (provider) => {
+    try {
+      const raw = await commands.authRefreshToken(provider);
+      set(normalize(raw));
+    } catch (e) {
+      set({ error: String(e) });
+    }
   },
 }));
 
