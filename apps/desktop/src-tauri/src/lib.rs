@@ -1,3 +1,4 @@
+mod auth;
 mod commands;
 mod deep_link;
 mod error;
