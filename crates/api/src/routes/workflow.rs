@@ -2,7 +2,10 @@
 
 use crate::handlers;
 use crate::state::AppState;
-use axum::{Router, routing::{get, post}};
+use axum::{
+    Router,
+    routing::{get, post},
+};
 
 /// Workflow routes
 pub fn router() -> Router<AppState> {
@@ -21,8 +24,5 @@ pub fn router() -> Router<AppState> {
             "/workflows/{id}/activate",
             post(handlers::activate_workflow),
         )
-        .route(
-            "/workflows/{id}/execute",
-            post(handlers::execute_workflow),
-        )
+        .route("/workflows/{id}/execute", post(handlers::execute_workflow))
 }
