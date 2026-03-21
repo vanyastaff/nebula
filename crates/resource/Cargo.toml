@@ -53,7 +53,7 @@ test-case = { workspace = true }
 mockall = { workspace = true }
 tempfile = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
-console-subscriber = "0.4"
+console-subscriber = "0.5"
 reqwest = { workspace = true }
 url = { workspace = true }
 
