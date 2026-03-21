@@ -14,6 +14,9 @@ use commands::credentials::{
     create_credential, delete_credential, get_credential, list_credentials, rotate_credential,
     update_credential,
 };
+use commands::workflows::{
+    create_workflow, delete_workflow, get_workflow, list_workflows, update_workflow,
+};
 
 #[tauri::command]
 #[specta::specta]
@@ -51,6 +54,11 @@ pub fn run() {
         update_credential,
         delete_credential,
         rotate_credential,
+        list_workflows,
+        get_workflow,
+        create_workflow,
+        update_workflow,
+        delete_workflow,
     ]);
 
     #[cfg(debug_assertions)]
