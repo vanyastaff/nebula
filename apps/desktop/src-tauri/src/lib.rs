@@ -8,7 +8,7 @@ use tauri::Manager;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_specta::{collect_commands, Builder};
 
-use commands::auth::{get_auth_state, sign_out, start_oauth};
+use commands::auth::{auth_get_user, auth_login, auth_logout, auth_refresh_token, get_auth_state};
 use commands::connection::{get_connection, set_connection};
 
 #[tauri::command]
@@ -22,8 +22,10 @@ pub fn run() {
     let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
         get_api_profile,
         get_auth_state,
-        start_oauth,
-        sign_out,
+        auth_login,
+        auth_logout,
+        auth_get_user,
+        auth_refresh_token,
         get_connection,
         set_connection,
     ]);
