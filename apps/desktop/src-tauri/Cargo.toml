@@ -36,6 +36,7 @@ rand             = "0.8"
 sha2             = "0.10"
 base64           = "0.22"
 log              = "0.4"
+dotenvy = "0.15.7"
 
 [features]
 default = ["custom-protocol"]
