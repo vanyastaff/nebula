@@ -110,7 +110,158 @@ async fn test_workflow_list_empty() {
 
 #[tokio::test]
 async fn test_error_format_rfc9457() {
-    // TODO: Test that errors return RFC 9457 Problem Details format
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::default();
+    let token = create_test_jwt();
+
+    // Test 1: Not Found (404) - workflow not found
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/workflows/00000000-0000-0000-0000-000000000000")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // Verify Content-Type header is application/problem+json
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(content_type, Some("application/problem+json"));
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let problem: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // Verify RFC 9457 required fields
+    assert!(problem["type"].is_string());
+    assert_eq!(problem["type"], "https://nebula.dev/problems/not-found");
+    assert!(problem["title"].is_string());
+    assert_eq!(problem["title"], "Not Found");
+    assert!(problem["status"].is_number());
+    assert_eq!(problem["status"], 404);
+    assert!(problem["detail"].is_string());
+
+    // Test 2: Bad Request (400) - invalid UUID format
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/workflows/invalid-uuid")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(content_type, Some("application/problem+json"));
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let problem: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // Verify RFC 9457 structure
+    assert!(problem["type"].is_string());
+    assert!(problem["title"].is_string());
+    assert!(problem["status"].is_number());
+    assert_eq!(problem["status"], 400);
+
+    // Test 3: Validation Error (400) - cancel already completed execution
+    use nebula_core::ExecutionId;
+
+    let execution_id = ExecutionId::new();
+    let workflow_id = "test-workflow-id";
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let execution_state = serde_json::json!({
+        "workflow_id": workflow_id,
+        "status": "completed",
+        "started_at": now,
+        "finished_at": now + 10,
+        "input": {"key": "value"},
+        "output": {"result": "success"}
+    });
+
+    state
+        .execution_repo
+        .transition(execution_id, 0, execution_state.clone())
+        .await
+        .unwrap();
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&format!("/api/v1/executions/{}/cancel", execution_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(content_type, Some("application/problem+json"));
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let problem: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // Verify RFC 9457 structure for validation errors
+    assert!(problem["type"].is_string());
+    assert_eq!(problem["type"], "https://nebula.dev/problems/validation-error");
+    assert!(problem["title"].is_string());
+    assert_eq!(problem["title"], "Validation Error");
+    assert!(problem["status"].is_number());
+    assert_eq!(problem["status"], 400);
+    assert!(problem["detail"].is_string());
+
+    // For validation errors, check if "errors" field is present with field-level details
+    if problem["errors"].is_array() {
+        let errors = problem["errors"].as_array().unwrap();
+        for error in errors {
+            // Each validation error should have code, detail, and pointer (RFC 6901)
+            assert!(error["code"].is_string());
+            assert!(error["detail"].is_string());
+            assert!(error["pointer"].is_string());
+            // Pointer should follow RFC 6901 (JSON Pointer) format
+            assert!(error["pointer"].as_str().unwrap().starts_with('/'));
+        }
+    }
 }
 
 #[tokio::test]
