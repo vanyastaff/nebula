@@ -1,12 +1,14 @@
+mod auth;
 mod commands;
 mod deep_link;
+mod error;
 mod types;
 
 use tauri::Manager;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_specta::{collect_commands, Builder};
 
-use commands::auth::{get_auth_state, sign_out, start_oauth};
+use commands::auth::{auth_get_user, auth_login, auth_logout, auth_refresh_token, get_auth_state};
 use commands::connection::{get_connection, set_connection};
 use commands::credentials::{
     create_credential, delete_credential, get_credential, list_credentials, rotate_credential,
@@ -19,13 +21,28 @@ fn get_api_profile() -> String {
     std::env::var("NEBULA_API_PROFILE").unwrap_or_else(|_| "local".to_string())
 }
 
+#[tauri::command]
+#[specta::specta]
+async fn close_splashscreen(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(splashscreen) = app.get_webview_window("splashscreen") {
+        splashscreen.close().map_err(|e| e.to_string())?;
+    }
+    if let Some(main_window) = app.get_webview_window("main") {
+        main_window.show().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
         get_api_profile,
+        close_splashscreen,
         get_auth_state,
-        start_oauth,
-        sign_out,
+        auth_login,
+        auth_logout,
+        auth_get_user,
+        auth_refresh_token,
         get_connection,
         set_connection,
         list_credentials,
@@ -46,6 +63,8 @@ pub fn run() {
         .expect("Failed to export TypeScript bindings");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())

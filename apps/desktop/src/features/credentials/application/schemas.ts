@@ -9,10 +9,7 @@
  * Mirrors the protocol definitions from crates/credential/src/protocols/
  */
 
-import type {
-  CredentialProtocolSchema,
-  CredentialKind,
-} from "../domain/types";
+import type { CredentialKind, CredentialProtocolSchema } from "../domain/types";
 
 /**
  * API Key protocol schema
@@ -318,9 +315,7 @@ export const CREDENTIAL_SCHEMAS: CredentialProtocolSchema[] = [
  * @param kind - The credential protocol kind
  * @returns The schema definition or undefined if not found
  */
-export function getSchemaByKind(
-  kind: CredentialKind
-): CredentialProtocolSchema | undefined {
+export function getSchemaByKind(kind: CredentialKind): CredentialProtocolSchema | undefined {
   return CREDENTIAL_SCHEMAS.find((schema) => schema.kind === kind);
 }
 
@@ -333,7 +328,7 @@ export function getSchemaByKind(
  */
 export function validateCredentialData(
   kind: CredentialKind,
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
 ): string[] {
   const schema = getSchemaByKind(kind);
   if (!schema) {
@@ -359,7 +354,7 @@ export function validateCredentialData(
     // Type-specific validation
     if (field.type === "number" && typeof value === "string") {
       const numValue = Number(value);
-      if (isNaN(numValue)) {
+      if (Number.isNaN(numValue)) {
         errors.push(`${field.label} must be a valid number`);
         continue;
       }

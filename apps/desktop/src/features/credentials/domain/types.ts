@@ -6,9 +6,9 @@
  */
 
 import type {
+  CreateCredentialRequest,
   Credential as RawCredential,
   CredentialMetadata as RawCredentialMetadata,
-  CreateCredentialRequest,
   UpdateCredentialRequest,
 } from "../../../bindings";
 
@@ -41,7 +41,8 @@ export type CredentialStatus =
  *
  * Wraps the raw metadata from bindings with parsed Date objects
  */
-export interface CredentialMetadata extends Omit<RawCredentialMetadata, "createdAt" | "lastAccessed" | "lastModified" | "expiresAt"> {
+export interface CredentialMetadata
+  extends Omit<RawCredentialMetadata, "createdAt" | "lastAccessed" | "lastModified" | "expiresAt"> {
   createdAt: Date;
   lastAccessed: Date | null;
   lastModified: Date;
@@ -193,7 +194,7 @@ export function computeCredentialStatus(metadata: CredentialMetadata): Credentia
   }
 
   // Check if pending interaction (OAuth2 flows, etc.)
-  if (metadata.tags["credential_status"] === "pending") {
+  if (metadata.tags.credential_status === "pending") {
     return { type: "pending_interaction" };
   }
 
@@ -212,7 +213,7 @@ export function computeRotationStatus(metadata: CredentialMetadata): RotationSta
   }
 
   // Check for error state in tags
-  if (metadata.tags["rotation_status"] === "failed") {
+  if (metadata.tags.rotation_status === "failed") {
     return "failed";
   }
 

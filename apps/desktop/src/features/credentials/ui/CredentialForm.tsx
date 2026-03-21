@@ -1,14 +1,10 @@
-import { useState, type CSSProperties, type ChangeEvent } from "react";
+import { type CSSProperties, type ChangeEvent, useState } from "react";
 import {
   CREDENTIAL_SCHEMAS,
   getSchemaByKind,
   validateCredentialData,
 } from "../application/schemas";
-import type {
-  CredentialKind,
-  CredentialFormData,
-  CredentialFieldDefinition,
-} from "../domain/types";
+import type { CredentialFormData, CredentialKind } from "../domain/types";
 
 export interface CredentialFormProps {
   /**
@@ -46,11 +42,9 @@ export function CredentialForm({
   isSubmitting = false,
 }: CredentialFormProps) {
   const [selectedKind, setSelectedKind] = useState<CredentialKind | null>(
-    (initialData?.kind as CredentialKind) ?? null
+    (initialData?.kind as CredentialKind) ?? null,
   );
-  const [formData, setFormData] = useState<Record<string, unknown>>(
-    initialData?.state ?? {}
-  );
+  const [formData, setFormData] = useState<Record<string, unknown>>(initialData?.state ?? {});
   const [name, setName] = useState<string>(initialData?.name ?? "");
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [touchedFields, setTouchedFields] = useState<Set<string>>(new Set());
@@ -226,9 +220,7 @@ export function CredentialForm({
   return (
     <form onSubmit={handleSubmit} style={containerStyle}>
       <div style={headerStyle}>
-        <h2 style={titleStyle}>
-          {initialData ? "Edit Credential" : "New Credential"}
-        </h2>
+        <h2 style={titleStyle}>{initialData ? "Edit Credential" : "New Credential"}</h2>
         <p style={subtitleStyle}>
           {selectedSchema
             ? `Configure ${selectedSchema.displayName} credential`
@@ -282,8 +274,8 @@ export function CredentialForm({
                     field.type === "checkbox"
                       ? (e.target as HTMLInputElement).checked
                       : field.type === "number"
-                      ? (e.target as HTMLInputElement).value
-                      : (e.target as HTMLInputElement | HTMLSelectElement).value;
+                        ? (e.target as HTMLInputElement).value
+                        : (e.target as HTMLInputElement | HTMLSelectElement).value;
                   handleFieldChange(field.name, value);
                 }}
                 onBlur={() => handleFieldBlur(field.name)}
@@ -301,8 +293,8 @@ export function CredentialForm({
         {validationErrors.length > 0 && (
           <div style={errorContainerStyle}>
             <ul style={errorListStyle}>
-              {validationErrors.map((error, index) => (
-                <li key={index}>{error}</li>
+              {validationErrors.map((error) => (
+                <li key={error}>{error}</li>
               ))}
             </ul>
           </div>
@@ -310,24 +302,11 @@ export function CredentialForm({
       </div>
 
       <div style={footerStyle}>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={isSubmitting}
-          style={buttonStyle}
-        >
+        <button type="button" onClick={onCancel} disabled={isSubmitting} style={buttonStyle}>
           Cancel
         </button>
-        <button
-          type="submit"
-          disabled={isSubmitting || !selectedKind}
-          style={primaryButtonStyle}
-        >
-          {isSubmitting
-            ? "Saving..."
-            : initialData
-            ? "Update Credential"
-            : "Create Credential"}
+        <button type="submit" disabled={isSubmitting || !selectedKind} style={primaryButtonStyle}>
+          {isSubmitting ? "Saving..." : initialData ? "Update Credential" : "Create Credential"}
         </button>
       </div>
     </form>
@@ -353,7 +332,7 @@ function ProtocolCard({ schema, isSelected, onClick, disabled }: ProtocolCardPro
     code: "⚙️",
   };
 
-  const icon = schema.icon ? iconMap[schema.icon] ?? "🔐" : "🔐";
+  const icon = schema.icon ? (iconMap[schema.icon] ?? "🔐") : "🔐";
 
   const cardStyle: CSSProperties = {
     padding: "14px",
@@ -361,9 +340,7 @@ function ProtocolCard({ schema, isSelected, onClick, disabled }: ProtocolCardPro
     border: isSelected
       ? "1.5px solid rgba(99, 128, 255, 0.6)"
       : "1px solid rgba(151, 165, 198, 0.2)",
-    background: isSelected
-      ? "rgba(99, 128, 255, 0.12)"
-      : "rgba(14, 20, 38, 0.5)",
+    background: isSelected ? "rgba(99, 128, 255, 0.12)" : "rgba(14, 20, 38, 0.5)",
     cursor: disabled ? "not-allowed" : "pointer",
     transition: "all 0.15s ease",
     opacity: disabled ? 0.5 : 1,
@@ -388,8 +365,17 @@ function ProtocolCard({ schema, isSelected, onClick, disabled }: ProtocolCardPro
   };
 
   return (
-    <div
-      onClick={() => !disabled && onClick()}
+    <button
+      type="button"
+      onClick={() => {
+        if (!disabled) onClick();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          if (!disabled) onClick();
+        }
+      }}
       style={cardStyle}
       onMouseEnter={(e) => {
         if (!disabled && !isSelected) {
@@ -405,7 +391,7 @@ function ProtocolCard({ schema, isSelected, onClick, disabled }: ProtocolCardPro
       <div style={iconStyle}>{icon}</div>
       <div style={nameStyle}>{schema.displayName}</div>
       <div style={descStyle}>{schema.description}</div>
-    </div>
+    </button>
   );
 }
 
@@ -502,7 +488,7 @@ function FormField({
   return (
     <div style={fieldContainerStyle}>
       {type !== "checkbox" && (
-        <label style={labelStyle}>
+        <label htmlFor={`field-${label}`} style={labelStyle}>
           {label}
           {required && <span style={requiredStyle}>*</span>}
         </label>
@@ -510,6 +496,7 @@ function FormField({
 
       {type === "select" && options ? (
         <select
+          id={`field-${label}`}
           value={value as string}
           onChange={onChange}
           onBlur={onBlur}
@@ -529,6 +516,7 @@ function FormField({
         </select>
       ) : type === "textarea" ? (
         <textarea
+          id={`field-${label}`}
           value={value as string}
           onChange={onChange}
           onBlur={onBlur}
@@ -539,6 +527,7 @@ function FormField({
       ) : type === "checkbox" ? (
         <div style={checkboxContainerStyle}>
           <input
+            id={`field-${label}`}
             type="checkbox"
             checked={value as boolean}
             onChange={onChange}
@@ -546,13 +535,14 @@ function FormField({
             disabled={disabled}
             style={checkboxStyle}
           />
-          <label style={checkboxLabelStyle}>
+          <label htmlFor={`field-${label}`} style={checkboxLabelStyle}>
             {label}
             {required && <span style={requiredStyle}>*</span>}
           </label>
         </div>
       ) : (
         <input
+          id={`field-${label}`}
           type={type}
           value={value as string | number}
           onChange={onChange}

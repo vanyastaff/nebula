@@ -1,3 +1,8 @@
+@import "tailwindcss";
+@import "./lib/theme/tokens.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
 html,
 body,
 #root {
@@ -8,5 +13,15 @@ body,
 
 body {
   overflow: hidden;
-  background: #0a0f1d;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }

@@ -88,3 +88,15 @@ pub struct UpdateCredentialRequest {
     pub state: Option<serde_json::Value>,
     pub tags: Option<HashMap<String, String>>,
 }
+
+// ── Auth User ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthUser {
+    pub id: String,
+    pub email: String,
+    pub name: String,
+    pub avatar_url: Option<String>,
+    pub provider: String,
+}

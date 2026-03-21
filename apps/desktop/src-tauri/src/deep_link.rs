@@ -1,11 +1,8 @@
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::{
-    commands::{
-        auth::{complete_sign_in, exchange_code, load, save_and_emit},
-        connection::get_connection,
-    },
-    types::{AuthStatus, ConnectionMode, UserProfile},
+    auth,
+    types::{AuthState, AuthStatus},
 };
 
 pub async fn handle(raw_url: &str, app: &AppHandle) {
@@ -33,12 +30,22 @@ pub async fn handle(raw_url: &str, app: &AppHandle) {
         .filter(|t| !t.is_empty())
     {
         let provider = params.get("provider").cloned();
-        let user: Option<UserProfile> = None;
-        let _ = complete_sign_in(token.clone(), provider, user, app);
+
+        // Store in keyring
+        let _ = auth::keyring::store_tokens(token, None).await;
+
+        let state = AuthState {
+            status: AuthStatus::SignedIn,
+            provider,
+            access_token: token.clone(),
+            user: None,
+            error: None,
+        };
+        let _ = app.emit("auth_state_changed", &state);
         return;
     }
 
-    // Flow 2: OAuth authorization code — exchange for token via backend
+    // Flow 2: OAuth authorization code — exchange for token via auth module
     let code = match params.get("code") {
         Some(c) => c.clone(),
         None => return,
@@ -46,20 +53,17 @@ pub async fn handle(raw_url: &str, app: &AppHandle) {
     let provider = match params.get("provider") {
         Some(p) => p.clone(),
         None => {
-            let mut state = load(app);
-            state.status = AuthStatus::SignedOut;
-            state.error = Some("OAuth callback missing provider parameter.".to_string());
-            let _ = save_and_emit(app, &state);
+            let state = AuthState {
+                status: AuthStatus::SignedOut,
+                provider: None,
+                access_token: String::new(),
+                user: None,
+                error: Some("OAuth callback missing provider parameter.".to_string()),
+            };
+            let _ = app.emit("auth_state_changed", &state);
             return;
         }
     };
 
-    // Resolve active API base URL from connection store
-    let conn = get_connection(app.clone()).await;
-    let api_base_url = match conn.mode {
-        ConnectionMode::Local => conn.local_base_url,
-        ConnectionMode::Remote => conn.remote_base_url,
-    };
-
-    let _ = exchange_code(code, provider, api_base_url, app.clone()).await;
+    let _ = auth::handle_deep_link_callback(code, provider, app).await;
 }

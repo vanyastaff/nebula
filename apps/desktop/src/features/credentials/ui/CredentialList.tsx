@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
+import type { CredentialKind } from "../domain/types";
 import { useCredentialStore } from "../store";
 import { RotationIndicator } from "./RotationIndicator";
-import type { CredentialKind } from "../domain/types";
 
 /**
  * Icon component for credential types
@@ -241,9 +241,7 @@ export function CredentialList({ onSelect }: CredentialListProps) {
       borderBottom: "1px solid rgba(151, 165, 198, 0.1)",
       cursor: "pointer",
       transition: "background-color 0.15s ease",
-      background: isSelected
-        ? "rgba(99, 128, 255, 0.12)"
-        : "transparent",
+      background: isSelected ? "rgba(99, 128, 255, 0.12)" : "transparent",
     };
   }
 
@@ -300,12 +298,20 @@ export function CredentialList({ onSelect }: CredentialListProps) {
             {credentials.map((credential) => (
               <tr
                 key={credential.id}
+                tabIndex={0}
                 style={getRowStyle(credential.id)}
                 onClick={() => {
                   if (onSelect) {
                     onSelect(credential.id);
                   } else {
                     select(credential.id);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    if (onSelect) onSelect(credential.id);
+                    else select(credential.id);
                   }
                 }}
                 onMouseEnter={(e) => {

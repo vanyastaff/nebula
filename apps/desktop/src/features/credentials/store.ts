@@ -1,16 +1,16 @@
-import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
+import { create } from "zustand";
 import {
-  commands,
-  type Credential as RawCredential,
   type CreateCredentialRequest,
+  type Credential as RawCredential,
   type UpdateCredentialRequest,
+  commands,
 } from "../../bindings";
 import {
-  normalizeCredential,
-  toListItem,
   type Credential,
   type CredentialListItem,
+  normalizeCredential,
+  toListItem,
 } from "./domain/types";
 
 interface CredentialState {
@@ -30,7 +30,7 @@ interface CredentialActions {
   select: (id: string | null) => void;
 }
 
-export const useCredentialStore = create<CredentialState & CredentialActions>((set, get) => ({
+export const useCredentialStore = create<CredentialState & CredentialActions>((set, _get) => ({
   credentials: [],
   selectedCredentialId: null,
   initialized: false,
@@ -54,7 +54,7 @@ export const useCredentialStore = create<CredentialState & CredentialActions>((s
         const updatedCredential = toListItem(normalizeCredential(event.payload));
         set((state) => ({
           credentials: state.credentials.map((c) =>
-            c.id === updatedCredential.id ? updatedCredential : c
+            c.id === updatedCredential.id ? updatedCredential : c,
           ),
           error: undefined,
         }));
@@ -74,7 +74,7 @@ export const useCredentialStore = create<CredentialState & CredentialActions>((s
         const rotatedCredential = toListItem(normalizeCredential(event.payload));
         set((state) => ({
           credentials: state.credentials.map((c) =>
-            c.id === rotatedCredential.id ? rotatedCredential : c
+            c.id === rotatedCredential.id ? rotatedCredential : c,
           ),
           error: undefined,
         }));

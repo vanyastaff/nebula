@@ -1,10 +1,10 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { type CSSProperties, useEffect, useState } from "react";
+import { commands } from "../../../bindings";
+import { getSchemaByKind } from "../application/schemas";
+import { computeRotationStatus, normalizeCredential } from "../domain/types";
+import type { Credential, CredentialKind } from "../domain/types";
 import { useCredentialStore } from "../store";
 import { RotationIndicator } from "./RotationIndicator";
-import { getSchemaByKind } from "../application/schemas";
-import { computeRotationStatus } from "../domain/types";
-import type { Credential, CredentialKind } from "../domain/types";
-import { commands } from "../../../bindings";
 
 export interface CredentialDetailProps {
   credentialId: string;
@@ -47,7 +47,7 @@ export function CredentialDetail({ credentialId }: CredentialDetailProps) {
     setRotating(true);
     try {
       const rotated = await commands.rotateCredential(credentialId);
-      setCredential(rotated);
+      setCredential(normalizeCredential(rotated));
       setShowRotationDialog(false);
     } catch (error) {
       console.error("Failed to rotate credential:", error);
@@ -100,6 +100,7 @@ export function CredentialDetail({ credentialId }: CredentialDetailProps) {
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <RotationIndicator status={rotationStatus} size="md" />
           <button
+            type="button"
             onClick={handleRotateClick}
             style={rotateButtonStyle}
             disabled={rotating}
@@ -115,14 +116,8 @@ export function CredentialDetail({ credentialId }: CredentialDetailProps) {
         <div style={metadataGridStyle}>
           <MetadataRow label="ID" value={credential.id} />
           <MetadataRow label="Type" value={schema?.displayName ?? credential.kind} />
-          <MetadataRow
-            label="Created"
-            value={formatDate(credential.metadata.createdAt)}
-          />
-          <MetadataRow
-            label="Modified"
-            value={formatDate(credential.metadata.lastModified)}
-          />
+          <MetadataRow label="Created" value={formatDate(credential.metadata.createdAt)} />
+          <MetadataRow label="Modified" value={formatDate(credential.metadata.lastModified)} />
           <MetadataRow
             label="Last Accessed"
             value={
@@ -134,9 +129,7 @@ export function CredentialDetail({ credentialId }: CredentialDetailProps) {
           <MetadataRow
             label="Expires"
             value={
-              credential.metadata.expiresAt
-                ? formatDate(credential.metadata.expiresAt)
-                : "Never"
+              credential.metadata.expiresAt ? formatDate(credential.metadata.expiresAt) : "Never"
             }
           />
           <MetadataRow label="Version" value={String(credential.metadata.version)} />
@@ -212,11 +205,12 @@ export function CredentialDetail({ credentialId }: CredentialDetailProps) {
           <div style={dialogContainerStyle}>
             <h3 style={dialogTitleStyle}>Rotate Credential</h3>
             <p style={dialogMessageStyle}>
-              Are you sure you want to rotate this credential? This will generate
-              new credential values and increment the version number.
+              Are you sure you want to rotate this credential? This will generate new credential
+              values and increment the version number.
             </p>
             <div style={dialogActionsStyle}>
               <button
+                type="button"
                 onClick={handleRotateCancel}
                 style={dialogCancelButtonStyle}
                 disabled={rotating}
@@ -224,6 +218,7 @@ export function CredentialDetail({ credentialId }: CredentialDetailProps) {
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={handleRotateConfirm}
                 style={dialogConfirmButtonStyle}
                 disabled={rotating}
@@ -260,30 +255,25 @@ interface CredentialFieldProps {
   onCopy: () => void;
 }
 
-function CredentialField({
-  label,
-  value,
-  sensitive,
-  copied,
-  onCopy,
-}: CredentialFieldProps) {
+function CredentialField({ label, value, sensitive, copied, onCopy }: CredentialFieldProps) {
   const displayValue = sensitive ? "*".repeat(Math.min(value.length, 20)) : value;
 
   return (
     <div style={credentialFieldContainerStyle}>
-      <label style={credentialFieldLabelStyle}>{label}</label>
+      <label htmlFor={`field-${label}`} style={credentialFieldLabelStyle}>
+        {label}
+      </label>
       <div style={credentialFieldRowStyle}>
-        <span style={credentialFieldValueStyle}>{displayValue}</span>
+        <span id={`field-${label}`} style={credentialFieldValueStyle}>
+          {displayValue}
+        </span>
         <button
+          type="button"
           onClick={onCopy}
           style={{
             ...copyButtonStyle,
-            backgroundColor: copied
-              ? "rgba(61, 167, 127, 0.2)"
-              : "rgba(184, 197, 230, 0.1)",
-            borderColor: copied
-              ? "rgba(61, 167, 127, 0.4)"
-              : "rgba(184, 197, 230, 0.3)",
+            backgroundColor: copied ? "rgba(61, 167, 127, 0.2)" : "rgba(184, 197, 230, 0.1)",
+            borderColor: copied ? "rgba(61, 167, 127, 0.4)" : "rgba(184, 197, 230, 0.3)",
           }}
         >
           {copied ? "Copied!" : "Copy"}
