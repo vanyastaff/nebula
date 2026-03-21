@@ -9,21 +9,103 @@ use crate::{
 };
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
 };
+use serde::Deserialize;
+
+/// Pagination query parameters
+#[derive(Debug, Deserialize)]
+pub struct PaginationParams {
+    /// Page number (1-indexed)
+    #[serde(default = "default_page")]
+    pub page: usize,
+    /// Page size (default 10, max 100)
+    #[serde(default = "default_page_size")]
+    pub page_size: usize,
+}
+
+fn default_page() -> usize {
+    1
+}
+
+fn default_page_size() -> usize {
+    10
+}
+
+impl PaginationParams {
+    /// Calculate offset for database query (0-indexed)
+    fn offset(&self) -> usize {
+        self.page.saturating_sub(1).saturating_mul(self.page_size)
+    }
+
+    /// Get validated limit (capped at 100)
+    fn limit(&self) -> usize {
+        self.page_size.min(100)
+    }
+}
 
 /// List workflows
 /// GET /api/v1/workflows
 pub async fn list_workflows(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
+    Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<ListWorkflowsResponse>> {
-    // TODO: Implement via workflow_repo.list()
+    let offset = params.offset();
+    let limit = params.limit();
+
+    // Fetch workflows from repository
+    let workflows = state
+        .workflow_repo
+        .list(offset, limit)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to list workflows: {}", e)))?;
+
+    // Map to response DTOs
+    let workflow_responses: Vec<WorkflowResponse> = workflows
+        .into_iter()
+        .map(|(id, definition)| {
+            // Extract fields from workflow definition JSON
+            let name = definition
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unnamed Workflow")
+                .to_string();
+
+            let description = definition
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let created_at = definition
+                .get("created_at")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            let updated_at = definition
+                .get("updated_at")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            WorkflowResponse {
+                id: id.to_string(),
+                name,
+                description,
+                created_at,
+                updated_at,
+            }
+        })
+        .collect();
+
+    // Note: total count is approximated as we don't have a count() method yet
+    // For accurate pagination, we would need to add count() to WorkflowRepo
+    let total = workflow_responses.len();
+
     Ok(Json(ListWorkflowsResponse {
-        workflows: vec![],
-        total: 0,
-        page: 1,
-        page_size: 10,
+        workflows: workflow_responses,
+        total,
+        page: params.page,
+        page_size: params.page_size,
     }))
 }
 
