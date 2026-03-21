@@ -701,3 +701,486 @@ async fn test_execute_workflow_not_found() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
+// ===== Execution Management Tests =====
+
+#[tokio::test]
+async fn test_execution_list_all_empty() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::default();
+    let app = app::build_app(state, &api_config);
+    let token = create_test_jwt();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/executions")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let response_data: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(response_data["executions"].as_array().unwrap().len(), 0);
+    assert_eq!(response_data["total"], 0);
+    assert_eq!(response_data["page"], 1);
+    assert_eq!(response_data["page_size"], 10);
+}
+
+#[tokio::test]
+async fn test_execution_list_for_workflow_empty() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::default();
+    let token = create_test_jwt();
+
+    // Create a workflow first
+    let create_request = serde_json::json!({
+        "name": "Test Workflow",
+        "description": "A test workflow",
+        "definition": {
+            "nodes": [],
+            "edges": []
+        }
+    });
+
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/workflows")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created_workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let workflow_id = created_workflow["id"].as_str().unwrap();
+
+    // List executions for the workflow
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(&format!("/api/v1/workflows/{}/executions", workflow_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let response_data: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(response_data["executions"].as_array().unwrap().len(), 0);
+    assert_eq!(response_data["total"], 0);
+}
+
+#[tokio::test]
+async fn test_execution_get_by_id() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use nebula_core::ExecutionId;
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::default();
+    let token = create_test_jwt();
+
+    // Create an execution directly in the repo
+    let execution_id = ExecutionId::new();
+    let workflow_id = "test-workflow-id";
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let execution_state = serde_json::json!({
+        "workflow_id": workflow_id,
+        "status": "running",
+        "started_at": now,
+        "input": {"key": "value"}
+    });
+
+    state
+        .execution_repo
+        .transition(execution_id, 0, execution_state.clone())
+        .await
+        .unwrap();
+
+    // Get the execution by ID
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(&format!("/api/v1/executions/{}", execution_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let execution: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(execution["id"], execution_id.to_string());
+    assert_eq!(execution["workflow_id"], workflow_id);
+    assert_eq!(execution["status"], "running");
+    assert_eq!(execution["started_at"], now);
+    assert_eq!(execution["input"]["key"], "value");
+}
+
+#[tokio::test]
+async fn test_execution_get_not_found() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::default();
+    let app = app::build_app(state, &api_config);
+    let token = create_test_jwt();
+
+    // Use a valid UUID format that doesn't exist
+    let nonexistent_id = "00000000-0000-0000-0000-000000000000";
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(&format!("/api/v1/executions/{}", nonexistent_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_execution_start() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::default();
+    let token = create_test_jwt();
+
+    // Create a workflow first
+    let create_request = serde_json::json!({
+        "name": "Test Workflow",
+        "description": "A test workflow",
+        "definition": {
+            "nodes": [],
+            "edges": []
+        }
+    });
+
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/workflows")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created_workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let workflow_id = created_workflow["id"].as_str().unwrap();
+
+    // Start an execution
+    let start_request = serde_json::json!({
+        "input": {
+            "test_key": "test_value"
+        }
+    });
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&format!("/api/v1/workflows/{}/executions", workflow_id))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::from(serde_json::to_string(&start_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Note: Currently the start endpoint is not fully implemented
+    // so we expect an internal server error. Once implemented, this should
+    // be changed to expect StatusCode::ACCEPTED (202)
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn test_execution_cancel() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use nebula_core::ExecutionId;
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::default();
+    let token = create_test_jwt();
+
+    // Create an execution directly in the repo
+    let execution_id = ExecutionId::new();
+    let workflow_id = "test-workflow-id";
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let execution_state = serde_json::json!({
+        "workflow_id": workflow_id,
+        "status": "running",
+        "started_at": now,
+        "input": {"key": "value"}
+    });
+
+    state
+        .execution_repo
+        .transition(execution_id, 0, execution_state.clone())
+        .await
+        .unwrap();
+
+    // Cancel the execution
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&format!("/api/v1/executions/{}/cancel", execution_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let cancelled_execution: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(cancelled_execution["id"], execution_id.to_string());
+    assert_eq!(cancelled_execution["status"], "cancelled");
+    assert!(cancelled_execution["finished_at"].is_number());
+
+    // Verify the execution was actually cancelled in the repo
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(&format!("/api/v1/executions/{}", execution_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let execution: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(execution["status"], "cancelled");
+}
+
+#[tokio::test]
+async fn test_execution_cancel_not_found() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::default();
+    let app = app::build_app(state, &api_config);
+    let token = create_test_jwt();
+
+    // Use a valid UUID format that doesn't exist
+    let nonexistent_id = "00000000-0000-0000-0000-000000000000";
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&format!("/api/v1/executions/{}/cancel", nonexistent_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_execution_cancel_already_completed() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use nebula_core::ExecutionId;
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::default();
+    let token = create_test_jwt();
+
+    // Create a completed execution directly in the repo
+    let execution_id = ExecutionId::new();
+    let workflow_id = "test-workflow-id";
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let execution_state = serde_json::json!({
+        "workflow_id": workflow_id,
+        "status": "completed",
+        "started_at": now,
+        "finished_at": now + 10,
+        "input": {"key": "value"},
+        "output": {"result": "success"}
+    });
+
+    state
+        .execution_repo
+        .transition(execution_id, 0, execution_state.clone())
+        .await
+        .unwrap();
+
+    // Try to cancel the completed execution
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&format!("/api/v1/executions/{}/cancel", execution_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should fail with a validation error
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // Check that the detail field contains the error message
+    assert!(error["detail"]
+        .as_str()
+        .unwrap()
+        .contains("Cannot cancel execution"));
+}
+
+#[tokio::test]
+async fn test_execution_get_invalid_id() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::default();
+    let app = app::build_app(state, &api_config);
+    let token = create_test_jwt();
+
+    // Use an invalid UUID format
+    let invalid_id = "not-a-valid-uuid";
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(&format!("/api/v1/executions/{}", invalid_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
