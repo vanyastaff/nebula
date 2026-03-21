@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router";
+import { ReactFlowProvider } from "@xyflow/react";
 import { Button } from "../../components/ui/Button";
 import { WorkflowCanvas } from "./ui/WorkflowCanvas";
 import { NodePalette } from "./ui/NodePalette";
@@ -24,7 +25,9 @@ export function WorkflowEditorPage() {
           <NodePalette />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <WorkflowCanvas />
+          <ReactFlowProvider>
+            <WorkflowCanvas />
+          </ReactFlowProvider>
         </div>
       </div>
     </div>

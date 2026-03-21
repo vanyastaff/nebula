@@ -1,4 +1,4 @@
-import { type CSSProperties, useCallback, useEffect, useMemo } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef } from "react";
 import {
   ReactFlow,
   Background,
@@ -13,11 +13,14 @@ import {
   type Connection,
   addEdge,
   BackgroundVariant,
+  useReactFlow,
+  type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useWorkflowStore } from "../store";
 import type { WorkflowNode, WorkflowEdge } from "../domain/types";
 import { generateId } from "../domain/types";
+import type { PluginAction } from "../../../bindings";
 
 /**
  * WorkflowCanvas component with React Flow integration
@@ -39,6 +42,11 @@ export function WorkflowCanvas() {
   const setEdges = useWorkflowStore((state) => state.setEdges);
   const setViewport = useWorkflowStore((state) => state.setViewport);
   const addEdgeAction = useWorkflowStore((state) => state.addEdge);
+  const addNodeAction = useWorkflowStore((state) => state.addNode);
+
+  // React Flow instance for coordinate transformation
+  const { screenToFlowPosition } = useReactFlow();
+  const reactFlowWrapper = useRef<HTMLDivElement>(null);
 
   // Convert domain nodes to React Flow nodes
   const reactFlowNodes: Node[] = useMemo(() => {
@@ -157,6 +165,73 @@ export function WorkflowCanvas() {
     // to do anything here - just having it in the store is enough
   }, [viewport]);
 
+  /**
+   * Snap position to grid (15px)
+   */
+  const snapToGrid = (position: { x: number; y: number }) => {
+    const gridSize = 15;
+    return {
+      x: Math.round(position.x / gridSize) * gridSize,
+      y: Math.round(position.y / gridSize) * gridSize,
+    };
+  };
+
+  /**
+   * Handle drag over - allow drop
+   */
+  const onDragOver = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  /**
+   * Handle drop - create new node from palette action
+   */
+  const onDrop = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault();
+
+      // Get action data from drag event
+      const actionData = event.dataTransfer.getData("application/nebula-action");
+      if (!actionData) return;
+
+      try {
+        const action: PluginAction = JSON.parse(actionData);
+
+        // Convert screen coordinates to flow coordinates
+        const position = screenToFlowPosition({
+          x: event.clientX,
+          y: event.clientY,
+        });
+
+        // Snap to grid
+        const snappedPosition = snapToGrid(position);
+
+        // Create new node
+        const newNode: WorkflowNode = {
+          id: generateId("node"),
+          type: "action",
+          position: snappedPosition,
+          data: {
+            actionType: action.key,
+            label: action.name,
+            parameters: {},
+            inputs: [],
+            outputs: [],
+            icon: action.icon ?? undefined,
+            color: action.color ?? undefined,
+          },
+        };
+
+        // Add node to store
+        addNodeAction(newNode);
+      } catch (error) {
+        console.error("Failed to create node from drop:", error);
+      }
+    },
+    [screenToFlowPosition, addNodeAction],
+  );
+
   // Styles
   const canvasContainerStyle: CSSProperties = {
     width: "100%",
@@ -168,7 +243,12 @@ export function WorkflowCanvas() {
   };
 
   return (
-    <div style={canvasContainerStyle}>
+    <div
+      ref={reactFlowWrapper}
+      style={canvasContainerStyle}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       <ReactFlow
         nodes={reactFlowNodes}
         edges={reactFlowEdges}

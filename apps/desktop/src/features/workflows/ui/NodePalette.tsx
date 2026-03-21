@@ -64,6 +64,15 @@ export function NodePalette({ onActionSelect }: NodePaletteProps) {
   // Group actions by category
   const groupedActions = groupActionsByCategory(pluginActions);
 
+  /**
+   * Handle drag start - store action data for drop
+   */
+  const handleDragStart = (event: React.DragEvent, action: PluginAction) => {
+    // Store action data in dataTransfer
+    event.dataTransfer.setData("application/nebula-action", JSON.stringify(action));
+    event.dataTransfer.effectAllowed = "copy";
+  };
+
   const containerStyle: CSSProperties = {
     width: "100%",
     height: "100%",
@@ -222,6 +231,8 @@ export function NodePalette({ onActionSelect }: NodePaletteProps) {
                 <div
                   key={action.key}
                   style={actionItemStyle}
+                  draggable
+                  onDragStart={(e) => handleDragStart(e, action)}
                   onMouseEnter={(e) => {
                     Object.assign(e.currentTarget.style, actionItemHoverStyle);
                   }}
