@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router";
 import { Button } from "../../components/ui/Button";
 import { WorkflowCanvas } from "./ui/WorkflowCanvas";
+import { NodePalette } from "./ui/NodePalette";
 
 export function WorkflowEditorPage() {
   const { t } = useTranslation();
@@ -18,8 +19,13 @@ export function WorkflowEditorPage() {
           {t("common.back")}
         </Button>
       </div>
-      <div style={{ flex: 1, minHeight: 0 }}>
-        <WorkflowCanvas />
+      <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 16 }}>
+        <div style={{ width: 300, flexShrink: 0 }}>
+          <NodePalette />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <WorkflowCanvas />
+        </div>
       </div>
     </div>
   );
