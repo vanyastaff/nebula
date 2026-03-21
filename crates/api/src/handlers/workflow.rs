@@ -334,9 +334,24 @@ pub async fn update_workflow(
 /// Delete workflow
 /// DELETE /api/v1/workflows/:id
 pub async fn delete_workflow(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    // TODO: Implement via workflow_repo.delete()
-    Err(ApiError::NotFound(format!("Workflow {} not found", id)))
+    // Parse workflow ID
+    let workflow_id = WorkflowId::parse(&id)
+        .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {}", e)))?;
+
+    // Delete workflow from repository
+    let existed = state
+        .workflow_repo
+        .delete(workflow_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to delete workflow: {}", e)))?;
+
+    // Return 404 if workflow didn't exist, 204 No Content if it was deleted
+    if existed {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound(format!("Workflow {} not found", id)))
+    }
 }
