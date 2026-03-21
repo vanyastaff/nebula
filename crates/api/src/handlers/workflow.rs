@@ -226,12 +226,109 @@ pub async fn create_workflow(
 /// Update workflow
 /// PUT /api/v1/workflows/:id
 pub async fn update_workflow(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(_payload): Json<UpdateWorkflowRequest>,
+    Json(payload): Json<UpdateWorkflowRequest>,
 ) -> ApiResult<Json<WorkflowResponse>> {
-    // TODO: Implement via workflow_repo.update()
-    Err(ApiError::NotFound(format!("Workflow {} not found", id)))
+    // Parse workflow ID
+    let workflow_id = WorkflowId::parse(&id)
+        .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {}", e)))?;
+
+    // Get current workflow with version
+    let (version, mut definition) = state
+        .workflow_repo
+        .get_with_version(workflow_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Workflow {} not found", id)))?;
+
+    // Get current timestamp
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    // Update definition with new values
+    if let Some(obj) = definition.as_object_mut() {
+        // Update name if provided
+        if let Some(name) = &payload.name {
+            if name.trim().is_empty() {
+                return Err(ApiError::validation_message(
+                    "Workflow name cannot be empty",
+                ));
+            }
+            obj.insert("name".to_string(), serde_json::json!(name));
+        }
+
+        // Update description if provided
+        if let Some(desc) = &payload.description {
+            obj.insert("description".to_string(), serde_json::json!(desc));
+        }
+
+        // Merge definition if provided
+        if let Some(new_def) = &payload.definition
+            && let Some(new_obj) = new_def.as_object()
+        {
+            for (key, value) in new_obj {
+                // Don't allow overwriting metadata fields
+                if !["name", "description", "created_at", "updated_at"].contains(&key.as_str()) {
+                    obj.insert(key.clone(), value.clone());
+                }
+            }
+        }
+
+        // Update the updated_at timestamp
+        obj.insert("updated_at".to_string(), serde_json::json!(now));
+    } else {
+        return Err(ApiError::Internal(
+            "Invalid workflow definition format".to_string(),
+        ));
+    }
+
+    // Save with optimistic concurrency control
+    state
+        .workflow_repo
+        .save(workflow_id, version, definition.clone())
+        .await
+        .map_err(|e| {
+            use nebula_storage::WorkflowRepoError;
+            match e {
+                WorkflowRepoError::Conflict { .. } => {
+                    ApiError::Conflict("Workflow was modified by another request".to_string())
+                }
+                _ => ApiError::Internal(format!("Failed to update workflow: {}", e)),
+            }
+        })?;
+
+    // Extract fields for response
+    let name = definition
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unnamed Workflow")
+        .to_string();
+
+    let description = definition
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let created_at = definition
+        .get("created_at")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    let updated_at = definition
+        .get("updated_at")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    Ok(Json(WorkflowResponse {
+        id,
+        name,
+        description,
+        created_at,
+        updated_at,
+    }))
 }
 
 /// Delete workflow
