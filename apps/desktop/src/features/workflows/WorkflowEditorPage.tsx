@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router";
 import { ReactFlowProvider } from "@xyflow/react";
@@ -18,6 +19,10 @@ export function WorkflowEditorPage() {
   const selectedNode = nodes.find((n) => n.selected);
   const currentWorkflow = useWorkflowStore((state) => state.currentWorkflow);
   const deploy = useWorkflowStore((state) => state.deploy);
+  const undo = useWorkflowStore((state) => state.undo);
+  const redo = useWorkflowStore((state) => state.redo);
+  const canUndo = useWorkflowStore((state) => state.canUndo);
+  const canRedo = useWorkflowStore((state) => state.canRedo);
 
   const handleDeploy = async () => {
     try {
@@ -32,6 +37,38 @@ export function WorkflowEditorPage() {
       alert(`Deployment failed: ${String(error)}`);
     }
   };
+
+  // Keyboard shortcuts for undo/redo
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Check if target is an input field - don't trigger undo/redo in that case
+      const target = event.target as HTMLElement;
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") {
+        return;
+      }
+
+      // Ctrl+Z for undo
+      if (event.ctrlKey && event.key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        if (canUndo()) {
+          undo();
+        }
+      }
+
+      // Ctrl+Y for redo
+      if (event.ctrlKey && event.key === "y") {
+        event.preventDefault();
+        if (canRedo()) {
+          redo();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [undo, redo, canUndo, canRedo]);
 
   return (
     <div className="p-6" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>

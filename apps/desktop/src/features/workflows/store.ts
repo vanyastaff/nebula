@@ -16,6 +16,7 @@ import {
   type WorkflowEdge,
   type CanvasState,
   type CanvasViewport,
+  type CanvasOperation,
   normalizeWorkflow,
   toListItem,
   createEmptyCanvasState,
@@ -56,6 +57,12 @@ interface WorkflowActions {
   saveToFile: (id: string) => Promise<string>;
   loadFromFile: () => Promise<void>;
   deploy: (serverUrl: string) => Promise<void>;
+
+  // Undo/redo operations
+  undo: () => void;
+  redo: () => void;
+  canUndo: () => boolean;
+  canRedo: () => boolean;
 }
 
 export const useWorkflowStore = create<WorkflowState & WorkflowActions>((set, get) => ({
@@ -226,73 +233,136 @@ export const useWorkflowStore = create<WorkflowState & WorkflowActions>((set, ge
   },
 
   addNode: (node: WorkflowNode) => {
-    set((state) => ({
-      canvas: {
-        ...state.canvas,
-        workflow: {
-          ...state.canvas.workflow,
-          nodes: [...state.canvas.workflow.nodes, node],
+    set((state) => {
+      const operation: CanvasOperation = {
+        type: "add_node",
+        timestamp: new Date(),
+        data: { node },
+      };
+
+      return {
+        canvas: {
+          ...state.canvas,
+          workflow: {
+            ...state.canvas.workflow,
+            nodes: [...state.canvas.workflow.nodes, node],
+          },
+          undoStack: [...state.canvas.undoStack, operation],
+          redoStack: [], // Clear redo stack on new operation
+          isDirty: true,
         },
-        isDirty: true,
-      },
-    }));
+      };
+    });
   },
 
   updateNode: (id: string, updates: Partial<WorkflowNode>) => {
-    set((state) => ({
-      canvas: {
-        ...state.canvas,
-        workflow: {
-          ...state.canvas.workflow,
-          nodes: state.canvas.workflow.nodes.map((n) =>
-            n.id === id ? { ...n, ...updates } : n,
-          ),
+    set((state) => {
+      const existingNode = state.canvas.workflow.nodes.find((n) => n.id === id);
+      if (!existingNode) return state;
+
+      const operation: CanvasOperation = {
+        type: "update_node_data",
+        timestamp: new Date(),
+        data: { nodeId: id, oldNode: existingNode, updates },
+      };
+
+      return {
+        canvas: {
+          ...state.canvas,
+          workflow: {
+            ...state.canvas.workflow,
+            nodes: state.canvas.workflow.nodes.map((n) =>
+              n.id === id ? { ...n, ...updates } : n,
+            ),
+          },
+          undoStack: [...state.canvas.undoStack, operation],
+          redoStack: [], // Clear redo stack on new operation
+          isDirty: true,
         },
-        isDirty: true,
-      },
-    }));
+      };
+    });
   },
 
   deleteNode: (id: string) => {
-    set((state) => ({
-      canvas: {
-        ...state.canvas,
-        workflow: {
-          ...state.canvas.workflow,
-          nodes: state.canvas.workflow.nodes.filter((n) => n.id !== id),
-          edges: state.canvas.workflow.edges.filter(
-            (e) => e.source !== id && e.target !== id,
-          ),
+    set((state) => {
+      const nodeToDelete = state.canvas.workflow.nodes.find((n) => n.id === id);
+      if (!nodeToDelete) return state;
+
+      const affectedEdges = state.canvas.workflow.edges.filter(
+        (e) => e.source === id || e.target === id,
+      );
+
+      const operation: CanvasOperation = {
+        type: "remove_node",
+        timestamp: new Date(),
+        data: { node: nodeToDelete, affectedEdges },
+      };
+
+      return {
+        canvas: {
+          ...state.canvas,
+          workflow: {
+            ...state.canvas.workflow,
+            nodes: state.canvas.workflow.nodes.filter((n) => n.id !== id),
+            edges: state.canvas.workflow.edges.filter(
+              (e) => e.source !== id && e.target !== id,
+            ),
+          },
+          undoStack: [...state.canvas.undoStack, operation],
+          redoStack: [], // Clear redo stack on new operation
+          isDirty: true,
         },
-        isDirty: true,
-      },
-    }));
+      };
+    });
   },
 
   addEdge: (edge: WorkflowEdge) => {
-    set((state) => ({
-      canvas: {
-        ...state.canvas,
-        workflow: {
-          ...state.canvas.workflow,
-          edges: [...state.canvas.workflow.edges, edge],
+    set((state) => {
+      const operation: CanvasOperation = {
+        type: "add_edge",
+        timestamp: new Date(),
+        data: { edge },
+      };
+
+      return {
+        canvas: {
+          ...state.canvas,
+          workflow: {
+            ...state.canvas.workflow,
+            edges: [...state.canvas.workflow.edges, edge],
+          },
+          undoStack: [...state.canvas.undoStack, operation],
+          redoStack: [], // Clear redo stack on new operation
+          isDirty: true,
         },
-        isDirty: true,
-      },
-    }));
+      };
+    });
   },
 
   deleteEdge: (id: string) => {
-    set((state) => ({
-      canvas: {
-        ...state.canvas,
-        workflow: {
-          ...state.canvas.workflow,
-          edges: state.canvas.workflow.edges.filter((e) => e.id !== id),
+    set((state) => {
+      const edgeToDelete = state.canvas.workflow.edges.find((e) => e.id === id);
+      if (!edgeToDelete) return state;
+
+      const operation: CanvasOperation = {
+        type: "remove_edge",
+        timestamp: new Date(),
+        data: { edge: edgeToDelete },
+      };
+
+      return {
+        canvas: {
+          ...state.canvas,
+          workflow: {
+            ...state.canvas.workflow,
+            edges: state.canvas.workflow.edges.filter((e) => e.id !== id),
+          },
+          undoStack: [...state.canvas.undoStack, operation],
+          redoStack: [], // Clear redo stack on new operation
+          isDirty: true,
         },
-        isDirty: true,
-      },
-    }));
+      };
+    });
   },
 
   setViewport: (viewport: CanvasViewport) => {
@@ -421,6 +491,165 @@ export const useWorkflowStore = create<WorkflowState & WorkflowActions>((set, ge
       set({ error: String(error) });
       throw error;
     }
+  },
+
+  // Undo/redo operations
+  undo: () => {
+    set((state) => {
+      if (state.canvas.undoStack.length === 0) return state;
+
+      const operation = state.canvas.undoStack[state.canvas.undoStack.length - 1];
+      const newUndoStack = state.canvas.undoStack.slice(0, -1);
+
+      let newWorkflow = state.canvas.workflow;
+
+      // Reverse the operation
+      switch (operation.type) {
+        case "add_node": {
+          const { node } = operation.data as { node: WorkflowNode };
+          newWorkflow = {
+            ...newWorkflow,
+            nodes: newWorkflow.nodes.filter((n) => n.id !== node.id),
+          };
+          break;
+        }
+        case "remove_node": {
+          const { node, affectedEdges } = operation.data as {
+            node: WorkflowNode;
+            affectedEdges: WorkflowEdge[];
+          };
+          newWorkflow = {
+            ...newWorkflow,
+            nodes: [...newWorkflow.nodes, node],
+            edges: [...newWorkflow.edges, ...affectedEdges],
+          };
+          break;
+        }
+        case "update_node_data": {
+          const { nodeId, oldNode } = operation.data as {
+            nodeId: string;
+            oldNode: WorkflowNode;
+            updates: Partial<WorkflowNode>;
+          };
+          newWorkflow = {
+            ...newWorkflow,
+            nodes: newWorkflow.nodes.map((n) => (n.id === nodeId ? oldNode : n)),
+          };
+          break;
+        }
+        case "add_edge": {
+          const { edge } = operation.data as { edge: WorkflowEdge };
+          newWorkflow = {
+            ...newWorkflow,
+            edges: newWorkflow.edges.filter((e) => e.id !== edge.id),
+          };
+          break;
+        }
+        case "remove_edge": {
+          const { edge } = operation.data as { edge: WorkflowEdge };
+          newWorkflow = {
+            ...newWorkflow,
+            edges: [...newWorkflow.edges, edge],
+          };
+          break;
+        }
+      }
+
+      return {
+        canvas: {
+          ...state.canvas,
+          workflow: newWorkflow,
+          undoStack: newUndoStack,
+          redoStack: [...state.canvas.redoStack, operation],
+          isDirty: true,
+        },
+      };
+    });
+  },
+
+  redo: () => {
+    set((state) => {
+      if (state.canvas.redoStack.length === 0) return state;
+
+      const operation = state.canvas.redoStack[state.canvas.redoStack.length - 1];
+      const newRedoStack = state.canvas.redoStack.slice(0, -1);
+
+      let newWorkflow = state.canvas.workflow;
+
+      // Reapply the operation
+      switch (operation.type) {
+        case "add_node": {
+          const { node } = operation.data as { node: WorkflowNode };
+          newWorkflow = {
+            ...newWorkflow,
+            nodes: [...newWorkflow.nodes, node],
+          };
+          break;
+        }
+        case "remove_node": {
+          const { node, affectedEdges } = operation.data as {
+            node: WorkflowNode;
+            affectedEdges: WorkflowEdge[];
+          };
+          newWorkflow = {
+            ...newWorkflow,
+            nodes: newWorkflow.nodes.filter((n) => n.id !== node.id),
+            edges: newWorkflow.edges.filter(
+              (e) => !affectedEdges.some((ae) => ae.id === e.id),
+            ),
+          };
+          break;
+        }
+        case "update_node_data": {
+          const { nodeId, updates } = operation.data as {
+            nodeId: string;
+            oldNode: WorkflowNode;
+            updates: Partial<WorkflowNode>;
+          };
+          newWorkflow = {
+            ...newWorkflow,
+            nodes: newWorkflow.nodes.map((n) =>
+              n.id === nodeId ? { ...n, ...updates } : n,
+            ),
+          };
+          break;
+        }
+        case "add_edge": {
+          const { edge } = operation.data as { edge: WorkflowEdge };
+          newWorkflow = {
+            ...newWorkflow,
+            edges: [...newWorkflow.edges, edge],
+          };
+          break;
+        }
+        case "remove_edge": {
+          const { edge } = operation.data as { edge: WorkflowEdge };
+          newWorkflow = {
+            ...newWorkflow,
+            edges: newWorkflow.edges.filter((e) => e.id !== edge.id),
+          };
+          break;
+        }
+      }
+
+      return {
+        canvas: {
+          ...state.canvas,
+          workflow: newWorkflow,
+          undoStack: [...state.canvas.undoStack, operation],
+          redoStack: newRedoStack,
+          isDirty: true,
+        },
+      };
+    });
+  },
+
+  canUndo: () => {
+    return get().canvas.undoStack.length > 0;
+  },
+
+  canRedo: () => {
+    return get().canvas.redoStack.length > 0;
   },
 }));
 
