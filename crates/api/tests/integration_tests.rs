@@ -811,10 +811,17 @@ async fn test_execute_workflow() {
         .await
         .unwrap();
 
-    // Note: Currently the execute endpoint is not fully implemented
-    // so we expect an internal server error. Once implemented, this should
-    // be changed to expect StatusCode::ACCEPTED (202)
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    // Verify 202 ACCEPTED response
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+    // Verify response body contains execution data
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let execution_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(execution_response["id"].is_string());
+    assert_eq!(execution_response["workflow_id"].as_str().unwrap(), workflow_id);
+    assert_eq!(execution_response["status"].as_str().unwrap(), "pending");
 }
 
 #[tokio::test]
@@ -850,9 +857,8 @@ async fn test_execute_workflow_not_found() {
         .await
         .unwrap();
 
-    // Note: Currently returns 500 because execute is not implemented
-    // When implemented, this should verify 404 NOT_FOUND for non-existent workflow
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    // Verify 404 NOT_FOUND for non-existent workflow
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 // ===== Execution Management Tests =====
@@ -1122,10 +1128,16 @@ async fn test_execution_start() {
         .await
         .unwrap();
 
-    // Note: Currently the start endpoint is not fully implemented
-    // so we expect an internal server error. Once implemented, this should
-    // be changed to expect StatusCode::ACCEPTED (202)
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    // Verify 202 ACCEPTED response
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+    // Verify response body contains execution data
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let execution_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(execution_response["id"].is_string());
+    assert_eq!(execution_response["status"].as_str().unwrap(), "pending");
 }
 
 #[tokio::test]

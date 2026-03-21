@@ -13,7 +13,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use nebula_core::WorkflowId;
+use nebula_core::{ExecutionId, WorkflowId};
 use serde::Deserialize;
 
 /// Pagination query parameters
@@ -440,18 +440,60 @@ pub async fn activate_workflow(
 /// Execute workflow (enqueue and return 202 Accepted)
 /// POST /api/v1/workflows/:id/execute
 pub async fn execute_workflow(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(_payload): Json<StartExecutionRequest>,
+    Json(payload): Json<StartExecutionRequest>,
 ) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {}", e)))?;
 
-    // TODO: Validate workflow exists, enqueue execution, return 202
-    // This should NOT wait for execution to complete!
-    Err(ApiError::Internal(format!(
-        "Execution for workflow {} not implemented yet",
-        workflow_id
-    )))
+    // Verify workflow exists
+    state
+        .workflow_repo
+        .get(workflow_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Workflow {} not found", id)))?;
+
+    // Generate new execution ID
+    let execution_id = ExecutionId::new();
+
+    // Get current timestamp
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    // Create initial execution state
+    let execution_state = serde_json::json!({
+        "workflow_id": id,
+        "status": "pending",
+        "started_at": now,
+        "input": payload.input,
+    });
+
+    // Create execution record (version 0 for new execution)
+    let success = state
+        .execution_repo
+        .transition(execution_id, 0, execution_state.clone())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to create execution: {}", e)))?;
+
+    if !success {
+        return Err(ApiError::Internal("Failed to create execution record".to_string()));
+    }
+
+    // Build response
+    let response = ExecutionResponse {
+        id: execution_id.to_string(),
+        workflow_id: id,
+        status: "pending".to_string(),
+        started_at: now,
+        finished_at: None,
+        input: payload.input,
+        output: None,
+    };
+
+    Ok((StatusCode::ACCEPTED, Json(response)))
 }
