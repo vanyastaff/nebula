@@ -393,3 +393,86 @@ pub async fn load_workflow_from_file(app: AppHandle) -> Result<Workflow, String>
         Err("Load cancelled by user".to_string())
     }
 }
+
+/// Deploy a workflow to a Nebula server via HTTP API
+///
+/// Makes a POST request to the server's workflow deployment endpoint with
+/// the workflow definition as JSON payload. Updates the workflow's server_url
+/// and last_deployed timestamp on success.
+#[tauri::command]
+#[specta::specta]
+pub async fn deploy_workflow(
+    id: String,
+    server_url: String,
+    app: AppHandle,
+) -> Result<Workflow, String> {
+    // Load the workflow
+    let mut workflow = load_one(&app, &id)
+        .ok_or_else(|| format!("Workflow not found: {}", id))?;
+
+    // Build the deployment payload (WorkflowDefinition format)
+    let definition = json!({
+        "id": workflow.id,
+        "name": workflow.name,
+        "description": workflow.metadata.description,
+        "version": {
+            "major": workflow.metadata.version,
+            "minor": 0,
+            "patch": 0,
+        },
+        "nodes": workflow.nodes,
+        "connections": workflow.edges,
+        "variables": {},
+        "config": {
+            "timeout": null,
+            "max_parallel_nodes": 10,
+            "checkpointing": {
+                "enabled": true,
+                "interval": null,
+            },
+            "retry_policy": null,
+        },
+        "tags": workflow.metadata.tags,
+        "metadata": {
+            "author": workflow.metadata.author,
+            "created_at": workflow.metadata.created_at,
+            "last_modified": workflow.metadata.last_modified,
+        },
+    });
+
+    // Make HTTP POST request to server
+    let endpoint = format!("{}/api/workflows", server_url.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(&endpoint)
+        .json(&definition)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to server: {}", e))?;
+
+    // Check response status
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(format!(
+            "Server returned error {}: {}",
+            status, error_body
+        ));
+    }
+
+    // Update workflow metadata
+    workflow.server_url = Some(server_url);
+    workflow.metadata.last_deployed = Some(Utc::now().to_rfc3339());
+    workflow.metadata.last_modified = Utc::now().to_rfc3339();
+
+    // Save updated workflow
+    save_workflow(&app, &workflow)?;
+    app.emit("workflow_updated", &workflow)
+        .map_err(|e: tauri::Error| e.to_string())?;
+
+    Ok(workflow)
+}

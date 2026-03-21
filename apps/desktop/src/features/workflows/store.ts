@@ -55,6 +55,7 @@ interface WorkflowActions {
   saveCanvasToWorkflow: () => Promise<void>;
   saveToFile: (id: string) => Promise<string>;
   loadFromFile: () => Promise<void>;
+  deploy: (serverUrl: string) => Promise<void>;
 }
 
 export const useWorkflowStore = create<WorkflowState & WorkflowActions>((set, get) => ({
@@ -376,6 +377,42 @@ export const useWorkflowStore = create<WorkflowState & WorkflowActions>((set, ge
         const workflow = normalizeWorkflow(result.data);
         get().loadWorkflow(workflow);
         set({ error: undefined });
+      } else {
+        set({ error: result.error });
+        throw new Error(result.error);
+      }
+    } catch (error) {
+      set({ error: String(error) });
+      throw error;
+    }
+  },
+
+  deploy: async (serverUrl: string) => {
+    try {
+      const currentWorkflow = get().currentWorkflow;
+      if (!currentWorkflow) {
+        const error = "No workflow loaded";
+        set({ error });
+        throw new Error(error);
+      }
+
+      // Validate server URL format
+      const trimmedUrl = serverUrl.trim();
+      if (!trimmedUrl) {
+        const error = "Server URL is required";
+        set({ error });
+        throw new Error(error);
+      }
+
+      // Deploy workflow to server
+      const result = await commands.deployWorkflow(currentWorkflow.id, trimmedUrl);
+      if (result.status === "ok") {
+        const updatedWorkflow = normalizeWorkflow(result.data);
+        set({
+          currentWorkflow: updatedWorkflow,
+          error: undefined,
+        });
+        // Event listener will update the list automatically
       } else {
         set({ error: result.error });
         throw new Error(result.error);

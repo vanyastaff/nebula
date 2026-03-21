@@ -16,6 +16,22 @@ export function WorkflowEditorPage() {
   // Get selected node from store
   const nodes = useWorkflowStore((state) => state.canvas.workflow.nodes);
   const selectedNode = nodes.find((n) => n.selected);
+  const currentWorkflow = useWorkflowStore((state) => state.currentWorkflow);
+  const deploy = useWorkflowStore((state) => state.deploy);
+
+  const handleDeploy = async () => {
+    try {
+      // Prompt user for server URL
+      // TODO: In the future, this could be stored in user settings or workflow metadata
+      const serverUrl = currentWorkflow?.serverUrl || prompt("Enter Nebula server URL:", "http://localhost:8080");
+      if (serverUrl) {
+        await deploy(serverUrl);
+        alert("Workflow deployed successfully!");
+      }
+    } catch (error) {
+      alert(`Deployment failed: ${String(error)}`);
+    }
+  };
 
   return (
     <div className="p-6" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
@@ -32,7 +48,7 @@ export function WorkflowEditorPage() {
           <NodePalette />
         </div>
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-          <CanvasToolbar />
+          <CanvasToolbar onDeploy={() => void handleDeploy()} />
           <div style={{ flex: 1, minHeight: 0 }}>
             <ReactFlowProvider>
               <WorkflowCanvas />

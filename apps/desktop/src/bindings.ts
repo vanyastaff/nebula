@@ -159,6 +159,14 @@ async loadWorkflowFromFile() : Promise<Result<Workflow, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async deployWorkflow(id: string, serverUrl: string) : Promise<Result<Workflow, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("deploy_workflow", { id, serverUrl }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
