@@ -12,6 +12,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
+use nebula_core::WorkflowId;
 use serde::Deserialize;
 
 /// Pagination query parameters
@@ -112,11 +113,53 @@ pub async fn list_workflows(
 /// Get workflow by ID
 /// GET /api/v1/workflows/:id
 pub async fn get_workflow(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<WorkflowResponse>> {
-    // TODO: Implement via workflow_repo.get()
-    Err(ApiError::NotFound(format!("Workflow {} not found", id)))
+    // Parse workflow ID
+    let workflow_id = WorkflowId::parse(&id)
+        .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {}", e)))?;
+
+    // Fetch workflow from repository
+    let definition = state
+        .workflow_repo
+        .get(workflow_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {}", e)))?;
+
+    // Check if workflow exists
+    let definition = definition
+        .ok_or_else(|| ApiError::NotFound(format!("Workflow {} not found", id)))?;
+
+    // Extract fields from workflow definition JSON
+    let name = definition
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unnamed Workflow")
+        .to_string();
+
+    let description = definition
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let created_at = definition
+        .get("created_at")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    let updated_at = definition
+        .get("updated_at")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    Ok(Json(WorkflowResponse {
+        id,
+        name,
+        description,
+        created_at,
+        updated_at,
+    }))
 }
 
 /// Create workflow
