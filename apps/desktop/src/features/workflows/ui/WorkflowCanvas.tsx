@@ -18,8 +18,8 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useWorkflowStore } from "../store";
-import type { WorkflowNode, WorkflowEdge } from "../domain/types";
-import { generateId } from "../domain/types";
+import type { WorkflowNode, WorkflowEdge, NodePort } from "../domain/types";
+import { generateId, validateEdgeConnection } from "../domain/types";
 import type { PluginAction } from "../../../bindings";
 
 /**
@@ -131,23 +131,86 @@ export function WorkflowCanvas() {
     [reactFlowEdges, edges, setEdges],
   );
 
-  // Handle new edge connections
+  // Handle new edge connections with validation
   const onConnect = useCallback(
     (connection: Connection) => {
       if (!connection.source || !connection.target) return;
 
+      // Prevent self-loops (following connection.rs pattern)
+      if (connection.source === connection.target) {
+        console.warn("Cannot create self-loop: source and target are the same node");
+        return;
+      }
+
+      // Find source and target nodes
+      const sourceNode = nodes.find((n) => n.id === connection.source);
+      const targetNode = nodes.find((n) => n.id === connection.target);
+
+      if (!sourceNode || !targetNode) {
+        console.warn("Source or target node not found");
+        return;
+      }
+
+      // Determine port IDs (default to "output" and "input" if not specified)
+      const sourcePortId = connection.sourceHandle ?? "output";
+      const targetPortId = connection.targetHandle ?? "input";
+
+      // Find the actual ports for validation
+      // If ports are defined, validate them; otherwise allow default connection
+      if (sourceNode.data.outputs.length > 0 || targetNode.data.inputs.length > 0) {
+        const sourcePort = sourceNode.data.outputs.find((p) => p.id === sourcePortId);
+        const targetPort = targetNode.data.inputs.find((p) => p.id === targetPortId);
+
+        // Validate port existence
+        if (sourceNode.data.outputs.length > 0 && !sourcePort) {
+          console.warn(`Source port "${sourcePortId}" not found on node "${sourceNode.data.label}"`);
+          return;
+        }
+
+        if (targetNode.data.inputs.length > 0 && !targetPort) {
+          console.warn(`Target port "${targetPortId}" not found on node "${targetNode.data.label}"`);
+          return;
+        }
+
+        // Validate port compatibility if both ports exist
+        if (sourcePort && targetPort) {
+          const validation = validateEdgeConnection(sourcePort, targetPort);
+          if (!validation.valid) {
+            console.warn(
+              `Invalid connection: ${validation.error} (${sourceNode.data.label}.${sourcePort.name} → ${targetNode.data.label}.${targetPort.name})`,
+            );
+            return;
+          }
+        }
+      }
+
+      // Check for duplicate connections
+      const isDuplicate = edges.some(
+        (e) =>
+          e.source === connection.source &&
+          e.target === connection.target &&
+          e.sourcePort === sourcePortId &&
+          e.targetPort === targetPortId,
+      );
+
+      if (isDuplicate) {
+        console.warn("Connection already exists");
+        return;
+      }
+
+      // All validations passed - create the edge
       const newEdge: WorkflowEdge = {
         id: generateId("edge"),
         source: connection.source,
-        sourcePort: connection.sourceHandle ?? "output",
+        sourcePort: sourcePortId,
         target: connection.target,
-        targetPort: connection.targetHandle ?? "input",
+        targetPort: targetPortId,
         animated: false,
       };
 
       addEdgeAction(newEdge);
     },
-    [addEdgeAction],
+    [nodes, edges, addEdgeAction],
   );
 
   // Handle viewport changes (pan/zoom)
