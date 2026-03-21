@@ -37,6 +37,9 @@ sha2             = "0.10"
 base64           = "0.22"
 log              = "0.4"
 
+# Nebula workspace crates
+nebula-plugin    = { path = "../../../crates/plugin" }
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

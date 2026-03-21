@@ -102,6 +102,22 @@ pub struct AuthUser {
     pub provider: String,
 }
 
+// ── Plugin Types ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginAction {
+    pub key: String,
+    pub name: String,
+    pub description: String,
+    pub version: u32,
+    pub group: Vec<String>,
+    pub icon: Option<String>,
+    pub icon_url: Option<String>,
+    pub color: Option<String>,
+    pub tags: Vec<String>,
+}
+
 // ── Workflow Types ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

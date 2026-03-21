@@ -15,7 +15,8 @@ use commands::credentials::{
     update_credential,
 };
 use commands::workflows::{
-    create_workflow, delete_workflow, get_workflow, list_workflows, update_workflow,
+    create_workflow, delete_workflow, get_workflow, list_plugin_actions, list_workflows,
+    update_workflow,
 };
 
 #[tauri::command]
@@ -59,6 +60,7 @@ pub fn run() {
         create_workflow,
         update_workflow,
         delete_workflow,
+        list_plugin_actions,
     ]);
 
     #[cfg(debug_assertions)]
