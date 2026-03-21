@@ -7,6 +7,8 @@ import { CredentialFormPage } from "../../features/credentials/CredentialFormPag
 import { CredentialListPage } from "../../features/credentials/CredentialListPage";
 import { DashboardPage } from "../../features/dashboard/DashboardPage";
 import { SettingsPage } from "../../features/settings/SettingsPage";
+import { WorkflowEditorPage } from "../../features/workflows/WorkflowEditorPage";
+import { WorkflowListPage } from "../../features/workflows/WorkflowListPage";
 
 export const router = createBrowserRouter([
   {
@@ -26,6 +28,9 @@ export const router = createBrowserRouter([
           { path: "credentials/new", element: <CredentialFormPage /> },
           { path: "credentials/:id", element: <CredentialDetailPage /> },
           { path: "credentials/:id/edit", element: <CredentialFormPage /> },
+          { path: "workflows", element: <WorkflowListPage /> },
+          { path: "workflows/new", element: <WorkflowEditorPage /> },
+          { path: "workflows/:id", element: <WorkflowEditorPage /> },
         ],
       },
     ],
