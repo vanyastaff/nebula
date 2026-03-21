@@ -36,11 +36,61 @@ pub async fn list_executions(
 /// Get execution by ID
 /// GET /api/v1/executions/:id
 pub async fn get_execution(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<ExecutionResponse>> {
-    // TODO: Implement via execution_repo.get()
-    Err(ApiError::NotFound(format!("Execution {} not found", id)))
+    use nebula_core::ExecutionId;
+
+    // Parse execution ID
+    let execution_id = ExecutionId::parse(&id)
+        .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {}", e)))?;
+
+    // Fetch execution state from repository
+    let state_result = state
+        .execution_repo
+        .get_state(execution_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get execution: {}", e)))?;
+
+    // Check if execution exists (get_state returns Option<(version, state)>)
+    let (_version, execution_state) = state_result
+        .ok_or_else(|| ApiError::NotFound(format!("Execution {} not found", id)))?;
+
+    // Extract fields from execution state JSON
+    let workflow_id = execution_state
+        .get("workflow_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let status = execution_state
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let started_at = execution_state
+        .get("started_at")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    let finished_at = execution_state
+        .get("finished_at")
+        .and_then(|v| v.as_i64());
+
+    let input = execution_state.get("input").cloned();
+
+    let output = execution_state.get("output").cloned();
+
+    Ok(Json(ExecutionResponse {
+        id,
+        workflow_id,
+        status,
+        started_at,
+        finished_at,
+        input,
+        output,
+    }))
 }
 
 /// Start workflow execution (enqueue and return 202 Accepted)
