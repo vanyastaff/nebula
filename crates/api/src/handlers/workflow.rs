@@ -37,12 +37,12 @@ fn default_page_size() -> usize {
 
 impl PaginationParams {
     /// Calculate offset for database query (0-indexed)
-    fn offset(&self) -> usize {
+    pub fn offset(&self) -> usize {
         self.page.saturating_sub(1).saturating_mul(self.page_size)
     }
 
     /// Get validated limit (capped at 100)
-    fn limit(&self) -> usize {
+    pub fn limit(&self) -> usize {
         self.page_size.min(100)
     }
 }

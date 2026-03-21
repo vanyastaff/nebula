@@ -2,12 +2,13 @@
 
 use crate::{
     errors::{ApiError, ApiResult},
+    handlers::workflow::PaginationParams,
     models::{ExecutionResponse, ListExecutionsResponse, StartExecutionRequest},
     state::AppState,
 };
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
 };
 
@@ -16,13 +17,19 @@ use axum::{
 pub async fn list_executions(
     State(_state): State<AppState>,
     Path(_workflow_id): Path<String>,
+    Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<ListExecutionsResponse>> {
-    // TODO: Implement via execution_repo.list()
+    // TODO: ExecutionRepo doesn't have a list() method yet.
+    // This requires extending the ExecutionRepo trait with:
+    //   async fn list(&self, workflow_id: Option<WorkflowId>, offset: usize, limit: usize)
+    //       -> Result<Vec<(ExecutionId, serde_json::Value)>, ExecutionRepoError>;
+    // For now, return empty list with proper pagination metadata.
+
     Ok(Json(ListExecutionsResponse {
         executions: vec![],
         total: 0,
-        page: 1,
-        page_size: 10,
+        page: params.page,
+        page_size: params.limit(),
     }))
 }
 
