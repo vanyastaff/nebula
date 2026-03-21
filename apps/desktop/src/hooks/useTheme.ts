@@ -1,4 +1,5 @@
-import { type ThemeMode, useThemeStore } from "../lib/theme";
+import { type ThemeMode } from "../lib/theme";
+import { useSettingsStore } from "../stores/settingsStore";
 
 interface UseThemeReturn {
   theme: ThemeMode;
@@ -6,7 +7,7 @@ interface UseThemeReturn {
 }
 
 export function useTheme(): UseThemeReturn {
-  const theme = useThemeStore((s) => s.theme);
-  const setTheme = useThemeStore((s) => s.setTheme);
+  const theme = useSettingsStore((s) => s.theme);
+  const setTheme = useSettingsStore((s) => s.setTheme);
   return { theme, setTheme };
 }

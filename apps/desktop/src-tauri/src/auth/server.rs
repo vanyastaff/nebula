@@ -27,21 +27,23 @@ const ERROR_HTML: &str = r#"<!DOCTYPE html>
 <p>Missing required parameters. Please try again.</p>
 </body></html>"#;
 
+/// Fixed port for the OAuth localhost callback server.
+pub const CALLBACK_PORT: u16 = 5678;
+/// Fixed path for the OAuth callback endpoint.
+pub const CALLBACK_PATH: &str = "/auth/github/callback";
+
 /// Starts a temporary localhost HTTP server that waits for one OAuth callback.
 ///
-/// Binds to `127.0.0.1:0` (OS-assigned port), accepts a single connection,
+/// Binds to `127.0.0.1:5678`, accepts a single connection,
 /// parses the `code` and `state` query parameters, and shuts down.
 ///
 /// Returns the port and a future that resolves to the callback result.
 pub async fn start_callback_server() -> Result<(u16, tokio::task::JoinHandle<Result<CallbackResult, String>>), String> {
-    let listener = TcpListener::bind("127.0.0.1:0")
+    let listener = TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
         .await
-        .map_err(|e| format!("failed to bind callback server: {e}"))?;
+        .map_err(|e| format!("failed to bind callback server on port {CALLBACK_PORT}: {e}"))?;
 
-    let port = listener
-        .local_addr()
-        .map_err(|e| format!("failed to get local addr: {e}"))?
-        .port();
+    let port = CALLBACK_PORT;
 
     let handle = tokio::spawn(async move {
         let result = timeout(CALLBACK_TIMEOUT, accept_callback(&listener)).await;
@@ -125,7 +127,7 @@ mod tests {
 
     #[test]
     fn parse_valid_callback() {
-        let req = "GET /callback?code=abc123&state=xyz HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let req = "GET /auth/github/callback?code=abc123&state=xyz HTTP/1.1\r\nHost: localhost\r\n\r\n";
         let result = parse_callback_params(req).unwrap();
         assert_eq!(result.code, "abc123");
         assert_eq!(result.state, "xyz");

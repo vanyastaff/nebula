@@ -12,6 +12,29 @@ use crate::types::{AuthState, AuthStatus, AuthUser, UserProfile};
 
 use self::oauth::OAuthProvider;
 
+/// Returns the OAuth client ID for the given provider from the environment.
+/// Looks for `GITHUB_CLIENT_ID` or `GOOGLE_CLIENT_ID` env vars.
+fn client_id_for(provider: OAuthProvider) -> Result<String, AppError> {
+    let var_name = match provider {
+        OAuthProvider::GitHub => "GITHUB_CLIENT_ID",
+        OAuthProvider::Google => "GOOGLE_CLIENT_ID",
+    };
+    std::env::var(var_name).map_err(|_| {
+        AppError::Auth(format!(
+            "OAuth client ID not configured. Set the {var_name} environment variable."
+        ))
+    })
+}
+
+/// Returns the OAuth client secret for the given provider from the environment.
+fn client_secret_for(provider: OAuthProvider) -> String {
+    let var_name = match provider {
+        OAuthProvider::GitHub => "GITHUB_CLIENT_SECRET",
+        OAuthProvider::Google => "GOOGLE_CLIENT_SECRET",
+    };
+    std::env::var(var_name).unwrap_or_default()
+}
+
 /// Global mutex to prevent concurrent auth flows.
 static AUTH_LOCK: Mutex<()> = Mutex::const_new(());
 
@@ -50,11 +73,17 @@ pub async fn login(provider: &str, app: &AppHandle) -> Result<AuthState, AppErro
         .await
         .map_err(AppError::Auth)?;
 
-    let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+    // Must match the callback URL registered in the GitHub/Google OAuth App.
+    let redirect_uri = format!("http://localhost:{port}{}", server::CALLBACK_PATH);
     let state_token = pkce::generate_verifier(); // reuse as random state
 
+    let client_id = client_id_for(oauth_provider).map_err(|e| {
+        emit_error(app, provider, &e);
+        e
+    })?;
+
     // Build auth URL and open browser
-    let auth_url = oauth::build_auth_url(oauth_provider, &redirect_uri, &state_token, &challenge);
+    let auth_url = oauth::build_auth_url(oauth_provider, &client_id, &redirect_uri, &state_token, &challenge);
 
     app.opener()
         .open_url(&auth_url, None::<&str>)
@@ -81,14 +110,14 @@ pub async fn login(provider: &str, app: &AppHandle) -> Result<AuthState, AppErro
         return Err(err);
     }
 
-    // Exchange code for tokens (client-side PKCE — no client_secret needed)
+    // Exchange code for tokens (PKCE — no client_secret needed for public clients)
     let tokens = oauth::exchange_code(
         oauth_provider,
         &callback_result.code,
         &verifier,
         &redirect_uri,
-        "", // client_id managed server-side or empty for PKCE-only
-        "", // no client_secret for public clients
+        &client_id,
+        &client_secret_for(oauth_provider),
     )
     .await
     .map_err(|e| {

@@ -49,6 +49,7 @@ impl OAuthProvider {
 /// Build the full authorization URL for the given provider.
 pub fn build_auth_url(
     provider: OAuthProvider,
+    client_id: &str,
     redirect_uri: &str,
     state: &str,
     code_challenge: &str,
@@ -58,6 +59,7 @@ pub fn build_auth_url(
 
     let mut params = vec![
         ("response_type", "code"),
+        ("client_id", client_id),
         ("redirect_uri", redirect_uri),
         ("state", state),
         ("scope", scopes),
@@ -65,8 +67,6 @@ pub fn build_auth_url(
         ("code_challenge_method", "S256"),
     ];
 
-    // GitHub uses `client_id` in the URL but we leave that to the caller or
-    // server-side flow. For now we build what we can without secrets.
     match provider {
         OAuthProvider::Google => {
             params.push(("access_type", "offline"));
@@ -111,14 +111,17 @@ pub async fn exchange_code(
 ) -> Result<TokenResponse, String> {
     let client = reqwest::Client::new();
 
-    let form = vec![
+    let mut form = vec![
         ("grant_type", "authorization_code"),
         ("code", code),
         ("redirect_uri", redirect_uri),
         ("client_id", client_id),
-        ("client_secret", client_secret),
         ("code_verifier", verifier),
     ];
+    // Only include client_secret for confidential clients; PKCE flows omit it.
+    if !client_secret.is_empty() {
+        form.push(("client_secret", client_secret));
+    }
 
     // GitHub requires Accept: application/json
     let mut req = client.post(provider.token_url()).form(&form);
@@ -128,13 +131,21 @@ pub async fn exchange_code(
 
     let response = req.send().await.map_err(|e| e.to_string())?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("token exchange failed: {status} {body}"));
+    // GitHub returns errors as HTTP 200 with {"error":"...","error_description":"..."}
+    let body = response.text().await.map_err(|e| e.to_string())?;
+
+    // Check for OAuth error response before attempting to parse tokens
+    if let Ok(err_val) = serde_json::from_str::<serde_json::Value>(&body) {
+        if let Some(err_code) = err_val.get("error").and_then(|v| v.as_str()) {
+            let description = err_val
+                .get("error_description")
+                .and_then(|v| v.as_str())
+                .unwrap_or(err_code);
+            return Err(format!("token exchange failed: {description}"));
+        }
     }
 
-    response.json::<TokenResponse>().await.map_err(|e| e.to_string())
+    serde_json::from_str::<TokenResponse>(&body).map_err(|e| format!("failed to parse token response: {e}\nbody: {body}"))
 }
 
 /// Fetch the user profile from the provider's userinfo endpoint.
@@ -212,11 +223,13 @@ mod tests {
     fn build_auth_url_contains_required_params() {
         let url = build_auth_url(
             OAuthProvider::Google,
+            "test-client-id",
             "http://127.0.0.1:8080/callback",
             "random-state",
             "challenge123",
         );
         assert!(url.starts_with("https://accounts.google.com"));
+        assert!(url.contains("client_id=test-client-id"));
         assert!(url.contains("response_type=code"));
         assert!(url.contains("state=random-state"));
         assert!(url.contains("code_challenge=challenge123"));

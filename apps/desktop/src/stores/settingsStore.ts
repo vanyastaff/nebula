@@ -1,4 +1,5 @@
 import { LazyStore } from "@tauri-apps/plugin-store";
+import i18n from "i18next";
 import { create } from "zustand";
 
 export type Theme = "light" | "dark" | "system";
@@ -37,6 +38,10 @@ export const useSettingsStore = create<SettingsState & SettingsActions>((set, ge
       (await store.get<boolean>("sidebarCollapsed")) ?? DEFAULTS.sidebarCollapsed;
 
     set({ theme, locale, sidebarCollapsed, initialized: true });
+    // Apply persisted locale to i18n
+    if (locale !== i18n.language) {
+      await i18n.changeLanguage(locale);
+    }
   },
 
   setTheme: async (theme) => {

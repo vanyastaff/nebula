@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { AppProvider } from "./providers/AppProvider";
+import "./lib/i18n";
 import "./styles.css";
 
 const rootEl = document.getElementById("root");

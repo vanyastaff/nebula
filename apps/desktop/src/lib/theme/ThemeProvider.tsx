@@ -1,17 +1,7 @@
 import { useEffect } from "react";
-import { create } from "zustand";
+import { useSettingsStore } from "../../stores/settingsStore";
 
 export type ThemeMode = "light" | "dark" | "system";
-
-interface ThemeState {
-  theme: ThemeMode;
-  setTheme: (theme: ThemeMode) => void;
-}
-
-export const useThemeStore = create<ThemeState>((set) => ({
-  theme: "system",
-  setTheme: (theme) => set({ theme }),
-}));
 
 function applyTheme(theme: ThemeMode): void {
   const isDark =
@@ -22,7 +12,7 @@ function applyTheme(theme: ThemeMode): void {
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const theme = useThemeStore((s) => s.theme);
+  const theme = useSettingsStore((s) => s.theme);
 
   useEffect(() => {
     applyTheme(theme);
