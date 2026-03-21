@@ -105,6 +105,44 @@ async rotateCredential(id: string) : Promise<Result<Credential, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async listWorkflows() : Promise<Workflow[]> {
+    return await TAURI_INVOKE("list_workflows");
+},
+async getWorkflow(id: string) : Promise<Result<Workflow, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_workflow", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async createWorkflow(request: CreateWorkflowRequest) : Promise<Result<Workflow, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("create_workflow", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async updateWorkflow(id: string, request: UpdateWorkflowRequest) : Promise<Result<Workflow, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_workflow", { id, request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async deleteWorkflow(id: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_workflow", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listPluginActions() : Promise<PluginAction[]> {
+    return await TAURI_INVOKE("list_plugin_actions");
 }
 }
 
@@ -124,10 +162,20 @@ export type AuthStatus = "signed_out" | "authorizing" | "signed_in"
 export type ConnectionConfig = { mode: ConnectionMode; localBaseUrl: string; remoteBaseUrl: string }
 export type ConnectionMode = "local" | "remote"
 export type CreateCredentialRequest = { name: string; kind: string; state: string; tags: Partial<{ [key in string]: string }> | null }
+export type CreateWorkflowRequest = { name: string; description: string | null; triggerMode: string; tags: Partial<{ [key in string]: string }> | null }
 export type Credential = { id: string; name: string; kind: string; metadata: CredentialMetadata; state: string }
 export type CredentialMetadata = { createdAt: string; lastAccessed: string | null; lastModified: string; version: number; expiresAt: string | null; ttlSeconds: number | null; tags: Partial<{ [key in string]: string }> }
+export type NodeData = { actionType: string; label: string; parameters: string; inputs: NodePort[]; outputs: NodePort[]; icon: string | null; color: string | null; validationErrors: string[] | null }
+export type NodePort = { id: string; name: string; type: string; dataType: string; required: boolean }
+export type PluginAction = { key: string; name: string; description: string; version: number; group: string[]; icon: string | null; iconUrl: string | null; color: string | null; tags: string[] }
+export type Position = { x: number; y: number }
 export type UpdateCredentialRequest = { name: string | null; state: string; tags: Partial<{ [key in string]: string }> | null }
+export type UpdateWorkflowRequest = { name: string | null; description: string | null; status: string | null; triggerMode: string | null; nodes: WorkflowNode[] | null; edges: WorkflowEdge[] | null; tags: Partial<{ [key in string]: string }> | null; serverUrl: string | null }
 export type UserProfile = { id: string; login: string; name: string | null; email: string | null; avatarUrl: string | null }
+export type Workflow = { id: string; name: string; status: string; triggerMode: string; nodes: WorkflowNode[]; edges: WorkflowEdge[]; metadata: WorkflowMetadata; serverUrl: string | null }
+export type WorkflowEdge = { id: string; source: string; sourcePort: string; target: string; targetPort: string; label: string | null; animated: boolean | null; selected: boolean | null }
+export type WorkflowMetadata = { createdAt: string; lastModified: string; lastDeployed: string | null; lastExecuted: string | null; version: number; tags: Partial<{ [key in string]: string }>; author: string | null; description: string | null }
+export type WorkflowNode = { id: string; type: string; position: Position; data: NodeData; selected: boolean | null; dragging: boolean | null }
 
 /** tauri-specta globals **/
 

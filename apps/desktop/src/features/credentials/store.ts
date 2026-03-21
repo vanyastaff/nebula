@@ -96,10 +96,14 @@ export const useCredentialStore = create<CredentialState & CredentialActions>((s
 
   get: async (id: string) => {
     try {
-      const raw = await commands.getCredential(id);
-      const credential = normalizeCredential(raw);
-      set({ error: undefined });
-      return credential;
+      const result = await commands.getCredential(id);
+      if (result.status === "ok") {
+        const credential = normalizeCredential(result.data);
+        set({ error: undefined });
+        return credential;
+      }
+      set({ error: result.error });
+      return undefined;
     } catch (error) {
       set({ error: String(error) });
       return undefined;
@@ -108,11 +112,15 @@ export const useCredentialStore = create<CredentialState & CredentialActions>((s
 
   create: async (request: CreateCredentialRequest) => {
     try {
-      const raw = await commands.createCredential(request);
-      const credential = normalizeCredential(raw);
-      set({ error: undefined });
-      // Event listener will update the list automatically
-      return credential;
+      const result = await commands.createCredential(request);
+      if (result.status === "ok") {
+        const credential = normalizeCredential(result.data);
+        set({ error: undefined });
+        // Event listener will update the list automatically
+        return credential;
+      }
+      set({ error: result.error });
+      throw new Error(result.error);
     } catch (error) {
       set({ error: String(error) });
       throw error;
@@ -121,11 +129,15 @@ export const useCredentialStore = create<CredentialState & CredentialActions>((s
 
   update: async (id: string, request: UpdateCredentialRequest) => {
     try {
-      const raw = await commands.updateCredential(id, request);
-      const credential = normalizeCredential(raw);
-      set({ error: undefined });
-      // Event listener will update the list automatically
-      return credential;
+      const result = await commands.updateCredential(id, request);
+      if (result.status === "ok") {
+        const credential = normalizeCredential(result.data);
+        set({ error: undefined });
+        // Event listener will update the list automatically
+        return credential;
+      }
+      set({ error: result.error });
+      throw new Error(result.error);
     } catch (error) {
       set({ error: String(error) });
       throw error;

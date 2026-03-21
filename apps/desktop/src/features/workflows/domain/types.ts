@@ -251,6 +251,34 @@ export function normalizeWorkflowMetadata(raw: RawWorkflowMetadata): WorkflowMet
 }
 
 /**
+ * Normalize raw workflow from bindings to domain workflow
+ */
+export function normalizeWorkflow(raw: any): Workflow {
+  // Convert nodes from raw format (parameters as JSON string) to domain format
+  const nodes: WorkflowNode[] = (raw.nodes || []).map((node: any) => ({
+    ...node,
+    data: {
+      ...node.data,
+      parameters:
+        typeof node.data.parameters === "string"
+          ? JSON.parse(node.data.parameters)
+          : node.data.parameters,
+    },
+  }));
+
+  return {
+    id: raw.id,
+    name: raw.name,
+    status: raw.status as WorkflowStatus,
+    triggerMode: raw.triggerMode as WorkflowTriggerMode,
+    nodes,
+    edges: raw.edges || [],
+    metadata: normalizeWorkflowMetadata(raw.metadata),
+    serverUrl: raw.serverUrl,
+  };
+}
+
+/**
  * Convert workflow to list item for UI display
  */
 export function toWorkflowListItem(workflow: Workflow): WorkflowListItem {
@@ -265,6 +293,11 @@ export function toWorkflowListItem(workflow: Workflow): WorkflowListItem {
     tags: workflow.metadata.tags,
   };
 }
+
+/**
+ * Alias for toWorkflowListItem
+ */
+export const toListItem = toWorkflowListItem;
 
 /**
  * Validate edge connection between two ports

@@ -41,8 +41,12 @@ export const useAuthStore = create<AuthState & AuthActions>((set) => ({
   login: async (provider) => {
     set({ status: "authorizing", error: undefined });
     try {
-      const raw = await commands.authLogin(provider);
-      set(normalize(raw));
+      const result = await commands.authLogin(provider);
+      if (result.status === "ok") {
+        set(normalize(result.data));
+      } else {
+        set({ status: "signed_out", error: String(result.error) });
+      }
     } catch (e) {
       set({ status: "signed_out", error: String(e) });
     }
@@ -65,9 +69,12 @@ export const useAuthStore = create<AuthState & AuthActions>((set) => ({
 
   checkAuth: async (provider) => {
     try {
-      const user = await commands.authGetUser(provider);
-      set({ user });
-      return user;
+      const result = await commands.authGetUser(provider);
+      if (result.status === "ok") {
+        set({ user: result.data });
+        return result.data;
+      }
+      return null;
     } catch {
       return null;
     }
@@ -75,8 +82,12 @@ export const useAuthStore = create<AuthState & AuthActions>((set) => ({
 
   refreshToken: async (provider) => {
     try {
-      const raw = await commands.authRefreshToken(provider);
-      set(normalize(raw));
+      const result = await commands.authRefreshToken(provider);
+      if (result.status === "ok") {
+        set(normalize(result.data));
+      } else {
+        set({ error: String(result.error) });
+      }
     } catch (e) {
       set({ error: String(e) });
     }

@@ -17,6 +17,7 @@ export function CredentialFormPage() {
         name: data.name,
         kind: data.kind,
         state: JSON.stringify(data.state),
+        tags: null,
       });
       void navigate("/credentials");
     } catch (err) {
