@@ -12,6 +12,26 @@ use axum::{
     http::StatusCode,
 };
 
+/// List all executions (global)
+/// GET /api/v1/executions
+pub async fn list_all_executions(
+    State(_state): State<AppState>,
+    Query(params): Query<PaginationParams>,
+) -> ApiResult<Json<ListExecutionsResponse>> {
+    // TODO: ExecutionRepo doesn't have a list() method yet.
+    // This requires extending the ExecutionRepo trait with:
+    //   async fn list(&self, workflow_id: Option<WorkflowId>, offset: usize, limit: usize)
+    //       -> Result<Vec<(ExecutionId, serde_json::Value)>, ExecutionRepoError>;
+    // For now, return empty list with proper pagination metadata.
+
+    Ok(Json(ListExecutionsResponse {
+        executions: vec![],
+        total: 0,
+        page: params.page,
+        page_size: params.limit(),
+    }))
+}
+
 /// List executions for a workflow
 /// GET /api/v1/workflows/:workflow_id/executions
 pub async fn list_executions(
