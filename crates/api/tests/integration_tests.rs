@@ -489,3 +489,215 @@ async fn test_delete_workflow() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn test_activate_workflow() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::default();
+    let token = create_test_jwt();
+
+    // Create a workflow first
+    let create_request = serde_json::json!({
+        "name": "Test Workflow",
+        "description": "A test workflow",
+        "definition": {
+            "nodes": [],
+            "edges": []
+        }
+    });
+
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/workflows")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created_workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let workflow_id = created_workflow["id"].as_str().unwrap();
+
+    // Activate the workflow
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&format!("/api/v1/workflows/{}/activate", workflow_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let activated_workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(activated_workflow["id"], workflow_id);
+    assert_eq!(activated_workflow["name"], "Test Workflow");
+    assert!(activated_workflow["created_at"].is_number());
+    assert!(activated_workflow["updated_at"].is_number());
+}
+
+#[tokio::test]
+async fn test_activate_workflow_not_found() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::default();
+    let app = app::build_app(state, &api_config);
+    let token = create_test_jwt();
+
+    // Use a valid UUID format that doesn't exist
+    let nonexistent_id = "00000000-0000-0000-0000-000000000000";
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&format!("/api/v1/workflows/{}/activate", nonexistent_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_execute_workflow() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::default();
+    let token = create_test_jwt();
+
+    // Create a workflow first
+    let create_request = serde_json::json!({
+        "name": "Test Workflow",
+        "description": "A test workflow",
+        "definition": {
+            "nodes": [],
+            "edges": []
+        }
+    });
+
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/workflows")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created_workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let workflow_id = created_workflow["id"].as_str().unwrap();
+
+    // Execute the workflow with input data
+    let execute_request = serde_json::json!({
+        "input": {
+            "key": "value"
+        }
+    });
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&format!("/api/v1/workflows/{}/execute", workflow_id))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::from(serde_json::to_string(&execute_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Note: Currently the execute endpoint is not fully implemented
+    // so we expect an internal server error. Once implemented, this should
+    // be changed to expect StatusCode::ACCEPTED (202)
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn test_execute_workflow_not_found() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::default();
+    let app = app::build_app(state, &api_config);
+    let token = create_test_jwt();
+
+    // Use a valid UUID format that doesn't exist
+    let nonexistent_id = "00000000-0000-0000-0000-000000000000";
+
+    let execute_request = serde_json::json!({
+        "input": null
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&format!("/api/v1/workflows/{}/execute", nonexistent_id))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::from(serde_json::to_string(&execute_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Note: Currently returns 500 because execute is not implemented
+    // When implemented, this should verify 404 NOT_FOUND for non-existent workflow
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
