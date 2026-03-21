@@ -1,4 +1,4 @@
-import { type CSSProperties, useCallback, useEffect, useMemo, useRef } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -43,10 +43,15 @@ export function WorkflowCanvas() {
   const setViewport = useWorkflowStore((state) => state.setViewport);
   const addEdgeAction = useWorkflowStore((state) => state.addEdge);
   const addNodeAction = useWorkflowStore((state) => state.addNode);
+  const deleteNode = useWorkflowStore((state) => state.deleteNode);
+  const deleteEdge = useWorkflowStore((state) => state.deleteEdge);
 
   // React Flow instance for coordinate transformation
   const { screenToFlowPosition } = useReactFlow();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
+
+  // Clipboard for copy/paste operations
+  const [clipboard, setClipboard] = useState<WorkflowNode[]>([]);
 
   // Convert domain nodes to React Flow nodes
   const reactFlowNodes: Node[] = useMemo(() => {
@@ -294,6 +299,127 @@ export function WorkflowCanvas() {
     },
     [screenToFlowPosition, addNodeAction],
   );
+
+  /**
+   * Handle keyboard shortcuts
+   */
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Check if we're focused on an input element (don't intercept normal typing)
+      const target = event.target as HTMLElement;
+      if (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable
+      ) {
+        return;
+      }
+
+      const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+      const isCtrlOrCmd = isMac ? event.metaKey : event.ctrlKey;
+
+      // Delete: Remove selected nodes and edges
+      if (event.key === "Delete" || event.key === "Backspace") {
+        event.preventDefault();
+
+        const selectedNodes = nodes.filter((n) => n.selected);
+        const selectedEdges = edges.filter((e) => e.selected);
+
+        // Delete selected nodes (this will also delete connected edges)
+        selectedNodes.forEach((node) => {
+          deleteNode(node.id);
+        });
+
+        // Delete selected edges that weren't already deleted by node deletion
+        selectedEdges.forEach((edge) => {
+          deleteEdge(edge.id);
+        });
+      }
+
+      // Copy: Copy selected nodes to clipboard
+      if (isCtrlOrCmd && event.key === "c") {
+        event.preventDefault();
+
+        const selectedNodes = nodes.filter((n) => n.selected);
+        if (selectedNodes.length > 0) {
+          setClipboard(selectedNodes);
+        }
+      }
+
+      // Paste: Paste nodes from clipboard
+      if (isCtrlOrCmd && event.key === "v") {
+        event.preventDefault();
+
+        if (clipboard.length > 0) {
+          // Calculate offset for pasted nodes
+          const offset = { x: 50, y: 50 };
+
+          // Create ID mapping for updating edges
+          const idMap = new Map<string, string>();
+
+          // Create new nodes with new IDs and offset positions
+          const newNodes = clipboard.map((node) => {
+            const newId = generateId("node");
+            idMap.set(node.id, newId);
+
+            return {
+              ...node,
+              id: newId,
+              position: {
+                x: node.position.x + offset.x,
+                y: node.position.y + offset.y,
+              },
+              selected: true, // Select pasted nodes
+            };
+          });
+
+          // Deselect existing nodes
+          const updatedNodes = nodes.map((n) => ({ ...n, selected: false }));
+
+          // Add new nodes
+          setNodes([...updatedNodes, ...newNodes]);
+
+          // Copy edges that connect pasted nodes
+          const clipboardNodeIds = new Set(clipboard.map((n) => n.id));
+          const edgesToCopy = edges.filter(
+            (edge) => clipboardNodeIds.has(edge.source) && clipboardNodeIds.has(edge.target),
+          );
+
+          // Create new edges with updated node IDs
+          const newEdges = edgesToCopy.map((edge) => ({
+            ...edge,
+            id: generateId("edge"),
+            source: idMap.get(edge.source) || edge.source,
+            target: idMap.get(edge.target) || edge.target,
+          }));
+
+          // Add new edges using the store action to maintain undo/redo
+          newEdges.forEach((edge) => {
+            addEdgeAction(edge);
+          });
+
+          // Update clipboard with new nodes for repeated pasting
+          setClipboard(newNodes);
+        }
+      }
+
+      // Select All: Select all nodes
+      if (isCtrlOrCmd && event.key === "a") {
+        event.preventDefault();
+
+        const updatedNodes = nodes.map((n) => ({ ...n, selected: true }));
+        setNodes(updatedNodes);
+      }
+    };
+
+    // Add event listener
+    window.addEventListener("keydown", handleKeyDown);
+
+    // Cleanup
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [nodes, edges, clipboard, deleteNode, deleteEdge, setNodes, addEdgeAction]);
 
   // Styles
   const canvasContainerStyle: CSSProperties = {
