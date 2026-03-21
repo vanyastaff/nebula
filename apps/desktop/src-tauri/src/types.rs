@@ -43,3 +43,13 @@ pub enum ConnectionMode {
     Local,
     Remote,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthUser {
+    pub id: String,
+    pub email: String,
+    pub name: String,
+    pub avatar_url: Option<String>,
+    pub provider: String,
+}
