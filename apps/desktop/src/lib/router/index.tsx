@@ -2,6 +2,8 @@ import { createBrowserRouter, RouterProvider } from "react-router";
 import { AppShell } from "../../components/layout/AppShell";
 import { AuthGuard } from "../../components/auth/AuthGuard";
 
+import { LoginPage } from "../../features/auth/LoginPage";
+
 // Placeholder pages until real page components are created
 function DashboardPage() {
   return <div className="p-6"><h1 className="text-2xl font-bold">Dashboard</h1></div>;
@@ -17,10 +19,6 @@ function CredentialsPage() {
 
 function CredentialDetailPage() {
   return <div className="p-6"><h1 className="text-2xl font-bold">Credential Detail</h1></div>;
-}
-
-function LoginPage() {
-  return <div className="flex h-screen items-center justify-center"><h1 className="text-2xl font-bold">Login</h1></div>;
 }
 
 export const router = createBrowserRouter([

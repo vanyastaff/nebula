@@ -30,7 +30,9 @@
     "rememberMe": "Запомнить меня",
     "loginSuccess": "Вход выполнен успешно",
     "logoutSuccess": "Выход выполнен успешно",
-    "loginFailed": "Ошибка входа. Проверьте ваши учётные данные."
+    "loginFailed": "Ошибка входа. Проверьте ваши учётные данные.",
+    "signInGoogle": "Войти через Google",
+    "signInGithub": "Войти через GitHub"
   },
   "settings": {
     "title": "Настройки",

@@ -30,7 +30,9 @@
     "rememberMe": "Remember Me",
     "loginSuccess": "Logged in successfully",
     "logoutSuccess": "Logged out successfully",
-    "loginFailed": "Login failed. Please check your credentials."
+    "loginFailed": "Login failed. Please check your credentials.",
+    "signInGoogle": "Sign in with Google",
+    "signInGithub": "Sign in with GitHub"
   },
   "settings": {
     "title": "Settings",
