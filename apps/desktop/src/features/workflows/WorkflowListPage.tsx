@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 import { Button } from "../../components/ui/Button";
+import { WorkflowList } from "./ui/WorkflowList";
 
 export function WorkflowListPage() {
   const { t } = useTranslation();
@@ -14,9 +15,7 @@ export function WorkflowListPage() {
           {t("workflows.add")}
         </Button>
       </div>
-      <div className="text-[var(--text-secondary)]">
-        {t("workflows.emptyState")}
-      </div>
+      <WorkflowList onSelect={(id) => void navigate(`/workflows/${id}`)} />
     </div>
   );
 }
