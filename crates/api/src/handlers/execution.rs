@@ -156,7 +156,9 @@ pub async fn start_execution(
         .map_err(|e| ApiError::Internal(format!("Failed to create execution: {}", e)))?;
 
     if !success {
-        return Err(ApiError::Internal("Failed to create execution record".to_string()));
+        return Err(ApiError::Internal(
+            "Failed to create execution record".to_string(),
+        ));
     }
 
     // Build response

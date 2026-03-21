@@ -820,7 +820,10 @@ async fn test_execute_workflow() {
         .unwrap();
     let execution_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(execution_response["id"].is_string());
-    assert_eq!(execution_response["workflow_id"].as_str().unwrap(), workflow_id);
+    assert_eq!(
+        execution_response["workflow_id"].as_str().unwrap(),
+        workflow_id
+    );
     assert_eq!(execution_response["status"].as_str().unwrap(), "pending");
 }
 
