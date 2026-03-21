@@ -39,6 +39,7 @@
     "general": "General",
     "appearance": "Appearance",
     "language": "Language",
+    "selectLanguage": "Select Language",
     "theme": "Theme",
     "themeLight": "Light",
     "themeDark": "Dark",
@@ -46,16 +47,22 @@
     "updates": "Updates",
     "checkForUpdates": "Check for Updates",
     "autoUpdate": "Automatic Updates",
-    "about": "About"
+    "about": "About",
+    "account": "Account"
   },
   "dashboard": {
     "title": "Dashboard",
     "welcome": "Welcome to Nebula",
+    "greeting": "Hello, {{name}}!",
+    "subtitle": "Start managing your workflows and credentials from here.",
     "recentWorkflows": "Recent Workflows",
     "quickActions": "Quick Actions",
+    "quickActionsDescription": "Access common tasks and shortcuts.",
     "createWorkflow": "Create Workflow",
     "importWorkflow": "Import Workflow",
-    "noWorkflows": "No workflows yet. Create your first one!"
+    "noWorkflows": "No workflows yet. Create your first one!",
+    "systemStatus": "System Status",
+    "allSystemsOperational": "All systems operational"
   },
   "nav": {
     "dashboard": "Dashboard",
