@@ -18,7 +18,8 @@
     "description": "Description",
     "status": "Status",
     "actions": "Actions",
-    "noResults": "No results found"
+    "noResults": "No results found",
+    "load": "Load"
   },
   "auth": {
     "login": "Log In",
@@ -106,5 +107,13 @@
     "unauthorized": "You are not authorized to perform this action",
     "validation": "Please check your input and try again",
     "serverError": "Server error. Please try again later."
+  },
+  "workflows": {
+    "title": "Workflows",
+    "add": "Add Workflow",
+    "edit": "Edit Workflow",
+    "new": "New Workflow",
+    "deploy": "Deploy",
+    "emptyState": "No workflows found. Create your first workflow to get started."
   }
 }

@@ -5,6 +5,7 @@ import { Button } from "../../components/ui/Button";
 import { WorkflowCanvas } from "./ui/WorkflowCanvas";
 import { NodePalette } from "./ui/NodePalette";
 import { NodeConfigPanel } from "./ui/NodeConfigPanel";
+import { CanvasToolbar } from "./ui/CanvasToolbar";
 import { useWorkflowStore } from "./store";
 
 export function WorkflowEditorPage() {
@@ -30,10 +31,13 @@ export function WorkflowEditorPage() {
         <div style={{ width: 300, flexShrink: 0 }}>
           <NodePalette />
         </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <ReactFlowProvider>
-            <WorkflowCanvas />
-          </ReactFlowProvider>
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+          <CanvasToolbar />
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <ReactFlowProvider>
+              <WorkflowCanvas />
+            </ReactFlowProvider>
+          </div>
         </div>
         {selectedNode && (
           <div style={{ width: 350, flexShrink: 0 }}>
