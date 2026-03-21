@@ -318,6 +318,13 @@ docker-compose.override.yml
 # Debug output artifacts
 check_output.txt
 
+# AI session working files (build plans, context snapshots)
+build-progress.txt
+context.json
+implementation_plan.json
+project_index.json
+init.sh
+
 # Git worktrees
 .worktrees/
 
