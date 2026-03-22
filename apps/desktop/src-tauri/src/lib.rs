@@ -39,6 +39,7 @@ async fn close_splashscreen(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    dotenvy::dotenv().ok();
     let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
         get_api_profile,
         close_splashscreen,

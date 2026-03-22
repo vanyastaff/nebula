@@ -1,11 +1,13 @@
-import { KeyRound, LayoutDashboard, PanelLeft, PanelLeftClose, Settings, User, Workflow } from "lucide-react";
+import { KeyRound, LayoutDashboard, LogOut, PanelLeft, Settings, Workflow } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router";
+import { Avatar } from "../ui/Avatar";
+import { useAuthStore } from "../../features/auth/store";
 import { useSettingsStore } from "../../stores/settingsStore";
 
 interface NavItem {
   labelKey: string;
-  icon: React.ComponentType<{ size?: number }>;
+  icon: React.ComponentType<{ size?: number; className?: string }>;
   path: string;
 }
 
@@ -21,60 +23,87 @@ export function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
   const { sidebarCollapsed, toggleSidebar } = useSettingsStore();
+  const { user, logout } = useAuthStore();
 
-  const width = sidebarCollapsed ? "w-16" : "w-60";
+  const collapsed = sidebarCollapsed;
+  const userName = user?.name ?? user?.email ?? "User";
 
   return (
     <aside
-      className={`flex ${width} shrink-0 flex-col border-r border-neutral-200 bg-neutral-50 transition-[width] duration-200 dark:border-neutral-700 dark:bg-neutral-850`}
+      className={`flex ${collapsed ? "w-14" : "w-56"} shrink-0 flex-col border-r border-[var(--border-primary)] bg-[var(--bg-secondary)] transition-[width] duration-200`}
     >
-      <nav className="flex flex-1 flex-col gap-1 p-2">
+      {/* Logo */}
+      <div
+        className={`flex h-10 shrink-0 items-center border-b border-[var(--border-primary)] ${collapsed ? "justify-center px-0" : "gap-2 px-3"}`}
+      >
+        <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-[var(--accent)] text-[10px] font-bold text-[var(--accent-text)]">
+          N
+        </div>
+        {!collapsed && (
+          <span className="select-none text-sm font-semibold text-[var(--text-primary)]">
+            Nebula
+          </span>
+        )}
+      </div>
+
+      {/* Nav */}
+      <nav className="flex flex-1 flex-col gap-0.5 p-2">
         {NAV_ITEMS.map((item) => {
-          const active = location.pathname === item.path;
+          const active = item.path === "/"
+            ? location.pathname === "/"
+            : location.pathname.startsWith(item.path);
           const label = t(item.labelKey);
           return (
             <button
               key={item.path}
               type="button"
               onClick={() => void navigate(item.path)}
-              className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              title={collapsed ? label : undefined}
+              className={`flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors ${
                 active
-                  ? "bg-neutral-200 text-neutral-900 dark:bg-neutral-700 dark:text-white"
-                  : "text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white"
-              }`}
-              title={sidebarCollapsed ? label : undefined}
+                  ? "bg-[var(--accent-subtle)] text-[var(--accent)] font-medium"
+                  : "text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]"
+              } ${collapsed ? "justify-center" : ""}`}
             >
-              <item.icon size={20} />
-              {!sidebarCollapsed && <span>{label}</span>}
+              <item.icon size={16} className="shrink-0" />
+              {!collapsed && <span>{label}</span>}
             </button>
           );
         })}
       </nav>
 
-      <div className="flex flex-col gap-1 border-t border-neutral-200 p-2 dark:border-neutral-700">
-        <button
-          type="button"
-          className="flex items-center gap-3 rounded-md px-3 py-2 text-neutral-500 dark:text-neutral-400"
-          title={t("sidebar.user")}
+      {/* Bottom: user + collapse */}
+      <div className="flex flex-col gap-0.5 border-t border-[var(--border-primary)] p-2">
+        {/* User */}
+        <div
+          className={`flex items-center gap-2.5 rounded-md px-2.5 py-1.5 ${collapsed ? "justify-center" : ""}`}
+          title={collapsed ? userName : undefined}
         >
-          <User size={20} />
-          {!sidebarCollapsed && <span className="truncate text-sm">{t("sidebar.account")}</span>}
-        </button>
+          <Avatar name={userName} src={user?.avatarUrl ?? undefined} size="sm" className="h-6 w-6 text-[10px]" />
+          {!collapsed && (
+            <span className="flex-1 truncate text-xs text-[var(--text-secondary)]">{userName}</span>
+          )}
+          {!collapsed && (
+            <button
+              type="button"
+              onClick={() => void logout()}
+              title={t("sidebar.logout", "Log out")}
+              className="rounded p-0.5 text-[var(--text-tertiary)] hover:text-[var(--error)] transition-colors"
+            >
+              <LogOut size={14} />
+            </button>
+          )}
+        </div>
 
+        {/* Collapse toggle */}
         <button
           type="button"
           onClick={() => void toggleSidebar()}
-          className="flex items-center gap-3 rounded-md px-3 py-2 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white"
-          title={sidebarCollapsed ? t("sidebar.expand") : t("sidebar.collapse")}
+          title={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
+          className={`flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[var(--text-tertiary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] transition-colors ${collapsed ? "justify-center" : ""}`}
         >
-          {sidebarCollapsed ? (
-            <PanelLeft size={20} />
-          ) : (
-            <>
-              <PanelLeftClose size={20} />
-              <span className="text-sm">{t("sidebar.collapse")}</span>
-            </>
-          )}
+          <PanelLeft size={16} className={`shrink-0 transition-transform duration-200 ${collapsed ? "" : "rotate-180"}`} />
+          {!collapsed && <span className="text-xs">{t("sidebar.collapse")}</span>}
         </button>
       </div>
     </aside>
