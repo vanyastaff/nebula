@@ -11,7 +11,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
-use nebula_resource::pool::{Pool, PoolConfig};
+use nebula_resource::pool::{Pool, PoolAcquire, PoolConfig, PoolLifetime, PoolSizing};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
 use nebula_resource::{ExecutionId, WorkflowId};
@@ -42,10 +42,9 @@ fn ctx() -> Context {
 
 fn pool_config(max_size: usize) -> PoolConfig {
     PoolConfig {
-        min_size: 0,
-        max_size,
-        acquire_timeout: Duration::from_secs(5),
-        maintenance_interval: None,
+        sizing: PoolSizing { min_size: 0, max_size },
+        acquire: PoolAcquire { timeout: Duration::from_secs(5), ..Default::default() },
+        lifetime: PoolLifetime { maintenance_interval: None, ..Default::default() },
         ..Default::default()
     }
 }

@@ -12,7 +12,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
-use nebula_resource::pool::{AdaptiveBackpressurePolicy, Pool, PoolBackpressurePolicy, PoolConfig};
+use nebula_resource::pool::{AdaptiveBackpressurePolicy, Pool, PoolAcquire, PoolBackpressurePolicy, PoolConfig, PoolLifetime, PoolSizing};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
 use nebula_resource::{ExecutionId, WorkflowId};
@@ -55,14 +55,15 @@ fn cancellable_ctx() -> Context {
 
 fn pool_config(max_size: usize, policy: Option<PoolBackpressurePolicy>) -> PoolConfig {
     PoolConfig {
-        min_size: 0,
-        max_size,
-        acquire_timeout: Duration::from_secs(5),
-        idle_timeout: Duration::from_secs(3600),
-        max_lifetime: Duration::from_secs(3600),
-        validation_interval: Duration::from_secs(3600),
-        maintenance_interval: None,
-        backpressure_policy: policy,
+        sizing: PoolSizing { min_size: 0, max_size },
+        acquire: PoolAcquire { timeout: Duration::from_secs(5), backpressure: policy, ..Default::default() },
+        lifetime: PoolLifetime {
+            idle_timeout: Duration::from_secs(3600),
+            max_lifetime: Duration::from_secs(3600),
+            validation_interval: Duration::from_secs(3600),
+            maintenance_interval: None,
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
