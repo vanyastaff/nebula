@@ -1,28 +1,29 @@
-/* Nebula Design Tokens */
+/* Nebula Design Tokens — v2 (Inngest × Temporal inspired) */
 
 :root {
   /* Backgrounds */
   --bg-primary: #ffffff;
-  --bg-secondary: #f8f9fb;
-  --bg-tertiary: #f1f3f7;
+  --bg-secondary: #f9fafb;
+  --bg-tertiary: #f3f4f6;
   --bg-elevated: #ffffff;
 
   /* Surfaces */
   --surface-primary: #ffffff;
-  --surface-secondary: #f8f9fb;
-  --surface-hover: #f1f3f7;
+  --surface-secondary: #f9fafb;
+  --surface-hover: #f3f4f6;
 
   /* Text */
-  --text-primary: #0f1729;
+  --text-primary: #0d1117;
   --text-secondary: #4b5563;
   --text-tertiary: #9ca3af;
   --text-inverse: #ffffff;
 
-  /* Accent — Nebula Purple */
+  /* Accent — Nebula Violet */
   --accent: #7c3aed;
   --accent-hover: #6d28d9;
   --accent-subtle: #ede9fe;
   --accent-text: #ffffff;
+  --accent-glow: rgba(124, 58, 237, 0.15);
 
   /* Semantic */
   --success: #10b981;
@@ -38,54 +39,174 @@
   --border-primary: #e5e7eb;
   --border-secondary: #d1d5db;
   --border-focus: var(--accent);
+  --border-accent: rgba(124, 58, 237, 0.25);
 
   /* Shadows */
   --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
   --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
   --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+
+  /* Glows */
+  --glow-accent: 0 0 20px rgba(124, 58, 237, 0.12);
+  --glow-success: 0 0 16px rgba(16, 185, 129, 0.1);
+  --glow-error: 0 0 16px rgba(239, 68, 68, 0.1);
+
+  /* Status Indicators */
+  --indicator-active: #10b981;
+  --indicator-paused: #f59e0b;
+  --indicator-error: #ef4444;
+  --indicator-draft: #9ca3af;
+  --indicator-archived: #6b7280;
+
+  /* Spacing Scale */
+  --space-0: 0px;
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+
+  /* Radius Scale */
+  --radius-none: 0px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-full: 9999px;
+
+  /* Typography */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  --font-size-xs: 0.6875rem;
+  --font-size-sm: 0.8125rem;
+  --font-size-base: 0.875rem;
+  --font-size-lg: 1rem;
+  --font-size-xl: 1.125rem;
+  --font-size-2xl: 1.375rem;
+  --font-size-3xl: 1.75rem;
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.625;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --letter-spacing-tight: -0.03em;
+  --letter-spacing-normal: 0em;
+  --letter-spacing-wide: 0.04em;
+
+  /* Canvas Surfaces (workflow editor, code areas) */
+  --canvas-bg: #f0f2f5;
+  --canvas-surface: rgba(255, 255, 255, 0.92);
+  --canvas-border: rgba(0, 0, 0, 0.08);
+  --canvas-text: #1a1a2e;
+  --canvas-text-muted: #6b7280;
+  --canvas-accent: #6366f1;
+  --canvas-grid: rgba(0, 0, 0, 0.05);
+  --canvas-node-bg: #ffffff;
+  --canvas-node-border: #e5e7eb;
+  --canvas-node-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --canvas-edge: #9ca3af;
+
+  /* Glassmorphism */
+  --glass-bg: rgba(255, 255, 255, 0.7);
+  --glass-border: rgba(255, 255, 255, 0.5);
+  --glass-shadow: 0 8px 32px rgb(0 0 0 / 0.08);
+  --glass-blur: 12px;
+
+  /* Transitions */
+  --transition-fast: 100ms ease;
+  --transition-normal: 200ms ease;
+  --transition-slow: 300ms ease;
+  --transition-colors: color 200ms ease, background-color 200ms ease, border-color 200ms ease;
+  --transition-transform: transform 200ms ease;
+  --transition-opacity: opacity 200ms ease;
+  --transition-shadow: box-shadow 200ms ease;
 }
 
 .dark {
-  /* Backgrounds */
-  --bg-primary: #0a0f1d;
-  --bg-secondary: #111827;
-  --bg-tertiary: #1f2937;
-  --bg-elevated: #1a2236;
+  /* Backgrounds — deep developer-grade navy (Temporal × Inngest) */
+  --bg-primary: #050912;
+  --bg-secondary: #080e1e;
+  --bg-tertiary: #0c1428;
+  --bg-elevated: #0f1830;
 
   /* Surfaces */
-  --surface-primary: #111827;
-  --surface-secondary: #1f2937;
-  --surface-hover: #374151;
+  --surface-primary: #080e1e;
+  --surface-secondary: #0c1428;
+  --surface-hover: #111f3c;
 
   /* Text */
-  --text-primary: #f9fafb;
-  --text-secondary: #d1d5db;
-  --text-tertiary: #6b7280;
-  --text-inverse: #0f1729;
+  --text-primary: #eef2ff;
+  --text-secondary: #8892a4;
+  --text-tertiary: #3d526b;
+  --text-inverse: #050912;
 
-  /* Accent — Nebula Purple */
-  --accent: #8b5cf6;
-  --accent-hover: #a78bfa;
-  --accent-subtle: #2e1065;
-  --accent-text: #ffffff;
+  /* Accent — bright violet on dark */
+  --accent: #a78bfa;
+  --accent-hover: #c4b5fd;
+  --accent-subtle: #170d3a;
+  --accent-text: #0d0621;
+  --accent-glow: rgba(167, 139, 250, 0.2);
+  --border-accent: rgba(167, 139, 250, 0.22);
 
   /* Semantic */
   --success: #34d399;
-  --success-subtle: #064e3b;
+  --success-subtle: #022c22;
   --warning: #fbbf24;
-  --warning-subtle: #78350f;
+  --warning-subtle: #1a0e00;
   --error: #f87171;
-  --error-subtle: #7f1d1d;
+  --error-subtle: #1f0505;
   --info: #60a5fa;
-  --info-subtle: #1e3a5f;
+  --info-subtle: #05152e;
 
   /* Borders */
-  --border-primary: #374151;
-  --border-secondary: #4b5563;
+  --border-primary: #141f35;
+  --border-secondary: #1c2e4a;
   --border-focus: var(--accent);
 
   /* Shadows */
-  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
-  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.4), 0 2px 4px -2px rgb(0 0 0 / 0.3);
-  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.4), 0 4px 6px -4px rgb(0 0 0 / 0.3);
+  --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.45);
+  --shadow-md: 0 4px 8px -1px rgb(0 0 0 / 0.55), 0 2px 4px -2px rgb(0 0 0 / 0.4);
+  --shadow-lg: 0 12px 24px -3px rgb(0 0 0 / 0.6), 0 4px 8px -4px rgb(0 0 0 / 0.45);
+
+  /* Glows */
+  --glow-accent: 0 0 24px rgba(167, 139, 250, 0.18);
+  --glow-success: 0 0 20px rgba(52, 211, 153, 0.12);
+  --glow-error: 0 0 20px rgba(248, 113, 113, 0.12);
+
+  /* Status Indicators */
+  --indicator-active: #34d399;
+  --indicator-paused: #fbbf24;
+  --indicator-error: #f87171;
+  --indicator-draft: #3d526b;
+  --indicator-archived: #141f35;
+
+  /* Canvas / Workflow Editor */
+  --canvas-bg: #030710;
+  --canvas-surface: rgba(8, 14, 30, 0.92);
+  --canvas-border: rgba(167, 139, 250, 0.12);
+  --canvas-text: #dde6ff;
+  --canvas-text-muted: #3d526b;
+  --canvas-accent: #818cf8;
+  --canvas-grid: rgba(167, 139, 250, 0.05);
+  --canvas-node-bg: #0c1428;
+  --canvas-node-border: #141f35;
+  --canvas-node-shadow: 0 2px 16px rgba(0, 0, 0, 0.6);
+  --canvas-edge: #1c2e4a;
+
+  /* Glassmorphism */
+  --glass-bg: rgba(8, 14, 30, 0.82);
+  --glass-border: rgba(167, 139, 250, 0.1);
+  --glass-shadow: 0 8px 32px rgb(0 0 0 / 0.5);
+  --glass-blur: 16px;
 }
