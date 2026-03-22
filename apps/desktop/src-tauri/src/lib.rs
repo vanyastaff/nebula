@@ -14,6 +14,10 @@ use commands::credentials::{
     create_credential, delete_credential, get_credential, list_credentials, rotate_credential,
     update_credential,
 };
+use commands::workflows::{
+    create_workflow, delete_workflow, deploy_workflow, get_workflow, list_plugin_actions,
+    list_workflows, load_workflow_from_file, save_workflow_to_file, update_workflow,
+};
 
 #[tauri::command]
 #[specta::specta]
@@ -52,6 +56,15 @@ pub fn run() {
         update_credential,
         delete_credential,
         rotate_credential,
+        list_workflows,
+        get_workflow,
+        create_workflow,
+        update_workflow,
+        delete_workflow,
+        list_plugin_actions,
+        save_workflow_to_file,
+        load_workflow_from_file,
+        deploy_workflow,
     ]);
 
     #[cfg(debug_assertions)]
@@ -69,6 +82,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();

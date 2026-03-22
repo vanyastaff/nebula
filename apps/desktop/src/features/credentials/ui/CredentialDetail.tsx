@@ -46,9 +46,13 @@ export function CredentialDetail({ credentialId }: CredentialDetailProps) {
   const handleRotateConfirm = async () => {
     setRotating(true);
     try {
-      const rotated = await commands.rotateCredential(credentialId);
-      setCredential(normalizeCredential(rotated));
-      setShowRotationDialog(false);
+      const result = await commands.rotateCredential(credentialId);
+      if (result.status === "ok") {
+        setCredential(normalizeCredential(result.data));
+        setShowRotationDialog(false);
+      } else {
+        throw new Error(result.error);
+      }
     } catch (error) {
       console.error("Failed to rotate credential:", error);
       alert(error instanceof Error ? error.message : "Failed to rotate credential");

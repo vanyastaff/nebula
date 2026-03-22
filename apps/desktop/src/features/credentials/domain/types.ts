@@ -178,7 +178,7 @@ export function normalizeMetadata(raw: RawCredentialMetadata): CredentialMetadat
     expiresAt: raw.expiresAt ? new Date(raw.expiresAt) : null,
     ttlSeconds: raw.ttlSeconds,
     version: raw.version,
-    tags: raw.tags,
+    tags: raw.tags as Record<string, string>,
   };
 }
 
