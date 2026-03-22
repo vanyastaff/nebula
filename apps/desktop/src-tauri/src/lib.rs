@@ -39,6 +39,12 @@ async fn close_splashscreen(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Try .env next to the executable first (production), fall back to CWD (dev).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            dotenvy::from_path(dir.join(".env")).ok();
+        }
+    }
     dotenvy::dotenv().ok();
     let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
         get_api_profile,

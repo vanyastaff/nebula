@@ -144,6 +144,9 @@ async deleteWorkflow(id: string) : Promise<Result<null, string>> {
 async listPluginActions() : Promise<PluginAction[]> {
     return await TAURI_INVOKE("list_plugin_actions");
 },
+/**
+ * Save a workflow to a local file via file dialog
+ */
 async saveWorkflowToFile(id: string) : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("save_workflow_to_file", { id }) };
@@ -152,6 +155,9 @@ async saveWorkflowToFile(id: string) : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Load a workflow from a local file via file dialog
+ */
 async loadWorkflowFromFile() : Promise<Result<Workflow, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("load_workflow_from_file") };
@@ -160,6 +166,13 @@ async loadWorkflowFromFile() : Promise<Result<Workflow, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Deploy a workflow to a Nebula server via HTTP API
+ * 
+ * Makes a POST request to the server's workflow deployment endpoint with
+ * the workflow definition as JSON payload. Updates the workflow's server_url
+ * and last_deployed timestamp on success.
+ */
 async deployWorkflow(id: string, serverUrl: string) : Promise<Result<Workflow, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("deploy_workflow", { id, serverUrl }) };
