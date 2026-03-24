@@ -339,6 +339,11 @@ let session = ssh.detach()?; // caller now owns SshSession
 Only works on `Guarded` handles (Pool, Transport). Returns `DetachError::NotDetachable`
 for Owned and Shared handles.
 
+**Detach and generation/reload:** A detached lease is completely independent of the
+Manager lifecycle. It does not participate in drain tracking, stale-generation detection,
+or config reload. It can outlive the Manager's reload and even shutdown — the caller
+is the sole owner.
+
 ### Credential access
 
 Actions can also access typed credentials directly (not through a resource):
@@ -1532,6 +1537,14 @@ cleanup() ctx resolves to global (scoped already removed).
 
 **Scope conflicts:** Same type + same branch level = registration-time error.
 Different branches = independent, no conflict.
+
+**Live handles after scoped removal:** When scoped resource is removed from
+`ScopedResourceMap` (step 1 of cleanup ordering), already-acquired handles from
+that scoped resource are still alive until dropped. They continue working — the
+underlying runtime is not destroyed until step 3 (after cleanup). This matches
+the general drain model: handles hold Arc/on_release references, runtime stays
+alive via refcount. Removal from map only affects **new** acquires (which now
+fall through to global).
 
 ### Metrics and events
 

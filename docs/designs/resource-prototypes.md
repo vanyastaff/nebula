@@ -619,8 +619,12 @@ async fn execute(&self, input: ReadSheetInput, ctx: &ActionContext) -> Result<Ac
     "credential only at create".
   - (b) Short-lived access token in credential, framework re-resolves frequently.
   - **Decision for v1:** Use (b) — CredentialStore resolves fresh access token each time.
-    create() just uses the token directly. No internal refresh logic.
-    This means Resident with short stale_after (e.g., 45 min for 1-hour token).
+    create() just uses the token directly. No internal refresh logic inside Runtime.
+    Resident with short `stale_after` (e.g., 45 min for 1-hour token) triggers periodic
+    `is_alive_sync` → false → destroy + recreate → CredentialStore resolves fresh token.
+    **Explicitly: v1 does NOT do automatic token refresh inside the resource.**
+    Token lifecycle is fully managed by CredentialStore + Resident recreate cycle.
+    Proactive pre-expiry refresh is a v2 enhancement.
 
 - ⚠️ **Rate limiting:** Google API has per-user-per-project quotas. Rate limiter should
   live in the resource (like LlmRuntime example in 04-recovery-resilience.md).
@@ -692,10 +696,12 @@ struct BotInner {
 
 /// What callers see via Deref. Cheap clone (all Arc).
 /// Can send messages AND receive updates.
+/// Caller-facing handle. Outbound API only (send_message, get_me).
+/// Incoming events go through EventSource → EventTrigger, NOT through Lease.
+/// This avoids the &mut self problem with broadcast::Receiver.
 pub struct TelegramBotHandle {
-    bot:       Bot,                                  // Clone = Arc
-    info:      Arc<BotInfo>,
-    update_rx: broadcast::Receiver<TelegramUpdate>,  // per-caller subscriber
+    bot:  Bot,            // Clone = Arc
+    info: Arc<BotInfo>,
 }
 
 impl TelegramBotHandle {
@@ -704,10 +710,6 @@ impl TelegramBotHandle {
             .await
             .map_err(TelegramError::Api)?;
         Ok(())
-    }
-
-    pub async fn recv_update(&mut self) -> Result<TelegramUpdate, TelegramError> {
-        self.update_rx.recv().await.map_err(|_| TelegramError::ChannelClosed)
     }
 
     pub fn bot_info(&self) -> &BotInfo { &self.info }
@@ -812,11 +814,10 @@ impl Service for TelegramBot {
         _ctx: &dyn Ctx,
     ) -> Result<TelegramBotHandle, TelegramError> {
         // ✅ WORKS WELL: cheap token creation. Bot clone = Arc.
-        // Each caller gets own broadcast::Receiver (independent read position).
+        // Outbound-only handle. No broadcast::Receiver here — events via EventSource.
         Ok(TelegramBotHandle {
-            bot:       runtime.inner.bot.clone(),
-            info:      Arc::clone(&runtime.inner.info),
-            update_rx: runtime.inner.update_tx.subscribe(),
+            bot:  runtime.inner.bot.clone(),
+            info: Arc::clone(&runtime.inner.info),
         })
     }
 
@@ -955,14 +956,12 @@ impl EventTrigger for IncomingMessageTrigger {
 - ✅ **Service drain on config reload:** old TelegramBotRuntime drains via Arc refcount.
   Existing TelegramBotHandle tokens (which hold Arc<BotInner>) continue working.
   New tokens are created from new runtime.
-- ⚠️ **Friction: recv_update() on TelegramBotHandle requires &mut self** for
-  broadcast::Receiver. But ResourceHandle gives &self via Deref. This means either:
-  - (a) Handle holds `Mutex<broadcast::Receiver>` — works but slightly ugly.
-  - (b) Lease has interior mutability for the receiver.
-  - (c) EventTrigger receives `&mut Self::Subscription` not `&R::Lease`.
-  - **Resolution:** EventTrigger already receives `&mut Self::Subscription` in the
-    EventSource trait. For actions using recv_update(), use interior mutability.
-    This is a known pattern for broadcast receivers.
+- ⚠️ **Resolved: recv_update() mutability.** broadcast::Receiver needs `&mut self`,
+  but ResourceHandle gives `&self` via Deref. **Decision:** remove `recv_update()`
+  from TelegramBotHandle (action-facing Lease). Event consumption goes through
+  `EventTrigger` trait which uses `EventSource::recv(&mut Subscription)` — no
+  mutability conflict. TelegramBotHandle exposes only outbound API: `send_message()`,
+  `get_me()`, etc. Incoming events = EventTrigger responsibility, not action code.
 
 ---
 
@@ -1270,7 +1269,7 @@ async fn execute(&self, input: TunnelInput, ctx: &ActionContext) -> Result<Actio
 | # | Issue | Affected | Severity | Resolution |
 |---|-------|----------|----------|------------|
 | 1 | Token caching for OAuth-based APIs | Google Sheets | Medium | Use short-lived tokens from CredentialStore, Resident stale_after for token TTL |
-| 2 | broadcast::Receiver needs &mut self | Telegram | Low | Interior mutability or use EventSource's &mut Subscription path |
+| 2 | broadcast::Receiver needs &mut self | Telegram | Low | **Resolved:** EventTrigger reads events via `EventSource::recv(&mut Subscription)`, NOT via `&Lease`. Actions wanting updates use `EventTrigger` trait (engine-managed). Direct `recv_update()` on TelegramBotHandle removed from action-facing API — it belongs in EventSource path only. |
 | 3 | SSH temp key file lifecycle | SSH | Low | Temp file in create(), cleanup in destroy(), OS fallback for cancellation |
 | 4 | max_sessions in two configs | SSH | Low | Remove from resource config, keep only in transport::Config |
 | 5 | parking_lot::Mutex for prepare() cache | Postgres | Low | Acceptable pattern, or use AtomicCell/always-SET alternative |
