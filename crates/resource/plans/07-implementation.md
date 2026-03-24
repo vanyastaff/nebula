@@ -291,6 +291,8 @@ Recovery primitives, cross-cutting integration.
 34. runtime/daemon/           daemon::Runtime<R>
     - config.rs               daemon::Config, RestartPolicy
     - runner.rs               run loop + restart (single CancellationToken from framework)
+                              debug_assert!(state.runtime.is_some()) at loop top —
+                              catches if recreate failed but loop was not broken.
 
 35. runtime/mod.rs            TopologyRuntime<R> enum (7 variants), shared_runtime()
 36. runtime/managed.rs        ManagedResource<R> + AnyManagedResource trait (type erasure)

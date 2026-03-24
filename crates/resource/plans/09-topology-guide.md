@@ -28,7 +28,6 @@ Topology кодифицирует эту природу. Framework знает к
 | **Telegram Bot** | Service | EventSource + Daemon | Long-lived bot + token handles + polling loop |
 | **SSH** | Transport | — | One TCP connection + N multiplexed shell sessions |
 | **WebSocket (outbound)** | Service | EventSource + Daemon | Long-lived connection + send handle tokens + incoming messages |
-| **Postgres** | Pool | — | Stateful TCP connections, expensive create, server-side limits |
 | **Kafka Producer** | Resident | — | One producer with internal buffer/batching, `Clone = Arc` |
 | **Kafka Consumer** | Exclusive | — | Partition assignment requires single owner, concurrent access = rebalance storm |
 | **gRPC** (`tonic::Channel`) | Resident | — | HTTP/2 multiplexed channel, internal load balancing, `Clone = Arc` |
