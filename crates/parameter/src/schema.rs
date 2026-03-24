@@ -18,6 +18,7 @@ use crate::field::Field;
 use crate::profile::ValidationProfile;
 use crate::report::ValidationReport;
 use crate::rules::Rule;
+use crate::runtime::ValidatedValues;
 use crate::values::FieldValues;
 
 /// Complete parameter schema for v2 authoring.
@@ -91,18 +92,27 @@ impl Schema {
     /// Unknown fields are treated as hard errors. Use [`validate_with_profile`]
     /// to relax this behaviour.
     ///
+    /// On success, returns [`ValidatedValues`] — a proof that the values
+    /// passed schema validation.
+    ///
     /// # Errors
     ///
     /// Returns a non-empty list of [`crate::error::ParameterError`] on failure.
     ///
     /// [`validate_with_profile`]: Schema::validate_with_profile
-    pub fn validate(&self, values: &FieldValues) -> Result<(), Vec<crate::error::ParameterError>> {
+    pub fn validate(
+        &self,
+        values: &FieldValues,
+    ) -> Result<ValidatedValues, Vec<crate::error::ParameterError>> {
         crate::validate::validate_fields(&self.fields, values)
+            .map(|()| ValidatedValues::new(values.clone()))
     }
 
     /// Validates `values` under the given [`ValidationProfile`].
     ///
     /// Returns a [`ValidationReport`] that separates hard errors from warnings.
+    /// Call [`ValidationReport::into_validated`] to extract the validated values
+    /// when no hard errors are present.
     #[must_use]
     pub fn validate_with_profile(
         &self,

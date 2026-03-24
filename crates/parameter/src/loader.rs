@@ -16,7 +16,45 @@ use crate::runtime::FieldValues;
 use crate::spec::FieldSpec;
 
 /// Boxed future returned by loader closures.
-pub type LoaderFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+pub type LoaderFuture<T> = Pin<Box<dyn Future<Output = Result<T, LoaderError>> + Send>>;
+
+// ── LoaderError ─────────────────────────────────────────────────────────────
+
+/// Error returned by a loader when it cannot resolve data.
+///
+/// This is intentionally a simple struct rather than a categorised enum —
+/// the parameter crate does not model transport-layer concerns. Action
+/// authors create `LoaderError` with the appropriate message.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct LoaderError {
+    /// Human-readable description of the failure.
+    pub message: String,
+    /// Optional underlying cause for error chaining.
+    #[source]
+    pub source: Option<Box<dyn std::error::Error + Send + Sync>>,
+}
+
+impl LoaderError {
+    /// Creates a loader error with a message.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Creates a loader error wrapping a source error.
+    pub fn with_source(
+        message: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            source: Some(Box::new(source)),
+        }
+    }
+}
 
 // ── LoaderCtx ────────────────────────────────────────────────────────────────
 
@@ -53,13 +91,17 @@ impl OptionLoader {
     pub fn new<F, Fut>(f: F) -> Self
     where
         F: Fn(LoaderCtx) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Vec<SelectOption>> + Send + 'static,
+        Fut: Future<Output = Result<Vec<SelectOption>, LoaderError>> + Send + 'static,
     {
         Self(Arc::new(move |ctx| Box::pin(f(ctx))))
     }
 
     /// Invokes the loader with the given context.
-    pub async fn call(&self, ctx: LoaderCtx) -> Vec<SelectOption> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoaderError`] if the loader cannot resolve options.
+    pub async fn call(&self, ctx: LoaderCtx) -> Result<Vec<SelectOption>, LoaderError> {
         (self.0)(ctx).await
     }
 }
@@ -96,13 +138,17 @@ impl RecordLoader {
     pub fn new<F, Fut>(f: F) -> Self
     where
         F: Fn(LoaderCtx) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Vec<FieldSpec>> + Send + 'static,
+        Fut: Future<Output = Result<Vec<FieldSpec>, LoaderError>> + Send + 'static,
     {
         Self(Arc::new(move |ctx| Box::pin(f(ctx))))
     }
 
     /// Invokes the loader with the given context.
-    pub async fn call(&self, ctx: LoaderCtx) -> Vec<FieldSpec> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoaderError`] if the loader cannot resolve field specs.
+    pub async fn call(&self, ctx: LoaderCtx) -> Result<Vec<FieldSpec>, LoaderError> {
         (self.0)(ctx).await
     }
 }

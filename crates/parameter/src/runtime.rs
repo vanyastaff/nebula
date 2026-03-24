@@ -4,6 +4,10 @@ pub use crate::error::ParameterError;
 pub use crate::values::{FieldValue, FieldValues, ModeValueRef};
 
 /// Schema-bound validated values view.
+///
+/// Cannot be constructed outside the crate — only produced by
+/// [`Schema::validate`](crate::schema::Schema::validate) or
+/// [`Schema::validate_with_profile`](crate::schema::Schema::validate_with_profile).
 #[derive(Debug, Clone)]
 pub struct ValidatedValues {
     values: FieldValues,
@@ -11,8 +15,9 @@ pub struct ValidatedValues {
 
 impl ValidatedValues {
     /// Creates a validated wrapper from runtime values.
-    #[must_use]
-    pub fn new(values: FieldValues) -> Self {
+    ///
+    /// Not publicly constructible — use [`Schema::validate`](crate::schema::Schema::validate).
+    pub(crate) fn new(values: FieldValues) -> Self {
         Self { values }
     }
 

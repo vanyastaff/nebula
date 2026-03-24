@@ -64,7 +64,7 @@ pub mod values;
 pub use conditions::Condition;
 pub use error::ParameterError;
 pub use field::Field;
-pub use loader::{LoaderCtx, OptionLoader, RecordLoader};
+pub use loader::{LoaderCtx, LoaderError, OptionLoader, RecordLoader};
 pub use metadata::FieldMetadata;
 pub use option::{OptionSource, SelectOption};
 pub use profile::ValidationProfile;
@@ -73,8 +73,8 @@ pub use rules::Rule;
 pub use runtime::{FieldValue, FieldValues, ModeValueRef, ValidatedValues};
 pub use schema::{Group, Schema, Severity, UiElement};
 pub use spec::{
-    DynamicFieldsMode, FieldSpec, FilterCombinator, FilterExpr, FilterGroup, FilterOp, FilterRule,
-    ModeVariant, UnknownFieldPolicy,
+    DynamicFieldsMode, FieldSpec, FieldSpecConvertError, FilterCombinator, FilterExpr, FilterGroup,
+    FilterOp, FilterRule, ModeVariant, UnknownFieldPolicy,
 };
 
 pub mod prelude {
@@ -83,7 +83,7 @@ pub mod prelude {
     pub use crate::conditions::Condition;
     pub use crate::error::ParameterError;
     pub use crate::field::Field;
-    pub use crate::loader::{LoaderCtx, OptionLoader, RecordLoader};
+    pub use crate::loader::{LoaderCtx, LoaderError, OptionLoader, RecordLoader};
     pub use crate::metadata::FieldMetadata;
     pub use crate::option::{OptionSource, SelectOption};
     pub use crate::profile::ValidationProfile;
@@ -92,7 +92,7 @@ pub mod prelude {
     pub use crate::runtime::{FieldValue, FieldValues, ModeValueRef, ValidatedValues};
     pub use crate::schema::{Group, Schema, Severity, UiElement};
     pub use crate::spec::{
-        DynamicFieldsMode, FieldSpec, FilterCombinator, FilterExpr, FilterGroup, FilterOp,
-        FilterRule, ModeVariant, UnknownFieldPolicy,
+        DynamicFieldsMode, FieldSpec, FieldSpecConvertError, FilterCombinator, FilterExpr,
+        FilterGroup, FilterOp, FilterRule, ModeVariant, UnknownFieldPolicy,
     };
 }

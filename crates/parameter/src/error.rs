@@ -61,15 +61,6 @@ pub enum ParameterError {
         key: String,
     },
 
-    /// A declarative validation rule failed.
-    #[error("validation failed for `{key}`: {reason}")]
-    ValidationError {
-        /// The parameter key that failed validation.
-        key: String,
-        /// Human-readable failure reason.
-        reason: String,
-    },
-
     /// A declarative validation rule failed with structured validator details.
     #[error("validation failed for `{key}` [{code}]: {reason}")]
     ValidationIssue {
@@ -112,7 +103,6 @@ impl ParameterError {
             Self::InvalidValue { .. } => "value",
             Self::MissingValue { .. } => "value",
             Self::UnknownField { .. } => "value",
-            Self::ValidationError { .. } => "validation",
             Self::ValidationIssue { .. } => "validation",
             Self::DeserializationError { .. } => "serialization",
             Self::SerializationError { .. } => "serialization",
@@ -130,7 +120,6 @@ impl ParameterError {
             Self::InvalidValue { .. } => "PARAM_INVALID_VALUE",
             Self::MissingValue { .. } => "PARAM_MISSING_VALUE",
             Self::UnknownField { .. } => "PARAM_UNKNOWN_FIELD",
-            Self::ValidationError { .. } => "PARAM_VALIDATION",
             Self::ValidationIssue { .. } => "PARAM_VALIDATION_ISSUE",
             Self::DeserializationError { .. } => "PARAM_DESER",
             Self::SerializationError { .. } => "PARAM_SER",
@@ -220,15 +209,6 @@ mod tests {
         };
         assert_eq!(err.to_string(), "unknown field `unexpected`");
 
-        let err = ParameterError::ValidationError {
-            key: "url".into(),
-            reason: "not a valid URL".into(),
-        };
-        assert_eq!(
-            err.to_string(),
-            "validation failed for `url`: not a valid URL"
-        );
-
         let err = ParameterError::ValidationIssue {
             key: "email".into(),
             code: "invalid_format".into(),
@@ -288,13 +268,6 @@ mod tests {
             (ParameterError::MissingValue { key: String::new() }, "value"),
             (ParameterError::UnknownField { key: String::new() }, "value"),
             (
-                ParameterError::ValidationError {
-                    key: String::new(),
-                    reason: String::new(),
-                },
-                "validation",
-            ),
-            (
                 ParameterError::ValidationIssue {
                     key: String::new(),
                     code: String::new(),
@@ -342,10 +315,6 @@ mod tests {
                 reason: String::new(),
             },
             ParameterError::MissingValue { key: String::new() },
-            ParameterError::ValidationError {
-                key: String::new(),
-                reason: String::new(),
-            },
             ParameterError::ValidationIssue {
                 key: String::new(),
                 code: String::new(),

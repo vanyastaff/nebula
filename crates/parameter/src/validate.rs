@@ -47,23 +47,50 @@ pub fn validate_with_profile(
 
     for field in fields {
         let value = values.get(&field.meta().id);
-        validate_field(field, value, values, &field.meta().id, &mut errors);
+        validate_field(
+            field,
+            value,
+            values,
+            &field.meta().id,
+            profile,
+            &mut errors,
+            &mut warnings,
+        );
     }
 
-    for key in values.keys() {
-        if !fields.iter().any(|f| f.meta().id == key) {
-            let err = ParameterError::UnknownField {
-                key: key.to_owned(),
-            };
-            match profile {
-                ValidationProfile::Strict => errors.push(err),
-                ValidationProfile::Warn => warnings.push(err),
-                ValidationProfile::Permissive => {}
-            }
-        }
-    }
+    emit_unknown_fields(fields, values, profile, &mut errors, &mut warnings);
 
     ValidationReport { errors, warnings }
+}
+
+fn emit_unknown_fields(
+    fields: &[Field],
+    values: &FieldValues,
+    profile: ValidationProfile,
+    errors: &mut Vec<ParameterError>,
+    warnings: &mut Vec<ParameterError>,
+) {
+    for key in values.keys() {
+        if !fields.iter().any(|f| f.meta().id == key) {
+            emit_unknown_field(key, profile, errors, warnings);
+        }
+    }
+}
+
+fn emit_unknown_field(
+    path: &str,
+    profile: ValidationProfile,
+    errors: &mut Vec<ParameterError>,
+    warnings: &mut Vec<ParameterError>,
+) {
+    let err = ParameterError::UnknownField {
+        key: path.to_owned(),
+    };
+    match profile {
+        ValidationProfile::Strict => errors.push(err),
+        ValidationProfile::Warn => warnings.push(err),
+        ValidationProfile::Permissive => {}
+    }
 }
 
 fn validate_field(
@@ -71,7 +98,9 @@ fn validate_field(
     value: Option<&serde_json::Value>,
     root_values: &FieldValues,
     path: &str,
+    profile: ValidationProfile,
     errors: &mut Vec<ParameterError>,
+    warnings: &mut Vec<ParameterError>,
 ) {
     let meta = field.meta();
     let hidden = meta
@@ -105,7 +134,7 @@ fn validate_field(
         return;
     }
 
-    validate_field_value(field, value, root_values, path, errors);
+    validate_field_value(field, value, root_values, path, profile, errors, warnings);
 }
 
 fn validate_field_value(
@@ -113,7 +142,9 @@ fn validate_field_value(
     value: &serde_json::Value,
     root_values: &FieldValues,
     path: &str,
+    profile: ValidationProfile,
     errors: &mut Vec<ParameterError>,
+    warnings: &mut Vec<ParameterError>,
 ) {
     let meta = field.meta();
 
@@ -216,15 +247,15 @@ fn validate_field_value(
                     object.get(nested_id),
                     root_values,
                     &nested_path,
+                    profile,
                     errors,
+                    warnings,
                 );
             }
 
             for nested_key in object.keys() {
                 if !fields.iter().any(|nested| nested.meta().id == *nested_key) {
-                    errors.push(ParameterError::UnknownField {
-                        key: format!("{path}.{nested_key}"),
-                    });
+                    emit_unknown_field(&format!("{path}.{nested_key}"), profile, errors, warnings);
                 }
             }
         }
@@ -269,7 +300,15 @@ fn validate_field_value(
 
             for (index, item_value) in items.iter().enumerate() {
                 let item_path = format!("{path}.{index}");
-                validate_field_value(item, item_value, root_values, &item_path, errors);
+                validate_field_value(
+                    item,
+                    item_value,
+                    root_values,
+                    &item_path,
+                    profile,
+                    errors,
+                    warnings,
+                );
             }
         }
         Field::Mode {
@@ -313,14 +352,14 @@ fn validate_field_value(
                 nested_value,
                 root_values,
                 &nested_path,
+                profile,
                 errors,
+                warnings,
             );
 
             for key in object.keys() {
                 if key != "mode" && key != "value" {
-                    errors.push(ParameterError::UnknownField {
-                        key: format!("{path}.{key}"),
-                    });
+                    emit_unknown_field(&format!("{path}.{key}"), profile, errors, warnings);
                 }
             }
         }

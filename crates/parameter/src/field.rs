@@ -411,12 +411,18 @@ impl Field {
     pub fn with_option_loader<F, Fut>(mut self, f: F) -> Self
     where
         F: Fn(crate::loader::LoaderCtx) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Vec<crate::option::SelectOption>> + Send + 'static,
+        Fut: std::future::Future<
+                Output = Result<Vec<crate::option::SelectOption>, crate::loader::LoaderError>,
+            > + Send
+            + 'static,
     {
         if let Self::Select { loader, .. } = &mut self {
             *loader = Some(OptionLoader::new(f));
         } else {
-            panic!("with_option_loader called on a non-Select Field variant");
+            debug_assert!(
+                false,
+                "with_option_loader called on a non-Select Field variant"
+            );
         }
         self
     }
@@ -431,12 +437,17 @@ impl Field {
     pub fn with_record_loader<F, Fut>(mut self, f: F) -> Self
     where
         F: Fn(crate::loader::LoaderCtx) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Vec<FieldSpec>> + Send + 'static,
+        Fut: std::future::Future<Output = Result<Vec<FieldSpec>, crate::loader::LoaderError>>
+            + Send
+            + 'static,
     {
         if let Self::DynamicFields { loader, .. } = &mut self {
             *loader = Some(RecordLoader::new(f));
         } else {
-            panic!("with_record_loader called on a non-DynamicFields Field variant");
+            debug_assert!(
+                false,
+                "with_record_loader called on a non-DynamicFields Field variant"
+            );
         }
         self
     }

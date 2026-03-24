@@ -433,6 +433,35 @@ impl Rule {
         matches!(self, Self::UniqueBy { .. } | Self::Custom { .. })
     }
 
+    /// Collects all field IDs referenced by context predicates in this rule.
+    ///
+    /// Recurses into logical combinators (`All`, `Any`, `Not`).
+    /// Value-only rules and deferred rules return no references.
+    pub fn field_references<'a>(&'a self, out: &mut Vec<&'a str>) {
+        match self {
+            Self::Eq { field, .. }
+            | Self::Ne { field, .. }
+            | Self::Gt { field, .. }
+            | Self::Gte { field, .. }
+            | Self::Lt { field, .. }
+            | Self::Lte { field, .. }
+            | Self::IsTrue { field }
+            | Self::IsFalse { field }
+            | Self::Set { field }
+            | Self::Empty { field }
+            | Self::Contains { field, .. }
+            | Self::Matches { field, .. }
+            | Self::In { field, .. } => out.push(field),
+            Self::All { rules } | Self::Any { rules } => {
+                for rule in rules {
+                    rule.field_references(out);
+                }
+            }
+            Self::Not { inner } => inner.field_references(out),
+            _ => {}
+        }
+    }
+
     /// Validates a JSON value against this rule.
     ///
     /// Only meaningful for value-validation rules. Predicate rules

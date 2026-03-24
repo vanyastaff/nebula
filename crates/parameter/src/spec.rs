@@ -1,5 +1,8 @@
 //! Supporting spec types used by schema fields and providers.
 
+use std::fmt;
+
+use crate::field::Field;
 use crate::loader::OptionLoader;
 use crate::metadata::FieldMetadata;
 use crate::option::OptionSource;
@@ -177,4 +180,107 @@ pub enum FilterOp {
     IsSet,
     /// Field is null or empty.
     IsEmpty,
+}
+
+// ── FieldSpec conversions ───────────────────────────────────────────────────
+
+/// Error returned when a [`Field`] variant cannot be converted to [`FieldSpec`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldSpecConvertError {
+    /// The name of the unsupported variant.
+    pub variant: String,
+}
+
+impl fmt::Display for FieldSpecConvertError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "cannot convert Field::{} to FieldSpec (only Text, Number, Boolean, Select supported)",
+            self.variant
+        )
+    }
+}
+
+impl std::error::Error for FieldSpecConvertError {}
+
+impl TryFrom<&Field> for FieldSpec {
+    type Error = FieldSpecConvertError;
+
+    fn try_from(field: &Field) -> Result<Self, Self::Error> {
+        match field {
+            Field::Text { meta, multiline } => Ok(FieldSpec::Text {
+                meta: meta.clone(),
+                multiline: *multiline,
+            }),
+            Field::Number {
+                meta,
+                integer,
+                min,
+                max,
+                step,
+            } => Ok(FieldSpec::Number {
+                meta: meta.clone(),
+                integer: *integer,
+                min: min.clone(),
+                max: max.clone(),
+                step: step.clone(),
+            }),
+            Field::Boolean { meta } => Ok(FieldSpec::Boolean { meta: meta.clone() }),
+            Field::Select {
+                meta,
+                source,
+                multiple,
+                allow_custom,
+                searchable,
+                loader,
+            } => Ok(FieldSpec::Select {
+                meta: meta.clone(),
+                source: source.clone(),
+                multiple: *multiple,
+                allow_custom: *allow_custom,
+                searchable: *searchable,
+                loader: loader.clone(),
+            }),
+            other => Err(FieldSpecConvertError {
+                variant: format!("{:?}", std::mem::discriminant(other)),
+            }),
+        }
+    }
+}
+
+impl From<FieldSpec> for Field {
+    fn from(spec: FieldSpec) -> Self {
+        match spec {
+            FieldSpec::Text { meta, multiline } => Field::Text { meta, multiline },
+            FieldSpec::Number {
+                meta,
+                integer,
+                min,
+                max,
+                step,
+            } => Field::Number {
+                meta,
+                integer,
+                min,
+                max,
+                step,
+            },
+            FieldSpec::Boolean { meta } => Field::Boolean { meta },
+            FieldSpec::Select {
+                meta,
+                source,
+                multiple,
+                allow_custom,
+                searchable,
+                loader,
+            } => Field::Select {
+                meta,
+                source,
+                multiple,
+                allow_custom,
+                searchable,
+                loader,
+            },
+        }
+    }
 }

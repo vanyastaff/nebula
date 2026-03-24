@@ -1,6 +1,8 @@
 //! Validation output report.
 
 use crate::error::ParameterError;
+use crate::runtime::ValidatedValues;
+use crate::values::FieldValues;
 
 /// The result of running schema validation with a [`crate::profile::ValidationProfile`].
 ///
@@ -43,6 +45,19 @@ impl ValidationReport {
             Ok(())
         } else {
             Err(self.errors)
+        }
+    }
+
+    /// Extracts [`ValidatedValues`] when the report has no hard errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns the report unchanged when it contains hard errors.
+    pub fn into_validated(self, values: &FieldValues) -> Result<ValidatedValues, Self> {
+        if self.errors.is_empty() {
+            Ok(ValidatedValues::new(values.clone()))
+        } else {
+            Err(self)
         }
     }
 }
