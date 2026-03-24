@@ -33,6 +33,9 @@ pub trait ResourceAction: Action {
     /// Topology for the scoped resource. Default: Resident.
     fn topology(&self) -> ScopedTopology { ScopedTopology::Resident }
 
+    /// Override acquire resilience for this scoped resource. Default: framework default.
+    fn acquire_resilience(&self) -> Option<AcquireResilience> { None }
+
     /// Custom cleanup after all downstream nodes complete. Default: noop.
     async fn cleanup(&self, ctx: &ActionContext) -> Result<()> { Ok(()) }
 }
