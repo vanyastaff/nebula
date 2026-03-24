@@ -140,13 +140,19 @@ When an execution (or branch) is cancelled:
 1. CancellationToken fires for the branch
 2. Running actions in the branch receive cancellation
 3. Actions complete or abort (timeout)
-4. ResourceAction::cleanup() called (in reverse order for nested scopes)
-5. Framework calls Resource::shutdown() on scoped runtime
-6. Framework calls Resource::destroy() on scoped runtime
-7. Scoped runtime removed from ScopedResourceMap
+4. Scoped resource removed from ScopedResourceMap (new acquires → fall through to global)
+5. ResourceAction::cleanup() called (in reverse order for nested scopes)
+   - cleanup() receives a ctx where scoped resource is ALREADY removed.
+   - ctx.resource::<R>() in cleanup() resolves to global (if registered), NOT scoped.
+   - This is intentional: cleanup() may need the global resource to undo setup
+     (e.g., DROP SCHEMA on global pool after scoped pool is gone).
+6. Framework calls Resource::shutdown() on scoped runtime
+7. Framework calls Resource::destroy() on scoped runtime
 ```
 
 **Key invariants:**
+- Scoped resource is removed from `ScopedResourceMap` **before** `cleanup()` runs.
+  This ensures `ctx.resource::<R>()` inside `cleanup()` resolves to global, not scoped.
 - `cleanup()` is called even on cancellation (like `finally` in try/catch).
 - Nested scopes destroy inner-to-outer (scope B destroyed before scope A).
 - Global resources are NOT affected by scoped resource cancellation.
@@ -161,8 +167,9 @@ If cleanup exceeds this, the runtime is dropped without graceful shutdown.
 ## Scope conflicts
 
 **Same resource type, same branch level:** Not allowed. The second `ResourceAction`
-for the same `R` at the same branch level produces a compile-time or registration-time
-error. Only one scoped resource of each type per branch level.
+for the same `R` at the same branch level produces a registration-time error
+(DAG structure is not known at compile time). Only one scoped resource of each
+type per branch level.
 
 **Same resource type, different branches:** Allowed. Each branch has independent
 scoped resources. Actions in branch A cannot see scoped resources from branch B.
@@ -263,7 +270,7 @@ impl ResourceAction for SandboxBrowserAction {
 | Feature | Scoped behavior |
 |---------|----------------|
 | **RecoveryGate** | Scoped resources do NOT participate in RecoveryGroups (too short-lived) |
-| **AcquireResilience** | Scoped resources use default resilience (no custom config) |
+| **AcquireResilience** | Default: framework default. ResourceAction can optionally override via `fn acquire_resilience() -> Option<AcquireResilience>` |
 | **Config reload** | Not applicable — scoped lifetime < reload interval |
 | **Credential rotation** | Not applicable — scoped lifetime < rotation interval |
 | **Metrics** | Scoped resources emit metrics with `scope=execution:{id}` label |

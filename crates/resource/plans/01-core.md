@@ -346,7 +346,8 @@ impl ResourceConfig for PgResourceConfig {
 
     fn fingerprint(&self) -> u64 {
         use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
+        // FxHasher: stable cross-process (DefaultHasher uses SipHash with random seed).
+        let mut h = rustc_hash::FxHasher::default();
         self.statement_timeout.map(|d| d.as_millis()).hash(&mut h);
         self.application_name.hash(&mut h);
         self.search_path.hash(&mut h);

@@ -84,7 +84,7 @@ resource type. Config changes will silently not propagate to existing instances.
 ```rust
 // CORRECT: hash compatibility-affecting fields
 fn fingerprint(&self) -> u64 {
-    let mut h = DefaultHasher::new();
+    let mut h = FxHasher::default(); // stable cross-process (not SipHash)
     self.statement_timeout.hash(&mut h);
     self.application_name.hash(&mut h);
     self.search_path.hash(&mut h);
@@ -191,6 +191,114 @@ After detach:
 
 ---
 
+## 8. `Exclusive::reset()` — must be idempotent and handle partial state
+
+**Contract:** `reset()` is called between callers to restore the resource to a clean
+state. The previous caller may have been dropped mid-operation (panic, cancel, timeout).
+`reset()` must handle any state the resource could be in — not just "completed normally".
+
+**Why:** If `reset()` assumes the previous caller finished cleanly, partial state
+(uncommitted offsets, half-written buffers, open cursors) will leak to the next caller.
+If `reset()` fails, framework falls back to destroy + recreate.
+
+```rust
+// CORRECT: handle any state
+async fn reset(&self, consumer: &StreamConsumer) -> Result<(), KafkaError> {
+    // Commit whatever offsets exist (even if previous caller didn't finish)
+    consumer.commit_consumer_state(CommitMode::Sync)?;
+    // Clear any pending fetched messages
+    consumer.pause_all();
+    consumer.resume_all();
+    Ok(())
+}
+
+// BUG: assumes previous caller committed
+async fn reset(&self, consumer: &StreamConsumer) -> Result<(), KafkaError> {
+    // Nothing to do — caller already committed
+    Ok(()) // WRONG: if caller was cancelled, offsets are uncommitted
+}
+```
+
+---
+
+## 9. `Pooled::recycle()` — must not panic
+
+**Contract:** `recycle()` runs inside a `ReleaseQueue` worker task. A panic in
+`recycle()` aborts the worker, and all pending release tasks on that worker are lost.
+This causes connection leaks and pool exhaustion.
+
+**Why:** ReleaseQueue workers are shared — one panic affects all subsequent releases
+assigned to that worker. `catch_unwind` is not used (async + Send constraints).
+
+**Rule:** All error paths in `recycle()` must return `Err(...)` or `Ok(RecycleDecision::Drop)`,
+never panic. Use `?` for fallible operations. If `DISCARD ALL` fails — return `Drop`,
+don't unwrap.
+
+```rust
+// CORRECT: all errors handled
+async fn recycle(&self, conn: &PgConnection, _metrics: &InstanceMetrics)
+    -> Result<RecycleDecision, PgError>
+{
+    match conn.client.simple_query("DISCARD ALL").await {
+        Ok(_) => Ok(RecycleDecision::Keep),
+        Err(_) => Ok(RecycleDecision::Drop), // don't unwrap, don't panic
+    }
+}
+
+// BUG: unwrap in recycle
+async fn recycle(&self, conn: &PgConnection, _: &InstanceMetrics)
+    -> Result<RecycleDecision, PgError>
+{
+    conn.client.simple_query("DISCARD ALL").await.unwrap(); // PANICS on closed conn!
+    Ok(RecycleDecision::Keep)
+}
+```
+
+---
+
+## 10. `Resource::create()` — cancellation safety
+
+**Contract:** `create()` may be cancelled via `CancellationToken` or `tokio::time::timeout`.
+If cancellation occurs mid-create, no zombie resources should remain (open connections,
+spawned tasks, allocated server-side resources).
+
+**Why:** Pool warmup, acquire retry, and shutdown all may cancel in-flight `create()` calls.
+If `create()` spawns a tokio task before returning and then gets cancelled, that task
+leaks forever.
+
+**Rules:**
+- Do not `tokio::spawn()` before the final `Ok(runtime)` return.
+- If you must spawn (e.g., Postgres connection task), use a guard that aborts the task on drop.
+- Server-side resources (created schema, allocated session) must be cleaned up if create fails.
+
+```rust
+// CORRECT: spawn only after successful setup, with abort-on-drop guard
+async fn create(&self, config: &PgConfig, cred: &DatabaseCredential, _ctx: &dyn Ctx)
+    -> Result<PgConnection, PgError>
+{
+    let (client, connection) = tokio_postgres::Config::new()
+        .host(&cred.host).connect(NoTls).await?;
+
+    // AbortOnDrop: if PgConnection is dropped, the connection task is aborted.
+    let conn_task = tokio::spawn(async move {
+        if let Err(e) = connection.await { tracing::warn!("pg conn error: {e}"); }
+    });
+
+    Ok(PgConnection { client, conn_task: AbortOnDrop::new(conn_task) })
+}
+
+// BUG: spawned task leaks if create() is cancelled between spawn and return
+async fn create(&self, config: &Config, cred: &Cred, _ctx: &dyn Ctx)
+    -> Result<MyRuntime, MyError>
+{
+    let handle = tokio::spawn(background_loop()); // SPAWNED
+    let client = connect(&cred).await?;           // ← if THIS fails, handle leaks!
+    Ok(MyRuntime { client, handle })
+}
+```
+
+---
+
 ## Summary table
 
 | Contract | Enforced by | Violation consequence |
@@ -202,3 +310,6 @@ After detach:
 | Transport `max_sessions` | Framework semaphore | Unbounded sessions on transport |
 | Daemon `CancellationToken` | Framework timeout | Ungraceful shutdown |
 | `detach()` cleanup responsibility | Ownership transfer | Connection leak |
+| `reset()` idempotency | Documentation only | Leaked state between callers |
+| `recycle()` no-panic | Documentation only | Worker abort, pool exhaustion |
+| `create()` cancel-safety | Documentation only | Zombie tasks/connections |
