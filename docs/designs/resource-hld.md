@@ -765,6 +765,12 @@ recycle_workers (ReleaseQueue), max_concurrent_creates, create_timeout.
 3. Pool full → wait (with timeout from AcquireOptions.deadline)
 4. Retry blacklist: SmallVec<[InstanceId; 4]> tracks broken instances within one acquire cycle
 
+**prepare() error handling:** If `prepare()` returns `Err`:
+- Instance is tainted (treated as broken) and destroyed, NOT returned to pool.
+- If error is retryable → acquire loop retries with next instance (up to max_acquire_attempts).
+- If error is permanent → fail fast, return error to caller.
+This covers cases like `SET search_path` failing because schema doesn't exist.
+
 **Pool release flow** (via ReleaseQueue):
 1. is_broken()? → destroy
 2. Framework policy: stale fingerprint? → destroy. max_lifetime exceeded? → destroy

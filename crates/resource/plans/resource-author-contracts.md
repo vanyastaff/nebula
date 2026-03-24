@@ -299,6 +299,25 @@ async fn create(&self, config: &Config, cred: &Cred, _ctx: &dyn Ctx)
 
 ---
 
+## 11. `Pooled::prepare()` error → instance must be destroyed
+
+**Contract:** If `prepare()` returns `Err`, the framework treats the instance as tainted
+and destroys it. The instance is NOT returned to the pool. The acquire loop may retry
+with a different instance (up to `max_acquire_attempts`).
+
+**Why:** `prepare()` runs after checkout/create, before handing the instance to the caller.
+If `SET search_path TO nonexistent_schema` fails, the connection is in an undefined state
+(search_path may be partially set, role may be wrong). Returning it to the pool would
+leak this corrupted state to the next caller.
+
+**Rules:**
+- Return `Err` for any setup failure — framework handles destroy + retry.
+- Do NOT call `taint()` manually — framework does it automatically.
+- Retryable errors (e.g., transient network blip during SET) trigger retry with next instance.
+- Permanent errors (e.g., schema doesn't exist) fail fast to caller.
+
+---
+
 ## Summary table
 
 | Contract | Enforced by | Violation consequence |
@@ -313,3 +332,4 @@ async fn create(&self, config: &Config, cred: &Cred, _ctx: &dyn Ctx)
 | `reset()` idempotency | Documentation only | Leaked state between callers |
 | `recycle()` no-panic | Documentation only | Worker abort, pool exhaustion |
 | `create()` cancel-safety | Documentation only | Zombie tasks/connections |
+| `prepare()` error → destroy | Framework enforced | Corrupted state leak to next caller |
