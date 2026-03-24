@@ -1405,6 +1405,27 @@ pub struct AcquireResilience {
 - Fast (3 failures, 10s reset) — caches, HTTP APIs
 - Slow (10 failures, 60s reset) — SSH, SMTP, Browser, LLM
 
+### AcquireOptions — per-acquire customization
+
+```rust
+pub struct AcquireOptions {
+    pub intent:   AcquireIntent,
+    pub deadline: Option<Instant>,  // if in the past → immediate error
+    pub tags:     SmallVec<[(Cow<'static, str>, Cow<'static, str>); 2]>,
+}
+
+pub enum AcquireIntent {
+    Standard,                       // normal use, default timeout
+    LongRunning,                    // hours (SSH tunnel, port forward) — pool doesn't timeout
+    Streaming { expected: Duration }, // 5-60s (LLM stream) — metrics track but no timeout
+    Prefetch,                       // low priority, pool may delay in favor of Standard
+    Critical,                       // highest priority, no backpressure timeout (health check, cred rotation)
+}
+```
+
+Intent affects: acquire timeout behavior, priority in pool queue, metrics labels, audit trail.
+Tags propagate to tracing spans and metrics for per-caller observability.
+
 ### WatchdogHandle — opt-in background probe
 
 Periodic health check for topologies without natural liveness detection:
@@ -1414,6 +1435,34 @@ Periodic health check for topologies without natural liveness detection:
 Not needed for: Pool (test_on_checkout), Resident (stale_after), HTTP (stateless).
 
 Config: interval, probe_timeout, failure_threshold, recovery_threshold, auto_recover.
+
+### Pool maintenance loop
+
+Background task per pool (if `maintenance` config present). Runs periodically:
+
+1. **reap_idle** — destroy instances idle > `idle_timeout`. Prevents connection hoarding.
+2. **probe_idle** — `check()` on idle instances (when `CheckPolicy::Interval`).
+   Staggered: `delay_per_instance = interval / idle_count` to avoid thundering herd of
+   health checks hitting the backend simultaneously.
+3. **recycle_idle** — run `recycle()` on idle instances to clear stale session state.
+4. **Memory pressure shrink** — if `PressureSnapshot` reads High or Critical (lock-free
+   AtomicU8), aggressively reduce idle count below `min_size`. Normal pressure → restore.
+
+Config: `MaintenanceConfig { interval, probe_idle, reap_idle, recycle_idle }`.
+
+### Daemon two-level restart
+
+When `Daemon::run()` exits with error, framework restarts based on `RestartPolicy`
+(Never / OnFailure / Always):
+
+- **Level 1 — retry run()** with same runtime (cheap). Up to `max_restarts` with backoff.
+  If run() succeeds after retry → reset counter.
+- **Level 2 — recreate runtime** (expensive). Destroy old → create new. Limited by
+  `RecreateBudget { max_total, max_per_window, window_duration }`.
+  If budget exhausted → emit `DaemonFailed` event, stop.
+
+`DaemonState` uses `Option<R::Runtime>` (not `mem::zeroed()` — amendment #15, no UB).
+`debug_assert!(state.runtime.is_some())` at loop top catches framework bugs.
 
 ### Config hot-reload
 
@@ -1429,6 +1478,29 @@ Per-topology strategy:
 | Exclusive | Destroy old → create new | SwappedImmediately |
 | EventSource | Unsubscribe → resubscribe | SwappedImmediately |
 | Daemon | Cancel → restart with new config | Restarting |
+
+**Failure path and rollback (amendment #9):**
+Reload is two-phase: `try_apply()` → `commit()` or `rollback()`.
+1. Validate new config (`config.validate()?`).
+2. Attempt topology-specific apply (create new runtime, update fingerprint, etc.).
+3. If apply succeeds → commit: swap config in `ArcSwap<R::Config>`, emit `ConfigReloaded`.
+4. If apply fails (create error, validation error) → rollback: keep old config, old runtime
+   continues operating. Emit `ConfigReloadFailed` event with error details.
+   No partial state — either fully applied or fully rolled back.
+
+### Service drain watchdog (amendment #10)
+
+When Service reloads config → new runtime created, old runtime drains via Arc refcount.
+But if a leaked handle holds the old Arc forever → old runtime never drops.
+
+Watchdog with `drain_deadline` (default 5 min) monitors `Weak::strong_count()` on old runtime.
+- If strong_count reaches 0 before deadline → old runtime destroyed. Normal path.
+- If deadline expires with strong_count > 0 → log warning with leaked handle count.
+  Old runtime is "abandoned" (memory leak, but new runtime is healthy).
+  Framework cannot force-drop Arc holders — this is logged for operator investigation.
+
+Same watchdog monitors shutdown drain: if handles not released within `drain_timeout`,
+ShutdownOrchestrator proceeds to Phase 3 (force terminate).
 
 ### Credential rotation
 
@@ -1470,6 +1542,90 @@ Different branches = independent, no conflict.
 
 **ResourceEvent** via `EventBus<ResourceEvent>`:
 - Registered, Removed, HealthChanged, RecoveryStarted, RecoveryCompleted, ConfigReloaded
+
+### Audit trail (amendment #12)
+
+Structured logging of every acquire/release for compliance and operational debugging.
+Uses dedicated tracing target for filtering: `target = "nebula_resource::audit"`.
+
+Every acquire emits:
+```
+tracing::info!(
+    target: "nebula_resource::audit",
+    resource_key = %key,
+    resource_id = %id,
+    execution_id = %ctx.execution_id(),
+    scope = %ctx.scope(),
+    topology = topology_tag,
+    intent = ?options.intent,
+    outcome = "acquired",      // or "error", "timeout", "backpressure"
+    duration_ms = acquire_ms,
+);
+```
+
+Every release emits:
+```
+tracing::info!(
+    target: "nebula_resource::audit",
+    resource_key = %key,
+    resource_id = %id,
+    execution_id = %ctx.execution_id(),
+    hold_ms = hold_duration.as_millis(),
+    tainted = tainted,
+    outcome = "released",      // or "destroyed", "detached"
+);
+```
+
+**Mandatory fields:** resource_key, resource_id, execution_id, scope, topology, intent.
+**Release-specific:** hold_ms, tainted, outcome.
+**Filtering:** operators enable/disable via tracing subscriber filter on target
+`nebula_resource::audit`. Production: always on. Dev: optional.
+
+### Plugin system
+
+Plugin = self-contained package of resources, credentials, and actions. Installed as
+a unit into `PluginRegistry`. After installation, components live in flat registries
+indexed by key.
+
+```rust
+pub trait Plugin: Send + Sync + 'static {
+    fn key(&self) -> &str;
+    fn manifest(&self) -> PluginManifest;
+    fn resources(&self) -> Vec<Box<dyn ResourceDescriptor>>;
+    fn credentials(&self) -> Vec<Box<dyn CredentialDescriptor>>;
+    fn actions(&self) -> Vec<Box<dyn ActionDescriptor>>;
+}
+```
+
+**Descriptors** provide metadata for both UI and runtime:
+- `ResourceDescriptor`: config JSON schema (`ParamDef`), credential requirements
+  (accepted types for UI dropdown), required_resources (dependencies),
+  `register()` (self-register from DB-loaded JSON config), `validate_config()`.
+- `CredentialDescriptor`: credential form schema, create/validate methods.
+- `ActionDescriptor`: input/output schemas, event schema (triggers), action type,
+  required_resources, factory method (`create_action()`).
+
+**PluginRegistry** — flat, cross-plugin lookup by key:
+```rust
+pub struct PluginRegistry {
+    plugins:     HashMap<String, Arc<dyn Plugin>>,
+    resources:   HashMap<String, Arc<dyn ResourceDescriptor>>,
+    credentials: HashMap<String, Arc<dyn CredentialDescriptor>>,
+    actions:     HashMap<String, Arc<dyn ActionDescriptor>>,
+}
+```
+
+**Key operations:**
+- `install(plugin)` → components go to flat registries by key.
+- `load_resources_from_db(manager, db, platform)` → generic loader, works for any plugin:
+  reads `SELECT id, type_key, scope, config FROM resources`, calls
+  `descriptor.register(manager, id, scope, config, platform)`.
+- `action_dependency_tree(action_key)` → "this action needs these resources and credentials"
+  (for workflow editor UI).
+- `plugin_catalog()`, `resource_catalog()`, `action_catalog()` → lists for UI.
+
+**Credential in resource config UI:** `CredentialRequirement { label, accepted_types, required }`
+drives dropdown "Select existing" (filtered by type) or "+ Add new" flow.
 
 ### Testing infrastructure (Phase 6)
 
@@ -1571,3 +1727,37 @@ nebula-resource/src/
 | 4 (week 3-4) | 7 topology runtime implementations, TopologyRuntime enum, ManagedResource | Phases 2, 3 |
 | 5 (week 4-5) | Registry, Manager, RegistrationBuilder, acquire dispatch, ShutdownOrchestrator, config reload, scope | Phase 4 |
 | 6 (week 5-6) | Derive macros, action bridges, plugin integration, testing module, first resources | Phase 5 |
+
+---
+
+## v2 Architectural Directions
+
+Recorded from multi-agent brainstorm. Not for v1 — design exploration for future.
+
+- **Topology decomposition into orthogonal axes:**
+  Access mode (Pool / Resident / Exclusive) × Provisioning (Sessioned / Tokenized / Direct)
+  × Side-channel (EventSource / Daemon / None). Current 7 traits work but mix these
+  dimensions. v2 may decompose for better composability.
+
+- **ResourceHooks trait:** Extensible lifecycle hooks (post_create, pre_checkout,
+  post_release, pre_shutdown). v1 covers this through prepare() / recycle() / shutdown().
+  Hooks useful for observability wrappers and decorator pattern on ResourceHandle.
+
+- **ResourceConditions:** Full Kubernetes-style conditions set on ResourceStatus
+  (multiple simultaneous conditions with timestamps, reasons, messages).
+  v1 uses simplified phase + last_error.
+
+- **Credential pre-expiry refresh:** Proactive token refresh before TTL expiry
+  (OAuth, cloud tokens). v1 is reactive via EventBus<CredentialRotatedEvent>.
+
+- **Cascading reload propagation:** Reload Postgres → temporarily degrade dependent
+  resources. v1 reloads are independent per-resource.
+
+- **Time virtualization for testing:** Virtual clock for deterministic timeout/backoff
+  tests. v1 uses tokio::time::pause().
+
+- **ConnectionAware trait:** Native disconnect detection (WebSocket close, Redis error_rx).
+  Deferred — v1 uses periodic check() fallback.
+
+- **InfraProvider trait:** Nested lifecycle (Browser process → Pages pool).
+  v1 handles via custom create() logic.
