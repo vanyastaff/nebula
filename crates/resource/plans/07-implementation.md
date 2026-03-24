@@ -224,7 +224,7 @@ Foundation. Всё остальное зависит от этого.
 ```
 14. topology/mod.rs           TopologyKind enum, re-exports
 15. topology/pooled.rs        Pooled (prepare, recycle, is_broken → BrokenCheck)
-16. topology/resident.rs      Resident (where Lease: Clone, is_alive, stale_after)
+16. topology/resident.rs      Resident (where Lease: Clone, is_alive_sync, stale_after)
 17. topology/service.rs       Service (acquire_token → Lease, release_token)
 18. topology/transport.rs     Transport (open_session → Lease, close_session)
 19. topology/exclusive.rs     Exclusive (reset — framework-managed)
@@ -248,7 +248,7 @@ Recovery primitives, cross-cutting integration.
 27. metrics.rs                      ResourceMetrics wrapper (← nebula-metrics + nebula-telemetry)
 ```
 
-**Milestone:** RecoveryGate CAS работает. AcquireResilience builds ResilienceChain. ResourceMetrics records counters.
+**Milestone:** RecoveryGate CAS работает. AcquireResilience builds ResilienceChain. ResourceMetrics records counters. CredentialStore is object-safe (resolve_erased + CredentialStoreExt blanket). ScopeResolver is object-safe (BoxFuture, amendment #20).
 
 ### Phase 4 — Runtime implementations (week 3-4)
 
@@ -260,12 +260,18 @@ Recovery primitives, cross-cutting integration.
     - entry.rs                PoolEntry + InstanceMetrics (3 pub + 3 pub(crate))
     - idle_queue.rs           LIFO/FIFO idle management
     - acquire.rs              checkout + create + prepare (is_broken + is_retryable loop)
+                              Retry blacklist: SmallVec<[InstanceId; 4]> tracks attempted
+                              instances within one acquire cycle — prevents re-checkout of
+                              the same broken instance. See amendment #7.
     - release.rs              framework policy BEFORE recycle, dispatch via ReleaseQueue
     - maintenance.rs          background loop + memory pressure adaptive sizing
+                              Staggered probe: when CheckPolicy::Interval, checks are spread
+                              across the interval (delay_per_instance = interval / idle_count)
+                              to avoid thundering herd of health checks to the backend.
 
 29. runtime/resident/         resident::Runtime<R>
     - config.rs               resident::Config { eager_create }
-    - health.rs               is_alive polling loop
+    - health.rs               is_alive_sync polling loop (O(1), no I/O — see contracts)
 
 30. runtime/service/          service::Runtime<R> (Arc-based, natural drain)
     - config.rs               service::Config
@@ -368,7 +374,8 @@ Unit tests (per module):
 Integration tests (cross-module):
   - Pool full lifecycle: warmup → acquire → prepare → use → release → recycle → reap
   - Pool acquire with is_broken + is_retryable retry loop
-  - Resident: create → clone Lease → stale_after → is_alive → recreate
+  - Pool acquire retry blacklist: broken instance not re-checked in same acquire cycle
+  - Resident: create → clone Lease → stale_after → is_alive_sync → recreate
   - Service: create → acquire_token (Lease) → use → natural drain (Arc refcount)
   - Transport: create → open_session (Lease) → use → close_session via ReleaseQueue
   - Exclusive: create → acquire (Arc + OwnedSemaphorePermit) → use → reset → release

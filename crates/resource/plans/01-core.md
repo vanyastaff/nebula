@@ -289,13 +289,26 @@ pub trait ResourceConfig: Send + Sync + Clone + 'static {
     /// Валидация конфигурации. Вызывается при registration.
     fn validate(&self) -> Result<()> { Ok(()) }
 
-    /// Стабильный fingerprint. При изменении — stale instances евиктируются.
+    /// Stable fingerprint of compatibility-affecting fields.
+    /// When fingerprint changes → existing instances are stale → evicted at next recycle.
     ///
-    /// Включает operational settings. НЕ включает credential data
-    /// (credential fingerprint отслеживается отдельно через credential store).
+    /// Must hash all operational settings that affect instance behavior after creation.
+    /// Does NOT include credential data (credential rotation tracked separately
+    /// via CredentialStore / EventBus<CredentialRotatedEvent>).
     ///
-    /// Пример: если statement_timeout изменился — connections stale.
-    /// Если password изменился — credential rotation event (отдельный flow).
+    /// Returns `0` if this config type does NOT support incremental stale detection.
+    /// Pool will never evict instances as "stale" when fingerprint is always 0.
+    ///
+    /// **When `0` is correct:**
+    ///   - `HttpConfig` — stateless client, reload = full destroy + recreate.
+    ///   - Configs where no field affects existing instance compatibility.
+    ///
+    /// **When `0` is a bug:**
+    ///   - `PgResourceConfig` — statement_timeout, search_path affect connections.
+    ///     Changing config without updating fingerprint → silent stale instances.
+    ///   - Any config with fields that change connection/session behavior post-creation.
+    ///
+    /// See: `resource-author-contracts.md` §3 for full contract.
     fn fingerprint(&self) -> u64 { 0 }
 }
 ```

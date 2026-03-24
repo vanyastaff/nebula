@@ -2,12 +2,31 @@
 
 ---
 
+## Health check levels
+
+Three distinct levels of health checking, from most local to most global:
+
+| Level | Mechanism | Scope | Question |
+|-------|-----------|-------|----------|
+| **Instance** | `is_broken()`, `Resource::check()` | Single runtime instance | "Is this specific connection alive?" |
+| **Acquire** | `AcquireResilience` (timeout/retry/CB) | Per-resource acquire path | "Can I get an instance right now?" |
+| **Backend** | `RecoveryGate` + `RecoveryGroup` | Shared infrastructure | "Is the backend reachable at all?" |
+
+Ordering in acquire path: Backend (step 1) → Acquire (step 2) → Instance (step 3).
+See "RecoveryGate vs CircuitBreaker" section below for details.
+
+---
+
 ## RecoveryGate — thundering herd prevention
 
 Infrastructure-level coordination: one probe attempt, all other callers wait.
 Prevents thundering herd when a shared backend goes down (e.g., Postgres primary).
 
 **CAS-based state machine** (via `ArcSwap::compare_and_swap`):
+
+> **NOTE:** `compare_and_swap` may be deprecated in future `arc-swap` versions.
+> Current usage is correct: we need early return from CAS loop (`Ok(ticket)` / `Err(waiter)`),
+> which `rcu()` does not support. Pin `arc-swap` version in `Cargo.toml`.
 
 ```
                   ┌──────────────────────────────────────────────┐

@@ -845,6 +845,17 @@ Resource может impl несколько topology traits (гибриды). Pr
 **Правило:** каждый target resource type маппится ровно на одну primary topology.
 Secondary traits (EventSource, Daemon) не меняют acquire semantics — добавляют capabilities.
 
+**Secondary capability ownership:**
+
+| Secondary | Owns | Lifecycle | HandleInner |
+|-----------|------|-----------|-------------|
+| **Service** | Token API (acquire/release) | Tied to primary runtime | Owned (Cloned) or Guarded (Tracked) |
+| **EventSource** | Subscription stream | Auto-unsubscribe on drop | N/A (subscription, not handle) |
+| **Daemon** | Background loop + CancellationToken | Framework restart policy | N/A (no acquire) |
+
+A secondary capability does not change the topology kind — it extends the lifecycle
+obligations of the primary resource. The primary topology still determines acquire semantics.
+
 ```
                      PG   Redis-S  Redis-D  Redis-PS  Kafka-P  Kafka-C  SSH   WS    TG-Bot  Browser  LLM   HTTP  gRPC  SMTP
 Resource             ✓    ✓       ✓       ✓         ✓       ✓        ✓    ✓    ✓       ✓       ✓     ✓     ✓     ✓

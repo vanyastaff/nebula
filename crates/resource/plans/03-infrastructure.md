@@ -64,6 +64,12 @@ impl<R: Resource> Deref for ResourceHandle<R> {
 }
 
 impl<R: Resource> ResourceHandle<R> {
+    /// Resource key for diagnostics/logging/UI.
+    pub fn resource_key(&self) -> &ResourceKey { &self.resource_key }
+
+    /// Topology tag for diagnostics/logging/UI (e.g., "pool", "resident", "service").
+    pub fn topology_tag(&self) -> &'static str { self.topology_tag }
+
     /// Пометить как broken. Guarded/Shared only.
     /// Owned — noop (no cleanup path to affect).
     pub fn taint(&mut self) {
