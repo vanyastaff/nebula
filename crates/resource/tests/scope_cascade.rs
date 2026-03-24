@@ -65,7 +65,7 @@ impl Resource for TrackingResource {
         Ok(format!("{}-instance", self.name))
     }
 
-    async fn cleanup(&self, _instance: String) -> Result<()> {
+    async fn destroy(&self, _instance: String) -> Result<()> {
         self.cleanup_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -89,7 +89,7 @@ impl Resource for OrderedResource {
         Ok(format!("{}-instance", self.name))
     }
 
-    async fn cleanup(&self, _instance: String) -> Result<()> {
+    async fn destroy(&self, _instance: String) -> Result<()> {
         self.order.lock().push(self.name.to_string());
         Ok(())
     }
@@ -113,7 +113,7 @@ impl Resource for OrderedResourceWithDep {
         Ok(format!("{}-instance", self.name))
     }
 
-    async fn cleanup(&self, _instance: String) -> Result<()> {
+    async fn destroy(&self, _instance: String) -> Result<()> {
         self.order.lock().push(self.name.to_string());
         Ok(())
     }
@@ -137,7 +137,7 @@ impl Resource for OrderedResourceWithDep2 {
         Ok(format!("{}-instance", self.name))
     }
 
-    async fn cleanup(&self, _instance: String) -> Result<()> {
+    async fn destroy(&self, _instance: String) -> Result<()> {
         self.order.lock().push(self.name.to_string());
         Ok(())
     }
@@ -529,3 +529,5 @@ async fn scope_shutdown_invokes_cleanup() {
         "cleanup should have been called during scope shutdown"
     );
 }
+
+

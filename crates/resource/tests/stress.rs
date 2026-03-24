@@ -76,7 +76,7 @@ impl Resource for FastResource {
         Ok(format!("{}#{n}", cfg.id))
     }
 
-    async fn recycle(&self, _inst: &mut String) -> Result<()> {
+    async fn recycle(&self, _inst: &mut String, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<()> {
         // симулируем лёгкую работу при recycle
         tokio::task::yield_now().await;
         Ok(())
@@ -137,7 +137,7 @@ impl Resource for FlakyResource {
     }
 
     // Don't reuse instances — every acquire triggers create(), exercising the breaker.
-    async fn is_reusable(&self, _inst: &String) -> Result<bool> {
+    async fn is_reusable(&self, _inst: &String, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
         Ok(false)
     }
 }
@@ -172,12 +172,12 @@ impl Resource for MortalResource {
         })
     }
 
-    async fn is_reusable(&self, inst: &MortalInstance) -> Result<bool> {
+    async fn is_reusable(&self, inst: &MortalInstance, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
         Ok(inst.born_at.elapsed() < inst.ttl)
     }
 
-    fn is_broken(&self, inst: &MortalInstance) -> bool {
-        inst.born_at.elapsed() >= inst.ttl
+    fn is_broken(&self, inst: &MortalInstance) -> nebula_resource::resource::BrokenCheck {
+        if inst.born_at.elapsed() >= inst.ttl { nebula_resource::resource::BrokenCheck::Broken } else { nebula_resource::resource::BrokenCheck::Healthy }
     }
 }
 
@@ -950,3 +950,6 @@ async fn throughput_report() {
         println!("    throughput: {throughput:.0} ops/sec  p99: {p99}ms  ops: {ops}");
     }
 }
+
+
+

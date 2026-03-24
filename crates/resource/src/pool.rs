@@ -1,18 +1,18 @@
 //! Resource pool — generic pool integrated with the [\Resource\] trait.
 //!
-//! [\Pool<R>\] calls [\R::create\], [\R::is_valid\], [\R::recycle\] and [\R::cleanup\]
+//! [\Pool<R>\] calls [\R::create\], [\R::is_reusable\], [\R::recycle\] and [\R::destroy\]
 //! directly, removing the need for closure factories.
 //!
 //! ## Lifecycle Hooks
 //!
 //! When a [\HookRegistry\] is attached (via [\Pool::with_hooks\]), the pool
 //! fires [\HookEvent::Create\] before/after [\Resource::create()\] and
-//! [\HookEvent::Cleanup\] before/after [\Resource::cleanup()\]. Before-hooks
-//! can cancel create operations; cleanup hooks are best-effort (errors are
+//! [\HookEvent::Destroy\] before/after [\Resource::destroy()\]. Before-hooks
+//! can cancel create operations; destroy hooks are best-effort (errors are
 //! logged but never propagated).
 //!
 //! [\Resource::create()\]: crate::Resource::create
-//! [\Resource::cleanup()\]: crate::Resource::cleanup
+//! [\Resource::destroy()\]: crate::Resource::destroy
 
 // ── Submodules ────────────────────────────────────────────────────────────────
 pub mod config;
@@ -59,19 +59,11 @@ use self::stats::new_latency_histogram;
 
 /// Lifecycle metadata for a pool-managed instance.
 ///
-/// Passed to [\Resource::is_reusable_with_meta\](crate::resource::Resource::is_reusable_with_meta)
-/// and [\Resource::recycle_with_meta\](crate::resource::Resource::recycle_with_meta) so that
+/// Passed to [`Resource::is_reusable`](crate::resource::Resource::is_reusable)
+/// and [`Resource::recycle`](crate::resource::Resource::recycle) so that
 /// adapters can make lifecycle decisions based on age and usage without storing
 /// that data inside the instance itself (which would couple the instance type to
 /// pool internals).
-///
-/// ## Deprecation note on existing signatures
-///
-/// \Resource::is_reusable\ and \Resource::recycle\ retain their original
-/// no-metadata signatures for backward compatibility.  Override
-/// \is_reusable_with_meta\ / ecycle_with_meta\ to access this context;
-/// the pool calls those first and falls back to the plain versions only if the
-/// metadata variants are not overridden (default no-op).
 #[derive(Debug, Clone, Copy)]
 pub struct InstanceMetadata {
     /// When the instance was first created by \Resource::create()\.
@@ -83,7 +75,7 @@ pub struct InstanceMetadata {
 }
 
 impl InstanceMetadata {
-    fn default_for_new_instance(created_at: Instant) -> Self {
+    pub(crate) fn default_for_new_instance(created_at: Instant) -> Self {
         Self {
             created_at,
             idle_since: created_at,
@@ -155,7 +147,7 @@ impl<R: Resource> Pool<R> {
     ///
     /// When a [`HookRegistry`] is provided, the pool fires
     /// [`HookEvent::Create`] around `Resource::create()` and
-    /// [`HookEvent::Cleanup`] around `Resource::cleanup()`.
+    /// [`HookEvent::Destroy`] around `Resource::destroy()`.
     ///
     /// # Errors
     /// Returns error if `pool_config` is invalid (e.g. max_size == 0).
@@ -458,7 +450,7 @@ impl<R: Resource> Pool<R> {
             match idle_result {
                 IdleResult::Expired(inst) => {
                     tracing::debug!("Destroying expired resource instance");
-                    Self::cleanup_with_hooks(inner, inst, &CleanupReason::Expired, None).await;
+                    Self::destroy_with_hooks(inner, inst, &CleanupReason::Expired, None).await;
                     continue;
                 }
                 IdleResult::Valid(entry, wait_ms) => {
@@ -489,7 +481,7 @@ impl<R: Resource> Pool<R> {
                         let mut fut = pin!(
                             inner
                                 .resource
-                                .is_reusable_with_meta(&entry.instance, &inst_meta)
+                                .is_reusable(&entry.instance, &inst_meta)
                         );
                         match fut.as_mut().poll(&mut task_cx) {
                             Poll::Ready(result) => Some(result),
@@ -502,7 +494,7 @@ impl<R: Resource> Pool<R> {
                         None => {
                             inner
                                 .resource
-                                .is_reusable_with_meta(&entry.instance, &inst_meta)
+                                .is_reusable(&entry.instance, &inst_meta)
                                 .await
                         }
                     };
@@ -519,7 +511,7 @@ impl<R: Resource> Pool<R> {
                                     state.stats.total_acquisitions.saturating_sub(1);
                                 state.stats.active = state.stats.active.saturating_sub(1);
                             });
-                            Self::cleanup_with_hooks(
+                            Self::destroy_with_hooks(
                                 inner,
                                 entry.instance,
                                 &CleanupReason::HealthCheckFailed,
@@ -648,7 +640,7 @@ impl<R: Resource> Pool<R> {
         }
         // Fast synchronous broken-check: skip async recycle entirely for obviously
         // dead instances (closed socket, invalid descriptor, etc.).
-        if inner.resource.is_broken(&inst) {
+        if inner.resource.is_broken(&inst).is_broken() {
             return Some(inst);
         }
         if inner
@@ -674,7 +666,7 @@ impl<R: Resource> Pool<R> {
         let recycle_ok = {
             let waker = std::task::Waker::noop();
             let cx = &mut std::task::Context::from_waker(waker);
-            let mut fut = std::pin::pin!(inner.resource.recycle_with_meta(&mut inst, &inst_meta));
+            let mut fut = std::pin::pin!(inner.resource.recycle(&mut inst, &inst_meta));
             matches!(fut.as_mut().poll(cx), std::task::Poll::Ready(Ok(())))
         };
         if !recycle_ok {
@@ -833,6 +825,7 @@ impl<R: Resource> Pool<R> {
             && inner
                 .resource
                 .is_broken(inst_slot.as_ref().expect("instance must exist"))
+                .is_broken()
         {
             skip_recycle = true;
         }
@@ -914,7 +907,7 @@ impl<R: Resource> Pool<R> {
         }
 
         if let Some((to_cleanup, reason)) = cleanup_reason {
-            Self::cleanup_with_hooks(inner, to_cleanup, &reason, None).await;
+            Self::destroy_with_hooks(inner, to_cleanup, &reason, None).await;
             tracing::debug!(
                 resource_id = %inner.resource_key,
                 "Cleaned up resource instance on release (pool shutdown or recycle failed)"
@@ -1012,7 +1005,7 @@ impl<R: Resource> Pool<R> {
         if let Some(timeout) = inner.pool_config.resilience.recycle_timeout {
             return match tokio::time::timeout(
                 timeout,
-                inner.resource.recycle_with_meta(instance, meta),
+                inner.resource.recycle(instance, meta),
             )
             .await
             {
@@ -1024,7 +1017,7 @@ impl<R: Resource> Pool<R> {
                 }),
             };
         }
-        inner.resource.recycle_with_meta(instance, meta).await
+        inner.resource.recycle(instance, meta).await
     }
 
     /// Create a new resource instance, firing [`HookEvent::Create`]
@@ -1063,12 +1056,12 @@ impl<R: Resource> Pool<R> {
         result
     }
 
-    /// Clean up an instance, firing [`HookEvent::Cleanup`] before/after
+    /// Destroy an instance, firing [`HookEvent::Destroy`] before/after
     /// hooks when a [`HookRegistry`] is attached.
     ///
     /// This also increments the `destroyed` stat and emits a
     /// [`ResourceEvent::CleanedUp`] event.
-    async fn cleanup_with_hooks(
+    async fn destroy_with_hooks(
         inner: &PoolInner<R>,
         instance: R::Instance,
         reason: &CleanupReason,
@@ -1077,19 +1070,19 @@ impl<R: Resource> Pool<R> {
         let resource_id: &str = &inner.resource_key;
         let ctx = ctx.unwrap_or(&inner.maintenance_ctx);
 
-        // Run Cleanup before-hooks (result is best-effort — cannot cancel a cleanup).
+        // Run Destroy before-hooks (result is best-effort — cannot cancel a destroy).
         if let Some(hooks) = &inner.hooks {
             let _ = hooks
-                .run_before(&HookEvent::Cleanup, resource_id, ctx)
+                .run_before(&HookEvent::Destroy, resource_id, ctx)
                 .await;
         }
 
-        let cleanup_ok = inner.resource.cleanup(instance).await.is_ok();
+        let destroy_ok = inner.resource.destroy(instance).await.is_ok();
 
-        // Run Cleanup after-hooks.
+        // Run Destroy after-hooks.
         if let Some(hooks) = &inner.hooks {
             hooks
-                .run_after(&HookEvent::Cleanup, resource_id, ctx, cleanup_ok)
+                .run_after(&HookEvent::Destroy, resource_id, ctx, destroy_ok)
                 .await;
         }
 
@@ -1201,7 +1194,7 @@ impl<R: Resource> Pool<R> {
             .flatten();
 
             if let Some(surplus) = rejected {
-                Self::cleanup_with_hooks(inner, surplus, &CleanupReason::Evicted, Some(ctx)).await;
+                Self::destroy_with_hooks(inner, surplus, &CleanupReason::Evicted, Some(ctx)).await;
                 break;
             }
         }
@@ -1230,7 +1223,7 @@ impl<R: Resource> Pool<R> {
             .flatten();
 
             if let Some(entry) = entry {
-                Self::cleanup_with_hooks(inner, entry.instance, &CleanupReason::Evicted, None)
+                Self::destroy_with_hooks(inner, entry.instance, &CleanupReason::Evicted, None)
                     .await;
                 let _ = Self::with_inner_state(inner, |state| {
                     state.stats.idle = state.idle.len();
@@ -1287,7 +1280,7 @@ impl<R: Resource> Pool<R> {
         })?;
 
         for inst in to_cleanup {
-            Self::cleanup_with_hooks(inner, inst, &CleanupReason::Evicted, Some(ctx)).await;
+            Self::destroy_with_hooks(inner, inst, &CleanupReason::Evicted, Some(ctx)).await;
         }
 
         // Ensure min_size
@@ -1352,7 +1345,7 @@ impl<R: Resource> Pool<R> {
         };
 
         for entry in entries {
-            Self::cleanup_with_hooks(inner, entry.instance, &CleanupReason::Shutdown, None).await;
+            Self::destroy_with_hooks(inner, entry.instance, &CleanupReason::Shutdown, None).await;
         }
 
         Self::with_inner_state(inner, |state| {
@@ -1402,7 +1395,7 @@ impl<R: Resource> Pool<R> {
 
         let evicted = to_evict.len();
         for inst in to_evict {
-            Self::cleanup_with_hooks(inner, inst, &CleanupReason::Evicted, None).await;
+            Self::destroy_with_hooks(inner, inst, &CleanupReason::Evicted, None).await;
         }
         evicted
     }
@@ -1865,7 +1858,7 @@ mod tests {
             Ok(format!("{}-instance", config.prefix))
         }
 
-        async fn recycle(&self, _instance: &mut Self::Instance) -> Result<()> {
+        async fn recycle(&self, _instance: &mut Self::Instance, _meta: &InstanceMetadata) -> Result<()> {
             tokio::time::sleep(Duration::from_millis(80)).await;
             Ok(())
         }
@@ -1951,7 +1944,7 @@ mod tests {
             Ok(format!("{}-inst", config.prefix))
         }
 
-        async fn is_reusable(&self, _instance: &Self::Instance) -> Result<bool> {
+        async fn is_reusable(&self, _instance: &Self::Instance, _meta: &InstanceMetadata) -> Result<bool> {
             let remaining = self
                 .fail_after
                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -2037,7 +2030,7 @@ mod tests {
             Ok(format!("{}-inst", config.prefix))
         }
 
-        async fn recycle(&self, _instance: &mut Self::Instance) -> Result<()> {
+        async fn recycle(&self, _instance: &mut Self::Instance, _meta: &InstanceMetadata) -> Result<()> {
             let key = nebula_core::resource_key!("recycle-fail");
             Err(Error::Internal {
                 resource_key: key,

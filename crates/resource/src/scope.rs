@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Each variant carries optional parent identifiers so that `contains()`
 /// can verify the parent chain instead of unconditionally returning true.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum Scope {
     /// Global scope - shared across all workflows and tenants

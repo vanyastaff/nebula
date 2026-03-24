@@ -63,6 +63,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
             fn is_reusable(
                 &self,
                 _instance: &Self::Instance,
+                _meta: &::nebula_resource::pool::InstanceMetadata,
             ) -> impl ::std::future::Future<Output = ::nebula_resource::error::Result<bool>> + Send {
                 async move { Ok(true) }
             }
@@ -70,18 +71,16 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
             fn recycle(
                 &self,
                 _instance: &mut Self::Instance,
+                _meta: &::nebula_resource::pool::InstanceMetadata,
             ) -> impl ::std::future::Future<Output = ::nebula_resource::error::Result<()>> + Send {
                 async move { Ok(()) }
             }
 
-            fn cleanup(
+            fn destroy(
                 &self,
                 _instance: Self::Instance,
             ) -> impl ::std::future::Future<Output = ::nebula_resource::error::Result<()>> + Send {
-                async move {
-                    drop(_instance);
-                    Ok(())
-                }
+                async move { Ok(()) }
             }
         }
     };

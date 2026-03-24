@@ -1,8 +1,8 @@
-//! Integration tests for Create and Cleanup lifecycle hooks.
+//! Integration tests for Create and Destroy lifecycle hooks.
 //!
 //! Verifies that when a [`HookRegistry`] is attached to a [`Pool`], the pool
 //! fires [`HookEvent::Create`] before/after `Resource::create()` and
-//! [`HookEvent::Cleanup`] before/after `Resource::cleanup()`.
+//! [`HookEvent::Destroy`] before/after `Resource::destroy()`.
 //!
 //! Also verifies that hooks fire through the [`Manager`] registration path.
 
@@ -143,7 +143,7 @@ impl ResourceHook for CountingHook {
     fn events(&self) -> Vec<HookEvent> {
         vec![
             HookEvent::Create,
-            HookEvent::Cleanup,
+            HookEvent::Destroy,
             HookEvent::Acquire,
             HookEvent::Release,
         ]
@@ -158,7 +158,7 @@ impl ResourceHook for CountingHook {
             HookEvent::Create => {
                 self.create_before.fetch_add(1, Ordering::SeqCst);
             }
-            HookEvent::Cleanup => {
+            HookEvent::Destroy => {
                 self.cleanup_before.fetch_add(1, Ordering::SeqCst);
             }
             HookEvent::Acquire => {
@@ -178,7 +178,7 @@ impl ResourceHook for CountingHook {
             HookEvent::Create => {
                 self.create_after.fetch_add(1, Ordering::SeqCst);
             }
-            HookEvent::Cleanup => {
+            HookEvent::Destroy => {
                 self.cleanup_after.fetch_add(1, Ordering::SeqCst);
             }
             HookEvent::Acquire => {
@@ -505,7 +505,7 @@ impl Resource for RecycleFailResource {
         Ok("recycle-fail-inst".to_string())
     }
 
-    async fn recycle(&self, _instance: &mut String) -> Result<()> {
+    async fn recycle(&self, _instance: &mut String, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<()> {
         Err(nebula_resource::error::Error::Internal {
             resource_key: resource_key!("recycle-fail"),
             message: "recycle always fails".to_string(),
@@ -675,3 +675,5 @@ async fn pool_without_hooks_works_normally() {
 
     pool.shutdown().await.unwrap();
 }
+
+

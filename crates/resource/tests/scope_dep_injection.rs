@@ -255,3 +255,5 @@ async fn deregister_scoped_only_removes_that_scope() {
         "global pool should be gone after deregister_scoped"
     );
 }
+
+

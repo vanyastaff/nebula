@@ -14,6 +14,26 @@ use crate::error::Result;
 use crate::metadata::ResourceMetadata;
 use crate::pool::InstanceMetadata;
 
+/// Synchronous broken-check result, returned by [`Resource::is_broken`].
+///
+/// `Broken` causes the pool to discard the instance immediately and skip the
+/// async recycle round-trip.  `Healthy` lets the normal recycle path proceed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrokenCheck {
+    /// Instance appears healthy — proceed with async recycle.
+    Healthy,
+    /// Instance is permanently broken — discard immediately, no recycle.
+    Broken,
+}
+
+impl BrokenCheck {
+    /// Returns `true` when the check result is `Broken`.
+    #[must_use]
+    pub fn is_broken(self) -> bool {
+        matches!(self, Self::Broken)
+    }
+}
+
 /// Configuration trait for resource types.
 pub trait Config: Send + Sync + 'static {
     /// Validate the configuration, returning an error if invalid.
@@ -59,7 +79,15 @@ pub trait Resource: Send + Sync + 'static {
     ///
     /// Return `Ok(true)` when the instance is reusable, `Ok(false)` when it
     /// should be discarded, and `Err(_)` on validation failure.
-    fn is_reusable(&self, _instance: &Self::Instance) -> impl Future<Output = Result<bool>> + Send {
+    ///
+    /// `meta` carries pool lifecycle context (age, idle time, acquire count)
+    /// so implementations can make metadata-aware decisions without coupling
+    /// the instance type to pool internals.
+    fn is_reusable(
+        &self,
+        _instance: &Self::Instance,
+        _meta: &InstanceMetadata,
+    ) -> impl Future<Output = Result<bool>> + Send {
         async { Ok(true) }
     }
 
@@ -69,52 +97,25 @@ pub trait Resource: Send + Sync + 'static {
     /// Must not block. Checks cheap indicators: closed TCP socket, invalid descriptor,
     /// or an atomic broken flag set by the instance.
     ///
-    /// `true`  → pool discards the instance and spawns async cleanup (no recycle).
-    /// `false` → pool continues to the normal async recycle path.
+    /// [`BrokenCheck::Broken`] → pool discards the instance and spawns async destroy (no recycle).
+    /// [`BrokenCheck::Healthy`] → pool continues to the normal async recycle path.
     ///
     /// Complements [`is_reusable`](Self::is_reusable): `is_broken` is a fast release-time
     /// guard; `is_reusable` is a deeper validity check at acquire-from-idle time.
-    fn is_broken(&self, _instance: &Self::Instance) -> bool {
-        false
+    fn is_broken(&self, _instance: &Self::Instance) -> BrokenCheck {
+        BrokenCheck::Healthy
     }
 
     /// Recycle an instance before returning it to the pool.
-    fn recycle(&self, _instance: &mut Self::Instance) -> impl Future<Output = Result<()>> + Send {
-        async { Ok(()) }
-    }
-
-    /// Deep reuse check with pool lifecycle metadata.
     ///
-    /// Same contract as [`is_reusable`](Self::is_reusable) but also receives
-    /// [`InstanceMetadata`] so that adapters can make decisions based on instance
-    /// age, idle time, or acquisition count without storing that data inside the
-    /// instance itself.
-    ///
-    /// **Migration note:** Override this method instead of `is_reusable` when you
-    /// need metadata.  The pool calls this first; `is_reusable` is only called when
-    /// this default implementation is not overridden (it delegates to `is_reusable`).
-    fn is_reusable_with_meta(
+    /// `meta` carries pool lifecycle context (age, idle time, acquire count)
+    /// for implementations that need metadata-aware recycling decisions.
+    fn recycle(
         &self,
-        instance: &Self::Instance,
-        _meta: &InstanceMetadata,
-    ) -> impl Future<Output = Result<bool>> + Send {
-        self.is_reusable(instance)
-    }
-
-    /// Recycle with pool lifecycle metadata.
-    ///
-    /// Same as [`recycle`](Self::recycle) but also receives [`InstanceMetadata`] so
-    /// that adapters can make fine-grained decisions (e.g. skip flush if the instance
-    /// was idle for less than a second). Defaults to delegating to `recycle`.
-    ///
-    /// **Migration note:** Override this method instead of `recycle` when you need
-    /// the metadata; do not override both.
-    fn recycle_with_meta(
-        &self,
-        instance: &mut Self::Instance,
+        _instance: &mut Self::Instance,
         _meta: &InstanceMetadata,
     ) -> impl Future<Output = Result<()>> + Send {
-        self.recycle(instance)
+        async { Ok(()) }
     }
 
     /// Prepare an instance for a specific execution context before handing it to the caller.
@@ -140,12 +141,13 @@ pub trait Resource: Send + Sync + 'static {
         async { Ok(()) }
     }
 
-    /// Clean up an instance when it is permanently removed.
-    fn cleanup(&self, instance: Self::Instance) -> impl Future<Output = Result<()>> + Send {
-        async {
-            drop(instance);
-            Ok(())
-        }
+    /// Permanently destroy an instance when it is removed from the pool.
+    ///
+    /// Called whenever an instance is discarded: on pool shutdown, after a failed
+    /// recycle, or when it exceeds its maximum lifetime. The default is a no-op
+    /// (the instance is simply dropped).
+    fn destroy(&self, _instance: Self::Instance) -> impl Future<Output = Result<()>> + Send {
+        async { Ok(()) }
     }
 }
 

@@ -35,15 +35,15 @@ impl Resource for NoOpResource {
         Ok(0)
     }
 
-    async fn is_reusable(&self, _instance: &u64) -> Result<bool> {
+    async fn is_reusable(&self, _instance: &u64, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
         Ok(true)
     }
 
-    async fn recycle(&self, _instance: &mut u64) -> Result<()> {
+    async fn recycle(&self, _instance: &mut u64, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<()> {
         Ok(())
     }
 
-    async fn cleanup(&self, _instance: u64) -> Result<()> {
+    async fn destroy(&self, _instance: u64) -> Result<()> {
         Ok(())
     }
 }
@@ -162,3 +162,5 @@ criterion_group!(
     concurrent_contention,
 );
 criterion_main!(benches);
+
+

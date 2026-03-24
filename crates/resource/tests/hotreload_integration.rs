@@ -61,7 +61,7 @@ impl Resource for TrackingResource {
         Ok("instance".to_string())
     }
 
-    async fn cleanup(&self, _instance: String) -> Result<()> {
+    async fn destroy(&self, _instance: String) -> Result<()> {
         self.cleanup_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -516,3 +516,5 @@ async fn reload_config_concurrent_acquire() {
         .expect("should downcast");
     assert_eq!(inst, "instance");
 }
+
+

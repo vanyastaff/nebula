@@ -76,3 +76,5 @@ async fn retain_predicate_receives_instance_metadata() {
         "both entries evicted when predicate returns false"
     );
 }
+
+

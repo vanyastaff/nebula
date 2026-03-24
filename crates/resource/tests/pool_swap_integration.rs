@@ -45,7 +45,7 @@ impl Resource for VersionedResource {
         Ok(self.version.to_string())
     }
 
-    async fn cleanup(&self, _instance: Self::Instance) -> Result<()> {
+    async fn destroy(&self, _instance: Self::Instance) -> Result<()> {
         self.cleanup_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -133,3 +133,5 @@ async fn config_reload_swaps_to_new_pool_while_old_drains() {
         .expect("downcast final instance");
     assert_eq!(final_instance, "v2");
 }
+
+

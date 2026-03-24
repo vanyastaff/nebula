@@ -130,6 +130,15 @@ pub mod error {
     pub type Result<T> = core::result::Result<T, String>;
 }
 
+pub mod pool {
+    #[derive(Debug, Clone, Copy)]
+    pub struct InstanceMetadata {
+        pub created_at: std::time::Instant,
+        pub idle_since: std::time::Instant,
+        pub acquire_count: usize,
+    }
+}
+
 pub trait Resource: Send + Sync + 'static {
     type Config;
     type Instance: Send + Sync + 'static;
@@ -145,14 +154,16 @@ pub trait Resource: Send + Sync + 'static {
     fn is_reusable(
         &self,
         instance: &Self::Instance,
+        meta: &pool::InstanceMetadata,
     ) -> impl ::std::future::Future<Output = crate::error::Result<bool>> + Send;
 
     fn recycle(
         &self,
         instance: &mut Self::Instance,
+        meta: &pool::InstanceMetadata,
     ) -> impl ::std::future::Future<Output = crate::error::Result<()>> + Send;
 
-    fn cleanup(
+    fn destroy(
         &self,
         instance: Self::Instance,
     ) -> impl ::std::future::Future<Output = crate::error::Result<()>> + Send;

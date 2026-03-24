@@ -894,19 +894,20 @@ impl<R: crate::Resource> HealthCheckable for ResourceHealthAdapter<R> {
         };
 
         // Step 2: validate the new instance.
-        let valid = match self.resource.is_reusable(&instance).await {
+        let probe_meta = crate::pool::InstanceMetadata::default_for_new_instance(start);
+        let valid = match self.resource.is_reusable(&instance, &probe_meta).await {
             Ok(v) => v,
             Err(e) => {
-                // Cleanup before returning.
-                let _ = self.resource.cleanup(instance).await;
+                // Destroy before returning.
+                let _ = self.resource.destroy(instance).await;
                 return Ok(HealthStatus::unhealthy(format!(
                     "Resource validation failed: {e}"
                 )));
             }
         };
 
-        // Step 3: cleanup the probe instance.
-        let _ = self.resource.cleanup(instance).await;
+        // Step 3: destroy the probe instance.
+        let _ = self.resource.destroy(instance).await;
 
         let latency = start.elapsed();
         if valid {

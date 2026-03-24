@@ -42,7 +42,7 @@ impl Resource for TrackingResource {
         Ok("tracked-instance".to_string())
     }
 
-    async fn cleanup(&self, _instance: String) -> Result<()> {
+    async fn destroy(&self, _instance: String) -> Result<()> {
         self.cleanup_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -239,3 +239,5 @@ async fn acquire_after_pool_shutdown_fails_immediately() {
         elapsed
     );
 }
+
+

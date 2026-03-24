@@ -117,3 +117,5 @@ async fn pool_acquire_returns_internal_when_state_poisoned() {
     assert!(matches!(err, Error::Internal { .. }));
     assert!(err.to_string().contains("pool state poisoned"));
 }
+
+

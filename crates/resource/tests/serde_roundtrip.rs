@@ -293,3 +293,5 @@ fn strategy_rejects_number() {
     let result = serde_json::from_str::<ScopingStrategy>("99");
     assert!(result.is_err(), "number should produce Err for Strategy");
 }
+
+

@@ -33,11 +33,11 @@ impl Resource for ProfileResource {
         Ok(0)
     }
 
-    async fn is_reusable(&self, _instance: &Self::Instance) -> Result<bool> {
+    async fn is_reusable(&self, _instance: &Self::Instance, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
         Ok(true)
     }
 
-    async fn recycle(&self, _instance: &mut Self::Instance) -> Result<()> {
+    async fn recycle(&self, _instance: &mut Self::Instance, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<()> {
         Ok(())
     }
 }
@@ -122,3 +122,5 @@ async fn main() {
         println!("latency=none");
     }
 }
+
+

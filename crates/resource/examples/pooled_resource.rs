@@ -65,18 +65,18 @@ impl Resource for DbResource {
         Ok(DbConnection { id, query_count: 0 })
     }
 
-    async fn is_reusable(&self, conn: &DbConnection) -> Result<bool> {
+    async fn is_reusable(&self, conn: &DbConnection, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
         // Reject connections that have served too many queries.
         Ok(conn.query_count < 100)
     }
 
-    async fn recycle(&self, conn: &mut DbConnection) -> Result<()> {
+    async fn recycle(&self, conn: &mut DbConnection, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<()> {
         // Reset per-checkout state.
         conn.query_count = 0;
         Ok(())
     }
 
-    async fn cleanup(&self, conn: DbConnection) -> Result<()> {
+    async fn destroy(&self, conn: DbConnection) -> Result<()> {
         println!("  [cleanup] closing connection #{}", conn.id);
         Ok(())
     }
@@ -192,3 +192,5 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+

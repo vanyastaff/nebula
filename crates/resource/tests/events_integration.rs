@@ -575,3 +575,5 @@ async fn pool_guard_drop_emits_released_event() {
     }
     assert!(found_released, "expected Released event after guard drop");
 }
+
+

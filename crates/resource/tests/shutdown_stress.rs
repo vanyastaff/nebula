@@ -51,7 +51,7 @@ impl Resource for StressResource {
         Ok(self.created.fetch_add(1, Ordering::SeqCst))
     }
 
-    async fn cleanup(&self, _instance: Self::Instance) -> Result<()> {
+    async fn destroy(&self, _instance: Self::Instance) -> Result<()> {
         self.cleaned.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -210,3 +210,5 @@ async fn pool_shutdown_does_not_hang_with_concurrent_acquires() {
         "shutdown should perform cleanup"
     );
 }
+
+

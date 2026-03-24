@@ -54,13 +54,13 @@ impl Resource for InMemoryCache {
     }
 
     /// A cache is always valid unless it has grown too large.
-    async fn is_reusable(&self, instance: &HashMap<String, String>) -> Result<bool> {
+    async fn is_reusable(&self, instance: &HashMap<String, String>, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
         // In a real resource you might check connectivity, staleness, etc.
         Ok(instance.len() < 10_000)
     }
 
     /// Clean up: nothing to do for an in-memory HashMap.
-    async fn cleanup(&self, _instance: HashMap<String, String>) -> Result<()> {
+    async fn destroy(&self, _instance: HashMap<String, String>) -> Result<()> {
         // In a real resource you would close connections, flush buffers, etc.
         Ok(())
     }
@@ -113,3 +113,5 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+

@@ -62,7 +62,7 @@ impl Resource for CountingResource {
         Ok(format!("inst-{n}"))
     }
 
-    async fn cleanup(&self, _instance: String) -> Result<()> {
+    async fn destroy(&self, _instance: String) -> Result<()> {
         self.cleanup_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -592,3 +592,5 @@ async fn utilization_snapshot_reflects_pool_state() {
     let (active, idle, max) = pool.utilization_snapshot();
     assert_eq!((active, idle, max), (2, 3, 10));
 }
+
+

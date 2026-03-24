@@ -22,4 +22,11 @@ Resource lifecycle management — pooling, health checks, autoscaling, hooks, an
 ## Relations
 - Depends on nebula-core, nebula-telemetry (re-exports CallRecord types), nebula-eventbus. Peer with nebula-credential.
 
-<!-- reviewed: 2026-03-22 (updated bench files to nested PoolConfig API: PoolSizing/PoolAcquire/PoolLifetime; no architectural changes) -->
+## Key API changes (2026-03-22)
+- `fn cleanup` renamed to `fn destroy` across the trait, all impls, pool internals (`destroy_with_hooks`), and `HookEvent::Cleanup` → `HookEvent::Destroy`
+- `fn is_broken` now returns `BrokenCheck` enum (`Healthy`/`Broken`), not `bool`
+- `fn is_reusable` and `fn recycle` now take `_meta: &InstanceMetadata` as second argument — the old `is_reusable_with_meta` / `recycle_with_meta` methods are gone
+- `BrokenCheck` is `pub` in `nebula_resource::resource`; `InstanceMetadata` is `pub` in `nebula_resource::pool`
+- `Scope` enum is now `#[non_exhaustive]`
+
+<!-- reviewed: 2026-03-22 (impl #2, #3, #7, #9: non_exhaustive Scope, cleanup→destroy, BrokenCheck, collapsed _with_meta variants) -->

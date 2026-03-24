@@ -102,18 +102,18 @@ impl Resource for ReferenceResource {
         })
     }
 
-    async fn is_reusable(&self, instance: &ReferenceInstance) -> Result<bool> {
+    async fn is_reusable(&self, instance: &ReferenceInstance, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
         Ok(instance.valid)
     }
 
-    async fn recycle(&self, instance: &mut ReferenceInstance) -> Result<()> {
+    async fn recycle(&self, instance: &mut ReferenceInstance, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<()> {
         self.recycle_count.fetch_add(1, Ordering::SeqCst);
         // Reset counter on recycle to simulate connection state reset.
         instance.counter = 0;
         Ok(())
     }
 
-    async fn cleanup(&self, _instance: ReferenceInstance) -> Result<()> {
+    async fn destroy(&self, _instance: ReferenceInstance) -> Result<()> {
         self.cleanup_called.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -168,14 +168,19 @@ async fn is_reusable_reflects_instance_state() {
         counter: 0,
         valid: true,
     };
-    assert!(resource.is_reusable(&valid_instance).await.unwrap());
+    let dummy_meta = nebula_resource::pool::InstanceMetadata {
+        created_at: std::time::Instant::now(),
+        idle_since: std::time::Instant::now(),
+        acquire_count: 1,
+    };
+    assert!(resource.is_reusable(&valid_instance, &dummy_meta).await.unwrap());
 
     let invalid_instance = ReferenceInstance {
         id: "test".into(),
         counter: 0,
         valid: false,
     };
-    assert!(!resource.is_reusable(&invalid_instance).await.unwrap());
+    assert!(!resource.is_reusable(&invalid_instance, &dummy_meta).await.unwrap());
 }
 
 #[tokio::test]
@@ -185,7 +190,11 @@ async fn recycle_resets_instance_state() {
 
     assert_eq!(instance.counter, 42);
 
-    resource.recycle(&mut instance).await.unwrap();
+    resource.recycle(&mut instance, &nebula_resource::pool::InstanceMetadata {
+        created_at: std::time::Instant::now(),
+        idle_since: std::time::Instant::now(),
+        acquire_count: 1,
+    }).await.unwrap();
 
     assert_eq!(instance.counter, 0, "recycle should reset counter");
     assert_eq!(resource.recycle_count.load(Ordering::SeqCst), 1);
@@ -217,17 +226,17 @@ async fn cleanup_is_called_on_shutdown() {
             self.inner.create(config, ctx).await
         }
 
-        async fn is_reusable(&self, instance: &ReferenceInstance) -> Result<bool> {
-            self.inner.is_reusable(instance).await
+        async fn is_reusable(&self, instance: &ReferenceInstance, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
+            self.inner.is_reusable(instance, _meta).await
         }
 
-        async fn recycle(&self, instance: &mut ReferenceInstance) -> Result<()> {
-            self.inner.recycle(instance).await
+        async fn recycle(&self, instance: &mut ReferenceInstance, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<()> {
+            self.inner.recycle(instance, _meta).await
         }
 
-        async fn cleanup(&self, instance: ReferenceInstance) -> Result<()> {
+        async fn destroy(&self, instance: ReferenceInstance) -> Result<()> {
             self.called.store(true, Ordering::SeqCst);
-            self.inner.cleanup(instance).await
+            self.inner.destroy(instance).await
         }
     }
 
@@ -312,3 +321,5 @@ async fn multiple_creates_get_unique_ids() {
     assert_eq!(i1.id, "ref-1");
     assert_eq!(i2.id, "ref-2");
 }
+
+

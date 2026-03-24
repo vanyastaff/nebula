@@ -765,3 +765,5 @@ async fn default_autoscale_plus_hooks_work_together() {
 
     manager.shutdown().await.unwrap();
 }
+
+

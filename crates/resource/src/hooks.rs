@@ -52,12 +52,12 @@ pub enum HookEvent {
     /// but only once (e.g. `SET search_path`, `SET timezone`, registering
     /// the connection in a registry).  Cannot cancel the creation.
     PostCreate,
-    /// Before/after cleaning up (permanently destroying) a resource instance.
+    /// Before/after permanently destroying a resource instance.
     ///
-    /// **Note:** Cleanup is irrevocable — the before-hook result is
-    /// **ignored** and cannot prevent the cleanup from proceeding.
+    /// **Note:** Destroy is irrevocable — the before-hook result is
+    /// **ignored** and cannot prevent the destruction from proceeding.
     /// Before-hooks are called for observability only.
-    Cleanup,
+    Destroy,
     /// Before handing an idle instance to the caller.
     ///
     /// Called after [`is_reusable`](crate::resource::Resource::is_reusable)
@@ -90,7 +90,7 @@ impl std::fmt::Display for HookEvent {
             Self::Release => write!(f, "Release"),
             Self::Create => write!(f, "Create"),
             Self::PostCreate => write!(f, "PostCreate"),
-            Self::Cleanup => write!(f, "Cleanup"),
+            Self::Destroy => write!(f, "Destroy"),
             Self::PreAcquire => write!(f, "PreAcquire"),
             Self::PostRecycle => write!(f, "PostRecycle"),
             Self::PostRelease => write!(f, "PostRelease"),
@@ -169,7 +169,7 @@ pub trait ResourceHook: Send + Sync {
     /// Returning [`HookResult::Cancel`] cancels the operation for
     /// [`Acquire`](HookEvent::Acquire) and [`Create`](HookEvent::Create).
     /// For [`Release`](HookEvent::Release) and
-    /// [`Cleanup`](HookEvent::Cleanup), the result is ignored (the
+    /// [`Destroy`](HookEvent::Destroy), the result is ignored (the
     /// operation proceeds regardless) because these occur in
     /// irrevocable contexts (e.g. `Drop`).
     async fn before(&self, event: &HookEvent, resource_id: &str, ctx: &Context) -> HookResult;
@@ -317,7 +317,7 @@ impl ResourceHook for AuditHook {
             HookEvent::Acquire,
             HookEvent::Release,
             HookEvent::Create,
-            HookEvent::Cleanup,
+            HookEvent::Destroy,
         ]
     }
 

@@ -33,11 +33,11 @@ impl Resource for BenchResource {
         Ok(0)
     }
 
-    async fn is_reusable(&self, _instance: &Self::Instance) -> Result<bool> {
+    async fn is_reusable(&self, _instance: &Self::Instance, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
         Ok(true)
     }
 
-    async fn recycle(&self, _instance: &mut Self::Instance) -> Result<()> {
+    async fn recycle(&self, _instance: &mut Self::Instance, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<()> {
         Ok(())
     }
 }
@@ -306,3 +306,5 @@ criterion_group!(
     contended_policy_compare_pool8,
 );
 criterion_main!(benches);
+
+
