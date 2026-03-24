@@ -459,6 +459,11 @@ After both complete: cleanup() → framework destroys scoped pool
 Downstream actions use `ctx.resource::<Postgres>()` exactly as with global resources —
 the scoped vs global distinction is completely transparent.
 
+**Resolution in configure() vs cleanup():**
+- `configure()` follows normal resolution (scoped wins). If a parent branch has scoped
+  Postgres, `ctx.resource::<Postgres>()` in configure() gets the scoped one, not global.
+- `cleanup()` runs AFTER scoped resource removed from map — resolves to global.
+
 **Cleanup ordering:**
 1. Scoped resource removed from ScopedResourceMap (new acquires → fall through to global)
 2. `cleanup()` called — `ctx.resource::<R>()` here resolves to global, NOT scoped
@@ -1290,6 +1295,7 @@ enum HandleInner<R: Resource> {
         on_release: Option<Box<dyn FnOnce(R::Lease, bool) + Send>>,
         tainted: bool,
         acquired_at: Instant,
+        generation: u64,    // stale handle detection after reload
     },
 
     /// Shared ref + async cleanup callback. Exclusive.
@@ -1298,6 +1304,7 @@ enum HandleInner<R: Resource> {
         on_release: Option<Box<dyn FnOnce(bool) + Send>>,
         tainted: bool,
         acquired_at: Instant,
+        generation: u64,    // stale handle detection after reload
     },
 }
 ```
