@@ -417,80 +417,136 @@ One ReleaseQueue per ManagedResource. Used by Pool (recycle/destroy), Transport 
 
 ```rust
 /// Async queue для обработки returned instances.
-/// N parallel workers. Worker count determined by topology:
+/// N parallel primary workers + 1 dedicated fallback worker.
+/// Worker count determined by topology:
 ///   Pool: configurable (Postgres=1 ~1ms, Browser=4 ~500ms).
 ///   Transport: 1 worker.
 ///   Exclusive: 1 worker.
 ///   Others: 0 (no ReleaseQueue needed).
 ///
-/// Исправлено (#14): N независимых primary receiver-ов вместо одного с Arc<Mutex>.
-/// При shared Mutex все workers стоят в очереди — реальный параллелизм = 1.
-/// Теперь каждый worker владеет своим rx. Round-robin submit на sender side.
-/// Fallback unbounded — один, shared через Arc<Mutex> (редкий путь, contention допустима).
+/// Architecture (amended from #14, reviewed per Gemini audit):
+///   - N primary workers: each owns its own rx (no Mutex on hot path).
+///   - 1 dedicated fallback worker: sole owner of fallback_rx (no Mutex).
+///   - Fallback is BOUNDED (10_000) to prevent OOM under sustained backend failure.
+///   - Every release_fn execution has a 30s timeout to prevent worker paralysis.
+///   - If both primary and fallback are full: task is dropped (intentional fail-open
+///     for process survival). This leaks a connection — recovery/maintenance paths
+///     will detect stale instances and clean them up.
 pub struct ReleaseQueue {
-    /// N senders — по одному на каждого worker. Submit round-robin.
+    /// N senders — one per primary worker. Submit round-robin.
     senders:     Vec<mpsc::Sender<ReleaseTask>>,
     /// Round-robin counter.
     next_worker: AtomicUsize,
-    /// Unbounded fallback — используется если primary worker полон (burst нагрузка).
-    /// Гарантирует что release task никогда не теряется при нормальной работе.
-    fallback_tx: mpsc::UnboundedSender<ReleaseTask>,
+    /// Bounded fallback — overflow buffer for burst load.
+    /// BOUNDED (not unbounded) to prevent OOM if backend hangs and workers stall.
+    fallback_tx: mpsc::Sender<ReleaseTask>,
     metrics:     Arc<ReleaseQueueMetrics>,
     workers:     Vec<JoinHandle<()>>,
 }
+
+/// Release timeout. If a release_fn (destroy/recycle) takes longer than this,
+/// it is abandoned. Prevents worker paralysis when backend hangs.
+const RELEASE_TASK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Fallback queue capacity. Large enough for burst, bounded to prevent OOM.
+const FALLBACK_CAPACITY: usize = 10_000;
 
 struct ReleaseTask {
     release_fn: Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>,
 }
 
-/// Per-queue metrics. `dropped` должен быть 0 в healthy system — алерт если растёт.
+/// Per-queue metrics. `dropped` should be 0 in a healthy system — alert if growing.
 #[derive(Default)]
 pub struct ReleaseQueueMetrics {
     pub submitted:     AtomicU64,
-    /// Primary worker был полон — использован unbounded fallback (burst нагрузка).
+    /// Primary worker was full — task routed to fallback (burst load).
     pub fallback_used: AtomicU64,
-    /// Task дропнут (только при shutdown). В production должен быть 0.
+    /// Task dropped (both primary and fallback full, or shutdown).
+    /// Intentional fail-open: leaks connection to prevent OOM.
+    /// Recovery: pool maintenance will detect stale/missing instances.
     pub dropped:       AtomicU64,
+    /// release_fn exceeded RELEASE_TASK_TIMEOUT. Backend may be hanging.
+    pub timed_out:     AtomicU64,
+}
+
+/// Execute a release task with timeout protection.
+async fn execute_with_timeout(task: ReleaseTask, metrics: &ReleaseQueueMetrics) {
+    match tokio::time::timeout(RELEASE_TASK_TIMEOUT, (task.release_fn)()).await {
+        Ok(()) => {}
+        Err(_) => {
+            metrics.timed_out.fetch_add(1, Ordering::Relaxed);
+            tracing::error!(
+                "ReleaseQueue: release task timed out after {:?}, dropping. \
+                 Backend may be hanging — investigate.",
+                RELEASE_TASK_TIMEOUT
+            );
+        }
+    }
 }
 
 impl ReleaseQueue {
     pub fn new(capacity: usize, num_workers: usize, cancel: CancellationToken) -> Self {
-        // Один fallback для overflow. Shared через Mutex — редкий путь, contention допустима.
-        let (fallback_tx, fallback_rx) = mpsc::unbounded_channel::<ReleaseTask>();
-        let fallback_rx = Arc::new(AsyncMutex::new(fallback_rx));
         let metrics = Arc::new(ReleaseQueueMetrics::default());
 
-        // N независимых primary receivers — настоящий параллелизм.
-        // Каждый worker владеет своим rx без Mutex.
+        // Bounded fallback with dedicated worker (no Mutex, no contention).
+        let (fallback_tx, fallback_rx) = mpsc::channel::<ReleaseTask>(FALLBACK_CAPACITY);
+        let fb_cancel  = cancel.clone();
+        let fb_metrics = Arc::clone(&metrics);
+        let fallback_worker = tokio::spawn(async move {
+            let mut fallback_rx = fallback_rx;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = fb_cancel.cancelled() => {
+                        // Drain remaining on shutdown.
+                        while let Ok(t) = fallback_rx.try_recv() {
+                            execute_with_timeout(t, &fb_metrics).await;
+                        }
+                        break;
+                    }
+                    task = fallback_rx.recv() => {
+                        match task {
+                            Some(t) => execute_with_timeout(t, &fb_metrics).await,
+                            None => break,
+                        }
+                    }
+                }
+            }
+        });
+
+        // N independent primary workers — true parallelism.
+        // Each worker owns its own rx without Mutex.
         let per_worker_cap = (capacity / num_workers.max(1)).max(1);
         let mut senders = Vec::with_capacity(num_workers);
-        let workers = (0..num_workers).map(|_| {
+        let mut workers = Vec::with_capacity(num_workers + 1);
+        workers.push(fallback_worker);
+
+        for _ in 0..num_workers {
             let (tx, rx) = mpsc::channel::<ReleaseTask>(per_worker_cap);
             senders.push(tx);
-            let cancel    = cancel.clone();
-            let fb_rx     = Arc::clone(&fallback_rx);
-            tokio::spawn(async move {
+            let cancel  = cancel.clone();
+            let metrics = Arc::clone(&metrics);
+            workers.push(tokio::spawn(async move {
+                let mut rx = rx;
                 loop {
                     tokio::select! {
                         biased;
                         _ = cancel.cancelled() => {
-                            // Drain own primary channel on shutdown.
-                            while let Ok(t) = rx.try_recv() { (t.release_fn)().await; }
-                            // Drain fallback (один winner — остальные workers see empty).
-                            let mut fb = fb_rx.lock().await;
-                            while let Ok(t) = fb.try_recv() { (t.release_fn)().await; }
+                            while let Ok(t) = rx.try_recv() {
+                                execute_with_timeout(t, &metrics).await;
+                            }
                             break;
                         }
-                        task = rx.recv() => {   // ← свой rx, нет Mutex на hot path!
-                            match task { Some(t) => (t.release_fn)().await, None => break }
-                        }
-                        task = async { fb_rx.lock().await.recv().await } => {
-                            match task { Some(t) => (t.release_fn)().await, None => {} }
+                        task = rx.recv() => {
+                            match task {
+                                Some(t) => execute_with_timeout(t, &metrics).await,
+                                None => break,
+                            }
                         }
                     }
                 }
-            })
-        }).collect();
+            }));
+        }
 
         Self {
             senders,
@@ -503,8 +559,8 @@ impl ReleaseQueue {
 
     /// Submit release task. Non-blocking (sync — safe to call from Drop).
     ///
-    /// Round-robin по workers. Если выбранный worker полон — fallback unbounded.
-    /// `dropped` counter увеличивается только при shutdown (fallback закрыт).
+    /// Round-robin across primary workers. If selected worker full → bounded fallback.
+    /// If fallback also full → drop task (intentional fail-open to prevent OOM).
     pub fn submit(&self, task: ReleaseTask) {
         self.metrics.submitted.fetch_add(1, Ordering::Relaxed);
         let idx = self.next_worker.fetch_add(1, Ordering::Relaxed) % self.senders.len();
@@ -513,15 +569,24 @@ impl ReleaseQueue {
             Err(mpsc::error::TrySendError::Full(task)) => {
                 self.metrics.fallback_used.fetch_add(1, Ordering::Relaxed);
                 tracing::warn!(
-                    "ReleaseQueue worker {} full, using fallback. \
+                    "ReleaseQueue worker {} full, routing to fallback. \
                      Consider increasing per-worker capacity.",
                     idx
                 );
-                if self.fallback_tx.send(task).is_err() {
-                    self.metrics.dropped.fetch_add(1, Ordering::Relaxed);
-                    tracing::error!(
-                        "ReleaseQueue fallback closed during shutdown, task dropped"
-                    );
+                match self.fallback_tx.try_send(task) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        self.metrics.dropped.fetch_add(1, Ordering::Relaxed);
+                        tracing::error!(
+                            "ReleaseQueue: both primary and fallback full. \
+                             Dropping release task to prevent OOM. \
+                             This leaks a connection — investigate backend health."
+                        );
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        self.metrics.dropped.fetch_add(1, Ordering::Relaxed);
+                        tracing::error!("ReleaseQueue fallback closed during shutdown");
+                    }
                 }
             }
             Err(mpsc::error::TrySendError::Closed(_task)) => {
@@ -558,7 +623,7 @@ impl ReleaseQueue {
 pub struct ReleaseQueueHandle {
     senders:     Vec<mpsc::Sender<ReleaseTask>>,
     next_worker: Arc<AtomicUsize>,
-    fallback_tx: mpsc::UnboundedSender<ReleaseTask>,
+    fallback_tx: mpsc::Sender<ReleaseTask>,
     metrics:     Arc<ReleaseQueueMetrics>,
 }
 
@@ -570,10 +635,17 @@ impl ReleaseQueueHandle {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(task)) => {
                 self.metrics.fallback_used.fetch_add(1, Ordering::Relaxed);
-                tracing::warn!("ReleaseQueue worker {} full, using fallback.", idx);
-                if self.fallback_tx.send(task).is_err() {
-                    self.metrics.dropped.fetch_add(1, Ordering::Relaxed);
-                    tracing::error!("ReleaseQueue fallback closed, task dropped");
+                match self.fallback_tx.try_send(task) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        self.metrics.dropped.fetch_add(1, Ordering::Relaxed);
+                        tracing::error!(
+                            "ReleaseQueue: both primary and fallback full, task dropped"
+                        );
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        self.metrics.dropped.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
