@@ -13,6 +13,27 @@ Topology кодифицирует эту природу. Framework знает к
 
 **Этот файл — standalone гайд.** Если вы реализуете новый ресурс, прочитайте только его. Decision tree → Quick-reference table → секция выбранной topology → примеры + анти-паттерны.
 
+### Why 7 topologies (not fewer)
+
+Each topology encodes a fundamentally different **ownership × lifecycle** pattern:
+
+| Topology | Ownership | Lifecycle | Why not merge? |
+|----------|-----------|-----------|----------------|
+| **Pool** | Exclusive per-caller, returned after use | Checkout → use → recycle → idle | Needs idle queue, recycle, maintenance |
+| **Resident** | Shared via Clone (Arc) | One instance, all callers clone | No checkout/recycle — Clone semantics |
+| **Exclusive** | Exclusive, one caller at a time | Lock → use → reset → unlock | Semaphore, not pool (no N instances) |
+| **Service** | Shared runtime, lightweight tokens | Runtime long-lived, tokens short-lived | Token ≠ Clone (acquire_token has logic) |
+| **Transport** | Shared connection, muxed sessions | Connection expensive, sessions cheap | Sessions have server-side resources |
+| **EventSource** | Subscription (secondary) | Subscribe → recv loop → unsubscribe | Pull-based events, not acquire/release |
+| **Daemon** | No caller access (secondary) | run() loop, restart on failure | No acquire at all — pure background |
+
+**Common questions:**
+- *"Isn't Resident just Pool with max_size=1?"* — No. Pool has idle queue, recycle, prepare, maintenance loop. Resident has ArcSwap cell and Clone. Internal machinery is completely different.
+- *"Can Service and Transport merge?"* — Service tokens are local clones (Arc). Transport sessions consume server resources (SSH channel, AMQP channel). Different release semantics.
+- *"Can EventSource and Daemon merge?"* — EventSource is pull-based (subscribe + recv). Daemon is push-based (run loop). Different control flow.
+
+**v2 direction:** Decompose into orthogonal axes (access mode × provisioning × side-channel) for better composability. See `07-implementation.md` v2 directions.
+
 ---
 
 ## Quick-reference: topology selection table

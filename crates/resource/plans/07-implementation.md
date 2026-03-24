@@ -169,14 +169,72 @@ impl<R: Resource> TopologyRuntime<R> {
     /// All others → Some(Arc<R::Runtime>).
     pub fn shared_runtime(&self) -> Option<Arc<R::Runtime>> { ... }
 
-    /// Per-topology config reload dispatch.
-    /// Pool: update fingerprint (lazy eviction at recycle).
-    /// Resident: destroy old → create new (ArcSwap swap).
-    /// Service: create new, old drains via Arc refcount.
-    /// Transport/Exclusive: destroy old → create new.
-    /// EventSource: unsubscribe → resubscribe.
-    /// Daemon: cancel → restart with new config.
-    pub async fn on_config_changed(&self, new_config: &R::Config) -> Result<()> { ... }
+    /// Per-topology config reload dispatch. Returns ReloadOutcome.
+    /// Pool: update fingerprint (lazy eviction at recycle) → SwappedImmediately.
+    /// Resident: destroy old → create new (ArcSwap swap) → SwappedImmediately.
+    /// Service: create new, old drains via Arc refcount → PendingDrain.
+    /// Transport/Exclusive: destroy old → create new → SwappedImmediately.
+    /// EventSource: unsubscribe → resubscribe → SwappedImmediately.
+    /// Daemon: cancel → restart with new config → Restarting.
+    pub async fn on_config_changed(&self, new_config: &R::Config) -> Result<ReloadOutcome> { ... }
+}
+
+/// Result of a config reload operation. Returned by on_config_changed().
+/// Engine can display this in UI ("applied immediately" vs "draining old connections").
+pub enum ReloadOutcome {
+    /// New config applied immediately. All new acquires use updated config.
+    SwappedImmediately,
+    /// Old runtime draining (Arc refcount). New runtime active for new acquires.
+    /// old_generation tracks which handles are stale.
+    PendingDrain { old_generation: u64 },
+    /// Runtime restarting (Daemon). Brief unavailability expected.
+    Restarting,
+    /// Config unchanged (fingerprint identical). No action taken.
+    NoChange,
+}
+```
+
+---
+
+## ManagedResource — generation tracking and status
+
+```rust
+pub struct ManagedResource<R: Resource> {
+    // ... existing fields ...
+
+    /// Monotonically increasing generation counter. Incremented on every
+    /// reload/recreate. Used for stale handle detection and drain tracking.
+    generation: AtomicU64,
+
+    /// Operational status. Updated by lifecycle operations.
+    status: ArcSwap<ResourceStatus>,
+}
+
+/// Simplified operational status (v1).
+/// Full Kubernetes-style conditions set deferred to v2.
+pub struct ResourceStatus {
+    /// Current lifecycle phase.
+    pub phase: ResourcePhase,
+    /// Current generation (matches ManagedResource::generation).
+    pub generation: u64,
+    /// Last error encountered (create failure, check failure, etc.).
+    pub last_error: Option<Arc<Error>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourcePhase {
+    /// Resource registered, not yet created (warmup pending).
+    Initializing,
+    /// Runtime created and healthy. Normal operation.
+    Ready,
+    /// Config reload in progress. New runtime being created or old draining.
+    Reloading,
+    /// Old runtime draining (Service Arc refcount, Pool stale eviction).
+    Draining,
+    /// Graceful shutdown in progress.
+    ShuttingDown,
+    /// Create/check failed. May recover via RecoveryGate.
+    Failed,
 }
 ```
 
@@ -207,11 +265,12 @@ Foundation. Всё остальное зависит от этого.
 5.  credential.rs      Credential trait re-export, minimal bridge to nebula-credential
 6.  metadata.rs        ResourceMetadata
 7.  cell.rs            Cell<T> (ArcSwap-based)
-8.  state.rs           AtomicRuntimeState
+8.  state.rs           AtomicRuntimeState, ResourceStatus, ResourcePhase
 9.  lease/guard.rs     LeaseGuard<L> (pool-internal only)
 10. lease/poison.rs    PoisonToken
 11. lease/options.rs   AcquireOptions, AcquireIntent
 12. handle.rs          ResourceHandle<R>, HandleInner (3 variants: Owned/Guarded/Shared)
+                       Guarded/Shared store generation: u64 at acquire time for stale detection
 13. release_queue.rs   ReleaseQueue + ReleaseQueueHandle (shared per ManagedResource)
 ```
 
@@ -296,6 +355,9 @@ Recovery primitives, cross-cutting integration.
 
 35. runtime/mod.rs            TopologyRuntime<R> enum (7 variants), shared_runtime()
 36. runtime/managed.rs        ManagedResource<R> + AnyManagedResource trait (type erasure)
+                              Includes: generation: AtomicU64, status: ArcSwap<ResourceStatus>
+                              HandleInner::Guarded/Shared store generation at acquire time
+                              for stale handle detection during reload/drain.
 ```
 
 **Milestone:** Pool lifecycle работает end-to-end. Можно `acquire<Postgres>()`.
@@ -347,8 +409,28 @@ Macros, bridges, first resources.
     - nebula-resource-redis
     - nebula-resource-http
 
-56. Documentation
-57. Integration tests
+56. testing/ module (behind `test-support` feature flag):
+    - testing/mod.rs              pub use, #[cfg(feature = "test-support")]
+    - testing/mock_provider.rs    TestContext::inject::<R>(mock_handle)
+    - testing/contract.rs         resource_contract_tests!() macro —
+                                  reusable test suite verifying Resource+Topology impls:
+                                  create→acquire→release→shutdown happy path,
+                                  concurrent acquire/release, cancellation during acquire,
+                                  drop path (panic, abort, dropped future)
+    - testing/fault.rs            FaultInjector — inject transient/permanent errors
+    - testing/harness.rs          TestManager, cancel/drop stress helpers,
+                                  Exclusive semaphore cancel-safety tests
+
+    # Cargo.toml:
+    # [features]
+    # test-support = ["tokio/test-util"]
+    #
+    # Downstream usage:
+    # [dev-dependencies]
+    # nebula-resource = { workspace = true, features = ["test-support"] }
+
+57. Documentation
+58. Integration tests
 ```
 
 Note: `credential.rs` moved to Phase 1 (item 5) as a core primitive.
@@ -400,4 +482,29 @@ Stress tests:
   - RecoveryGate thundering herd (50 concurrent recovery attempts)
   - Resident stale_after with rapid recreation
   - Service natural drain under config reload (Arc refcount → 0)
+  - ReloadOutcome: verify each topology returns correct variant
+  - Generation tracking: stale handle detection after reload
+  - ResourceStatus phase transitions: Initializing → Ready → Reloading → Ready
 ```
+
+---
+
+## v2 Architectural Directions
+
+Recorded from multi-agent brainstorm. Not for v1 — design exploration for future.
+
+- **Topology decomposition into orthogonal axes:**
+  Access mode (Pool/Resident/Exclusive) × Provisioning (Sessioned/Tokenized/Direct) × Side-channel (EventSource/Daemon/None).
+  Current 7 traits work but mix these dimensions. v2 may decompose for composability.
+
+- **ResourceHooks trait:** Extensible lifecycle hooks (post_create, pre_checkout, post_release, pre_shutdown). v1 covers this through prepare()/recycle()/shutdown(). Hooks useful for observability wrappers.
+
+- **ResourceConditions:** Full Kubernetes-style conditions set on ResourceStatus (multiple simultaneous conditions with timestamps). v1 uses simplified phase + last_error.
+
+- **Credential pre-expiry refresh:** Proactive token refresh before TTL expiry (OAuth, cloud tokens). v1 is reactive (EventBus<CredentialRotatedEvent>).
+
+- **Cascading reload propagation:** Reload Postgres → temporarily degrade dependent resources. v1 reloads are independent per-resource.
+
+- **Time virtualization for testing:** Virtual clock for deterministic timeout/backoff tests. v1 uses tokio::time::pause().
+
+- **Bounded ReleaseQueue fallback:** Replace current bounded(10k) with configurable max_fallback_capacity + MarkLeakedAndScheduleRecovery policy. v1.1 candidate.
