@@ -19,3 +19,5 @@ Parameter schema system (RFC 0005) — defines what inputs a workflow node accep
 
 ## Relations
 - Used by nebula-action (re-exports `Field`, `Schema`), nebula-sdk, nebula-macros.
+
+<!-- reviewed: 2026-03-24 -->
