@@ -286,6 +286,38 @@ manager.register(Postgres)
     .build().await?;
 ```
 
+### InstanceMetrics в recycle()
+
+`recycle()` receives `&InstanceMetrics` — use it for intelligent recycling decisions:
+
+```rust
+async fn recycle(&self, conn: &PgConnection, metrics: &InstanceMetrics)
+    -> Result<RecycleDecision, PgError>
+{
+    // Too many errors → instance unreliable, drop it
+    if metrics.error_count >= 5 {
+        return Ok(RecycleDecision::Drop);
+    }
+    // Force-rotate after 1000 checkouts (prevent memory leaks, stale state)
+    if metrics.checkout_count >= 1000 {
+        return Ok(RecycleDecision::Drop);
+    }
+    // Max age: 1 hour (force reconnect to pick up server config changes)
+    if metrics.age() > Duration::from_secs(3600) {
+        return Ok(RecycleDecision::Drop);
+    }
+    // Connection alive? Smart recycle.
+    if conn.client.is_closed() {
+        return Ok(RecycleDecision::Drop);
+    }
+    conn.client.simple_query("DISCARD ALL").await?;
+    Ok(RecycleDecision::Keep)
+}
+```
+
+**Available fields:** `error_count` (errors during this instance's lifetime), `checkout_count`
+(times handed out to callers), `created_at` (when instance was created), `age()` (time since creation).
+
 ### Анти-паттерны
 
 - **❌ Pool для stateless client** (reqwest::Client). Clone дешевле pool checkout. → Используй **Resident**.
@@ -865,6 +897,26 @@ manager.register(TelegramBot)
     .also_event_source(event_source::Config::default()) // secondary
     .also_daemon(daemon::Config::default())             // secondary
     .build().await?;
+```
+
+**Resident + EventSource (Redis Pub/Sub):**
+
+```rust
+// Redis as shared client (Resident) + event stream (EventSource)
+manager.register(RedisSubscriber)
+    .config(RedisSubscriberConfig {
+        channels: vec!["orders.*".into(), "notifications.*".into()],
+        buffer_size: 1024,
+        ..Default::default()
+    })
+    .id("redis-events")
+    .resident(resident::Config { eager_create: true })
+    .also_event_source(event_source::Config::default())
+    .build().await?;
+
+// Actions use the shared client:
+let redis = ctx.resource::<RedisSubscriber>().await?;
+// Triggers subscribe to the event stream via EventTrigger trait.
 ```
 
 Для гибридов на разных Resource struct-ах (Redis Shared + Subscriber, Kafka Producer + Consumer) — регистрируйте как отдельные ресурсы. ResourceGroup для группировки — v2 (deferred).

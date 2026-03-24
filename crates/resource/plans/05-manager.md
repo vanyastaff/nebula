@@ -474,6 +474,10 @@ pub trait ScopeResolver: Send + Sync {
 }
 
 /// Cached resolver — moka cache TTL=5min. Scope relationships меняются редко.
+/// NOTE: moka dependency should be behind a feature gate:
+///   [features]
+///   scope-cache = ["dep:moka"]  # enabled by default
+/// Without this feature, Manager::with_scope_resolver() wraps the resolver directly.
 pub struct CachedScopeResolver {
     inner: Arc<dyn ScopeResolver>,
     cache: moka::future::Cache<(ScopeLevel, ScopeLevel), bool>,
@@ -935,6 +939,8 @@ impl ShutdownOrchestrator {
         tokio::time::sleep(config.drain_timeout.min(Duration::from_secs(5))).await;
 
         // Phase 2: Dependency-ordered cleanup.
+        // v1: reverse registration order (no dependency graph yet).
+        // v2: proper topological sort from registered resource dependencies.
         let order = manager.registry.reverse_topological_order();
 
         for resource_id in order {

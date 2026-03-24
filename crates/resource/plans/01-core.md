@@ -37,6 +37,12 @@ pub trait Resource: Send + Sync + 'static {
     ///
     /// Stable Rust: explicit `type Lease = ...` in each impl.
     /// When associated type defaults stabilize: `= Self::Runtime` default in trait.
+    ///
+    /// **Important distinction:** `Runtime` is the internal instance managed by the framework.
+    /// `Lease` is what callers see via `Deref`. They may be the same type (Pool: `Lease = PgConnection`,
+    /// Resident: `Lease = reqwest::Client`) or different (Service: `Lease = TelegramBotHandle`,
+    /// Transport: `Lease = SshSession`). Never assume they are interchangeable — use `R::Lease`
+    /// for caller-facing code and `R::Runtime` for internal lifecycle management.
     type Lease: Send + Sync + 'static;
 
     /// Typed error. Каждый resource определяет свой enum ошибок.
@@ -827,6 +833,10 @@ pub enum PgError {
     BotBlocked { chat_id: i64 },
 }
 
+// NOTE: `scope = target` requires a field to use as target ID.
+// By default, the macro uses the first field and calls `.to_string()`.
+// To specify a different field: `#[classify(transient, scope = target, field = "chat_id")]`.
+
 // Macro generates:
 impl From<PgError> for nebula_resource::Error {
     fn from(e: PgError) -> Self {
@@ -842,4 +852,83 @@ impl From<PgError> for nebula_resource::Error {
         }
     }
 }
+```
+
+---
+
+## ResourceKey — compile-time validated key
+
+```rust
+/// Compile-time validated resource key. Lowercase ASCII with `.`/`_`/`-` separators.
+/// Must start and end with a lowercase letter. No leading/trailing separators.
+///
+/// Examples: "postgres", "redis.shared", "telegram.bot", "ssh", "http.client".
+/// Used for: Registry lookup, metrics labels, UI display, logging.
+#[macro_export]
+macro_rules! resource_key {
+    ($key:expr) => {{
+        const _: () = {
+            let bytes = $key.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                let b = bytes[i];
+                assert!(
+                    b.is_ascii_lowercase() || b.is_ascii_digit()
+                        || b == b'.' || b == b'_' || b == b'-',
+                    "resource_key must be lowercase ASCII with separators . _ -"
+                );
+                i += 1;
+            }
+            assert!(bytes.len() > 0, "resource_key must not be empty");
+            assert!(
+                bytes[0].is_ascii_lowercase(),
+                "resource_key must start with lowercase letter"
+            );
+            assert!(
+                bytes[bytes.len() - 1].is_ascii_lowercase()
+                    || bytes[bytes.len() - 1].is_ascii_digit(),
+                "resource_key must end with lowercase letter or digit"
+            );
+        };
+        $crate::ResourceKey::new_static($key)
+    }};
+}
+```
+
+---
+
+## ResourceId — unique instance identifier
+
+```rust
+/// Unique identifier for a registered resource instance.
+/// Used in Manager::acquire(), Registry lookup, metrics, and logging.
+///
+/// Typically a human-readable slug: "main-postgres", "redis-cache", "telegram-bot-1".
+/// Or a UUID for dynamic/scoped resources: ResourceId::from(Uuid::new_v4()).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ResourceId(CompactString);
+
+impl ResourceId {
+    pub fn new(id: impl Into<CompactString>) -> Self { Self(id.into()) }
+    pub fn as_str(&self) -> &str { &self.0 }
+}
+
+impl fmt::Display for ResourceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
+}
+
+impl From<&str> for ResourceId {
+    fn from(s: &str) -> Self { Self::new(s) }
+}
+
+impl From<Uuid> for ResourceId {
+    fn from(id: Uuid) -> Self { Self::new(id.to_string()) }
+}
+```
+
+Usage:
+```rust
+let id = ResourceId::new("main-postgres");
+// or for scoped/dynamic:
+let id = ResourceId::from(Uuid::new_v4());
 ```

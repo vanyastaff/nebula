@@ -177,12 +177,17 @@ may be `Pool(max_size=20)`, while a scoped `Postgres` may be
 ## Use cases
 
 ### Temporary test database
+
+> **NOTE:** `configure()` may call `ctx.resource::<R>()` to use global resources.
+> These global resources must be registered in the Manager before the workflow starts.
+> If not registered, `configure()` will return `ActionError::ResourceNotFound`.
+
 ```rust
 impl ResourceAction for TestDatabaseAction {
     type Resource = Postgres;
 
     async fn configure(&self, ctx: &ActionContext) -> Result<PgResourceConfig> {
-        // Create temp schema, return config pointing to it
+        // Create temp schema using the GLOBAL pool (must be registered beforehand)
         let db = ctx.resource::<Postgres>().await?; // use global pool
         let schema = format!("test_{}", ctx.execution_id());
         db.execute(&format!("CREATE SCHEMA {schema}"), &[]).await?;

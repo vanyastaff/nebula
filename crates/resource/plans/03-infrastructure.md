@@ -283,6 +283,8 @@ pub struct AcquireOptions {
     /// Намерение использования. Влияет на timeout и metrics.
     pub intent:   AcquireIntent,
     /// Дедлайн. Если pool full — ждать не дольше этого.
+    /// NOTE: If deadline is in the past, acquire should return error immediately.
+    /// Implementation should check `deadline.filter(|d| *d > Instant::now())`.
     pub deadline: Option<Instant>,
     /// Произвольные tags для tracing/metrics.
     pub tags:     SmallVec<[(Cow<'static, str>, Cow<'static, str>); 2]>,
