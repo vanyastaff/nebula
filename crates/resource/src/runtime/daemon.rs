@@ -87,7 +87,15 @@ where
         let execution_id = *ctx.execution_id();
 
         let join_handle = tokio::spawn(async move {
-            daemon_loop(resource, runtime, config, cancel, cancel_token_for_run, execution_id).await;
+            daemon_loop(
+                resource,
+                runtime,
+                config,
+                cancel,
+                cancel_token_for_run,
+                execution_id,
+            )
+            .await;
         });
 
         *guard = Some(join_handle);
@@ -125,8 +133,7 @@ async fn daemon_loop<R>(
     R::Runtime: Send + Sync + 'static,
 {
     let mut restarts = 0u32;
-    let ctx = crate::ctx::BasicCtx::new(execution_id)
-        .with_cancel_token(run_cancel.clone());
+    let ctx = crate::ctx::BasicCtx::new(execution_id).with_cancel_token(run_cancel.clone());
 
     loop {
         if cancel.is_cancelled() {

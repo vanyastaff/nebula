@@ -189,7 +189,14 @@ fn validate_type(
         ParameterType::Mode {
             variants,
             default_variant,
-        } => validate_mode(value, variants, default_variant.as_deref(), key, depth, report),
+        } => validate_mode(
+            value,
+            variants,
+            default_variant.as_deref(),
+            key,
+            depth,
+            report,
+        ),
 
         ParameterType::Dynamic { .. } | ParameterType::Filter { .. } => {
             // Dynamic: resolved at runtime, skip.
@@ -334,7 +341,14 @@ fn validate_object(
         if is_pick_mode && !obj.contains_key(&sub_param.id) {
             continue;
         }
-        validate_parameter(sub_param, &nested_values, nested_map, key, depth + 1, report);
+        validate_parameter(
+            sub_param,
+            &nested_values,
+            nested_map,
+            key,
+            depth + 1,
+            report,
+        );
     }
 
     // Check for unknown fields within the object.
@@ -451,7 +465,14 @@ fn validate_mode(
             .into_iter()
             .collect();
         let variant_map = variant_values.as_map();
-        validate_parameter(variant, &variant_values, variant_map, key, depth + 1, report);
+        validate_parameter(
+            variant,
+            &variant_values,
+            variant_map,
+            key,
+            depth + 1,
+            report,
+        );
     }
 
     // Check for unknown keys (only "mode" and "value" allowed).

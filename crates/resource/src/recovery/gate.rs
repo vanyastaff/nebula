@@ -327,7 +327,9 @@ impl RecoveryGate {
 
 /// Computes exponential backoff: `base * 2^(attempt - 1)`, capped at 5 min.
 fn compute_backoff(base: Duration, attempt: u32) -> Duration {
-    let multiplier = 1u64.checked_shl(attempt.saturating_sub(1)).unwrap_or(u64::MAX);
+    let multiplier = 1u64
+        .checked_shl(attempt.saturating_sub(1))
+        .unwrap_or(u64::MAX);
     let backoff = base.saturating_mul(multiplier as u32);
     if backoff > MAX_BACKOFF {
         MAX_BACKOFF

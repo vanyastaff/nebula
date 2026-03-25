@@ -113,7 +113,10 @@ mod tests {
         let c = AcquireResilience::standard();
         assert!(c.timeout.is_some());
         assert!(c.retry.is_some());
-        assert_eq!(c.circuit_breaker, Some(AcquireCircuitBreakerPreset::Standard));
+        assert_eq!(
+            c.circuit_breaker,
+            Some(AcquireCircuitBreakerPreset::Standard)
+        );
     }
 
     #[test]

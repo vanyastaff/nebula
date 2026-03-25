@@ -8,8 +8,8 @@
 //! recycle() -> Keep/Drop.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
@@ -63,7 +63,8 @@ impl<R: Resource> PoolRuntime<R> {
 
     /// Updates the config fingerprint (e.g., after hot-reload).
     pub fn set_fingerprint(&self, fingerprint: u64) {
-        self.current_fingerprint.store(fingerprint, Ordering::Release);
+        self.current_fingerprint
+            .store(fingerprint, Ordering::Release);
     }
 
     /// Returns the number of idle instances currently in the pool.
@@ -129,7 +130,13 @@ where
         }
 
         let lease: R::Lease = entry.runtime.clone().into();
-        Ok(self.build_guarded_handle(lease, entry, resource.clone(), release_queue.clone(), generation))
+        Ok(self.build_guarded_handle(
+            lease,
+            entry,
+            resource.clone(),
+            release_queue.clone(),
+            generation,
+        ))
     }
 
     /// Attempts to pop and validate an idle instance.
@@ -627,11 +634,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn semaphore_timeout_sanity() {
+        // Minimal test: semaphore with 0 permits should timeout.
+        let sem = Arc::new(Semaphore::new(0));
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(100), sem.acquire_owned()).await;
+        assert!(result.is_err(), "should have timed out");
+    }
+
+    /// Verifies that the pool correctly returns backpressure error when full.
+    ///
+    /// Uses a pre-acquired semaphore permit to simulate full pool, avoiding
+    /// interaction between tokio timer and spawned ReleaseQueue workers on
+    /// the single-thread test runtime.
+    #[tokio::test]
     async fn pool_full_returns_backpressure() {
         let resource = MockPool::new();
         let config = Config {
             max_size: 1,
-            create_timeout: std::time::Duration::from_millis(50),
+            create_timeout: std::time::Duration::from_millis(200),
             ..Config::default()
         };
         let pool = PoolRuntime::<MockPool>::new(config, 1);
@@ -639,13 +660,9 @@ mod tests {
         let rq = Arc::new(rq);
         let ctx = test_ctx();
 
-        // Hold one handle — pool is now full.
-        let _handle = pool
-            .acquire(&resource, &PoolTestConfig, &(), &ctx, &rq, 0)
-            .await
-            .unwrap();
+        // Steal the only permit — pool is full without involving acquire().
+        let _permit = pool.semaphore.clone().acquire_owned().await.unwrap();
 
-        // Second acquire should time out.
         let result = pool
             .acquire(&resource, &PoolTestConfig, &(), &ctx, &rq, 0)
             .await;

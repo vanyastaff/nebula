@@ -34,4 +34,4 @@ v2 rewrite — topology-agnostic resource management.
 - Depends on: nebula-core
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 
-<!-- reviewed: 2026-03-25 -->
+<!-- reviewed: 2026-03-25 — Phase 4a runtime implementations complete -->

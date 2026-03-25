@@ -9,8 +9,8 @@ use std::marker::PhantomData;
 use crate::ctx::Ctx;
 use crate::error::Error;
 use crate::resource::Resource;
-use crate::topology::event_source::config::Config;
 use crate::topology::event_source::EventSource;
+use crate::topology::event_source::config::Config;
 
 /// Runtime state for an event source topology.
 ///

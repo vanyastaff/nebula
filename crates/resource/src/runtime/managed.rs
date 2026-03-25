@@ -4,8 +4,8 @@
 //! resource. It bundles the resource implementation, hot-swappable config,
 //! topology runtime, release queue, and lifecycle metadata.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use arc_swap::ArcSwap;
 

@@ -14,8 +14,8 @@ use crate::error::Error;
 use crate::handle::ResourceHandle;
 use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
-use crate::topology::transport::config::Config;
 use crate::topology::transport::Transport;
+use crate::topology::transport::config::Config;
 
 /// Runtime state for a transport topology.
 ///

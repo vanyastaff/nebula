@@ -103,10 +103,7 @@ impl Registry {
     ///
     /// Uses the [`TypeId`] secondary index to find the key, then performs
     /// a scope-aware lookup and downcast.
-    pub fn get_typed<R: Resource>(
-        &self,
-        scope: &ScopeLevel,
-    ) -> Option<Arc<ManagedResource<R>>> {
+    pub fn get_typed<R: Resource>(&self, scope: &ScopeLevel) -> Option<Arc<ManagedResource<R>>> {
         let type_id = TypeId::of::<ManagedResource<R>>();
         let key = self.type_index.get(&type_id)?;
         let any_managed = self.get(&key, scope)?;

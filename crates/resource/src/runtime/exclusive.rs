@@ -12,8 +12,8 @@ use crate::error::Error;
 use crate::handle::ResourceHandle;
 use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
-use crate::topology::exclusive::config::Config;
 use crate::topology::exclusive::Exclusive;
+use crate::topology::exclusive::config::Config;
 
 /// Runtime state for an exclusive topology.
 ///
@@ -90,9 +90,7 @@ where
             "exclusive",
             generation,
             move |_returned_lease, _tainted| {
-                rq.submit(move || {
-                    Box::pin(release_exclusive(resource_clone, runtime, permit))
-                });
+                rq.submit(move || Box::pin(release_exclusive(resource_clone, runtime, permit)));
             },
         ))
     }

@@ -259,8 +259,7 @@ mod tests {
         let resource = TrackedService {
             released: released.clone(),
         };
-        let rt =
-            ServiceRuntime::<TrackedService>::new("tracked-runtime".into(), Config::default());
+        let rt = ServiceRuntime::<TrackedService>::new("tracked-runtime".into(), Config::default());
         let (rq, rq_handle) = ReleaseQueue::new(1);
         let rq = Arc::new(rq);
         let ctx = test_ctx();

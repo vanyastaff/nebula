@@ -11,8 +11,8 @@ use crate::ctx::Ctx;
 use crate::error::Error;
 use crate::handle::ResourceHandle;
 use crate::resource::Resource;
-use crate::topology::resident::config::Config;
 use crate::topology::resident::Resident;
+use crate::topology::resident::config::Config;
 
 /// Runtime state for a resident topology.
 ///
