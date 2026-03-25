@@ -61,7 +61,7 @@ impl LoaderError {
 /// Context passed to loader functions when the UI requests dynamic data.
 ///
 /// Renamed from `LoaderCtx` in v2 for clarity.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LoaderContext {
     /// The id of the field requesting a load.
     pub field_id: String,
@@ -83,6 +83,22 @@ pub struct LoaderContext {
     /// Actions can attach arbitrary JSON here to pass extra context to loaders
     /// (e.g. API endpoint configuration, feature flags).
     pub metadata: Option<serde_json::Value>,
+}
+
+impl std::fmt::Debug for LoaderContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoaderContext")
+            .field("field_id", &self.field_id)
+            .field("values", &self.values)
+            .field("filter", &self.filter)
+            .field("cursor", &self.cursor)
+            .field(
+                "credential",
+                &self.credential.as_ref().map(|_| "<redacted>"),
+            )
+            .field("metadata", &self.metadata)
+            .finish()
+    }
 }
 
 /// Backwards-compatible alias for [`LoaderContext`].

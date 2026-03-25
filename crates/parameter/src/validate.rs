@@ -15,6 +15,9 @@ use crate::profile::ValidationProfile;
 use crate::report::ValidationReport;
 use crate::values::ParameterValues;
 
+/// Maximum recursion depth for nested validation (Object → Object → ...).
+const MAX_VALIDATE_DEPTH: u8 = 16;
+
 /// Validates `parameters` against `values` using strict defaults.
 ///
 /// # Errors
@@ -45,7 +48,7 @@ pub fn validate_with_profile(
     let values_map = values.as_map();
 
     for param in parameters {
-        validate_parameter(param, values, values_map, "", &mut report);
+        validate_parameter(param, values, values_map, "", 0, &mut report);
     }
 
     // Unknown field check.
@@ -72,8 +75,13 @@ fn validate_parameter(
     values: &ParameterValues,
     values_map: &std::collections::HashMap<String, Value>,
     path_prefix: &str,
+    depth: u8,
     report: &mut ValidationReport,
 ) {
+    if depth >= MAX_VALIDATE_DEPTH {
+        return;
+    }
+
     let key = make_path(path_prefix, &param.id);
 
     // 1. Skip Computed and Notice — no validation needed.
@@ -134,7 +142,7 @@ fn validate_parameter(
     }
 
     // 7. Type-specific validation.
-    validate_type(&param.param_type, value, &key, report);
+    validate_type(&param.param_type, value, &key, depth, report);
 }
 
 /// Type-specific validation dispatch.
@@ -142,6 +150,7 @@ fn validate_type(
     param_type: &ParameterType,
     value: &Value,
     key: &str,
+    depth: u8,
     report: &mut ValidationReport,
 ) {
     match param_type {
@@ -168,19 +177,19 @@ fn validate_type(
         ParameterType::Object {
             parameters,
             display_mode,
-        } => validate_object(value, parameters, display_mode, key, report),
+        } => validate_object(value, parameters, display_mode, key, depth, report),
 
         ParameterType::List {
             item,
             min_items,
             max_items,
             ..
-        } => validate_list(value, item, *min_items, *max_items, key, report),
+        } => validate_list(value, item, *min_items, *max_items, key, depth, report),
 
         ParameterType::Mode {
             variants,
             default_variant,
-        } => validate_mode(value, variants, default_variant.as_deref(), key, report),
+        } => validate_mode(value, variants, default_variant.as_deref(), key, depth, report),
 
         ParameterType::Dynamic { .. } | ParameterType::Filter { .. } => {
             // Dynamic: resolved at runtime, skip.
@@ -302,6 +311,7 @@ fn validate_object(
     parameters: &[Parameter],
     display_mode: &crate::display_mode::DisplayMode,
     key: &str,
+    depth: u8,
     report: &mut ValidationReport,
 ) {
     let Some(obj) = value.as_object() else {
@@ -324,7 +334,7 @@ fn validate_object(
         if is_pick_mode && !obj.contains_key(&sub_param.id) {
             continue;
         }
-        validate_parameter(sub_param, &nested_values, nested_map, key, report);
+        validate_parameter(sub_param, &nested_values, nested_map, key, depth + 1, report);
     }
 
     // Check for unknown fields within the object.
@@ -346,6 +356,7 @@ fn validate_list(
     min_items: Option<u32>,
     max_items: Option<u32>,
     key: &str,
+    depth: u8,
     report: &mut ValidationReport,
 ) {
     let Some(arr) = value.as_array() else {
@@ -389,7 +400,7 @@ fn validate_list(
             .into_iter()
             .collect();
         let item_map = item_values.as_map();
-        validate_parameter(item, &item_values, item_map, &item_key, report);
+        validate_parameter(item, &item_values, item_map, &item_key, depth + 1, report);
     }
 }
 
@@ -400,6 +411,7 @@ fn validate_mode(
     variants: &[Parameter],
     default_variant: Option<&str>,
     key: &str,
+    depth: u8,
     report: &mut ValidationReport,
 ) {
     let Some(obj) = value.as_object() else {
@@ -439,7 +451,7 @@ fn validate_mode(
             .into_iter()
             .collect();
         let variant_map = variant_values.as_map();
-        validate_parameter(variant, &variant_values, variant_map, key, report);
+        validate_parameter(variant, &variant_values, variant_map, key, depth + 1, report);
     }
 
     // Check for unknown keys (only "mode" and "value" allowed).
