@@ -435,10 +435,9 @@ fn validate_mode(
     if let Some(variant_value) = obj.get("value")
         && !variant_value.is_null()
     {
-        let variant_values: ParameterValues =
-            vec![(variant.id.clone(), variant_value.clone())]
-                .into_iter()
-                .collect();
+        let variant_values: ParameterValues = vec![(variant.id.clone(), variant_value.clone())]
+            .into_iter()
+            .collect();
         let variant_map = variant_values.as_map();
         validate_parameter(variant, &variant_values, variant_map, key, report);
     }

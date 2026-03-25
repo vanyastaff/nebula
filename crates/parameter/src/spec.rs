@@ -215,7 +215,11 @@ impl TryFrom<&Parameter> for FieldSpec {
                 loader: loader.clone(),
             }),
             other => Err(FieldSpecConvertError {
-                variant: format!("{other:?}").split_whitespace().next().unwrap_or("unknown").to_string(),
+                variant: format!("{other:?}")
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("unknown")
+                    .to_string(),
             }),
         }
     }

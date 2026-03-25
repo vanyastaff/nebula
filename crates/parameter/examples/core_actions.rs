@@ -58,9 +58,7 @@ fn switch_schema() -> ParameterCollection {
         .add(
             Parameter::string("value")
                 .label("Value to Switch On")
-                .description(
-                    "Expression or field reference whose value determines the route",
-                )
+                .description("Expression or field reference whose value determines the route")
                 .required(),
         )
         .add(

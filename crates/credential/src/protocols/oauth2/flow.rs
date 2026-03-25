@@ -160,7 +160,10 @@ impl FlowProtocol for OAuth2Protocol {
 // ── Private helpers ──────────────────────────────────────────────────────────
 
 /// Extract a required string parameter, returning a validation error if missing.
-fn extract_required<'a>(values: &'a ParameterValues, key: &str) -> Result<&'a str, CredentialError> {
+fn extract_required<'a>(
+    values: &'a ParameterValues,
+    key: &str,
+) -> Result<&'a str, CredentialError> {
     values
         .get_string(key)
         .ok_or_else(|| CredentialError::Validation {

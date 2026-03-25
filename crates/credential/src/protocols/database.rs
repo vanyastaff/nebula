@@ -42,11 +42,7 @@ impl StaticProtocol for DatabaseProtocol {
                     .placeholder("localhost")
                     .required(),
             )
-            .add(
-                Parameter::string("port")
-                    .label("Port")
-                    .placeholder("5432"),
-            )
+            .add(Parameter::string("port").label("Port").placeholder("5432"))
             .add(Parameter::string("database").label("Database").required())
             .add(Parameter::string("username").label("Username").required())
             .add(

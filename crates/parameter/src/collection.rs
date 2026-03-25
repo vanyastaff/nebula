@@ -93,8 +93,7 @@ impl ParameterCollection {
         &self,
         values: &ParameterValues,
     ) -> Result<crate::runtime::ValidatedValues, Vec<ParameterError>> {
-        // Delegate to validation engine — will be implemented in Task 9.
-        // For now, return Ok with validated wrapper.
+        crate::validate::validate_parameters(&self.parameters, values)?;
         Ok(crate::runtime::ValidatedValues::new(values.clone()))
     }
 
@@ -107,9 +106,7 @@ impl ParameterCollection {
         values: &ParameterValues,
         profile: ValidationProfile,
     ) -> ValidationReport {
-        // Delegate to validation engine — will be implemented in Task 9.
-        let _ = (values, profile);
-        ValidationReport::default()
+        crate::validate::validate_with_profile(&self.parameters, values, profile)
     }
 
     /// Normalizes runtime values using schema defaults.
@@ -118,8 +115,7 @@ impl ParameterCollection {
     /// materialized from `default` metadata and mode default variants.
     #[must_use]
     pub fn normalize(&self, values: &ParameterValues) -> ParameterValues {
-        // Delegate to normalization engine — will be implemented in Task 10.
-        values.clone()
+        crate::normalize::normalize_parameters(&self.parameters, values)
     }
 }
 
@@ -214,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_stub_returns_ok() {
+    fn validate_no_required_returns_ok() {
         let coll = ParameterCollection::new().add(Parameter::string("name"));
         let values = ParameterValues::new();
 
@@ -223,9 +219,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_with_profile_stub_returns_empty_report() {
+    fn validate_with_profile_no_issues_returns_ok() {
         let coll = ParameterCollection::new().add(Parameter::string("name"));
-        let values = ParameterValues::new();
+        let mut values = ParameterValues::new();
+        values.set("name", json!("Alice"));
 
         let report = coll.validate_with_profile(&values, ValidationProfile::Strict);
         assert!(report.is_ok());
@@ -234,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_stub_returns_clone() {
+    fn normalize_preserves_existing_values() {
         let coll = ParameterCollection::new().add(Parameter::string("name"));
 
         let mut values = ParameterValues::new();

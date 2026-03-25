@@ -1,43 +1,48 @@
-//! Serialization round-trip tests for the v2 Schema / Field types.
+//! Serialization round-trip tests for the v3 Parameter / ParameterCollection types.
 
-use nebula_parameter::{Field, Rule, Schema};
+use nebula_parameter::{Parameter, ParameterCollection, ParameterType, Rule};
 
 #[test]
-fn schema_json_roundtrip() {
-    let schema = Schema::new()
-        .field(Field::text("name").with_label("Name").required())
-        .field(Field::text("token").with_label("Token").required().secret());
+fn collection_json_roundtrip() {
+    let collection = ParameterCollection::new()
+        .add(Parameter::string("name").label("Name").required())
+        .add(
+            Parameter::string("token")
+                .label("Token")
+                .required()
+                .secret(),
+        );
 
-    let json = serde_json::to_string(&schema).unwrap();
-    let back: Schema = serde_json::from_str(&json).unwrap();
+    let json = serde_json::to_string(&collection).unwrap();
+    let back: ParameterCollection = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(back.fields.len(), 2);
+    assert_eq!(back.parameters.len(), 2);
     assert!(back.contains("name"));
     assert!(back.contains("token"));
-    assert!(back.get_field("token").unwrap().meta().secret);
+    assert!(back.get("token").unwrap().secret);
 }
 
 #[test]
-fn field_meta_is_flat_in_json() {
-    let field = Field::text("host")
-        .with_label("Host")
-        .with_placeholder("localhost")
+fn parameter_fields_are_flat_in_json() {
+    let param = Parameter::string("host")
+        .label("Host")
+        .placeholder("localhost")
         .required();
 
-    let json = serde_json::to_value(&field).unwrap();
+    let json = serde_json::to_value(&param).unwrap();
     assert_eq!(json["id"], "host");
     assert_eq!(json["label"], "Host");
     assert_eq!(json["placeholder"], "localhost");
     assert_eq!(json["required"], true);
-    assert_eq!(json["type"], "text");
+    assert_eq!(json["type"], "string");
 }
 
 #[test]
-fn field_builder_methods() {
-    let field = Field::text("my_field")
-        .with_label("My Field")
-        .with_description("A test field")
-        .with_hint("Enter something")
+fn parameter_builder_methods() {
+    let param = Parameter::string("my_field")
+        .label("My Field")
+        .description("A test field")
+        .hint("Enter something")
         .required()
         .secret()
         .with_rule(Rule::MinLength {
@@ -45,37 +50,39 @@ fn field_builder_methods() {
             message: None,
         });
 
-    let meta = field.meta();
-    assert_eq!(meta.id, "my_field");
-    assert_eq!(meta.label, "My Field");
-    assert!(meta.description.is_some());
-    assert!(meta.required);
-    assert!(meta.secret);
-    assert!(!meta.rules.is_empty());
+    assert_eq!(param.id, "my_field");
+    assert_eq!(param.label.as_deref(), Some("My Field"));
+    assert!(param.description.is_some());
+    assert!(param.required);
+    assert!(param.secret);
+    assert!(!param.rules.is_empty());
 }
 
 #[test]
-fn schema_convenience_methods() {
-    let schema = Schema::new()
-        .field(Field::boolean("enabled").with_label("Enabled"))
-        .field(Field::number("count").with_label("Count"));
+fn collection_convenience_methods() {
+    let collection = ParameterCollection::new()
+        .add(Parameter::boolean("enabled").label("Enabled"))
+        .add(Parameter::number("count").label("Count"));
 
-    assert_eq!(schema.len(), 2);
-    assert!(!schema.is_empty());
-    assert!(schema.contains("enabled"));
-    assert!(!schema.contains("missing"));
+    assert_eq!(collection.len(), 2);
+    assert!(!collection.is_empty());
+    assert!(collection.contains("enabled"));
+    assert!(!collection.contains("missing"));
 
-    let field = schema.get_field("count").unwrap();
-    assert!(matches!(field, Field::Number { .. }));
+    let param = collection.get("count").unwrap();
+    assert!(matches!(
+        param.param_type,
+        ParameterType::Number { integer: false, .. }
+    ));
 }
 
 #[test]
-fn select_field_roundtrip() {
-    let field = Field::select("env").with_label("Environment").required();
+fn select_parameter_roundtrip() {
+    let param = Parameter::select("env").label("Environment").required();
 
-    let json = serde_json::to_string(&field).unwrap();
-    let back: Field = serde_json::from_str(&json).unwrap();
+    let json = serde_json::to_string(&param).unwrap();
+    let back: Parameter = serde_json::from_str(&json).unwrap();
 
-    assert!(back.meta().required);
-    assert_eq!(back.meta().id, "env");
+    assert!(back.required);
+    assert_eq!(back.id, "env");
 }

@@ -57,11 +57,7 @@ impl FlowProtocol for LdapProtocol {
                     .placeholder("ldap.example.com")
                     .required(),
             )
-            .add(
-                Parameter::string("port")
-                    .label("Port")
-                    .placeholder("389"),
-            )
+            .add(Parameter::string("port").label("Port").placeholder("389"))
             .add(
                 Parameter::string("bind_dn")
                     .label("Bind DN")
