@@ -10,6 +10,7 @@ use dashmap::DashMap;
 use nebula_core::ResourceKey;
 
 use crate::ctx::ScopeLevel;
+use crate::metrics::ResourceMetrics;
 use crate::resource::Resource;
 use crate::runtime::managed::ManagedResource;
 
@@ -23,6 +24,9 @@ pub trait AnyManagedResource: Send + Sync + 'static {
 
     /// Returns a reference to `self` as `&dyn Any` for downcasting.
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync>;
+
+    /// Returns the per-resource metrics for this managed resource.
+    fn metrics(&self) -> &Arc<ResourceMetrics>;
 }
 
 impl<R: Resource> AnyManagedResource for ManagedResource<R> {
@@ -32,6 +36,10 @@ impl<R: Resource> AnyManagedResource for ManagedResource<R> {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
         self
+    }
+
+    fn metrics(&self) -> &Arc<ResourceMetrics> {
+        &self.metrics
     }
 }
 

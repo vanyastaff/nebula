@@ -88,6 +88,8 @@ impl Manager {
     ) -> Result<(), Error> {
         let key = R::key();
 
+        let per_resource_metrics = Arc::new(ResourceMetrics::new());
+
         let managed = Arc::new(ManagedResource {
             resource,
             config: arc_swap::ArcSwap::from_pointee(config),
@@ -95,12 +97,15 @@ impl Manager {
             release_queue,
             generation: std::sync::atomic::AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
+            metrics: per_resource_metrics,
         });
 
         let type_id = TypeId::of::<ManagedResource<R>>();
-        self.registry.register(key.clone(), type_id, scope, managed);
+        self.registry
+            .register(key.clone(), type_id, scope, managed.clone());
 
         self.metrics.record_create();
+        managed.metrics.record_create();
         let _ = self
             .event_tx
             .send(ResourceEvent::Registered { key: key.clone() });
@@ -172,7 +177,7 @@ impl Manager {
                     &managed.release_queue,
                     generation,
                     options,
-                    Arc::clone(&self.metrics),
+                    Arc::clone(&managed.metrics),
                 )
                 .await
             }
@@ -182,7 +187,7 @@ impl Manager {
             ))),
         };
 
-        self.record_acquire_result(&result, started);
+        self.record_acquire_result(&managed, &result, started);
         result
     }
 
@@ -221,7 +226,7 @@ impl Manager {
             ))),
         };
 
-        self.record_acquire_result(&result, started);
+        self.record_acquire_result(&managed, &result, started);
         result
     }
 
@@ -256,7 +261,7 @@ impl Manager {
                     &managed.release_queue,
                     generation,
                     options,
-                    Arc::clone(&self.metrics),
+                    Arc::clone(&managed.metrics),
                 )
                 .await
             }
@@ -266,7 +271,7 @@ impl Manager {
             ))),
         };
 
-        self.record_acquire_result(&result, started);
+        self.record_acquire_result(&managed, &result, started);
         result
     }
 
@@ -301,7 +306,7 @@ impl Manager {
                     &managed.release_queue,
                     generation,
                     options,
-                    Arc::clone(&self.metrics),
+                    Arc::clone(&managed.metrics),
                 )
                 .await
             }
@@ -311,7 +316,7 @@ impl Manager {
             ))),
         };
 
-        self.record_acquire_result(&result, started);
+        self.record_acquire_result(&managed, &result, started);
         result
     }
 
@@ -345,7 +350,7 @@ impl Manager {
                     &managed.release_queue,
                     generation,
                     options,
-                    Arc::clone(&self.metrics),
+                    Arc::clone(&managed.metrics),
                 )
                 .await
             }
@@ -355,7 +360,7 @@ impl Manager {
             ))),
         };
 
-        self.record_acquire_result(&result, started);
+        self.record_acquire_result(&managed, &result, started);
         result
     }
 
@@ -401,9 +406,22 @@ impl Manager {
         &self.recovery_groups
     }
 
-    /// Returns a reference to the metrics counters.
+    /// Returns a reference to the aggregate metrics counters.
     pub fn metrics(&self) -> &ResourceMetrics {
         &self.metrics
+    }
+
+    /// Returns per-resource metrics for the given key and scope.
+    ///
+    /// Returns `None` if no resource is registered under the given key
+    /// and scope combination.
+    pub fn resource_metrics(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+    ) -> Option<Arc<ResourceMetrics>> {
+        let managed = self.registry.get(key, scope)?;
+        Some(Arc::clone(managed.metrics()))
     }
 
     /// Returns the manager's cancellation token.
@@ -430,16 +448,18 @@ impl Manager {
         self.registry.get(key, scope)
     }
 
-    /// Records acquire success/failure in metrics and emits the
-    /// corresponding [`ResourceEvent`].
+    /// Records acquire success/failure in both per-resource and aggregate
+    /// metrics, and emits the corresponding [`ResourceEvent`].
     fn record_acquire_result<R: Resource>(
         &self,
+        managed: &ManagedResource<R>,
         result: &Result<crate::handle::ResourceHandle<R>, Error>,
         started: Instant,
     ) {
         match result {
             Ok(_) => {
                 self.metrics.record_acquire();
+                managed.metrics.record_acquire();
                 let _ = self.event_tx.send(ResourceEvent::AcquireSuccess {
                     key: R::key(),
                     duration: started.elapsed(),
@@ -447,6 +467,7 @@ impl Manager {
             }
             Err(e) => {
                 self.metrics.record_acquire_error();
+                managed.metrics.record_acquire_error();
                 let _ = self.event_tx.send(ResourceEvent::AcquireFailed {
                     key: R::key(),
                     error: e.to_string(),

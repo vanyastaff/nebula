@@ -15,7 +15,9 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - `HandleInner::Guarded` holds `permit: Option<OwnedSemaphorePermit>` — permit drops AFTER catch_unwind in Drop, preventing leak on callback panic
 - `TopologyTag` enum (not `&str`) identifies handle origin — `#[non_exhaustive]`, use `as_str()` for display
 - Manager emits `ResourceEvent` via `broadcast::channel(256)` on register/remove/acquire — subscribe via `subscribe_events()`
-- `Manager.metrics` is `Arc<ResourceMetrics>` — cloned into topology release callbacks for `record_release()` tracking
+- `Manager.metrics` is aggregate `Arc<ResourceMetrics>` — `ManagedResource.metrics` is per-resource; both incremented on acquire/create
+- Per-resource metrics passed to topology runtimes; aggregate stays on Manager for rollup
+- `Manager::resource_metrics(key, scope)` returns per-resource `Arc<ResourceMetrics>` via `AnyManagedResource::metrics()`
 - `ScopeLevel::Workflow(WorkflowId)` and `ScopeLevel::Execution(ExecutionId)` — typed IDs, not String
 - Deprecated `Context`/`Scope` in `compat` for v1 migration
 
@@ -39,4 +41,4 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 - Webhook still uses deprecated v1 compat types; migration tracked separately
 
-<!-- reviewed: 2026-03-25 — CAS for all RecoveryGate state transitions -->
+<!-- reviewed: 2026-03-25 — per-resource metrics with aggregate rollup -->

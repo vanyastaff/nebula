@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use arc_swap::ArcSwap;
 
+use crate::metrics::ResourceMetrics;
 use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
 use crate::state::ResourceStatus;
@@ -35,6 +36,8 @@ pub struct ManagedResource<R: Resource> {
     pub(crate) generation: AtomicU64,
     /// Current lifecycle status (phase + last error).
     pub(crate) status: ArcSwap<ResourceStatus>,
+    /// Per-resource metrics (independent of the aggregate counters on Manager).
+    pub(crate) metrics: Arc<ResourceMetrics>,
 }
 
 impl<R: Resource> ManagedResource<R> {
@@ -51,5 +54,10 @@ impl<R: Resource> ManagedResource<R> {
     /// Returns a snapshot of the current configuration.
     pub fn config(&self) -> Arc<R::Config> {
         self.config.load_full()
+    }
+
+    /// Returns the per-resource metrics for this managed resource.
+    pub fn metrics(&self) -> &Arc<ResourceMetrics> {
+        &self.metrics
     }
 }

@@ -2120,3 +2120,89 @@ async fn pool_permit_not_leaked_after_release() {
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
+
+// ---------------------------------------------------------------------------
+// Per-resource metrics tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn per_resource_metrics_are_independent() {
+    let manager = Manager::new();
+
+    // Register a pooled resource.
+    let pool_resource = PoolTestResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        max_size: 4,
+        ..Default::default()
+    };
+    let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    manager
+        .register(
+            pool_resource.clone(),
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Pool(pool_rt),
+            rq.clone(),
+        )
+        .expect("pool registration should succeed");
+
+    // Register a resident resource.
+    let resident_resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resident_resource.clone(),
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+        )
+        .expect("resident registration should succeed");
+
+    // Acquire the pooled resource once.
+    let ctx = test_ctx();
+    let handle: ResourceHandle<PoolTestResource> = manager
+        .acquire_pooled(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("pool acquire should succeed");
+    drop(handle);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Check per-resource metrics: pool should have 1 acquire, resident 0.
+    let pool_metrics = manager
+        .resource_metrics(&resource_key!("test-pool"), &ScopeLevel::Global)
+        .expect("pool metrics should exist");
+    let pool_snap = pool_metrics.snapshot();
+    assert_eq!(pool_snap.acquire_total, 1, "pool should have 1 acquire");
+    assert_eq!(pool_snap.acquire_errors, 0);
+    assert_eq!(pool_snap.create_total, 1, "pool registration records create");
+
+    let resident_metrics = manager
+        .resource_metrics(&resource_key!("test-resident"), &ScopeLevel::Global)
+        .expect("resident metrics should exist");
+    let resident_snap = resident_metrics.snapshot();
+    assert_eq!(
+        resident_snap.acquire_total, 0,
+        "resident should have 0 acquires"
+    );
+    assert_eq!(
+        resident_snap.create_total, 1,
+        "resident registration records create"
+    );
+
+    // Aggregate metrics should show 1 acquire total (from pool) and 2 creates.
+    let agg = manager.metrics().snapshot();
+    assert_eq!(agg.acquire_total, 1, "aggregate should have 1 acquire");
+    assert_eq!(agg.create_total, 2, "aggregate should have 2 creates");
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
