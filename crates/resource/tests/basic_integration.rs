@@ -848,8 +848,8 @@ async fn pool_concurrent_acquire_respects_max_size() {
     );
 
     // One more acquire should time out (pool full, short timeout via deadline).
-    let opts =
-        AcquireOptions::default().with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(100));
+    let opts = AcquireOptions::default()
+        .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(100));
     let result = pool
         .acquire(
             &resource,
@@ -904,8 +904,8 @@ async fn pool_backpressure_when_full() {
         .expect("first acquire should succeed");
 
     // Short deadline — should get backpressure quickly.
-    let opts =
-        AcquireOptions::default().with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(50));
+    let opts = AcquireOptions::default()
+        .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(50));
     let result = pool
         .acquire(
             &resource,
@@ -1162,7 +1162,10 @@ async fn manager_multiple_resources_coexist() {
         .await
         .expect("resident acquire should succeed");
 
-    assert_eq!(pool_handle.topology_tag(), nebula_resource::TopologyTag::Pool);
+    assert_eq!(
+        pool_handle.topology_tag(),
+        nebula_resource::TopologyTag::Pool
+    );
     assert_eq!(
         resident_handle.topology_tag(),
         nebula_resource::TopologyTag::Resident
@@ -1213,8 +1216,8 @@ async fn pool_acquire_with_deadline() {
         .expect("first acquire should succeed");
 
     // Very short deadline should override the 30s default timeout.
-    let opts =
-        AcquireOptions::default().with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(100));
+    let opts = AcquireOptions::default()
+        .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(100));
     let start = std::time::Instant::now();
     let result = pool
         .acquire(
@@ -1290,6 +1293,616 @@ async fn pool_detach_removes_from_pool() {
         pool.idle_count().await,
         0,
         "detached handle should not return to pool"
+    );
+
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Service mock resource
+// ---------------------------------------------------------------------------
+
+/// Inner state for the service runtime.
+#[derive(Debug)]
+struct ServiceInner {
+    data: String,
+}
+
+/// Token handed out by the service.
+#[derive(Clone, Debug)]
+struct ServiceToken {
+    data: String,
+}
+
+#[derive(Clone)]
+struct ServiceTestResource {
+    create_counter: Arc<AtomicU64>,
+    token_counter: Arc<AtomicU64>,
+}
+
+impl ServiceTestResource {
+    fn new() -> Self {
+        Self {
+            create_counter: Arc::new(AtomicU64::new(0)),
+            token_counter: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl Resource for ServiceTestResource {
+    type Config = TestConfig;
+    type Runtime = Arc<ServiceInner>;
+    type Lease = ServiceToken;
+    type Error = TestError;
+    type Credential = ();
+
+    fn key() -> ResourceKey {
+        resource_key!("test-service")
+    }
+
+    fn create(
+        &self,
+        _config: &TestConfig,
+        _credential: &(),
+        _ctx: &dyn Ctx,
+    ) -> impl std::future::Future<Output = Result<Arc<ServiceInner>, TestError>> + Send {
+        let counter = self.create_counter.clone();
+        async move {
+            counter.fetch_add(1, Ordering::Relaxed);
+            Ok(Arc::new(ServiceInner {
+                data: "svc-data".into(),
+            }))
+        }
+    }
+
+    fn destroy(
+        &self,
+        _runtime: Arc<ServiceInner>,
+    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
+        async { Ok(()) }
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Service for ServiceTestResource {
+    const TOKEN_MODE: TokenMode = TokenMode::Cloned;
+
+    fn acquire_token(
+        &self,
+        runtime: &Arc<ServiceInner>,
+        _ctx: &dyn Ctx,
+    ) -> impl std::future::Future<Output = Result<ServiceToken, TestError>> + Send {
+        let token_id = self.token_counter.fetch_add(1, Ordering::Relaxed);
+        let data = format!("{}-token-{token_id}", runtime.data);
+        async move { Ok(ServiceToken { data }) }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Transport mock resource
+// ---------------------------------------------------------------------------
+
+/// Inner state for the transport runtime.
+#[derive(Debug)]
+struct TransportInner {
+    name: String,
+}
+
+/// Session handle returned by the transport.
+#[derive(Debug)]
+struct SessionHandle {
+    id: u64,
+}
+
+#[derive(Clone)]
+struct TransportTestResource {
+    create_counter: Arc<AtomicU64>,
+    session_counter: Arc<AtomicU64>,
+    close_counter: Arc<AtomicU64>,
+}
+
+impl TransportTestResource {
+    fn new() -> Self {
+        Self {
+            create_counter: Arc::new(AtomicU64::new(0)),
+            session_counter: Arc::new(AtomicU64::new(0)),
+            close_counter: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl Resource for TransportTestResource {
+    type Config = TestConfig;
+    type Runtime = Arc<TransportInner>;
+    type Lease = SessionHandle;
+    type Error = TestError;
+    type Credential = ();
+
+    fn key() -> ResourceKey {
+        resource_key!("test-transport")
+    }
+
+    fn create(
+        &self,
+        _config: &TestConfig,
+        _credential: &(),
+        _ctx: &dyn Ctx,
+    ) -> impl std::future::Future<Output = Result<Arc<TransportInner>, TestError>> + Send {
+        let counter = self.create_counter.clone();
+        async move {
+            counter.fetch_add(1, Ordering::Relaxed);
+            Ok(Arc::new(TransportInner {
+                name: "transport".into(),
+            }))
+        }
+    }
+
+    fn destroy(
+        &self,
+        _runtime: Arc<TransportInner>,
+    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
+        async { Ok(()) }
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Transport for TransportTestResource {
+    fn open_session(
+        &self,
+        _transport: &Arc<TransportInner>,
+        _ctx: &dyn Ctx,
+    ) -> impl std::future::Future<Output = Result<SessionHandle, TestError>> + Send {
+        let id = self.session_counter.fetch_add(1, Ordering::Relaxed);
+        async move { Ok(SessionHandle { id }) }
+    }
+
+    fn close_session(
+        &self,
+        _transport: &Arc<TransportInner>,
+        _session: SessionHandle,
+        _healthy: bool,
+    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
+        let close_counter = self.close_counter.clone();
+        async move {
+            close_counter.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Exclusive mock resource
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct ExclusiveTestResource {
+    create_counter: Arc<AtomicU64>,
+    reset_counter: Arc<AtomicU64>,
+}
+
+impl ExclusiveTestResource {
+    fn new() -> Self {
+        Self {
+            create_counter: Arc::new(AtomicU64::new(0)),
+            reset_counter: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl Resource for ExclusiveTestResource {
+    type Config = TestConfig;
+    type Runtime = Arc<AtomicU64>;
+    type Lease = Arc<AtomicU64>;
+    type Error = TestError;
+    type Credential = ();
+
+    fn key() -> ResourceKey {
+        resource_key!("test-exclusive")
+    }
+
+    fn create(
+        &self,
+        _config: &TestConfig,
+        _credential: &(),
+        _ctx: &dyn Ctx,
+    ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+        let counter = self.create_counter.clone();
+        async move {
+            let id = counter.fetch_add(1, Ordering::Relaxed);
+            Ok(Arc::new(AtomicU64::new(id)))
+        }
+    }
+
+    fn destroy(
+        &self,
+        _runtime: Arc<AtomicU64>,
+    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
+        async { Ok(()) }
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Exclusive for ExclusiveTestResource {
+    fn reset(
+        &self,
+        _runtime: &Arc<AtomicU64>,
+    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
+        self.reset_counter.fetch_add(1, Ordering::Relaxed);
+        async { Ok(()) }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Service tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn service_acquire_cloned_token() {
+    let resource = ServiceTestResource::new();
+    let runtime = Arc::new(ServiceInner {
+        data: "svc-data".into(),
+    });
+    let rt =
+        ServiceRuntime::<ServiceTestResource>::new(runtime, service::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+    let ctx = test_ctx();
+
+    // Acquire first token.
+    let h1 = rt
+        .acquire(
+            &resource,
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await
+        .expect("first acquire should succeed");
+
+    assert_eq!(h1.topology_tag(), nebula_resource::TopologyTag::Service);
+    // Owned handle (Cloned mode) — generation is None.
+    assert!(h1.generation().is_none());
+
+    // Acquire second token concurrently — both should succeed.
+    let h2 = rt
+        .acquire(
+            &resource,
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await
+        .expect("second acquire should succeed");
+
+    // Tokens are distinct (different token_counter values).
+    assert_eq!(resource.token_counter.load(Ordering::Relaxed), 2);
+
+    drop(h1);
+    drop(h2);
+
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn service_acquire_via_manager() {
+    let manager = Manager::new();
+    let resource = ServiceTestResource::new();
+    let runtime = Arc::new(ServiceInner {
+        data: "managed-svc".into(),
+    });
+    let svc_rt =
+        ServiceRuntime::<ServiceTestResource>::new(runtime, service::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    manager
+        .register(
+            resource.clone(),
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Service(svc_rt),
+            rq.clone(),
+        )
+        .expect("registration should succeed");
+
+    assert!(manager.contains(&resource_key!("test-service")));
+
+    let ctx = test_ctx();
+    let handle: ResourceHandle<ServiceTestResource> = manager
+        .acquire_service(&ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed");
+
+    assert_eq!(handle.topology_tag(), nebula_resource::TopologyTag::Service);
+    assert_eq!(resource.token_counter.load(Ordering::Relaxed), 1);
+
+    drop(handle);
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Transport tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn transport_acquire_opens_session() {
+    let resource = TransportTestResource::new();
+    let runtime = Arc::new(TransportInner {
+        name: "test-conn".into(),
+    });
+    let config = transport::config::Config {
+        max_sessions: 10,
+        ..Default::default()
+    };
+    let rt = TransportRuntime::<TransportTestResource>::new(runtime, config);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+    let ctx = test_ctx();
+
+    let handle = rt
+        .acquire(
+            &resource,
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await
+        .expect("acquire should succeed");
+
+    assert_eq!(
+        handle.topology_tag(),
+        nebula_resource::TopologyTag::Transport
+    );
+    assert_eq!(resource.session_counter.load(Ordering::Relaxed), 1);
+
+    // Drop triggers close_session via release queue.
+    drop(handle);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert_eq!(resource.close_counter.load(Ordering::Relaxed), 1);
+
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn transport_session_bounded_by_semaphore() {
+    let resource = TransportTestResource::new();
+    let runtime = Arc::new(TransportInner {
+        name: "bounded-conn".into(),
+    });
+    let config = transport::config::Config {
+        max_sessions: 2,
+        keepalive_interval: None,
+    };
+    let rt = TransportRuntime::<TransportTestResource>::new(runtime, config);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+    let ctx = test_ctx();
+
+    // Acquire two sessions — should both succeed (max_sessions = 2).
+    let h1 = rt
+        .acquire(
+            &resource,
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await
+        .expect("first session");
+
+    let h2 = rt
+        .acquire(
+            &resource,
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await
+        .expect("second session");
+
+    assert_eq!(resource.session_counter.load(Ordering::Relaxed), 2);
+
+    // Third acquire should block because semaphore is exhausted.
+    let rt_ref = &rt;
+    let resource_ref = &resource;
+    let rq_ref = &rq;
+    let ctx_ref = &ctx;
+
+    let result = tokio::time::timeout(std::time::Duration::from_millis(100), async {
+        rt_ref
+            .acquire(
+                resource_ref,
+                ctx_ref,
+                rq_ref,
+                0,
+                &AcquireOptions::default(),
+                Arc::new(ResourceMetrics::new()),
+            )
+            .await
+    })
+    .await;
+
+    assert!(result.is_err(), "third acquire should have timed out");
+
+    // Release one session — frees a semaphore permit.
+    drop(h1);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Now third acquire should succeed.
+    let h3 = rt
+        .acquire(
+            &resource,
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await
+        .expect("third session after release");
+
+    assert_eq!(resource.session_counter.load(Ordering::Relaxed), 3);
+
+    drop(h2);
+    drop(h3);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Exclusive tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn exclusive_acquire_one_at_a_time() {
+    let resource = ExclusiveTestResource::new();
+    let runtime = Arc::new(AtomicU64::new(42));
+    let rt = ExclusiveRuntime::<ExclusiveTestResource>::new(
+        runtime,
+        exclusive::config::Config::default(),
+    );
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    // First acquire succeeds.
+    let h1 = rt
+        .acquire(
+            &resource,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await
+        .expect("first acquire should succeed");
+
+    assert_eq!(h1.topology_tag(), nebula_resource::TopologyTag::Exclusive);
+
+    // Second acquire should block (semaphore has 1 permit).
+    let rt_ref = &rt;
+    let resource_ref = &resource;
+    let rq_ref = &rq;
+
+    let result = tokio::time::timeout(std::time::Duration::from_millis(100), async {
+        rt_ref
+            .acquire(
+                resource_ref,
+                rq_ref,
+                0,
+                &AcquireOptions::default(),
+                Arc::new(ResourceMetrics::new()),
+            )
+            .await
+    })
+    .await;
+
+    assert!(result.is_err(), "second acquire should have timed out");
+
+    // Release the first handle.
+    drop(h1);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Now second acquire should succeed.
+    let h2 = rt
+        .acquire(
+            &resource,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await
+        .expect("second acquire after release");
+
+    assert_eq!(h2.topology_tag(), nebula_resource::TopologyTag::Exclusive);
+
+    drop(h2);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn exclusive_reset_called_on_release() {
+    let resource = ExclusiveTestResource::new();
+    let runtime = Arc::new(AtomicU64::new(0));
+    let rt = ExclusiveRuntime::<ExclusiveTestResource>::new(
+        runtime,
+        exclusive::config::Config::default(),
+    );
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    let handle = rt
+        .acquire(
+            &resource,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await
+        .expect("acquire should succeed");
+
+    assert_eq!(resource.reset_counter.load(Ordering::Relaxed), 0);
+
+    // Drop triggers reset via release queue.
+    drop(handle);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert_eq!(
+        resource.reset_counter.load(Ordering::Relaxed),
+        1,
+        "reset should have been called once after release"
+    );
+
+    // Acquire and release again to confirm reset increments.
+    let handle2 = rt
+        .acquire(
+            &resource,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await
+        .expect("second acquire");
+
+    drop(handle2);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert_eq!(
+        resource.reset_counter.load(Ordering::Relaxed),
+        2,
+        "reset should have been called twice"
     );
 
     drop(rq);
