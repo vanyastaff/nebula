@@ -185,8 +185,7 @@ mod tests {
         };
 
         let cancel = CancellationToken::new();
-        let handle =
-            WatchdogHandle::start(config, check_fn, on_change, cancel.clone());
+        let handle = WatchdogHandle::start(config, check_fn, on_change, cancel.clone());
 
         // Advance time enough for 3+ failures (3 intervals = 300ms + margin).
         tokio::time::sleep(Duration::from_millis(350)).await;
@@ -236,8 +235,7 @@ mod tests {
         };
 
         let cancel = CancellationToken::new();
-        let handle =
-            WatchdogHandle::start(config, check_fn, on_change, cancel.clone());
+        let handle = WatchdogHandle::start(config, check_fn, on_change, cancel.clone());
 
         // After 3 failures (~300ms), should go unhealthy.
         tokio::time::sleep(Duration::from_millis(350)).await;
@@ -279,8 +277,7 @@ mod tests {
         };
 
         let cancel = CancellationToken::new();
-        let handle =
-            WatchdogHandle::start(config, check_fn, |_| {}, cancel.clone());
+        let handle = WatchdogHandle::start(config, check_fn, |_| {}, cancel.clone());
 
         // Let it run for a couple of ticks.
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -307,8 +304,7 @@ mod tests {
         let unhealthy_fired = Arc::new(AtomicBool::new(false));
 
         // check_fn that hangs forever (simulates timeout).
-        let check_fn =
-            || async { std::future::pending::<Result<(), crate::Error>>().await };
+        let check_fn = || async { std::future::pending::<Result<(), crate::Error>>().await };
 
         let fired = Arc::clone(&unhealthy_fired);
         let on_change = move |healthy: bool| {
@@ -326,8 +322,7 @@ mod tests {
         };
 
         let cancel = CancellationToken::new();
-        let handle =
-            WatchdogHandle::start(config, check_fn, on_change, cancel.clone());
+        let handle = WatchdogHandle::start(config, check_fn, on_change, cancel.clone());
 
         // Each cycle: 100ms interval + 50ms timeout = ~150ms per iteration.
         // Need 2 failures, so ~300ms + margin.
