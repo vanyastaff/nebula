@@ -1,29 +1,37 @@
 # nebula-parameter
 Parameter schema system (RFC 0005) — defines what inputs a workflow node accepts.
 
+**STATUS: v2→v3 migration in progress** (see `docs/plans/2026-03-24-parameter-v3-migration.md`). During migration, both v2 and v3 types may coexist temporarily. The v3 HLD is `docs/designs/nebula-parameter-hld-v3.md`.
+
 ## Invariants
-- **`src/schema.rs` and `src/providers.rs` are the ground truth.** `docs/crates/parameter/*.md` is the old v1 API — stale, kept for migration history. Never trust those docs.
+- **v3 ground truth:** `src/parameter.rs` (Parameter struct), `src/parameter_type.rs` (ParameterType enum), `src/collection.rs` (ParameterCollection). Old `src/schema.rs` and `src/field.rs` are being replaced.
 - Provider registration keys must be lowercase ASCII with only `.`, `_`, `-`. Returns `Err` on bad key — never panics.
-- **`ValidatedValues` is only constructible via `Schema::validate()` / `Schema::validate_with_profile()`.** Constructor is `pub(crate)` — external crates cannot fake validation proof.
-- **Loaders are fallible.** `OptionLoader` and `RecordLoader` return `Result<Vec<T>, LoaderError>`. Callers must handle errors.
+- **`ValidatedValues` is only constructible via `ParameterCollection::validate()` / `validate_with_profile()`.** Constructor is `pub(crate)` — external crates cannot fake validation proof.
+- **Loaders are fallible.** `OptionLoader`, `RecordLoader`, `FilterFieldLoader` return `Result<LoaderResult<T>, LoaderError>`. Callers must handle errors.
+- **`Condition` is separate from `Rule`.** `Condition` = predicate on sibling values (visibility, required). `Rule` = validation constraint on own value. They never mix.
 
 ## Key Decisions
-- V2 `Field` enum has 16 variants covering all UI input types. `Schema` is the container.
-- `FieldValues` is the runtime key-value map; `ValidatedValues` wraps it post-validation.
-- `Condition` handles field visibility/required logic declaratively (show field only when another field = X).
+- v3 replaces `Field` enum (16 variants) with `Parameter` struct + `ParameterType` enum (19 variants). Shared metadata is on the struct; type-specific data in the enum.
+- `ParameterValues` (renamed from `FieldValues`) is the runtime key-value map; `ValidatedValues` wraps it post-validation.
+- `Condition` is its own enum (Eq, Ne, OneOf, Set, NotSet, IsTrue, Gt, Lt, All, Any, Not) using `ParameterPath` for field references.
+- `Transformer` pipeline applied lazily via `get_transformed()` — does NOT affect validation or normalization.
+- `DisplayMode` controls Object presentation: Inline, Collapsed, PickFields, Sections. PickFields/Sections skip default backfill for absent keys.
+- `ModeVariant` wrapper removed — Mode variants are `Vec<Parameter>` directly (param.id = variant key).
+- `Notice` and `Computed` are parameter types, not separate UI elements.
 - `ValidationProfile` selects which rules run (strict vs permissive). Profile is threaded through nested Object/Mode validation — consistent at all depths.
-- `FieldSpec` is an intentionally restricted subset of `Field` (4 variants) for dynamic providers. Duplication is accepted; `TryFrom<&Field>` and `From<FieldSpec>` conversions available.
+- `FieldSpec` is an intentionally restricted subset of `Parameter` (4 variants) for dynamic providers.
 
 ## Traps
 - **DO NOT use the old docs** — `docs/crates/parameter/` describes removed APIs.
 - `Rule` in this crate (`parameter::Rule`) is distinct from `nebula_validator::Rule`. Both exist; context determines which.
-- `OptionLoader` / `RecordLoader` are inline async loaders for dynamic select fields — they require an async runtime; don't call in sync contexts. **They return `Result` — handle `LoaderError`.**
-- `UnknownFieldPolicy` controls whether extra keys in `FieldValues` are rejected or ignored — defaults to strict.
+- `OptionLoader` / `RecordLoader` / `FilterFieldLoader` are inline async loaders — they require an async runtime; don't call in sync contexts. **They return `Result<LoaderResult<T>>` — handle `LoaderError`.**
 - `with_option_loader()` / `with_record_loader()` use `debug_assert!` on wrong variant — no-op in release, panics in debug.
 - `ParameterError::ValidationError` variant was removed — use `ValidationIssue` for all structured validation errors.
+- **During migration:** lib.rs may not wire all new modules until Task 13. Individual files may not compile standalone.
 
 ## Relations
-- Used by nebula-action (re-exports `Field`, `Schema`), nebula-sdk, nebula-macros.
+- Used by nebula-action (re-exports `Parameter`, `ParameterCollection`), nebula-sdk, nebula-macros.
 - `Rule::field_references()` added to nebula-validator for lint cross-referencing.
+- Consumers migrating: action, credential, auth, engine, sdk, macros, resource.
 
-<!-- reviewed: 2026-03-24 -->
+<!-- reviewed: 2026-03-25 -->
