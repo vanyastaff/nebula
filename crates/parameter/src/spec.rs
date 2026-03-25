@@ -1,73 +1,34 @@
-//! Supporting spec types used by schema fields and providers.
+//! Supporting spec types used by parameter schemas and providers.
 
 use std::fmt;
 
-use crate::field::Field;
 use crate::loader::OptionLoader;
-use crate::metadata::FieldMetadata;
-use crate::option::OptionSource;
+use crate::option::SelectOption;
 
-/// One variant in a [`crate::field::Field::Mode`] discriminated-union field.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ModeVariant {
-    /// Stable variant key.
-    pub key: String,
-    /// Display label.
-    pub label: String,
-    /// Optional description.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// Single content field for this variant.
-    ///
-    /// Use [`crate::field::Field::Object`] to group multiple sub-fields inside one variant.
-    pub content: Box<crate::field::Field>,
-}
-
-/// Controls when the dynamic fields editor is rendered.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DynamicFieldsMode {
-    /// Show all provider fields.
-    #[default]
-    All,
-    /// Show only required provider fields initially.
-    RequiredOnly,
-}
-
-/// Policy for values returned by a provider but absent from the schema.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UnknownFieldPolicy {
-    /// Keep unknown values and surface a warning.
-    #[default]
-    WarnKeep,
-    /// Drop unknown values from storage.
-    Strip,
-    /// Fail validation when unknown values are present.
-    Error,
-}
-
-/// Simplified field subset that dynamic record providers may return.
+/// Simplified parameter subset that dynamic record providers may return.
 ///
-/// Providers must not introduce nested [`crate::field::Field::Mode`] or
-/// [`crate::field::Field::DynamicFields`] variants.
+/// Providers must not introduce nested Mode or Dynamic variants.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FieldSpec {
     /// Free-form text.
     Text {
-        /// Shared field metadata.
-        #[serde(flatten)]
-        meta: FieldMetadata,
+        /// Stable field identifier.
+        id: String,
+        /// Display label.
+        #[serde(default)]
+        label: String,
         /// Render as a multi-line textarea.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         multiline: bool,
     },
     /// Number.
     Number {
-        /// Shared field metadata.
-        #[serde(flatten)]
-        meta: FieldMetadata,
+        /// Stable field identifier.
+        id: String,
+        /// Display label.
+        #[serde(default)]
+        label: String,
         /// Restrict input to whole integers.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         integer: bool,
@@ -83,18 +44,22 @@ pub enum FieldSpec {
     },
     /// Boolean toggle.
     Boolean {
-        /// Shared field metadata.
-        #[serde(flatten)]
-        meta: FieldMetadata,
+        /// Stable field identifier.
+        id: String,
+        /// Display label.
+        #[serde(default)]
+        label: String,
     },
-    /// Select with static or dynamic options.
+    /// Select with static options.
     Select {
-        /// Shared field metadata.
-        #[serde(flatten)]
-        meta: FieldMetadata,
-        /// Option source.
-        #[serde(flatten)]
-        source: OptionSource,
+        /// Stable field identifier.
+        id: String,
+        /// Display label.
+        #[serde(default)]
+        label: String,
+        /// Static options.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        options: Vec<SelectOption>,
         /// Allow selecting multiple values.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         multiple: bool,
@@ -110,7 +75,7 @@ pub enum FieldSpec {
     },
 }
 
-/// Top-level filter expression emitted by a [`crate::field::Field::Filter`] editor.
+/// Top-level filter expression emitted by a filter editor.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FilterExpr {
@@ -184,7 +149,7 @@ pub enum FilterOp {
 
 // ── FieldSpec conversions ───────────────────────────────────────────────────
 
-/// Error returned when a [`Field`] variant cannot be converted to [`FieldSpec`].
+/// Error returned when a conversion to [`FieldSpec`] is not supported.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldSpecConvertError {
     /// The name of the unsupported variant.
@@ -195,92 +160,10 @@ impl fmt::Display for FieldSpecConvertError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "cannot convert Field::{} to FieldSpec (only Text, Number, Boolean, Select supported)",
+            "cannot convert to FieldSpec: unsupported variant `{}`",
             self.variant
         )
     }
 }
 
 impl std::error::Error for FieldSpecConvertError {}
-
-impl TryFrom<&Field> for FieldSpec {
-    type Error = FieldSpecConvertError;
-
-    fn try_from(field: &Field) -> Result<Self, Self::Error> {
-        match field {
-            Field::Text { meta, multiline } => Ok(FieldSpec::Text {
-                meta: meta.clone(),
-                multiline: *multiline,
-            }),
-            Field::Number {
-                meta,
-                integer,
-                min,
-                max,
-                step,
-            } => Ok(FieldSpec::Number {
-                meta: meta.clone(),
-                integer: *integer,
-                min: min.clone(),
-                max: max.clone(),
-                step: step.clone(),
-            }),
-            Field::Boolean { meta } => Ok(FieldSpec::Boolean { meta: meta.clone() }),
-            Field::Select {
-                meta,
-                source,
-                multiple,
-                allow_custom,
-                searchable,
-                loader,
-            } => Ok(FieldSpec::Select {
-                meta: meta.clone(),
-                source: source.clone(),
-                multiple: *multiple,
-                allow_custom: *allow_custom,
-                searchable: *searchable,
-                loader: loader.clone(),
-            }),
-            other => Err(FieldSpecConvertError {
-                variant: format!("{:?}", std::mem::discriminant(other)),
-            }),
-        }
-    }
-}
-
-impl From<FieldSpec> for Field {
-    fn from(spec: FieldSpec) -> Self {
-        match spec {
-            FieldSpec::Text { meta, multiline } => Field::Text { meta, multiline },
-            FieldSpec::Number {
-                meta,
-                integer,
-                min,
-                max,
-                step,
-            } => Field::Number {
-                meta,
-                integer,
-                min,
-                max,
-                step,
-            },
-            FieldSpec::Boolean { meta } => Field::Boolean { meta },
-            FieldSpec::Select {
-                meta,
-                source,
-                multiple,
-                allow_custom,
-                searchable,
-                loader,
-            } => Field::Select {
-                meta,
-                source,
-                multiple,
-                allow_custom,
-                searchable,
-                loader,
-            },
-        }
-    }
-}

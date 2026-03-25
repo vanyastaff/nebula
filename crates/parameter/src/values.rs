@@ -5,9 +5,7 @@ use std::ops::Index;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-#[path = "transformer.rs"]
-mod transformer_impl;
-pub use transformer_impl::Transformer;
+use crate::transformer::Transformer;
 
 /// Reserved object key that marks expression-backed runtime values.
 pub const EXPRESSION_KEY: &str = "$expr";

@@ -13,7 +13,7 @@ use crate::error::ParameterError;
 use crate::parameter::Parameter;
 use crate::profile::ValidationProfile;
 use crate::report::ValidationReport;
-use crate::values::FieldValues;
+use crate::values::ParameterValues;
 
 /// Complete parameter collection for v3 authoring.
 ///
@@ -51,6 +51,7 @@ impl ParameterCollection {
 
     /// Appends a parameter to the collection.
     #[must_use]
+    #[allow(clippy::should_implement_trait)]
     pub fn add(mut self, param: Parameter) -> Self {
         self.parameters.push(param);
         self
@@ -90,7 +91,7 @@ impl ParameterCollection {
     /// Returns a non-empty list of [`ParameterError`] on failure.
     pub fn validate(
         &self,
-        values: &FieldValues,
+        values: &ParameterValues,
     ) -> Result<crate::runtime::ValidatedValues, Vec<ParameterError>> {
         // Delegate to validation engine — will be implemented in Task 9.
         // For now, return Ok with validated wrapper.
@@ -103,7 +104,7 @@ impl ParameterCollection {
     #[must_use]
     pub fn validate_with_profile(
         &self,
-        values: &FieldValues,
+        values: &ParameterValues,
         profile: ValidationProfile,
     ) -> ValidationReport {
         // Delegate to validation engine — will be implemented in Task 9.
@@ -116,7 +117,7 @@ impl ParameterCollection {
     /// Existing user-provided values are preserved. Missing fields are
     /// materialized from `default` metadata and mode default variants.
     #[must_use]
-    pub fn normalize(&self, values: &FieldValues) -> FieldValues {
+    pub fn normalize(&self, values: &ParameterValues) -> ParameterValues {
         // Delegate to normalization engine — will be implemented in Task 10.
         values.clone()
     }
@@ -215,7 +216,7 @@ mod tests {
     #[test]
     fn validate_stub_returns_ok() {
         let coll = ParameterCollection::new().add(Parameter::string("name"));
-        let values = FieldValues::new();
+        let values = ParameterValues::new();
 
         let result = coll.validate(&values);
         assert!(result.is_ok());
@@ -224,7 +225,7 @@ mod tests {
     #[test]
     fn validate_with_profile_stub_returns_empty_report() {
         let coll = ParameterCollection::new().add(Parameter::string("name"));
-        let values = FieldValues::new();
+        let values = ParameterValues::new();
 
         let report = coll.validate_with_profile(&values, ValidationProfile::Strict);
         assert!(report.is_ok());
@@ -236,7 +237,7 @@ mod tests {
     fn normalize_stub_returns_clone() {
         let coll = ParameterCollection::new().add(Parameter::string("name"));
 
-        let mut values = FieldValues::new();
+        let mut values = ParameterValues::new();
         values.set("name", json!("Alice"));
 
         let normalized = coll.normalize(&values);

@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::path::ParameterPath;
+use crate::path::ParameterPath;
 
 /// A declarative predicate over runtime parameter values.
 ///
@@ -178,6 +178,7 @@ impl Condition {
 
     /// Create a [`Not`](Self::Not) condition (logical negation).
     #[must_use]
+    #[allow(clippy::should_implement_trait)]
     pub fn not(condition: Self) -> Self {
         Self::Not {
             condition: Box::new(condition),
@@ -203,7 +204,7 @@ impl Condition {
 
             Self::Set { field } => values.get(field.as_str()).is_some_and(|v| !v.is_null()),
 
-            Self::NotSet { field } => values.get(field.as_str()).map_or(true, Value::is_null),
+            Self::NotSet { field } => values.get(field.as_str()).is_none_or(Value::is_null),
 
             Self::IsTrue { field } => {
                 values.get(field.as_str()).and_then(Value::as_bool) == Some(true)

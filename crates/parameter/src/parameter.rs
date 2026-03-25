@@ -672,6 +672,7 @@ impl Parameter {
 
     /// Adds a child parameter to an [`ParameterType::Object`].
     #[must_use]
+    #[allow(clippy::should_implement_trait)]
     pub fn add(mut self, param: Parameter) -> Self {
         if let ParameterType::Object { parameters, .. } = &mut self.param_type {
             parameters.push(param);

@@ -2,7 +2,7 @@
 
 use crate::error::ParameterError;
 use crate::runtime::ValidatedValues;
-use crate::values::FieldValues;
+use crate::values::ParameterValues;
 
 /// The result of running schema validation with a [`crate::profile::ValidationProfile`].
 ///
@@ -53,7 +53,7 @@ impl ValidationReport {
     /// # Errors
     ///
     /// Returns the report unchanged when it contains hard errors.
-    pub fn into_validated(self, values: &FieldValues) -> Result<ValidatedValues, Self> {
+    pub fn into_validated(self, values: &ParameterValues) -> Result<ValidatedValues, Self> {
         if self.errors.is_empty() {
             Ok(ValidatedValues::new(values.clone()))
         } else {

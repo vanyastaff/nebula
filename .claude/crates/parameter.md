@@ -27,11 +27,11 @@ Parameter schema system (RFC 0005) — defines what inputs a workflow node accep
 - `OptionLoader` / `RecordLoader` / `FilterFieldLoader` are inline async loaders — they require an async runtime; don't call in sync contexts. **They return `Result<LoaderResult<T>>` — handle `LoaderError`.**
 - v3 type-specific builders (e.g. `multiline()`, `min()`, `searchable()`) silently no-op when called on the wrong ParameterType variant. `with_option_loader()` / `with_record_loader()` / `with_filter_field_loader()` also no-op on wrong variant.
 - `ParameterError::ValidationError` variant was removed — use `ValidationIssue` for all structured validation errors.
-- **During migration:** lib.rs may not wire all new modules until Task 13. Individual files may not compile standalone.
+- **Task 13 completed:** lib.rs wires all v3 modules. Old `field.rs`, `metadata.rs`, `schema.rs` deleted. `validate.rs`, `normalize.rs`, `lint.rs` are stubs pending Tasks 9-11. Integration tests and examples use old API — pending Tasks 14-15.
 
 ## Relations
 - Used by nebula-action (re-exports `Parameter`, `ParameterCollection`), nebula-sdk, nebula-macros.
 - `Rule::field_references()` added to nebula-validator for lint cross-referencing.
 - Consumers migrating: action, credential, auth, engine, sdk, macros, resource.
 
-<!-- reviewed: 2026-03-25 (Task 7: FieldValues→ParameterValues rename + get_transformed) -->
+<!-- reviewed: 2026-03-25 (Task 13: wire lib.rs, delete old v2 modules, stub validate/normalize/lint) -->

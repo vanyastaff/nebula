@@ -12,8 +12,8 @@ pub use crate::values::ParameterValues as FieldValues;
 /// Schema-bound validated values view.
 ///
 /// Cannot be constructed outside the crate — only produced by
-/// [`Schema::validate`](crate::schema::Schema::validate) or
-/// [`Schema::validate_with_profile`](crate::schema::Schema::validate_with_profile).
+/// [`Schema::validate`](crate::collection::ParameterCollection::validate) or
+/// [`Schema::validate_with_profile`](crate::collection::ParameterCollection::validate_with_profile).
 #[derive(Debug, Clone)]
 pub struct ValidatedValues {
     values: ParameterValues,
@@ -22,7 +22,7 @@ pub struct ValidatedValues {
 impl ValidatedValues {
     /// Creates a validated wrapper from runtime values.
     ///
-    /// Not publicly constructible — use [`Schema::validate`](crate::schema::Schema::validate).
+    /// Not publicly constructible — use [`Schema::validate`](crate::collection::ParameterCollection::validate).
     pub(crate) fn new(values: ParameterValues) -> Self {
         Self { values }
     }
