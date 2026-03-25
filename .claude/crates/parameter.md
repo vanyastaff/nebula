@@ -27,4 +27,4 @@ Parameter schema system (RFC 0005) — defines what inputs a workflow node accep
 - Used by nebula-action (re-exports `Parameter`, `ParameterCollection`), nebula-credential, nebula-sdk, nebula-macros.
 - `Rule::field_references()` from nebula-validator used for lint cross-referencing.
 
-<!-- reviewed: 2026-03-25 -->
+<!-- reviewed: 2026-03-25 (post-resource-v2) -->
