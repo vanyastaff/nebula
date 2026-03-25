@@ -5,6 +5,7 @@
 //! If the runtime is missing or stale, it is (re)created.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::Mutex;
 use tracing::warn;
@@ -118,7 +119,11 @@ where
             if let Some(old) = self.cell.take() {
                 match Arc::try_unwrap(old) {
                     Ok(owned) => {
-                        let _ = resource.destroy(owned).await;
+                        let _ = tokio::time::timeout(
+                            Duration::from_secs(10),
+                            resource.destroy(owned),
+                        )
+                        .await;
                     }
                     Err(arc) => {
                         warn!(
@@ -133,10 +138,16 @@ where
         }
 
         // Create a new runtime.
-        let runtime = resource
-            .create(resource_config, credential, ctx)
-            .await
-            .map_err(Into::into)?;
+        let runtime = match tokio::time::timeout(
+            self.config.create_timeout,
+            resource.create(resource_config, credential, ctx),
+        )
+        .await
+        {
+            Ok(Ok(rt)) => rt,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => return Err(Error::transient("resident: create timed out")),
+        };
 
         let lease: R::Lease = runtime.clone().into();
         self.cell.store(Arc::new(runtime));
@@ -264,7 +275,7 @@ mod tests {
         }
 
         for h in handles {
-            h.await.unwrap();
+            let _ = h.await.unwrap();
         }
 
         // Only one create should have happened.
@@ -314,6 +325,7 @@ mod tests {
         let resource = MockResident::new();
         let config = Config {
             recreate_on_failure: true,
+            ..Default::default()
         };
         let rt = ResidentRuntime::<MockResident>::new(config);
         let ctx = test_ctx();
@@ -348,11 +360,77 @@ mod tests {
         assert_eq!(resource.create_count.load(Ordering::Relaxed), 2);
     }
 
+    // A resource whose `create()` never returns — for timeout tests.
+    #[derive(Clone)]
+    struct HangingResident;
+
+    impl Resource for HangingResident {
+        type Config = bool;
+        type Runtime = u32;
+        type Lease = u32;
+        type Error = MockError;
+        type Credential = ();
+
+        fn key() -> ResourceKey {
+            resource_key!("hanging-resident")
+        }
+
+        fn create(
+            &self,
+            _config: &bool,
+            _credential: &(),
+            _ctx: &dyn Ctx,
+        ) -> impl std::future::Future<Output = Result<u32, MockError>> + Send {
+            async {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                Ok(0)
+            }
+        }
+
+        fn destroy(
+            &self,
+            _runtime: u32,
+        ) -> impl std::future::Future<Output = Result<(), MockError>> + Send {
+            async { Ok(()) }
+        }
+
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl Resident for HangingResident {}
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resident_create_timeout_does_not_deadlock() {
+        let resource = HangingResident;
+        let config = Config {
+            create_timeout: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let rt = Arc::new(ResidentRuntime::<HangingResident>::new(config));
+        let ctx = Arc::new(test_ctx());
+
+        // First acquire should fail quickly with a timeout, not hang.
+        let result = rt
+            .acquire(&resource, &true, &(), ctx.as_ref(), &AcquireOptions::default())
+            .await;
+        assert!(result.is_err(), "first acquire should time out");
+
+        // Second acquire must also fail quickly — the create_lock must have
+        // been released after the first timeout.
+        let result = rt
+            .acquire(&resource, &true, &(), ctx.as_ref(), &AcquireOptions::default())
+            .await;
+        assert!(result.is_err(), "second acquire should time out (lock released)");
+    }
+
     #[tokio::test]
     async fn acquire_fails_when_not_alive_and_no_recreate() {
         let resource = MockResident::new();
         let config = Config {
             recreate_on_failure: false,
+            ..Default::default()
         };
         let rt = ResidentRuntime::<MockResident>::new(config);
         let ctx = test_ctx();

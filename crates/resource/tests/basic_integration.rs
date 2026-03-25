@@ -406,6 +406,7 @@ async fn resident_recreates_when_not_alive() {
     let resource = ResidentTestResource::new();
     let config = resident::config::Config {
         recreate_on_failure: true,
+        ..Default::default()
     };
     let rt = ResidentRuntime::<ResidentTestResource>::new(config);
     let ctx = test_ctx();
@@ -1694,6 +1695,7 @@ async fn transport_session_bounded_by_semaphore() {
     let config = transport::config::Config {
         max_sessions: 2,
         keepalive_interval: None,
+        ..Default::default()
     };
     let rt = TransportRuntime::<TransportTestResource>::new(runtime, config);
     let (rq, rq_handle) = ReleaseQueue::new(1);
@@ -1770,6 +1772,86 @@ async fn transport_session_bounded_by_semaphore() {
 
     drop(h2);
     drop(h3);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn transport_acquire_timeout_when_sessions_exhausted() {
+    let resource = TransportTestResource::new();
+    let runtime = Arc::new(TransportInner {
+        name: "timeout-conn".into(),
+    });
+    let config = transport::config::Config {
+        max_sessions: 1,
+        keepalive_interval: None,
+        acquire_timeout: std::time::Duration::from_millis(50),
+    };
+    let rt = TransportRuntime::<TransportTestResource>::new(runtime, config);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+    let ctx = test_ctx();
+
+    // Hold the only session.
+    let _held = rt
+        .acquire(
+            &resource,
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await
+        .expect("first acquire should succeed");
+
+    // Second acquire must time out (no deadline override — uses config timeout).
+    let result = rt
+        .acquire(
+            &resource,
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await;
+    let err = match result {
+        Err(e) => e,
+        Ok(_) => panic!("second acquire should time out"),
+    };
+
+    assert!(
+        matches!(err.kind(), ErrorKind::Backpressure),
+        "expected Backpressure, got {err:?}",
+    );
+
+    // With an explicit deadline the caller-supplied timeout is respected.
+    let short_deadline = std::time::Instant::now() + std::time::Duration::from_millis(25);
+    let opts = AcquireOptions::default().with_deadline(short_deadline);
+    let result2 = rt
+        .acquire(
+            &resource,
+            &ctx,
+            &rq,
+            0,
+            &opts,
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await;
+    let err2 = match result2 {
+        Err(e) => e,
+        Ok(_) => panic!("deadline acquire should time out"),
+    };
+
+    assert!(
+        matches!(err2.kind(), ErrorKind::Backpressure),
+        "expected Backpressure with deadline, got {err2:?}",
+    );
+
+    drop(_held);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     drop(rq);
@@ -1904,6 +1986,78 @@ async fn exclusive_reset_called_on_release() {
         2,
         "reset should have been called twice"
     );
+
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn exclusive_acquire_timeout_when_locked() {
+    let resource = ExclusiveTestResource::new();
+    let runtime = Arc::new(AtomicU64::new(0));
+    let config = exclusive::config::Config {
+        acquire_timeout: std::time::Duration::from_millis(50),
+    };
+    let rt = ExclusiveRuntime::<ExclusiveTestResource>::new(runtime, config);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    // Hold the exclusive lock.
+    let _h1 = rt
+        .acquire(
+            &resource,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await
+        .expect("first acquire should succeed");
+
+    // Second acquire should time out via config timeout.
+    let result = rt
+        .acquire(
+            &resource,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await;
+    let err = match result {
+        Err(e) => e,
+        Ok(_) => panic!("second acquire should time out"),
+    };
+    assert!(
+        matches!(err.kind(), ErrorKind::Backpressure),
+        "expected Backpressure, got {:?}",
+        err.kind(),
+    );
+
+    // Also test deadline-based timeout via AcquireOptions.
+    let short_deadline = AcquireOptions::default()
+        .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(10));
+    let result2 = rt
+        .acquire(
+            &resource,
+            &rq,
+            0,
+            &short_deadline,
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await;
+    let err2 = match result2 {
+        Err(e) => e,
+        Ok(_) => panic!("deadline acquire should time out"),
+    };
+    assert!(
+        matches!(err2.kind(), ErrorKind::Backpressure),
+        "expected Backpressure, got {:?}",
+        err2.kind(),
+    );
+
+    drop(_h1);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;

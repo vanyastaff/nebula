@@ -29,10 +29,26 @@ where
 
 /// Configuration types for resident topology.
 pub mod config {
+    use std::time::Duration;
+
     /// Resident configuration.
-    #[derive(Debug, Clone, Default)]
+    #[derive(Debug, Clone)]
     pub struct Config {
         /// Whether to automatically recreate the instance on failure.
         pub recreate_on_failure: bool,
+        /// Maximum time to wait for `Resource::create()` before aborting.
+        ///
+        /// Prevents a hanging backend from holding the create lock forever,
+        /// which would deadlock all subsequent acquires.
+        pub create_timeout: Duration,
+    }
+
+    impl Default for Config {
+        fn default() -> Self {
+            Self {
+                recreate_on_failure: false,
+                create_timeout: Duration::from_secs(30),
+            }
+        }
     }
 }
