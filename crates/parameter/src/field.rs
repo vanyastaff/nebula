@@ -403,16 +403,19 @@ impl Field {
 
     /// Attaches an async inline option loader to a [`Field::Select`] variant.
     ///
-    /// The closure receives a [`crate::loader::LoaderCtx`] by value and must
-    /// return a future that resolves to a `Vec<SelectOption>`.
+    /// The closure receives a [`crate::loader::LoaderContext`] by value and must
+    /// return a future that resolves to a `LoaderResult<SelectOption>`.
     ///
     /// Panics if called on a non-`Select` variant.
     #[must_use]
     pub fn with_option_loader<F, Fut>(mut self, f: F) -> Self
     where
-        F: Fn(crate::loader::LoaderCtx) -> Fut + Send + Sync + 'static,
+        F: Fn(crate::loader::LoaderContext) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<
-                Output = Result<Vec<crate::option::SelectOption>, crate::loader::LoaderError>,
+                Output = Result<
+                    crate::loader_result::LoaderResult<crate::option::SelectOption>,
+                    crate::loader::LoaderError,
+                >,
             > + Send
             + 'static,
     {
@@ -429,16 +432,20 @@ impl Field {
 
     /// Attaches an async inline record loader to a [`Field::DynamicFields`] variant.
     ///
-    /// The closure receives a [`crate::loader::LoaderCtx`] by value and must
-    /// return a future that resolves to a `Vec<FieldSpec>`.
+    /// The closure receives a [`crate::loader::LoaderContext`] by value and must
+    /// return a future that resolves to a `LoaderResult<serde_json::Value>`.
     ///
     /// Panics if called on a non-`DynamicFields` variant.
     #[must_use]
     pub fn with_record_loader<F, Fut>(mut self, f: F) -> Self
     where
-        F: Fn(crate::loader::LoaderCtx) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<Vec<FieldSpec>, crate::loader::LoaderError>>
-            + Send
+        F: Fn(crate::loader::LoaderContext) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = Result<
+                    crate::loader_result::LoaderResult<serde_json::Value>,
+                    crate::loader::LoaderError,
+                >,
+            > + Send
             + 'static,
     {
         if let Self::DynamicFields { loader, .. } = &mut self {

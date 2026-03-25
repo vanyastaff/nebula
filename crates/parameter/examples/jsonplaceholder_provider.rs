@@ -11,9 +11,9 @@
 //! ```
 
 use nebula_parameter::field::Field;
-use nebula_parameter::loader::{LoaderCtx, LoaderError};
+use nebula_parameter::loader::{LoaderContext, LoaderError};
+use nebula_parameter::loader_result::LoaderResult;
 use nebula_parameter::option::SelectOption;
-use nebula_parameter::runtime::FieldValues;
 
 // -- API shape ----------------------------------------------------------------
 
@@ -32,7 +32,7 @@ async fn main() {
     // Build a Field::Select with an inline async loader that hits JSONPlaceholder.
     let field = Field::select("assigned_user")
         .with_label("Assigned User")
-        .with_option_loader(|ctx: LoaderCtx| async move {
+        .with_option_loader(|ctx: LoaderContext| async move {
             let users: Vec<User> = reqwest::Client::new()
                 .get("https://jsonplaceholder.typicode.com/users")
                 .send()
@@ -44,7 +44,7 @@ async fn main() {
 
             let filter = ctx.filter.as_deref().unwrap_or("").to_lowercase();
 
-            Ok(users
+            let options: Vec<SelectOption> = users
                 .into_iter()
                 .filter(|u| {
                     filter.is_empty()
@@ -59,24 +59,27 @@ async fn main() {
                     opt.description = Some(u.email);
                     opt
                 })
-                .collect())
+                .collect();
+
+            Ok(LoaderResult::done(options))
         });
 
     let loader = field.option_loader().expect("loader is attached");
 
     // Full list.
-    let ctx = LoaderCtx {
+    let ctx = LoaderContext {
         field_id: "assigned_user".to_owned(),
-        values: FieldValues::new(),
+        values: serde_json::Value::Object(serde_json::Map::new()),
         filter: None,
         cursor: None,
         credential: None,
+        metadata: None,
     };
 
-    let options = loader.call(ctx).await.expect("loader should succeed");
+    let result = loader.call(ctx).await.expect("loader should succeed");
 
-    println!("=== All users ({} total) ===", options.len());
-    for opt in &options {
+    println!("=== All users ({} total) ===", result.items.len());
+    for opt in &result.items {
         println!(
             "  id={:<3}  {}  <{}>",
             opt.value,
@@ -86,12 +89,13 @@ async fn main() {
     }
 
     // Filtered list -- only names/usernames containing "le".
-    let ctx_filtered = LoaderCtx {
+    let ctx_filtered = LoaderContext {
         field_id: "assigned_user".to_owned(),
-        values: FieldValues::new(),
+        values: serde_json::Value::Object(serde_json::Map::new()),
         filter: Some("le".to_owned()),
         cursor: None,
         credential: None,
+        metadata: None,
     };
 
     let filtered = loader
@@ -99,8 +103,11 @@ async fn main() {
         .await
         .expect("loader should succeed");
 
-    println!("\n=== Filtered by \"le\" ({} results) ===", filtered.len());
-    for opt in &filtered {
+    println!(
+        "\n=== Filtered by \"le\" ({} results) ===",
+        filtered.items.len()
+    );
+    for opt in &filtered.items {
         println!(
             "  id={:<3}  {}  <{}>",
             opt.value,
