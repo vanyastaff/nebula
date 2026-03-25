@@ -4,10 +4,13 @@ use std::fmt;
 
 use crate::loader::OptionLoader;
 use crate::option::SelectOption;
+use crate::parameter::Parameter;
+use crate::parameter_type::ParameterType;
 
 /// Simplified parameter subset that dynamic record providers may return.
 ///
-/// Providers must not introduce nested Mode or Dynamic variants.
+/// Only the four leaf types (Text, Number, Boolean, Select) are representable;
+/// nested or compound [`ParameterType`] variants are not supported.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FieldSpec {
@@ -167,3 +170,116 @@ impl fmt::Display for FieldSpecConvertError {
 }
 
 impl std::error::Error for FieldSpecConvertError {}
+
+impl TryFrom<&Parameter> for FieldSpec {
+    type Error = FieldSpecConvertError;
+
+    fn try_from(param: &Parameter) -> Result<Self, Self::Error> {
+        let id = param.id.clone();
+        let label = param.label.clone().unwrap_or_default();
+
+        match &param.param_type {
+            ParameterType::String { multiline } => Ok(FieldSpec::Text {
+                id,
+                label,
+                multiline: *multiline,
+            }),
+            ParameterType::Number {
+                integer,
+                min,
+                max,
+                step,
+            } => Ok(FieldSpec::Number {
+                id,
+                label,
+                integer: *integer,
+                min: min.clone(),
+                max: max.clone(),
+                step: step.clone(),
+            }),
+            ParameterType::Boolean => Ok(FieldSpec::Boolean { id, label }),
+            ParameterType::Select {
+                options,
+                multiple,
+                allow_custom,
+                searchable,
+                loader,
+                ..
+            } => Ok(FieldSpec::Select {
+                id,
+                label,
+                options: options.clone(),
+                multiple: *multiple,
+                allow_custom: *allow_custom,
+                searchable: *searchable,
+                loader: loader.clone(),
+            }),
+            other => Err(FieldSpecConvertError {
+                variant: format!("{other:?}").split_whitespace().next().unwrap_or("unknown").to_string(),
+            }),
+        }
+    }
+}
+
+impl From<FieldSpec> for Parameter {
+    fn from(spec: FieldSpec) -> Self {
+        match spec {
+            FieldSpec::Text {
+                id,
+                label,
+                multiline,
+            } => Parameter {
+                id,
+                param_type: ParameterType::String { multiline },
+                label: Some(label),
+                ..Parameter::string("_placeholder")
+            },
+            FieldSpec::Number {
+                id,
+                label,
+                integer,
+                min,
+                max,
+                step,
+            } => Parameter {
+                id,
+                param_type: ParameterType::Number {
+                    integer,
+                    min,
+                    max,
+                    step,
+                },
+                label: Some(label),
+                ..Parameter::string("_placeholder")
+            },
+            FieldSpec::Boolean { id, label } => Parameter {
+                id,
+                param_type: ParameterType::Boolean,
+                label: Some(label),
+                ..Parameter::string("_placeholder")
+            },
+            FieldSpec::Select {
+                id,
+                label,
+                options,
+                multiple,
+                allow_custom,
+                searchable,
+                loader,
+            } => Parameter {
+                id,
+                param_type: ParameterType::Select {
+                    options,
+                    dynamic: false,
+                    depends_on: Vec::new(),
+                    multiple,
+                    allow_custom,
+                    searchable,
+                    loader,
+                },
+                label: Some(label),
+                ..Parameter::string("_placeholder")
+            },
+        }
+    }
+}
