@@ -96,7 +96,7 @@ where
         let resource_clone = resource.clone();
         let rq = release_queue.clone();
 
-        Ok(ResourceHandle::guarded(
+        Ok(ResourceHandle::guarded_with_permit(
             session,
             R::key(),
             TopologyTag::Transport,
@@ -109,28 +109,27 @@ where
                         runtime,
                         lease,
                         !tainted,
-                        permit,
                     ))
                 });
             },
+            Some(permit),
         ))
     }
 }
 
 /// Async helper for releasing a transport session.
 ///
-/// Calls `close_session` and then drops the semaphore permit, freeing a slot
-/// for the next caller.
+/// Calls `close_session`. The semaphore permit is **not** held here — it
+/// was already returned when the handle dropped (it lives in
+/// `HandleInner::Guarded`, not in the callback closure).
 async fn release_transport_session<R>(
     resource: R,
     runtime: Arc<R::Runtime>,
     session: R::Lease,
     healthy: bool,
-    _permit: tokio::sync::OwnedSemaphorePermit,
 ) where
     R: Transport + Send + Sync + 'static,
     R::Runtime: Send + Sync + 'static,
 {
     let _ = resource.close_session(&runtime, session, healthy).await;
-    // _permit drops here, releasing the semaphore slot.
 }

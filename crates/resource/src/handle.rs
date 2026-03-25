@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nebula_core::ResourceKey;
+use tokio::sync::OwnedSemaphorePermit;
 
 use crate::resource::Resource;
 use crate::topology_tag::TopologyTag;
@@ -35,6 +36,7 @@ enum HandleInner<R: Resource> {
     Guarded {
         value: Option<R::Lease>,
         on_release: Option<GuardedRelease<R>>,
+        permit: Option<OwnedSemaphorePermit>,
         tainted: bool,
         acquired_at: Instant,
         generation: u64,
@@ -66,10 +68,36 @@ impl<R: Resource> ResourceHandle<R> {
         generation: u64,
         on_release: impl FnOnce(R::Lease, bool) + Send + 'static,
     ) -> Self {
+        Self::guarded_with_permit(
+            lease,
+            resource_key,
+            topology_tag,
+            generation,
+            on_release,
+            None,
+        )
+    }
+
+    /// Creates a guarded handle with an optional semaphore permit.
+    ///
+    /// The permit is held as a separate field so that it is returned to the
+    /// semaphore even if the release callback panics (caught by `catch_unwind`
+    /// in the `Drop` impl). Without this, a panic in the callback would
+    /// destroy the permit along with the unwound closure, permanently leaking
+    /// a semaphore slot.
+    pub fn guarded_with_permit(
+        lease: R::Lease,
+        resource_key: ResourceKey,
+        topology_tag: TopologyTag,
+        generation: u64,
+        on_release: impl FnOnce(R::Lease, bool) + Send + 'static,
+        permit: Option<OwnedSemaphorePermit>,
+    ) -> Self {
         Self {
             inner: HandleInner::Guarded {
                 value: Some(lease),
                 on_release: Some(Box::new(on_release)),
+                permit,
                 tainted: false,
                 acquired_at: Instant::now(),
                 generation,
@@ -124,6 +152,7 @@ impl<R: Resource> ResourceHandle<R> {
                     HandleInner::Guarded {
                         value: None,
                         on_release: None,
+                        permit: None,
                         tainted: true,
                         acquired_at: Instant::now(),
                         generation: 0,
@@ -140,6 +169,7 @@ impl<R: Resource> ResourceHandle<R> {
                     HandleInner::Guarded {
                         value: None,
                         on_release: None,
+                        permit: None,
                         tainted: true,
                         acquired_at: Instant::now(),
                         generation: 0,
@@ -211,9 +241,16 @@ impl<R: Resource> Drop for ResourceHandle<R> {
             HandleInner::Guarded {
                 value,
                 on_release,
+                permit,
                 tainted,
                 ..
             } => {
+                // Take the permit out BEFORE the callback runs. It will be
+                // dropped at the end of this scope — after catch_unwind —
+                // ensuring the semaphore slot is returned even if the
+                // callback panics.
+                let _permit_guard = permit.take();
+
                 if let (Some(lease), Some(callback)) = (value.take(), on_release.take()) {
                     // catch_unwind prevents double-panic abort if callback panics.
                     let tainted = *tainted;
@@ -228,6 +265,7 @@ impl<R: Resource> Drop for ResourceHandle<R> {
                         );
                     }
                 }
+                // _permit_guard drops here, returning the slot to the semaphore.
             }
             HandleInner::Shared {
                 on_release,

@@ -25,15 +25,24 @@ use crate::topology::pooled::config::Config;
 use crate::topology::pooled::{InstanceMetrics, Pooled, RecycleDecision};
 use crate::topology_tag::TopologyTag;
 
-/// A single pooled instance with its metrics, config fingerprint, and semaphore permit.
+/// A single pooled instance with its metrics and config fingerprint.
 ///
-/// The permit lives with the entry for its entire lifecycle — from creation
-/// through idle queue and checkout cycles until final destruction.
+/// The semaphore permit no longer lives here — it is held in
+/// `HandleInner::Guarded` so that it is returned even if the release
+/// callback panics.
 struct PoolEntry<R: Resource> {
     runtime: R::Runtime,
     metrics: InstanceMetrics,
     fingerprint: u64,
-    permit: OwnedSemaphorePermit,
+}
+
+/// Result of attempting to pop an idle instance from the pool.
+enum IdleResult<R: Resource> {
+    /// A valid idle instance was found — wrapped in a handle.
+    Found(ResourceHandle<R>),
+    /// No usable idle instance — the permit is returned so the caller
+    /// can create a new instance.
+    Empty(OwnedSemaphorePermit),
 }
 
 /// Runtime state for a pool topology.
@@ -85,13 +94,16 @@ where
 {
     /// Acquires an instance from the pool.
     ///
-    /// 1. Try to pop from the idle queue.
-    /// 2. Check `is_broken` — if broken, destroy and try next.
-    /// 3. If `test_on_checkout` — run `check()`.
-    /// 4. Run `prepare(ctx)`.
-    /// 5. Return a guarded handle whose drop submits release to the queue.
-    /// 6. If no idle: create a new instance (respecting semaphore for max_size).
-    /// 7. If semaphore is full: wait with `create_timeout`.
+    /// 1. Acquire a semaphore permit (waits with timeout if pool is full).
+    /// 2. Try to pop from the idle queue.
+    /// 3. Check `is_broken` — if broken, destroy and try next.
+    /// 4. If `test_on_checkout` — run `check()`.
+    /// 5. Run `prepare(ctx)`.
+    /// 6. Return a guarded handle whose drop submits release to the queue.
+    /// 7. If no idle: create a new instance with the acquired permit.
+    ///
+    /// The semaphore permit lives in the handle (not the release callback),
+    /// so it is returned even if the callback panics.
     ///
     /// # Errors
     ///
@@ -111,25 +123,30 @@ where
         options: &AcquireOptions,
         metrics: Arc<ResourceMetrics>,
     ) -> Result<ResourceHandle<R>, Error> {
-        // Try to get an idle instance first.
-        if let Some(handle) = self
+        // Acquire a semaphore permit first — this is the concurrency gate.
+        // If idle instances exist their permits were already returned on
+        // handle drop, so a permit is immediately available.
+        let permit = self.acquire_semaphore_permit(options).await?;
+
+        // Try to get an idle instance.
+        let permit = match self
             .try_acquire_idle(
                 resource,
                 ctx,
                 release_queue,
                 generation,
+                permit,
                 Arc::clone(&metrics),
             )
             .await?
         {
-            return Ok(handle);
-        }
+            IdleResult::Found(handle) => return Ok(handle),
+            IdleResult::Empty(permit) => permit,
+        };
 
-        // No idle instance available — acquire a semaphore permit for a new slot.
-        let permit = self.acquire_semaphore_permit(options).await?;
-
+        // No idle instance available — create a new one with our permit.
         let entry = match self
-            .create_entry(resource, resource_config, credential, ctx, permit)
+            .create_entry(resource, resource_config, credential, ctx)
             .await
         {
             Ok(e) => e,
@@ -139,7 +156,7 @@ where
         // Prepare the new instance.
         if let Err(e) = resource.prepare(&entry.runtime, ctx).await {
             let _ = resource.destroy(entry.runtime).await;
-            // permit is dropped with entry
+            // permit drops here, returning the slot.
             return Err(e.into());
         }
 
@@ -147,6 +164,7 @@ where
         Ok(self.build_guarded_handle(
             lease,
             entry,
+            permit,
             resource.clone(),
             release_queue.clone(),
             generation,
@@ -156,16 +174,19 @@ where
 
     /// Attempts to pop and validate an idle instance.
     ///
-    /// Returns `Ok(Some(handle))` if a valid instance was found,
-    /// `Ok(None)` if the idle queue is empty, or `Err` on failure.
+    /// On success returns the handle. On empty idle queue (or all entries
+    /// destroyed) returns the permit back so the caller can use it for a
+    /// fresh creation. On hard error the permit is dropped (returning the
+    /// slot to the semaphore).
     async fn try_acquire_idle(
         &self,
         resource: &R,
         ctx: &dyn Ctx,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
+        permit: OwnedSemaphorePermit,
         metrics: Arc<ResourceMetrics>,
-    ) -> Result<Option<ResourceHandle<R>>, Error> {
+    ) -> Result<IdleResult<R>, Error> {
         loop {
             let entry = {
                 let mut idle = self.idle.lock().await;
@@ -177,10 +198,10 @@ where
             };
 
             let Some(mut entry) = entry else {
-                return Ok(None);
+                return Ok(IdleResult::Empty(permit));
             };
 
-            // Stale fingerprint — destroy silently (permit drops with entry).
+            // Stale fingerprint — destroy silently.
             let current_fp = self.current_fingerprint.load(Ordering::Acquire);
             if entry.fingerprint != current_fp {
                 let _ = resource.destroy(entry.runtime).await;
@@ -218,9 +239,10 @@ where
             entry.metrics.checkout_count += 1;
 
             let lease: R::Lease = entry.runtime.clone().into();
-            return Ok(Some(self.build_guarded_handle(
+            return Ok(IdleResult::Found(self.build_guarded_handle(
                 lease,
                 entry,
+                permit,
                 resource.clone(),
                 release_queue.clone(),
                 generation,
@@ -254,7 +276,6 @@ where
         config: &R::Config,
         credential: &R::Credential,
         ctx: &dyn Ctx,
-        permit: OwnedSemaphorePermit,
     ) -> Result<PoolEntry<R>, Error> {
         let runtime = match tokio::time::timeout(
             self.config.create_timeout,
@@ -277,16 +298,25 @@ where
                 created_at: Instant::now(),
             },
             fingerprint: self.current_fingerprint.load(Ordering::Acquire),
-            permit,
         })
     }
 
     /// Builds a guarded handle with an on-release callback that submits
     /// async recycle work to the [`ReleaseQueue`].
+    ///
+    /// The semaphore permit is stored directly in the handle, not inside
+    /// the callback closure. This ensures the permit is returned even if
+    /// the callback panics.
+    // Reason: `permit` must be a separate argument — it cannot live in
+    // `PoolEntry` because it needs to be stored in the handle, not the
+    // callback closure. Bundling into a struct would add complexity for
+    // a single call site.
+    #[allow(clippy::too_many_arguments)]
     fn build_guarded_handle(
         &self,
         lease: R::Lease,
         entry: PoolEntry<R>,
+        permit: OwnedSemaphorePermit,
         resource: R,
         release_queue: Arc<ReleaseQueue>,
         generation: u64,
@@ -296,7 +326,7 @@ where
         let current_fp_ref = self.current_fingerprint.clone();
         let max_lifetime = self.config.max_lifetime;
 
-        ResourceHandle::guarded(
+        ResourceHandle::guarded_with_permit(
             lease,
             R::key(),
             TopologyTag::Pool,
@@ -309,7 +339,6 @@ where
                     runtime,
                     metrics: entry.metrics.clone(),
                     fingerprint: entry.fingerprint,
-                    permit: entry.permit,
                 };
 
                 // Load fingerprint at release time (not checkout time) to detect
@@ -326,6 +355,7 @@ where
                     ))
                 });
             },
+            Some(permit),
         )
     }
 }
@@ -333,8 +363,8 @@ where
 /// Async release logic extracted to avoid excessive nesting inside closures.
 ///
 /// Decides whether to recycle or destroy a returned pool entry. The semaphore
-/// permit lives inside `entry` and is dropped automatically when the entry is
-/// destroyed, freeing a slot for new instances.
+/// permit is **not** held here — it was already returned when the handle
+/// dropped (it lives in `HandleInner::Guarded`, not in the callback closure).
 async fn release_entry<R>(
     resource: R,
     entry: PoolEntry<R>,

@@ -1908,3 +1908,61 @@ async fn exclusive_reset_called_on_release() {
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
+
+// ---------------------------------------------------------------------------
+// Pool permit leak regression test
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pool_permit_not_leaked_after_release() {
+    // Pool with max_size=1. Acquire, drop, acquire again.
+    // If the permit leaked, the second acquire would block forever.
+    let resource = PoolTestResource::new();
+    let config = nebula_resource::topology::pooled::config::Config {
+        max_size: 1,
+        ..Default::default()
+    };
+    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+    let ctx = test_ctx();
+    let metrics = Arc::new(ResourceMetrics::new());
+
+    let handle = pool
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            metrics.clone(),
+        )
+        .await
+        .expect("first acquire should succeed");
+    drop(handle);
+    // Permit should be returned immediately on handle drop (not after async
+    // recycle). A short sleep ensures the drop has executed.
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    // Second acquire must succeed — permit was returned.
+    let handle2 = pool
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            metrics,
+        )
+        .await
+        .expect("second acquire must not block — permit should be available");
+    drop(handle2);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
