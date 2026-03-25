@@ -6,8 +6,10 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`
 - `ErrorKind` determines retry: Transient/Exhausted = retryable
-- Manager has `acquire_pooled`, `acquire_resident`, etc. (not one generic) — each topology has different trait bounds
+- Manager has `acquire_pooled`, `acquire_resident`, etc. (not one generic) — each topology has different trait bounds; all accept `&AcquireOptions`
+- `AcquireOptions` threaded through all acquire paths — pool uses `options.remaining()` for semaphore timeout
 - `ResourceHandle` RAII — guarded returns lease to pool on drop, tainted destroys
+- `TopologyTag` enum (not `&str`) identifies handle origin — `#[non_exhaustive]`, use `as_str()` for display
 - Deprecated `Context`/`Scope` in `compat` for v1 migration
 
 ## Traps
@@ -27,4 +29,4 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 - Webhook still uses deprecated v1 compat types; migration tracked separately
 
-<!-- reviewed: 2026-03-25 — re-export runtime types + topology configs from lib.rs -->
+<!-- reviewed: 2026-03-25 — AcquireOptions wired through all acquire paths -->

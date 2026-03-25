@@ -10,6 +10,7 @@ use tokio::sync::Semaphore;
 
 use crate::error::Error;
 use crate::handle::ResourceHandle;
+use crate::options::AcquireOptions;
 use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
 use crate::topology::exclusive::Exclusive;
@@ -69,6 +70,7 @@ where
         resource: &R,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
+        _options: &AcquireOptions,
     ) -> Result<ResourceHandle<R>, Error>
     where
         R::Runtime: Into<R::Lease>,

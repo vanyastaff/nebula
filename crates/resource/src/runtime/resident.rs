@@ -13,6 +13,7 @@ use crate::cell::Cell;
 use crate::ctx::Ctx;
 use crate::error::Error;
 use crate::handle::ResourceHandle;
+use crate::options::AcquireOptions;
 use crate::resource::Resource;
 use crate::topology::resident::Resident;
 use crate::topology::resident::config::Config;
@@ -77,6 +78,7 @@ where
         resource_config: &R::Config,
         credential: &R::Credential,
         ctx: &dyn Ctx,
+        _options: &AcquireOptions,
     ) -> Result<ResourceHandle<R>, Error>
     where
         R::Runtime: Into<R::Lease>,
@@ -86,7 +88,11 @@ where
             && resource.is_alive_sync(&existing)
         {
             let lease: R::Lease = (*existing).clone().into();
-            return Ok(ResourceHandle::owned(lease, R::key(), TopologyTag::Resident));
+            return Ok(ResourceHandle::owned(
+                lease,
+                R::key(),
+                TopologyTag::Resident,
+            ));
         }
 
         // Slow path — serialise create / recreate.
@@ -96,7 +102,11 @@ where
         if let Some(existing) = self.cell.load() {
             if resource.is_alive_sync(&existing) {
                 let lease: R::Lease = (*existing).clone().into();
-                return Ok(ResourceHandle::owned(lease, R::key(), TopologyTag::Resident));
+                return Ok(ResourceHandle::owned(
+                    lease,
+                    R::key(),
+                    TopologyTag::Resident,
+                ));
             }
 
             // Still not alive — destroy and recreate if configured.
@@ -131,7 +141,11 @@ where
         let lease: R::Lease = runtime.clone().into();
         self.cell.store(Arc::new(runtime));
 
-        Ok(ResourceHandle::owned(lease, R::key(), TopologyTag::Resident))
+        Ok(ResourceHandle::owned(
+            lease,
+            R::key(),
+            TopologyTag::Resident,
+        ))
     }
 }
 
@@ -139,6 +153,7 @@ where
 mod tests {
     use super::*;
     use crate::ctx::BasicCtx;
+    use crate::options::AcquireOptions;
     use crate::resource::{ResourceConfig, ResourceMetadata};
     use nebula_core::{ExecutionId, ResourceKey, resource_key};
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -241,7 +256,10 @@ mod tests {
             let runtime = Arc::clone(&rt);
             let c = Arc::clone(&ctx);
             handles.push(tokio::spawn(async move {
-                runtime.acquire(&r, &true, &(), c.as_ref()).await.unwrap()
+                runtime
+                    .acquire(&r, &true, &(), c.as_ref(), &AcquireOptions::default())
+                    .await
+                    .unwrap()
             }));
         }
 
@@ -263,7 +281,10 @@ mod tests {
         let rt = ResidentRuntime::<MockResident>::new(Config::default());
         let ctx = test_ctx();
 
-        let handle = rt.acquire(&resource, &true, &(), &ctx).await.unwrap();
+        let handle = rt
+            .acquire(&resource, &true, &(), &ctx, &AcquireOptions::default())
+            .await
+            .unwrap();
         assert_eq!(*handle, 100);
         assert_eq!(resource.create_count.load(Ordering::Relaxed), 1);
     }
@@ -274,8 +295,14 @@ mod tests {
         let rt = ResidentRuntime::<MockResident>::new(Config::default());
         let ctx = test_ctx();
 
-        let h1 = rt.acquire(&resource, &true, &(), &ctx).await.unwrap();
-        let h2 = rt.acquire(&resource, &true, &(), &ctx).await.unwrap();
+        let h1 = rt
+            .acquire(&resource, &true, &(), &ctx, &AcquireOptions::default())
+            .await
+            .unwrap();
+        let h2 = rt
+            .acquire(&resource, &true, &(), &ctx, &AcquireOptions::default())
+            .await
+            .unwrap();
 
         // Both should have the same value — only one create.
         assert_eq!(*h1, *h2);
@@ -292,7 +319,10 @@ mod tests {
         let ctx = test_ctx();
 
         // First acquire — creates.
-        let h1 = rt.acquire(&resource, &true, &(), &ctx).await.unwrap();
+        let h1 = rt
+            .acquire(&resource, &true, &(), &ctx, &AcquireOptions::default())
+            .await
+            .unwrap();
         assert_eq!(*h1, 100);
 
         // Mark as not alive.
@@ -310,7 +340,10 @@ mod tests {
         resource.alive.store(false, Ordering::Relaxed);
         // The acquire will destroy old, create new. The new one won't be checked
         // via is_alive_sync on the same acquire call — it's stored and returned.
-        let h2 = rt.acquire(&resource, &true, &(), &ctx).await.unwrap();
+        let h2 = rt
+            .acquire(&resource, &true, &(), &ctx, &AcquireOptions::default())
+            .await
+            .unwrap();
         assert_eq!(*h2, 101); // Second creation.
         assert_eq!(resource.create_count.load(Ordering::Relaxed), 2);
     }
@@ -325,13 +358,18 @@ mod tests {
         let ctx = test_ctx();
 
         // First acquire — creates.
-        let _h1 = rt.acquire(&resource, &true, &(), &ctx).await.unwrap();
+        let _h1 = rt
+            .acquire(&resource, &true, &(), &ctx, &AcquireOptions::default())
+            .await
+            .unwrap();
 
         // Mark as not alive.
         resource.alive.store(false, Ordering::Relaxed);
 
         // Second acquire — should fail.
-        let result = rt.acquire(&resource, &true, &(), &ctx).await;
+        let result = rt
+            .acquire(&resource, &true, &(), &ctx, &AcquireOptions::default())
+            .await;
         assert!(result.is_err());
     }
 }

@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use nebula_resource::AcquireOptions;
 use nebula_resource::Manager;
 use nebula_resource::ctx::{BasicCtx, Ctx, ScopeLevel};
 use nebula_resource::error::{Error, ErrorKind};
@@ -228,7 +229,15 @@ async fn pool_acquire_use_release_reacquire() {
 
     // First acquire creates a new instance.
     let handle = pool
-        .acquire(&resource, &test_config(), &(), &ctx, &rq, 0)
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+        )
         .await
         .expect("first acquire should succeed");
 
@@ -247,7 +256,15 @@ async fn pool_acquire_use_release_reacquire() {
 
     // Second acquire reuses the idle instance (no new creation).
     let handle2 = pool
-        .acquire(&resource, &test_config(), &(), &ctx, &rq, 0)
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+        )
         .await
         .expect("second acquire should succeed");
 
@@ -277,7 +294,15 @@ async fn pool_broken_instance_gets_replaced() {
 
     // Acquire and release to populate idle queue.
     let handle = pool
-        .acquire(&resource, &test_config(), &(), &ctx, &rq, 0)
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+        )
         .await
         .unwrap();
     drop(handle);
@@ -289,7 +314,15 @@ async fn pool_broken_instance_gets_replaced() {
 
     // Next acquire should destroy the broken instance and create new.
     let handle2 = pool
-        .acquire(&resource, &test_config(), &(), &ctx, &rq, 0)
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+        )
         .await
         .expect("should create a fresh instance");
 
@@ -321,7 +354,13 @@ async fn resident_acquire_creates_then_clones() {
 
     // First acquire creates.
     let h1 = rt
-        .acquire(&resource, &test_config(), &(), &ctx)
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &AcquireOptions::default(),
+        )
         .await
         .expect("first acquire");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
@@ -329,7 +368,13 @@ async fn resident_acquire_creates_then_clones() {
 
     // Second acquire clones (no new creation).
     let h2 = rt
-        .acquire(&resource, &test_config(), &(), &ctx)
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &AcquireOptions::default(),
+        )
         .await
         .expect("second acquire");
     assert_eq!(
@@ -352,7 +397,13 @@ async fn resident_recreates_when_not_alive() {
     let ctx = test_ctx();
 
     let _h1 = rt
-        .acquire(&resource, &test_config(), &(), &ctx)
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &AcquireOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
@@ -362,7 +413,13 @@ async fn resident_recreates_when_not_alive() {
 
     // Next acquire should recreate.
     let _h2 = rt
-        .acquire(&resource, &test_config(), &(), &ctx)
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &AcquireOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -403,7 +460,7 @@ async fn manager_register_and_acquire_pooled() {
 
     let ctx = test_ctx();
     let handle: ResourceHandle<PoolTestResource> = manager
-        .acquire_pooled(&(), &ctx)
+        .acquire_pooled(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -442,11 +499,14 @@ async fn manager_register_and_acquire_resident() {
 
     let ctx = test_ctx();
     let handle: ResourceHandle<ResidentTestResource> = manager
-        .acquire_resident(&(), &ctx)
+        .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
-    assert_eq!(handle.topology_tag(), nebula_resource::TopologyTag::Resident);
+    assert_eq!(
+        handle.topology_tag(),
+        nebula_resource::TopologyTag::Resident
+    );
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
 
     drop(handle);
@@ -480,7 +540,7 @@ async fn manager_shutdown_rejects_acquire() {
 
     let ctx = test_ctx();
     let result = manager
-        .acquire_resident::<ResidentTestResource>(&(), &ctx)
+        .acquire_resident::<ResidentTestResource>(&(), &ctx, &AcquireOptions::default())
         .await;
 
     assert!(result.is_err());
@@ -594,7 +654,15 @@ async fn tainted_handle_not_recycled() {
     let ctx = test_ctx();
 
     let mut handle = pool
-        .acquire(&resource, &test_config(), &(), &ctx, &rq, 0)
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+        )
         .await
         .unwrap();
 

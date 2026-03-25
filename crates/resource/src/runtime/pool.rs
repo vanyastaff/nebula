@@ -17,6 +17,7 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use crate::ctx::Ctx;
 use crate::error::Error;
 use crate::handle::ResourceHandle;
+use crate::options::AcquireOptions;
 use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
 use crate::topology::pooled::config::Config;
@@ -95,6 +96,9 @@ where
     ///
     /// - [`ErrorKind::Backpressure`] if the pool is full and the timeout expires.
     /// - [`ErrorKind::Transient`] if creation or preparation fails.
+    // Reason: `options` is a separate concern from the existing resource/config/ctx
+    // tuple and will be reduced when we bundle resource+config into a single arg.
+    #[allow(clippy::too_many_arguments)]
     pub async fn acquire(
         &self,
         resource: &R,
@@ -103,6 +107,7 @@ where
         ctx: &dyn Ctx,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
+        options: &AcquireOptions,
     ) -> Result<ResourceHandle<R>, Error> {
         // Try to get an idle instance first.
         if let Some(handle) = self
@@ -113,7 +118,7 @@ where
         }
 
         // No idle instance available — acquire a semaphore permit for a new slot.
-        let permit = self.acquire_semaphore_permit().await?;
+        let permit = self.acquire_semaphore_permit(options).await?;
 
         let entry = match self
             .create_entry(resource, resource_config, credential, ctx, permit)
@@ -214,13 +219,15 @@ where
     }
 
     /// Waits for a semaphore permit with the configured timeout.
-    async fn acquire_semaphore_permit(&self) -> Result<OwnedSemaphorePermit, Error> {
-        match tokio::time::timeout(
-            self.config.create_timeout,
-            self.semaphore.clone().acquire_owned(),
-        )
-        .await
-        {
+    ///
+    /// If the caller provided a deadline via [`AcquireOptions`], the remaining
+    /// time is used instead of the pool's `create_timeout`.
+    async fn acquire_semaphore_permit(
+        &self,
+        options: &AcquireOptions,
+    ) -> Result<OwnedSemaphorePermit, Error> {
+        let timeout = options.remaining().unwrap_or(self.config.create_timeout);
+        match tokio::time::timeout(timeout, self.semaphore.clone().acquire_owned()).await {
             Ok(Ok(permit)) => Ok(permit),
             Ok(Err(_closed)) => Err(Error::permanent("pool semaphore closed")),
             Err(_timeout) => Err(Error::backpressure(
@@ -363,6 +370,7 @@ async fn release_entry<R>(
 mod tests {
     use super::*;
     use crate::ctx::BasicCtx;
+    use crate::options::AcquireOptions;
     use crate::resource::{ResourceConfig, ResourceMetadata};
     use crate::topology::pooled::BrokenCheck;
     use nebula_core::{ExecutionId, ResourceKey, resource_key};
@@ -493,7 +501,15 @@ mod tests {
         let ctx = test_ctx();
 
         let handle = pool
-            .acquire(&resource, &PoolTestConfig, &(), &ctx, &rq, 0)
+            .acquire(
+                &resource,
+                &PoolTestConfig,
+                &(),
+                &ctx,
+                &rq,
+                0,
+                &AcquireOptions::default(),
+            )
             .await;
         assert!(handle.is_ok());
         let handle = handle.unwrap();
@@ -525,7 +541,15 @@ mod tests {
 
         // Acquire and release to populate idle queue.
         let handle = pool
-            .acquire(&resource, &PoolTestConfig, &(), &ctx, &rq, 0)
+            .acquire(
+                &resource,
+                &PoolTestConfig,
+                &(),
+                &ctx,
+                &rq,
+                0,
+                &AcquireOptions::default(),
+            )
             .await
             .unwrap();
         drop(handle);
@@ -534,7 +558,15 @@ mod tests {
 
         // Second acquire should reuse the idle instance.
         let handle2 = pool
-            .acquire(&resource, &PoolTestConfig, &(), &ctx, &rq, 0)
+            .acquire(
+                &resource,
+                &PoolTestConfig,
+                &(),
+                &ctx,
+                &rq,
+                0,
+                &AcquireOptions::default(),
+            )
             .await;
         assert!(handle2.is_ok());
 
@@ -561,7 +593,15 @@ mod tests {
 
         // Acquire and release to populate idle queue.
         let handle = pool
-            .acquire(&resource, &PoolTestConfig, &(), &ctx, &rq, 0)
+            .acquire(
+                &resource,
+                &PoolTestConfig,
+                &(),
+                &ctx,
+                &rq,
+                0,
+                &AcquireOptions::default(),
+            )
             .await
             .unwrap();
         drop(handle);
@@ -573,7 +613,15 @@ mod tests {
         resource.break_on_return.store(true, Ordering::Relaxed);
 
         let handle2 = pool
-            .acquire(&resource, &PoolTestConfig, &(), &ctx, &rq, 0)
+            .acquire(
+                &resource,
+                &PoolTestConfig,
+                &(),
+                &ctx,
+                &rq,
+                0,
+                &AcquireOptions::default(),
+            )
             .await;
         assert!(handle2.is_ok());
 
@@ -600,7 +648,15 @@ mod tests {
         let ctx = test_ctx();
 
         let mut handle = pool
-            .acquire(&resource, &PoolTestConfig, &(), &ctx, &rq, 0)
+            .acquire(
+                &resource,
+                &PoolTestConfig,
+                &(),
+                &ctx,
+                &rq,
+                0,
+                &AcquireOptions::default(),
+            )
             .await
             .unwrap();
         handle.taint();
@@ -629,7 +685,15 @@ mod tests {
         let ctx = test_ctx();
 
         let result = pool
-            .acquire(&resource, &PoolTestConfig, &(), &ctx, &rq, 0)
+            .acquire(
+                &resource,
+                &PoolTestConfig,
+                &(),
+                &ctx,
+                &rq,
+                0,
+                &AcquireOptions::default(),
+            )
             .await;
         assert!(result.is_err());
 
@@ -668,7 +732,15 @@ mod tests {
         let _permit = pool.semaphore.clone().acquire_owned().await.unwrap();
 
         let result = pool
-            .acquire(&resource, &PoolTestConfig, &(), &ctx, &rq, 0)
+            .acquire(
+                &resource,
+                &PoolTestConfig,
+                &(),
+                &ctx,
+                &rq,
+                0,
+                &AcquireOptions::default(),
+            )
             .await;
         let err = match result {
             Err(e) => e,

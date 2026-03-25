@@ -24,6 +24,7 @@ use nebula_core::ResourceKey;
 use crate::ctx::{Ctx, ScopeLevel};
 use crate::error::Error;
 use crate::metrics::ResourceMetrics;
+use crate::options::AcquireOptions;
 use crate::recovery::group::RecoveryGroupRegistry;
 use crate::registry::Registry;
 use crate::release_queue::ReleaseQueue;
@@ -129,6 +130,7 @@ impl Manager {
         &self,
         credential: &R::Credential,
         ctx: &dyn Ctx,
+        options: &AcquireOptions,
     ) -> Result<crate::handle::ResourceHandle<R>, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
@@ -148,6 +150,7 @@ impl Manager {
                     ctx,
                     &managed.release_queue,
                     generation,
+                    options,
                 )
                 .await
             }
@@ -174,6 +177,7 @@ impl Manager {
         &self,
         credential: &R::Credential,
         ctx: &dyn Ctx,
+        options: &AcquireOptions,
     ) -> Result<crate::handle::ResourceHandle<R>, Error>
     where
         R: crate::topology::resident::Resident + Send + Sync + 'static,
@@ -185,7 +189,7 @@ impl Manager {
 
         let result = match &managed.topology {
             TopologyRuntime::Resident(rt) => {
-                rt.acquire(&managed.resource, &config, credential, ctx)
+                rt.acquire(&managed.resource, &config, credential, ctx, options)
                     .await
             }
             _ => Err(Error::permanent(format!(
@@ -210,6 +214,7 @@ impl Manager {
     pub async fn acquire_service<R>(
         &self,
         ctx: &dyn Ctx,
+        options: &AcquireOptions,
     ) -> Result<crate::handle::ResourceHandle<R>, Error>
     where
         R: crate::topology::service::Service + Clone + Send + Sync + 'static,
@@ -221,8 +226,14 @@ impl Manager {
 
         let result = match &managed.topology {
             TopologyRuntime::Service(rt) => {
-                rt.acquire(&managed.resource, ctx, &managed.release_queue, generation)
-                    .await
+                rt.acquire(
+                    &managed.resource,
+                    ctx,
+                    &managed.release_queue,
+                    generation,
+                    options,
+                )
+                .await
             }
             _ => Err(Error::permanent(format!(
                 "{}: expected service topology",
@@ -246,6 +257,7 @@ impl Manager {
     pub async fn acquire_transport<R>(
         &self,
         ctx: &dyn Ctx,
+        options: &AcquireOptions,
     ) -> Result<crate::handle::ResourceHandle<R>, Error>
     where
         R: crate::topology::transport::Transport + Clone + Send + Sync + 'static,
@@ -257,8 +269,14 @@ impl Manager {
 
         let result = match &managed.topology {
             TopologyRuntime::Transport(rt) => {
-                rt.acquire(&managed.resource, ctx, &managed.release_queue, generation)
-                    .await
+                rt.acquire(
+                    &managed.resource,
+                    ctx,
+                    &managed.release_queue,
+                    generation,
+                    options,
+                )
+                .await
             }
             _ => Err(Error::permanent(format!(
                 "{}: expected transport topology",
@@ -282,6 +300,7 @@ impl Manager {
     pub async fn acquire_exclusive<R>(
         &self,
         ctx: &dyn Ctx,
+        options: &AcquireOptions,
     ) -> Result<crate::handle::ResourceHandle<R>, Error>
     where
         R: crate::topology::exclusive::Exclusive + Clone + Send + Sync + 'static,
@@ -293,8 +312,13 @@ impl Manager {
 
         let result = match &managed.topology {
             TopologyRuntime::Exclusive(rt) => {
-                rt.acquire(&managed.resource, &managed.release_queue, generation)
-                    .await
+                rt.acquire(
+                    &managed.resource,
+                    &managed.release_queue,
+                    generation,
+                    options,
+                )
+                .await
             }
             _ => Err(Error::permanent(format!(
                 "{}: expected exclusive topology",

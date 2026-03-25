@@ -395,8 +395,13 @@ mod tests {
 
     #[test]
     fn detach_shared_returns_none() {
-        let handle =
-            ResourceHandle::<DummyResource>::shared(Arc::new(5), test_key(), TopologyTag::Resident, 1, |_| {});
+        let handle = ResourceHandle::<DummyResource>::shared(
+            Arc::new(5),
+            test_key(),
+            TopologyTag::Resident,
+            1,
+            |_| {},
+        );
         let lease = handle.detach();
         assert_eq!(lease, None);
     }

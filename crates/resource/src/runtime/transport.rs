@@ -12,6 +12,7 @@ use tokio::sync::Semaphore;
 use crate::ctx::Ctx;
 use crate::error::Error;
 use crate::handle::ResourceHandle;
+use crate::options::AcquireOptions;
 use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
 use crate::topology::transport::Transport;
@@ -75,6 +76,7 @@ where
         ctx: &dyn Ctx,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
+        _options: &AcquireOptions,
     ) -> Result<ResourceHandle<R>, Error> {
         let permit = self
             .session_semaphore

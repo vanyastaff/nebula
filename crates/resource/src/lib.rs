@@ -57,7 +57,6 @@ pub use registry::{AnyManagedResource, Registry};
 pub use release_queue::ReleaseQueue;
 pub use resource::{AnyResource, Credential, Resource, ResourceConfig, ResourceMetadata};
 pub use state::{ResourcePhase, ResourceStatus};
-pub use topology_tag::TopologyTag;
 pub use topology::daemon::{Daemon, RestartPolicy};
 pub use topology::event_source::EventSource;
 pub use topology::exclusive::Exclusive;
@@ -65,6 +64,7 @@ pub use topology::pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision
 pub use topology::resident::Resident;
 pub use topology::service::{Service, TokenMode};
 pub use topology::transport::Transport;
+pub use topology_tag::TopologyTag;
 
 pub use integration::{AcquireCircuitBreakerPreset, AcquireResilience, AcquireRetryConfig};
 pub use recovery::{

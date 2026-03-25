@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::ctx::Ctx;
 use crate::error::Error;
 use crate::handle::ResourceHandle;
+use crate::options::AcquireOptions;
 use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
 use crate::topology::service::config::Config;
@@ -66,6 +67,7 @@ where
         ctx: &dyn Ctx,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
+        _options: &AcquireOptions,
     ) -> Result<ResourceHandle<R>, Error> {
         let token = resource
             .acquire_token(&self.runtime, ctx)
@@ -105,6 +107,7 @@ where
 mod tests {
     use super::*;
     use crate::ctx::BasicCtx;
+    use crate::options::AcquireOptions;
     use crate::resource::{ResourceConfig, ResourceMetadata};
     use nebula_core::{ExecutionId, ResourceKey, resource_key};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -244,7 +247,10 @@ mod tests {
         let rq = Arc::new(rq);
         let ctx = test_ctx();
 
-        let handle = rt.acquire(&resource, &ctx, &rq, 0).await.unwrap();
+        let handle = rt
+            .acquire(&resource, &ctx, &rq, 0, &AcquireOptions::default())
+            .await
+            .unwrap();
         assert_eq!(*handle, "runtime-token");
         assert_eq!(handle.topology_tag(), TopologyTag::Service);
         // Owned handle — generation is None.
@@ -265,7 +271,10 @@ mod tests {
         let rq = Arc::new(rq);
         let ctx = test_ctx();
 
-        let handle = rt.acquire(&resource, &ctx, &rq, 1).await.unwrap();
+        let handle = rt
+            .acquire(&resource, &ctx, &rq, 1, &AcquireOptions::default())
+            .await
+            .unwrap();
         assert_eq!(*handle, "tracked-runtime-tracked-token");
         assert_eq!(handle.topology_tag(), TopologyTag::Service);
         assert_eq!(handle.generation(), Some(1));
