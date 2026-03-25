@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 /// A single option in a select or multi-select parameter.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `SelectOption` intentionally does **not** derive `Eq` because the `value`
+/// field is [`serde_json::Value`], which contains floating-point numbers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SelectOption {
     /// The value produced when this option is selected.
     pub value: serde_json::Value,
@@ -14,12 +17,26 @@ pub struct SelectOption {
     pub description: Option<String>,
 
     /// Whether this option is shown but not selectable.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
+
+    /// Optional icon identifier (e.g. a URL or icon key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 impl SelectOption {
-    /// Creates a new enabled option.
+    /// Creates a new enabled option with no description or icon.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_parameter::option::SelectOption;
+    ///
+    /// let opt = SelectOption::new(serde_json::json!("us-east-1"), "US East");
+    /// assert_eq!(opt.label, "US East");
+    /// assert!(!opt.disabled);
+    /// ```
     #[must_use]
     pub fn new(value: serde_json::Value, label: impl Into<String>) -> Self {
         Self {
@@ -27,28 +44,60 @@ impl SelectOption {
             label: label.into(),
             description: None,
             disabled: false,
+            icon: None,
         }
     }
-}
 
-/// Where a select parameter gets its options from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "source", rename_all = "snake_case")]
-pub enum OptionSource {
-    /// Options defined inline in the parameter schema.
-    Static {
-        /// The available options.
-        options: Vec<SelectOption>,
-    },
+    /// Sets a human-readable description (fluent builder).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_parameter::option::SelectOption;
+    ///
+    /// let opt = SelectOption::new(serde_json::json!("json"), "JSON")
+    ///     .description("JavaScript Object Notation");
+    /// assert_eq!(opt.description.as_deref(), Some("JavaScript Object Notation"));
+    /// ```
+    #[must_use]
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
 
-    /// Options loaded at runtime by a named provider.
-    Dynamic {
-        /// Provider key resolved by runtime registry.
-        provider: String,
-        /// Re-resolve options when these sibling fields change.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        depends_on: Vec<String>,
-    },
+    /// Sets an icon identifier (fluent builder).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_parameter::option::SelectOption;
+    ///
+    /// let opt = SelectOption::new(serde_json::json!("slack"), "Slack")
+    ///     .icon("slack-icon");
+    /// assert_eq!(opt.icon.as_deref(), Some("slack-icon"));
+    /// ```
+    #[must_use]
+    pub fn icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// Marks this option as disabled (fluent builder).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_parameter::option::SelectOption;
+    ///
+    /// let opt = SelectOption::new(serde_json::json!("beta"), "Beta Feature")
+    ///     .disabled();
+    /// assert!(opt.disabled);
+    /// ```
+    #[must_use]
+    pub fn disabled(mut self) -> Self {
+        self.disabled = true;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -62,6 +111,19 @@ mod tests {
         assert_eq!(opt.value, serde_json::json!("us-east-1"));
         assert!(opt.description.is_none());
         assert!(!opt.disabled);
+        assert!(opt.icon.is_none());
+    }
+
+    #[test]
+    fn fluent_builders() {
+        let opt = SelectOption::new(serde_json::json!("beta"), "Beta Feature")
+            .description("Not yet available")
+            .icon("warning")
+            .disabled();
+
+        assert_eq!(opt.description.as_deref(), Some("Not yet available"));
+        assert_eq!(opt.icon.as_deref(), Some("warning"));
+        assert!(opt.disabled);
     }
 
     #[test]
@@ -75,76 +137,23 @@ mod tests {
     }
 
     #[test]
-    fn serde_option_round_trip() {
-        let opt = SelectOption {
-            value: serde_json::json!("application/json"),
-            label: "JSON".into(),
-            description: Some("JSON format".into()),
-            disabled: false,
-        };
+    fn serde_round_trip_minimal() {
+        let opt = SelectOption::new(serde_json::json!("application/json"), "JSON");
+        let json = serde_json::to_string(&opt).unwrap();
+        let deserialized: SelectOption = serde_json::from_str(&json).unwrap();
+        assert_eq!(opt, deserialized);
+    }
+
+    #[test]
+    fn serde_round_trip_full() {
+        let opt = SelectOption::new(serde_json::json!("application/json"), "JSON")
+            .description("JSON format")
+            .icon("file-json")
+            .disabled();
 
         let json = serde_json::to_string(&opt).unwrap();
         let deserialized: SelectOption = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.value, opt.value);
-        assert_eq!(deserialized.label, opt.label);
-        assert_eq!(deserialized.description, opt.description);
-        assert_eq!(deserialized.disabled, opt.disabled);
-    }
-
-    #[test]
-    fn disabled_option() {
-        let opt = SelectOption {
-            value: serde_json::json!("beta"),
-            label: "Beta Feature".into(),
-            description: Some("Not yet available".into()),
-            disabled: true,
-        };
-
-        let json = serde_json::to_string(&opt).unwrap();
-        assert!(json.contains("\"disabled\":true"));
-    }
-
-    #[test]
-    fn serde_static_source() {
-        let source = OptionSource::Static {
-            options: vec![
-                SelectOption::new(serde_json::json!("a"), "Alpha"),
-                SelectOption::new(serde_json::json!("b"), "Bravo"),
-            ],
-        };
-
-        let json = serde_json::to_string(&source).unwrap();
-        assert!(json.contains("\"source\":\"static\""));
-
-        let deserialized: OptionSource = serde_json::from_str(&json).unwrap();
-        match deserialized {
-            OptionSource::Static { options } => assert_eq!(options.len(), 2),
-            _ => panic!("expected Static"),
-        }
-    }
-
-    #[test]
-    fn serde_dynamic_source() {
-        let source = OptionSource::Dynamic {
-            provider: "load_regions".into(),
-            depends_on: Vec::new(),
-        };
-
-        let json = serde_json::to_string(&source).unwrap();
-        assert!(json.contains("\"source\":\"dynamic\""));
-        assert!(json.contains("\"provider\":\"load_regions\""));
-
-        let deserialized: OptionSource = serde_json::from_str(&json).unwrap();
-        match deserialized {
-            OptionSource::Dynamic {
-                provider,
-                depends_on,
-            } => {
-                assert_eq!(provider, "load_regions");
-                assert!(depends_on.is_empty());
-            }
-            _ => panic!("expected Dynamic"),
-        }
+        assert_eq!(opt, deserialized);
     }
 
     #[test]
@@ -152,5 +161,33 @@ mod tests {
         let opt = SelectOption::new(serde_json::json!(1), "K");
         let json = serde_json::to_string(&opt).unwrap();
         assert!(!json.contains("description"));
+        assert!(!json.contains("disabled"));
+        assert!(!json.contains("icon"));
+    }
+
+    #[test]
+    fn disabled_option_serialized() {
+        let opt = SelectOption::new(serde_json::json!("beta"), "Beta Feature").disabled();
+        let json = serde_json::to_string(&opt).unwrap();
+        assert!(json.contains("\"disabled\":true"));
+    }
+
+    #[test]
+    fn icon_field_round_trip() {
+        let opt = SelectOption::new(serde_json::json!("slack"), "Slack").icon("slack-logo");
+        let json = serde_json::to_string(&opt).unwrap();
+        assert!(json.contains("\"icon\":\"slack-logo\""));
+
+        let deserialized: SelectOption = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.icon.as_deref(), Some("slack-logo"));
+    }
+
+    #[test]
+    fn deserialize_without_optional_fields() {
+        let json = r#"{"value":"x","label":"X"}"#;
+        let opt: SelectOption = serde_json::from_str(json).unwrap();
+        assert!(opt.description.is_none());
+        assert!(!opt.disabled);
+        assert!(opt.icon.is_none());
     }
 }
