@@ -17,11 +17,20 @@ use nebula_resource::recovery::{GateState, RecoveryGate, RecoveryGateConfig};
 use nebula_resource::release_queue::ReleaseQueue;
 use nebula_resource::resource::{Resource, ResourceConfig, ResourceMetadata};
 use nebula_resource::runtime::TopologyRuntime;
+use nebula_resource::runtime::exclusive::ExclusiveRuntime;
 use nebula_resource::runtime::pool::PoolRuntime;
 use nebula_resource::runtime::resident::ResidentRuntime;
+use nebula_resource::runtime::service::ServiceRuntime;
+use nebula_resource::runtime::transport::TransportRuntime;
+use nebula_resource::topology::exclusive;
+use nebula_resource::topology::exclusive::Exclusive;
 use nebula_resource::topology::pooled::{BrokenCheck, Pooled, RecycleDecision};
 use nebula_resource::topology::resident;
 use nebula_resource::topology::resident::Resident;
+use nebula_resource::topology::service;
+use nebula_resource::topology::service::{Service, TokenMode};
+use nebula_resource::topology::transport;
+use nebula_resource::topology::transport::Transport;
 
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
 
@@ -793,6 +802,496 @@ async fn acquire_emits_success_event() {
 
     drop(_handle);
     drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Pool concurrency scenarios
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pool_concurrent_acquire_respects_max_size() {
+    let resource = PoolTestResource::new();
+    let max_size = 3;
+    let config = nebula_resource::topology::pooled::config::Config {
+        max_size,
+        create_timeout: std::time::Duration::from_millis(200),
+        ..Default::default()
+    };
+    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+    let ctx = test_ctx();
+
+    // Acquire max_size handles concurrently — all should succeed.
+    let mut handles = Vec::new();
+    for _ in 0..max_size {
+        let handle = pool
+            .acquire(
+                &resource,
+                &test_config(),
+                &(),
+                &ctx,
+                &rq,
+                0,
+                &AcquireOptions::default(),
+                Arc::new(ResourceMetrics::new()),
+            )
+            .await
+            .expect("acquire within max_size should succeed");
+        handles.push(handle);
+    }
+    assert_eq!(
+        resource.create_counter.load(Ordering::Relaxed),
+        u64::from(max_size),
+    );
+
+    // One more acquire should time out (pool full, short timeout via deadline).
+    let opts =
+        AcquireOptions::default().with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(100));
+    let result = pool
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &rq,
+            0,
+            &opts,
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await;
+    let err = match result {
+        Err(e) => e,
+        Ok(_) => panic!("expected backpressure error when pool is full"),
+    };
+    assert_eq!(*err.kind(), ErrorKind::Backpressure);
+
+    drop(handles);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn pool_backpressure_when_full() {
+    let resource = PoolTestResource::new();
+    let config = nebula_resource::topology::pooled::config::Config {
+        max_size: 1,
+        create_timeout: std::time::Duration::from_millis(200),
+        ..Default::default()
+    };
+    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+    let ctx = test_ctx();
+
+    // Acquire the single slot.
+    let _held = pool
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await
+        .expect("first acquire should succeed");
+
+    // Short deadline — should get backpressure quickly.
+    let opts =
+        AcquireOptions::default().with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(50));
+    let result = pool
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &rq,
+            0,
+            &opts,
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await;
+
+    let err = match result {
+        Err(e) => e,
+        Ok(_) => panic!("expected backpressure error when pool is full"),
+    };
+    assert_eq!(*err.kind(), ErrorKind::Backpressure);
+
+    drop(_held);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Scope-aware lookup
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn manager_scope_exact_match() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    let scope = ScopeLevel::Organization("acme".into());
+    manager
+        .register(
+            resource.clone(),
+            test_config(),
+            (),
+            scope.clone(),
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+        )
+        .expect("registration should succeed");
+
+    // Acquire with the same org scope.
+    let ctx = BasicCtx::new(ExecutionId::new()).with_scope(scope);
+    let handle: ResourceHandle<ResidentTestResource> = manager
+        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire with matching scope should succeed");
+
+    assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
+
+    drop(handle);
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn manager_scope_fallback_to_global() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    // Register at Global scope.
+    manager
+        .register(
+            resource.clone(),
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+        )
+        .expect("registration should succeed");
+
+    // Acquire with Organization scope — should fall back to Global.
+    let ctx =
+        BasicCtx::new(ExecutionId::new()).with_scope(ScopeLevel::Organization("other-org".into()));
+    let handle: ResourceHandle<ResidentTestResource> = manager
+        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should fall back to Global");
+
+    assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
+
+    drop(handle);
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn manager_scope_mismatch_not_found() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    // Register at Organization("acme") — no Global fallback.
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Organization("acme".into()),
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+        )
+        .expect("registration should succeed");
+
+    // Acquire with a different org scope — no match, no Global fallback.
+    let ctx =
+        BasicCtx::new(ExecutionId::new()).with_scope(ScopeLevel::Organization("other".into()));
+    let result = manager
+        .acquire_resident::<ResidentTestResource>(&(), &ctx, &AcquireOptions::default())
+        .await;
+
+    let err = match result {
+        Err(e) => e,
+        Ok(_) => panic!("expected NotFound error for mismatched scope"),
+    };
+    assert_eq!(*err.kind(), ErrorKind::NotFound);
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Metrics verification
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn metrics_track_acquire_release_create_destroy() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+        )
+        .expect("registration should succeed");
+
+    // register calls record_create
+    let snap = manager.metrics().snapshot();
+    assert_eq!(snap.create_total, 1, "register should record create");
+
+    // Acquire.
+    let ctx = test_ctx();
+    let handle: ResourceHandle<ResidentTestResource> = manager
+        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed");
+
+    let snap = manager.metrics().snapshot();
+    assert_eq!(snap.acquire_total, 1, "acquire should be counted");
+    assert_eq!(snap.acquire_errors, 0, "no errors expected");
+
+    drop(handle);
+
+    // Remove — calls record_destroy.
+    let key = resource_key!("test-resident");
+    manager.remove(&key).expect("remove should succeed");
+
+    let snap = manager.metrics().snapshot();
+    assert_eq!(snap.destroy_total, 1, "remove should record destroy");
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Multiple resources coexist
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn manager_multiple_resources_coexist() {
+    let manager = Manager::new();
+
+    // Register a pool resource.
+    let pool_resource = PoolTestResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        max_size: 2,
+        ..Default::default()
+    };
+    let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    manager
+        .register(
+            pool_resource.clone(),
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Pool(pool_rt),
+            rq.clone(),
+        )
+        .expect("pool registration should succeed");
+
+    // Register a resident resource.
+    let resident_resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resident_resource.clone(),
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+        )
+        .expect("resident registration should succeed");
+
+    assert!(manager.contains(&resource_key!("test-pool")));
+    assert!(manager.contains(&resource_key!("test-resident")));
+    assert_eq!(manager.keys().len(), 2);
+
+    // Acquire each independently.
+    let ctx = test_ctx();
+    let pool_handle: ResourceHandle<PoolTestResource> = manager
+        .acquire_pooled(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("pool acquire should succeed");
+
+    let resident_handle: ResourceHandle<ResidentTestResource> = manager
+        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("resident acquire should succeed");
+
+    assert_eq!(pool_handle.topology_tag(), nebula_resource::TopologyTag::Pool);
+    assert_eq!(
+        resident_handle.topology_tag(),
+        nebula_resource::TopologyTag::Resident
+    );
+    assert_eq!(pool_resource.create_counter.load(Ordering::Relaxed), 1);
+    assert_eq!(resident_resource.create_counter.load(Ordering::Relaxed), 1);
+
+    drop(pool_handle);
+    drop(resident_handle);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// AcquireOptions deadline
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pool_acquire_with_deadline() {
+    let resource = PoolTestResource::new();
+    let config = nebula_resource::topology::pooled::config::Config {
+        max_size: 1,
+        // Long default timeout — the deadline should override this.
+        create_timeout: std::time::Duration::from_secs(30),
+        ..Default::default()
+    };
+    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+    let ctx = test_ctx();
+
+    // Acquire the single slot.
+    let _held = pool
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await
+        .expect("first acquire should succeed");
+
+    // Very short deadline should override the 30s default timeout.
+    let opts =
+        AcquireOptions::default().with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(100));
+    let start = std::time::Instant::now();
+    let result = pool
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &rq,
+            0,
+            &opts,
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await;
+
+    let elapsed = start.elapsed();
+    let err = match result {
+        Err(e) => e,
+        Ok(_) => panic!("expected backpressure error with short deadline"),
+    };
+    assert_eq!(*err.kind(), ErrorKind::Backpressure);
+    // Should have timed out quickly, not waited 30s.
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "deadline should override default timeout, elapsed: {elapsed:?}"
+    );
+
+    drop(_held);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Handle detach
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pool_detach_removes_from_pool() {
+    let resource = PoolTestResource::new();
+    let config = nebula_resource::topology::pooled::config::Config {
+        max_size: 2,
+        ..Default::default()
+    };
+    let pool = PoolRuntime::<PoolTestResource>::new(config, 1);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+    let ctx = test_ctx();
+
+    let handle = pool
+        .acquire(
+            &resource,
+            &test_config(),
+            &(),
+            &ctx,
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
+        )
+        .await
+        .expect("acquire should succeed");
+
+    // Detach — the lease is extracted, on_release callback is disarmed.
+    let lease = handle.detach();
+    assert!(lease.is_some(), "guarded handle detach should return Some");
+
+    // Give time for any potential (but should-not-happen) release processing.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Pool should NOT get the instance back — idle_count stays 0.
+    assert_eq!(
+        pool.idle_count().await,
+        0,
+        "detached handle should not return to pool"
+    );
+
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
