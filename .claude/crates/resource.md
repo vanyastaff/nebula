@@ -25,6 +25,7 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - `ResourceHandle::detach()` on Shared returns None
 - `ReleaseQueue::submit` drops silently if all channels full
 - Pool semaphore permit returns on handle drop, BEFORE async recycle — new caller can acquire while old entry recycles
+- Cancel-safety guards (`CreateGuard`, `SessionGuard`) wrap entries/sessions between creation and handle construction — if the future is cancelled, the guard logs via `tracing::warn` and drops the runtime/session (native `Drop` only; async `destroy`/`close_session` cannot run in `Drop`)
 - `ExclusiveRuntime::acquire` requires `R::Runtime: Clone + Into<R::Lease>`
 - `DaemonRuntime::start` errors if already running; `stop()` is idempotent
 - `Registry::get_typed<R>` keys on `TypeId::of::<ManagedResource<R>>()` not `TypeId::of::<R>()`
@@ -38,4 +39,4 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 - Webhook still uses deprecated v1 compat types; migration tracked separately
 
-<!-- reviewed: 2026-03-25 — exclusive acquire timeout to prevent infinite semaphore wait -->
+<!-- reviewed: 2026-03-25 — CAS for all RecoveryGate state transitions -->

@@ -272,42 +272,15 @@ impl RecoveryGate {
                 GateState::Failed {
                     retry_at, attempt, ..
                 } => {
-                    let now = Instant::now();
-                    if now < *retry_at {
+                    if Instant::now() < *retry_at {
                         return Err(TryBeginError::RetryLater {
                             retry_at: *retry_at,
                         });
                     }
-                    let next_attempt = attempt + 1;
-                    if next_attempt > self.inner.max_attempts {
-                        // Exceeded max attempts — transition to permanent.
-                        let next = Arc::new(GateState::PermanentlyFailed {
-                            message: format!(
-                                "max recovery attempts ({}) exceeded",
-                                self.inner.max_attempts
-                            ),
-                        });
-                        self.inner.state.store(next);
-                        self.inner.notify.notify_waiters();
-                        return Err(TryBeginError::PermanentlyFailed {
-                            message: format!(
-                                "max recovery attempts ({}) exceeded",
-                                self.inner.max_attempts
-                            ),
-                        });
+                    match self.try_begin_from_failed(&current, *attempt) {
+                        Some(result) => return result,
+                        None => continue, // CAS failed — retry the loop.
                     }
-                    let next = Arc::new(GateState::InProgress {
-                        attempt: next_attempt,
-                    });
-                    let prev = self.inner.state.compare_and_swap(&current, next);
-                    if Arc::ptr_eq(&prev, &current) {
-                        return Ok(RecoveryTicket {
-                            gate: Arc::clone(&self.inner),
-                            attempt: next_attempt,
-                            consumed: false,
-                        });
-                    }
-                    // CAS failed — retry the loop.
                 }
                 GateState::PermanentlyFailed { message } => {
                     return Err(TryBeginError::PermanentlyFailed {
@@ -316,6 +289,57 @@ impl RecoveryGate {
                 }
             }
         }
+    }
+
+    /// Attempts a CAS transition from `Failed` to either `PermanentlyFailed`
+    /// (when max attempts exceeded) or `InProgress`.
+    ///
+    /// Returns `Some(result)` on successful CAS, `None` if CAS failed and the
+    /// caller should retry.
+    fn try_begin_from_failed(
+        &self,
+        current: &arc_swap::Guard<Arc<GateState>>,
+        attempt: u32,
+    ) -> Option<Result<RecoveryTicket, TryBeginError>> {
+        let next_attempt = attempt + 1;
+        if next_attempt > self.inner.max_attempts {
+            return self.cas_to_permanently_failed(current);
+        }
+        let next = Arc::new(GateState::InProgress {
+            attempt: next_attempt,
+        });
+        let prev = self.inner.state.compare_and_swap(current, next);
+        if !Arc::ptr_eq(&prev, current) {
+            return None; // CAS failed
+        }
+        Some(Ok(RecoveryTicket {
+            gate: Arc::clone(&self.inner),
+            attempt: next_attempt,
+            consumed: false,
+        }))
+    }
+
+    /// CAS transition to [`GateState::PermanentlyFailed`] when max attempts
+    /// are exceeded.
+    ///
+    /// Returns `Some(Err(...))` on success, `None` if CAS failed.
+    fn cas_to_permanently_failed(
+        &self,
+        current: &arc_swap::Guard<Arc<GateState>>,
+    ) -> Option<Result<RecoveryTicket, TryBeginError>> {
+        let msg = format!(
+            "max recovery attempts ({}) exceeded",
+            self.inner.max_attempts
+        );
+        let next = Arc::new(GateState::PermanentlyFailed {
+            message: msg.clone(),
+        });
+        let prev = self.inner.state.compare_and_swap(current, next);
+        if !Arc::ptr_eq(&prev, current) {
+            return None; // CAS failed
+        }
+        self.inner.notify.notify_waiters();
+        Some(Err(TryBeginError::PermanentlyFailed { message: msg }))
     }
 
     /// Returns a snapshot of the current gate state.
