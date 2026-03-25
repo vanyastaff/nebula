@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use nebula_resource::AcquireOptions;
 use nebula_resource::Manager;
+use nebula_resource::ResourceMetrics;
 use nebula_resource::ctx::{BasicCtx, Ctx, ScopeLevel};
 use nebula_resource::error::{Error, ErrorKind};
 use nebula_resource::handle::ResourceHandle;
@@ -237,6 +238,7 @@ async fn pool_acquire_use_release_reacquire() {
             &rq,
             0,
             &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
         )
         .await
         .expect("first acquire should succeed");
@@ -264,6 +266,7 @@ async fn pool_acquire_use_release_reacquire() {
             &rq,
             0,
             &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
         )
         .await
         .expect("second acquire should succeed");
@@ -302,6 +305,7 @@ async fn pool_broken_instance_gets_replaced() {
             &rq,
             0,
             &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
         )
         .await
         .unwrap();
@@ -322,6 +326,7 @@ async fn pool_broken_instance_gets_replaced() {
             &rq,
             0,
             &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
         )
         .await
         .expect("should create a fresh instance");
@@ -662,6 +667,7 @@ async fn tainted_handle_not_recycled() {
             &rq,
             0,
             &AcquireOptions::default(),
+            Arc::new(ResourceMetrics::new()),
         )
         .await
         .unwrap();
@@ -673,6 +679,120 @@ async fn tainted_handle_not_recycled() {
     // Tainted handle should NOT be recycled.
     assert_eq!(pool.idle_count().await, 0);
 
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Event emission tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn register_emits_registered_event() {
+    let manager = Manager::new();
+    let mut rx = manager.subscribe_events();
+
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+        )
+        .expect("registration should succeed");
+
+    let event = rx.try_recv().expect("should have received an event");
+    assert!(
+        matches!(&event, nebula_resource::ResourceEvent::Registered { key } if key == &resource_key!("test-resident")),
+        "expected Registered event, got {event:?}"
+    );
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn remove_emits_removed_event() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+        )
+        .unwrap();
+
+    let mut rx = manager.subscribe_events();
+    let key = resource_key!("test-resident");
+    manager.remove(&key).expect("remove should succeed");
+
+    let event = rx.try_recv().expect("should have received an event");
+    assert!(
+        matches!(&event, nebula_resource::ResourceEvent::Removed { key } if key == &resource_key!("test-resident")),
+        "expected Removed event, got {event:?}"
+    );
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn acquire_emits_success_event() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+        )
+        .unwrap();
+
+    let mut rx = manager.subscribe_events();
+    // Drain the Registered event.
+    let _ = rx.try_recv();
+
+    let ctx = test_ctx();
+    let _handle: ResourceHandle<ResidentTestResource> = manager
+        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed");
+
+    let event = rx.try_recv().expect("should have received an event");
+    assert!(
+        matches!(&event, nebula_resource::ResourceEvent::AcquireSuccess { key, .. } if key == &resource_key!("test-resident")),
+        "expected AcquireSuccess event, got {event:?}"
+    );
+
+    drop(_handle);
+    drop(manager);
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }

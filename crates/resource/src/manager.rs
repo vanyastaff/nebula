@@ -16,13 +16,16 @@
 
 use std::any::TypeId;
 use std::sync::Arc;
+use std::time::Instant;
 
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 use nebula_core::ResourceKey;
 
 use crate::ctx::{Ctx, ScopeLevel};
 use crate::error::Error;
+use crate::events::ResourceEvent;
 use crate::metrics::ResourceMetrics;
 use crate::options::AcquireOptions;
 use crate::recovery::group::RecoveryGroupRegistry;
@@ -40,18 +43,32 @@ pub struct Manager {
     registry: Registry,
     recovery_groups: RecoveryGroupRegistry,
     cancel: CancellationToken,
-    metrics: ResourceMetrics,
+    metrics: Arc<ResourceMetrics>,
+    event_tx: broadcast::Sender<ResourceEvent>,
 }
 
 impl Manager {
     /// Creates a new empty manager.
     pub fn new() -> Self {
+        let (event_tx, _) = broadcast::channel(256);
         Self {
             registry: Registry::new(),
             recovery_groups: RecoveryGroupRegistry::new(),
             cancel: CancellationToken::new(),
-            metrics: ResourceMetrics::new(),
+            metrics: Arc::new(ResourceMetrics::new()),
+            event_tx,
         }
+    }
+
+    /// Subscribes to resource lifecycle events.
+    ///
+    /// Returns a [`broadcast::Receiver`] that receives [`ResourceEvent`]s
+    /// emitted during registration, removal, and acquisition. Slow consumers
+    /// that fall behind the 256-event buffer will receive a
+    /// [`RecvError::Lagged`](broadcast::error::RecvError::Lagged) on the
+    /// next recv.
+    pub fn subscribe_events(&self) -> broadcast::Receiver<ResourceEvent> {
+        self.event_tx.subscribe()
     }
 
     /// Registers a resource with its config, credential, scope, topology,
@@ -84,6 +101,9 @@ impl Manager {
         self.registry.register(key.clone(), type_id, scope, managed);
 
         self.metrics.record_create();
+        let _ = self
+            .event_tx
+            .send(ResourceEvent::Registered { key: key.clone() });
 
         tracing::debug!(%key, "resource registered");
         Ok(())
@@ -137,6 +157,7 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
+        let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
         let generation = managed.generation();
         let config = managed.config();
@@ -151,6 +172,7 @@ impl Manager {
                     &managed.release_queue,
                     generation,
                     options,
+                    Arc::clone(&self.metrics),
                 )
                 .await
             }
@@ -160,7 +182,7 @@ impl Manager {
             ))),
         };
 
-        self.record_acquire_result(&result);
+        self.record_acquire_result(&result, started);
         result
     }
 
@@ -184,6 +206,7 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Clone + Send + 'static,
     {
+        let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
         let config = managed.config();
 
@@ -198,7 +221,7 @@ impl Manager {
             ))),
         };
 
-        self.record_acquire_result(&result);
+        self.record_acquire_result(&result, started);
         result
     }
 
@@ -221,6 +244,7 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
+        let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
         let generation = managed.generation();
 
@@ -232,6 +256,7 @@ impl Manager {
                     &managed.release_queue,
                     generation,
                     options,
+                    Arc::clone(&self.metrics),
                 )
                 .await
             }
@@ -241,7 +266,7 @@ impl Manager {
             ))),
         };
 
-        self.record_acquire_result(&result);
+        self.record_acquire_result(&result, started);
         result
     }
 
@@ -264,6 +289,7 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
+        let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
         let generation = managed.generation();
 
@@ -275,6 +301,7 @@ impl Manager {
                     &managed.release_queue,
                     generation,
                     options,
+                    Arc::clone(&self.metrics),
                 )
                 .await
             }
@@ -284,7 +311,7 @@ impl Manager {
             ))),
         };
 
-        self.record_acquire_result(&result);
+        self.record_acquire_result(&result, started);
         result
     }
 
@@ -307,6 +334,7 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
+        let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
         let generation = managed.generation();
 
@@ -317,6 +345,7 @@ impl Manager {
                     &managed.release_queue,
                     generation,
                     options,
+                    Arc::clone(&self.metrics),
                 )
                 .await
             }
@@ -326,7 +355,7 @@ impl Manager {
             ))),
         };
 
-        self.record_acquire_result(&result);
+        self.record_acquire_result(&result, started);
         result
     }
 
@@ -341,6 +370,9 @@ impl Manager {
             return Err(Error::not_found(key));
         }
         self.metrics.record_destroy();
+        let _ = self
+            .event_tx
+            .send(ResourceEvent::Removed { key: key.clone() });
         tracing::debug!(%key, "resource removed");
         Ok(())
     }
@@ -398,14 +430,28 @@ impl Manager {
         self.registry.get(key, scope)
     }
 
-    /// Records acquire success/failure in metrics.
+    /// Records acquire success/failure in metrics and emits the
+    /// corresponding [`ResourceEvent`].
     fn record_acquire_result<R: Resource>(
         &self,
         result: &Result<crate::handle::ResourceHandle<R>, Error>,
+        started: Instant,
     ) {
         match result {
-            Ok(_) => self.metrics.record_acquire(),
-            Err(_) => self.metrics.record_acquire_error(),
+            Ok(_) => {
+                self.metrics.record_acquire();
+                let _ = self.event_tx.send(ResourceEvent::AcquireSuccess {
+                    key: R::key(),
+                    duration: started.elapsed(),
+                });
+            }
+            Err(e) => {
+                self.metrics.record_acquire_error();
+                let _ = self.event_tx.send(ResourceEvent::AcquireFailed {
+                    key: R::key(),
+                    error: e.to_string(),
+                });
+            }
         }
     }
 }

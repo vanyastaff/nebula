@@ -17,6 +17,7 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use crate::ctx::Ctx;
 use crate::error::Error;
 use crate::handle::ResourceHandle;
+use crate::metrics::ResourceMetrics;
 use crate::options::AcquireOptions;
 use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
@@ -108,10 +109,17 @@ where
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
         options: &AcquireOptions,
+        metrics: Arc<ResourceMetrics>,
     ) -> Result<ResourceHandle<R>, Error> {
         // Try to get an idle instance first.
         if let Some(handle) = self
-            .try_acquire_idle(resource, ctx, release_queue, generation)
+            .try_acquire_idle(
+                resource,
+                ctx,
+                release_queue,
+                generation,
+                Arc::clone(&metrics),
+            )
             .await?
         {
             return Ok(handle);
@@ -142,6 +150,7 @@ where
             resource.clone(),
             release_queue.clone(),
             generation,
+            metrics,
         ))
     }
 
@@ -155,6 +164,7 @@ where
         ctx: &dyn Ctx,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
+        metrics: Arc<ResourceMetrics>,
     ) -> Result<Option<ResourceHandle<R>>, Error> {
         loop {
             let entry = {
@@ -214,6 +224,7 @@ where
                 resource.clone(),
                 release_queue.clone(),
                 generation,
+                metrics,
             )));
         }
     }
@@ -279,6 +290,7 @@ where
         resource: R,
         release_queue: Arc<ReleaseQueue>,
         generation: u64,
+        metrics: Arc<ResourceMetrics>,
     ) -> ResourceHandle<R> {
         let idle = self.idle.clone();
         let current_fp_ref = self.current_fingerprint.clone();
@@ -290,6 +302,8 @@ where
             TopologyTag::Pool,
             generation,
             move |returned_lease: R::Lease, tainted| {
+                metrics.record_release();
+
                 let runtime: R::Runtime = returned_lease.into();
                 let entry = PoolEntry {
                     runtime,
@@ -509,6 +523,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
+                Arc::new(ResourceMetrics::new()),
             )
             .await;
         assert!(handle.is_ok());
@@ -549,6 +564,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
+                Arc::new(ResourceMetrics::new()),
             )
             .await
             .unwrap();
@@ -566,6 +582,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
+                Arc::new(ResourceMetrics::new()),
             )
             .await;
         assert!(handle2.is_ok());
@@ -601,6 +618,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
+                Arc::new(ResourceMetrics::new()),
             )
             .await
             .unwrap();
@@ -621,6 +639,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
+                Arc::new(ResourceMetrics::new()),
             )
             .await;
         assert!(handle2.is_ok());
@@ -656,6 +675,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
+                Arc::new(ResourceMetrics::new()),
             )
             .await
             .unwrap();
@@ -693,6 +713,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
+                Arc::new(ResourceMetrics::new()),
             )
             .await;
         assert!(result.is_err());
@@ -740,6 +761,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
+                Arc::new(ResourceMetrics::new()),
             )
             .await;
         let err = match result {

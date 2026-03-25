@@ -12,6 +12,7 @@ use tokio::sync::Semaphore;
 use crate::ctx::Ctx;
 use crate::error::Error;
 use crate::handle::ResourceHandle;
+use crate::metrics::ResourceMetrics;
 use crate::options::AcquireOptions;
 use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
@@ -77,6 +78,7 @@ where
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
         _options: &AcquireOptions,
+        metrics: Arc<ResourceMetrics>,
     ) -> Result<ResourceHandle<R>, Error> {
         let permit = self
             .session_semaphore
@@ -100,6 +102,7 @@ where
             TopologyTag::Transport,
             generation,
             move |lease, tainted| {
+                metrics.record_release();
                 rq.submit(move || {
                     Box::pin(release_transport_session(
                         resource_clone,

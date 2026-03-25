@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::ctx::Ctx;
 use crate::error::Error;
 use crate::handle::ResourceHandle;
+use crate::metrics::ResourceMetrics;
 use crate::options::AcquireOptions;
 use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
@@ -68,6 +69,7 @@ where
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
         _options: &AcquireOptions,
+        metrics: Arc<ResourceMetrics>,
     ) -> Result<ResourceHandle<R>, Error> {
         let token = resource
             .acquire_token(&self.runtime, ctx)
@@ -88,6 +90,7 @@ where
             TopologyTag::Service,
             generation,
             move |lease, _tainted| {
+                metrics.record_release();
                 rq.submit(move || Box::pin(release_service_token(resource_clone, runtime, lease)));
             },
         ))
@@ -248,7 +251,14 @@ mod tests {
         let ctx = test_ctx();
 
         let handle = rt
-            .acquire(&resource, &ctx, &rq, 0, &AcquireOptions::default())
+            .acquire(
+                &resource,
+                &ctx,
+                &rq,
+                0,
+                &AcquireOptions::default(),
+                Arc::new(ResourceMetrics::new()),
+            )
             .await
             .unwrap();
         assert_eq!(*handle, "runtime-token");
@@ -272,7 +282,14 @@ mod tests {
         let ctx = test_ctx();
 
         let handle = rt
-            .acquire(&resource, &ctx, &rq, 1, &AcquireOptions::default())
+            .acquire(
+                &resource,
+                &ctx,
+                &rq,
+                1,
+                &AcquireOptions::default(),
+                Arc::new(ResourceMetrics::new()),
+            )
             .await
             .unwrap();
         assert_eq!(*handle, "tracked-runtime-tracked-token");
