@@ -32,6 +32,7 @@ pub mod options;
 pub mod release_queue;
 pub mod resource;
 pub mod state;
+pub mod topology;
 
 pub use cell::Cell;
 pub use ctx::{BasicCtx, Ctx, Extensions, ScopeLevel, ctx_ext};
@@ -42,6 +43,13 @@ pub use options::{AcquireIntent, AcquireOptions};
 pub use release_queue::ReleaseQueue;
 pub use resource::{AnyResource, Credential, Resource, ResourceConfig, ResourceMetadata};
 pub use state::{ResourcePhase, ResourceStatus};
+pub use topology::daemon::{Daemon, RestartPolicy};
+pub use topology::event_source::EventSource;
+pub use topology::exclusive::Exclusive;
+pub use topology::pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision};
+pub use topology::resident::Resident;
+pub use topology::service::{Service, TokenMode};
+pub use topology::transport::Transport;
 
 pub use nebula_core::{ExecutionId, ResourceKey, WorkflowId};
 
