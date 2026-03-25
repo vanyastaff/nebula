@@ -6,6 +6,9 @@
 
 use std::sync::Arc;
 
+use tokio::sync::Mutex;
+use tracing::warn;
+
 use crate::cell::Cell;
 use crate::ctx::Ctx;
 use crate::error::Error;
@@ -18,9 +21,14 @@ use crate::topology::resident::config::Config;
 ///
 /// Holds a single shared runtime instance in a lock-free [`Cell`].
 /// On acquire, the runtime is cloned into an owned [`ResourceHandle`].
+///
+/// A `create_lock` mutex serialises the slow path (create / recreate) while
+/// keeping the fast path (load + liveness check) entirely lock-free.
 pub struct ResidentRuntime<R: Resource> {
     cell: Cell<R::Runtime>,
     config: Config,
+    /// Serialises the create / recreate slow path.
+    create_lock: Mutex<()>,
 }
 
 impl<R: Resource> ResidentRuntime<R> {
@@ -29,6 +37,7 @@ impl<R: Resource> ResidentRuntime<R> {
         Self {
             cell: Cell::new(),
             config,
+            create_lock: Mutex::new(()),
         }
     }
 
@@ -47,17 +56,20 @@ impl<R> ResidentRuntime<R>
 where
     R: Resident + Send + Sync + 'static,
     R::Lease: Clone,
-    R::Runtime: Clone,
+    R::Runtime: Clone + Send + 'static,
 {
     /// Acquires a clone of the shared runtime instance.
     ///
-    /// 1. Load from cell — if present, check liveness, clone into owned handle.
-    /// 2. If absent or not alive: create via `resource.create()`, store, clone.
-    /// 3. If `recreate_on_failure` and liveness check fails: destroy + recreate.
+    /// **Fast path** (lock-free): load from cell, check liveness, clone.
+    ///
+    /// **Slow path** (mutex-serialised): create or recreate the runtime.
+    /// A double-check after lock acquisition prevents duplicate creates
+    /// when multiple callers race on an empty or stale cell.
     ///
     /// # Errors
     ///
-    /// Returns an error if creation fails.
+    /// Returns an error if creation fails or if the runtime is not alive
+    /// and `recreate_on_failure` is disabled.
     pub async fn acquire(
         &self,
         resource: &R,
@@ -68,21 +80,44 @@ where
     where
         R::Runtime: Into<R::Lease>,
     {
-        // Try to use existing runtime.
+        // Fast path — lock-free load + liveness check.
+        if let Some(existing) = self.cell.load()
+            && resource.is_alive_sync(&existing)
+        {
+            let lease: R::Lease = (*existing).clone().into();
+            return Ok(ResourceHandle::owned(lease, R::key(), "resident"));
+        }
+
+        // Slow path — serialise create / recreate.
+        let _guard = self.create_lock.lock().await;
+
+        // Double-check: another task may have created while we waited.
         if let Some(existing) = self.cell.load() {
             if resource.is_alive_sync(&existing) {
                 let lease: R::Lease = (*existing).clone().into();
                 return Ok(ResourceHandle::owned(lease, R::key(), "resident"));
             }
 
-            // Not alive — destroy and recreate if configured.
+            // Still not alive — destroy and recreate if configured.
             if !self.config.recreate_on_failure {
                 return Err(Error::transient("resident runtime is not alive"));
             }
 
-            // Take the old one out and best-effort destroy via Arc::try_unwrap.
-            if let Some(owned) = self.cell.take().and_then(|arc| Arc::try_unwrap(arc).ok()) {
-                let _ = resource.destroy(owned).await;
+            // Take the old runtime out and best-effort destroy.
+            if let Some(old) = self.cell.take() {
+                match Arc::try_unwrap(old) {
+                    Ok(owned) => {
+                        let _ = resource.destroy(owned).await;
+                    }
+                    Err(arc) => {
+                        warn!(
+                            resource = %R::key(),
+                            refs = Arc::strong_count(&arc),
+                            "cannot exclusively destroy resident runtime; \
+                             another handle still held — dropping Arc"
+                        );
+                    }
+                }
             }
         }
 
@@ -163,7 +198,11 @@ mod tests {
             _ctx: &dyn Ctx,
         ) -> impl std::future::Future<Output = Result<u32, MockError>> + Send {
             let count = self.create_count.fetch_add(1, Ordering::Relaxed);
-            async move { Ok(count + 100) }
+            async move {
+                // Yield to increase the chance of concurrent interleaving.
+                tokio::task::yield_now().await;
+                Ok(count + 100)
+            }
         }
 
         fn destroy(
@@ -186,6 +225,35 @@ mod tests {
 
     fn test_ctx() -> BasicCtx {
         BasicCtx::new(ExecutionId::new())
+    }
+
+    #[tokio::test]
+    async fn concurrent_acquire_creates_only_once() {
+        let resource = MockResident::new();
+        let rt = Arc::new(ResidentRuntime::<MockResident>::new(Config::default()));
+        let ctx = Arc::new(test_ctx());
+
+        // Spawn 10 concurrent acquires on an empty cell.
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let r = resource.clone();
+            let runtime = Arc::clone(&rt);
+            let c = Arc::clone(&ctx);
+            handles.push(tokio::spawn(async move {
+                runtime.acquire(&r, &true, &(), c.as_ref()).await.unwrap()
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // Only one create should have happened.
+        assert_eq!(
+            resource.create_count.load(Ordering::Relaxed),
+            1,
+            "concurrent acquires on empty cell should create exactly once"
+        );
     }
 
     #[tokio::test]
