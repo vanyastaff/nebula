@@ -1,19 +1,19 @@
 //! Real-world async option loader that fetches users from the public
 //! JSONPlaceholder API and surfaces them as select options.
 //!
-//! Demonstrates attaching an [`nebula_parameter::loader::OptionLoader`] inline
-//! directly to a [`nebula_parameter::field::Field::Select`] variant -- no
-//! registry or trait impl required.
+//! Demonstrates attaching an [`OptionLoader`](nebula_parameter::loader::OptionLoader)
+//! inline to a [`Parameter::select`] — no registry or trait impl required.
 //!
 //! Run with:
 //! ```text
 //! cargo run -p nebula-parameter --example jsonplaceholder_provider
 //! ```
 
-use nebula_parameter::field::Field;
 use nebula_parameter::loader::{LoaderContext, LoaderError};
 use nebula_parameter::loader_result::LoaderResult;
 use nebula_parameter::option::SelectOption;
+use nebula_parameter::parameter::Parameter;
+use nebula_parameter::parameter_type::ParameterType;
 
 // -- API shape ----------------------------------------------------------------
 
@@ -29,9 +29,9 @@ struct User {
 
 #[tokio::main]
 async fn main() {
-    // Build a Field::Select with an inline async loader that hits JSONPlaceholder.
-    let field = Field::select("assigned_user")
-        .with_label("Assigned User")
+    // Build a Parameter::select with an inline async loader that hits JSONPlaceholder.
+    let param = Parameter::select("assigned_user")
+        .label("Assigned User")
         .with_option_loader(|ctx: LoaderContext| async move {
             let users: Vec<User> = reqwest::Client::new()
                 .get("https://jsonplaceholder.typicode.com/users")
@@ -64,7 +64,11 @@ async fn main() {
             Ok(LoaderResult::done(options))
         });
 
-    let loader = field.option_loader().expect("loader is attached");
+    // Extract the loader from the parameter's Select type.
+    let loader = match &param.param_type {
+        ParameterType::Select { loader, .. } => loader.as_ref().expect("loader is attached"),
+        _ => unreachable!("parameter is a select"),
+    };
 
     // Full list.
     let ctx = LoaderContext {
