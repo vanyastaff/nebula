@@ -92,7 +92,7 @@ fn validate_parameter(
         return;
     }
 
-    let raw_value = lookup_value(values, path_prefix, &param.id);
+    let raw_value = lookup_value(values, &param.id);
 
     // 2. Check visible_when — if hidden and no value, skip entirely.
     if let Some(condition) = &param.visible_when
@@ -475,14 +475,9 @@ fn make_path(prefix: &str, segment: &str) -> String {
     }
 }
 
-/// Looks up a value from `ParameterValues`, handling nested paths.
-fn lookup_value<'a>(values: &'a ParameterValues, path_prefix: &str, id: &str) -> Option<&'a Value> {
-    if path_prefix.is_empty() {
-        values.get(id)
-    } else {
-        // For nested contexts, the ParameterValues is already scoped.
-        values.get(id)
-    }
+/// Looks up a value from `ParameterValues` by key.
+fn lookup_value<'a>(values: &'a ParameterValues, id: &str) -> Option<&'a Value> {
+    values.get(id)
 }
 
 /// Returns `true` if the value is absent or JSON null.
@@ -497,8 +492,9 @@ fn value_type_name(value: &Value) -> String {
         Value::Bool(b) => format!("boolean {b}"),
         Value::Number(n) => format!("number {n}"),
         Value::String(s) => {
-            if s.len() > 20 {
-                format!("string \"{}...\"", &s[..20])
+            let truncated: String = s.chars().take(20).collect();
+            if truncated.len() < s.len() {
+                format!("string \"{truncated}...\"")
             } else {
                 format!("string \"{s}\"")
             }

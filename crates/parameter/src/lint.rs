@@ -561,7 +561,7 @@ fn check_depends_on(
         let dep_str = dep.as_str();
 
         // 7. Self-reference
-        if dep_str == param_id || dep_str == format!("$root.{param_id}") {
+        if dep_str == param_id || dep_str.strip_prefix("$root.") == Some(param_id) {
             diags.push(LintDiagnostic {
                 path: path.to_owned(),
                 level: LintLevel::Error,
