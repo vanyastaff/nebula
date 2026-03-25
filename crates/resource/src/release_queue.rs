@@ -31,9 +31,6 @@ const TASK_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
 /// Channel buffer size per primary worker.
 const CHANNEL_BUFFER: usize = 256;
 
-/// Fallback channel buffer size.
-const FALLBACK_BUFFER: usize = 1024;
-
 /// Handle to the running release queue workers.
 ///
 /// Must be passed to [`ReleaseQueue::shutdown`] for graceful termination.
@@ -58,7 +55,7 @@ pub struct ReleaseQueueHandle {
 /// ```
 pub struct ReleaseQueue {
     senders: Vec<mpsc::Sender<TaskFactory>>,
-    fallback_tx: mpsc::Sender<TaskFactory>,
+    fallback_tx: mpsc::UnboundedSender<TaskFactory>,
     next: AtomicUsize,
 }
 
@@ -79,8 +76,8 @@ impl ReleaseQueue {
             workers.push(tokio::spawn(Self::worker_loop(rx)));
         }
 
-        let (fallback_tx, fallback_rx) = mpsc::channel::<TaskFactory>(FALLBACK_BUFFER);
-        let fallback_worker = tokio::spawn(Self::worker_loop(fallback_rx));
+        let (fallback_tx, fallback_rx) = mpsc::unbounded_channel::<TaskFactory>();
+        let fallback_worker = tokio::spawn(Self::worker_loop_unbounded(fallback_rx));
 
         let queue = Self {
             senders,
@@ -107,11 +104,11 @@ impl ReleaseQueue {
         match self.senders[idx].try_send(factory) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(factory)) => {
-                // Primary is full — use fallback.
-                if let Err(e) = self.fallback_tx.try_send(factory) {
-                    tracing::error!(
-                        "release queue overflow: both primary and fallback channels full, \
-                         dropping release task (may leak semaphore permit): {e}"
+                // Primary is full — use unbounded fallback (never drops).
+                if let Err(e) = self.fallback_tx.send(factory) {
+                    tracing::warn!(
+                        "release queue fallback channel closed, \
+                         dropping release task: {e}"
                     );
                 }
             }
@@ -135,20 +132,36 @@ impl ReleaseQueue {
         loop {
             match tokio::time::timeout(WORKER_RECV_TIMEOUT, rx.recv()).await {
                 Ok(Some(factory)) => {
-                    let task = factory();
-                    if tokio::time::timeout(TASK_EXECUTION_TIMEOUT, task)
-                        .await
-                        .is_err()
-                    {
-                        tracing::warn!(
-                            "release task timed out after {}s, skipping",
-                            TASK_EXECUTION_TIMEOUT.as_secs()
-                        );
-                    }
+                    Self::execute_task(factory).await;
                 }
                 Ok(None) => break,  // channel closed
                 Err(_) => continue, // timeout, loop back
             }
+        }
+    }
+
+    async fn worker_loop_unbounded(mut rx: mpsc::UnboundedReceiver<TaskFactory>) {
+        loop {
+            match tokio::time::timeout(WORKER_RECV_TIMEOUT, rx.recv()).await {
+                Ok(Some(factory)) => {
+                    Self::execute_task(factory).await;
+                }
+                Ok(None) => break,  // channel closed
+                Err(_) => continue, // timeout, loop back
+            }
+        }
+    }
+
+    async fn execute_task(factory: TaskFactory) {
+        let task = factory();
+        if tokio::time::timeout(TASK_EXECUTION_TIMEOUT, task)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                "release task timed out after {}s, skipping",
+                TASK_EXECUTION_TIMEOUT.as_secs()
+            );
         }
     }
 }
@@ -205,5 +218,34 @@ mod tests {
     #[should_panic(expected = "worker_count must be at least 1")]
     async fn zero_workers_panics() {
         let _ = ReleaseQueue::new(0);
+    }
+
+    #[tokio::test]
+    async fn fallback_channel_never_drops_tasks() {
+        // Use 1 worker so primary channel has 256 capacity.
+        // Submit more tasks than old total capacity (256 + 1024 = 1280).
+        let total_tasks: u32 = 1500;
+        let (queue, handle) = ReleaseQueue::new(1);
+        let counter = Arc::new(AtomicU32::new(0));
+
+        for _ in 0..total_tasks {
+            let c = counter.clone();
+            queue.submit(move || {
+                Box::pin(async move {
+                    c.fetch_add(1, Ordering::Relaxed);
+                })
+            });
+        }
+
+        // Give workers time to drain all tasks.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        drop(queue);
+        ReleaseQueue::shutdown(handle).await;
+
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            total_tasks,
+            "all {total_tasks} tasks must complete — none should be dropped"
+        );
     }
 }
