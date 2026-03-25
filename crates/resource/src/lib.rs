@@ -17,6 +17,10 @@
 //! | [`ReleaseQueue`] | Background worker pool for async cleanup |
 //! | [`Error`] | Unified error with [`ErrorKind`] + [`ErrorScope`] |
 //! | [`Ctx`] | Execution context with cancellation and extensions |
+//! | [`Manager`] | Central registry with acquire dispatch and shutdown |
+//! | [`Registry`] | Type-erased storage for managed resources |
+//! | [`ResourceEvent`] | Lifecycle events for observability |
+//! | [`ResourceMetrics`](metrics::ResourceMetrics) | Atomic operation counters |
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
@@ -26,11 +30,14 @@ pub mod cell;
 pub mod compat;
 pub mod ctx;
 pub mod error;
+pub mod events;
 pub mod handle;
 pub mod integration;
 pub mod manager;
+pub mod metrics;
 pub mod options;
 pub mod recovery;
+pub mod registry;
 pub mod release_queue;
 pub mod resource;
 pub mod runtime;
@@ -41,8 +48,11 @@ pub use cell::Cell;
 pub use ctx::{BasicCtx, Ctx, Extensions, ScopeLevel, ctx_ext};
 pub use error::{Error, ErrorKind, ErrorScope};
 pub use handle::ResourceHandle;
+pub use events::ResourceEvent;
 pub use manager::Manager;
+pub use metrics::{MetricsSnapshot, ResourceMetrics};
 pub use options::{AcquireIntent, AcquireOptions};
+pub use registry::{AnyManagedResource, Registry};
 pub use release_queue::ReleaseQueue;
 pub use resource::{AnyResource, Credential, Resource, ResourceConfig, ResourceMetadata};
 pub use state::{ResourcePhase, ResourceStatus};

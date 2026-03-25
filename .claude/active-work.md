@@ -7,6 +7,7 @@ Updated: 2026-03-25
 - **Desktop app** (Tauri): `apps/desktop/` — replaces old egui nebula-app
 
 ## Recently Completed
+- **nebula-resource Phase 5** (2026-03-25): Manager, Registry, Events, Metrics. Topology-specific acquire dispatch (acquire_pooled, acquire_resident, etc.). Phase 6 (tests, docs, consumers) next.
 - **nebula-parameter** v3 migration (2026-03-25): full rewrite from v2 (Field enum + Schema) to v3 (Parameter struct + ParameterType enum + ParameterCollection). All consumers migrated.
 
 ## Blocked / Parked
