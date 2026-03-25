@@ -6,6 +6,8 @@
 
 pub mod gate;
 pub mod group;
+pub mod watchdog;
 
 pub use gate::{GateState, RecoveryGate, RecoveryGateConfig, RecoveryTicket, RecoveryWaiter};
 pub use group::{RecoveryGroupKey, RecoveryGroupRegistry};
+pub use watchdog::{WatchdogConfig, WatchdogHandle};

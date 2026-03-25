@@ -69,7 +69,7 @@ pub use topology_tag::TopologyTag;
 pub use integration::{AcquireCircuitBreakerPreset, AcquireResilience, AcquireRetryConfig};
 pub use recovery::{
     GateState, RecoveryGate, RecoveryGateConfig, RecoveryGroupKey, RecoveryGroupRegistry,
-    RecoveryTicket, RecoveryWaiter,
+    RecoveryTicket, RecoveryWaiter, WatchdogConfig, WatchdogHandle,
 };
 
 pub use nebula_core::{ExecutionId, ResourceKey, WorkflowId};

@@ -25,6 +25,7 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - `Registry::get_typed<R>` keys on `TypeId::of::<ManagedResource<R>>()` not `TypeId::of::<R>()`
 - `Manager::lookup` returns `Err(Cancelled)` after shutdown
 - Must drop Manager before `ReleaseQueue::shutdown` (holds Arc via ManagedResource)
+- `WatchdogHandle` cancels on drop but does NOT await — use `stop()` for graceful shutdown
 
 ## Relations
 
@@ -32,4 +33,4 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 - Webhook still uses deprecated v1 compat types; migration tracked separately
 
-<!-- reviewed: 2026-03-25 — ScopeLevel uses typed WorkflowId/ExecutionId -->
+<!-- reviewed: 2026-03-25 — WatchdogHandle added for background health probes -->
