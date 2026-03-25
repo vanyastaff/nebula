@@ -27,12 +27,13 @@ Parameter schema system (RFC 0005) — defines what inputs a workflow node accep
 - `OptionLoader` / `RecordLoader` / `FilterFieldLoader` are inline async loaders — they require an async runtime; don't call in sync contexts. **They return `Result<LoaderResult<T>>` — handle `LoaderError`.**
 - v3 type-specific builders (e.g. `multiline()`, `min()`, `searchable()`) silently no-op when called on the wrong ParameterType variant. `with_option_loader()` / `with_record_loader()` / `with_filter_field_loader()` also no-op on wrong variant.
 - `ParameterError::ValidationError` variant was removed — use `ValidationIssue` for all structured validation errors.
-- **Task 13 completed:** lib.rs wires all v3 modules. Old `field.rs`, `metadata.rs`, `schema.rs` deleted. `normalize.rs`, `lint.rs` are stubs pending Tasks 10-11. Integration tests and examples use old API — pending Tasks 14-15.
+- **Task 13 completed:** lib.rs wires all v3 modules. Old `field.rs`, `metadata.rs`, `schema.rs` deleted. `lint.rs` is a stub pending Task 11. Integration tests and examples use old API — pending Tasks 14-15.
 - **Task 9 completed:** `validate.rs` fully rewritten. Validates per-parameter (skip Computed/Notice, visible_when, required/required_when, rules, type-specific). Type-specific: Number (integer/min/max), Select (options/multi/allow_custom), Object (recursive with pick-mode), List (min/max items, recursive), Mode (variant matching under "mode"+"value" keys), Dynamic/Filter skipped. Unknown field check per ValidationProfile.
+- **Task 10 completed:** `normalize.rs` fully rewritten. Backfills defaults from `Parameter.default` and `Mode.default_variant`. Skips Computed/Notice/Hidden. Mode: ensures "mode" key, recurses into variant (Object→recurse "value", scalar→backfill "value" default, Hidden→skip). Object: Inline/Collapsed recurse all sub-params; PickFields/Sections only process present keys. List: recurse each item with template. Depth-limited to 16. Extra keys preserved. User values never overwritten.
 
 ## Relations
 - Used by nebula-action (re-exports `Parameter`, `ParameterCollection`), nebula-sdk, nebula-macros.
 - `Rule::field_references()` added to nebula-validator for lint cross-referencing.
 - Consumers migrating: action, credential, auth, engine, sdk, macros, resource.
 
-<!-- reviewed: 2026-03-25 (Task 9: rewrite validation engine) -->
+<!-- reviewed: 2026-03-25 (Task 10: rewrite normalization engine) -->
