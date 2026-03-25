@@ -42,10 +42,7 @@ const MAX_NORMALIZE_DEPTH: u8 = 16;
 /// assert_eq!(result.get("retries"), Some(&json!(3)));
 /// ```
 #[must_use]
-pub fn normalize_parameters(
-    parameters: &[Parameter],
-    values: &ParameterValues,
-) -> ParameterValues {
+pub fn normalize_parameters(parameters: &[Parameter], values: &ParameterValues) -> ParameterValues {
     let mut result = values.clone();
     normalize_slice(parameters, &mut result, 0);
     result
@@ -108,10 +105,22 @@ fn normalize_one(param: &Parameter, values: &mut ParameterValues, depth: u8) {
 /// Handle recursion into Mode, Object, and List values.
 fn normalize_nested(param: &Parameter, values: &mut ParameterValues, depth: u8) {
     match &param.param_type {
-        ParameterType::Mode { variants, default_variant } => {
-            normalize_mode(&param.id, variants, default_variant.as_deref(), values, depth);
+        ParameterType::Mode {
+            variants,
+            default_variant,
+        } => {
+            normalize_mode(
+                &param.id,
+                variants,
+                default_variant.as_deref(),
+                values,
+                depth,
+            );
         }
-        ParameterType::Object { parameters, display_mode } => {
+        ParameterType::Object {
+            parameters,
+            display_mode,
+        } => {
             normalize_object(&param.id, parameters, *display_mode, values, depth);
         }
         ParameterType::List { item, .. } => {
@@ -180,7 +189,10 @@ fn normalize_mode(
 
                 let mut inner_values = object_to_parameter_values(&inner);
                 normalize_slice(parameters, &mut inner_values, depth + 1);
-                obj.insert("value".to_owned(), parameter_values_to_object(&inner_values));
+                obj.insert(
+                    "value".to_owned(),
+                    parameter_values_to_object(&inner_values),
+                );
             }
             _ => {
                 // Scalar or other variant — backfill "value" from variant default.
@@ -234,7 +246,9 @@ fn normalize_object(
 fn normalize_pick_mode(parameters: &[Parameter], values: &mut ParameterValues, depth: u8) {
     for param in parameters {
         match &param.param_type {
-            ParameterType::Computed { .. } | ParameterType::Notice { .. } | ParameterType::Hidden => {
+            ParameterType::Computed { .. }
+            | ParameterType::Notice { .. }
+            | ParameterType::Hidden => {
                 continue;
             }
             _ => {}
@@ -253,12 +267,7 @@ fn normalize_pick_mode(parameters: &[Parameter], values: &mut ParameterValues, d
 /// Normalize a List parameter's value.
 ///
 /// Recurses into each array item using the item template parameter.
-fn normalize_list(
-    key: &str,
-    item_template: &Parameter,
-    values: &mut ParameterValues,
-    depth: u8,
-) {
+fn normalize_list(key: &str, item_template: &Parameter, values: &mut ParameterValues, depth: u8) {
     let Some(raw) = values.get(key).cloned() else {
         return;
     };
@@ -294,9 +303,7 @@ fn normalize_list_item(template: &Parameter, element: &Value, depth: u8) -> Valu
 
 /// Convert a JSON object map into a [`ParameterValues`].
 fn object_to_parameter_values(obj: &serde_json::Map<String, Value>) -> ParameterValues {
-    obj.iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect()
+    obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
 }
 
 /// Convert a [`ParameterValues`] back into a JSON object.
@@ -362,16 +369,14 @@ mod tests {
 
     #[test]
     fn skips_computed() {
-        let params = vec![Parameter::computed("full_name")
-            .default(json!("should not appear"))];
+        let params = vec![Parameter::computed("full_name").default(json!("should not appear"))];
         let result = normalize_parameters(&params, &ParameterValues::new());
         assert!(!result.contains("full_name"));
     }
 
     #[test]
     fn skips_notice() {
-        let params = vec![Parameter::notice("info_banner")
-            .default(json!("should not appear"))];
+        let params = vec![Parameter::notice("info_banner").default(json!("should not appear"))];
         let result = normalize_parameters(&params, &ParameterValues::new());
         assert!(!result.contains("info_banner"));
     }
@@ -387,20 +392,24 @@ mod tests {
 
     #[test]
     fn mode_backfills_default_variant_when_absent() {
-        let params = vec![Parameter::mode("auth")
-            .variant(Parameter::string("bearer"))
-            .variant(Parameter::string("basic"))
-            .default_variant("bearer")];
+        let params = vec![
+            Parameter::mode("auth")
+                .variant(Parameter::string("bearer"))
+                .variant(Parameter::string("basic"))
+                .default_variant("bearer"),
+        ];
         let result = normalize_parameters(&params, &ParameterValues::new());
         assert_eq!(result.get("auth"), Some(&json!({"mode": "bearer"})));
     }
 
     #[test]
     fn mode_preserves_existing_mode_value() {
-        let params = vec![Parameter::mode("auth")
-            .variant(Parameter::string("bearer").default(json!("tok")))
-            .variant(Parameter::string("basic"))
-            .default_variant("bearer")];
+        let params = vec![
+            Parameter::mode("auth")
+                .variant(Parameter::string("bearer").default(json!("tok")))
+                .variant(Parameter::string("basic"))
+                .default_variant("bearer"),
+        ];
         let values = make_values(&[("auth", json!({"mode": "basic", "value": "creds"}))]);
         let result = normalize_parameters(&params, &values);
         assert_eq!(
@@ -411,9 +420,11 @@ mod tests {
 
     #[test]
     fn mode_backfills_variant_scalar_default() {
-        let params = vec![Parameter::mode("auth")
-            .variant(Parameter::string("bearer").default(json!("default_token")))
-            .default_variant("bearer")];
+        let params = vec![
+            Parameter::mode("auth")
+                .variant(Parameter::string("bearer").default(json!("default_token")))
+                .default_variant("bearer"),
+        ];
         // Value has mode selected but no "value" key.
         let values = make_values(&[("auth", json!({"mode": "bearer"}))]);
         let result = normalize_parameters(&params, &values);
@@ -425,9 +436,11 @@ mod tests {
 
     #[test]
     fn mode_backfills_mode_key_from_default_variant() {
-        let params = vec![Parameter::mode("auth")
-            .variant(Parameter::string("bearer"))
-            .default_variant("bearer")];
+        let params = vec![
+            Parameter::mode("auth")
+                .variant(Parameter::string("bearer"))
+                .default_variant("bearer"),
+        ];
         // Object without "mode" key.
         let values = make_values(&[("auth", json!({}))]);
         let result = normalize_parameters(&params, &values);
@@ -439,9 +452,11 @@ mod tests {
 
     #[test]
     fn object_inline_backfills_nested_defaults() {
-        let params = vec![Parameter::object("config")
-            .add(Parameter::string("host").default(json!("localhost")))
-            .add(Parameter::integer("port").default(json!(8080)))];
+        let params = vec![
+            Parameter::object("config")
+                .add(Parameter::string("host").default(json!("localhost")))
+                .add(Parameter::integer("port").default(json!(8080))),
+        ];
         let values = make_values(&[("config", json!({}))]);
         let result = normalize_parameters(&params, &values);
         assert_eq!(
@@ -452,9 +467,11 @@ mod tests {
 
     #[test]
     fn object_inline_preserves_existing_nested_values() {
-        let params = vec![Parameter::object("config")
-            .add(Parameter::string("host").default(json!("localhost")))
-            .add(Parameter::integer("port").default(json!(8080)))];
+        let params = vec![
+            Parameter::object("config")
+                .add(Parameter::string("host").default(json!("localhost")))
+                .add(Parameter::integer("port").default(json!(8080))),
+        ];
         let values = make_values(&[("config", json!({"host": "example.com"}))]);
         let result = normalize_parameters(&params, &values);
         let obj = result.get("config").unwrap().as_object().unwrap();
@@ -464,10 +481,12 @@ mod tests {
 
     #[test]
     fn object_pick_mode_does_not_backfill_absent_fields() {
-        let params = vec![Parameter::object("config")
-            .pick_fields()
-            .add(Parameter::string("host").default(json!("localhost")))
-            .add(Parameter::integer("port").default(json!(8080)))];
+        let params = vec![
+            Parameter::object("config")
+                .pick_fields()
+                .add(Parameter::string("host").default(json!("localhost")))
+                .add(Parameter::integer("port").default(json!(8080))),
+        ];
         let values = make_values(&[("config", json!({"host": "example.com"}))]);
         let result = normalize_parameters(&params, &values);
         let obj = result.get("config").unwrap().as_object().unwrap();
@@ -478,10 +497,12 @@ mod tests {
 
     #[test]
     fn object_sections_behaves_like_pick_mode() {
-        let params = vec![Parameter::object("config")
-            .sections()
-            .add(Parameter::string("host").default(json!("localhost")))
-            .add(Parameter::integer("port").default(json!(8080)))];
+        let params = vec![
+            Parameter::object("config")
+                .sections()
+                .add(Parameter::string("host").default(json!("localhost")))
+                .add(Parameter::integer("port").default(json!(8080))),
+        ];
         let values = make_values(&[("config", json!({}))]);
         let result = normalize_parameters(&params, &values);
         let obj = result.get("config").unwrap().as_object().unwrap();
@@ -516,10 +537,7 @@ mod tests {
 
     #[test]
     fn list_preserves_non_array_value() {
-        let params = vec![Parameter::list(
-            "items",
-            Parameter::string("item"),
-        )];
+        let params = vec![Parameter::list("items", Parameter::string("item"))];
         // Value is not an array — left unchanged.
         let values = make_values(&[("items", json!("not an array"))]);
         let result = normalize_parameters(&params, &values);
@@ -535,8 +553,7 @@ mod tests {
             if depth == 0 {
                 return Parameter::string("leaf").default(json!("deep"));
             }
-            Parameter::object(&format!("level_{depth}"))
-                .add(deep_object(depth - 1))
+            Parameter::object(&format!("level_{depth}")).add(deep_object(depth - 1))
         }
 
         let params = vec![deep_object(20)];

@@ -101,9 +101,9 @@ fn validate_parameter(
             .is_some_and(|c| c.evaluate(values_map));
 
     if is_required && is_missing_or_null(raw_value) {
-        report.errors.push(ParameterError::MissingValue {
-            key: key.clone(),
-        });
+        report
+            .errors
+            .push(ParameterError::MissingValue { key: key.clone() });
         return;
     }
 
@@ -145,10 +145,7 @@ fn validate_type(
 ) {
     match param_type {
         ParameterType::Number {
-            integer,
-            min,
-            max,
-            ..
+            integer, min, max, ..
         } => validate_number(value, *integer, min.as_ref(), max.as_ref(), key, report),
 
         ParameterType::Select {
@@ -157,7 +154,15 @@ fn validate_type(
             allow_custom,
             dynamic,
             ..
-        } => validate_select(value, options, *multiple, *allow_custom, *dynamic, key, report),
+        } => validate_select(
+            value,
+            options,
+            *multiple,
+            *allow_custom,
+            *dynamic,
+            key,
+            report,
+        ),
 
         ParameterType::Object {
             parameters,
@@ -310,10 +315,7 @@ fn validate_object(
     };
 
     // Build a nested ParameterValues from the object for condition evaluation.
-    let nested_values: ParameterValues = obj
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
+    let nested_values: ParameterValues = obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let nested_map = nested_values.as_map();
 
     let is_pick_mode = display_mode.is_pick_mode();
@@ -384,8 +386,9 @@ fn validate_list(
     for (i, item_value) in arr.iter().enumerate() {
         let item_key = make_path(key, &i.to_string());
         // Build a single-entry ParameterValues for the item.
-        let item_values: ParameterValues =
-            vec![(item.id.clone(), item_value.clone())].into_iter().collect();
+        let item_values: ParameterValues = vec![(item.id.clone(), item_value.clone())]
+            .into_iter()
+            .collect();
         let item_map = item_values.as_map();
         validate_parameter(item, &item_values, item_map, &item_key, report);
     }
@@ -409,10 +412,7 @@ fn validate_mode(
         return;
     };
 
-    let mode_key = obj
-        .get("mode")
-        .and_then(Value::as_str)
-        .or(default_variant);
+    let mode_key = obj.get("mode").and_then(Value::as_str).or(default_variant);
 
     let Some(mode_key) = mode_key else {
         report.errors.push(ParameterError::InvalidValue {
@@ -435,10 +435,9 @@ fn validate_mode(
     // Validate variant's content under "value" key.
     if let Some(variant_value) = obj.get("value") {
         if !variant_value.is_null() {
-            let variant_values: ParameterValues =
-                vec![(variant.id.clone(), variant_value.clone())]
-                    .into_iter()
-                    .collect();
+            let variant_values: ParameterValues = vec![(variant.id.clone(), variant_value.clone())]
+                .into_iter()
+                .collect();
             let variant_map = variant_values.as_map();
             validate_parameter(variant, &variant_values, variant_map, key, report);
         }
@@ -466,11 +465,7 @@ fn make_path(prefix: &str, segment: &str) -> String {
 }
 
 /// Looks up a value from `ParameterValues`, handling nested paths.
-fn lookup_value<'a>(
-    values: &'a ParameterValues,
-    path_prefix: &str,
-    id: &str,
-) -> Option<&'a Value> {
+fn lookup_value<'a>(values: &'a ParameterValues, path_prefix: &str, id: &str) -> Option<&'a Value> {
     if path_prefix.is_empty() {
         values.get(id)
     } else {
@@ -561,7 +556,11 @@ mod tests {
         let result = validate_parameters(&params, &values);
         assert!(result.is_err());
         let errors = result.unwrap_err();
-        assert!(errors.iter().any(|e| matches!(e, ParameterError::UnknownField { key } if key == "extra")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, ParameterError::UnknownField { key } if key == "extra"))
+        );
     }
 
     #[test]
@@ -643,10 +642,12 @@ mod tests {
 
     #[test]
     fn select_rejects_invalid_option() {
-        let params = vec![Parameter::select("color")
-            .option(json!("red"), "Red")
-            .option(json!("blue"), "Blue")
-            .required()];
+        let params = vec![
+            Parameter::select("color")
+                .option(json!("red"), "Red")
+                .option(json!("blue"), "Blue")
+                .required(),
+        ];
         let mut values = ParameterValues::new();
         values.set("color", json!("green"));
         let result = validate_parameters(&params, &values);
@@ -655,10 +656,12 @@ mod tests {
 
     #[test]
     fn select_accepts_valid_option() {
-        let params = vec![Parameter::select("color")
-            .option(json!("red"), "Red")
-            .option(json!("blue"), "Blue")
-            .required()];
+        let params = vec![
+            Parameter::select("color")
+                .option(json!("red"), "Red")
+                .option(json!("blue"), "Blue")
+                .required(),
+        ];
         let mut values = ParameterValues::new();
         values.set("color", json!("red"));
         let result = validate_parameters(&params, &values);
@@ -667,10 +670,12 @@ mod tests {
 
     #[test]
     fn select_allow_custom_skips_check() {
-        let params = vec![Parameter::select("color")
-            .option(json!("red"), "Red")
-            .allow_custom()
-            .required()];
+        let params = vec![
+            Parameter::select("color")
+                .option(json!("red"), "Red")
+                .allow_custom()
+                .required(),
+        ];
         let mut values = ParameterValues::new();
         values.set("color", json!("chartreuse"));
         let result = validate_parameters(&params, &values);
@@ -679,11 +684,13 @@ mod tests {
 
     #[test]
     fn multi_select_validates_each_item() {
-        let params = vec![Parameter::select("colors")
-            .option(json!("red"), "Red")
-            .option(json!("blue"), "Blue")
-            .multiple()
-            .required()];
+        let params = vec![
+            Parameter::select("colors")
+                .option(json!("red"), "Red")
+                .option(json!("blue"), "Blue")
+                .multiple()
+                .required(),
+        ];
         let mut values = ParameterValues::new();
         values.set("colors", json!(["red", "green"]));
         let result = validate_parameters(&params, &values);
@@ -692,10 +699,12 @@ mod tests {
 
     #[test]
     fn list_validates_min_max_items() {
-        let params = vec![Parameter::list("tags", Parameter::string("tag"))
-            .min_items(1)
-            .max_items(3)
-            .required()];
+        let params = vec![
+            Parameter::list("tags", Parameter::string("tag"))
+                .min_items(1)
+                .max_items(3)
+                .required(),
+        ];
         let mut values = ParameterValues::new();
 
         values.set("tags", json!([]));
@@ -726,8 +735,11 @@ mod tests {
 
     #[test]
     fn object_rejects_non_object() {
-        let params =
-            vec![Parameter::object("config").add(Parameter::string("host")).required()];
+        let params = vec![
+            Parameter::object("config")
+                .add(Parameter::string("host"))
+                .required(),
+        ];
         let mut values = ParameterValues::new();
         values.set("config", json!("not an object"));
         let result = validate_parameters(&params, &values);
@@ -736,9 +748,11 @@ mod tests {
 
     #[test]
     fn object_validates_nested_required() {
-        let params = vec![Parameter::object("config")
-            .add(Parameter::string("host").required())
-            .required()];
+        let params = vec![
+            Parameter::object("config")
+                .add(Parameter::string("host").required())
+                .required(),
+        ];
         let mut values = ParameterValues::new();
         values.set("config", json!({}));
         let result = validate_parameters(&params, &values);
@@ -751,9 +765,11 @@ mod tests {
 
     #[test]
     fn object_nested_passes_when_present() {
-        let params = vec![Parameter::object("config")
-            .add(Parameter::string("host").required())
-            .required()];
+        let params = vec![
+            Parameter::object("config")
+                .add(Parameter::string("host").required())
+                .required(),
+        ];
         let mut values = ParameterValues::new();
         values.set("config", json!({"host": "localhost"}));
         let result = validate_parameters(&params, &values);
@@ -762,10 +778,12 @@ mod tests {
 
     #[test]
     fn mode_rejects_non_object() {
-        let params = vec![Parameter::mode("auth")
-            .variant(Parameter::string("bearer"))
-            .variant(Parameter::string("basic"))
-            .required()];
+        let params = vec![
+            Parameter::mode("auth")
+                .variant(Parameter::string("bearer"))
+                .variant(Parameter::string("basic"))
+                .required(),
+        ];
         let mut values = ParameterValues::new();
         values.set("auth", json!("not an object"));
         let result = validate_parameters(&params, &values);
@@ -774,10 +792,12 @@ mod tests {
 
     #[test]
     fn mode_rejects_unknown_variant() {
-        let params = vec![Parameter::mode("auth")
-            .variant(Parameter::string("bearer"))
-            .variant(Parameter::string("basic"))
-            .required()];
+        let params = vec![
+            Parameter::mode("auth")
+                .variant(Parameter::string("bearer"))
+                .variant(Parameter::string("basic"))
+                .required(),
+        ];
         let mut values = ParameterValues::new();
         values.set("auth", json!({"mode": "oauth2"}));
         let result = validate_parameters(&params, &values);
@@ -790,10 +810,12 @@ mod tests {
 
     #[test]
     fn mode_accepts_valid_variant() {
-        let params = vec![Parameter::mode("auth")
-            .variant(Parameter::string("bearer"))
-            .variant(Parameter::string("basic"))
-            .required()];
+        let params = vec![
+            Parameter::mode("auth")
+                .variant(Parameter::string("bearer"))
+                .variant(Parameter::string("basic"))
+                .required(),
+        ];
         let mut values = ParameterValues::new();
         values.set("auth", json!({"mode": "bearer", "value": "token123"}));
         let result = validate_parameters(&params, &values);
@@ -818,9 +840,11 @@ mod tests {
 
     #[test]
     fn visible_when_hidden_and_absent_skips() {
-        let params = vec![Parameter::string("token")
-            .required()
-            .visible_when(crate::conditions::Condition::eq("auth", "oauth2"))];
+        let params = vec![
+            Parameter::string("token")
+                .required()
+                .visible_when(crate::conditions::Condition::eq("auth", "oauth2")),
+        ];
         let mut values = ParameterValues::new();
         values.set("auth", json!("basic"));
         // token is required but hidden (visible_when false) and absent → skip
@@ -830,9 +854,11 @@ mod tests {
 
     #[test]
     fn visible_when_hidden_but_value_present_validates() {
-        let params = vec![Parameter::string("token")
-            .required()
-            .visible_when(crate::conditions::Condition::eq("auth", "oauth2"))];
+        let params = vec![
+            Parameter::string("token")
+                .required()
+                .visible_when(crate::conditions::Condition::eq("auth", "oauth2")),
+        ];
         let mut values = ParameterValues::new();
         values.set("auth", json!("basic"));
         values.set("token", json!("some-value"));
@@ -843,8 +869,10 @@ mod tests {
 
     #[test]
     fn required_when_condition_true_enforces_requirement() {
-        let params = vec![Parameter::string("token")
-            .required_when(crate::conditions::Condition::eq("auth", "oauth2"))];
+        let params = vec![
+            Parameter::string("token")
+                .required_when(crate::conditions::Condition::eq("auth", "oauth2")),
+        ];
         let mut values = ParameterValues::new();
         values.set("auth", json!("oauth2"));
         // token is required because auth == oauth2, but missing
@@ -858,8 +886,10 @@ mod tests {
 
     #[test]
     fn required_when_condition_false_skips_requirement() {
-        let params = vec![Parameter::string("token")
-            .required_when(crate::conditions::Condition::eq("auth", "oauth2"))];
+        let params = vec![
+            Parameter::string("token")
+                .required_when(crate::conditions::Condition::eq("auth", "oauth2")),
+        ];
         let mut values = ParameterValues::new();
         values.set("auth", json!("basic"));
         let report = validate_with_profile(&params, &values, ValidationProfile::Permissive);

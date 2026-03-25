@@ -930,10 +930,7 @@ mod tests {
     fn string_constructor_defaults() {
         let p = Parameter::string("name");
         assert_eq!(p.id, "name");
-        assert_eq!(
-            p.param_type,
-            ParameterType::String { multiline: false }
-        );
+        assert_eq!(p.param_type, ParameterType::String { multiline: false });
         assert!(!p.required);
         assert!(!p.secret);
         assert!(p.label.is_none());
@@ -970,10 +967,7 @@ mod tests {
     #[test]
     fn number_min_max_step() {
         let p = Parameter::number("score").min(0.0).max(100.0).step(0.5);
-        if let ParameterType::Number {
-            min, max, step, ..
-        } = &p.param_type
-        {
+        if let ParameterType::Number { min, max, step, .. } = &p.param_type {
             assert!(min.is_some());
             assert!(max.is_some());
             assert!(step.is_some());
@@ -984,11 +978,11 @@ mod tests {
 
     #[test]
     fn number_i64_helpers() {
-        let p = Parameter::integer("count").min_i64(0).max_i64(1000).step_i64(1);
-        if let ParameterType::Number {
-            min, max, step, ..
-        } = &p.param_type
-        {
+        let p = Parameter::integer("count")
+            .min_i64(0)
+            .max_i64(1000)
+            .step_i64(1);
+        if let ParameterType::Number { min, max, step, .. } = &p.param_type {
             assert_eq!(min.as_ref().and_then(|n| n.as_i64()), Some(0));
             assert_eq!(max.as_ref().and_then(|n| n.as_i64()), Some(1000));
             assert_eq!(step.as_ref().and_then(|n| n.as_i64()), Some(1));
@@ -1086,10 +1080,7 @@ mod tests {
     #[test]
     fn multiline_only_affects_string() {
         let s = Parameter::string("text").multiline();
-        assert_eq!(
-            s.param_type,
-            ParameterType::String { multiline: true }
-        );
+        assert_eq!(s.param_type, ParameterType::String { multiline: true });
 
         // No-op on non-string types
         let n = Parameter::number("num").multiline();
@@ -1113,19 +1104,27 @@ mod tests {
 
         assert_eq!(
             info.param_type,
-            ParameterType::Notice { severity: NoticeSeverity::Info }
+            ParameterType::Notice {
+                severity: NoticeSeverity::Info
+            }
         );
         assert_eq!(
             warn.param_type,
-            ParameterType::Notice { severity: NoticeSeverity::Warning }
+            ParameterType::Notice {
+                severity: NoticeSeverity::Warning
+            }
         );
         assert_eq!(
             danger.param_type,
-            ParameterType::Notice { severity: NoticeSeverity::Danger }
+            ParameterType::Notice {
+                severity: NoticeSeverity::Danger
+            }
         );
         assert_eq!(
             success.param_type,
-            ParameterType::Notice { severity: NoticeSeverity::Success }
+            ParameterType::Notice {
+                severity: NoticeSeverity::Success
+            }
         );
     }
 
