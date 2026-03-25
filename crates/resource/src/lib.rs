@@ -43,6 +43,7 @@ pub mod resource;
 pub mod runtime;
 pub mod state;
 pub mod topology;
+pub mod topology_tag;
 
 pub use cell::Cell;
 pub use ctx::{BasicCtx, Ctx, Extensions, ScopeLevel, ctx_ext};
@@ -56,6 +57,7 @@ pub use registry::{AnyManagedResource, Registry};
 pub use release_queue::ReleaseQueue;
 pub use resource::{AnyResource, Credential, Resource, ResourceConfig, ResourceMetadata};
 pub use state::{ResourcePhase, ResourceStatus};
+pub use topology_tag::TopologyTag;
 pub use topology::daemon::{Daemon, RestartPolicy};
 pub use topology::event_source::EventSource;
 pub use topology::exclusive::Exclusive;
@@ -71,6 +73,26 @@ pub use recovery::{
 };
 
 pub use nebula_core::{ExecutionId, ResourceKey, WorkflowId};
+
+// Runtime types — needed for `Manager::register()`.
+pub use runtime::TopologyRuntime;
+pub use runtime::daemon::DaemonRuntime;
+pub use runtime::event_source::EventSourceRuntime;
+pub use runtime::exclusive::ExclusiveRuntime;
+pub use runtime::managed::ManagedResource;
+pub use runtime::pool::PoolRuntime;
+pub use runtime::resident::ResidentRuntime;
+pub use runtime::service::ServiceRuntime;
+pub use runtime::transport::TransportRuntime;
+
+// Topology configurations — used at registration time.
+pub use topology::daemon::config::Config as DaemonConfig;
+pub use topology::event_source::config::Config as EventSourceConfig;
+pub use topology::exclusive::config::Config as ExclusiveConfig;
+pub use topology::pooled::config::Config as PoolConfig;
+pub use topology::resident::config::Config as ResidentConfig;
+pub use topology::service::config::Config as ServiceConfig;
+pub use topology::transport::config::Config as TransportConfig;
 
 // Backward-compatibility re-exports (deprecated, will be removed).
 #[allow(deprecated)]

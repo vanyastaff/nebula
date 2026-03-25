@@ -27,4 +27,4 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 - Webhook still uses deprecated v1 compat types; migration tracked separately
 
-<!-- reviewed: 2026-03-25 — TOCTOU fix in Manager::remove, Registry::remove now returns bool -->
+<!-- reviewed: 2026-03-25 — re-export runtime types + topology configs from lib.rs -->
