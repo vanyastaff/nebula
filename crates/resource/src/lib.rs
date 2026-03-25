@@ -27,10 +27,13 @@ pub mod compat;
 pub mod ctx;
 pub mod error;
 pub mod handle;
+pub mod integration;
 pub mod manager;
 pub mod options;
+pub mod recovery;
 pub mod release_queue;
 pub mod resource;
+pub mod runtime;
 pub mod state;
 pub mod topology;
 
@@ -50,6 +53,12 @@ pub use topology::pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision
 pub use topology::resident::Resident;
 pub use topology::service::{Service, TokenMode};
 pub use topology::transport::Transport;
+
+pub use integration::{AcquireCircuitBreakerPreset, AcquireResilience, AcquireRetryConfig};
+pub use recovery::{
+    GateState, RecoveryGate, RecoveryGateConfig, RecoveryGroupKey, RecoveryGroupRegistry,
+    RecoveryTicket, RecoveryWaiter,
+};
 
 pub use nebula_core::{ExecutionId, ResourceKey, WorkflowId};
 
