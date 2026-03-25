@@ -17,62 +17,20 @@ default = []
 [dependencies]
 # Nebula ecosystem
 nebula-core = { path = "../core" }
-nebula-eventbus = { path = "../eventbus" }
-nebula-metrics = { path = "../metrics" }
-nebula-telemetry = { path = "../telemetry" }
-nebula-resilience = { path = "../resilience" }
 
 # Async runtime
-tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync", "macros"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 tokio-util = { workspace = true }
 
 # Core
-async-trait = { workspace = true }
 thiserror = { workspace = true }
-uuid = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-dashmap = { workspace = true }
-parking_lot = { workspace = true }
-tracing = { workspace = true }
-metrics = { workspace = true }
-chrono = { workspace = true, features = ["serde"] }
 arc-swap = { workspace = true }
-moka = { workspace = true, features = ["sync"] }
-rustc-hash = "2.1.1"
-hdrhistogram = "7.5"
-im = { workspace = true }
+dashmap = { workspace = true }
 smallvec = { workspace = true }
-rand = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-nebula-parameter = { path = "../parameter" }
-tokio-test = { workspace = true }
-proptest = { workspace = true }
-test-case = { workspace = true }
-mockall = { workspace = true }
-tempfile = { workspace = true }
-criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
-console-subscriber = "0.4"
-reqwest = { workspace = true }
-url = { workspace = true }
-
-[[bench]]
-name = "pool_throughput"
-harness = false
-
-[[bench]]
-name = "acquire"
-harness = false
-
-[[bench]]
-name = "acquire_paths"
-harness = false
-
-[[bench]]
-name = "acquire_contended"
-harness = false
-
-[[bench]]
-name = "manager_acquire"
-harness = false
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
+pretty_assertions = { workspace = true }
