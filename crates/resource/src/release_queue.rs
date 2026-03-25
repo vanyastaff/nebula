@@ -37,6 +37,7 @@ const FALLBACK_BUFFER: usize = 1024;
 /// Handle to the running release queue workers.
 ///
 /// Must be passed to [`ReleaseQueue::shutdown`] for graceful termination.
+#[must_use = "dropping ReleaseQueueHandle without shutdown leaks worker tasks"]
 pub struct ReleaseQueueHandle {
     workers: Vec<tokio::task::JoinHandle<()>>,
     fallback_worker: tokio::task::JoinHandle<()>,

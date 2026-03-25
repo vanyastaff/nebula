@@ -57,12 +57,8 @@ impl Manager {
     /// and release queue.
     ///
     /// The resource is wrapped in a [`ManagedResource`] and stored in the
-    /// registry under `R::key()`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if
-    /// a resource with the same key and scope is already registered.
+    /// registry under `R::key()`. If a resource with the same key and scope
+    /// is already registered, it is silently replaced.
     pub fn register<R: Resource>(
         &self,
         resource: R,

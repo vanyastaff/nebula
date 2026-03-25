@@ -22,6 +22,7 @@ type GuardedRelease<R> = Box<dyn FnOnce(<R as Resource>::Lease, bool) + Send>;
 /// Dereferences to `R::Lease` for ergonomic access. On drop, guarded and
 /// shared handles notify the pool (or release callback) so the lease can
 /// be recycled or destroyed.
+#[must_use = "dropping a ResourceHandle immediately releases the resource"]
 pub struct ResourceHandle<R: Resource> {
     inner: HandleInner<R>,
     resource_key: ResourceKey,

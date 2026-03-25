@@ -91,6 +91,7 @@ pub enum TryBeginError {
 /// [`fail_transient`](RecoveryTicket::fail_transient) /
 /// [`fail_permanent`](RecoveryTicket::fail_permanent), the gate
 /// automatically transitions to [`GateState::Failed`] with a backoff.
+#[must_use = "dropping a RecoveryTicket without resolve/fail triggers auto-fail"]
 pub struct RecoveryTicket {
     gate: Arc<RecoveryGateInner>,
     attempt: u32,
@@ -333,12 +334,10 @@ fn compute_backoff(base: Duration, attempt: u32) -> Duration {
     let multiplier = 1u64
         .checked_shl(attempt.saturating_sub(1))
         .unwrap_or(u64::MAX);
-    let backoff = base.saturating_mul(multiplier as u32);
-    if backoff > MAX_BACKOFF {
-        MAX_BACKOFF
-    } else {
-        backoff
-    }
+    // Use u64 arithmetic to avoid truncation for large attempts.
+    let backoff_millis = (base.as_millis() as u64).saturating_mul(multiplier);
+    let max_millis = MAX_BACKOFF.as_millis() as u64;
+    Duration::from_millis(backoff_millis.min(max_millis))
 }
 
 #[cfg(test)]

@@ -41,7 +41,7 @@ pub struct PoolRuntime<R: Resource> {
     idle: Arc<Mutex<VecDeque<PoolEntry<R>>>>,
     semaphore: Arc<Semaphore>,
     config: Config,
-    current_fingerprint: AtomicU64,
+    current_fingerprint: Arc<AtomicU64>,
 }
 
 impl<R: Resource> PoolRuntime<R> {
@@ -52,7 +52,7 @@ impl<R: Resource> PoolRuntime<R> {
             idle: Arc::new(Mutex::new(VecDeque::new())),
             semaphore,
             config,
-            current_fingerprint: AtomicU64::new(fingerprint),
+            current_fingerprint: Arc::new(AtomicU64::new(fingerprint)),
         }
     }
 
@@ -273,7 +273,7 @@ where
         generation: u64,
     ) -> ResourceHandle<R> {
         let idle = self.idle.clone();
-        let current_fp = self.current_fingerprint.load(Ordering::Acquire);
+        let current_fp_ref = self.current_fingerprint.clone();
         let max_lifetime = self.config.max_lifetime;
 
         ResourceHandle::guarded(
@@ -290,6 +290,9 @@ where
                     permit: entry.permit,
                 };
 
+                // Load fingerprint at release time (not checkout time) to detect
+                // config changes that happened while the handle was checked out.
+                let current_fp = current_fp_ref.load(Ordering::Acquire);
                 release_queue.submit(move || {
                     Box::pin(release_entry(
                         resource,
