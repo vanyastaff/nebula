@@ -41,12 +41,12 @@ fn expand(input: syn::DeriveInput) -> syn::Result<TokenStream> {
     let param_count = param_defs.len();
     let expanded = quote! {
         impl #impl_generics #struct_name #ty_generics #where_clause {
-            /// Returns the parameter schema describing all fields.
-            pub fn parameters() -> ::nebula_parameter::schema::Schema {
-                use ::nebula_parameter::{Field, Schema};
+            /// Returns the parameter collection describing all fields.
+            pub fn parameters() -> ::nebula_parameter::collection::ParameterCollection {
+                use ::nebula_parameter::{Parameter, ParameterCollection};
 
-                Schema::new()
-                    #(.field(#param_defs))*
+                ParameterCollection::new()
+                    #(.add(#param_defs))*
             }
 
             /// Returns the number of parameters.

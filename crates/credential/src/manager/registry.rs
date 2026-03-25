@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use nebula_parameter::values::FieldValues;
+use nebula_parameter::values::ParameterValues;
 
 use crate::core::{
     CredentialContext, CredentialError, CredentialState,
@@ -32,7 +32,7 @@ pub(crate) enum InitResult {
     },
 }
 
-use nebula_parameter::schema::Schema;
+use nebula_parameter::collection::ParameterCollection;
 
 use crate::protocols::{
     ApiKeyProtocol, ApiKeyState, BasicAuthProtocol, BasicAuthState, OAuth2Config, OAuth2Protocol,
@@ -67,8 +67,8 @@ impl RegisteredProtocol {
 
     /// Build state for static protocols (sync, no IO).
     fn build_static<S: CredentialState>(
-        values: &FieldValues,
-        build: impl FnOnce(&FieldValues) -> Result<S, CredentialError>,
+        values: &ParameterValues,
+        build: impl FnOnce(&ParameterValues) -> Result<S, CredentialError>,
     ) -> Result<InitResult, CredentialError> {
         let state = build(values)?;
         Ok(InitResult::Complete {
@@ -85,7 +85,7 @@ impl RegisteredProtocol {
     /// Execute protocol initialization and return type-erased result.
     pub(crate) async fn initialize(
         &self,
-        values: &FieldValues,
+        values: &ParameterValues,
         ctx: &mut CredentialContext,
     ) -> Result<InitResult, CredentialError> {
         match self {
@@ -131,11 +131,11 @@ impl RegisteredProtocol {
     }
 }
 
-/// Build OAuth2Config from FieldValues.
+/// Build OAuth2Config from ParameterValues.
 ///
 /// Expects optional keys: `auth_url`, `token_url`, `grant_type`, `scopes`.
 /// Defaults: empty URLs, AuthorizationCode grant.
-fn oauth2_config_from_values(values: &FieldValues) -> Result<OAuth2Config, CredentialError> {
+fn oauth2_config_from_values(values: &ParameterValues) -> Result<OAuth2Config, CredentialError> {
     use crate::protocols::GrantType;
 
     let auth_url = values
@@ -206,7 +206,7 @@ impl ProtocolRegistry {
 
     /// Build schema for a protocol (parameters, display name, capabilities).
     #[must_use]
-    pub fn schema_for(&self, type_id: &str) -> Option<ProtocolSchema> {
+    pub fn schema_for(&self, type_id: &str) -> Option<ProtocolParameterCollection> {
         let protocol = self.get(type_id)?;
         Some(protocol.to_schema())
     }
@@ -276,18 +276,18 @@ impl ProtocolRegistry {
     }
 }
 
-/// Schema info for a registered protocol (used by list_types).
+/// ParameterCollection info for a registered protocol (used by list_types).
 #[derive(Clone, Debug)]
-pub struct ProtocolSchema {
+pub struct ProtocolParameterCollection {
     pub type_id: String,
     pub display_name: String,
     pub description: String,
-    pub params: Schema,
+    pub params: ParameterCollection,
     pub capabilities: Vec<String>,
 }
 
 impl RegisteredProtocol {
-    fn to_schema(self) -> ProtocolSchema {
+    fn to_schema(self) -> ProtocolParameterCollection {
         let (type_id, display_name, description, params, capabilities) = match self {
             Self::ApiKey => (
                 ApiKeyState::KIND,
@@ -311,7 +311,7 @@ impl RegisteredProtocol {
                 vec!["refresh".to_string(), "interactive".to_string()],
             ),
         };
-        ProtocolSchema {
+        ProtocolParameterCollection {
             type_id: type_id.to_string(),
             display_name: display_name.to_string(),
             description: description.to_string(),

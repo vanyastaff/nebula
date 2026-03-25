@@ -9,8 +9,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
 use serde_json::Value;
 
-use nebula_parameter::values::FieldValues;
-use nebula_parameter::{Field, Schema};
+use nebula_parameter::values::ParameterValues;
+use nebula_parameter::{Parameter, ParameterCollection};
 
 use crate::core::result::{
     DisplayData, InitializeResult, InteractionRequest, PartialState, UserInput,
@@ -36,18 +36,18 @@ impl FlowProtocol for OAuth2Protocol {
     type Config = OAuth2Config;
     type State = OAuth2State;
 
-    fn parameters() -> Schema {
-        Schema::new()
-            .field(
-                Field::text("client_id")
-                    .with_label("Client ID")
-                    .with_description("OAuth2 client identifier")
+    fn parameters() -> ParameterCollection {
+        ParameterCollection::new()
+            .add(
+                Parameter::string("client_id")
+                    .label("Client ID")
+                    .description("OAuth2 client identifier")
                     .required(),
             )
-            .field(
-                Field::text("client_secret")
-                    .with_label("Client Secret")
-                    .with_description("OAuth2 client secret")
+            .add(
+                Parameter::string("client_secret")
+                    .label("Client Secret")
+                    .description("OAuth2 client secret")
                     .required()
                     .secret(),
             )
@@ -55,7 +55,7 @@ impl FlowProtocol for OAuth2Protocol {
 
     async fn initialize(
         config: &Self::Config,
-        values: &FieldValues,
+        values: &ParameterValues,
         _ctx: &mut CredentialContext,
     ) -> Result<InitializeResult<Self::State>, CredentialError> {
         let client_id = extract_required(values, "client_id")?;
@@ -160,7 +160,7 @@ impl FlowProtocol for OAuth2Protocol {
 // ── Private helpers ──────────────────────────────────────────────────────────
 
 /// Extract a required string parameter, returning a validation error if missing.
-fn extract_required<'a>(values: &'a FieldValues, key: &str) -> Result<&'a str, CredentialError> {
+fn extract_required<'a>(values: &'a ParameterValues, key: &str) -> Result<&'a str, CredentialError> {
     values
         .get_string(key)
         .ok_or_else(|| CredentialError::Validation {
@@ -619,7 +619,7 @@ mod tests {
             .scopes(["read"])
             .build();
 
-        let mut values = FieldValues::new();
+        let mut values = ParameterValues::new();
         values.set("client_id", serde_json::json!("my_client"));
         values.set("client_secret", serde_json::json!("my_secret"));
 
@@ -648,7 +648,7 @@ mod tests {
             .token_url("https://example.com/token")
             .build();
 
-        let values = FieldValues::new(); // empty
+        let values = ParameterValues::new(); // empty
         let mut ctx = CredentialContext::new("test");
         let result = OAuth2Protocol::initialize(&config, &values, &mut ctx).await;
         assert!(result.is_err());

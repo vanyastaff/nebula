@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 
-use nebula_parameter::schema::Schema;
-use nebula_parameter::values::FieldValues;
+use nebula_parameter::collection::ParameterCollection;
+use nebula_parameter::values::ParameterValues;
 
 use crate::core::{
     CredentialContext, CredentialDescription, CredentialError, CredentialState,
@@ -133,7 +133,7 @@ pub trait StaticProtocol: Send + Sync + 'static {
     /// Parameters this protocol contributes.
     ///
     /// Merged first (before own params) by the macro.
-    fn parameters() -> Schema
+    fn parameters() -> ParameterCollection
     where
         Self: Sized;
 
@@ -141,7 +141,7 @@ pub trait StaticProtocol: Send + Sync + 'static {
     ///
     /// Called by the macro-generated `initialize()` when `extends` is set.
     /// `values` contains the full flat input (protocol fields + own fields).
-    fn build_state(values: &FieldValues) -> Result<Self::State, CredentialError>
+    fn build_state(values: &ParameterValues) -> Result<Self::State, CredentialError>
     where
         Self: Sized;
 }
@@ -176,14 +176,14 @@ pub trait FlowProtocol: Send + Sync + 'static {
     type State: CredentialState;
 
     /// Parameters shown to user in UI (client_id, client_secret, etc.)
-    fn parameters() -> Schema
+    fn parameters() -> ParameterCollection
     where
         Self: Sized;
 
     /// Execute the authentication flow
     async fn initialize(
         config: &Self::Config,
-        values: &FieldValues,
+        values: &ParameterValues,
         ctx: &mut CredentialContext,
     ) -> Result<InitializeResult<Self::State>, CredentialError>
     where
@@ -260,7 +260,7 @@ mod tests {
                 .key("test_api_key")
                 .name("Test API Key")
                 .description("Test API key credential")
-                .properties(nebula_parameter::schema::Schema::new())
+                .properties(nebula_parameter::collection::ParameterCollection::new())
                 .build()
                 .unwrap()
         }
@@ -287,7 +287,7 @@ mod tests {
                 .key("test_db_cred")
                 .name("Test DB Cred")
                 .description("Test database credential")
-                .properties(nebula_parameter::schema::Schema::new())
+                .properties(nebula_parameter::collection::ParameterCollection::new())
                 .build()
                 .unwrap()
         }

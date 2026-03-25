@@ -12,8 +12,8 @@ pub use config::{LdapConfig, TlsMode};
 
 use serde::{Deserialize, Serialize};
 
-use nebula_parameter::values::FieldValues;
-use nebula_parameter::{Field, Schema};
+use nebula_parameter::values::ParameterValues;
+use nebula_parameter::{Parameter, ParameterCollection};
 
 use crate::core::result::InitializeResult;
 use crate::core::{CredentialContext, CredentialError, CredentialState, ValidationError};
@@ -49,28 +49,28 @@ impl FlowProtocol for LdapProtocol {
     type Config = LdapConfig;
     type State = LdapState;
 
-    fn parameters() -> Schema {
-        Schema::new()
-            .field(
-                Field::text("host")
-                    .with_label("LDAP Host")
-                    .with_placeholder("ldap.example.com")
+    fn parameters() -> ParameterCollection {
+        ParameterCollection::new()
+            .add(
+                Parameter::string("host")
+                    .label("LDAP Host")
+                    .placeholder("ldap.example.com")
                     .required(),
             )
-            .field(
-                Field::text("port")
-                    .with_label("Port")
-                    .with_placeholder("389"),
+            .add(
+                Parameter::string("port")
+                    .label("Port")
+                    .placeholder("389"),
             )
-            .field(
-                Field::text("bind_dn")
-                    .with_label("Bind DN")
-                    .with_placeholder("cn=admin,dc=example,dc=com")
+            .add(
+                Parameter::string("bind_dn")
+                    .label("Bind DN")
+                    .placeholder("cn=admin,dc=example,dc=com")
                     .required(),
             )
-            .field(
-                Field::text("bind_password")
-                    .with_label("Bind Password")
+            .add(
+                Parameter::string("bind_password")
+                    .label("Bind Password")
                     .required()
                     .secret(),
             )
@@ -78,7 +78,7 @@ impl FlowProtocol for LdapProtocol {
 
     async fn initialize(
         config: &Self::Config,
-        values: &FieldValues,
+        values: &ParameterValues,
         _ctx: &mut CredentialContext,
     ) -> Result<InitializeResult<Self::State>, CredentialError> {
         let host = values
@@ -146,7 +146,7 @@ mod tests {
     #[tokio::test]
     async fn initialize_stores_credentials() {
         let config = LdapConfig::default();
-        let mut values = FieldValues::new();
+        let mut values = ParameterValues::new();
         values.set("host", serde_json::json!("ldap.example.com"));
         values.set("port", serde_json::json!("389"));
         values.set("bind_dn", serde_json::json!("cn=admin,dc=example,dc=com"));
@@ -172,7 +172,7 @@ mod tests {
     #[tokio::test]
     async fn missing_host_returns_error() {
         let config = LdapConfig::default();
-        let values = FieldValues::new();
+        let values = ParameterValues::new();
         let mut ctx = CredentialContext::new("test");
         let result = LdapProtocol::initialize(&config, &values, &mut ctx).await;
         assert!(result.is_err());
@@ -181,7 +181,7 @@ mod tests {
     #[tokio::test]
     async fn port_defaults_to_389_when_missing() {
         let config = LdapConfig::default();
-        let mut values = FieldValues::new();
+        let mut values = ParameterValues::new();
         values.set("host", serde_json::json!("ldap.example.com"));
         values.set("bind_dn", serde_json::json!("cn=admin,dc=example,dc=com"));
         values.set("bind_password", serde_json::json!("secret"));

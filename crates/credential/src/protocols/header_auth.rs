@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use nebula_parameter::values::FieldValues;
-use nebula_parameter::{Field, Schema};
+use nebula_parameter::values::ParameterValues;
+use nebula_parameter::{Parameter, ParameterCollection};
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
 use crate::traits::StaticProtocol;
@@ -30,23 +30,23 @@ pub struct HeaderAuthProtocol;
 impl StaticProtocol for HeaderAuthProtocol {
     type State = HeaderAuthState;
 
-    fn parameters() -> Schema {
-        Schema::new()
-            .field(
-                Field::text("header_name")
-                    .with_label("Header Name")
-                    .with_placeholder("X-Auth-Token")
+    fn parameters() -> ParameterCollection {
+        ParameterCollection::new()
+            .add(
+                Parameter::string("header_name")
+                    .label("Header Name")
+                    .placeholder("X-Auth-Token")
                     .required(),
             )
-            .field(
-                Field::text("header_value")
-                    .with_label("Header Value")
+            .add(
+                Parameter::string("header_value")
+                    .label("Header Value")
                     .required()
                     .secret(),
             )
     }
 
-    fn build_state(values: &FieldValues) -> Result<Self::State, CredentialError> {
+    fn build_state(values: &ParameterValues) -> Result<Self::State, CredentialError> {
         let header_name = values
             .get_string("header_name")
             .ok_or_else(|| CredentialError::Validation {
@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn build_state_produces_state() {
-        let mut values = FieldValues::new();
+        let mut values = ParameterValues::new();
         values.set("header_name", json!("X-Auth-Token"));
         values.set("header_value", json!("tok_123"));
         let state = HeaderAuthProtocol::build_state(&values).unwrap();
@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn missing_header_name_returns_error() {
-        let mut values = FieldValues::new();
+        let mut values = ParameterValues::new();
         values.set("header_value", json!("tok_123"));
         assert!(HeaderAuthProtocol::build_state(&values).is_err());
     }

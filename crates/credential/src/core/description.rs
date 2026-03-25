@@ -1,4 +1,4 @@
-use nebula_parameter::schema::Schema;
+use nebula_parameter::collection::ParameterCollection;
 use serde::{Deserialize, Serialize};
 
 /// Describes a credential type (OAuth2, API Key, Database, etc.)
@@ -14,11 +14,11 @@ use serde::{Deserialize, Serialize};
 ///
 /// ```
 /// use nebula_credential::core::CredentialDescription;
-/// use nebula_parameter::{Field, Schema};
+/// use nebula_parameter::{Parameter, ParameterCollection};
 ///
-/// let properties = Schema::new()
-///     .field(Field::text("client_id").with_label("Client ID").required())
-///     .field(Field::text("client_secret").with_label("Client Secret").required().secret());
+/// let properties = ParameterCollection::new()
+///     .add(Parameter::string("client_id").label("Client ID").required())
+///     .add(Parameter::string("client_secret").label("Client Secret").required().secret());
 ///
 /// let github_oauth2 = CredentialDescription {
 ///     key: "github_oauth2".to_string(),
@@ -54,7 +54,7 @@ pub struct CredentialDescription {
     pub documentation_url: Option<String>,
 
     /// Parameter definitions - what fields this credential type requires.
-    pub properties: Schema,
+    pub properties: ParameterCollection,
 }
 
 impl CredentialDescription {
@@ -73,7 +73,7 @@ pub struct CredentialDescriptionBuilder {
     icon: Option<String>,
     icon_url: Option<String>,
     documentation_url: Option<String>,
-    properties: Option<Schema>,
+    properties: Option<ParameterCollection>,
 }
 
 impl CredentialDescriptionBuilder {
@@ -114,7 +114,7 @@ impl CredentialDescriptionBuilder {
     }
 
     /// Set the parameter schema
-    pub fn properties(mut self, properties: Schema) -> Self {
+    pub fn properties(mut self, properties: ParameterCollection) -> Self {
         self.properties = Some(properties);
         self
     }

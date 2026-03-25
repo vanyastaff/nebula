@@ -4,7 +4,7 @@
 //! and storage of completed credentials.
 
 use nebula_credential::prelude::*;
-use nebula_parameter::values::FieldValues;
+use nebula_parameter::values::ParameterValues;
 use std::sync::Arc;
 
 /// Helper to create a test manager with encryption key (required for create storage)
@@ -20,7 +20,7 @@ async fn create_test_manager() -> CredentialManager {
 #[tokio::test]
 async fn test_create_api_key_complete() {
     let manager = create_test_manager().await;
-    let mut values = FieldValues::new();
+    let mut values = ParameterValues::new();
     values.set("server", serde_json::json!("https://api.example.com"));
     values.set("token", serde_json::json!("secret-token-123"));
     let context = CredentialContext::new("user-1");
@@ -50,7 +50,7 @@ async fn test_create_api_key_complete() {
 #[tokio::test]
 async fn test_create_basic_auth_complete() {
     let manager = create_test_manager().await;
-    let mut values = FieldValues::new();
+    let mut values = ParameterValues::new();
     values.set("username", serde_json::json!("alice"));
     values.set("password", serde_json::json!("s3cr3t"));
     let context = CredentialContext::new("user-1");
@@ -75,7 +75,7 @@ async fn test_create_basic_auth_complete() {
 #[tokio::test]
 async fn test_create_unknown_type_returns_error() {
     let manager = create_test_manager().await;
-    let values = FieldValues::new();
+    let values = ParameterValues::new();
     let context = CredentialContext::new("user-1");
 
     let result = manager.create("unknown_type", &values, &context).await;
@@ -91,7 +91,7 @@ async fn test_create_without_encryption_key_returns_error() {
     let manager = CredentialManager::builder()
         .storage(Arc::new(storage))
         .build();
-    let mut values = FieldValues::new();
+    let mut values = ParameterValues::new();
     values.set("server", serde_json::json!("https://api.example.com"));
     values.set("token", serde_json::json!("secret"));
     let context = CredentialContext::new("user-1");

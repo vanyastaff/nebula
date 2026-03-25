@@ -3,8 +3,8 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 
-use nebula_parameter::values::FieldValues;
-use nebula_parameter::{Field, Schema};
+use nebula_parameter::values::ParameterValues;
+use nebula_parameter::{Parameter, ParameterCollection};
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
 use crate::traits::StaticProtocol;
@@ -39,18 +39,18 @@ pub struct BasicAuthProtocol;
 impl StaticProtocol for BasicAuthProtocol {
     type State = BasicAuthState;
 
-    fn parameters() -> Schema {
-        Schema::new()
-            .field(Field::text("username").with_label("Username").required())
-            .field(
-                Field::text("password")
-                    .with_label("Password")
+    fn parameters() -> ParameterCollection {
+        ParameterCollection::new()
+            .add(Parameter::string("username").label("Username").required())
+            .add(
+                Parameter::string("password")
+                    .label("Password")
                     .required()
                     .secret(),
             )
     }
 
-    fn build_state(values: &FieldValues) -> Result<Self::State, CredentialError> {
+    fn build_state(values: &ParameterValues) -> Result<Self::State, CredentialError> {
         let username = values
             .get_string("username")
             .ok_or_else(|| CredentialError::Validation {
@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn build_state_produces_state() {
-        let mut values = FieldValues::new();
+        let mut values = ParameterValues::new();
         values.set("username", json!("alice"));
         values.set("password", json!("s3cr3t"));
         let state = BasicAuthProtocol::build_state(&values).unwrap();
@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn missing_username_returns_error() {
-        let mut values = FieldValues::new();
+        let mut values = ParameterValues::new();
         values.set("password", json!("s3cr3t"));
         assert!(BasicAuthProtocol::build_state(&values).is_err());
     }

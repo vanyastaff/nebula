@@ -7,8 +7,8 @@ use nebula_credential::core::{
     CredentialContext, CredentialDescription, CredentialId, CredentialMetadata, ManagerError,
 };
 use nebula_credential::prelude::*;
-use nebula_parameter::values::FieldValues;
-use nebula_parameter::{Field, Schema};
+use nebula_parameter::values::ParameterValues;
+use nebula_parameter::{Parameter, ParameterCollection};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -23,11 +23,11 @@ fn test_manager() -> CredentialManager {
 }
 
 fn github_description() -> CredentialDescription {
-    let properties = Schema::new()
-        .field(Field::text("client_id").with_label("Client ID").required())
-        .field(
-            Field::text("client_secret")
-                .with_label("Client Secret")
+    let properties = ParameterCollection::new()
+        .add(Parameter::string("client_id").label("Client ID").required())
+        .add(
+            Parameter::string("client_secret")
+                .label("Client Secret")
                 .required()
                 .secret(),
         );
@@ -57,7 +57,7 @@ async fn store_validated_succeeds_with_valid_values() {
     let id = CredentialId::new();
     let context = CredentialContext::new("user-1");
 
-    let mut values = FieldValues::new();
+    let mut values = ParameterValues::new();
     values.set("client_id", json!("my-client-id"));
     values.set("client_secret", json!("super-secret"));
 
@@ -87,7 +87,7 @@ async fn store_validated_fails_on_missing_required_field() {
     let context = CredentialContext::new("user-1");
 
     // Only provide client_id, omit required client_secret
-    let mut values = FieldValues::new();
+    let mut values = ParameterValues::new();
     values.set("client_id", json!("my-client-id"));
 
     let result = manager
@@ -135,7 +135,7 @@ async fn store_validated_collects_multiple_errors() {
     let context = CredentialContext::new("user-1");
 
     // Both required fields missing
-    let values = FieldValues::new();
+    let values = ParameterValues::new();
 
     let result = manager
         .store_validated(

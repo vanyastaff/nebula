@@ -4,15 +4,15 @@
 //! that can be used for type registry and documentation.
 
 use nebula_credential::core::CredentialDescription;
-use nebula_parameter::{Field, Schema};
+use nebula_parameter::{Parameter, ParameterCollection};
 
 fn main() {
     // Example 1: GitHub OAuth2 credential type
-    let github_properties = Schema::new()
-        .field(Field::text("client_id").with_label("Client ID").required())
-        .field(
-            Field::text("client_secret")
-                .with_label("Client Secret")
+    let github_properties = ParameterCollection::new()
+        .add(Parameter::string("client_id").label("Client ID").required())
+        .add(
+            Parameter::string("client_secret")
+                .label("Client Secret")
                 .required()
                 .secret(),
         );
@@ -37,12 +37,12 @@ fn main() {
     println!();
 
     // Example 2: PostgreSQL database credential type
-    let postgres_properties = Schema::new()
-        .field(Field::text("host").with_label("Host").required())
-        .field(Field::text("username").with_label("Username").required())
-        .field(
-            Field::text("password")
-                .with_label("Password")
+    let postgres_properties = ParameterCollection::new()
+        .add(Parameter::string("host").label("Host").required())
+        .add(Parameter::string("username").label("Username").required())
+        .add(
+            Parameter::string("password")
+                .label("Password")
                 .required()
                 .secret(),
         );
@@ -70,9 +70,9 @@ fn main() {
         icon: Some("key".to_string()),
         icon_url: None,
         documentation_url: None,
-        properties: Schema::new().field(
-            Field::text("api_key")
-                .with_label("API Key")
+        properties: ParameterCollection::new().add(
+            Parameter::string("api_key")
+                .label("API Key")
                 .required()
                 .secret(),
         ),

@@ -100,7 +100,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
             <#proto as ::nebula_credential::traits::StaticProtocol>::parameters()
         },
         None => quote! {
-            ::nebula_parameter::schema::Schema::new()
+            ::nebula_parameter::collection::ParameterCollection::new()
         },
     };
 

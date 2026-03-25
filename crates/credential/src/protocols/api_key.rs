@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use nebula_parameter::values::FieldValues;
-use nebula_parameter::{Field, Schema};
+use nebula_parameter::values::ParameterValues;
+use nebula_parameter::{Parameter, ParameterCollection};
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
 use crate::traits::StaticProtocol;
@@ -63,24 +63,24 @@ pub struct ApiKeyProtocol;
 impl StaticProtocol for ApiKeyProtocol {
     type State = ApiKeyState;
 
-    fn parameters() -> Schema {
-        Schema::new()
-            .field(
-                Field::text("server")
-                    .with_label("Server URL")
-                    .with_description("Base URL of the service (e.g. https://api.github.com)")
+    fn parameters() -> ParameterCollection {
+        ParameterCollection::new()
+            .add(
+                Parameter::string("server")
+                    .label("Server URL")
+                    .description("Base URL of the service (e.g. https://api.github.com)")
                     .required(),
             )
-            .field(
-                Field::text("token")
-                    .with_label("API Token")
-                    .with_description("Secret API token or personal access token")
+            .add(
+                Parameter::string("token")
+                    .label("API Token")
+                    .description("Secret API token or personal access token")
                     .required()
                     .secret(),
             )
     }
 
-    fn build_state(values: &FieldValues) -> Result<Self::State, CredentialError> {
+    fn build_state(values: &ParameterValues) -> Result<Self::State, CredentialError> {
         let server = values
             .get_string("server")
             .ok_or_else(|| CredentialError::Validation {
@@ -115,20 +115,20 @@ mod tests {
     #[test]
     fn server_is_required() {
         let params = ApiKeyProtocol::parameters();
-        assert!(params.get_field("server").unwrap().meta().required);
+        assert!(params.get("server").unwrap().required);
     }
 
     #[test]
     fn token_is_secret_and_required() {
         let params = ApiKeyProtocol::parameters();
-        let token = params.get_field("token").unwrap();
-        assert!(token.meta().required);
-        assert!(token.meta().secret);
+        let token = params.get("token").unwrap();
+        assert!(token.required);
+        assert!(token.secret);
     }
 
     #[test]
     fn build_state_produces_correct_state() {
-        let mut values = FieldValues::new();
+        let mut values = ParameterValues::new();
         values.set("server", json!("https://api.github.com"));
         values.set("token", json!("ghp_secret123"));
 
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn build_state_missing_server_returns_error() {
-        let mut values = FieldValues::new();
+        let mut values = ParameterValues::new();
         values.set("token", json!("ghp_secret123"));
 
         assert!(ApiKeyProtocol::build_state(&values).is_err());
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn build_state_missing_token_returns_error() {
-        let mut values = FieldValues::new();
+        let mut values = ParameterValues::new();
         values.set("server", json!("https://api.github.com"));
 
         assert!(ApiKeyProtocol::build_state(&values).is_err());

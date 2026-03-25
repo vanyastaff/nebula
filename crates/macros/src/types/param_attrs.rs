@@ -71,7 +71,7 @@ impl ParameterAttrs {
 
         let description_setter = description
             .as_ref()
-            .map(|value| quote!(.with_description(#value)))
+            .map(|value| quote!(.description(#value)))
             .unwrap_or_default();
 
         let required_setter = if required {
@@ -82,8 +82,8 @@ impl ParameterAttrs {
         let secret_setter = if secret { quote!(.secret()) } else { quote!() };
 
         Ok(quote! {
-            ::nebula_parameter::schema::Field::text(#key)
-                .with_label(#name)
+            ::nebula_parameter::parameter::Parameter::string(#key)
+                .label(#name)
                 #description_setter
                 #required_setter
                 #secret_setter

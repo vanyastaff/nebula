@@ -5,7 +5,8 @@ extern crate self as nebula_parameter;
 extern crate self as nebula_plugin;
 extern crate self as nebula_resource;
 
-pub use schema::{Field, Schema};
+pub use collection::ParameterCollection;
+pub use parameter::Parameter;
 
 /// Minimal ActionKey stub for proc-macro tests.
 #[derive(Clone, Debug)]
@@ -178,7 +179,7 @@ pub mod core {
         pub icon: Option<String>,
         pub icon_url: Option<String>,
         pub documentation_url: Option<String>,
-        pub properties: crate::schema::Schema,
+        pub properties: crate::collection::ParameterCollection,
     }
 
     pub struct CredentialContext;
@@ -210,7 +211,7 @@ pub trait CredentialType: Send + Sync + 'static {
 pub trait StaticProtocol: Send + Sync + 'static {
     type State: Send + Sync + Clone + 'static;
 
-    fn parameters() -> crate::schema::Schema
+    fn parameters() -> crate::collection::ParameterCollection
     where
         Self: Sized;
 
@@ -234,7 +235,7 @@ pub trait FlowProtocol: Send + Sync + 'static {
     type Config: Send + Sync + 'static;
     type State: Send + Sync + Clone + 'static;
 
-    fn parameters() -> crate::schema::Schema
+    fn parameters() -> crate::collection::ParameterCollection
     where
         Self: Sized;
 
@@ -354,8 +355,8 @@ pub mod protocols {
         type Config = OAuth2Config;
         type State = OAuth2State;
 
-        fn parameters() -> crate::schema::Schema {
-            crate::schema::Schema::new()
+        fn parameters() -> crate::collection::ParameterCollection {
+            crate::collection::ParameterCollection::new()
         }
 
         async fn initialize(
@@ -404,8 +405,8 @@ pub mod protocols {
         type Config = LdapConfig;
         type State = LdapState;
 
-        fn parameters() -> crate::schema::Schema {
-            crate::schema::Schema::new()
+        fn parameters() -> crate::collection::ParameterCollection {
+            crate::collection::ParameterCollection::new()
         }
 
         async fn initialize(
@@ -504,6 +505,49 @@ pub mod schema {
     }
 }
 
+pub mod parameter {
+    #[derive(Clone)]
+    pub struct Parameter {
+        pub id: String,
+        pub label_val: String,
+        pub description_val: Option<String>,
+        pub required: bool,
+        pub secret: bool,
+    }
+
+    impl Parameter {
+        pub fn string(id: &str) -> Self {
+            Self {
+                id: id.to_string(),
+                label_val: id.to_string(),
+                description_val: None,
+                required: false,
+                secret: false,
+            }
+        }
+
+        pub fn label(mut self, l: &str) -> Self {
+            self.label_val = l.to_string();
+            self
+        }
+
+        pub fn description(mut self, d: &str) -> Self {
+            self.description_val = Some(d.to_string());
+            self
+        }
+
+        pub fn required(mut self) -> Self {
+            self.required = true;
+            self
+        }
+
+        pub fn secret(mut self) -> Self {
+            self.secret = true;
+            self
+        }
+    }
+}
+
 pub mod collection {
     #[derive(Clone, Default)]
     pub struct ParameterCollection;
@@ -511,6 +555,10 @@ pub mod collection {
     impl ParameterCollection {
         pub fn new() -> Self {
             Self
+        }
+
+        pub fn add(self, _param: crate::parameter::Parameter) -> Self {
+            self
         }
     }
 }

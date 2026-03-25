@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use nebula_parameter::values::FieldValues;
-use nebula_parameter::{Field, Schema};
+use nebula_parameter::values::ParameterValues;
+use nebula_parameter::{Parameter, ParameterCollection};
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
 use crate::traits::StaticProtocol;
@@ -34,35 +34,35 @@ pub struct DatabaseProtocol;
 impl StaticProtocol for DatabaseProtocol {
     type State = DatabaseState;
 
-    fn parameters() -> Schema {
-        Schema::new()
-            .field(
-                Field::text("host")
-                    .with_label("Host")
-                    .with_placeholder("localhost")
+    fn parameters() -> ParameterCollection {
+        ParameterCollection::new()
+            .add(
+                Parameter::string("host")
+                    .label("Host")
+                    .placeholder("localhost")
                     .required(),
             )
-            .field(
-                Field::text("port")
-                    .with_label("Port")
-                    .with_placeholder("5432"),
+            .add(
+                Parameter::string("port")
+                    .label("Port")
+                    .placeholder("5432"),
             )
-            .field(Field::text("database").with_label("Database").required())
-            .field(Field::text("username").with_label("Username").required())
-            .field(
-                Field::text("password")
-                    .with_label("Password")
+            .add(Parameter::string("database").label("Database").required())
+            .add(Parameter::string("username").label("Username").required())
+            .add(
+                Parameter::string("password")
+                    .label("Password")
                     .required()
                     .secret(),
             )
-            .field(
-                Field::text("ssl_mode")
-                    .with_label("SSL Mode")
-                    .with_placeholder("disable"),
+            .add(
+                Parameter::string("ssl_mode")
+                    .label("SSL Mode")
+                    .placeholder("disable"),
             )
     }
 
-    fn build_state(values: &FieldValues) -> Result<Self::State, CredentialError> {
+    fn build_state(values: &ParameterValues) -> Result<Self::State, CredentialError> {
         let host = values
             .get_string("host")
             .ok_or_else(|| CredentialError::Validation {
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn build_state_with_defaults() {
-        let mut values = FieldValues::new();
+        let mut values = ParameterValues::new();
         values.set("host", json!("localhost"));
         values.set("port", json!("5432"));
         values.set("database", json!("mydb"));
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn missing_host_returns_error() {
-        let mut values = FieldValues::new();
+        let mut values = ParameterValues::new();
         values.set("database", json!("mydb"));
         values.set("username", json!("admin"));
         values.set("password", json!("pass"));

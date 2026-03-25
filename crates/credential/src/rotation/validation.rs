@@ -515,7 +515,7 @@ mod tests {
                 .key("mock")
                 .name("Mock Credential")
                 .description("Mock credential for testing")
-                .properties(nebula_parameter::schema::Schema::new())
+                .properties(nebula_parameter::collection::ParameterCollection::new())
                 .build()
                 .unwrap()
         }
