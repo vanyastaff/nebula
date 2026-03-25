@@ -1,0 +1,268 @@
+//! Resident runtime — one shared instance, clone on acquire.
+//!
+//! The resident runtime holds a single [`Cell`] containing the shared
+//! runtime. On acquire, the runtime is cloned into an owned handle.
+//! If the runtime is missing or stale, it is (re)created.
+
+use std::sync::Arc;
+
+use crate::cell::Cell;
+use crate::ctx::Ctx;
+use crate::error::Error;
+use crate::handle::ResourceHandle;
+use crate::resource::Resource;
+use crate::topology::resident::config::Config;
+use crate::topology::resident::Resident;
+
+/// Runtime state for a resident topology.
+///
+/// Holds a single shared runtime instance in a lock-free [`Cell`].
+/// On acquire, the runtime is cloned into an owned [`ResourceHandle`].
+pub struct ResidentRuntime<R: Resource> {
+    cell: Cell<R::Runtime>,
+    config: Config,
+}
+
+impl<R: Resource> ResidentRuntime<R> {
+    /// Creates a new resident runtime with the given configuration.
+    pub fn new(config: Config) -> Self {
+        Self {
+            cell: Cell::new(),
+            config,
+        }
+    }
+
+    /// Returns the current configuration.
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// Returns `true` if the cell currently holds a runtime instance.
+    pub fn is_initialized(&self) -> bool {
+        self.cell.is_some()
+    }
+}
+
+impl<R> ResidentRuntime<R>
+where
+    R: Resident + Send + Sync + 'static,
+    R::Lease: Clone,
+    R::Runtime: Clone,
+{
+    /// Acquires a clone of the shared runtime instance.
+    ///
+    /// 1. Load from cell — if present, check liveness, clone into owned handle.
+    /// 2. If absent or not alive: create via `resource.create()`, store, clone.
+    /// 3. If `recreate_on_failure` and liveness check fails: destroy + recreate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if creation fails.
+    pub async fn acquire(
+        &self,
+        resource: &R,
+        resource_config: &R::Config,
+        credential: &R::Credential,
+        ctx: &dyn Ctx,
+    ) -> Result<ResourceHandle<R>, Error>
+    where
+        R::Runtime: Into<R::Lease>,
+    {
+        // Try to use existing runtime.
+        if let Some(existing) = self.cell.load() {
+            if resource.is_alive_sync(&existing) {
+                let lease: R::Lease = (*existing).clone().into();
+                return Ok(ResourceHandle::owned(lease, R::key(), "resident"));
+            }
+
+            // Not alive — destroy and recreate if configured.
+            if !self.config.recreate_on_failure {
+                return Err(Error::transient("resident runtime is not alive"));
+            }
+
+            // Take the old one out and best-effort destroy via Arc::try_unwrap.
+            if let Some(owned) = self.cell.take().and_then(|arc| Arc::try_unwrap(arc).ok()) {
+                let _ = resource.destroy(owned).await;
+            }
+        }
+
+        // Create a new runtime.
+        let runtime = resource
+            .create(resource_config, credential, ctx)
+            .await
+            .map_err(Into::into)?;
+
+        let lease: R::Lease = runtime.clone().into();
+        self.cell.store(Arc::new(runtime));
+
+        Ok(ResourceHandle::owned(lease, R::key(), "resident"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ctx::BasicCtx;
+    use crate::resource::{ResourceConfig, ResourceMetadata};
+    use nebula_core::{ExecutionId, ResourceKey, resource_key};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    #[derive(Clone)]
+    struct MockResident {
+        alive: Arc<AtomicBool>,
+        create_count: Arc<AtomicU32>,
+    }
+
+    impl MockResident {
+        fn new() -> Self {
+            Self {
+                alive: Arc::new(AtomicBool::new(true)),
+                create_count: Arc::new(AtomicU32::new(0)),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct MockError(String);
+
+    impl std::fmt::Display for MockError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+
+    impl std::error::Error for MockError {}
+
+    impl From<MockError> for Error {
+        fn from(e: MockError) -> Self {
+            Error::transient(e.0)
+        }
+    }
+
+    impl ResourceConfig for bool {
+        fn validate(&self) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    impl Resource for MockResident {
+        type Config = bool;
+        type Runtime = u32;
+        type Lease = u32;
+        type Error = MockError;
+        type Credential = ();
+
+        fn key() -> ResourceKey {
+            resource_key!("mock-resident")
+        }
+
+        fn create(
+            &self,
+            _config: &bool,
+            _credential: &(),
+            _ctx: &dyn Ctx,
+        ) -> impl std::future::Future<Output = Result<u32, MockError>> + Send {
+            let count = self.create_count.fetch_add(1, Ordering::Relaxed);
+            async move { Ok(count + 100) }
+        }
+
+        fn destroy(
+            &self,
+            _runtime: u32,
+        ) -> impl std::future::Future<Output = Result<(), MockError>> + Send {
+            async { Ok(()) }
+        }
+
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl Resident for MockResident {
+        fn is_alive_sync(&self, _runtime: &u32) -> bool {
+            self.alive.load(Ordering::Relaxed)
+        }
+    }
+
+    fn test_ctx() -> BasicCtx {
+        BasicCtx::new(ExecutionId::new())
+    }
+
+    #[tokio::test]
+    async fn acquire_creates_on_first_call() {
+        let resource = MockResident::new();
+        let rt = ResidentRuntime::<MockResident>::new(Config::default());
+        let ctx = test_ctx();
+
+        let handle = rt.acquire(&resource, &true, &(), &ctx).await.unwrap();
+        assert_eq!(*handle, 100);
+        assert_eq!(resource.create_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn acquire_reuses_existing_instance() {
+        let resource = MockResident::new();
+        let rt = ResidentRuntime::<MockResident>::new(Config::default());
+        let ctx = test_ctx();
+
+        let h1 = rt.acquire(&resource, &true, &(), &ctx).await.unwrap();
+        let h2 = rt.acquire(&resource, &true, &(), &ctx).await.unwrap();
+
+        // Both should have the same value — only one create.
+        assert_eq!(*h1, *h2);
+        assert_eq!(resource.create_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn acquire_recreates_when_not_alive_and_configured() {
+        let resource = MockResident::new();
+        let config = Config {
+            recreate_on_failure: true,
+        };
+        let rt = ResidentRuntime::<MockResident>::new(config);
+        let ctx = test_ctx();
+
+        // First acquire — creates.
+        let h1 = rt.acquire(&resource, &true, &(), &ctx).await.unwrap();
+        assert_eq!(*h1, 100);
+
+        // Mark as not alive.
+        resource.alive.store(false, Ordering::Relaxed);
+
+        // Second acquire — should recreate.
+        resource.alive.store(true, Ordering::Relaxed);
+        // Need to mark not alive for the check, then alive for the new instance.
+        resource.alive.store(false, Ordering::Relaxed);
+        // Actually, after recreate the new instance will be checked on next acquire.
+        // Let's just test that recreate happens.
+        resource.alive.store(true, Ordering::Relaxed);
+
+        // Mark not alive so existing is rejected.
+        resource.alive.store(false, Ordering::Relaxed);
+        // The acquire will destroy old, create new. The new one won't be checked
+        // via is_alive_sync on the same acquire call — it's stored and returned.
+        let h2 = rt.acquire(&resource, &true, &(), &ctx).await.unwrap();
+        assert_eq!(*h2, 101); // Second creation.
+        assert_eq!(resource.create_count.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn acquire_fails_when_not_alive_and_no_recreate() {
+        let resource = MockResident::new();
+        let config = Config {
+            recreate_on_failure: false,
+        };
+        let rt = ResidentRuntime::<MockResident>::new(config);
+        let ctx = test_ctx();
+
+        // First acquire — creates.
+        let _h1 = rt.acquire(&resource, &true, &(), &ctx).await.unwrap();
+
+        // Mark as not alive.
+        resource.alive.store(false, Ordering::Relaxed);
+
+        // Second acquire — should fail.
+        let result = rt.acquire(&resource, &true, &(), &ctx).await;
+        assert!(result.is_err());
+    }
+}
