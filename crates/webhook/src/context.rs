@@ -1,4 +1,10 @@
 //! Trigger context for webhook operations
+//!
+//! Uses the deprecated `Context`/`Scope` types from nebula-resource v1.
+//! Migration to `BasicCtx`/`ScopeLevel` is tracked separately.
+
+// Reason: webhook crate still uses v1 compat types; migration tracked separately.
+#![allow(deprecated)]
 
 use crate::{Environment, TriggerState};
 use nebula_resource::{Context, ExecutionId, WorkflowId};
