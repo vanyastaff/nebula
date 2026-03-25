@@ -65,24 +65,25 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error if the semaphore is closed.
+    /// Returns an error if the semaphore is closed or the acquire times out.
     pub async fn acquire(
         &self,
         resource: &R,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
-        _options: &AcquireOptions,
+        options: &AcquireOptions,
         metrics: Arc<ResourceMetrics>,
     ) -> Result<ResourceHandle<R>, Error>
     where
         R::Runtime: Into<R::Lease>,
     {
-        let permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::permanent("exclusive semaphore closed"))?;
+        let timeout = options.remaining().unwrap_or(self.config.acquire_timeout);
+        let permit =
+            match tokio::time::timeout(timeout, self.semaphore.clone().acquire_owned()).await {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => return Err(Error::permanent("exclusive semaphore closed")),
+                Err(_) => return Err(Error::backpressure("exclusive: timed out waiting for lock")),
+            };
 
         let lease: R::Lease = (*self.runtime).clone().into();
         let runtime = self.runtime.clone();

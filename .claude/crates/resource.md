@@ -7,8 +7,9 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`
 - `ErrorKind` determines retry: Transient/Exhausted = retryable
 - Manager has `acquire_pooled`, `acquire_resident`, etc. (not one generic) — each topology has different trait bounds; all accept `&AcquireOptions`
-- `AcquireOptions` threaded through all acquire paths — pool and transport use `options.remaining()` for semaphore timeout
+- `AcquireOptions` threaded through all acquire paths — pool, transport, and exclusive use `options.remaining()` for semaphore timeout
 - Transport `Config::acquire_timeout` (default 30s) caps semaphore wait; overridden by `AcquireOptions::deadline` when set
+- Exclusive `Config::acquire_timeout` (default 30s) caps semaphore wait; overridden by `AcquireOptions::deadline` when set
 - Resident `Config::create_timeout` (default 30s) wraps `resource.create()` in `tokio::time::timeout`; destroy gets a hard 10s timeout — prevents create_lock deadlock when backend hangs
 - `ResourceHandle` RAII — guarded returns lease to pool on drop, tainted destroys
 - `HandleInner::Guarded` holds `permit: Option<OwnedSemaphorePermit>` — permit drops AFTER catch_unwind in Drop, preventing leak on callback panic
@@ -37,4 +38,4 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 - Webhook still uses deprecated v1 compat types; migration tracked separately
 
-<!-- reviewed: 2026-03-25 — transport acquire timeout to prevent infinite semaphore wait -->
+<!-- reviewed: 2026-03-25 — exclusive acquire timeout to prevent infinite semaphore wait -->

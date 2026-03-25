@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use tokio::sync::Semaphore;
+use tokio::time;
 
 use crate::ctx::Ctx;
 use crate::error::Error;
@@ -70,6 +71,8 @@ where
     /// # Errors
     ///
     /// - [`ErrorKind::Permanent`] if the semaphore is closed.
+    /// - [`ErrorKind::Backpressure`] if the acquire times out waiting for a
+    ///   permit.
     /// - Propagates errors from `open_session`.
     pub async fn acquire(
         &self,
@@ -77,15 +80,20 @@ where
         ctx: &dyn Ctx,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
-        _options: &AcquireOptions,
+        options: &AcquireOptions,
         metrics: Arc<ResourceMetrics>,
     ) -> Result<ResourceHandle<R>, Error> {
-        let permit = self
-            .session_semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::permanent("transport session semaphore closed"))?;
+        let timeout = options.remaining().unwrap_or(self.config.acquire_timeout);
+        let permit =
+            match time::timeout(timeout, self.session_semaphore.clone().acquire_owned()).await {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => return Err(Error::permanent("transport session semaphore closed")),
+                Err(_) => {
+                    return Err(Error::backpressure(
+                        "transport: timed out waiting for available session",
+                    ));
+                }
+            };
 
         let session = resource
             .open_session(&self.runtime, ctx)

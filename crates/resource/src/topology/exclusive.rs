@@ -24,7 +24,20 @@ pub trait Exclusive: Resource {
 
 /// Configuration types for exclusive topology.
 pub mod config {
+    use std::time::Duration;
+
     /// Exclusive configuration.
-    #[derive(Debug, Clone, Default)]
-    pub struct Config {}
+    #[derive(Debug, Clone)]
+    pub struct Config {
+        /// Timeout for acquiring the exclusive lock.
+        pub acquire_timeout: Duration,
+    }
+
+    impl Default for Config {
+        fn default() -> Self {
+            Self {
+                acquire_timeout: Duration::from_secs(30),
+            }
+        }
+    }
 }

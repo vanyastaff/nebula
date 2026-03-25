@@ -119,11 +119,9 @@ where
             if let Some(old) = self.cell.take() {
                 match Arc::try_unwrap(old) {
                     Ok(owned) => {
-                        let _ = tokio::time::timeout(
-                            Duration::from_secs(10),
-                            resource.destroy(owned),
-                        )
-                        .await;
+                        let _ =
+                            tokio::time::timeout(Duration::from_secs(10), resource.destroy(owned))
+                                .await;
                     }
                     Err(arc) => {
                         warn!(
@@ -413,16 +411,31 @@ mod tests {
 
         // First acquire should fail quickly with a timeout, not hang.
         let result = rt
-            .acquire(&resource, &true, &(), ctx.as_ref(), &AcquireOptions::default())
+            .acquire(
+                &resource,
+                &true,
+                &(),
+                ctx.as_ref(),
+                &AcquireOptions::default(),
+            )
             .await;
         assert!(result.is_err(), "first acquire should time out");
 
         // Second acquire must also fail quickly — the create_lock must have
         // been released after the first timeout.
         let result = rt
-            .acquire(&resource, &true, &(), ctx.as_ref(), &AcquireOptions::default())
+            .acquire(
+                &resource,
+                &true,
+                &(),
+                ctx.as_ref(),
+                &AcquireOptions::default(),
+            )
             .await;
-        assert!(result.is_err(), "second acquire should time out (lock released)");
+        assert!(
+            result.is_err(),
+            "second acquire should time out (lock released)"
+        );
     }
 
     #[tokio::test]

@@ -55,6 +55,12 @@ pub mod config {
         pub max_sessions: u32,
         /// Interval for sending keepalives. `None` disables keepalives.
         pub keepalive_interval: Option<Duration>,
+        /// Timeout for acquiring a session semaphore permit.
+        ///
+        /// When all sessions are in use, acquire calls will wait at most this
+        /// long before returning a backpressure error. Callers may override
+        /// this per-request via [`AcquireOptions::deadline`].
+        pub acquire_timeout: Duration,
     }
 
     impl Default for Config {
@@ -62,6 +68,7 @@ pub mod config {
             Self {
                 max_sessions: 10,
                 keepalive_interval: Some(Duration::from_secs(30)),
+                acquire_timeout: Duration::from_secs(30),
             }
         }
     }
