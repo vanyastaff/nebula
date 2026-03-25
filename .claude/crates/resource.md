@@ -6,6 +6,7 @@ v2 rewrite — topology-agnostic resource management.
 - Phase 1: primitives (Error, Ctx, Resource trait, Handle, Cell, ReleaseQueue, State, Options)
 - Phase 2: 7 topology traits in `topology/`
 - Phase 3: recovery layer (`recovery/`) + integration config (`integration/`)
+- Phase 4: topology runtimes in `runtime/` — Pool, Resident, Service, Transport, Exclusive, EventSource, Daemon
 - Resource trait uses RPITIT; `Ctx` is dyn-compatible with `ctx_ext::<T>()` free fn
 - `Manager` is a placeholder pending Phase 5
 
@@ -22,6 +23,8 @@ v2 rewrite — topology-agnostic resource management.
 - `Ctx::ext_raw()` → use `ctx_ext::<T>()` instead
 - `ResourceHandle::detach()` on Shared returns None
 - `ReleaseQueue::submit` drops silently if all channels full
+- `ExclusiveRuntime::acquire` requires `R::Runtime: Clone + Into<R::Lease>`
+- `DaemonRuntime::start` returns error if already running (not idempotent); `stop()` is idempotent
 
 ## Relations
 - Depends on: nebula-core
