@@ -48,11 +48,19 @@ impl Resource for BenchResource {
         Ok(0)
     }
 
-    async fn is_reusable(&self, _instance: &Self::Instance, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
+    async fn is_reusable(
+        &self,
+        _instance: &Self::Instance,
+        _meta: &nebula_resource::pool::InstanceMetadata,
+    ) -> Result<bool> {
         Ok(true)
     }
 
-    async fn recycle(&self, _instance: &mut Self::Instance, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<()> {
+    async fn recycle(
+        &self,
+        _instance: &mut Self::Instance,
+        _meta: &nebula_resource::pool::InstanceMetadata,
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -67,9 +75,18 @@ fn bg_ctx() -> Context {
 
 fn pool_config() -> PoolConfig {
     PoolConfig {
-        sizing: PoolSizing { min_size: 1, max_size: 64 },
-        acquire: PoolAcquire { timeout: Duration::from_secs(5), ..Default::default() },
-        lifetime: PoolLifetime { maintenance_interval: None, ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 1,
+            max_size: 64,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(5),
+            ..Default::default()
+        },
+        lifetime: PoolLifetime {
+            maintenance_interval: None,
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -235,5 +252,3 @@ fn manager_overhead(c: &mut Criterion) {
 
 criterion_group!(benches, manager_overhead);
 criterion_main!(benches);
-
-

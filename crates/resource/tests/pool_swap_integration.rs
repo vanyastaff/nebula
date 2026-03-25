@@ -133,5 +133,3 @@ async fn config_reload_swaps_to_new_pool_while_old_drains() {
         .expect("downcast final instance");
     assert_eq!(final_instance, "v2");
 }
-
-

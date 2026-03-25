@@ -182,5 +182,3 @@ async fn double_register_with_active_guards() {
         "should be from new pool, got: {new_instance}"
     );
 }
-
-

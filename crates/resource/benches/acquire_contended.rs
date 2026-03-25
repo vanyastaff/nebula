@@ -9,7 +9,10 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
-use nebula_resource::pool::{AdaptiveBackpressurePolicy, Pool, PoolAcquire, PoolBackpressurePolicy, PoolConfig, PoolLifetime, PoolSizing};
+use nebula_resource::pool::{
+    AdaptiveBackpressurePolicy, Pool, PoolAcquire, PoolBackpressurePolicy, PoolConfig,
+    PoolLifetime, PoolSizing,
+};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
 use nebula_resource::{ExecutionId, WorkflowId};
@@ -33,11 +36,19 @@ impl Resource for BenchResource {
         Ok(0)
     }
 
-    async fn is_reusable(&self, _instance: &Self::Instance, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
+    async fn is_reusable(
+        &self,
+        _instance: &Self::Instance,
+        _meta: &nebula_resource::pool::InstanceMetadata,
+    ) -> Result<bool> {
         Ok(true)
     }
 
-    async fn recycle(&self, _instance: &mut Self::Instance, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<()> {
+    async fn recycle(
+        &self,
+        _instance: &mut Self::Instance,
+        _meta: &nebula_resource::pool::InstanceMetadata,
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -52,9 +63,19 @@ fn pool_config(max_size: usize) -> PoolConfig {
 
 fn pool_config_with_policy(max_size: usize, policy: Option<PoolBackpressurePolicy>) -> PoolConfig {
     PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size },
-        acquire: PoolAcquire { timeout: Duration::from_secs(5), backpressure: policy, ..Default::default() },
-        lifetime: PoolLifetime { maintenance_interval: None, ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(5),
+            backpressure: policy,
+            ..Default::default()
+        },
+        lifetime: PoolLifetime {
+            maintenance_interval: None,
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -306,5 +327,3 @@ criterion_group!(
     contended_policy_compare_pool8,
 );
 criterion_main!(benches);
-
-

@@ -502,5 +502,3 @@ mod manager_scope_tests {
         );
     }
 }
-
-

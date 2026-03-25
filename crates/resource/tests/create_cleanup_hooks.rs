@@ -505,7 +505,11 @@ impl Resource for RecycleFailResource {
         Ok("recycle-fail-inst".to_string())
     }
 
-    async fn recycle(&self, _instance: &mut String, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<()> {
+    async fn recycle(
+        &self,
+        _instance: &mut String,
+        _meta: &nebula_resource::pool::InstanceMetadata,
+    ) -> Result<()> {
         Err(nebula_resource::error::Error::Internal {
             resource_key: resource_key!("recycle-fail"),
             message: "recycle always fails".to_string(),
@@ -675,5 +679,3 @@ async fn pool_without_hooks_works_normally() {
 
     pool.shutdown().await.unwrap();
 }
-
-

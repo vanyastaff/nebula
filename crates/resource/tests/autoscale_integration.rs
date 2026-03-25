@@ -592,5 +592,3 @@ async fn utilization_snapshot_reflects_pool_state() {
     let (active, idle, max) = pool.utilization_snapshot();
     assert_eq!((active, idle, max), (2, 3, 10));
 }
-
-

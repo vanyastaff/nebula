@@ -42,9 +42,18 @@ fn ctx() -> Context {
 
 fn pool_config(max_size: usize) -> PoolConfig {
     PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size },
-        acquire: PoolAcquire { timeout: Duration::from_secs(5), ..Default::default() },
-        lifetime: PoolLifetime { maintenance_interval: None, ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(5),
+            ..Default::default()
+        },
+        lifetime: PoolLifetime {
+            maintenance_interval: None,
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -151,5 +160,3 @@ criterion_group!(
     acquire_contention_very_small_pool,
 );
 criterion_main!(benches);
-
-

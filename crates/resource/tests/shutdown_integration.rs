@@ -239,5 +239,3 @@ async fn acquire_after_pool_shutdown_fails_immediately() {
         elapsed
     );
 }
-
-

@@ -52,9 +52,8 @@ ignore_all_files_in_gitignore: true
 # Note: global ignored_paths from serena_config.yml are also applied additively.
 ignored_paths:
   # stale parameter docs — ground truth is src/schema.rs + src/providers.rs (see CLAUDE.md)
-  - "docs/crates/parameter/**"
-  # untracked plans directories
-  - "crates/*/plans/**"
+- "docs/crates/parameter/**"
+- "crates/*/plans/**"
 
 # whether the project is in read-only mode
 # If set to true, all editing tools will be disabled and attempts to use them will result in an error
@@ -174,13 +173,27 @@ initial_prompt: |
   - Credentials always encrypted; CredentialAccessor injected via Context, never a global lookup
   - EventBus for all cross-crate signals — never add direct imports as a workaround
   - docs/crates/parameter/ is permanently stale; src/schema.rs + src/providers.rs are ground truth
-
 # time budget (seconds) per tool call for the retrieval of additional symbol information
 # such as docstrings or parameter information.
 # This overrides the corresponding setting in the global configuration; see the documentation there.
 # If null or missing, use the setting from the global configuration.
-symbol_info_budget: 8  # rust-analyzer on 26-crate workspace can be slow
+symbol_info_budget: 8.0
+                       # rust-analyzer on 26-crate workspace can be slow
 
 # list of regex patterns which, when matched, mark a memory entry as read‑only.
 # Extends the list from the global configuration, merging the two lists.
 read_only_memory_patterns: []
+
+# list of regex patterns for memories to completely ignore.
+# Matching memories will not appear in list_memories or activate_project output
+# and cannot be accessed via read_memory or write_memory.
+# To access ignored memory files, use the read_file tool on the raw file path.
+# Extends the list from the global configuration, merging the two lists.
+# Example: ["_archive/.*", "_episodes/.*"]
+ignored_memory_patterns: []
+
+# advanced configuration option allowing to configure language server-specific options.
+# Maps the language key to the options.
+# Have a look at the docstring of the constructors of the LS implementations within solidlsp (e.g., for C# or PHP) to see which options are available.
+# No documentation on options means no options are available.
+ls_specific_settings: {}

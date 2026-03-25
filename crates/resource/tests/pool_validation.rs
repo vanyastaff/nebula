@@ -50,7 +50,11 @@ impl Resource for SharedValidatableResource {
         Ok(format!("inst-{n}"))
     }
 
-    async fn is_reusable(&self, _instance: &String, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
+    async fn is_reusable(
+        &self,
+        _instance: &String,
+        _meta: &nebula_resource::pool::InstanceMetadata,
+    ) -> Result<bool> {
         if self.reject.swap(false, Ordering::SeqCst) {
             return Ok(false);
         }
@@ -80,7 +84,11 @@ impl Resource for MultiInvalidResource {
         Ok(format!("inst-{n}"))
     }
 
-    async fn is_reusable(&self, _instance: &String, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
+    async fn is_reusable(
+        &self,
+        _instance: &String,
+        _meta: &nebula_resource::pool::InstanceMetadata,
+    ) -> Result<bool> {
         if self.reject_all.load(Ordering::SeqCst) {
             return Ok(false);
         }
@@ -110,7 +118,11 @@ impl Resource for ErrValidResource {
         Ok(format!("inst-{n}"))
     }
 
-    async fn is_reusable(&self, _instance: &String, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
+    async fn is_reusable(
+        &self,
+        _instance: &String,
+        _meta: &nebula_resource::pool::InstanceMetadata,
+    ) -> Result<bool> {
         if self.error_flag.swap(false, Ordering::SeqCst) {
             return Err(Error::HealthCheck {
                 resource_key: resource_key!("err-valid"),
@@ -288,5 +300,3 @@ async fn is_valid_error_treated_as_invalid() {
     );
     assert_eq!(stats.created, 2, "original + replacement");
 }
-
-

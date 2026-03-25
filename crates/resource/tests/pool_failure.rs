@@ -259,5 +259,3 @@ async fn intermittent_create_failure_recovery() {
     assert_eq!(stats.active, 2);
     assert_eq!(stats.created, 2);
 }
-
-

@@ -210,5 +210,3 @@ async fn pool_shutdown_does_not_hang_with_concurrent_acquires() {
         "shutdown should perform cleanup"
     );
 }
-
-

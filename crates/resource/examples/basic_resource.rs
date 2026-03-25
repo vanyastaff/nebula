@@ -54,7 +54,11 @@ impl Resource for InMemoryCache {
     }
 
     /// A cache is always valid unless it has grown too large.
-    async fn is_reusable(&self, instance: &HashMap<String, String>, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
+    async fn is_reusable(
+        &self,
+        instance: &HashMap<String, String>,
+        _meta: &nebula_resource::pool::InstanceMetadata,
+    ) -> Result<bool> {
         // In a real resource you might check connectivity, staleness, etc.
         Ok(instance.len() < 10_000)
     }
@@ -113,5 +117,3 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-
-

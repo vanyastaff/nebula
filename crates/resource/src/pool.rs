@@ -478,11 +478,7 @@ impl<R: Resource> Pool<R> {
                         use std::task::{Context as TaskCtx, Poll, Waker};
                         let waker = Waker::noop();
                         let mut task_cx = TaskCtx::from_waker(waker);
-                        let mut fut = pin!(
-                            inner
-                                .resource
-                                .is_reusable(&entry.instance, &inst_meta)
-                        );
+                        let mut fut = pin!(inner.resource.is_reusable(&entry.instance, &inst_meta));
                         match fut.as_mut().poll(&mut task_cx) {
                             Poll::Ready(result) => Some(result),
                             Poll::Pending => None,
@@ -1003,11 +999,7 @@ impl<R: Resource> Pool<R> {
         meta: &InstanceMetadata,
     ) -> Result<()> {
         if let Some(timeout) = inner.pool_config.resilience.recycle_timeout {
-            return match tokio::time::timeout(
-                timeout,
-                inner.resource.recycle(instance, meta),
-            )
-            .await
+            return match tokio::time::timeout(timeout, inner.resource.recycle(instance, meta)).await
             {
                 Ok(result) => result,
                 Err(_) => Err(Error::Timeout {
@@ -1858,7 +1850,11 @@ mod tests {
             Ok(format!("{}-instance", config.prefix))
         }
 
-        async fn recycle(&self, _instance: &mut Self::Instance, _meta: &InstanceMetadata) -> Result<()> {
+        async fn recycle(
+            &self,
+            _instance: &mut Self::Instance,
+            _meta: &InstanceMetadata,
+        ) -> Result<()> {
             tokio::time::sleep(Duration::from_millis(80)).await;
             Ok(())
         }
@@ -1944,7 +1940,11 @@ mod tests {
             Ok(format!("{}-inst", config.prefix))
         }
 
-        async fn is_reusable(&self, _instance: &Self::Instance, _meta: &InstanceMetadata) -> Result<bool> {
+        async fn is_reusable(
+            &self,
+            _instance: &Self::Instance,
+            _meta: &InstanceMetadata,
+        ) -> Result<bool> {
             let remaining = self
                 .fail_after
                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -2030,7 +2030,11 @@ mod tests {
             Ok(format!("{}-inst", config.prefix))
         }
 
-        async fn recycle(&self, _instance: &mut Self::Instance, _meta: &InstanceMetadata) -> Result<()> {
+        async fn recycle(
+            &self,
+            _instance: &mut Self::Instance,
+            _meta: &InstanceMetadata,
+        ) -> Result<()> {
             let key = nebula_core::resource_key!("recycle-fail");
             Err(Error::Internal {
                 resource_key: key,

@@ -350,5 +350,3 @@ async fn acquisitions_equal_releases_after_cleanup() {
     assert_eq!(stats.active, 0);
     assert_eq!(stats.total_acquisitions, stats.total_releases);
 }
-
-

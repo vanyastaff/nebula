@@ -12,7 +12,10 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::context::Context;
 use nebula_resource::error::Result;
-use nebula_resource::pool::{AdaptiveBackpressurePolicy, Pool, PoolAcquire, PoolBackpressurePolicy, PoolConfig, PoolLifetime, PoolSizing};
+use nebula_resource::pool::{
+    AdaptiveBackpressurePolicy, Pool, PoolAcquire, PoolBackpressurePolicy, PoolConfig,
+    PoolLifetime, PoolSizing,
+};
 use nebula_resource::resource::{Config, Resource};
 use nebula_resource::scope::Scope;
 use nebula_resource::{ExecutionId, WorkflowId};
@@ -36,11 +39,19 @@ impl Resource for BenchResource {
         Ok(0)
     }
 
-    async fn is_reusable(&self, _instance: &Self::Instance, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
+    async fn is_reusable(
+        &self,
+        _instance: &Self::Instance,
+        _meta: &nebula_resource::pool::InstanceMetadata,
+    ) -> Result<bool> {
         Ok(true)
     }
 
-    async fn recycle(&self, _instance: &mut Self::Instance, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<()> {
+    async fn recycle(
+        &self,
+        _instance: &mut Self::Instance,
+        _meta: &nebula_resource::pool::InstanceMetadata,
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -55,8 +66,15 @@ fn cancellable_ctx() -> Context {
 
 fn pool_config(max_size: usize, policy: Option<PoolBackpressurePolicy>) -> PoolConfig {
     PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size },
-        acquire: PoolAcquire { timeout: Duration::from_secs(5), backpressure: policy, ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(5),
+            backpressure: policy,
+            ..Default::default()
+        },
         lifetime: PoolLifetime {
             idle_timeout: Duration::from_secs(3600),
             max_lifetime: Duration::from_secs(3600),
@@ -210,5 +228,3 @@ criterion_group!(
     policy_dispatch_overhead,
 );
 criterion_main!(benches);
-
-

@@ -35,11 +35,19 @@ impl Resource for NoOpResource {
         Ok(0)
     }
 
-    async fn is_reusable(&self, _instance: &u64, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<bool> {
+    async fn is_reusable(
+        &self,
+        _instance: &u64,
+        _meta: &nebula_resource::pool::InstanceMetadata,
+    ) -> Result<bool> {
         Ok(true)
     }
 
-    async fn recycle(&self, _instance: &mut u64, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<()> {
+    async fn recycle(
+        &self,
+        _instance: &mut u64,
+        _meta: &nebula_resource::pool::InstanceMetadata,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -54,8 +62,14 @@ fn bench_ctx() -> Context {
 
 fn pool_config(max_size: usize) -> PoolConfig {
     PoolConfig {
-        sizing: PoolSizing { min_size: 0, max_size },
-        acquire: PoolAcquire { timeout: Duration::from_secs(5), ..Default::default() },
+        sizing: PoolSizing {
+            min_size: 0,
+            max_size,
+        },
+        acquire: PoolAcquire {
+            timeout: Duration::from_secs(5),
+            ..Default::default()
+        },
         lifetime: PoolLifetime {
             idle_timeout: Duration::from_secs(3600),
             max_lifetime: Duration::from_secs(3600),
@@ -162,5 +176,3 @@ criterion_group!(
     concurrent_contention,
 );
 criterion_main!(benches);
-
-

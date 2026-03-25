@@ -82,5 +82,3 @@ fn guard_callback_receives_the_resource() {
         "callback should receive the resource instance"
     );
 }
-
-

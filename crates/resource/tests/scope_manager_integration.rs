@@ -438,5 +438,3 @@ async fn concurrent_multi_tenant_acquire() {
     handle_a.await.unwrap();
     handle_b.await.unwrap();
 }
-
-

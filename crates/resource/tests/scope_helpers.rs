@@ -48,5 +48,3 @@ pub fn scope_action_in_execution(
 pub fn scope_custom(key: impl Into<String>, value: impl Into<String>) -> Scope {
     Scope::try_custom(key, value).expect("valid custom scope in test")
 }
-
-

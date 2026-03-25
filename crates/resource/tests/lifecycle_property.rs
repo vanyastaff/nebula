@@ -150,5 +150,3 @@ fn exhaustive_transition_consistency() {
         }
     }
 }
-
-

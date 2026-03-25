@@ -203,7 +203,11 @@ impl Resource for RecycleCountingResource {
         Ok("instance".to_string())
     }
 
-    async fn recycle(&self, _instance: &mut String, _meta: &nebula_resource::pool::InstanceMetadata) -> nebula_resource::Result<()> {
+    async fn recycle(
+        &self,
+        _instance: &mut String,
+        _meta: &nebula_resource::pool::InstanceMetadata,
+    ) -> nebula_resource::Result<()> {
         self.recycle_calls.fetch_add(1, Ordering::SeqCst);
         Err(Error::Internal {
             resource_key: resource_key!("cb-recycle"),
@@ -312,5 +316,3 @@ async fn create_and_recycle_breakers_are_independent() {
         result.err()
     );
 }
-
-

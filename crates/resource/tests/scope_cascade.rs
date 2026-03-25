@@ -529,5 +529,3 @@ async fn scope_shutdown_invokes_cleanup() {
         "cleanup should have been called during scope shutdown"
     );
 }
-
-

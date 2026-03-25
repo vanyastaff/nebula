@@ -129,5 +129,3 @@ async fn action_pool_exhaustion_maps_to_retryable_category_contract() {
     assert!(err.is_retryable());
     drop(held);
 }
-
-

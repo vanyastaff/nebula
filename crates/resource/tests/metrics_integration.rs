@@ -102,5 +102,3 @@ async fn spawn_metrics_collector_helper_works() {
     let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
     assert!(result.is_ok(), "spawned collector should terminate cleanly");
 }
-
-

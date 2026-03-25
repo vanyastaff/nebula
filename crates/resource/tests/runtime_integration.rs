@@ -149,5 +149,3 @@ async fn runtime_unhealthy_nonrecoverable_is_fatal_contract() {
     assert_eq!(err.category(), ErrorCategory::Fatal);
     assert!(err.is_fatal());
 }
-
-

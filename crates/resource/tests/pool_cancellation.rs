@@ -110,5 +110,3 @@ async fn acquire_cancelled_mid_wait_no_slot_leak() {
     let stats = pool.stats();
     assert_eq!(stats.active, 0);
 }
-
-

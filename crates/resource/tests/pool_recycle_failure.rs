@@ -59,7 +59,11 @@ impl Resource for RecycleResource {
         Ok(format!("inst-{n}"))
     }
 
-    async fn recycle(&self, _instance: &mut String, _meta: &nebula_resource::pool::InstanceMetadata) -> Result<()> {
+    async fn recycle(
+        &self,
+        _instance: &mut String,
+        _meta: &nebula_resource::pool::InstanceMetadata,
+    ) -> Result<()> {
         if self.fail_recycle.load(Ordering::SeqCst) {
             return Err(Error::Internal {
                 resource_key: resource_key!("recycle-test"),
@@ -164,5 +168,3 @@ async fn recycle_failure_does_not_block_next_acquire() {
     );
     assert_eq!(stats.destroyed, 1, "no additional destroys");
 }
-
-

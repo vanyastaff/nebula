@@ -516,5 +516,3 @@ async fn reload_config_concurrent_acquire() {
         .expect("should downcast");
     assert_eq!(inst, "instance");
 }
-
-
