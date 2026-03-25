@@ -115,10 +115,14 @@ impl Registry {
 
     /// Removes all entries for the given key.
     ///
+    /// Returns `true` if the key existed and was removed, `false` otherwise.
     /// Also removes the type index entry if it points to this key.
-    pub fn remove(&self, key: &ResourceKey) {
-        self.entries.remove(key);
-        self.type_index.retain(|_type_id, k| k != key);
+    pub fn remove(&self, key: &ResourceKey) -> bool {
+        let existed = self.entries.remove(key).is_some();
+        if existed {
+            self.type_index.retain(|_type_id, k| k != key);
+        }
+        existed
     }
 
     /// Returns all registered resource keys.

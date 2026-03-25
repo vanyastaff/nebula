@@ -492,6 +492,18 @@ async fn manager_shutdown_rejects_acquire() {
     ReleaseQueue::shutdown(rq_handle).await;
 }
 
+#[test]
+fn remove_nonexistent_returns_not_found() {
+    let manager = Manager::new();
+    let key = resource_key!("does-not-exist");
+
+    let result = manager.remove(&key);
+
+    assert!(result.is_err());
+    let err = result.err().expect("should be an error");
+    assert_eq!(*err.kind(), ErrorKind::NotFound);
+}
+
 // ---------------------------------------------------------------------------
 // RecoveryGate tests
 // ---------------------------------------------------------------------------

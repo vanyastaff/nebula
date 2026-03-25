@@ -313,11 +313,9 @@ impl Manager {
     /// Returns [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if
     /// the key is not registered.
     pub fn remove(&self, key: &ResourceKey) -> Result<(), Error> {
-        if !self.registry.contains(key) {
+        if !self.registry.remove(key) {
             return Err(Error::not_found(key));
         }
-
-        self.registry.remove(key);
         self.metrics.record_destroy();
         tracing::debug!(%key, "resource removed");
         Ok(())
