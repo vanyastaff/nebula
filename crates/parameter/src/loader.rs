@@ -229,10 +229,7 @@ impl FilterFieldLoader {
     /// # Errors
     ///
     /// Returns [`LoaderError`] if the loader cannot resolve filter fields.
-    pub async fn call(
-        &self,
-        ctx: LoaderContext,
-    ) -> Result<LoaderResult<FilterField>, LoaderError> {
+    pub async fn call(&self, ctx: LoaderContext) -> Result<LoaderResult<FilterField>, LoaderError> {
         (self.0)(ctx).await
     }
 }

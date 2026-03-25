@@ -197,22 +197,17 @@ impl Condition {
 
             Self::Ne { field, value } => values.get(field.as_str()) != Some(value),
 
-            Self::OneOf { field, values: vs } => values
-                .get(field.as_str())
-                .is_some_and(|v| vs.contains(v)),
+            Self::OneOf { field, values: vs } => {
+                values.get(field.as_str()).is_some_and(|v| vs.contains(v))
+            }
 
-            Self::Set { field } => values
-                .get(field.as_str())
-                .is_some_and(|v| !v.is_null()),
+            Self::Set { field } => values.get(field.as_str()).is_some_and(|v| !v.is_null()),
 
-            Self::NotSet { field } => values
-                .get(field.as_str())
-                .map_or(true, Value::is_null),
+            Self::NotSet { field } => values.get(field.as_str()).map_or(true, Value::is_null),
 
-            Self::IsTrue { field } => values
-                .get(field.as_str())
-                .and_then(Value::as_bool)
-                == Some(true),
+            Self::IsTrue { field } => {
+                values.get(field.as_str()).and_then(Value::as_bool) == Some(true)
+            }
 
             Self::Gt { field, value } => match (
                 values.get(field.as_str()).and_then(Value::as_f64),
@@ -412,14 +407,8 @@ mod tests {
 
     #[test]
     fn all_requires_every_sub_condition() {
-        let cond = Condition::all(vec![
-            Condition::set("a"),
-            Condition::set("b"),
-        ]);
-        let both = values(&[
-            ("a", Value::Bool(true)),
-            ("b", Value::Bool(true)),
-        ]);
+        let cond = Condition::all(vec![Condition::set("a"), Condition::set("b")]);
+        let both = values(&[("a", Value::Bool(true)), ("b", Value::Bool(true))]);
         let one = values(&[("a", Value::Bool(true))]);
         assert!(cond.evaluate(&both));
         assert!(!cond.evaluate(&one));
@@ -427,10 +416,7 @@ mod tests {
 
     #[test]
     fn any_requires_at_least_one() {
-        let cond = Condition::any(vec![
-            Condition::set("a"),
-            Condition::set("b"),
-        ]);
+        let cond = Condition::any(vec![Condition::set("a"), Condition::set("b")]);
         let one = values(&[("b", Value::Bool(true))]);
         assert!(cond.evaluate(&one));
         assert!(!cond.evaluate(&HashMap::new()));
@@ -449,11 +435,9 @@ mod tests {
         let cond = Condition::all(vec![
             Condition::eq("a", "v"),
             Condition::not(Condition::set("b")),
-            Condition::any(vec![
-                Condition::IsTrue {
-                    field: ParameterPath::from("c"),
-                },
-            ]),
+            Condition::any(vec![Condition::IsTrue {
+                field: ParameterPath::from("c"),
+            }]),
         ]);
         let mut refs = Vec::new();
         cond.field_references(&mut refs);

@@ -125,14 +125,10 @@ impl Transformer {
                 apply_to_string(value, |s| s.replace(from.as_str(), to.as_str()))
             }
             Self::StripPrefix { prefix } => apply_to_string(value, |s| {
-                s.strip_prefix(prefix.as_str())
-                    .unwrap_or(s)
-                    .to_owned()
+                s.strip_prefix(prefix.as_str()).unwrap_or(s).to_owned()
             }),
             Self::StripSuffix { suffix } => apply_to_string(value, |s| {
-                s.strip_suffix(suffix.as_str())
-                    .unwrap_or(s)
-                    .to_owned()
+                s.strip_suffix(suffix.as_str()).unwrap_or(s).to_owned()
             }),
             Self::Regex { pattern, group } => {
                 let Some(s) = value.as_str() else {
@@ -247,7 +243,10 @@ mod tests {
         let t = Transformer::StripPrefix {
             prefix: "https://".into(),
         };
-        assert_eq!(t.apply(&json!("http://example.com")), json!("http://example.com"));
+        assert_eq!(
+            t.apply(&json!("http://example.com")),
+            json!("http://example.com")
+        );
     }
 
     #[test]
@@ -331,9 +330,7 @@ mod tests {
 
     #[test]
     fn json_path_single_segment() {
-        let t = Transformer::JsonPath {
-            path: "key".into(),
-        };
+        let t = Transformer::JsonPath { path: "key".into() };
         let value = json!({"key": 42});
         assert_eq!(t.apply(&value), json!(42));
     }
@@ -366,20 +363,15 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(
-            t.apply(&json!("https://example.com")),
-            json!("example.com")
-        );
+        assert_eq!(t.apply(&json!("https://example.com")), json!("example.com"));
     }
 
     #[test]
     fn first_match_returns_original_if_nothing_changes() {
         let t = Transformer::FirstMatch {
-            transformers: vec![
-                Transformer::StripPrefix {
-                    prefix: "ftp://".into(),
-                },
-            ],
+            transformers: vec![Transformer::StripPrefix {
+                prefix: "ftp://".into(),
+            }],
         };
         assert_eq!(t.apply(&json!("hello")), json!("hello"));
     }

@@ -5,12 +5,28 @@ use std::ops::Index;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+#[path = "transformer.rs"]
+mod transformer_impl;
+pub use transformer_impl::Transformer;
+
 /// Reserved object key that marks expression-backed runtime values.
 pub const EXPRESSION_KEY: &str = "$expr";
 
+/// Trait for parameter definitions that carry an ID and transformers.
+///
+/// The v3 [`Parameter`](crate::parameter::Parameter) type implements this trait,
+/// allowing [`ParameterValues::get_transformed`] to look up and apply
+/// transformers from a schema slice.
+pub trait TransformableParameter {
+    /// The stable identifier for this parameter.
+    fn param_id(&self) -> &str;
+    /// The transformers attached to this parameter.
+    fn param_transformers(&self) -> &[Transformer];
+}
+
 /// Typed runtime value model used on top of the JSON wire format.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FieldValue {
+pub enum ParameterValue {
     /// Plain JSON literal.
     Literal(serde_json::Value),
     /// Expression-backed value encoded as `{ "$expr": "..." }`.
@@ -24,7 +40,7 @@ pub enum FieldValue {
     },
 }
 
-impl FieldValue {
+impl ParameterValue {
     /// Parses a typed value from JSON runtime data.
     #[must_use]
     pub fn from_json(value: &serde_json::Value) -> Self {
@@ -77,7 +93,7 @@ pub struct ModeValueRef<'a> {
     pub value: Option<&'a serde_json::Value>,
 }
 
-/// Trait for numeric types supported by [`FieldValues::get_number`].
+/// Trait for numeric types supported by [`ParameterValues::get_number`].
 pub trait Numeric:
     Copy + PartialOrd + Debug + Send + Sync + Serialize + DeserializeOwned + 'static
 {
@@ -113,12 +129,12 @@ impl Numeric for u16 {
 
 /// A set of parameter values, keyed by parameter key.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FieldValues {
+pub struct ParameterValues {
     #[serde(flatten)]
     values: HashMap<String, serde_json::Value>,
 }
 
-impl FieldValues {
+impl ParameterValues {
     /// Create an empty value set.
     #[must_use]
     pub fn new() -> Self {
@@ -137,13 +153,13 @@ impl FieldValues {
     }
 
     /// Set a typed runtime value for a parameter key.
-    pub fn set_typed(&mut self, key: impl Into<String>, value: FieldValue) {
+    pub fn set_typed(&mut self, key: impl Into<String>, value: ParameterValue) {
         self.values.insert(key.into(), value.into_json());
     }
 
     /// Set an expression-backed value.
     pub fn set_expression(&mut self, key: impl Into<String>, expression: impl Into<String>) {
-        self.set_typed(key, FieldValue::Expression(expression.into()));
+        self.set_typed(key, ParameterValue::Expression(expression.into()));
     }
 
     /// Set a mode selection value.
@@ -155,7 +171,7 @@ impl FieldValues {
     ) {
         self.set_typed(
             key,
-            FieldValue::Mode {
+            ParameterValue::Mode {
                 mode: mode.into(),
                 value,
             },
@@ -198,8 +214,8 @@ impl FieldValues {
 
     /// Get a value classified into the typed runtime model.
     #[must_use]
-    pub fn get_typed(&self, key: &str) -> Option<FieldValue> {
-        self.values.get(key).map(FieldValue::from_json)
+    pub fn get_typed(&self, key: &str) -> Option<ParameterValue> {
+        self.values.get(key).map(ParameterValue::from_json)
     }
 
     /// Get an expression body if the value is expression-backed.
@@ -293,20 +309,20 @@ impl FieldValues {
 
     /// Create a snapshot of the current values for later restore.
     #[must_use]
-    pub fn snapshot(&self) -> FieldValuesSnapshot {
-        FieldValuesSnapshot {
+    pub fn snapshot(&self) -> ParameterValuesSnapshot {
+        ParameterValuesSnapshot {
             values: self.values.clone(),
         }
     }
 
     /// Restore values from a previously taken snapshot.
-    pub fn restore(&mut self, snapshot: &FieldValuesSnapshot) {
+    pub fn restore(&mut self, snapshot: &ParameterValuesSnapshot) {
         self.values = snapshot.values.clone();
     }
 
     /// Compute the difference between this value set and another.
     #[must_use]
-    pub fn diff(&self, other: &Self) -> FieldValuesDiff {
+    pub fn diff(&self, other: &Self) -> ParameterValuesDiff {
         let mut added = Vec::new();
         let mut removed = Vec::new();
         let mut changed = Vec::new();
@@ -329,7 +345,7 @@ impl FieldValues {
         removed.sort();
         changed.sort();
 
-        FieldValuesDiff {
+        ParameterValuesDiff {
             added,
             removed,
             changed,
@@ -341,9 +357,36 @@ impl FieldValues {
     pub fn as_map(&self) -> &HashMap<String, serde_json::Value> {
         &self.values
     }
+
+    /// Get value with schema transformers applied.
+    ///
+    /// Looks up the parameter definition in the collection, gets the raw value,
+    /// and applies each transformer in the parameter's transformer list.
+    /// Returns `None` if the key doesn't exist or has no matching parameter.
+    ///
+    /// The `parameters` slice must implement [`TransformableParameter`] — the
+    /// v3 [`Parameter`](crate::parameter::Parameter) type satisfies this.
+    #[must_use]
+    pub fn get_transformed<P: TransformableParameter>(
+        &self,
+        key: &str,
+        parameters: &[P],
+    ) -> Option<serde_json::Value> {
+        let value = self.values.get(key)?;
+        let param = parameters.iter().find(|p| p.param_id() == key)?;
+        let transformers = param.param_transformers();
+        if transformers.is_empty() {
+            return Some(value.clone());
+        }
+        let mut result = value.clone();
+        for t in transformers {
+            result = t.apply(&result);
+        }
+        Some(result)
+    }
 }
 
-impl FromIterator<(String, serde_json::Value)> for FieldValues {
+impl FromIterator<(String, serde_json::Value)> for ParameterValues {
     fn from_iter<I: IntoIterator<Item = (String, serde_json::Value)>>(iter: I) -> Self {
         Self {
             values: iter.into_iter().collect(),
@@ -351,7 +394,7 @@ impl FromIterator<(String, serde_json::Value)> for FieldValues {
     }
 }
 
-impl Index<&str> for FieldValues {
+impl Index<&str> for ParameterValues {
     type Output = serde_json::Value;
 
     fn index(&self, key: &str) -> &Self::Output {
@@ -361,13 +404,13 @@ impl Index<&str> for FieldValues {
 
 /// A frozen copy of parameter values for snapshot/restore.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FieldValuesSnapshot {
+pub struct ParameterValuesSnapshot {
     values: HashMap<String, serde_json::Value>,
 }
 
 /// Describes the differences between two parameter value sets.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FieldValuesDiff {
+pub struct ParameterValuesDiff {
     /// Keys present in `other` but not in `self`.
     pub added: Vec<String>,
     /// Keys present in `self` but not in `other`.
@@ -376,6 +419,14 @@ pub struct FieldValuesDiff {
     pub changed: Vec<String>,
 }
 
+/// Backward-compatible type alias.
+#[deprecated(note = "renamed to ParameterValues")]
+pub type FieldValues = ParameterValues;
+
+/// Backward-compatible type alias.
+#[deprecated(note = "renamed to ParameterValue")]
+pub type FieldValue = ParameterValue;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,14 +434,14 @@ mod tests {
 
     #[test]
     fn new_is_empty() {
-        let vals = FieldValues::new();
+        let vals = ParameterValues::new();
         assert!(vals.is_empty());
         assert_eq!(vals.len(), 0);
     }
 
     #[test]
     fn set_and_get() {
-        let mut vals = FieldValues::new();
+        let mut vals = ParameterValues::new();
         vals.set("host", json!("localhost"));
         vals.set("port", json!(8080));
 
@@ -402,7 +453,7 @@ mod tests {
 
     #[test]
     fn remove() {
-        let mut vals = FieldValues::new();
+        let mut vals = ParameterValues::new();
         vals.set("key", json!("value"));
 
         let removed = vals.remove("key");
@@ -413,7 +464,7 @@ mod tests {
 
     #[test]
     fn contains() {
-        let mut vals = FieldValues::new();
+        let mut vals = ParameterValues::new();
         vals.set("host", json!("localhost"));
 
         assert!(vals.contains("host"));
@@ -422,7 +473,7 @@ mod tests {
 
     #[test]
     fn keys_iterator() {
-        let mut vals = FieldValues::new();
+        let mut vals = ParameterValues::new();
         vals.set("a", json!(1));
         vals.set("b", json!(2));
 
@@ -433,7 +484,7 @@ mod tests {
 
     #[test]
     fn convenience_getters() {
-        let mut vals = FieldValues::new();
+        let mut vals = ParameterValues::new();
         vals.set("name", json!("Alice"));
         vals.set("age", json!(30));
         vals.set("active", json!(true));
@@ -450,7 +501,7 @@ mod tests {
 
     #[test]
     fn get_number_preserves_integer_types() {
-        let mut vals = FieldValues::new();
+        let mut vals = ParameterValues::new();
         vals.set("port", serde_json::json!(8080));
         vals.set("ratio", serde_json::json!(0.5));
 
@@ -462,7 +513,7 @@ mod tests {
 
     #[test]
     fn snapshot_and_restore() {
-        let mut vals = FieldValues::new();
+        let mut vals = ParameterValues::new();
         vals.set("x", json!(1));
         vals.set("y", json!(2));
 
@@ -481,12 +532,12 @@ mod tests {
 
     #[test]
     fn diff_detects_changes() {
-        let mut a = FieldValues::new();
+        let mut a = ParameterValues::new();
         a.set("x", json!(1));
         a.set("y", json!(2));
         a.set("z", json!(3));
 
-        let mut b = FieldValues::new();
+        let mut b = ParameterValues::new();
         b.set("x", json!(1)); // same
         b.set("y", json!(99)); // changed
         b.set("w", json!(4)); // added
@@ -499,8 +550,8 @@ mod tests {
 
     #[test]
     fn diff_empty_sets() {
-        let a = FieldValues::new();
-        let b = FieldValues::new();
+        let a = ParameterValues::new();
+        let b = ParameterValues::new();
         let diff = a.diff(&b);
         assert!(diff.added.is_empty());
         assert!(diff.removed.is_empty());
@@ -509,7 +560,7 @@ mod tests {
 
     #[test]
     fn from_iterator() {
-        let vals: FieldValues = vec![("a".to_owned(), json!(1)), ("b".to_owned(), json!(2))]
+        let vals: ParameterValues = vec![("a".to_owned(), json!(1)), ("b".to_owned(), json!(2))]
             .into_iter()
             .collect();
 
@@ -519,7 +570,7 @@ mod tests {
 
     #[test]
     fn index_access() {
-        let mut vals = FieldValues::new();
+        let mut vals = ParameterValues::new();
         vals.set("key", json!("value"));
         assert_eq!(vals["key"], json!("value"));
     }
@@ -527,24 +578,24 @@ mod tests {
     #[test]
     #[should_panic]
     fn index_missing_key_panics() {
-        let vals = FieldValues::new();
+        let vals = ParameterValues::new();
         let _ = &vals["missing"];
     }
 
     #[test]
     fn serde_round_trip() {
-        let mut vals = FieldValues::new();
+        let mut vals = ParameterValues::new();
         vals.set("host", json!("localhost"));
         vals.set("port", json!(8080));
 
         let json_str = serde_json::to_string(&vals).unwrap();
-        let deserialized: FieldValues = serde_json::from_str(&json_str).unwrap();
+        let deserialized: ParameterValues = serde_json::from_str(&json_str).unwrap();
         assert_eq!(vals, deserialized);
     }
 
     #[test]
     fn serde_flat_structure() {
-        let mut vals = FieldValues::new();
+        let mut vals = ParameterValues::new();
         vals.set("name", json!("test"));
 
         let json_str = serde_json::to_string(&vals).unwrap();
@@ -555,7 +606,7 @@ mod tests {
 
     #[test]
     fn typed_value_expression_roundtrip() {
-        let mut vals = FieldValues::new();
+        let mut vals = ParameterValues::new();
         vals.set_expression("timeout", "inputs.retries * 1000");
 
         assert_eq!(
@@ -564,13 +615,15 @@ mod tests {
         );
         assert_eq!(
             vals.get_typed("timeout"),
-            Some(FieldValue::Expression("inputs.retries * 1000".to_owned()))
+            Some(ParameterValue::Expression(
+                "inputs.retries * 1000".to_owned()
+            ))
         );
     }
 
     #[test]
     fn typed_value_mode_roundtrip() {
-        let mut vals = FieldValues::new();
+        let mut vals = ParameterValues::new();
         vals.set_mode("auth", "bearer", Some(json!({ "token": "abc" })));
 
         let mode = vals.get_mode("auth").expect("mode value expected");
@@ -578,7 +631,7 @@ mod tests {
         assert_eq!(mode.value, Some(&json!({ "token": "abc" })));
         assert_eq!(
             vals.get_typed("auth"),
-            Some(FieldValue::Mode {
+            Some(ParameterValue::Mode {
                 mode: "bearer".to_owned(),
                 value: Some(json!({ "token": "abc" })),
             })
@@ -587,12 +640,79 @@ mod tests {
 
     #[test]
     fn typed_value_literal_classification() {
-        let mut vals = FieldValues::new();
+        let mut vals = ParameterValues::new();
         vals.set("port", json!(8080));
 
         assert_eq!(
             vals.get_typed("port"),
-            Some(FieldValue::Literal(json!(8080)))
+            Some(ParameterValue::Literal(json!(8080)))
         );
+    }
+
+    /// Test helper implementing [`TransformableParameter`].
+    struct TestParam {
+        id: String,
+        transformers: Vec<Transformer>,
+    }
+
+    impl TestParam {
+        fn new(id: &str, transformers: Vec<Transformer>) -> Self {
+            Self {
+                id: id.to_owned(),
+                transformers,
+            }
+        }
+    }
+
+    impl TransformableParameter for TestParam {
+        fn param_id(&self) -> &str {
+            &self.id
+        }
+        fn param_transformers(&self) -> &[Transformer] {
+            &self.transformers
+        }
+    }
+
+    #[test]
+    fn get_transformed_applies_transformers() {
+        let mut vals = ParameterValues::new();
+        vals.set("name", json!("  HELLO  "));
+
+        let params = vec![TestParam::new(
+            "name",
+            vec![Transformer::Trim, Transformer::Lowercase],
+        )];
+
+        let result = vals.get_transformed("name", &params);
+        assert_eq!(result, Some(json!("hello")));
+    }
+
+    #[test]
+    fn get_transformed_no_transformers_returns_raw() {
+        let mut vals = ParameterValues::new();
+        vals.set("name", json!("  HELLO  "));
+
+        let params = vec![TestParam::new("name", vec![])];
+
+        let result = vals.get_transformed("name", &params);
+        assert_eq!(result, Some(json!("  HELLO  ")));
+    }
+
+    #[test]
+    fn get_transformed_missing_key_returns_none() {
+        let vals = ParameterValues::new();
+        let params = vec![TestParam::new("name", vec![])];
+
+        assert_eq!(vals.get_transformed("missing", &params), None);
+    }
+
+    #[test]
+    fn get_transformed_missing_param_returns_none() {
+        let mut vals = ParameterValues::new();
+        vals.set("name", json!("hello"));
+
+        let params: Vec<TestParam> = vec![];
+
+        assert_eq!(vals.get_transformed("name", &params), None);
     }
 }
