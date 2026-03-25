@@ -87,10 +87,11 @@ fn validate_parameter(
     let raw_value = lookup_value(values, path_prefix, &param.id);
 
     // 2. Check visible_when — if hidden and no value, skip entirely.
-    if let Some(condition) = &param.visible_when {
-        if !condition.evaluate(values_map) && raw_value.is_none() {
-            return;
-        }
+    if let Some(condition) = &param.visible_when
+        && !condition.evaluate(values_map)
+        && raw_value.is_none()
+    {
+        return;
     }
 
     // 3. Check required.
@@ -229,30 +230,28 @@ fn validate_number(
         return;
     }
 
-    if let Some(min_num) = min {
-        if let Some(min_f) = min_num.as_f64() {
-            if n < min_f {
-                report.errors.push(ParameterError::ValidationIssue {
-                    key: key.to_owned(),
-                    code: "number_min".to_owned(),
-                    reason: format!("value {n} is below minimum {min_f}"),
-                    params: vec![("min".to_owned(), min_f.to_string())],
-                });
-            }
-        }
+    if let Some(min_num) = min
+        && let Some(min_f) = min_num.as_f64()
+        && n < min_f
+    {
+        report.errors.push(ParameterError::ValidationIssue {
+            key: key.to_owned(),
+            code: "number_min".to_owned(),
+            reason: format!("value {n} is below minimum {min_f}"),
+            params: vec![("min".to_owned(), min_f.to_string())],
+        });
     }
 
-    if let Some(max_num) = max {
-        if let Some(max_f) = max_num.as_f64() {
-            if n > max_f {
-                report.errors.push(ParameterError::ValidationIssue {
-                    key: key.to_owned(),
-                    code: "number_max".to_owned(),
-                    reason: format!("value {n} exceeds maximum {max_f}"),
-                    params: vec![("max".to_owned(), max_f.to_string())],
-                });
-            }
-        }
+    if let Some(max_num) = max
+        && let Some(max_f) = max_num.as_f64()
+        && n > max_f
+    {
+        report.errors.push(ParameterError::ValidationIssue {
+            key: key.to_owned(),
+            code: "number_max".to_owned(),
+            reason: format!("value {n} exceeds maximum {max_f}"),
+            params: vec![("max".to_owned(), max_f.to_string())],
+        });
     }
 }
 
@@ -360,26 +359,26 @@ fn validate_list(
 
     let len = arr.len();
 
-    if let Some(min) = min_items {
-        if len < min as usize {
-            report.errors.push(ParameterError::ValidationIssue {
-                key: key.to_owned(),
-                code: "min_items".to_owned(),
-                reason: format!("expected at least {min} items, got {len}"),
-                params: vec![("min".to_owned(), min.to_string())],
-            });
-        }
+    if let Some(min) = min_items
+        && len < min as usize
+    {
+        report.errors.push(ParameterError::ValidationIssue {
+            key: key.to_owned(),
+            code: "min_items".to_owned(),
+            reason: format!("expected at least {min} items, got {len}"),
+            params: vec![("min".to_owned(), min.to_string())],
+        });
     }
 
-    if let Some(max) = max_items {
-        if len > max as usize {
-            report.errors.push(ParameterError::ValidationIssue {
-                key: key.to_owned(),
-                code: "max_items".to_owned(),
-                reason: format!("expected at most {max} items, got {len}"),
-                params: vec![("max".to_owned(), max.to_string())],
-            });
-        }
+    if let Some(max) = max_items
+        && len > max as usize
+    {
+        report.errors.push(ParameterError::ValidationIssue {
+            key: key.to_owned(),
+            code: "max_items".to_owned(),
+            reason: format!("expected at most {max} items, got {len}"),
+            params: vec![("max".to_owned(), max.to_string())],
+        });
     }
 
     // Recurse into each item.
@@ -433,14 +432,15 @@ fn validate_mode(
     };
 
     // Validate variant's content under "value" key.
-    if let Some(variant_value) = obj.get("value") {
-        if !variant_value.is_null() {
-            let variant_values: ParameterValues = vec![(variant.id.clone(), variant_value.clone())]
+    if let Some(variant_value) = obj.get("value")
+        && !variant_value.is_null()
+    {
+        let variant_values: ParameterValues =
+            vec![(variant.id.clone(), variant_value.clone())]
                 .into_iter()
                 .collect();
-            let variant_map = variant_values.as_map();
-            validate_parameter(variant, &variant_values, variant_map, key, report);
-        }
+        let variant_map = variant_values.as_map();
+        validate_parameter(variant, &variant_values, variant_map, key, report);
     }
 
     // Check for unknown keys (only "mode" and "value" allowed).
