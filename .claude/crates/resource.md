@@ -12,6 +12,7 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - `TopologyTag` enum (not `&str`) identifies handle origin — `#[non_exhaustive]`, use `as_str()` for display
 - Manager emits `ResourceEvent` via `broadcast::channel(256)` on register/remove/acquire — subscribe via `subscribe_events()`
 - `Manager.metrics` is `Arc<ResourceMetrics>` — cloned into topology release callbacks for `record_release()` tracking
+- `ScopeLevel::Workflow(WorkflowId)` and `ScopeLevel::Execution(ExecutionId)` — typed IDs, not String
 - Deprecated `Context`/`Scope` in `compat` for v1 migration
 
 ## Traps
@@ -31,4 +32,4 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 - Webhook still uses deprecated v1 compat types; migration tracked separately
 
-<!-- reviewed: 2026-03-25 — release metrics wired in topology callbacks -->
+<!-- reviewed: 2026-03-25 — ScopeLevel uses typed WorkflowId/ExecutionId -->

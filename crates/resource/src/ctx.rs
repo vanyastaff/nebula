@@ -7,7 +7,7 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 
-use nebula_core::ExecutionId;
+use nebula_core::{ExecutionId, WorkflowId};
 use tokio_util::sync::CancellationToken;
 
 /// Scope level for resource isolation.
@@ -24,9 +24,9 @@ pub enum ScopeLevel {
     /// Scoped to a project.
     Project(String),
     /// Scoped to a workflow definition.
-    Workflow(String),
+    Workflow(WorkflowId),
     /// Scoped to a single execution run.
-    Execution(String),
+    Execution(ExecutionId),
 }
 
 /// Execution context for resource operations.
@@ -179,9 +179,9 @@ mod tests {
 
     #[test]
     fn basic_ctx_with_scope() {
-        let ctx =
-            BasicCtx::new(ExecutionId::new()).with_scope(ScopeLevel::Execution("run-1".into()));
-        assert_eq!(*ctx.scope(), ScopeLevel::Execution("run-1".into()));
+        let exec_id = ExecutionId::new();
+        let ctx = BasicCtx::new(exec_id).with_scope(ScopeLevel::Execution(exec_id));
+        assert_eq!(*ctx.scope(), ScopeLevel::Execution(exec_id));
     }
 
     #[test]
