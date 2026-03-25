@@ -4,6 +4,7 @@
 //! and [`ResourceStatus`] bundles phase with generation and error information.
 
 /// Lifecycle phase of a managed resource.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourcePhase {
     /// Resource is being created for the first time.

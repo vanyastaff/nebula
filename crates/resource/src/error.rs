@@ -10,6 +10,7 @@ use std::time::Duration;
 use nebula_core::ResourceKey;
 
 /// How the framework should handle this error.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorKind {
     /// Network blip, timeout — retry with backoff.
@@ -30,6 +31,7 @@ pub enum ErrorKind {
 }
 
 /// Whether the error is resource-wide or target-specific.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ErrorScope {
     /// The resource itself might be broken.

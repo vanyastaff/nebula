@@ -9,6 +9,7 @@ use crate::ctx::Ctx;
 use crate::resource::Resource;
 
 /// Policy for restarting a daemon after it exits.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RestartPolicy {
     /// Never restart — if the daemon exits, it stays down.

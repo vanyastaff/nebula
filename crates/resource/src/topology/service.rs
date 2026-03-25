@@ -6,6 +6,7 @@ use crate::ctx::Ctx;
 use crate::resource::Resource;
 
 /// How the service manages token lifecycle.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TokenMode {
     /// Token is a cheap clone; release is a no-op. Results in an owned handle.

@@ -10,6 +10,7 @@ use crate::resource::Resource;
 /// Used in the `Drop` path to decide whether an instance should be returned
 /// to the idle pool or destroyed immediately. Because it runs in `Drop`,
 /// this check must be synchronous and O(1) — no I/O, no async.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum BrokenCheck {
     /// Instance is healthy and can be returned to the pool.
@@ -26,6 +27,7 @@ impl BrokenCheck {
 }
 
 /// Decision after an async recycle check.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecycleDecision {
     /// Return the instance to the idle pool.

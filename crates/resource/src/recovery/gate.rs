@@ -25,6 +25,7 @@ use tokio::sync::Notify;
 const MAX_BACKOFF: Duration = Duration::from_secs(300);
 
 /// Current state of a [`RecoveryGate`].
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum GateState {
     /// No recovery in progress; the backend is presumed healthy or untested.

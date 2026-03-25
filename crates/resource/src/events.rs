@@ -15,6 +15,7 @@ use nebula_core::ResourceKey;
 /// Events are lightweight and cheap to clone. They carry enough
 /// information for logging, metrics, and audit trails without
 /// holding references to live resources.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum ResourceEvent {
     /// A resource was successfully registered.

@@ -13,6 +13,7 @@ use smallvec::SmallVec;
 ///
 /// Topologies may use this to select different pools, apply different
 /// timeouts, or skip health checks for critical requests.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcquireIntent {
     /// Normal acquire — default path.
