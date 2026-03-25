@@ -213,7 +213,18 @@ impl<R: Resource> Drop for ResourceHandle<R> {
                 ..
             } => {
                 if let (Some(lease), Some(callback)) = (value.take(), on_release.take()) {
-                    callback(lease, *tainted);
+                    // catch_unwind prevents double-panic abort if callback panics.
+                    let tainted = *tainted;
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        callback(lease, tainted);
+                    }))
+                    .is_err()
+                    {
+                        tracing::error!(
+                            key = %self.resource_key,
+                            "release callback panicked in ResourceHandle Drop"
+                        );
+                    }
                 }
             }
             HandleInner::Shared {
@@ -222,7 +233,17 @@ impl<R: Resource> Drop for ResourceHandle<R> {
                 ..
             } => {
                 if let Some(callback) = on_release.take() {
-                    callback(*tainted);
+                    let tainted = *tainted;
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        callback(tainted);
+                    }))
+                    .is_err()
+                    {
+                        tracing::error!(
+                            key = %self.resource_key,
+                            "release callback panicked in ResourceHandle Drop"
+                        );
+                    }
                 }
             }
         }

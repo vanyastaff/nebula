@@ -172,11 +172,14 @@ impl RecoveryWaiter {
     /// the new state.
     pub async fn wait(&self) -> GateState {
         loop {
-            self.gate.notify.notified().await;
+            // Register notification BEFORE checking state to avoid missing
+            // a notify that fires between the state check and the await.
+            let notified = self.gate.notify.notified();
             let snap = self.gate.state.load();
             if !matches!(**snap, GateState::InProgress { .. }) {
                 return (**snap).clone();
             }
+            notified.await;
         }
     }
 }

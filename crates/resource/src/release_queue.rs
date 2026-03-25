@@ -25,6 +25,9 @@ type TaskFactory = Box<dyn FnOnce() -> ReleaseTask + Send>;
 /// checking for shutdown.
 const WORKER_RECV_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Maximum time a single release task may execute before being aborted.
+const TASK_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Channel buffer size per primary worker.
 const CHANNEL_BUFFER: usize = 256;
 
@@ -105,7 +108,10 @@ impl ReleaseQueue {
             Err(mpsc::error::TrySendError::Full(factory)) => {
                 // Primary is full — use fallback.
                 if let Err(e) = self.fallback_tx.try_send(factory) {
-                    tracing::warn!("release queue fallback channel full, dropping task: {e}");
+                    tracing::error!(
+                        "release queue overflow: both primary and fallback channels full, \
+                         dropping release task (may leak semaphore permit): {e}"
+                    );
                 }
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -129,7 +135,15 @@ impl ReleaseQueue {
             match tokio::time::timeout(WORKER_RECV_TIMEOUT, rx.recv()).await {
                 Ok(Some(factory)) => {
                     let task = factory();
-                    task.await;
+                    if tokio::time::timeout(TASK_EXECUTION_TIMEOUT, task)
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            "release task timed out after {}s, skipping",
+                            TASK_EXECUTION_TIMEOUT.as_secs()
+                        );
+                    }
                 }
                 Ok(None) => break,  // channel closed
                 Err(_) => continue, // timeout, loop back
