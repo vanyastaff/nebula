@@ -20,4 +20,4 @@ AES-256-GCM credential storage, manager, rotation, and protocol implementations.
 ## Relations
 - Depends on nebula-core (IDs), nebula-eventbus (rotation events). Peer with nebula-resource (no import between them).
 
-<!-- reviewed: 2026-03-19 -->
+<!-- reviewed: 2026-03-25 -->

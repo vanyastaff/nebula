@@ -29,5 +29,5 @@ Resource lifecycle management — pooling, health checks, autoscaling, hooks, an
 - `BrokenCheck` is `pub` in `nebula_resource::resource`; `InstanceMetadata` is `pub` in `nebula_resource::pool`
 - `Scope` enum is now `#[non_exhaustive]`
 
-<!-- reviewed: 2026-03-22 (impl #2, #3, #7, #9: non_exhaustive Scope, cleanup→destroy, BrokenCheck, collapsed _with_meta variants) -->
-<!-- reviewed: 2026-03-24 (plans only: sync 09-topology-guide credential/is_alive_sync, ReleaseQueue bounded fallback+timeout, new resource-author-contracts.md) -->
+<!-- reviewed: 2026-03-25 -->
+<!-- reviewed: 2026-03-25 -->
