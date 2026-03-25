@@ -13,6 +13,7 @@ use std::time::Instant;
 use nebula_core::ResourceKey;
 
 use crate::resource::Resource;
+use crate::topology_tag::TopologyTag;
 
 /// Callback invoked when a guarded lease is released.
 type GuardedRelease<R> = Box<dyn FnOnce(<R as Resource>::Lease, bool) + Send>;
@@ -26,7 +27,7 @@ type GuardedRelease<R> = Box<dyn FnOnce(<R as Resource>::Lease, bool) + Send>;
 pub struct ResourceHandle<R: Resource> {
     inner: HandleInner<R>,
     resource_key: ResourceKey,
-    topology_tag: &'static str,
+    topology_tag: TopologyTag,
 }
 
 enum HandleInner<R: Resource> {
@@ -49,7 +50,7 @@ enum HandleInner<R: Resource> {
 
 impl<R: Resource> ResourceHandle<R> {
     /// Creates an owned handle — no pool, no release callback.
-    pub fn owned(lease: R::Lease, resource_key: ResourceKey, topology_tag: &'static str) -> Self {
+    pub fn owned(lease: R::Lease, resource_key: ResourceKey, topology_tag: TopologyTag) -> Self {
         Self {
             inner: HandleInner::Owned(lease),
             resource_key,
@@ -61,7 +62,7 @@ impl<R: Resource> ResourceHandle<R> {
     pub fn guarded(
         lease: R::Lease,
         resource_key: ResourceKey,
-        topology_tag: &'static str,
+        topology_tag: TopologyTag,
         generation: u64,
         on_release: impl FnOnce(R::Lease, bool) + Send + 'static,
     ) -> Self {
@@ -82,7 +83,7 @@ impl<R: Resource> ResourceHandle<R> {
     pub fn shared(
         lease: Arc<R::Lease>,
         resource_key: ResourceKey,
-        topology_tag: &'static str,
+        topology_tag: TopologyTag,
         generation: u64,
         on_release: impl FnOnce(bool) + Send + 'static,
     ) -> Self {
@@ -170,8 +171,8 @@ impl<R: Resource> ResourceHandle<R> {
         &self.resource_key
     }
 
-    /// Returns the topology tag (e.g., `"pool"`, `"resident"`, `"service"`).
-    pub fn topology_tag(&self) -> &'static str {
+    /// Returns the topology tag identifying which topology this handle came from.
+    pub fn topology_tag(&self) -> TopologyTag {
         self.topology_tag
     }
 
@@ -298,7 +299,7 @@ mod tests {
 
     #[test]
     fn owned_deref() {
-        let handle = ResourceHandle::<DummyResource>::owned(42, test_key(), "test");
+        let handle = ResourceHandle::<DummyResource>::owned(42, test_key(), TopologyTag::Pool);
         assert_eq!(*handle, 42);
     }
 
@@ -313,7 +314,7 @@ mod tests {
             let _handle = ResourceHandle::<DummyResource>::guarded(
                 99,
                 test_key(),
-                "pool",
+                TopologyTag::Pool,
                 1,
                 move |lease, tainted| {
                     value_clone.store(lease, Ordering::Relaxed);
@@ -336,7 +337,7 @@ mod tests {
             let _handle = ResourceHandle::<DummyResource>::shared(
                 Arc::new(77),
                 test_key(),
-                "resident",
+                TopologyTag::Resident,
                 1,
                 move |_tainted| {
                     released_clone.store(true, Ordering::Relaxed);
@@ -355,7 +356,7 @@ mod tests {
             let mut handle = ResourceHandle::<DummyResource>::guarded(
                 1,
                 test_key(),
-                "pool",
+                TopologyTag::Pool,
                 1,
                 move |_lease, tainted| {
                     was_tainted_clone.store(tainted, Ordering::Relaxed);
@@ -368,7 +369,7 @@ mod tests {
 
     #[test]
     fn detach_owned_returns_lease() {
-        let handle = ResourceHandle::<DummyResource>::owned(42, test_key(), "test");
+        let handle = ResourceHandle::<DummyResource>::owned(42, test_key(), TopologyTag::Pool);
         let lease = handle.detach();
         assert_eq!(lease, Some(42));
     }
@@ -381,7 +382,7 @@ mod tests {
         let handle = ResourceHandle::<DummyResource>::guarded(
             10,
             test_key(),
-            "pool",
+            TopologyTag::Pool,
             1,
             move |_lease, _tainted| {
                 released_clone.store(true, Ordering::Relaxed);
@@ -395,22 +396,22 @@ mod tests {
     #[test]
     fn detach_shared_returns_none() {
         let handle =
-            ResourceHandle::<DummyResource>::shared(Arc::new(5), test_key(), "resident", 1, |_| {});
+            ResourceHandle::<DummyResource>::shared(Arc::new(5), test_key(), TopologyTag::Resident, 1, |_| {});
         let lease = handle.detach();
         assert_eq!(lease, None);
     }
 
     #[test]
     fn hold_duration_is_zero_for_owned() {
-        let handle = ResourceHandle::<DummyResource>::owned(1, test_key(), "test");
+        let handle = ResourceHandle::<DummyResource>::owned(1, test_key(), TopologyTag::Pool);
         assert_eq!(handle.hold_duration(), std::time::Duration::ZERO);
     }
 
     #[test]
     fn resource_key_and_topology_tag() {
         let key = test_key();
-        let handle = ResourceHandle::<DummyResource>::owned(1, key.clone(), "pool");
+        let handle = ResourceHandle::<DummyResource>::owned(1, key.clone(), TopologyTag::Pool);
         assert_eq!(*handle.resource_key(), key);
-        assert_eq!(handle.topology_tag(), "pool");
+        assert_eq!(handle.topology_tag(), TopologyTag::Pool);
     }
 }

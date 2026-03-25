@@ -21,6 +21,7 @@ use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
 use crate::topology::pooled::config::Config;
 use crate::topology::pooled::{InstanceMetrics, Pooled, RecycleDecision};
+use crate::topology_tag::TopologyTag;
 
 /// A single pooled instance with its metrics, config fingerprint, and semaphore permit.
 ///
@@ -279,7 +280,7 @@ where
         ResourceHandle::guarded(
             lease,
             R::key(),
-            "pool",
+            TopologyTag::Pool,
             generation,
             move |returned_lease: R::Lease, tainted| {
                 let runtime: R::Runtime = returned_lease.into();
@@ -497,7 +498,7 @@ mod tests {
         assert!(handle.is_ok());
         let handle = handle.unwrap();
         assert_eq!(*handle, 1);
-        assert_eq!(handle.topology_tag(), "pool");
+        assert_eq!(handle.topology_tag(), TopologyTag::Pool);
 
         drop(handle);
         // Give release queue time to process.

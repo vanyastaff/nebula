@@ -232,7 +232,7 @@ async fn pool_acquire_use_release_reacquire() {
         .await
         .expect("first acquire should succeed");
 
-    assert_eq!(handle.topology_tag(), "pool");
+    assert_eq!(handle.topology_tag(), nebula_resource::TopologyTag::Pool);
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
 
     // Use the lease.
@@ -325,7 +325,7 @@ async fn resident_acquire_creates_then_clones() {
         .await
         .expect("first acquire");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
-    assert_eq!(h1.topology_tag(), "resident");
+    assert_eq!(h1.topology_tag(), nebula_resource::TopologyTag::Resident);
 
     // Second acquire clones (no new creation).
     let h2 = rt
@@ -407,7 +407,7 @@ async fn manager_register_and_acquire_pooled() {
         .await
         .expect("acquire should succeed");
 
-    assert_eq!(handle.topology_tag(), "pool");
+    assert_eq!(handle.topology_tag(), nebula_resource::TopologyTag::Pool);
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
 
     drop(handle);
@@ -446,7 +446,7 @@ async fn manager_register_and_acquire_resident() {
         .await
         .expect("acquire should succeed");
 
-    assert_eq!(handle.topology_tag(), "resident");
+    assert_eq!(handle.topology_tag(), nebula_resource::TopologyTag::Resident);
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
 
     drop(handle);

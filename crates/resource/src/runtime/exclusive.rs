@@ -14,6 +14,7 @@ use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
 use crate::topology::exclusive::Exclusive;
 use crate::topology::exclusive::config::Config;
+use crate::topology_tag::TopologyTag;
 
 /// Runtime state for an exclusive topology.
 ///
@@ -87,7 +88,7 @@ where
         Ok(ResourceHandle::guarded(
             lease,
             R::key(),
-            "exclusive",
+            TopologyTag::Exclusive,
             generation,
             move |_returned_lease, _tainted| {
                 rq.submit(move || Box::pin(release_exclusive(resource_clone, runtime, permit)));

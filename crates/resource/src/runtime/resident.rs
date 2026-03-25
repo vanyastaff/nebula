@@ -16,6 +16,7 @@ use crate::handle::ResourceHandle;
 use crate::resource::Resource;
 use crate::topology::resident::Resident;
 use crate::topology::resident::config::Config;
+use crate::topology_tag::TopologyTag;
 
 /// Runtime state for a resident topology.
 ///
@@ -85,7 +86,7 @@ where
             && resource.is_alive_sync(&existing)
         {
             let lease: R::Lease = (*existing).clone().into();
-            return Ok(ResourceHandle::owned(lease, R::key(), "resident"));
+            return Ok(ResourceHandle::owned(lease, R::key(), TopologyTag::Resident));
         }
 
         // Slow path — serialise create / recreate.
@@ -95,7 +96,7 @@ where
         if let Some(existing) = self.cell.load() {
             if resource.is_alive_sync(&existing) {
                 let lease: R::Lease = (*existing).clone().into();
-                return Ok(ResourceHandle::owned(lease, R::key(), "resident"));
+                return Ok(ResourceHandle::owned(lease, R::key(), TopologyTag::Resident));
             }
 
             // Still not alive — destroy and recreate if configured.
@@ -130,7 +131,7 @@ where
         let lease: R::Lease = runtime.clone().into();
         self.cell.store(Arc::new(runtime));
 
-        Ok(ResourceHandle::owned(lease, R::key(), "resident"))
+        Ok(ResourceHandle::owned(lease, R::key(), TopologyTag::Resident))
     }
 }
 

@@ -16,6 +16,7 @@ use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
 use crate::topology::transport::Transport;
 use crate::topology::transport::config::Config;
+use crate::topology_tag::TopologyTag;
 
 /// Runtime state for a transport topology.
 ///
@@ -94,7 +95,7 @@ where
         Ok(ResourceHandle::guarded(
             session,
             R::key(),
-            "transport",
+            TopologyTag::Transport,
             generation,
             move |lease, tainted| {
                 rq.submit(move || {

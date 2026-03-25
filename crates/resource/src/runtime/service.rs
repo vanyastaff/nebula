@@ -14,6 +14,7 @@ use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
 use crate::topology::service::config::Config;
 use crate::topology::service::{Service, TokenMode};
+use crate::topology_tag::TopologyTag;
 
 /// Runtime state for a service topology.
 ///
@@ -72,7 +73,7 @@ where
             .map_err(Into::into)?;
 
         if R::TOKEN_MODE == TokenMode::Cloned {
-            return Ok(ResourceHandle::owned(token, R::key(), "service"));
+            return Ok(ResourceHandle::owned(token, R::key(), TopologyTag::Service));
         }
 
         let runtime = self.runtime.clone();
@@ -82,7 +83,7 @@ where
         Ok(ResourceHandle::guarded(
             token,
             R::key(),
-            "service",
+            TopologyTag::Service,
             generation,
             move |lease, _tainted| {
                 rq.submit(move || Box::pin(release_service_token(resource_clone, runtime, lease)));
@@ -245,7 +246,7 @@ mod tests {
 
         let handle = rt.acquire(&resource, &ctx, &rq, 0).await.unwrap();
         assert_eq!(*handle, "runtime-token");
-        assert_eq!(handle.topology_tag(), "service");
+        assert_eq!(handle.topology_tag(), TopologyTag::Service);
         // Owned handle — generation is None.
         assert!(handle.generation().is_none());
 
@@ -266,7 +267,7 @@ mod tests {
 
         let handle = rt.acquire(&resource, &ctx, &rq, 1).await.unwrap();
         assert_eq!(*handle, "tracked-runtime-tracked-token");
-        assert_eq!(handle.topology_tag(), "service");
+        assert_eq!(handle.topology_tag(), TopologyTag::Service);
         assert_eq!(handle.generation(), Some(1));
 
         // Drop triggers release via ReleaseQueue.
