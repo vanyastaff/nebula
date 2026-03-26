@@ -67,6 +67,13 @@ pub mod utils;
 
 // ── v2 modules ────────────────────────────────────────────────────────────────
 
+/// Composable storage layers (encryption, etc.) for v2 stores.
+pub mod layer;
+/// In-memory credential store for testing (v2).
+pub mod store_memory;
+/// v2 credential store trait with layered composition.
+pub mod store_v2;
+
 /// Credential state trait for stored credential data (v2).
 pub mod credential_state;
 /// Unified Credential trait replacing six v1 traits (v2).
@@ -116,6 +123,11 @@ pub use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
 pub use crate::rotation::{
     CredentialRotationEvent, GracePeriodConfig, RotationError, RotationResult,
 };
+
+// v2: Storage
+pub use layer::EncryptionLayer;
+pub use store_memory::InMemoryStore;
+pub use store_v2::{CredentialStoreV2, PutMode, StoreError, StoredCredential};
 
 // v2: Auth schemes
 pub use scheme::{ApiKeyAuth, BasicAuth, BearerToken, DatabaseAuth, OAuth2Token};

@@ -14,6 +14,9 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
   - `pending` — `PendingState` trait + `NoPendingState` marker. Uses `Zeroize` (not `ZeroizeOnDrop`).
   - `credential_v2` — Unified `Credential` trait (replaces 6 v1 traits). RPITIT, no `#[async_trait]`.
   - `resolve` — `ResolveResult`, `InteractionRequest`, `UserInput`, `RefreshOutcome`, `TestResult`, `RefreshPolicy`.
+  - `store_v2` — `CredentialStoreV2` trait (CRUD + CAS), `StoredCredential`, `PutMode`, `StoreError`.
+  - `store_memory` — `InMemoryStore` (test-only, `Clone` shares data via `Arc`).
+  - `layer/encryption` — `EncryptionLayer<S>` wraps any store with AES-256-GCM on `data` field. Serializes `EncryptedData` as JSON bytes.
 
 ## Traps
 - Circular dep: peer with nebula-resource, signal via EventBus only.
