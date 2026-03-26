@@ -155,7 +155,11 @@ impl<R: Resource> SessionGuard<R> {
     ///
     /// After this call, `Drop` is a no-op.
     fn defuse(&mut self) -> R::Lease {
-        self.session.take().expect("SessionGuard: already defused")
+        // Invariant: defuse() is called exactly once, right before
+        // constructing the ResourceHandle.
+        self.session
+            .take()
+            .unwrap_or_else(|| unreachable!("SessionGuard defused twice"))
     }
 }
 

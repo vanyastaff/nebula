@@ -96,12 +96,13 @@ impl Manager {
     /// Creates a new empty manager with the given configuration.
     pub fn with_config(config: ManagerConfig) -> Self {
         let (event_tx, _) = broadcast::channel(256);
+        let cancel = CancellationToken::new();
         let (release_queue, release_queue_handle) =
-            ReleaseQueue::new(config.release_queue_workers);
+            ReleaseQueue::with_cancel(config.release_queue_workers, cancel.clone());
         Self {
             registry: Registry::new(),
             recovery_groups: RecoveryGroupRegistry::new(),
-            cancel: CancellationToken::new(),
+            cancel,
             metrics: Arc::new(ResourceMetrics::new()),
             event_tx,
             release_queue: Arc::new(release_queue),
@@ -591,21 +592,33 @@ impl Manager {
     pub async fn graceful_shutdown(&self, config: ShutdownConfig) {
         tracing::info!("resource manager: starting graceful shutdown");
 
-        // Phase 1: SIGNAL — stop new acquires.
+        // Phase 1: SIGNAL — cancel the shared token. This does two things:
+        //   a) Rejects new acquire calls (checked in `lookup`).
+        //   b) Tells release queue workers to drain remaining tasks and exit
+        //      (they share this token via `ReleaseQueue::with_cancel`).
         self.cancel.cancel();
 
-        // Phase 2: DRAIN — wait for in-flight handles.
+        // Phase 2: DRAIN — wait for in-flight handles to be released.
         tokio::time::sleep(config.drain_timeout).await;
 
         // Phase 3: CLEAR — drop all ManagedResources so their
-        // Arc<ReleaseQueue> refs are released. This unblocks workers
-        // that are waiting for senders to close.
+        // Arc<ReleaseQueue> refs are released.
         self.registry.clear();
 
-        // Phase 4: AWAIT WORKERS — take the handle and shut down the
-        // release queue background workers.
+        // Phase 4: AWAIT WORKERS — workers are already draining (from
+        // Phase 1 cancel signal). Await with a bounded timeout in case
+        // a release task is slow.
         if let Some(handle) = self.release_queue_handle.lock().await.take() {
-            ReleaseQueue::shutdown(handle).await;
+            let shutdown_fut = ReleaseQueue::shutdown(handle);
+            if tokio::time::timeout(Duration::from_secs(10), shutdown_fut)
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    "resource manager: release queue workers did not \
+                     finish within 10s, continuing shutdown"
+                );
+            }
         }
 
         tracing::info!("resource manager: shutdown complete");
@@ -733,7 +746,7 @@ fn trigger_recovery_on_failure(gate: &Option<Arc<RecoveryGate>>, error: &Error) 
         return;
     }
     if let Ok(ticket) = gate.try_begin() {
-        ticket.fail_transient("acquire failed");
+        ticket.fail_transient(error.to_string());
     }
 }
 

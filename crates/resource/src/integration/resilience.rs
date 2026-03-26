@@ -33,7 +33,9 @@ pub struct AcquireResilience {
 /// Retry policy for resource acquisition.
 #[derive(Debug, Clone)]
 pub struct AcquireRetryConfig {
-    /// Maximum number of retry attempts (excluding the initial try).
+    /// Maximum total number of attempts (including the initial try).
+    ///
+    /// For example, `max_attempts: 3` means 1 initial try + 2 retries.
     pub max_attempts: u32,
     /// Initial backoff duration before the first retry.
     pub initial_backoff: Duration,

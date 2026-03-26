@@ -513,7 +513,11 @@ impl<R: Resource> CreateGuard<R> {
 
     /// Returns a reference to the inner entry for inspection.
     fn entry(&self) -> &PoolEntry<R> {
-        self.entry.as_ref().expect("CreateGuard: already defused")
+        // Invariant: entry() is only called between new() and defuse(),
+        // both are private with single call sites in the same function.
+        self.entry
+            .as_ref()
+            .unwrap_or_else(|| unreachable!("CreateGuard accessed after defuse"))
     }
 
     /// Returns a reference to the runtime for use in `prepare()`.
@@ -525,7 +529,11 @@ impl<R: Resource> CreateGuard<R> {
     ///
     /// After this call, `Drop` is a no-op.
     fn defuse(&mut self) -> PoolEntry<R> {
-        self.entry.take().expect("CreateGuard: already defused")
+        // Invariant: defuse() is called exactly once, right before
+        // constructing the ResourceHandle.
+        self.entry
+            .take()
+            .unwrap_or_else(|| unreachable!("CreateGuard defused twice"))
     }
 }
 
