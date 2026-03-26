@@ -479,4 +479,50 @@ mod tests {
         assert_eq!(*handle.resource_key(), key);
         assert_eq!(handle.topology_tag(), TopologyTag::Pool);
     }
+
+    #[test]
+    fn taint_on_shared_handle_is_seen_by_callback() {
+        let was_tainted = Arc::new(AtomicBool::new(false));
+        let wt = was_tainted.clone();
+
+        {
+            let mut handle = ResourceHandle::<DummyResource>::shared(
+                Arc::new(42),
+                test_key(),
+                TopologyTag::Resident,
+                1,
+                move |tainted| {
+                    wt.store(tainted, Ordering::Relaxed);
+                },
+            );
+            handle.taint();
+        }
+
+        assert!(
+            was_tainted.load(Ordering::Relaxed),
+            "taint() on Shared handle should be visible in release callback"
+        );
+    }
+
+    #[test]
+    fn detach_guarded_does_not_fire_callback() {
+        let released = Arc::new(AtomicBool::new(false));
+        let r = released.clone();
+
+        let handle = ResourceHandle::<DummyResource>::guarded(
+            10,
+            test_key(),
+            TopologyTag::Pool,
+            1,
+            move |_lease, _tainted| {
+                r.store(true, Ordering::Relaxed);
+            },
+        );
+        let lease = handle.detach();
+        assert_eq!(lease, Some(10));
+        assert!(
+            !released.load(Ordering::Relaxed),
+            "detach should skip the release callback"
+        );
+    }
 }

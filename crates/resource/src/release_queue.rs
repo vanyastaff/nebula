@@ -340,4 +340,56 @@ mod tests {
             "all {total_tasks} tasks must complete — none should be dropped"
         );
     }
+
+    #[tokio::test]
+    async fn close_drains_buffered_tasks_before_exit() {
+        let cancel = CancellationToken::new();
+        let (queue, handle) = ReleaseQueue::with_cancel(1, cancel);
+        let counter = Arc::new(AtomicU32::new(0));
+
+        for _ in 0..5 {
+            let c = counter.clone();
+            queue.submit(move || {
+                Box::pin(async move {
+                    c.fetch_add(1, Ordering::Relaxed);
+                })
+            });
+        }
+
+        // Signal drain via close() without dropping the queue.
+        queue.close();
+        ReleaseQueue::shutdown(handle).await;
+
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            5,
+            "close() must drain all buffered tasks before workers exit"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_task_is_aborted_after_execution_timeout() {
+        let (queue, handle) = ReleaseQueue::new(1);
+        let completed = Arc::new(AtomicBool::new(false));
+        let c = completed.clone();
+
+        queue.submit(move || {
+            Box::pin(async move {
+                // Sleep longer than TASK_EXECUTION_TIMEOUT (30s).
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                c.store(true, Ordering::Relaxed);
+            })
+        });
+
+        // Advance past the task timeout.
+        tokio::time::sleep(Duration::from_secs(35)).await;
+
+        drop(queue);
+        ReleaseQueue::shutdown(handle).await;
+
+        assert!(
+            !completed.load(Ordering::Relaxed),
+            "slow task should have been aborted by the execution timeout"
+        );
+    }
 }
