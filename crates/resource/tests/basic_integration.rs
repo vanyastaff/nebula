@@ -3158,3 +3158,211 @@ async fn exclusive_reset_failure_does_not_block_next_acquire() {
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
+
+// ---------------------------------------------------------------------------
+// Recovery gate integration tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn recovery_gate_blocks_acquire_when_permanently_failed() {
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    let gate = RecoveryGate::new(RecoveryGateConfig::default());
+    // Force permanent failure.
+    let ticket = gate.try_begin().expect("gate starts idle");
+    ticket.fail_permanent("backend certificate expired");
+
+    let manager = Manager::new();
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+            None,
+            Some(Arc::new(gate)),
+        )
+        .expect("registration should succeed");
+
+    let ctx = test_ctx();
+    let result: Result<ResourceHandle<ResidentTestResource>, _> =
+        manager.acquire_resident(&(), &ctx, &AcquireOptions::default()).await;
+
+    let err = result.err().expect("acquire should fail when gate is permanently failed");
+    assert_eq!(
+        *err.kind(),
+        ErrorKind::Permanent,
+        "should be a permanent error"
+    );
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn recovery_gate_blocks_acquire_when_in_progress() {
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    let gate = RecoveryGate::new(RecoveryGateConfig::default());
+    // Hold the ticket — gate is InProgress.
+    let _ticket = gate.try_begin().expect("gate starts idle");
+
+    let manager = Manager::new();
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+            None,
+            Some(Arc::new(gate)),
+        )
+        .expect("registration should succeed");
+
+    let ctx = test_ctx();
+    let result: Result<ResourceHandle<ResidentTestResource>, _> =
+        manager.acquire_resident(&(), &ctx, &AcquireOptions::default()).await;
+
+    let err = result.err().expect("acquire should fail when gate is in progress");
+    assert_eq!(
+        *err.kind(),
+        ErrorKind::Transient,
+        "should be a transient error"
+    );
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn recovery_gate_allows_acquire_when_idle() {
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    let gate = RecoveryGate::new(RecoveryGateConfig::default());
+
+    let manager = Manager::new();
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+            None,
+            Some(Arc::new(gate)),
+        )
+        .expect("registration should succeed");
+
+    let ctx = test_ctx();
+    let handle: ResourceHandle<ResidentTestResource> = manager
+        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed when gate is idle");
+
+    drop(handle);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn recovery_gate_allows_acquire_after_backoff_expires() {
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    let gate = RecoveryGate::new(RecoveryGateConfig {
+        max_attempts: 5,
+        base_backoff: std::time::Duration::from_millis(0), // instant expiry
+    });
+    // Fail transiently — backoff is 0ms, so retry_at is already in the past.
+    let ticket = gate.try_begin().expect("gate starts idle");
+    ticket.fail_transient("connection refused");
+
+    let manager = Manager::new();
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+            None,
+            Some(Arc::new(gate)),
+        )
+        .expect("registration should succeed");
+
+    let ctx = test_ctx();
+    // Backoff expired, so acquire should proceed (caller acts as probe).
+    let handle: ResourceHandle<ResidentTestResource> = manager
+        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed after backoff expires");
+
+    drop(handle);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn recovery_gate_none_does_not_affect_acquire() {
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    let manager = Manager::new();
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+            None,
+            None, // no recovery gate
+        )
+        .expect("registration should succeed");
+
+    let ctx = test_ctx();
+    let handle: ResourceHandle<ResidentTestResource> = manager
+        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed without recovery gate");
+
+    drop(handle);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
