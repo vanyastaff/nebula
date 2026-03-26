@@ -11,6 +11,9 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 - v2 modules coexist with v1 (v1 deleted later):
   - `scheme/` — 5 `AuthScheme` types (BearerToken, BasicAuth, DatabaseAuth, ApiKeyAuth, OAuth2Token)
   - `credential_state` — `CredentialStateV2` (avoids v1 name conflict). `identity_state!` macro.
+  - `pending` — `PendingState` trait + `NoPendingState` marker. Uses `Zeroize` (not `ZeroizeOnDrop`).
+  - `credential_v2` — Unified `Credential` trait (replaces 6 v1 traits). RPITIT, no `#[async_trait]`.
+  - `resolve` — `ResolveResult`, `InteractionRequest`, `UserInput`, `RefreshOutcome`, `TestResult`, `RefreshPolicy`.
 
 ## Traps
 - Circular dep: peer with nebula-resource, signal via EventBus only.

@@ -35,8 +35,8 @@ impl BasicAuth {
     pub fn basic_header(&self) -> String {
         use base64::Engine;
         self.password.expose_secret(|p| {
-            let encoded = base64::engine::general_purpose::STANDARD
-                .encode(format!("{}:{p}", self.username));
+            let encoded =
+                base64::engine::general_purpose::STANDARD.encode(format!("{}:{p}", self.username));
             format!("Basic {encoded}")
         })
     }

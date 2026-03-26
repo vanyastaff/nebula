@@ -67,10 +67,16 @@ pub mod utils;
 
 // ── v2 modules ────────────────────────────────────────────────────────────────
 
-/// Authentication scheme types (v2).
-pub mod scheme;
 /// Credential state trait for stored credential data (v2).
 pub mod credential_state;
+/// Unified Credential trait replacing six v1 traits (v2).
+pub mod credential_v2;
+/// Typed pending state for interactive flows (v2).
+pub mod pending;
+/// Resolve result types: interaction, refresh, test (v2).
+pub mod resolve;
+/// Authentication scheme types (v2).
+pub mod scheme;
 
 // ── Root re-exports ─────────────────────────────────────────────────────────
 // Commonly-used types available directly as `nebula_credential::TypeName`.
@@ -116,6 +122,18 @@ pub use scheme::{ApiKeyAuth, BasicAuth, BearerToken, DatabaseAuth, OAuth2Token};
 
 // v2: Credential state
 pub use credential_state::CredentialStateV2;
+
+// v2: Pending state
+pub use pending::{NoPendingState, PendingState};
+
+// v2: Unified Credential trait
+pub use credential_v2::Credential;
+
+// v2: Resolve types
+pub use resolve::{
+    DisplayData, InteractionRequest, RefreshOutcome, RefreshPolicy, ResolveResult,
+    StaticResolveResult, TestResult, UserInput,
+};
 
 /// Commonly used types and traits
 pub mod prelude {

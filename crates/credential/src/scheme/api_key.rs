@@ -37,9 +37,7 @@ impl ApiKeyAuth {
     pub fn header(name: impl Into<String>, key: SecretString) -> Self {
         Self {
             key,
-            placement: ApiKeyPlacement::Header {
-                name: name.into(),
-            },
+            placement: ApiKeyPlacement::Header { name: name.into() },
         }
     }
 
@@ -47,9 +45,7 @@ impl ApiKeyAuth {
     pub fn query(name: impl Into<String>, key: SecretString) -> Self {
         Self {
             key,
-            placement: ApiKeyPlacement::QueryParam {
-                name: name.into(),
-            },
+            placement: ApiKeyPlacement::QueryParam { name: name.into() },
         }
     }
 

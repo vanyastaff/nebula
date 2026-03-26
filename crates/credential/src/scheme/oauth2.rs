@@ -61,8 +61,7 @@ impl OAuth2Token {
 
     /// Returns `true` if the token has expired.
     pub fn is_expired(&self) -> bool {
-        self.expires_at
-            .is_some_and(|at| at <= chrono::Utc::now())
+        self.expires_at.is_some_and(|at| at <= chrono::Utc::now())
     }
 }
 

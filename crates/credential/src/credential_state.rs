@@ -7,8 +7,8 @@
 //!
 //! [`AuthScheme`]: nebula_core::AuthScheme
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 /// Trait for credential state types stored in encrypted storage (v2).
 ///
@@ -16,9 +16,7 @@ use serde::Serialize;
 /// from this state for consumer use.
 ///
 /// [`AuthScheme`]: nebula_core::AuthScheme
-pub trait CredentialStateV2:
-    Serialize + DeserializeOwned + Send + Sync + 'static
-{
+pub trait CredentialStateV2: Serialize + DeserializeOwned + Send + Sync + 'static {
     /// Unique identifier for this state type (e.g., `"oauth2_state"`).
     const KIND: &'static str;
     /// Schema version for migration support.
