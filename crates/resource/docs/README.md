@@ -109,16 +109,18 @@ impl Resource for HttpResource {
 For pool topology, implement [`Pooled`] to tell the runtime when an instance
 can be recycled and how to detect a broken one.
 
-```rust,no_run
-use nebula_resource::topology::pooled::{Pooled, RecycleDecision, BrokenCheck};
+```rust,ignore
+use nebula_resource::topology::pooled::{Pooled, BrokenCheck, RecycleDecision, InstanceMetrics};
 
 impl Pooled for HttpResource {
-    fn recycle_decision(&self, _runtime: &HttpRuntime) -> RecycleDecision {
-        RecycleDecision::Recycle   // HTTP clients are always reusable
+    fn is_broken(&self, _runtime: &HttpRuntime) -> BrokenCheck {
+        BrokenCheck::Healthy       // HTTP clients don't break between uses
     }
 
-    fn broken_check(&self) -> BrokenCheck {
-        BrokenCheck::None          // No pre-acquire health probe needed
+    fn recycle(
+        &self, _runtime: &HttpRuntime, _metrics: &InstanceMetrics,
+    ) -> impl Future<Output = Result<RecycleDecision, HttpError>> + Send {
+        async { Ok(RecycleDecision::Keep) }  // always reusable
     }
 }
 ```
@@ -141,7 +143,7 @@ async fn main() -> Result<(), nebula_resource::Error> {
         PoolConfig::default(),
     )?;
 
-    let ctx = BasicCtx::new(ScopeLevel::Global);
+    let ctx = BasicCtx::new(nebula_resource::ExecutionId::new());
     let options = AcquireOptions::default();
 
     // Typed acquire — returns ResourceHandle<HttpResource>
