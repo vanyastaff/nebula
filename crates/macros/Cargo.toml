@@ -23,7 +23,7 @@ proc-macro2 = "1.0"
 trybuild = "1.0"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-toml = "1.0"
+toml = "1.1"
 yaml-rust2 = "0.11"
 async-trait = { workspace = true }
 nebula-validator = { path = "../validator" }
