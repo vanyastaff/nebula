@@ -143,6 +143,11 @@ impl Manager {
     /// callers receive an immediate error instead of hitting the dead
     /// backend. On transient acquire failures the gate is passively
     /// triggered so subsequent callers fast-fail.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`ResourceConfig::validate()`] fails on the
+    /// provided config.
     // Reason: register is a constructor that needs all parameters upfront;
     // a builder would be overengineering for a single-call registration API.
     #[allow(clippy::too_many_arguments)]
@@ -156,6 +161,9 @@ impl Manager {
         resilience: Option<AcquireResilience>,
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<(), Error> {
+        use crate::resource::ResourceConfig as _;
+        config.validate()?;
+
         let key = R::key();
 
         let per_resource_metrics = Arc::new(ResourceMetrics::new());
