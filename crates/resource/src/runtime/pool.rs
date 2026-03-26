@@ -184,7 +184,7 @@ where
         &self,
         resource: &R,
         resource_config: &R::Config,
-        credential: &R::Credential,
+        auth: &R::Auth,
         ctx: &dyn Ctx,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
@@ -214,7 +214,7 @@ where
 
         // No idle instance available — create a new one with our permit.
         let entry = match self
-            .create_entry(resource, resource_config, credential, ctx)
+            .create_entry(resource, resource_config, auth, ctx)
             .await
         {
             Ok(e) => e,
@@ -360,12 +360,12 @@ where
         &self,
         resource: &R,
         config: &R::Config,
-        credential: &R::Credential,
+        auth: &R::Auth,
         ctx: &dyn Ctx,
     ) -> Result<PoolEntry<R>, Error> {
         let runtime = match tokio::time::timeout(
             self.config.create_timeout,
-            resource.create(config, credential, ctx),
+            resource.create(config, auth, ctx),
         )
         .await
         {
@@ -619,7 +619,7 @@ mod tests {
         type Runtime = u32;
         type Lease = u32;
         type Error = MockError;
-        type Credential = ();
+        type Auth = ();
 
         fn key() -> ResourceKey {
             resource_key!("mock-pool")
@@ -628,7 +628,7 @@ mod tests {
         fn create(
             &self,
             _config: &PoolTestConfig,
-            _credential: &(),
+            _auth: &(),
             _ctx: &dyn Ctx,
         ) -> impl std::future::Future<Output = Result<u32, MockError>> + Send {
             let fail = self.fail_create.load(Ordering::Relaxed);

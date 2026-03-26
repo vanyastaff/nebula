@@ -352,7 +352,7 @@ mod tests {
         type Runtime = ();
         type Lease = u32;
         type Error = std::convert::Infallible;
-        type Credential = ();
+        type Auth = ();
         fn key() -> ResourceKey {
             nebula_core::resource_key!("dummy")
         }
@@ -360,7 +360,7 @@ mod tests {
         fn create(
             &self,
             _config: &(),
-            _credential: &(),
+            _auth: &(),
             _ctx: &dyn crate::ctx::Ctx,
         ) -> impl std::future::Future<Output = Result<(), std::convert::Infallible>> + Send
         {

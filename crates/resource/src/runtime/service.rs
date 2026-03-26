@@ -148,7 +148,7 @@ mod tests {
         type Runtime = String;
         type Lease = String;
         type Error = SvcError;
-        type Credential = ();
+        type Auth = ();
 
         fn key() -> ResourceKey {
             resource_key!("cloned-svc")
@@ -157,7 +157,7 @@ mod tests {
         fn create(
             &self,
             _config: &String,
-            _credential: &(),
+            _auth: &(),
             _ctx: &dyn Ctx,
         ) -> impl std::future::Future<Output = Result<String, SvcError>> + Send {
             async { Ok("runtime".into()) }
@@ -193,7 +193,7 @@ mod tests {
         type Runtime = String;
         type Lease = String;
         type Error = SvcError;
-        type Credential = ();
+        type Auth = ();
 
         fn key() -> ResourceKey {
             resource_key!("tracked-svc")
@@ -202,7 +202,7 @@ mod tests {
         fn create(
             &self,
             _config: &String,
-            _credential: &(),
+            _auth: &(),
             _ctx: &dyn Ctx,
         ) -> impl std::future::Future<Output = Result<String, SvcError>> + Send {
             async { Ok("tracked-runtime".into()) }

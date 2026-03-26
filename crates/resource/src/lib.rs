@@ -57,7 +57,7 @@ pub use metrics::{MetricsSnapshot, ResourceMetrics};
 pub use options::{AcquireIntent, AcquireOptions};
 pub use registry::{AnyManagedResource, Registry};
 pub use release_queue::ReleaseQueue;
-pub use resource::{AnyResource, Credential, Resource, ResourceConfig, ResourceMetadata};
+pub use resource::{AnyResource, Resource, ResourceConfig, ResourceMetadata};
 pub use state::{ResourcePhase, ResourceStatus};
 pub use topology::daemon::{Daemon, RestartPolicy};
 pub use topology::event_source::EventSource;

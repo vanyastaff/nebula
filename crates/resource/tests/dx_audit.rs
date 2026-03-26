@@ -118,7 +118,7 @@ impl Resource for HttpClientResource {
     type Runtime = FakeHttpClient;
     type Lease = FakeHttpClient;
     type Error = DxTestError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -127,7 +127,7 @@ impl Resource for HttpClientResource {
     fn create(
         &self,
         _config: &HttpClientConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> impl std::future::Future<Output = Result<FakeHttpClient, DxTestError>> + Send {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -198,7 +198,7 @@ async fn use_case_1_http_client_pool() {
 
     // FRICTION NOTE [register() PARAMETER COUNT]: register() takes 7 parameters.
     // The typical call for a basic pool is:
-    //   register(resource, config, credential, scope, topology, resilience, recovery_gate)
+    //   register(resource, config, auth, scope, topology, resilience, recovery_gate)
     // The last two are almost always None for basic usage.
     // This is called out in a comment (`// Reason: register is a constructor ...`)
     // but it's still painful. A builder or at least a `register_simple()` helper
@@ -221,15 +221,15 @@ async fn use_case_1_http_client_pool() {
 
     let ctx = test_ctx();
 
-    // FRICTION NOTE [acquire_pooled CREDENTIAL PARAMETER]: The acquire_pooled
+    // FRICTION NOTE [acquire_pooled AUTH PARAMETER]: The acquire_pooled
     // signature is:
-    //   async fn acquire_pooled<R>(&self, credential: &R::Credential, ctx: &dyn Ctx, options: &AcquireOptions)
+    //   async fn acquire_pooled<R>(&self, auth: &R::Auth, ctx: &dyn Ctx, options: &AcquireOptions)
     //
-    // When Credential = (), you must pass `&()`. This is not obvious. The
+    // When Auth = (), you must pass `&()`. This is not obvious. The
     // README example uses `manager.acquire(&key, &ctx)` which doesn't exist.
     // I expected: `manager.acquire::<HttpClientResource>(&ctx, &opts)`.
-    // Having to pass credential at acquire-time when most resources don't use
-    // them adds noise to every call site.
+    // Having to pass auth at acquire-time when most resources don't use
+    // it adds noise to every call site.
     // SEVERITY: Minor
 
     let handle: ResourceHandle<HttpClientResource> = manager
@@ -283,7 +283,7 @@ impl Resource for ConfigStoreResource {
     type Runtime = ConfigStore;
     type Lease = ConfigStore;
     type Error = DxTestError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("config.store")
@@ -292,7 +292,7 @@ impl Resource for ConfigStoreResource {
     fn create(
         &self,
         config: &ConfigStoreConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> impl std::future::Future<Output = Result<ConfigStore, DxTestError>> + Send {
         let path = config.path.clone();
@@ -425,7 +425,7 @@ impl Resource for DbResource {
     type Runtime = FakeDbConnection;
     type Lease = FakeDbConnection;
     type Error = DxTestError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("db.connection")
@@ -434,7 +434,7 @@ impl Resource for DbResource {
     fn create(
         &self,
         _config: &DbConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> impl std::future::Future<Output = Result<FakeDbConnection, DxTestError>> + Send {
         let count = self.create_count.clone();

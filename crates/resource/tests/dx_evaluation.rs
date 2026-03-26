@@ -90,7 +90,7 @@ impl Resource for HttpResource {
     type Runtime = HttpClient;
     type Lease = HttpClient; // same as Runtime — blanket From<T> for T covers the bounds
     type Error = MyError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -99,7 +99,7 @@ impl Resource for HttpResource {
     async fn create(
         &self,
         config: &HttpConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn nebula_resource::Ctx,
     ) -> Result<HttpClient, MyError> {
         Ok(HttpClient {
@@ -215,7 +215,7 @@ impl Resource for ConfigStoreResource {
     type Runtime = ConfigStore;
     type Lease = ConfigStore;
     type Error = MyError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("config.store")
@@ -224,7 +224,7 @@ impl Resource for ConfigStoreResource {
     async fn create(
         &self,
         config: &ConfigStoreConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn nebula_resource::Ctx,
     ) -> Result<ConfigStore, MyError> {
         let mut map = std::collections::HashMap::new();
@@ -333,7 +333,7 @@ impl Resource for DbResource {
     type Runtime = DbConnection;
     type Lease = DbConnection;
     type Error = MyError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("db.connection")
@@ -342,7 +342,7 @@ impl Resource for DbResource {
     async fn create(
         &self,
         _config: &DbConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn nebula_resource::Ctx,
     ) -> Result<DbConnection, MyError> {
         let id = self.counter.fetch_add(1, Ordering::Relaxed);
