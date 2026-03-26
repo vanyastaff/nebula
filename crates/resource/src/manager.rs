@@ -29,6 +29,7 @@ use crate::events::ResourceEvent;
 use crate::integration::AcquireResilience;
 use crate::metrics::ResourceMetrics;
 use crate::options::AcquireOptions;
+use crate::recovery::gate::{GateState, RecoveryGate};
 use crate::recovery::group::RecoveryGroupRegistry;
 use crate::registry::Registry;
 use crate::release_queue::ReleaseQueue;
@@ -88,7 +89,8 @@ impl Manager {
     }
 
     /// Registers a resource with its config, credential, scope, topology,
-    /// release queue, and optional resilience configuration.
+    /// release queue, optional resilience configuration, and optional
+    /// recovery gate.
     ///
     /// The resource is wrapped in a [`ManagedResource`] and stored in the
     /// registry under `R::key()`. If a resource with the same key and scope
@@ -96,6 +98,12 @@ impl Manager {
     ///
     /// When `resilience` is `Some`, acquire calls are wrapped with
     /// timeout and retry logic from [`AcquireResilience`].
+    ///
+    /// When `recovery_gate` is `Some`, acquire calls check the gate before
+    /// proceeding. If the backend is recovering or permanently failed,
+    /// callers receive an immediate error instead of hitting the dead
+    /// backend. On transient acquire failures the gate is passively
+    /// triggered so subsequent callers fast-fail.
     // Reason: register is a constructor that needs all parameters upfront;
     // a builder would be overengineering for a single-call registration API.
     #[allow(clippy::too_many_arguments)]
@@ -108,6 +116,7 @@ impl Manager {
         topology: TopologyRuntime<R>,
         release_queue: Arc<ReleaseQueue>,
         resilience: Option<AcquireResilience>,
+        recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<(), Error> {
         let key = R::key();
 
@@ -122,6 +131,7 @@ impl Manager {
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
             metrics: per_resource_metrics,
             resilience,
+            recovery_gate,
         });
 
         let type_id = TypeId::of::<ManagedResource<R>>();
@@ -188,6 +198,7 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
+        check_recovery_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
         let result = execute_with_resilience(&resilience, || {
@@ -218,6 +229,9 @@ impl Manager {
         })
         .await;
 
+        if let Err(e) = &result {
+            trigger_recovery_on_failure(&managed.recovery_gate, e);
+        }
         self.record_acquire_result(&managed, &result, started);
         result
     }
@@ -244,6 +258,7 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
+        check_recovery_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
         let result = execute_with_resilience(&resilience, || {
@@ -264,6 +279,9 @@ impl Manager {
         })
         .await;
 
+        if let Err(e) = &result {
+            trigger_recovery_on_failure(&managed.recovery_gate, e);
+        }
         self.record_acquire_result(&managed, &result, started);
         result
     }
@@ -289,6 +307,7 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
+        check_recovery_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
         let result = execute_with_resilience(&resilience, || {
@@ -316,6 +335,9 @@ impl Manager {
         })
         .await;
 
+        if let Err(e) = &result {
+            trigger_recovery_on_failure(&managed.recovery_gate, e);
+        }
         self.record_acquire_result(&managed, &result, started);
         result
     }
@@ -341,6 +363,7 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
+        check_recovery_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
         let result = execute_with_resilience(&resilience, || {
@@ -368,6 +391,9 @@ impl Manager {
         })
         .await;
 
+        if let Err(e) = &result {
+            trigger_recovery_on_failure(&managed.recovery_gate, e);
+        }
         self.record_acquire_result(&managed, &result, started);
         result
     }
@@ -393,6 +419,7 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
+        check_recovery_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
         let result = execute_with_resilience(&resilience, || {
@@ -419,8 +446,61 @@ impl Manager {
         })
         .await;
 
+        if let Err(e) = &result {
+            trigger_recovery_on_failure(&managed.recovery_gate, e);
+        }
         self.record_acquire_result(&managed, &result, started);
         result
+    }
+
+    /// Hot-reloads the configuration for a registered resource.
+    ///
+    /// Validates the new config, swaps it into the [`ArcSwap`](arc_swap::ArcSwap),
+    /// increments the generation counter, and — for pool topologies — updates the
+    /// fingerprint so idle instances with stale configs are evicted on next
+    /// acquire or release.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no
+    ///   resource of type `R` is registered for the given scope.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if config
+    ///   validation fails.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the
+    ///   manager is shut down.
+    pub fn reload_config<R: Resource>(
+        &self,
+        new_config: R::Config,
+        scope: &ScopeLevel,
+    ) -> Result<(), Error> {
+        use crate::resource::ResourceConfig as _;
+
+        new_config.validate()?;
+
+        let managed = self.lookup::<R>(scope)?;
+
+        // Compute fingerprint before swap so we don't clone config.
+        let new_fp = new_config.fingerprint();
+
+        // Atomically swap the config.
+        managed.config.store(Arc::new(new_config));
+
+        // Update pool fingerprint so stale idle instances are evicted.
+        if let TopologyRuntime::Pool(ref pool_rt) = managed.topology {
+            pool_rt.set_fingerprint(new_fp);
+        }
+
+        // Bump generation — readers snapshot this to detect changes.
+        managed
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+
+        let _ = self
+            .event_tx
+            .send(ResourceEvent::ConfigReloaded { key: R::key() });
+
+        tracing::info!(key = %R::key(), "resource config reloaded");
+        Ok(())
     }
 
     /// Removes a resource from the registry by key.
@@ -577,6 +657,46 @@ impl Manager {
                 });
             }
         }
+    }
+}
+
+/// Checks the recovery gate before acquire.
+///
+/// Returns `Ok(())` if the backend is presumed healthy or the backoff has
+/// expired (allowing the caller to act as the probe). Returns an
+/// appropriate error otherwise.
+fn check_recovery_gate(gate: &Option<Arc<RecoveryGate>>) -> Result<(), Error> {
+    let Some(gate) = gate else { return Ok(()) };
+
+    match gate.state() {
+        GateState::Idle => Ok(()),
+        GateState::InProgress { .. } => Err(Error::transient(
+            "backend recovery in progress, retry later",
+        )),
+        GateState::Failed { retry_at, .. } => {
+            let now = Instant::now();
+            if now < retry_at {
+                let wait = retry_at - now;
+                Err(Error::exhausted("backend recovering", Some(wait)))
+            } else {
+                // Backoff expired — allow through so this caller acts as probe.
+                Ok(())
+            }
+        }
+        GateState::PermanentlyFailed { message, .. } => Err(Error::permanent(message)),
+    }
+}
+
+/// If the acquire result is a retryable error and a recovery gate is
+/// present, passively trigger recovery so subsequent callers fast-fail
+/// instead of independently hitting the dead backend.
+fn trigger_recovery_on_failure(gate: &Option<Arc<RecoveryGate>>, error: &Error) {
+    let Some(gate) = gate else { return };
+    if !error.is_retryable() {
+        return;
+    }
+    if let Ok(ticket) = gate.try_begin() {
+        ticket.fail_transient("acquire failed");
     }
 }
 

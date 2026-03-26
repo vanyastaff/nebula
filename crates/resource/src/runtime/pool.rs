@@ -34,6 +34,9 @@ struct PoolEntry<R: Resource> {
     runtime: R::Runtime,
     metrics: InstanceMetrics,
     fingerprint: u64,
+    /// When this entry was last returned to the idle queue.
+    /// `None` for freshly created entries that have never been idle.
+    returned_at: Option<Instant>,
 }
 
 /// Result of attempting to pop an idle instance from the pool.
@@ -92,6 +95,62 @@ where
     R::Lease: Into<R::Runtime>,
     R::Runtime: Clone,
 {
+    /// Runs one maintenance cycle: evicts idle-timeout, max-lifetime, and
+    /// stale-fingerprint entries from the idle queue.
+    ///
+    /// Returns the number of entries evicted. Each evicted entry is destroyed
+    /// via [`Resource::destroy`].
+    pub async fn run_maintenance(&self, resource: &R) -> usize {
+        let to_destroy = {
+            let mut idle = self.idle.lock().await;
+            let current_fp = self.current_fingerprint.load(Ordering::Acquire);
+            let now = Instant::now();
+
+            let mut keep = VecDeque::with_capacity(idle.len());
+            let mut evict = Vec::new();
+
+            for entry in idle.drain(..) {
+                if Self::should_evict(&entry, &self.config, current_fp, now) {
+                    evict.push(entry.runtime);
+                } else {
+                    keep.push_back(entry);
+                }
+            }
+            *idle = keep;
+            evict
+        };
+
+        let evicted = to_destroy.len();
+        for runtime in to_destroy {
+            let _ = resource.destroy(runtime).await;
+        }
+
+        if evicted > 0 {
+            tracing::debug!(evicted, "pool maintenance: evicted idle/expired entries");
+        }
+        evicted
+    }
+
+    /// Checks whether a pool entry should be evicted during maintenance.
+    fn should_evict(entry: &PoolEntry<R>, config: &Config, current_fp: u64, now: Instant) -> bool {
+        // Stale fingerprint.
+        if entry.fingerprint != current_fp {
+            return true;
+        }
+        // Max lifetime exceeded.
+        if config
+            .max_lifetime
+            .is_some_and(|max| now.duration_since(entry.metrics.created_at) > max)
+        {
+            return true;
+        }
+        // Idle timeout exceeded.
+        if let (Some(idle_timeout), Some(returned_at)) = (config.idle_timeout, entry.returned_at) {
+            return now.duration_since(returned_at) > idle_timeout;
+        }
+        false
+    }
+
     /// Acquires an instance from the pool.
     ///
     /// 1. Acquire a semaphore permit (waits with timeout if pool is full).
@@ -316,6 +375,7 @@ where
                 created_at: Instant::now(),
             },
             fingerprint: self.current_fingerprint.load(Ordering::Acquire),
+            returned_at: None,
         })
     }
 
@@ -357,6 +417,7 @@ where
                     runtime,
                     metrics: entry.metrics.clone(),
                     fingerprint: entry.fingerprint,
+                    returned_at: None, // set by release_entry on idle push
                 };
 
                 // Load fingerprint at release time (not checkout time) to detect
@@ -420,6 +481,8 @@ async fn release_entry<R>(
     // Async recycle check.
     match resource.recycle(&entry.runtime, &entry.metrics).await {
         Ok(RecycleDecision::Keep) => {
+            let mut entry = entry;
+            entry.returned_at = Some(Instant::now());
             idle.lock().await.push_back(entry);
         }
         Ok(RecycleDecision::Drop) | Err(_) => {
@@ -871,5 +934,123 @@ mod tests {
 
         drop(rq);
         ReleaseQueue::shutdown(rq_handle).await;
+    }
+
+    // -- Maintenance tests --
+
+    /// Helper: pushes a fake idle entry with custom timestamps.
+    async fn push_idle_entry(
+        pool: &PoolRuntime<MockPool>,
+        created_at: Instant,
+        returned_at: Option<Instant>,
+        fingerprint: u64,
+    ) {
+        pool.idle.lock().await.push_back(PoolEntry {
+            runtime: 42,
+            metrics: InstanceMetrics {
+                error_count: 0,
+                checkout_count: 1,
+                created_at,
+            },
+            fingerprint,
+            returned_at,
+        });
+    }
+
+    #[tokio::test]
+    async fn maintenance_evicts_idle_timeout_entries() {
+        let resource = MockPool::new();
+        let config = Config {
+            max_size: 5,
+            idle_timeout: Some(std::time::Duration::from_millis(50)),
+            max_lifetime: None,
+            ..Config::default()
+        };
+        let pool = PoolRuntime::<MockPool>::new(config, 1);
+
+        // Push two entries: one returned long ago (should be evicted),
+        // one returned just now (should be kept).
+        let long_ago = Instant::now() - std::time::Duration::from_millis(200);
+        push_idle_entry(&pool, Instant::now(), Some(long_ago), 1).await;
+        push_idle_entry(&pool, Instant::now(), Some(Instant::now()), 1).await;
+
+        assert_eq!(pool.idle_count().await, 2);
+        let evicted = pool.run_maintenance(&resource).await;
+        assert_eq!(evicted, 1);
+        assert_eq!(pool.idle_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn maintenance_evicts_max_lifetime_entries() {
+        let resource = MockPool::new();
+        let config = Config {
+            max_size: 5,
+            idle_timeout: None,
+            max_lifetime: Some(std::time::Duration::from_millis(50)),
+            ..Config::default()
+        };
+        let pool = PoolRuntime::<MockPool>::new(config, 1);
+
+        // One old entry (should be evicted), one fresh (should be kept).
+        let old_creation = Instant::now() - std::time::Duration::from_millis(200);
+        push_idle_entry(&pool, old_creation, Some(Instant::now()), 1).await;
+        push_idle_entry(&pool, Instant::now(), Some(Instant::now()), 1).await;
+
+        let evicted = pool.run_maintenance(&resource).await;
+        assert_eq!(evicted, 1);
+        assert_eq!(pool.idle_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn maintenance_evicts_stale_fingerprint_entries() {
+        let resource = MockPool::new();
+        let config = Config {
+            max_size: 5,
+            idle_timeout: None,
+            max_lifetime: None,
+            ..Config::default()
+        };
+        let pool = PoolRuntime::<MockPool>::new(config, 1);
+
+        // Entry with old fingerprint.
+        push_idle_entry(&pool, Instant::now(), Some(Instant::now()), 1).await;
+        // Entry with current fingerprint.
+        push_idle_entry(&pool, Instant::now(), Some(Instant::now()), 1).await;
+
+        // Update fingerprint — first two entries now stale.
+        pool.set_fingerprint(2);
+
+        let evicted = pool.run_maintenance(&resource).await;
+        assert_eq!(evicted, 2);
+        assert_eq!(pool.idle_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn maintenance_no_op_when_all_healthy() {
+        let resource = MockPool::new();
+        let config = Config {
+            max_size: 5,
+            idle_timeout: Some(std::time::Duration::from_secs(300)),
+            max_lifetime: Some(std::time::Duration::from_secs(1800)),
+            ..Config::default()
+        };
+        let pool = PoolRuntime::<MockPool>::new(config, 1);
+
+        push_idle_entry(&pool, Instant::now(), Some(Instant::now()), 1).await;
+        push_idle_entry(&pool, Instant::now(), Some(Instant::now()), 1).await;
+
+        let evicted = pool.run_maintenance(&resource).await;
+        assert_eq!(evicted, 0);
+        assert_eq!(pool.idle_count().await, 2);
+    }
+
+    #[tokio::test]
+    async fn maintenance_no_op_on_empty_pool() {
+        let resource = MockPool::new();
+        let config = Config::default();
+        let pool = PoolRuntime::<MockPool>::new(config, 1);
+
+        let evicted = pool.run_maintenance(&resource).await;
+        assert_eq!(evicted, 0);
     }
 }

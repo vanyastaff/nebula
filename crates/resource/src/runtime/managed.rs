@@ -11,6 +11,7 @@ use arc_swap::ArcSwap;
 
 use crate::integration::AcquireResilience;
 use crate::metrics::ResourceMetrics;
+use crate::recovery::RecoveryGate;
 use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
 use crate::state::ResourceStatus;
@@ -41,6 +42,11 @@ pub struct ManagedResource<R: Resource> {
     pub(crate) metrics: Arc<ResourceMetrics>,
     /// Optional resilience configuration (timeout + retry) for acquire.
     pub(crate) resilience: Option<AcquireResilience>,
+    /// Optional recovery gate for thundering-herd prevention.
+    ///
+    /// When set, acquire calls check the gate before proceeding and
+    /// trigger passive recovery on transient failures.
+    pub(crate) recovery_gate: Option<Arc<RecoveryGate>>,
 }
 
 impl<R: Resource> ManagedResource<R> {

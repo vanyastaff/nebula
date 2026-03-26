@@ -3191,10 +3191,13 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
         .expect("registration should succeed");
 
     let ctx = test_ctx();
-    let result: Result<ResourceHandle<ResidentTestResource>, _> =
-        manager.acquire_resident(&(), &ctx, &AcquireOptions::default()).await;
+    let result: Result<ResourceHandle<ResidentTestResource>, _> = manager
+        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .await;
 
-    let err = result.err().expect("acquire should fail when gate is permanently failed");
+    let err = result
+        .err()
+        .expect("acquire should fail when gate is permanently failed");
     assert_eq!(
         *err.kind(),
         ErrorKind::Permanent,
@@ -3233,10 +3236,13 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
         .expect("registration should succeed");
 
     let ctx = test_ctx();
-    let result: Result<ResourceHandle<ResidentTestResource>, _> =
-        manager.acquire_resident(&(), &ctx, &AcquireOptions::default()).await;
+    let result: Result<ResourceHandle<ResidentTestResource>, _> = manager
+        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .await;
 
-    let err = result.err().expect("acquire should fail when gate is in progress");
+    let err = result
+        .err()
+        .expect("acquire should fail when gate is in progress");
     assert_eq!(
         *err.kind(),
         ErrorKind::Transient,
@@ -3361,6 +3367,334 @@ async fn recovery_gate_none_does_not_affect_acquire() {
 
     drop(handle);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Config hot-reload tests
+// ---------------------------------------------------------------------------
+
+/// Config with a controllable fingerprint for reload tests.
+#[derive(Clone, Debug)]
+struct ReloadConfig {
+    fingerprint: u64,
+    valid: bool,
+}
+
+impl ReloadConfig {
+    fn new(fingerprint: u64) -> Self {
+        Self {
+            fingerprint,
+            valid: true,
+        }
+    }
+
+    fn invalid() -> Self {
+        Self {
+            fingerprint: 0,
+            valid: false,
+        }
+    }
+}
+
+impl ResourceConfig for ReloadConfig {
+    fn validate(&self) -> Result<(), Error> {
+        if self.valid {
+            Ok(())
+        } else {
+            Err(Error::permanent("invalid config"))
+        }
+    }
+
+    fn fingerprint(&self) -> u64 {
+        self.fingerprint
+    }
+}
+
+/// Minimal pooled resource for reload tests.
+#[derive(Clone)]
+struct ReloadPoolResource {
+    create_counter: Arc<AtomicU64>,
+}
+
+impl ReloadPoolResource {
+    fn new() -> Self {
+        Self {
+            create_counter: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl Resource for ReloadPoolResource {
+    type Config = ReloadConfig;
+    type Runtime = Arc<AtomicU64>;
+    type Lease = Arc<AtomicU64>;
+    type Error = TestError;
+    type Credential = ();
+
+    fn key() -> ResourceKey {
+        resource_key!("test-reload-pool")
+    }
+
+    fn create(
+        &self,
+        _config: &ReloadConfig,
+        _credential: &(),
+        _ctx: &dyn Ctx,
+    ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+        let counter = self.create_counter.clone();
+        async move {
+            let id = counter.fetch_add(1, Ordering::Relaxed);
+            Ok(Arc::new(AtomicU64::new(id)))
+        }
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Pooled for ReloadPoolResource {
+    fn is_broken(&self, _runtime: &Arc<AtomicU64>) -> BrokenCheck {
+        BrokenCheck::Healthy
+    }
+}
+
+#[tokio::test]
+async fn reload_config_swaps_config_and_bumps_generation() {
+    let manager = Manager::new();
+    let resource = ReloadPoolResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        max_size: 4,
+        ..Default::default()
+    };
+    let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    manager
+        .register(
+            resource,
+            ReloadConfig::new(1),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Pool(pool_rt),
+            rq.clone(),
+            None,
+            None,
+        )
+        .expect("register should succeed");
+
+    // Check initial generation.
+    let managed = manager
+        .lookup::<ReloadPoolResource>(&ScopeLevel::Global)
+        .expect("lookup should succeed");
+    assert_eq!(managed.generation(), 0);
+    assert_eq!(managed.config().fingerprint, 1);
+
+    // Reload with new config.
+    manager
+        .reload_config::<ReloadPoolResource>(ReloadConfig::new(42), &ScopeLevel::Global)
+        .expect("reload should succeed");
+
+    assert_eq!(managed.generation(), 1);
+    assert_eq!(managed.config().fingerprint, 42);
+
+    drop(managed);
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn reload_config_rejects_invalid_config() {
+    let manager = Manager::new();
+    let resource = ReloadPoolResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        max_size: 4,
+        ..Default::default()
+    };
+    let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    manager
+        .register(
+            resource,
+            ReloadConfig::new(1),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Pool(pool_rt),
+            rq.clone(),
+            None,
+            None,
+        )
+        .expect("register should succeed");
+
+    // Reload with invalid config — should fail.
+    let result =
+        manager.reload_config::<ReloadPoolResource>(ReloadConfig::invalid(), &ScopeLevel::Global);
+    assert!(result.is_err());
+    assert_eq!(*result.unwrap_err().kind(), ErrorKind::Permanent);
+
+    // Original config still intact.
+    let managed = manager
+        .lookup::<ReloadPoolResource>(&ScopeLevel::Global)
+        .expect("lookup should succeed");
+    assert_eq!(managed.generation(), 0, "generation should not change on failure");
+    assert_eq!(managed.config().fingerprint, 1, "config should not change on failure");
+
+    drop(managed);
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn reload_config_emits_event() {
+    let manager = Manager::new();
+    let mut rx = manager.subscribe_events();
+    let resource = ReloadPoolResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        max_size: 4,
+        ..Default::default()
+    };
+    let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    manager
+        .register(
+            resource,
+            ReloadConfig::new(1),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Pool(pool_rt),
+            rq.clone(),
+            None,
+            None,
+        )
+        .expect("register should succeed");
+
+    // Drain the Registered event.
+    let _ = rx.recv().await.expect("should receive Registered event");
+
+    manager
+        .reload_config::<ReloadPoolResource>(ReloadConfig::new(99), &ScopeLevel::Global)
+        .expect("reload should succeed");
+
+    let event = rx.recv().await.expect("should receive event");
+    assert!(
+        matches!(event, nebula_resource::ResourceEvent::ConfigReloaded { ref key } if key == &resource_key!("test-reload-pool")),
+        "expected ConfigReloaded event, got {event:?}"
+    );
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn reload_config_evicts_stale_pool_instances() {
+    let manager = Manager::new();
+    let resource = ReloadPoolResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        max_size: 4,
+        ..Default::default()
+    };
+    let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    manager
+        .register(
+            resource.clone(),
+            ReloadConfig::new(1),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Pool(pool_rt),
+            rq.clone(),
+            None,
+            None,
+        )
+        .expect("register should succeed");
+
+    let ctx = test_ctx();
+
+    // Acquire and release to populate idle queue with fingerprint=1.
+    let handle: ResourceHandle<ReloadPoolResource> = manager
+        .acquire_pooled(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("first acquire should succeed");
+    assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
+    drop(handle);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Reload with new fingerprint — stale instances should be evicted.
+    manager
+        .reload_config::<ReloadPoolResource>(ReloadConfig::new(2), &ScopeLevel::Global)
+        .expect("reload should succeed");
+
+    // Next acquire should create a fresh instance (stale one evicted).
+    let handle2: ResourceHandle<ReloadPoolResource> = manager
+        .acquire_pooled(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("second acquire should succeed");
+    assert_eq!(
+        resource.create_counter.load(Ordering::Relaxed),
+        2,
+        "stale instance should have been evicted, forcing new creation"
+    );
+
+    drop(handle2);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn reload_config_not_found_returns_error() {
+    let manager = Manager::new();
+
+    let result =
+        manager.reload_config::<ReloadPoolResource>(ReloadConfig::new(1), &ScopeLevel::Global);
+    assert!(result.is_err());
+    assert_eq!(*result.unwrap_err().kind(), ErrorKind::NotFound);
+}
+
+#[tokio::test]
+async fn reload_config_rejected_when_shutdown() {
+    let manager = Manager::new();
+    let resource = ReloadPoolResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config::default();
+    let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    manager
+        .register(
+            resource,
+            ReloadConfig::new(1),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Pool(pool_rt),
+            rq.clone(),
+            None,
+            None,
+        )
+        .expect("register should succeed");
+
+    manager.shutdown();
+
+    let result =
+        manager.reload_config::<ReloadPoolResource>(ReloadConfig::new(2), &ScopeLevel::Global);
+    assert!(result.is_err());
+    assert_eq!(*result.unwrap_err().kind(), ErrorKind::Cancelled);
 
     drop(manager);
     drop(rq);
