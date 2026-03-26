@@ -245,9 +245,9 @@ impl Manager {
             config,
             (),
             ScopeLevel::Global,
-            TopologyRuntime::Resident(
-                crate::runtime::resident::ResidentRuntime::<R>::new(resident_config),
-            ),
+            TopologyRuntime::Resident(crate::runtime::resident::ResidentRuntime::<R>::new(
+                resident_config,
+            )),
             None,
             None,
         )
@@ -308,12 +308,10 @@ impl Manager {
             config,
             (),
             ScopeLevel::Global,
-            TopologyRuntime::Exclusive(
-                crate::runtime::exclusive::ExclusiveRuntime::<R>::new(
-                    runtime,
-                    exclusive_config,
-                ),
-            ),
+            TopologyRuntime::Exclusive(crate::runtime::exclusive::ExclusiveRuntime::<R>::new(
+                runtime,
+                exclusive_config,
+            )),
             None,
             None,
         )
