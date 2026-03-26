@@ -127,27 +127,26 @@ impl Pooled for HttpResource {
 
 ### 3. Register and acquire
 
-```rust,no_run
-use nebula_resource::{Manager, PoolConfig, BasicCtx};
-use nebula_resource::ctx::ScopeLevel;
-use nebula_resource::options::AcquireOptions;
+```rust,ignore
+use nebula_resource::{Manager, PoolConfig, BasicCtx, AcquireOptions, ExecutionId};
 
 #[tokio::main]
 async fn main() -> Result<(), nebula_resource::Error> {
     let manager = Manager::new();
 
-    // register_pooled: credential = (), scope = Global, no resilience config
+    // Simple registration — credential = (), scope = Global, no resilience
     manager.register_pooled(
         HttpResource,
         HttpConfig { base_url: "https://api.example.com".into(), timeout_ms: 5_000 },
         PoolConfig::default(),
     )?;
 
-    let ctx = BasicCtx::new(nebula_resource::ExecutionId::new());
-    let options = AcquireOptions::default();
+    let ctx = BasicCtx::new(ExecutionId::new());
 
-    // Typed acquire — returns ResourceHandle<HttpResource>
-    let handle = manager.acquire_pooled::<HttpResource>(&(), &ctx, &options).await?;
+    // acquire_pooled_default: no credential noise for Credential = ()
+    let handle = manager
+        .acquire_pooled_default::<HttpResource>(&ctx, &AcquireOptions::default())
+        .await?;
 
     // Use via Deref — handle is held until dropped
     let _runtime: &HttpRuntime = &*handle;
@@ -156,6 +155,31 @@ async fn main() -> Result<(), nebula_resource::Error> {
     // Call handle.taint() before dropping to skip recycle and force destroy.
     Ok(())
 }
+```
+
+### 4. Register with resilience
+
+For production use, add timeout + retry + recovery gate via `RegisterOptions`:
+
+```rust,ignore
+use nebula_resource::{
+    Manager, PoolConfig, RegisterOptions, AcquireResilience, RecoveryGate, RecoveryGateConfig,
+};
+use std::sync::Arc;
+
+let manager = Manager::new();
+let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig::default()));
+
+manager.register_pooled_with(
+    DbResource,
+    db_config,
+    PoolConfig { max_size: 20, ..Default::default() },
+    RegisterOptions {
+        resilience: Some(AcquireResilience::standard()),
+        recovery_gate: Some(gate),
+        ..Default::default()
+    },
+)?;
 ```
 
 ---
@@ -177,9 +201,28 @@ Every `acquire_*` and `register_*` call returns `Result<_, Error>`. The
 Use `err.is_retryable()` to branch without matching on variants. Use
 `err.retry_after()` to respect rate-limit hints.
 
-The [`ClassifyError`] derive macro generates `From<YourError> for Error`
-conversions that assign the correct `ErrorKind` based on attributes you
-annotate on each variant.
+### ClassifyError derive macro
+
+Use `#[derive(ClassifyError)]` to auto-generate `From<YourError> for Error`
+with the correct `ErrorKind` per variant — no manual `From` impl needed:
+
+```rust,ignore
+use nebula_resource::ClassifyError;
+
+#[derive(Debug, ClassifyError)]
+pub enum DbError {
+    #[classify(transient)]
+    ConnectionLost(String),
+    #[classify(permanent)]
+    AuthFailed(String),
+    #[classify(exhausted, retry_after_secs = 30)]
+    RateLimited,
+}
+```
+
+This generates the `impl From<DbError> for nebula_resource::Error` with
+correct `ErrorKind::Transient`, `ErrorKind::Permanent`, and
+`ErrorKind::Exhausted { retry_after: Some(30s) }` respectively.
 
 ---
 
@@ -191,8 +234,9 @@ annotate on each variant.
 | Shared singleton with clone-on-acquire | `register_resident` + `ResidentConfig` |
 | Long-lived runtime, short-lived tokens | `register_service` + `ServiceConfig` |
 | Single-caller serialized access | `register_exclusive` + `ExclusiveConfig` |
-| Retry + timeout on acquire | Pass `AcquireResilience` to `register` |
-| Fast-fail during backend recovery | Pass `Arc<RecoveryGate>` to `register` |
+| Multiplexed sessions over shared transport | `register_transport` + `TransportConfig` |
+| Retry + timeout on acquire | `register_*_with` + `RegisterOptions { resilience: Some(...) }` |
+| Fast-fail during backend recovery | `register_*_with` + `RegisterOptions { recovery_gate: Some(...) }` |
 | Config hot-reload (fingerprint-based) | Implement `ResourceConfig::fingerprint` |
 | Lifecycle event stream | `manager.subscribe_events()` → `broadcast::Receiver<ResourceEvent>` |
 | Async background cleanup | `ReleaseQueue` (owned by `Manager`, transparent to callers) |

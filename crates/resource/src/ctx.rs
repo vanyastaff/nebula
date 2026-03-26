@@ -15,9 +15,10 @@ use tokio_util::sync::CancellationToken;
 /// Determines the lifecycle boundary of a resource instance. Finer scopes
 /// (e.g., `Execution`) are cleaned up more aggressively than coarser ones
 /// (e.g., `Global`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum ScopeLevel {
     /// Application-lifetime singleton.
+    #[default]
     Global,
     /// Scoped to an organization.
     Organization(String),

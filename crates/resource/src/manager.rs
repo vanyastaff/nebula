@@ -70,6 +70,20 @@ impl Default for ManagerConfig {
     }
 }
 
+/// Extended options for resource registration.
+///
+/// Used with the `register_*_with` convenience methods to configure
+/// resilience and recovery beyond the simple `register_*` defaults.
+#[derive(Debug, Clone, Default)]
+pub struct RegisterOptions {
+    /// Scope level for the resource (default: `Global`).
+    pub scope: ScopeLevel,
+    /// Optional acquire resilience (timeout + retry + circuit breaker).
+    pub resilience: Option<AcquireResilience>,
+    /// Optional recovery gate for thundering-herd prevention.
+    pub recovery_gate: Option<Arc<RecoveryGate>>,
+}
+
 /// Central registry and lifecycle manager for all resources.
 ///
 /// Owns the [`ReleaseQueue`] internally — callers never need to create,
@@ -325,6 +339,202 @@ impl Manager {
         )
     }
 
+    /// Registers a transport resource with sensible defaults.
+    ///
+    /// Shorthand for [`register`](Self::register) with `credential = ()`,
+    /// `scope = Global`, no resilience, no recovery gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if config validation fails.
+    pub fn register_transport<R>(
+        &self,
+        resource: R,
+        config: R::Config,
+        runtime: R::Runtime,
+        transport_config: crate::topology::transport::config::Config,
+    ) -> Result<(), Error>
+    where
+        R: Resource<Credential = ()>,
+    {
+        self.register(
+            resource,
+            config,
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Transport(crate::runtime::transport::TransportRuntime::<R>::new(
+                runtime,
+                transport_config,
+            )),
+            None,
+            None,
+        )
+    }
+
+    /// Registers a pooled resource with extended options.
+    ///
+    /// Like [`register_pooled`](Self::register_pooled) but accepts
+    /// [`RegisterOptions`] for scope, resilience, and recovery gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if config validation fails.
+    pub fn register_pooled_with<R>(
+        &self,
+        resource: R,
+        config: R::Config,
+        pool_config: crate::topology::pooled::config::Config,
+        options: RegisterOptions,
+    ) -> Result<(), Error>
+    where
+        R: Resource<Credential = ()>,
+    {
+        use crate::resource::ResourceConfig as _;
+        let fingerprint = config.fingerprint();
+        self.register(
+            resource,
+            config,
+            (),
+            options.scope,
+            TopologyRuntime::Pool(crate::runtime::pool::PoolRuntime::<R>::new(
+                pool_config,
+                fingerprint,
+            )),
+            options.resilience,
+            options.recovery_gate,
+        )
+    }
+
+    /// Registers a resident resource with extended options.
+    ///
+    /// Like [`register_resident`](Self::register_resident) but accepts
+    /// [`RegisterOptions`] for scope, resilience, and recovery gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if config validation fails.
+    pub fn register_resident_with<R>(
+        &self,
+        resource: R,
+        config: R::Config,
+        resident_config: crate::topology::resident::config::Config,
+        options: RegisterOptions,
+    ) -> Result<(), Error>
+    where
+        R: Resource<Credential = ()>,
+    {
+        self.register(
+            resource,
+            config,
+            (),
+            options.scope,
+            TopologyRuntime::Resident(crate::runtime::resident::ResidentRuntime::<R>::new(
+                resident_config,
+            )),
+            options.resilience,
+            options.recovery_gate,
+        )
+    }
+
+    /// Registers a service resource with extended options.
+    ///
+    /// Like [`register_service`](Self::register_service) but accepts
+    /// [`RegisterOptions`] for scope, resilience, and recovery gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if config validation fails.
+    pub fn register_service_with<R>(
+        &self,
+        resource: R,
+        config: R::Config,
+        runtime: R::Runtime,
+        service_config: crate::topology::service::config::Config,
+        options: RegisterOptions,
+    ) -> Result<(), Error>
+    where
+        R: Resource<Credential = ()>,
+    {
+        self.register(
+            resource,
+            config,
+            (),
+            options.scope,
+            TopologyRuntime::Service(crate::runtime::service::ServiceRuntime::<R>::new(
+                runtime,
+                service_config,
+            )),
+            options.resilience,
+            options.recovery_gate,
+        )
+    }
+
+    /// Registers a transport resource with extended options.
+    ///
+    /// Like [`register_transport`](Self::register_transport) but accepts
+    /// [`RegisterOptions`] for scope, resilience, and recovery gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if config validation fails.
+    pub fn register_transport_with<R>(
+        &self,
+        resource: R,
+        config: R::Config,
+        runtime: R::Runtime,
+        transport_config: crate::topology::transport::config::Config,
+        options: RegisterOptions,
+    ) -> Result<(), Error>
+    where
+        R: Resource<Credential = ()>,
+    {
+        self.register(
+            resource,
+            config,
+            (),
+            options.scope,
+            TopologyRuntime::Transport(crate::runtime::transport::TransportRuntime::<R>::new(
+                runtime,
+                transport_config,
+            )),
+            options.resilience,
+            options.recovery_gate,
+        )
+    }
+
+    /// Registers an exclusive resource with extended options.
+    ///
+    /// Like [`register_exclusive`](Self::register_exclusive) but accepts
+    /// [`RegisterOptions`] for scope, resilience, and recovery gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if config validation fails.
+    pub fn register_exclusive_with<R>(
+        &self,
+        resource: R,
+        config: R::Config,
+        runtime: R::Runtime,
+        exclusive_config: crate::topology::exclusive::config::Config,
+        options: RegisterOptions,
+    ) -> Result<(), Error>
+    where
+        R: Resource<Credential = ()>,
+    {
+        self.register(
+            resource,
+            config,
+            (),
+            options.scope,
+            TopologyRuntime::Exclusive(crate::runtime::exclusive::ExclusiveRuntime::<R>::new(
+                runtime,
+                exclusive_config,
+            )),
+            options.resilience,
+            options.recovery_gate,
+        )
+    }
+
     /// Looks up a registered `ManagedResource<R>` by type and scope.
     ///
     /// This is the building block for acquire: callers retrieve the managed
@@ -413,6 +623,23 @@ impl Manager {
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
+    /// Acquires a pooled resource handle without credentials.
+    ///
+    /// Shorthand for [`acquire_pooled`](Self::acquire_pooled) with `credential = &()`.
+    /// Only available when `R::Credential = ()`.
+    pub async fn acquire_pooled_default<R>(
+        &self,
+        ctx: &dyn Ctx,
+        options: &AcquireOptions,
+    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    where
+        R: crate::topology::pooled::Pooled<Credential = ()> + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Into<R::Runtime> + Send + 'static,
+    {
+        self.acquire_pooled::<R>(&(), ctx, options).await
+    }
+
     /// Acquires a handle to a resident resource.
     ///
     /// # Errors
@@ -461,6 +688,23 @@ impl Manager {
         }
         self.record_acquire_result(&managed, &result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+    }
+
+    /// Acquires a resident resource handle without credentials.
+    ///
+    /// Shorthand for [`acquire_resident`](Self::acquire_resident) with `credential = &()`.
+    /// Only available when `R::Credential = ()`.
+    pub async fn acquire_resident_default<R>(
+        &self,
+        ctx: &dyn Ctx,
+        options: &AcquireOptions,
+    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    where
+        R: crate::topology::resident::Resident<Credential = ()> + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Clone + Send + 'static,
+    {
+        self.acquire_resident::<R>(&(), ctx, options).await
     }
 
     /// Acquires a handle to a service resource.

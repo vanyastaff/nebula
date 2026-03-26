@@ -11,7 +11,10 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - `ResourceHandle` RAII — guarded returns lease on drop, tainted destroys
 - Guarded permit drops AFTER catch_unwind in Drop — prevents semaphore leak on panic
 - `TopologyTag` is enum (not `&str`), `#[non_exhaustive]`
-- `register_pooled/resident/service/exclusive` convenience methods: `Credential = ()`, `ScopeLevel::Global`, no resilience/gate
+- `register_pooled/resident/service/exclusive/transport` convenience methods: `Credential = ()`, `ScopeLevel::Global`, no resilience/gate
+- `register_*_with` variants accept `RegisterOptions` for scope/resilience/gate without full `register()` signature
+- `acquire_pooled_default`/`acquire_resident_default` helpers pass `&()` credential — only for `Credential = ()`
+- `ScopeLevel` derives `Default` (= `Global`); `RegisterOptions::default()` works out of the box
 - Deprecated `Context`/`Scope` in `compat` for v1 migration
 
 ## Traps
