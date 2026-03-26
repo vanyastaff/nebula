@@ -3,19 +3,30 @@
 //! Loads stored credentials, deserializes state, and projects to
 //! [`AuthScheme`](nebula_core::AuthScheme) via the
 //! [`Credential::project()`](crate::credential_v2::Credential::project) pipeline.
+//!
+//! For refreshable credentials, use [`CredentialResolver::resolve_with_refresh()`]
+//! which coordinates refresh via [`RefreshCoordinator`] to prevent
+//! thundering herd.
 
 use std::sync::Arc;
 
+use crate::core::CredentialContext;
 use crate::credential_state::CredentialStateV2;
 use crate::credential_v2::Credential;
 use crate::handle_v2::CredentialHandle;
-use crate::store_v2::{CredentialStoreV2, StoreError};
+use crate::refresh::{RefreshAttempt, RefreshCoordinator};
+use crate::resolve::RefreshOutcome;
+use crate::store_v2::{CredentialStoreV2, PutMode, StoreError, StoredCredential};
 
 /// Resolves credentials from storage into typed [`CredentialHandle`]s.
 ///
 /// The resolver loads a [`StoredCredential`](crate::store_v2::StoredCredential),
 /// verifies the `state_kind` matches the expected credential type,
 /// deserializes the state, and projects it to the [`AuthScheme`](nebula_core::AuthScheme).
+///
+/// For refreshable credentials, [`resolve_with_refresh()`](Self::resolve_with_refresh)
+/// coordinates concurrent refresh attempts through the embedded
+/// [`RefreshCoordinator`].
 ///
 /// # Examples
 ///
@@ -31,12 +42,16 @@ use crate::store_v2::{CredentialStoreV2, StoreError};
 /// ```
 pub struct CredentialResolver<S: CredentialStoreV2> {
     store: Arc<S>,
+    refresh_coordinator: RefreshCoordinator,
 }
 
 impl<S: CredentialStoreV2> CredentialResolver<S> {
     /// Creates a new resolver backed by the given store.
     pub fn new(store: Arc<S>) -> Self {
-        Self { store }
+        Self {
+            store,
+            refresh_coordinator: RefreshCoordinator::new(),
+        }
     }
 
     /// Resolves a credential by ID into a typed handle.
@@ -62,13 +77,92 @@ impl<S: CredentialStoreV2> CredentialResolver<S> {
     where
         C: Credential,
     {
+        let stored = self.load_and_verify::<C>(credential_id).await?;
+        let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
+        let scheme = C::project(&state);
+        Ok(CredentialHandle::new(scheme, credential_id))
+    }
+
+    /// Resolves a credential, refreshing it if expired.
+    ///
+    /// If the credential's state reports an expiration time
+    /// ([`CredentialStateV2::expires_at()`]) in the past, the resolver
+    /// coordinates a refresh through the embedded
+    /// [`RefreshCoordinator`]. Only one caller performs the actual
+    /// refresh; others wait and then re-read the updated state from
+    /// the store.
+    ///
+    /// For non-expiring credentials this behaves identically to
+    /// [`resolve()`](Self::resolve).
+    ///
+    /// # Errors
+    ///
+    /// Returns all errors from [`resolve()`](Self::resolve), plus:
+    ///
+    /// - [`ResolveError::Refresh`] if `Credential::refresh()` fails.
+    /// - [`ResolveError::Store`] if the CAS write after refresh fails.
+    /// - [`ResolveError::ReauthRequired`] if the refresh indicates
+    ///   the credential needs full re-authentication.
+    pub async fn resolve_with_refresh<C>(
+        &self,
+        credential_id: &str,
+        ctx: &CredentialContext,
+    ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
+    where
+        C: Credential,
+    {
+        let stored = self.load_and_verify::<C>(credential_id).await?;
+        let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
+
+        // Check expiration
+        let needs_refresh = state
+            .expires_at()
+            .is_some_and(|exp| exp <= chrono::Utc::now());
+
+        if !needs_refresh {
+            let scheme = C::project(&state);
+            return Ok(CredentialHandle::new(scheme, credential_id));
+        }
+
+        // Coordinate refresh -- only one caller does the work
+        match self.refresh_coordinator.try_refresh(credential_id).await {
+            RefreshAttempt::Winner => {
+                let result = self
+                    .perform_refresh::<C>(credential_id, state, stored, ctx)
+                    .await;
+                // Always complete to wake waiters, even on error
+                self.refresh_coordinator.complete(credential_id).await;
+                result
+            }
+            RefreshAttempt::Waiter(notify) => {
+                notify.notified().await;
+                // Re-read from store -- the winner updated it
+                self.resolve::<C>(credential_id).await
+            }
+        }
+    }
+
+    /// Returns a reference to the embedded [`RefreshCoordinator`].
+    ///
+    /// Primarily useful for testing and diagnostics.
+    pub fn refresh_coordinator(&self) -> &RefreshCoordinator {
+        &self.refresh_coordinator
+    }
+
+    /// Loads and verifies a stored credential's `state_kind`.
+    async fn load_and_verify<C>(
+        &self,
+        credential_id: &str,
+    ) -> Result<StoredCredential, ResolveError>
+    where
+        C: Credential,
+    {
         let stored = self
             .store
             .get(credential_id)
             .await
             .map_err(ResolveError::Store)?;
 
-        // Verify state kind matches
         let expected_kind = <C::State as CredentialStateV2>::KIND;
         if stored.state_kind != expected_kind {
             return Err(ResolveError::KindMismatch {
@@ -78,17 +172,79 @@ impl<S: CredentialStoreV2> CredentialResolver<S> {
             });
         }
 
-        // Deserialize state
-        let state: C::State =
-            serde_json::from_slice(&stored.data).map_err(|e| ResolveError::Deserialize {
+        Ok(stored)
+    }
+
+    /// Deserializes stored bytes into the credential state type.
+    fn deserialize<C>(
+        &self,
+        credential_id: &str,
+        stored: &StoredCredential,
+    ) -> Result<C::State, ResolveError>
+    where
+        C: Credential,
+    {
+        serde_json::from_slice(&stored.data).map_err(|e| ResolveError::Deserialize {
+            credential_id: credential_id.to_string(),
+            reason: e.to_string(),
+        })
+    }
+
+    /// Performs the actual refresh: calls `C::refresh()`, writes back
+    /// to the store with CAS, and projects the result.
+    async fn perform_refresh<C>(
+        &self,
+        credential_id: &str,
+        mut state: C::State,
+        stored: StoredCredential,
+        ctx: &CredentialContext,
+    ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
+    where
+        C: Credential,
+    {
+        let outcome = C::refresh(&mut state, ctx)
+            .await
+            .map_err(|e| ResolveError::Refresh {
                 credential_id: credential_id.to_string(),
                 reason: e.to_string(),
             })?;
 
-        // Project to scheme
-        let scheme = C::project(&state);
+        match outcome {
+            RefreshOutcome::Refreshed => {
+                let data = serde_json::to_vec(&state).map_err(|e| ResolveError::Refresh {
+                    credential_id: credential_id.to_string(),
+                    reason: format!("failed to serialize refreshed state: {e}"),
+                })?;
 
-        Ok(CredentialHandle::new(scheme, credential_id))
+                let updated = StoredCredential {
+                    data,
+                    updated_at: chrono::Utc::now(),
+                    expires_at: state.expires_at(),
+                    ..stored
+                };
+
+                self.store
+                    .put(
+                        updated,
+                        PutMode::CompareAndSwap {
+                            expected_version: stored.version,
+                        },
+                    )
+                    .await
+                    .map_err(ResolveError::Store)?;
+
+                let scheme = C::project(&state);
+                Ok(CredentialHandle::new(scheme, credential_id))
+            }
+            RefreshOutcome::NotSupported => {
+                // Not refreshable -- return current state anyway
+                let scheme = C::project(&state);
+                Ok(CredentialHandle::new(scheme, credential_id))
+            }
+            RefreshOutcome::ReauthRequired => Err(ResolveError::ReauthRequired {
+                credential_id: credential_id.to_string(),
+            }),
+        }
     }
 }
 
@@ -118,6 +274,22 @@ pub enum ResolveError {
         credential_id: String,
         /// The deserialization error message.
         reason: String,
+    },
+
+    /// Refresh failed.
+    #[error("credential {credential_id}: refresh failed: {reason}")]
+    Refresh {
+        /// The credential ID.
+        credential_id: String,
+        /// The refresh error message.
+        reason: String,
+    },
+
+    /// Credential needs full re-authentication (refresh token expired).
+    #[error("credential {credential_id}: re-authentication required")]
+    ReauthRequired {
+        /// The credential ID.
+        credential_id: String,
     },
 }
 

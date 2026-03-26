@@ -13,6 +13,8 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 - `EncryptionLayer<S>` serializes `EncryptedData` as JSON bytes in `data` field.
 - `CredentialRegistryV2`: type-erased dispatch — `register::<C>()` captures deserialize+project closure keyed by `state_kind`.
 - `CredentialResolver` verifies `state_kind` match before deserialize; returns `CredentialHandle<S>` (Arc-wrapped).
+- `RefreshCoordinator`: per-credential `Notify` in `HashMap<String, Arc<Notify>>` behind `Mutex`. Winner refreshes, waiters block on `Notify::notified()`. `complete()` must always be called (even on error).
+- `resolve_with_refresh()` checks `CredentialStateV2::expires_at()`, coordinates via `RefreshCoordinator`, CAS writes refreshed state back.
 - `SecretString` serializes as `"[REDACTED]"` — tests must construct raw JSON for round-trip.
 
 ## Traps
@@ -24,4 +26,4 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 - Depends on: nebula-core, nebula-eventbus. Peer: nebula-resource.
 
 <!-- reviewed: 2026-03-25 -->
-<!-- updated: 2026-03-25 — Phase 3: credential impls -->
+<!-- updated: 2026-03-25 — RefreshCoordinator for thundering-herd prevention -->

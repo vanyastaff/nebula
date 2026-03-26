@@ -84,6 +84,8 @@ pub mod credentials;
 pub mod handle_v2;
 /// Typed pending state for interactive flows (v2).
 pub mod pending;
+/// Refresh coordination -- thundering herd prevention (v2).
+pub mod refresh;
 /// Type-erased credential registry for runtime dispatch (v2).
 pub mod registry_v2;
 /// Resolve result types: interaction, refresh, test (v2).
@@ -157,6 +159,9 @@ pub use handle_v2::CredentialHandle;
 
 // v2: Registry
 pub use registry_v2::{CredentialRegistryV2, RegistryError};
+
+// v2: Refresh coordination
+pub use refresh::RefreshCoordinator;
 
 // v2: Resolver
 pub use resolver::{CredentialResolver, ResolveError};
