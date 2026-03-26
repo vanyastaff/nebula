@@ -17,11 +17,15 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 
 - `ctx_ext::<T>()` not `Ctx::ext_raw()`
 - `ResourceHandle::detach()` on Shared returns None
-- `ReleaseQueue::submit` drops silently if all channels full
+- `ReleaseQueue::submit` falls back to unbounded channel if primary full (warns at power-of-two intervals)
 - Pool permit returns on handle drop BEFORE async recycle — new caller can acquire during recycle
-- Cancel-safety guards (`CreateGuard`, `SessionGuard`) — async destroy cannot run in Drop, logs warning
+- Cancel-safety guards (`CreateGuard`, `SessionGuard`) — async destroy cannot run in Drop, logs warning; use `unreachable!()` not `expect()` for invariants
+- `graceful_shutdown` Phase 2 is drain-aware — tracks active handles via `AtomicU64 + Notify`, returns immediately when zero
+- `ResourceHandle` carries optional `drain_counter` for shutdown coordination (set via `with_drain_tracker` in acquire methods)
+- `AcquireRetryConfig::max_attempts` is TOTAL attempts (including initial try), not retries
 - `Registry::get_typed<R>` keys on `TypeId::of::<ManagedResource<R>>()` not `TypeId::of::<R>()`
-- Must drop Manager before `ReleaseQueue::shutdown`
+- Manager shares its `CancellationToken` with `ReleaseQueue` workers via `with_cancel()` — `cancel()` triggers worker drain+exit without needing to drop senders
+- `ReleaseQueue::close()` cancels workers explicitly for standalone (non-Manager) usage
 - `WatchdogHandle` cancels on drop but does NOT await — use `stop()` for graceful
 
 ## Relations
@@ -29,4 +33,4 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - Depends on: nebula-core, nebula-resource-macros (re-exports `ClassifyError` derive)
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 
-<!-- reviewed: 2026-03-25 — added ClassifyError derive macro via nebula-resource-macros -->
+<!-- reviewed: 2026-03-25 — P0+P1 safety fixes, drain-aware shutdown, 8 new tests -->
