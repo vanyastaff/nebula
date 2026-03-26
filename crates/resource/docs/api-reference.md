@@ -1,88 +1,290 @@
-# nebula-resource — API Reference
+# nebula-resource — API Reference (v2)
 
 Complete public API reference. All types are in `nebula_resource` unless noted.
+Re-exported from `nebula_core`: `ExecutionId`, `ResourceKey`, `WorkflowId`, `resource_key!`.
 
 ---
 
 ## Table of Contents
 
 - [Core Traits](#core-traits)
+- [Topology Traits](#topology-traits)
+- [Topology Configs](#topology-configs)
+- [Handle](#handle)
 - [Manager](#manager)
-- [Pool](#pool)
-- [Guard](#guard)
-- [Context and Scope](#context-and-scope)
-- [Metadata](#metadata)
-- [Error Handling](#error-handling)
-- [Lifecycle](#lifecycle)
-- [Resource References and Providers](#resource-references-and-providers)
-- [Components and Credentials](#components-and-credentials)
-- [Observability](#observability)
-- [Prelude](#prelude)
+- [Error Model](#error-model)
+- [Context](#context)
+- [Options](#options)
+- [Resilience](#resilience)
+- [Recovery](#recovery)
+- [Events](#events)
+- [Metrics](#metrics)
+- [State](#state)
+- [Runtime Types](#runtime-types)
+- [Utilities](#utilities)
 
 ---
 
 ## Core Traits
 
-### `Config`
-
-```rust
-pub trait Config: Send + Sync + 'static {
-    fn validate(&self) -> Result<()> { Ok(()) }
-}
-```
-
-Marker trait for resource configuration types. Override `validate` to return
-`Error::Validation` on invalid fields before a pool is created.
-
----
-
 ### `Resource`
+
+The central abstraction. Describes how to create, health-check, and tear down one resource type.
+Uses RPITIT (`impl Future`) — no `Box<dyn Future>` overhead.
 
 ```rust
 pub trait Resource: Send + Sync + 'static {
-    type Config: Config;
-    type Instance: Send + Sync + 'static;
+    type Config: ResourceConfig;
+    type Runtime: Send + Sync + 'static;   // live resource handle
+    type Lease: Send + Sync + 'static;     // what callers hold
+    type Error: Into<crate::Error> + ...;  // resource-specific error
+    type Credential: Credential;           // secrets injected before create()
 
-    fn metadata(&self) -> ResourceMetadata;
+    fn key() -> ResourceKey;
+    fn metadata() -> ResourceMetadata { ... }  // default: derived from key
 
-    async fn create(
-        &self,
-        config: &Self::Config,
-        ctx: &Context,
-    ) -> Result<Self::Instance>;
+    fn create(&self, config: &Self::Config, credential: &Self::Credential,
+              ctx: &dyn Ctx) -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send;
 
-    async fn is_reusable(
-        &self,
-        instance: &Self::Instance,
-    ) -> Result<bool> { Ok(true) }
+    fn check(&self, runtime: &Self::Runtime)
+        -> impl Future<Output = Result<(), Self::Error>> + Send { ... }  // default: Ok
 
-    async fn recycle(
-        &self,
-        instance: &mut Self::Instance,
-    ) -> Result<()> { Ok(()) }
+    fn shutdown(&self, runtime: &Self::Runtime)
+        -> impl Future<Output = Result<(), Self::Error>> + Send { ... }  // default: no-op
 
-    async fn cleanup(
-        &self,
-        instance: Self::Instance,
-    ) -> Result<()> { drop(instance); Ok(()) }
-
-    fn declare_key() -> ResourceKey
-    where Self: Sized;
+    fn destroy(&self, runtime: Self::Runtime)
+        -> impl Future<Output = Result<(), Self::Error>> + Send { ... }  // default: drop
 }
 ```
 
-| Method | Description |
-|--------|-------------|
-| `metadata` | Returns static `ResourceMetadata` used for discovery and events. The `metadata.key` is the canonical `ResourceKey` for this type. |
-| `create` | Builds a new `Instance` from `Config` and `Context`. Called when the pool needs a new connection. |
-| `is_broken` | **Synchronous** fast-path broken check. Return `true` if the instance is obviously dead (e.g. closed socket, invalid descriptor) so the pool skips recycle immediately. Default: always `false`. |
-| `prepare` | **Async** per-acquire hook called just before the instance is handed to the caller. Use for authentication refresh, lease renewal, or health pre-check. Default: no-op. |
-| `is_reusable` | Returns `Ok(true)` if the instance can be reused after being returned to the pool. Return `Ok(false)` or `Err` to discard. Default: always reusable. |
-| `is_reusable_with_meta` | Metadata-aware variant of `is_reusable`. Receives an `InstanceMetadata` snapshot (creation time, idle duration, acquire count). Defaults to calling `is_reusable`. |
-| `recycle` | Resets state before returning an instance to the idle queue (e.g. rollback uncommitted transactions). Default: no-op. |
-| `recycle_with_meta` | Metadata-aware variant of `recycle`. Receives `InstanceMetadata`. Defaults to calling `recycle`. |
-| `cleanup` | Permanently destroys an instance (close socket, flush buffers). Called for tainted or expired instances. Default: drop. |
-| `declare_key` | Returns the `ResourceKey` used by `ResourceRef::of::<R>()`. Default: snake_case of the type name. Override for a stable key independent of type name. |
+**Lifecycle:** `create → check (periodic) → shutdown → destroy`
+
+If `Runtime` and `Lease` are the same type, the blanket `From<T> for T` satisfies conversion bounds used by pool/resident/exclusive topologies.
+
+---
+
+### `ResourceConfig`
+
+Operational configuration. Must contain no secrets — credentials go in `Credential`.
+
+```rust
+pub trait ResourceConfig: Send + Sync + Clone + 'static {
+    fn validate(&self) -> Result<(), Error> { Ok(()) }
+    fn fingerprint(&self) -> u64 { 0 }  // used for hot-reload change detection
+}
+```
+
+Two configs with the same non-zero fingerprint are treated as identical during `reload_config`.
+
+---
+
+### `Credential`
+
+Secret material resolved by the framework before `Resource::create`. Use `()` for unauthenticated resources.
+
+```rust
+pub trait Credential: Send + Sync + Clone + 'static {
+    const KIND: &'static str;  // e.g. "oauth2", "api_key", "none"
+}
+```
+
+---
+
+### `AnyResource`
+
+Trait-object-safe marker for type-erased resource registration. Implementors of `Resource` typically also implement this.
+
+```rust
+pub trait AnyResource: Send + Sync + 'static {
+    fn key(&self) -> ResourceKey;
+    fn metadata(&self) -> ResourceMetadata;
+}
+```
+
+---
+
+## Topology Traits
+
+Topology traits extend `Resource` with lifecycle hooks specific to how instances are managed. Register the matching runtime via `TopologyRuntime`.
+
+### `Pooled` — N interchangeable instances
+
+```rust
+pub trait Pooled: Resource {
+    fn is_broken(&self, runtime: &Self::Runtime) -> BrokenCheck { Healthy }
+    fn recycle(&self, runtime: &Self::Runtime, metrics: &InstanceMetrics)
+        -> impl Future<Output = Result<RecycleDecision, Self::Error>> + Send { Keep }
+    fn prepare(&self, runtime: &Self::Runtime, ctx: &dyn Ctx)
+        -> impl Future<Output = Result<(), Self::Error>> + Send { Ok(()) }
+}
+```
+
+| Type | Purpose |
+|------|---------|
+| `BrokenCheck` | Sync O(1) result from `is_broken`: `Healthy` or `Broken(String)` |
+| `RecycleDecision` | Async recycle result: `Keep` (return to pool) or `Drop` (destroy) |
+| `InstanceMetrics` | `error_count`, `checkout_count`, `created_at` — available in `recycle` |
+
+`is_broken` runs in the `Drop` path — no async, no I/O. `prepare` runs after checkout, before the caller receives the lease (use for `SET search_path`, session setup, etc.).
+
+Acquire bounds: `R: Clone`, `R::Runtime: Clone + Into<R::Lease>`, `R::Lease: Into<R::Runtime>`.
+
+---
+
+### `Resident` — one shared instance, clone on acquire
+
+```rust
+pub trait Resident: Resource where Self::Lease: Clone {
+    fn is_alive_sync(&self, runtime: &Self::Runtime) -> bool { true }
+    fn stale_after(&self) -> Option<Duration> { None }
+}
+```
+
+The runtime is created once and cloned for every caller. Use for stateless or internally-pooled clients (e.g., `reqwest::Client`).
+
+Acquire bounds: `R::Runtime: Clone + Into<R::Lease>`, `R::Lease: Clone`.
+
+---
+
+### `Service` — long-lived runtime, short-lived tokens
+
+```rust
+pub trait Service: Resource {
+    const TOKEN_MODE: TokenMode = TokenMode::Cloned;
+
+    fn acquire_token(&self, runtime: &Self::Runtime, ctx: &dyn Ctx)
+        -> impl Future<Output = Result<Self::Lease, Self::Error>> + Send;
+
+    fn release_token(&self, runtime: &Self::Runtime, token: Self::Lease)
+        -> impl Future<Output = Result<(), Self::Error>> + Send { Ok(()) }
+}
+```
+
+`TokenMode::Cloned` → owned handle, release is a no-op. `TokenMode::Tracked` → guarded handle, `release_token` is called on drop.
+
+---
+
+### `Transport` — shared connection, multiplexed sessions
+
+```rust
+pub trait Transport: Resource {
+    fn open_session(&self, transport: &Self::Runtime, ctx: &dyn Ctx)
+        -> impl Future<Output = Result<Self::Lease, Self::Error>> + Send;
+
+    fn close_session(&self, transport: &Self::Runtime, session: Self::Lease, healthy: bool)
+        -> impl Future<Output = Result<(), Self::Error>> + Send { Ok(()) }
+
+    fn keepalive(&self, transport: &Self::Runtime)
+        -> impl Future<Output = Result<(), Self::Error>> + Send { Ok(()) }
+}
+```
+
+One transport (HTTP/2, gRPC channel, AMQP connection) serves many sessions (streams, channels). Semaphore enforces `max_sessions`.
+
+---
+
+### `Exclusive` — one caller at a time
+
+```rust
+pub trait Exclusive: Resource {
+    fn reset(&self, runtime: &Self::Runtime)
+        -> impl Future<Output = Result<(), Self::Error>> + Send { Ok(()) }
+}
+```
+
+The semaphore allows only one active lease. `reset` is called after each release, before the next caller receives the lock. Use for serial ports, single-writer databases.
+
+---
+
+### `EventSource` — pull-based event subscription (secondary)
+
+```rust
+pub trait EventSource: Resource {
+    type Event: Send + Clone + 'static;
+    type Subscription: Send + 'static;
+
+    fn subscribe(&self, runtime: &Self::Runtime, ctx: &dyn Ctx)
+        -> impl Future<Output = Result<Self::Subscription, Self::Error>> + Send;
+
+    fn recv(&self, subscription: &mut Self::Subscription)
+        -> impl Future<Output = Result<Self::Event, Self::Error>> + Send;
+}
+```
+
+Secondary topology — layered on top of a primary runtime. `recv` blocks until an event arrives.
+
+---
+
+### `Daemon` — background run loop (secondary)
+
+```rust
+pub trait Daemon: Resource {
+    fn run(&self, runtime: &Self::Runtime, ctx: &dyn Ctx, cancel: CancellationToken)
+        -> impl Future<Output = Result<(), Self::Error>> + Send;
+}
+```
+
+Runs until the token is cancelled or the future returns. The implementation must select on `cancel` for cooperative shutdown. Governed by `RestartPolicy`: `Never`, `OnFailure` (default), `Always`.
+
+---
+
+## Topology Configs
+
+Each config is the `Config` type alias exported from `nebula_resource` (e.g., `PoolConfig`).
+
+| Type | Key fields | Defaults |
+|------|-----------|---------|
+| `PoolConfig` | `min_size: u32`, `max_size: u32`, `idle_timeout: Option<Duration>`, `max_lifetime: Option<Duration>`, `create_timeout: Duration`, `strategy: PoolStrategy`, `warmup: WarmupStrategy`, `test_on_checkout: bool`, `maintenance_interval: Duration`, `max_concurrent_creates: u32` | `1 / 10 / 300s / 1800s / 30s / Lifo / None / false / 30s / 3` |
+| `ResidentConfig` | `recreate_on_failure: bool`, `create_timeout: Duration` | `false / 30s` |
+| `ServiceConfig` | `drain_timeout: Option<Duration>` | `None` |
+| `TransportConfig` | `max_sessions: u32`, `keepalive_interval: Option<Duration>`, `acquire_timeout: Duration` | `10 / Some(30s) / 30s` |
+| `ExclusiveConfig` | `acquire_timeout: Duration` | `30s` |
+| `EventSourceConfig` | `buffer_size: usize` | `0` |
+| `DaemonConfig` | `restart_policy: RestartPolicy`, `max_restarts: u32`, `restart_backoff: Duration` | `OnFailure / 5 / 1s` |
+
+`PoolStrategy`: `Lifo` (default, hot working set) or `Fifo` (even spread).
+`WarmupStrategy`: `None` (default), `Sequential`, `Parallel`, or `Staggered { interval }`.
+
+---
+
+## Handle
+
+### `ResourceHandle<R>`
+
+The value callers hold while using a resource. Annotated `#[must_use]` — dropping immediately releases the resource back to the topology.
+
+**Three ownership modes:**
+
+| Mode | Description |
+|------|-------------|
+| `Owned` | Caller owns the lease outright — no pool return, `hold_duration` returns zero |
+| `Guarded` | Exclusive lease, returned to pool via callback on drop |
+| `Shared` | `Arc`-wrapped lease for resident topology |
+
+```rust
+impl<R: Resource> ResourceHandle<R> {
+    // Constructors (used by topology runtimes, rarely called directly):
+    pub fn owned(lease: R::Lease, key: ResourceKey, tag: TopologyTag) -> Self;
+    pub fn guarded(lease: R::Lease, key: ResourceKey, tag: TopologyTag,
+                   generation: u64, on_release: impl FnOnce(R::Lease, bool) + Send + 'static) -> Self;
+    pub fn shared(lease: Arc<R::Lease>, key: ResourceKey, tag: TopologyTag,
+                  generation: u64, on_release: impl FnOnce(bool) + Send + 'static) -> Self;
+
+    // Use:
+    pub fn taint(&mut self);                 // mark for destroy instead of recycle
+    pub fn detach(self) -> Option<R::Lease>; // extract lease, skip release callback
+    pub fn hold_duration(&self) -> Duration; // zero for Owned, elapsed for Guarded/Shared
+    pub fn resource_key(&self) -> &ResourceKey;
+    pub fn topology_tag(&self) -> TopologyTag;
+    pub fn generation(&self) -> Option<u64>;
+
+    // Implements: Deref<Target = R::Lease>, Debug, Drop
+}
+```
+
+**Panic safety:** The `Drop` impl wraps release callbacks in `catch_unwind`. If the callback panics, the semaphore permit is still returned — no permit leaks.
+
+`detach` on a `Shared` handle returns `None` because the `Arc` may have other holders.
 
 ---
 
@@ -90,118 +292,83 @@ pub trait Resource: Send + Sync + 'static {
 
 ### `Manager`
 
-Central registry. Holds one `Pool<R>` per registered resource type.
+Central registry and lifecycle manager. Share via `Arc<Manager>`.
 
 ```rust
 impl Manager {
     pub fn new() -> Self;
-    pub fn builder() -> ManagerBuilder;
+    pub fn with_config(config: ManagerConfig) -> Self;
 
-    /// Register a resource with its config and pool settings.
-    /// Returns a typed pool handle for direct pool access.
+    // Registration:
     pub fn register<R: Resource>(
-        &self,
-        resource: R,
-        config: R::Config,
-        pool_config: PoolConfig,
-    ) -> Result<TypedPool<R>>;
+        &self, resource: R, config: R::Config, credential: R::Credential,
+        scope: ScopeLevel, topology: TopologyRuntime<R>,
+        resilience: Option<AcquireResilience>,
+        recovery_gate: Option<Arc<RecoveryGate>>,
+    ) -> Result<(), Error>;
 
-    /// Register a resource under a specific scope and strategy.
-    pub fn register_scoped<R: Resource>(
-        &self,
-        resource: R,
-        config: R::Config,
-        pool_config: PoolConfig,
-        scope: Scope,
-        strategy: Strategy,
-    ) -> Result<TypedPool<R>>;
+    // Convenience shorthands (credential = (), scope = Global, no resilience/gate):
+    pub fn register_pooled<R: Resource<Credential = ()>>(
+        &self, resource: R, config: R::Config, pool_config: PoolConfig) -> Result<(), Error>;
+    pub fn register_resident<R: Resource<Credential = ()>>(
+        &self, resource: R, config: R::Config, resident_config: ResidentConfig) -> Result<(), Error>;
+    pub fn register_service<R: Resource<Credential = ()>>(
+        &self, resource: R, config: R::Config, runtime: R::Runtime,
+        service_config: ServiceConfig) -> Result<(), Error>;
+    pub fn register_exclusive<R: Resource<Credential = ()>>(
+        &self, resource: R, config: R::Config, runtime: R::Runtime,
+        exclusive_config: ExclusiveConfig) -> Result<(), Error>;
 
-    /// Acquire an instance by resource key.
-    pub async fn acquire(
-        &self,
-        key: &ResourceKey,
-        ctx: &Context,
-    ) -> Result<AnyGuard>;
+    // Lookup:
+    pub fn lookup<R: Resource>(&self, scope: &ScopeLevel) -> Result<Arc<ManagedResource<R>>, Error>;
+    pub fn contains(&self, key: &ResourceKey) -> bool;
+    pub fn keys(&self) -> Vec<ResourceKey>;
+    pub fn get_any(&self, key: &ResourceKey, scope: &ScopeLevel)
+        -> Option<Arc<dyn AnyManagedResource>>;
 
-    /// Acquire a typed instance.
-    pub async fn acquire_typed<R: Resource>(
-        &self,
-        ctx: &Context,
-    ) -> Result<TypedResourceGuard<R>>;
+    // Acquire (topology-specific):
+    pub async fn acquire_pooled<R: Pooled + Clone + ...>(
+        &self, credential: &R::Credential, ctx: &dyn Ctx, options: &AcquireOptions,
+    ) -> Result<ResourceHandle<R>, Error>;
+    pub async fn acquire_resident<R: Resident + ...>(...) -> Result<ResourceHandle<R>, Error>;
+    pub async fn acquire_service<R: Service + Clone + ...>(...) -> Result<ResourceHandle<R>, Error>;
+    pub async fn acquire_transport<R: Transport + Clone + ...>(...) -> Result<ResourceHandle<R>, Error>;
+    pub async fn acquire_exclusive<R: Exclusive + Clone + ...>(...) -> Result<ResourceHandle<R>, Error>;
 
-    /// Get a typed pool handle for a registered resource.
-    pub fn pool<R: Resource>(&self) -> Option<TypedPool<R>>;
+    // Config hot-reload:
+    pub fn reload_config<R: Resource>(&self, new_config: R::Config,
+        scope: &ScopeLevel) -> Result<(), Error>;
 
-    /// Hot-reload config for a resource without dropping the existing pool.
-    pub async fn reload_config<R: Resource>(
-        &self,
-        config: R::Config,
-    ) -> Result<()>;
+    // Removal:
+    pub fn remove(&self, key: &ResourceKey) -> Result<(), Error>;
 
-    /// Aggregate status snapshot for all registered resources.
-    pub fn list_status(&self) -> Vec<ResourceStatus>;
+    // Observability:
+    pub fn subscribe_events(&self) -> broadcast::Receiver<ResourceEvent>;
+    pub fn metrics(&self) -> &ResourceMetrics;
+    pub fn resource_metrics(&self, key: &ResourceKey, scope: &ScopeLevel)
+        -> Option<Arc<ResourceMetrics>>;
+    pub fn recovery_groups(&self) -> &RecoveryGroupRegistry;
+    pub fn cancel_token(&self) -> &CancellationToken;
+    pub fn is_shutdown(&self) -> bool;
 
-    /// Status snapshot for one resource.
-    pub fn get_status(&self, key: &ResourceKey) -> Option<ResourceStatus>;
-
-    /// Reference to the shared event bus.
-    pub fn event_bus(&self) -> &Arc<EventBus>;
-
-    /// Declare a dependency between two resource keys.
-    pub fn add_dependency(
-        &self,
-        dependent: &ResourceKey,
-        dependency: &ResourceKey,
-    ) -> Result<()>;
-
-    /// Enable auto-scaling for one registered resource.
-    pub fn enable_autoscaling(
-        &self,
-        key: &ResourceKey,
-        policy: AutoScalePolicy,
-    ) -> Result<()>;
-
-    /// Graceful shutdown with phased drain, cleanup, and terminate.
-    pub async fn shutdown(&self) -> Result<()>;
-
-    /// Graceful shutdown with explicit timeouts.
-    pub async fn shutdown_with(&self, config: ShutdownConfig) -> Result<()>;
+    // Shutdown:
+    pub fn shutdown(&self);  // immediate — cancels token, no drain
+    pub async fn graceful_shutdown(&self, config: ShutdownConfig);
 }
 ```
+
+**`reload_config` mechanics:** validates the new config, atomically swaps it, increments the generation counter. For pool topology, updates the fingerprint so idle instances created with the old config are evicted on next checkout or release.
+
+**`graceful_shutdown` phases:** (1) cancel token → new acquires rejected; (2) drain in-flight handles up to `drain_timeout`; (3) clear registry; (4) await release queue workers (bounded 10 s).
 
 ---
 
-### `ManagerBuilder`
+### `ManagerConfig`
 
 ```rust
-impl ManagerBuilder {
-    pub fn new() -> Self;
-
-    pub fn health_config(self, config: HealthCheckConfig) -> Self;
-    pub fn event_bus(self, event_bus: Arc<EventBus>) -> Self;
-    pub fn quarantine_config(self, config: QuarantineConfig) -> Self;
-
-    /// Set a default AutoScalePolicy applied to every registered pool.
-    pub fn default_autoscale_policy(self, policy: AutoScalePolicy) -> Self;
-
-    pub fn build(self) -> Manager;
+pub struct ManagerConfig {
+    pub release_queue_workers: usize,  // default: 2
 }
-```
-
-**Example:**
-
-```rust
-use std::sync::Arc;
-use nebula_resource::{EventBus, HealthCheckConfig, ManagerBuilder, QuarantineConfig};
-
-let manager = ManagerBuilder::new()
-    .event_bus(Arc::new(EventBus::new(4096)))
-    .health_config(HealthCheckConfig {
-        failure_threshold: 5,
-        ..Default::default()
-    })
-    .quarantine_config(QuarantineConfig::default())
-    .build();
 ```
 
 ---
@@ -210,827 +377,515 @@ let manager = ManagerBuilder::new()
 
 ```rust
 pub struct ShutdownConfig {
-    /// Max wait for in-flight acquisitions to complete. Default: 30s.
-    pub drain_timeout: Duration,
-    /// Max time for cleanup callbacks per pool. Default: 10s.
-    pub cleanup_timeout: Duration,
-    /// Max time for forceful termination after cleanup. Default: 5s.
-    pub terminate_timeout: Duration,
+    pub drain_timeout: Duration,  // default: 30s
 }
 ```
 
 ---
 
-### `ResourceStatus`
-
-Aggregate snapshot combining metadata, health, pool dimensions, and quarantine
-state. Used by `nebula-api` for `GET /resources` and `GET /resources/:id`.
-
-```rust
-#[derive(Debug, Clone, Serialize)]
-pub struct ResourceStatus {
-    pub metadata: ResourceMetadata,
-    pub health: HealthState,
-    pub pool: ResourcePoolStatus,
-    pub quarantined: bool,
-    pub quarantine_reason: Option<String>,
-    pub scope: Scope,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct ResourcePoolStatus {
-    pub active: usize,
-    pub idle: usize,
-    pub max_size: usize,
-}
-```
-
----
-
-### `TypedPool<R>`
-
-A typed handle to a registered pool. Acquired from `Manager::register` or
-`Manager::pool::<R>()`.
-
-```rust
-impl<R: Resource> TypedPool<R> {
-    pub async fn acquire(&self, ctx: &Context) -> Result<TypedResourceGuard<R>>;
-    pub fn stats(&self) -> Result<PoolStats>;
-}
-```
-
----
-
-### `TypedResourceGuard<R>` and `AnyGuard`
-
-```rust
-// TypedResourceGuard<R> — returned by acquire_typed / TypedPool::acquire
-impl<R: Resource> TypedResourceGuard<R> {
-    /// Extract the instance, skipping pool return (use carefully).
-    pub fn into_inner(self) -> R::Instance;
-    // Implements Deref<Target = R::Instance>, DerefMut, Drop
-}
-
-// AnyGuard — type-erased guard returned by Manager::acquire
-impl AnyGuard {
-    /// Downcast to a typed guard.
-    pub fn downcast<R: Resource>(self) -> Result<TypedResourceGuard<R>>;
-    // Implements AnyGuardTrait, Drop
-}
-```
-
----
-
-## Pool
-
-### `PoolConfig`
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PoolConfig {
-    /// Minimum number of idle connections to maintain. Default: 1.
-    pub min_size: usize,
-    /// Maximum total connections (idle + active). Default: 10.
-    pub max_size: usize,
-    /// Max wait for acquire permit. Default: 30s.
-    pub acquire_timeout: Duration,
-    /// Evict idle connections older than this. Default: 10 min.
-    pub idle_timeout: Duration,
-    /// Evict connections older than this regardless of idle time. Default: 30 min.
-    pub max_lifetime: Duration,
-    /// How often `is_reusable` is called on idle connections. Default: 60s.
-    pub validation_interval: Duration,
-    /// How often background maintenance runs. Default: Some(60s).
-    pub maintenance_interval: Option<Duration>,
-    /// Idle selection order. Default: Fifo.
-    pub strategy: PoolStrategy,
-    /// Acquire backpressure. Default: BoundedWait { timeout: 30s }.
-    pub backpressure_policy: Option<PoolBackpressurePolicy>,
-    /// Circuit breaker for Resource::create. Default: None.
-    pub create_breaker: Option<CircuitBreakerConfig>,
-    /// Circuit breaker for Resource::recycle. Default: None.
-    pub recycle_breaker: Option<CircuitBreakerConfig>,
-    /// Timeout for Resource::create. Default: None (uses acquire_timeout).
-    pub create_timeout: Option<Duration>,
-    /// Timeout for Resource::recycle. Default: None.
-    pub recycle_timeout: Option<Duration>,
-    /// Whether instances are exclusively owned by one caller (default) or
-    /// cloned and shared across callers without consuming semaphore permits.
-    /// `Shared` requires `R::Instance: Clone`; use `Pool::acquire_shared`.
-    pub sharing_mode: PoolSharingMode,
-    /// When `true`, the pool spawns a background warm-up `maintain` call
-    /// immediately after construction to pre-fill idle instances up to
-    /// `min_size`. Default: `false`.
-    pub warm_up: bool,
-}
-
-impl PoolConfig {
-    /// Attach sensible circuit breakers to create and recycle.
-    pub fn with_standard_breakers(self) -> Self;
-
-    /// Validate constraints (min_size <= max_size, etc.).
-    pub fn validate(&self) -> Result<()>;
-
-    /// Resolve the effective backpressure policy (falls back to BoundedWait).
-    pub fn effective_backpressure_policy(&self) -> PoolBackpressurePolicy;
-}
-```
-
----
-
-### `PoolStrategy`
-
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum PoolStrategy {
-    /// Return the oldest idle instance. Distributes usage evenly. Default.
-    #[default]
-    Fifo,
-    /// Return the most recently used idle instance.
-    /// Keeps a hot working set small; idle-surplus instances expire naturally.
-    Lifo,
-}
-```
-
----
-
-### `PoolSharingMode`
-
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PoolSharingMode {
-    /// Each caller gets an exclusively owned instance (the pool's default).
-    #[default]
-    Exclusive,
-    /// Callers receive a cloned copy of an idle instance without consuming a
-    /// semaphore permit. Requires `R::Instance: Clone`. Use
-    /// `Pool::acquire_shared` to opt into this mode per call.
-    Shared,
-}
-```
-
-`Shared` is intended for lightweight, immutable-by-convention instances
-(e.g. a config snapshot or read-only HTTP client wrapper). The pool keeps
-one resident instance alive; every call to `acquire_shared` clones it and
-returns a no-op guard (drop does not recycle or return a permit).
-
----
-
-### `PoolBackpressurePolicy`
-
-```rust
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum PoolBackpressurePolicy {
-    /// Return Error::PoolExhausted immediately if no permit is available.
-    FailFast,
-    /// Wait up to `timeout`, then return Error::PoolExhausted.
-    BoundedWait { timeout: Duration },
-    /// Switch between low/high-pressure timeouts based on utilisation.
-    Adaptive(AdaptiveBackpressurePolicy),
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AdaptiveBackpressurePolicy {
-    /// Utilisation ratio (active / max_size) above which pressure is "high". Default: 0.8.
-    pub high_pressure_utilization: f64,
-    /// Waiter count above which pressure is "high". Default: 8.
-    pub high_pressure_waiters: usize,
-    /// Acquire timeout under low pressure. Default: 30s.
-    pub low_pressure_timeout: Duration,
-    /// Acquire timeout under high pressure. Default: 100ms.
-    pub high_pressure_timeout: Duration,
-}
-```
-
----
-
-### `InstanceMetadata`
-
-Passed to `Resource::is_reusable_with_meta` and `Resource::recycle_with_meta`.
-Allows implementations to make lifecycle decisions based on how long an instance
-has been alive, how long it has been idle, and how many times it has been used.
-
-```rust
-#[derive(Debug, Clone, Copy)]
-pub struct InstanceMetadata {
-    /// When the instance was created by `Resource::create`.
-    pub created_at: Instant,
-    /// When the instance last entered the idle queue (last release time).
-    pub idle_since: Instant,
-    /// How many times this instance has been checked out (including current).
-    pub acquire_count: usize,
-}
-```
-
-**Example** — rotate a connection if it is more than 30 minutes old:
-
-```rust
-async fn is_reusable_with_meta(
-    &self,
-    instance: &Self::Instance,
-    meta: &InstanceMetadata,
-) -> Result<bool> {
-    if meta.created_at.elapsed() > Duration::from_secs(1800) {
-        return Ok(false); // force cleanup and re-create
-    }
-    self.is_reusable(instance).await
-}
-```
-
----
-
-### Pool methods
-
-```rust
-impl<R: Resource> Pool<R> {
-    /// Evict idle instances for which `predicate` returns `false`.
-    /// Respects `min_size` — will not drop below the minimum.
-    /// Returns the number of evicted instances.
-    pub async fn retain<F>(
-        &self,
-        predicate: F,  // FnMut(&R::Instance, created_at: Instant, idle_since: Instant) -> bool
-    ) -> usize;
-
-    /// Resize the pool live without draining it.
-    /// - Grow: adds `(new_max - current_max)` semaphore permits.
-    /// - Shrink: best-effort — tries to quietly absorb excess permits;
-    ///   active guards beyond `new_max` complete normally.
-    pub fn set_max_size(&self, new_max: usize) -> Result<()>;
-}
-
-/// Available only when `R::Instance: Clone`.
-impl<R: Resource> Pool<R>
-where
-    R::Instance: Clone,
-{
-    /// Acquire a cloned snapshot of the front idle instance without consuming
-    /// a semaphore permit. If the idle queue is empty, creates one instance
-    /// and keeps it resident.
-    ///
-    /// The returned guard's `on_drop` is a no-op — dropping the guard neither
-    /// returns a permit nor recycles the instance.
-    ///
-    /// Use for lightweight, effectively-immutable resources (e.g. config
-    /// snapshots, read-only clients).
-    pub async fn acquire_shared(
-        &self,
-        ctx: &Context,
-    ) -> Result<(Guard<R::Instance, fn(R::Instance, bool)>, Duration)>;
-}
-```
-
----
-
-### `PoolStats` and `LatencyPercentiles`
-
-```rust
-#[derive(Debug, Clone, Serialize)]
-pub struct PoolStats {
-    pub total_acquisitions: u64,
-    pub total_releases: u64,
-    pub active: usize,
-    pub idle: usize,
-    pub created: u64,
-    pub destroyed: u64,
-    pub total_wait_time_ms: u64,
-    pub max_wait_time_ms: u64,
-    pub exhausted_count: u64,
-    /// HDR histogram percentiles. None if no acquisitions recorded yet.
-    pub acquire_latency: Option<LatencyPercentiles>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct LatencyPercentiles {
-    pub p50_ms: u64,
-    pub p95_ms: u64,
-    pub p99_ms: u64,
-    pub p999_ms: u64,
-    pub mean_ms: f64,
-}
-```
-
----
-
-## Guard
-
-### `Guard<T>`
-
-```rust
-pub struct Guard<T, F = Box<dyn FnOnce(T, bool) + Send>>
-where
-    F: FnOnce(T, bool) + Send + 'static,
-{
-    // fields private
-}
-
-impl<T, F> Guard<T, F>
-where
-    F: FnOnce(T, bool) + Send + 'static,
-{
-    /// Construct a guard with a drop callback.
-    /// `on_drop(instance, is_tainted)` is called exactly once on drop.
-    pub fn new(resource: T, on_drop: F) -> Self;
-
-    /// Mark the instance as unusable. The drop callback will receive
-    /// `is_tainted = true`, causing the pool to call cleanup instead of recycle.
-    pub fn taint(&mut self);
-
-    pub fn is_tainted(&self) -> bool;
-
-    /// Extract the inner value, consuming the guard without calling the callback.
-    pub fn into_inner(self) -> T;
-
-    /// Detach the instance from the pool: fires the `on_detach` callback (which
-    /// returns the semaphore permit and decrements the active count) but skips
-    /// the `on_drop` recycle/cleanup path entirely. Use when ownership of the
-    /// instance is being transferred outside the pool (e.g. moved into a long-
-    /// lived actor).
-    pub fn detach(self) -> T;
-
-    /// Leak the instance: extracts the value without calling any callback.
-    /// The semaphore permit is **not** returned. The pool's active count and
-    /// `max_size` enforcement are permanently affected until the pool is
-    /// destroyed. Only use for diagnostics or intentional permanent extraction.
-    pub fn leak(self) -> T;
-}
-
-// Implements: Deref<Target = T>, DerefMut, Debug (where T: Debug), Drop
-```
-
----
-
-## Context and Scope
-
-### `Context`
-
-```rust
-pub struct Context {
-    pub scope: Scope,
-    pub execution_id: ExecutionId,
-    pub workflow_id: WorkflowId,
-    /// W3C TraceContext for distributed tracing propagation. Optional.
-    pub trace_context: Option<TraceContext>,
-    // cancellation, metadata, recorder — accessed via methods
-    // tenant_id is derived from scope — see tenant_id() below
-}
-
-impl Context {
-    /// Construct with an active cancellation token derived from a new root.
-    pub fn new(scope: Scope, workflow_id: WorkflowId, execution_id: ExecutionId) -> Self;
-
-    /// Construct without a cancellation token (for background/system operations).
-    pub fn background(scope: Scope, workflow_id: WorkflowId, execution_id: ExecutionId) -> Self;
-
-    /// Returns the tenant ID embedded in the current scope (if any).
-    /// Reads from Tenant / Workflow / Execution / Action scope variants.
-    pub fn tenant_id(&self) -> Option<&str>;
-
-    /// Upgrade the scope to embed `tenant_id` instead of storing a separate field.
-    /// Global → Tenant; Tenant → replaced; Workflow/Execution/Action → tenant_id sub-field updated.
-    pub fn with_tenant(self, tenant_id: impl Into<String>) -> Self;
-    pub fn with_metadata(self, key: impl Into<String>, value: impl Into<String>) -> Self;
-    pub fn with_cancellation(self, token: CancellationToken) -> Self;
-    pub fn with_recorder(self, recorder: Arc<dyn Recorder>) -> Self;
-    /// Attach a W3C TraceContext for distributed tracing propagation.
-    pub fn with_trace_context(self, tc: TraceContext) -> Self;
-
-    pub fn is_cancellable(&self) -> bool;
-    pub fn is_cancelled(&self) -> bool;
-    pub fn recorder(&self) -> Arc<dyn Recorder>;
-
-    /// Retrieve a typed sub-resource pool handle previously injected by the manager.
-    pub fn resource<R: Resource>(&self, key: &str) -> Option<ResourcePoolHandle<R>>;
-}
-
-/// W3C TraceContext propagation headers for distributed tracing.
-///
-/// Inject into outbound requests via `inject_headers`; extract from inbound
-/// requests via `from_headers`.
-pub struct TraceContext {
-    /// Mandatory `traceparent` header value.
-    /// Format: `{version}-{trace-id}-{parent-id}-{trace-flags}`
-    pub traceparent: String,
-    /// Optional `tracestate` header value carrying vendor-specific trace data.
-    pub tracestate: Option<String>,
-}
-
-impl TraceContext {
-    /// Extract from an HTTP header map; returns `None` if `traceparent` is absent.
-    pub fn from_headers(headers: &HashMap<String, String>) -> Option<Self>;
-    /// Inject `traceparent` (and `tracestate` if present) into a header map.
-    pub fn inject_headers(&self, headers: &mut HashMap<String, String>);
-}
-```
-
----
-
-### `Scope`
-
-```rust
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Scope {
-    Global,
-    Tenant      { tenant_id: String },
-    Workflow    { workflow_id: String, tenant_id: Option<String> },
-    Execution   { execution_id: String, workflow_id: Option<String>, tenant_id: Option<String> },
-    Action      { action_id: String, execution_id: Option<String>, workflow_id: Option<String>, tenant_id: Option<String> },
-    Custom      { key: String, value: String, parent: Option<Box<Scope>> },
-}
-
-impl Scope {
-    // Fallible constructors — return Err if any ID string is empty.
-    pub fn try_tenant(tenant_id: impl Into<String>) -> Result<Self, String>;
-    pub fn try_workflow(workflow_id: impl Into<String>) -> Result<Self, String>;
-    pub fn try_workflow_in_tenant(workflow_id: impl Into<String>, tenant_id: impl Into<String>) -> Result<Self, String>;
-    pub fn try_execution(execution_id: impl Into<String>) -> Result<Self, String>;
-    pub fn try_execution_in_workflow(
-        execution_id: impl Into<String>,
-        workflow_id: impl Into<String>,
-        tenant_id: Option<String>,
-    ) -> Result<Self, String>;
-    pub fn try_action(action_id: impl Into<String>) -> Result<Self, String>;
-    pub fn try_action_in_execution(
-        action_id: impl Into<String>,
-        execution_id: impl Into<String>,
-        workflow_id: Option<String>,
-        tenant_id: Option<String>,
-    ) -> Result<Self, String>;
-    /// Create a Custom scope without a parent.
-    pub fn try_custom(key: impl Into<String>, value: impl Into<String>) -> Result<Self, String>;
-    /// Create a Custom scope nested under `parent` for hierarchical containment checks.
-    pub fn try_custom_with_parent(key: impl Into<String>, value: impl Into<String>, parent: Scope) -> Result<Self, String>;
-
-    /// Numeric depth: Global=0, Tenant=1, Workflow=2, Execution=3, Action=4, Custom≥1.
-    pub fn hierarchy_level(&self) -> u8;
-    pub fn is_broader_than(&self, other: &Scope) -> bool;
-    pub fn is_narrower_than(&self, other: &Scope) -> bool;
-
-    /// Returns true if `self` transitively contains `other`
-    /// (i.e. `other` is a descendant in the hierarchy).
-    pub fn contains(&self, other: &Scope) -> bool;
-
-    pub fn scope_key(&self) -> String;
-    pub fn description(&self) -> String;
-}
-```
-
----
-
-### `Strategy`
-
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum Strategy {
-    /// Exact scope match only.
-    Strict,
-    /// Pool scope must contain (or equal) the requested scope. Default.
-    #[default]
-    Hierarchical,
-    /// Exact match first; falls back to hierarchical if no exact match.
-    Fallback,
-}
-
-impl Strategy {
-    pub fn is_compatible(&self, resource_scope: &Scope, requested_scope: &Scope) -> bool;
-}
-```
-
----
-
-## Metadata
-
-### `ResourceMetadata`
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourceMetadata {
-    /// Canonical identifier used everywhere in the system.
-    pub key: ResourceKey,
-    pub name: String,
-    pub description: String,
-    pub icon: Option<String>,
-    pub icon_url: Option<String>,
-    pub tags: Vec<String>,
-}
-
-impl ResourceMetadata {
-    pub fn new(key: ResourceKey, name: impl Into<String>, description: impl Into<String>) -> Self;
-    pub fn from_key(key: ResourceKey) -> Self;
-
-    /// Start a builder (preferred over direct construction).
-    pub fn builder(key: ResourceKey, name: impl Into<String>, description: impl Into<String>) -> ResourceMetadataBuilder;
-}
-
-pub struct ResourceMetadataBuilder { /* ... */ }
-
-impl ResourceMetadataBuilder {
-    pub fn icon(self, icon: impl Into<String>) -> Self;
-    pub fn icon_url(self, icon_url: impl Into<String>) -> Self;
-    pub fn tag(self, tag: impl Into<String>) -> Self;
-    pub fn tags<T, I>(self, tags: I) -> Self
-    where T: Into<String>, I: IntoIterator<Item = T>;
-    pub fn build(self) -> ResourceMetadata;
-}
-```
-
----
-
-## Error Handling
+## Error Model
 
 ### `Error`
 
 ```rust
-#[non_exhaustive]
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("configuration error: {message}")]
-    Configuration {
-        message: String,
-        #[source] source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
-
-    #[error("resource '{resource_key}' failed to initialise: {reason}")]
-    Initialization {
-        resource_key: ResourceKey,
-        reason: String,
-        #[source] source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
-
-    #[error("resource '{resource_key}' unavailable: {reason}")]
-    Unavailable {
-        resource_key: ResourceKey,
-        reason: String,
-        retryable: bool,
-    },
-
-    #[error("health check failed for '{resource_key}' (attempt {attempt}): {reason}")]
-    HealthCheck {
-        resource_key: ResourceKey,
-        reason: String,
-        attempt: u32,
-    },
-
-    #[error("no credential configured for resource '{resource_key}'")]
-    CredentialNotConfigured { resource_key: ResourceKey },
-
-    #[error("credential '{credential_id}' not found for resource '{resource_key}'")]
-    MissingCredential {
-        credential_id: String,
-        resource_key: ResourceKey,
-    },
-
-    #[error("resource '{resource_key}' timed out after {timeout_ms}ms during {operation}")]
-    Timeout {
-        resource_key: ResourceKey,
-        timeout_ms: u64,
-        operation: String,
-    },
-
-    #[error("circuit breaker open for '{resource_key}' operation '{operation}'")]
-    CircuitBreakerOpen {
-        resource_key: ResourceKey,
-        operation: &'static str,
-        retry_after: Option<Duration>,
-    },
-
-    #[error("pool exhausted for '{resource_key}': {current_size}/{max_size} active, {waiters} waiting")]
-    PoolExhausted {
-        resource_key: ResourceKey,
-        current_size: usize,
-        max_size: usize,
-        waiters: usize,
-    },
-
-    #[error("dependency '{dependency_id}' failed for '{resource_key}': {reason}")]
-    DependencyFailure {
-        resource_key: ResourceKey,
-        dependency_id: String,
-        reason: String,
-    },
-
-    #[error("circular dependency detected: {cycle}")]
-    CircularDependency { cycle: String },
-
-    #[error("invalid state transition for '{resource_key}': {from} → {to}")]
-    InvalidStateTransition {
-        resource_key: ResourceKey,
-        from: String,
-        to: String,
-    },
-
-    #[error("validation failed")]
-    Validation { violations: Vec<FieldViolation> },
-
-    #[error("internal error for '{resource_key}': {message}")]
-    Internal {
-        resource_key: ResourceKey,
-        message: String,
-        #[source] source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
-}
+pub struct Error { /* kind, scope, message, resource_key, source */ }
 
 impl Error {
-    pub fn configuration(message: impl Into<String>) -> Self;
-    pub fn validation(violations: Vec<FieldViolation>) -> Self;
+    // Constructors:
+    pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self;
+    pub fn transient(message: impl Into<String>) -> Self;
+    pub fn permanent(message: impl Into<String>) -> Self;
+    pub fn exhausted(message: impl Into<String>, retry_after: Option<Duration>) -> Self;
+    pub fn not_found(key: &ResourceKey) -> Self;
+    pub fn cancelled() -> Self;
+    pub fn backpressure(message: impl Into<String>) -> Self;
 
-    pub fn category(&self) -> ErrorCategory;
-    pub fn is_retryable(&self) -> bool;
-    pub fn is_fatal(&self) -> bool;
-    pub fn is_validation(&self) -> bool;
-    pub fn retry_after(&self) -> Option<Duration>;
-    pub fn operation(&self) -> Option<&'static str>;
+    // Builders:
+    pub fn with_resource_key(self, key: ResourceKey) -> Self;
+    pub fn with_source(self, source: impl Error + Send + Sync + 'static) -> Self;
+    pub fn with_scope(self, scope: ErrorScope) -> Self;
+
+    // Introspection:
+    pub fn kind(&self) -> &ErrorKind;
+    pub fn scope(&self) -> &ErrorScope;
     pub fn resource_key(&self) -> Option<&ResourceKey>;
+    pub fn is_retryable(&self) -> bool;  // true for Transient and Exhausted
+    pub fn retry_after(&self) -> Option<Duration>;
 }
 ```
 
 ---
 
-### `ErrorCategory` and `FieldViolation`
+### `ErrorKind` and `ErrorScope`
 
 ```rust
-pub enum ErrorCategory {
-    /// Operation may succeed on retry. Apply resilience layer backoff.
-    Retryable,
-    /// Permanent failure. Do not retry; fail the node.
-    Fatal,
-    /// Invalid input, config, or contract. Fix the caller; do not retry.
-    Validation,
+#[non_exhaustive]
+pub enum ErrorKind {
+    Transient,                              // network blip, timeout — retry with backoff
+    Permanent,                              // auth failure, bad config — never retry
+    Exhausted { retry_after: Option<Duration> }, // rate limit — retry after cooldown
+    Backpressure,                           // pool/semaphore full
+    NotFound,                               // key not in registry
+    Cancelled,                              // CancellationToken fired
 }
 
-pub struct FieldViolation {
-    pub field: String,
-    pub constraint: String,
-    pub actual: String,
+#[non_exhaustive]
+pub enum ErrorScope {
+    Resource,                 // the resource itself may be broken (default)
+    Target { id: String },    // only a specific target failed (e.g., one user blocked)
+}
+```
+
+**Retryability:** `Transient` and `Exhausted` return `true` from `is_retryable()`. The `AcquireResilience` retry loop only retries errors where `is_retryable()` is `true`.
+
+---
+
+### `ClassifyError` derive macro
+
+Generates `From<YourError> for nebula_resource::Error`. See `nebula_resource_macros::ClassifyError` for full documentation.
+
+---
+
+## Context
+
+### `Ctx` trait
+
+Every resource lifecycle method receives `&dyn Ctx`.
+
+```rust
+pub trait Ctx: Send + Sync {
+    fn scope(&self) -> &ScopeLevel;
+    fn execution_id(&self) -> &ExecutionId;
+    fn cancel_token(&self) -> &CancellationToken;
+    fn ext_raw(&self, type_id: TypeId) -> Option<&(dyn Any + Send + Sync)>;
 }
 
-impl FieldViolation {
-    pub fn new(
-        field: impl Into<String>,
-        constraint: impl Into<String>,
-        actual: impl Into<String>,
-    ) -> Self;
+pub fn ctx_ext<T: Send + Sync + 'static>(ctx: &dyn Ctx) -> Option<&T>;
+```
+
+---
+
+### `BasicCtx`
+
+Default concrete implementation of `Ctx`.
+
+```rust
+impl BasicCtx {
+    pub fn new(execution_id: ExecutionId) -> Self;  // scope = Global
+    pub fn with_scope(self, scope: ScopeLevel) -> Self;
+    pub fn with_cancel_token(self, token: CancellationToken) -> Self;
+    pub fn with_extensions(self, extensions: Extensions) -> Self;
 }
 ```
 
 ---
 
-## Lifecycle
+### `ScopeLevel`
+
+Lifecycle boundary for resource instances. Finer scopes are cleaned up more aggressively.
 
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub enum Lifecycle {
-    #[default]
-    Created,
-    Initializing,
-    Ready,
-    InUse,
-    Idle,
-    Maintenance,
-    Draining,
-    Cleanup,
-    Terminated,
-    Failed,
-}
-
-impl Lifecycle {
-    /// True if the instance can be handed to a caller (Ready | Idle).
-    pub fn is_available(&self) -> bool;
-    /// True if no further transitions are possible (Terminated | Failed).
-    pub fn is_terminal(&self) -> bool;
-    /// True for transient states (Initializing | Draining | Cleanup).
-    pub fn is_transitional(&self) -> bool;
-    /// True if acquire is valid (Ready | Idle).
-    pub fn can_acquire(&self) -> bool;
-    /// Validate a state transition against the state machine.
-    pub fn can_transition_to(&self, target: Lifecycle) -> bool;
-    /// All valid next states from this state.
-    pub fn next_states(&self) -> &'static [Lifecycle];
-    pub fn description(&self) -> &'static str;
+pub enum ScopeLevel {
+    Global,
+    Organization(String),
+    Project(String),
+    Workflow(WorkflowId),
+    Execution(ExecutionId),
 }
 ```
 
----
-
-## Resource References and Providers
-
-### `ResourceRef<R>` and `ErasedResourceRef`
-
-```rust
-pub struct ResourceRef<R: Resource> {
-    pub key: ResourceKey,
-    // PhantomData<fn() -> R>
-}
-
-impl<R: Resource> ResourceRef<R> {
-    /// Construct from a string key.
-    pub fn new(key: &str) -> Result<Self>;
-    /// Derive from Resource::declare_key — no string needed.
-    pub fn of() -> Self;
-    /// Erase the type parameter for storage in heterogeneous collections.
-    pub fn erase(self) -> ErasedResourceRef;
-}
-
-pub struct ErasedResourceRef {
-    pub key: ResourceKey,
-}
-```
+Registry lookup prefers an exact scope match; falls back to `Global`.
 
 ---
 
-### `ResourceProvider`
+### `Extensions`
 
-Trait implemented by `Manager` and test doubles. Enables type-safe resource
-acquisition without a direct dependency on `Manager`.
-
-```rust
-pub trait ResourceProvider: Send + Sync {
-    async fn resource<R: Resource>(&self, ctx: &Context) -> Result<Guard<R::Instance>>;
-    async fn acquire(&self, id: &str, ctx: &Context) -> Result<Box<dyn Any + Send>>;
-
-    // Default implementations (call acquire / resource):
-    async fn has_resource<R: Resource>(&self, ctx: &Context) -> bool;
-    async fn has(&self, id: &str, ctx: &Context) -> bool;
-    async fn exists(&self, id: &str, ctx: &Context) -> bool;
-    async fn exists_resource<R: Resource>(&self, ctx: &Context) -> bool;
-}
-```
-
----
-
-## Components and Credentials
-
-### `HasResourceComponents`
-
-Declare static credential and sub-resource dependencies for a `Resource` type.
-Used by the engine to pre-validate dependencies before execution.
+Type-map for arbitrary typed data threaded through the context.
 
 ```rust
-pub trait HasResourceComponents: Resource {
-    fn components() -> ResourceComponents;
-}
-
-pub struct ResourceComponents {
-    // private fields
-}
-
-impl ResourceComponents {
+impl Extensions {
     pub fn new() -> Self;
-
-    /// Declare a required credential of type `C`.
-    pub fn credential<C: nebula_credential::CredentialType>(self, id: &str) -> Self;
-
-    /// Declare a sub-resource dependency.
-    pub fn resource<R: Resource>(self, key: &str) -> Self;
-
-    pub fn credential_ref(&self) -> Option<&ErasedCredentialRef>;
-    pub fn resource_refs(&self) -> &[ErasedResourceRef];
+    pub fn insert<T: Send + Sync + 'static>(&mut self, value: T);
+    pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T>;
 }
 ```
 
 ---
 
-## Observability
+## Options
 
-See [`events-and-hooks.md`](events-and-hooks.md) for the full `EventBus`,
-`ResourceEvent`, and `HookRegistry` reference.
+### `AcquireOptions`
 
-See [`health-and-quarantine.md`](health-and-quarantine.md) for `HealthChecker`,
-`HealthState`, `QuarantineManager`, and `RecoveryStrategy`.
-
-### `MetricsCollector`
-
-Bridges pool stats to `nebula-metrics`. Registered automatically by `Manager`.
+Passed to every `acquire_*` call. Communicates intent and deadline to topologies.
 
 ```rust
-pub struct MetricsCollector;
+pub struct AcquireOptions {
+    pub intent: AcquireIntent,      // default: Standard
+    pub deadline: Option<Instant>,  // absolute deadline for the acquire
+    pub tags: SmallVec<[...; 2]>,   // routing/diagnostics key-value pairs
+}
 
-impl MetricsCollector {
-    pub fn record_acquire(key: &ResourceKey, wait_ms: u64);
-    pub fn record_release(key: &ResourceKey, usage_ms: u64);
-    pub fn record_create(key: &ResourceKey, success: bool);
-    pub fn record_exhausted(key: &ResourceKey);
+impl AcquireOptions {
+    pub fn with_deadline(self, deadline: Instant) -> Self;
+    pub fn with_intent(self, intent: AcquireIntent) -> Self;
+    pub fn with_tag(self, key: impl Into<Cow<'static, str>>,
+                    value: impl Into<Cow<'static, str>>) -> Self;
+    pub fn remaining(&self) -> Option<Duration>;
 }
 ```
 
 ---
 
-## Prelude
-
-The prelude re-exports the most commonly used types:
+### `AcquireIntent`
 
 ```rust
-use nebula_resource::prelude::*;
+#[non_exhaustive]
+pub enum AcquireIntent {
+    Standard,                          // default path
+    LongRunning,                       // caller will hold the lease for a long time
+    Streaming { expected: Duration },  // streaming data, hint for duration
+    Prefetch,                          // low priority, may be deferred
+    Critical,                          // bypass queues, never throttle
+}
 ```
 
-Includes: `Context`, `Error`, `ErrorCategory`, `Result`, `Guard`, `Lifecycle`,
-`ResourceMetadata`, `ErasedResourceRef`, `ResourceProvider`, `ResourceRef`,
-`Config`, `Resource`, `Scope`, `Strategy`, `AutoScalePolicy`,
-`BackPressurePolicy`, `EventBus`, `EventBusStats`, `EventFilter`,
-`EventSubscriber`, `QuarantineTrigger`, `ResourceEvent`, `ScopedEvent`,
-`ScopedSubscriber`, `SubscriptionScope`, `HealthCheckable`, `HealthState`,
-`HealthStatus`, `ResourceHealthAdapter`, `HookEvent`, `HookFilter`,
-`HookRegistry`, `HookResult`, `ResourceHook`, `Manager`, `ManagerBuilder`,
-`ResourceHandle`, `ResourcePoolStatus`, `ResourceStatus`,
-`TypedResourceGuard`, `AdaptiveBackpressurePolicy`, `LatencyPercentiles`,
-`Pool`, `PoolBackpressurePolicy`, `PoolConfig`, `PoolStats`, `PoolStrategy`,
-`ExecutionId`, `ResourceId`, `ResourceKey`, `WorkflowId`.
+---
+
+## Resilience
+
+### `AcquireResilience`
+
+Wraps acquire calls with timeout, exponential-backoff retry, and circuit-breaker hints.
+Pass as `resilience` parameter to `Manager::register`.
+
+```rust
+pub struct AcquireResilience {
+    pub timeout: Option<Duration>,
+    pub retry: Option<AcquireRetryConfig>,
+    pub circuit_breaker: Option<AcquireCircuitBreakerPreset>,
+}
+
+impl AcquireResilience {
+    pub fn standard() -> Self;  // 30s timeout, 3 attempts, standard breaker
+    pub fn fast() -> Self;      // 10s timeout, 2 attempts, fast breaker
+    pub fn slow() -> Self;      // 60s timeout, 5 attempts, slow breaker
+    pub fn none() -> Self;      // no timeout, no retries, no breaker
+}
+```
+
+---
+
+### `AcquireRetryConfig` and `AcquireCircuitBreakerPreset`
+
+```rust
+pub struct AcquireRetryConfig {
+    pub max_attempts: u32,      // total attempts including the initial try
+    pub initial_backoff: Duration,
+    pub max_backoff: Duration,
+}
+
+pub enum AcquireCircuitBreakerPreset {
+    Standard,  // 5 failures, 30s reset
+    Fast,      // 3 failures, 10s reset
+    Slow,      // 10 failures, 60s reset
+}
+```
+
+Retry only fires on `is_retryable()` errors. `timeout` is a per-attempt wall-clock limit.
+
+---
+
+## Recovery
+
+### `RecoveryGate`
+
+CAS-based state machine preventing thundering herd on dead backends. Only one caller at a time performs the expensive probe.
+
+```text
+Idle → InProgress → Idle           (success path)
+                  → Failed         (transient failure, exponential backoff)
+                  → PermanentlyFailed (max_attempts exceeded or explicit fail_permanent)
+```
+
+```rust
+impl RecoveryGate {
+    pub fn new(config: RecoveryGateConfig) -> Self;
+    pub fn try_begin(&self) -> Result<RecoveryTicket, TryBeginError>;
+    pub fn state(&self) -> GateState;
+    pub fn reset(&self);  // admin override, returns gate to Idle
+}
+```
+
+---
+
+### `RecoveryTicket`
+
+RAII exclusive recovery rights. `#[must_use]` — dropping without resolving auto-fails with backoff.
+
+```rust
+impl RecoveryTicket {
+    pub fn resolve(self);                             // success → Idle, wake waiters
+    pub fn fail_transient(self, message: impl Into<String>);  // → Failed with backoff
+    pub fn fail_permanent(self, message: impl Into<String>);  // → PermanentlyFailed
+    pub fn attempt(&self) -> u32;
+}
+```
+
+---
+
+### `RecoveryGateConfig`, `GateState`, `RecoveryWaiter`
+
+```rust
+pub struct RecoveryGateConfig {
+    pub max_attempts: u32,     // default: 5
+    pub base_backoff: Duration, // default: 1s, doubled each attempt, capped at 5 min
+}
+
+#[non_exhaustive]
+pub enum GateState {
+    Idle,
+    InProgress { attempt: u32 },
+    Failed { message: String, retry_at: Instant, attempt: u32 },
+    PermanentlyFailed { message: String },
+}
+
+impl RecoveryWaiter {
+    pub async fn wait(&self) -> GateState;  // blocks until gate leaves InProgress
+}
+```
+
+---
+
+### `RecoveryGroupRegistry`
+
+Per-key registry of `RecoveryGate` instances. `Manager` exposes this via `recovery_groups()`.
+
+```rust
+impl RecoveryGroupRegistry {
+    pub fn new() -> Self;
+    pub fn get_or_create(&self, key: RecoveryGroupKey, config: RecoveryGateConfig)
+        -> Arc<RecoveryGate>;
+    pub fn get(&self, key: &RecoveryGroupKey) -> Option<Arc<RecoveryGate>>;
+    pub fn remove(&self, key: &RecoveryGroupKey) -> Option<Arc<RecoveryGate>>;
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+}
+```
+
+---
+
+### `WatchdogHandle`
+
+Opt-in periodic health probe. Calls `on_health_change(false)` after `failure_threshold` consecutive failures; calls `on_health_change(true)` after `recovery_threshold` consecutive successes. Dropping the handle cancels the probe.
+
+```rust
+impl WatchdogHandle {
+    pub fn start<F, Fut>(config: WatchdogConfig, check_fn: F,
+        on_health_change: impl Fn(bool) + Send + Sync + 'static,
+        parent_cancel: CancellationToken) -> Self
+    where F: Fn() -> Fut + Send + Sync + 'static, Fut: Future<Output = Result<(), Error>> + Send;
+
+    pub async fn stop(self);
+}
+
+pub struct WatchdogConfig {
+    pub interval: Duration,           // default: 30s
+    pub probe_timeout: Duration,      // default: 5s — timeout counts as failure
+    pub failure_threshold: u32,       // default: 3
+    pub recovery_threshold: u32,      // default: 1
+}
+```
+
+---
+
+## Events
+
+### `ResourceEvent`
+
+Lifecycle events emitted by `Manager` into a 256-slot broadcast channel. Slow consumers receive `RecvError::Lagged`.
+
+```rust
+#[non_exhaustive]
+pub enum ResourceEvent {
+    Registered { key: ResourceKey },
+    Removed { key: ResourceKey },
+    AcquireSuccess { key: ResourceKey, duration: Duration },
+    AcquireFailed { key: ResourceKey, error: String },
+    Released { key: ResourceKey, held: Duration, tainted: bool },
+    HealthChanged { key: ResourceKey, healthy: bool },
+    ConfigReloaded { key: ResourceKey },
+}
+
+impl ResourceEvent {
+    pub fn key(&self) -> &ResourceKey;
+}
+```
+
+Subscribe via `Manager::subscribe_events() -> broadcast::Receiver<ResourceEvent>`.
+
+---
+
+## Metrics
+
+### `ResourceMetrics` and `MetricsSnapshot`
+
+Lock-free atomic counters. `Manager::metrics()` returns aggregate counters; `Manager::resource_metrics(key, scope)` returns per-resource counters.
+
+```rust
+impl ResourceMetrics {
+    pub fn new() -> Self;
+    pub fn record_acquire(&self);
+    pub fn record_acquire_error(&self);
+    pub fn record_release(&self);
+    pub fn record_create(&self);
+    pub fn record_destroy(&self);
+    pub fn snapshot(&self) -> MetricsSnapshot;
+}
+
+pub struct MetricsSnapshot {
+    pub acquire_total: u64,
+    pub acquire_errors: u64,
+    pub release_total: u64,
+    pub create_total: u64,
+    pub destroy_total: u64,
+}
+```
+
+---
+
+## State
+
+### `ResourcePhase` and `ResourceStatus`
+
+```rust
+#[non_exhaustive]
+pub enum ResourcePhase {
+    Initializing, Ready, Reloading, Draining, ShuttingDown, Failed,
+}
+
+impl ResourcePhase {
+    pub fn is_accepting(&self) -> bool;  // true for Ready and Reloading
+    pub fn is_terminal(&self) -> bool;   // true for ShuttingDown and Failed
+}
+
+pub struct ResourceStatus {
+    pub phase: ResourcePhase,
+    pub generation: u64,             // incremented on each reload_config
+    pub last_error: Option<String>,
+}
+```
+
+---
+
+## Runtime Types
+
+These types are used when calling `Manager::register` directly. The convenience helpers (`register_pooled`, etc.) construct them internally.
+
+### `TopologyRuntime<R>`
+
+Dispatch enum selecting which runtime manages a resource's instances.
+
+```rust
+pub enum TopologyRuntime<R: Resource> {
+    Pool(PoolRuntime<R>),
+    Resident(ResidentRuntime<R>),
+    Service(ServiceRuntime<R>),
+    Transport(TransportRuntime<R>),
+    Exclusive(ExclusiveRuntime<R>),
+    EventSource(EventSourceRuntime<R>),
+    Daemon(DaemonRuntime<R>),
+}
+```
+
+Each variant (`PoolRuntime<R>`, `ResidentRuntime<R>`, etc.) is constructible via `::new(config)` or `::new(runtime, config)`. Topology runtimes are not intended to be called directly by application code — use the `Manager::acquire_*` methods.
+
+### `ManagedResource<R>`
+
+Per-registration bundle holding the resource, hot-swappable config, topology runtime, release queue, generation counter, status, metrics, resilience config, and optional recovery gate. Returned by `Manager::lookup` for low-level access.
+
+```rust
+impl<R: Resource> ManagedResource<R> {
+    pub fn generation(&self) -> u64;
+    pub fn status(&self) -> Arc<ResourceStatus>;
+    pub fn config(&self) -> Arc<R::Config>;
+    pub fn metrics(&self) -> &Arc<ResourceMetrics>;
+}
+```
+
+### `Registry` and `AnyManagedResource`
+
+Type-erased storage for `ManagedResource<R>`. Provides two lookup paths: by `ResourceKey + ScopeLevel` (returns `Arc<dyn AnyManagedResource>`) and by type `R` (downcasts to `Arc<ManagedResource<R>>`). Exposed via `Manager::get_any` for diagnostic use.
+
+---
+
+## Utilities
+
+### `Cell<T>`
+
+Lock-free `ArcSwapOption`-backed cell for the Resident topology. Holds at most one `Arc<T>`.
+
+```rust
+impl<T> Cell<T> {
+    pub fn new() -> Self;
+    pub fn store(&self, value: Arc<T>);
+    pub fn load(&self) -> Option<Arc<T>>;
+    pub fn take(&self) -> Option<Arc<T>>;
+    pub fn is_some(&self) -> bool;
+}
+```
+
+---
+
+### `ReleaseQueue`
+
+Distributes async cleanup tasks across N primary workers and one unbounded fallback. Primary channels are bounded (256 tasks each); overflow goes to the fallback — tasks are never dropped. Workers drain buffered tasks before exiting on cancellation.
+
+```rust
+impl ReleaseQueue {
+    pub fn new(worker_count: usize) -> (Self, ReleaseQueueHandle);  // panics if 0
+    pub fn with_cancel(worker_count: usize, cancel: CancellationToken)
+        -> (Self, ReleaseQueueHandle);
+    pub fn submit(&self, factory: impl FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>>
+                                               + Send + 'static);
+    pub fn close(&self);
+    pub async fn shutdown(handle: ReleaseQueueHandle);
+}
+```
+
+Task execution is bounded at 30 s per task. When used via `Manager`, the manager's token is shared with workers so `graceful_shutdown` signals drain automatically.
+
+`ReleaseQueueHandle` is `#[must_use]` — dropping without calling `shutdown` leaks worker tasks.
+
+---
+
+### `ResourceMetadata`
+
+UI and diagnostic information returned by `Resource::metadata()`.
+
+```rust
+pub struct ResourceMetadata {
+    pub key: ResourceKey,
+    pub name: String,
+    pub description: Option<String>,
+    pub tags: Vec<String>,
+}
+
+impl ResourceMetadata {
+    pub fn from_key(key: &ResourceKey) -> Self;
+}
+```
+
+---
+
+### `TopologyTag`
+
+Identifies which topology a `ResourceHandle` was acquired from. Used for observability and diagnostics.
+
+```rust
+#[non_exhaustive]
+pub enum TopologyTag { Pool, Resident, Service, Transport, Exclusive, EventSource, Daemon }
+
+impl TopologyTag {
+    pub fn as_str(self) -> &'static str;
+}
+```
