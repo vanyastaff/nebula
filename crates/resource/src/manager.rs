@@ -15,8 +15,8 @@
 //! ```
 
 use std::any::TypeId;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::{Notify, broadcast};
@@ -604,27 +604,7 @@ impl Manager {
 
         // Phase 2: DRAIN — wait for in-flight handles to be released,
         // or timeout if they are not released in time.
-        {
-            let active = self.drain_tracker.0.load(AtomicOrdering::Acquire);
-            if active > 0 {
-                tracing::debug!(active_handles = active, "waiting for handles to drain");
-                let wait_result = tokio::time::timeout(config.drain_timeout, async {
-                    loop {
-                        self.drain_tracker.1.notified().await;
-                        if self.drain_tracker.0.load(AtomicOrdering::Acquire) == 0 {
-                            break;
-                        }
-                    }
-                })
-                .await;
-                if wait_result.is_err() {
-                    tracing::warn!(
-                        active_handles = self.drain_tracker.0.load(AtomicOrdering::Relaxed),
-                        "resource manager: drain timeout expired with handles still active"
-                    );
-                }
-            }
-        }
+        self.wait_for_drain(config.drain_timeout).await;
 
         // Phase 3: CLEAR — drop all ManagedResources so their
         // Arc<ReleaseQueue> refs are released.
@@ -647,6 +627,33 @@ impl Manager {
         }
 
         tracing::info!("resource manager: shutdown complete");
+    }
+
+    /// Waits until all active `ResourceHandle`s are dropped or timeout expires.
+    async fn wait_for_drain(&self, timeout: Duration) {
+        let active = self.drain_tracker.0.load(AtomicOrdering::Acquire);
+        if active == 0 {
+            return;
+        }
+
+        tracing::debug!(active_handles = active, "waiting for handles to drain");
+        let tracker = &self.drain_tracker;
+        let drained = tokio::time::timeout(timeout, async {
+            loop {
+                tracker.1.notified().await;
+                if tracker.0.load(AtomicOrdering::Acquire) == 0 {
+                    return;
+                }
+            }
+        })
+        .await;
+
+        if drained.is_err() {
+            tracing::warn!(
+                active_handles = tracker.0.load(AtomicOrdering::Relaxed),
+                "resource manager: drain timeout expired with handles still active"
+            );
+        }
     }
 
     /// Returns `true` if a resource with the given key is registered.

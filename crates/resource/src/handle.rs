@@ -7,8 +7,8 @@
 //! - **Shared**: `Arc`-wrapped lease with shared access.
 
 use std::ops::Deref;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::Instant;
 
 use nebula_core::ResourceKey;
@@ -304,10 +304,10 @@ impl<R: Resource> Drop for ResourceHandle<R> {
         }
 
         // Drain tracking: decrement active count and notify shutdown waiters.
-        if let Some(ref tracker) = self.drain_counter {
-            if tracker.0.fetch_sub(1, AtomicOrdering::Release) == 1 {
-                tracker.1.notify_waiters();
-            }
+        if let Some(ref tracker) = self.drain_counter
+            && tracker.0.fetch_sub(1, AtomicOrdering::Release) == 1
+        {
+            tracker.1.notify_waiters();
         }
     }
 }
