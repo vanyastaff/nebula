@@ -80,10 +80,16 @@ pub mod credential_state;
 pub mod credential_v2;
 /// Built-in credential type implementations (v2).
 pub mod credentials;
+/// Typed credential handle returned by the resolver (v2).
+pub mod handle_v2;
 /// Typed pending state for interactive flows (v2).
 pub mod pending;
+/// Type-erased credential registry for runtime dispatch (v2).
+pub mod registry_v2;
 /// Resolve result types: interaction, refresh, test (v2).
 pub mod resolve;
+/// Runtime credential resolution (v2).
+pub mod resolver;
 /// Authentication scheme types (v2).
 pub mod scheme;
 
@@ -145,6 +151,15 @@ pub use credential_v2::Credential;
 
 // v2: Built-in credential implementations
 pub use credentials::{ApiKeyCredential, BasicAuthCredential, DatabaseCredential};
+
+// v2: Typed handle
+pub use handle_v2::CredentialHandle;
+
+// v2: Registry
+pub use registry_v2::{CredentialRegistryV2, RegistryError};
+
+// v2: Resolver
+pub use resolver::{CredentialResolver, ResolveError};
 
 // v2: Resolve types
 pub use resolve::{
