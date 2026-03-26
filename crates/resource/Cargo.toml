@@ -17,6 +17,7 @@ default = []
 [dependencies]
 # Nebula ecosystem
 nebula-core = { path = "../core" }
+nebula-resource-macros = { path = "../resource-macros" }
 
 # Async runtime
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }

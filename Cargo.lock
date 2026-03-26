@@ -4027,6 +4027,7 @@ dependencies = [
  "arc-swap",
  "dashmap",
  "nebula-core",
+ "nebula-resource-macros",
  "pretty_assertions",
  "serde",
  "serde_json",
@@ -4035,6 +4036,15 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "nebula-resource-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

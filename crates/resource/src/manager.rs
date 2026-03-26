@@ -32,7 +32,7 @@ use crate::options::AcquireOptions;
 use crate::recovery::gate::{GateState, RecoveryGate};
 use crate::recovery::group::RecoveryGroupRegistry;
 use crate::registry::Registry;
-use crate::release_queue::ReleaseQueue;
+use crate::release_queue::{ReleaseQueue, ReleaseQueueHandle};
 use crate::resource::Resource;
 use crate::runtime::TopologyRuntime;
 use crate::runtime::managed::ManagedResource;
@@ -52,7 +52,28 @@ impl Default for ShutdownConfig {
     }
 }
 
+/// Configuration for the [`Manager`].
+#[derive(Debug, Clone)]
+pub struct ManagerConfig {
+    /// Number of background workers for the release queue.
+    ///
+    /// Defaults to 2.
+    pub release_queue_workers: usize,
+}
+
+impl Default for ManagerConfig {
+    fn default() -> Self {
+        Self {
+            release_queue_workers: 2,
+        }
+    }
+}
+
 /// Central registry and lifecycle manager for all resources.
+///
+/// Owns the [`ReleaseQueue`] internally — callers never need to create,
+/// pass, or shut down the queue manually. The queue is drained during
+/// [`graceful_shutdown`](Self::graceful_shutdown).
 ///
 /// Thread-safe: all internal state is behind concurrent data structures.
 /// Share via `Arc<Manager>` across tasks.
@@ -62,18 +83,29 @@ pub struct Manager {
     cancel: CancellationToken,
     metrics: Arc<ResourceMetrics>,
     event_tx: broadcast::Sender<ResourceEvent>,
+    release_queue: Arc<ReleaseQueue>,
+    release_queue_handle: tokio::sync::Mutex<Option<ReleaseQueueHandle>>,
 }
 
 impl Manager {
-    /// Creates a new empty manager.
+    /// Creates a new empty manager with default configuration.
     pub fn new() -> Self {
+        Self::with_config(ManagerConfig::default())
+    }
+
+    /// Creates a new empty manager with the given configuration.
+    pub fn with_config(config: ManagerConfig) -> Self {
         let (event_tx, _) = broadcast::channel(256);
+        let (release_queue, release_queue_handle) =
+            ReleaseQueue::new(config.release_queue_workers);
         Self {
             registry: Registry::new(),
             recovery_groups: RecoveryGroupRegistry::new(),
             cancel: CancellationToken::new(),
             metrics: Arc::new(ResourceMetrics::new()),
             event_tx,
+            release_queue: Arc::new(release_queue),
+            release_queue_handle: tokio::sync::Mutex::new(Some(release_queue_handle)),
         }
     }
 
@@ -89,12 +121,14 @@ impl Manager {
     }
 
     /// Registers a resource with its config, credential, scope, topology,
-    /// release queue, optional resilience configuration, and optional
-    /// recovery gate.
+    /// optional resilience configuration, and optional recovery gate.
     ///
     /// The resource is wrapped in a [`ManagedResource`] and stored in the
     /// registry under `R::key()`. If a resource with the same key and scope
     /// is already registered, it is silently replaced.
+    ///
+    /// The manager's internal [`ReleaseQueue`] is automatically shared with
+    /// the managed resource — callers never need to create or manage it.
     ///
     /// When `resilience` is `Some`, acquire calls are wrapped with
     /// timeout and retry logic from [`AcquireResilience`].
@@ -114,7 +148,6 @@ impl Manager {
         _credential: R::Credential,
         scope: ScopeLevel,
         topology: TopologyRuntime<R>,
-        release_queue: Arc<ReleaseQueue>,
         resilience: Option<AcquireResilience>,
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<(), Error> {
@@ -126,7 +159,7 @@ impl Manager {
             resource,
             config: arc_swap::ArcSwap::from_pointee(config),
             topology,
-            release_queue,
+            release_queue: Arc::clone(&self.release_queue),
             generation: std::sync::atomic::AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
             metrics: per_resource_metrics,
@@ -538,7 +571,10 @@ impl Manager {
     /// 1. **Signal** — cancels the token so new acquires are rejected.
     /// 2. **Drain** — waits up to [`ShutdownConfig::drain_timeout`] for
     ///    in-flight handles to be released.
-    /// 3. **Cleanup** — logs any resources still registered.
+    /// 3. **Clear** — drops all managed resources, releasing their
+    ///    `Arc<ReleaseQueue>` references so workers can drain and exit.
+    /// 4. **Await workers** — waits for the release queue workers to
+    ///    finish processing remaining tasks.
     ///
     /// # Examples
     ///
@@ -561,14 +597,15 @@ impl Manager {
         // Phase 2: DRAIN — wait for in-flight handles.
         tokio::time::sleep(config.drain_timeout).await;
 
-        // Phase 3: CLEANUP — log remaining state.
-        let remaining = self.registry.keys();
-        if !remaining.is_empty() {
-            tracing::warn!(
-                count = remaining.len(),
-                "resource manager: shutdown complete with {} resources still registered",
-                remaining.len()
-            );
+        // Phase 3: CLEAR — drop all ManagedResources so their
+        // Arc<ReleaseQueue> refs are released. This unblocks workers
+        // that are waiting for senders to close.
+        self.registry.clear();
+
+        // Phase 4: AWAIT WORKERS — take the handle and shut down the
+        // release queue background workers.
+        if let Some(handle) = self.release_queue_handle.lock().await.take() {
+            ReleaseQueue::shutdown(handle).await;
         }
 
         tracing::info!("resource manager: shutdown complete");
@@ -767,6 +804,6 @@ impl std::fmt::Debug for Manager {
         f.debug_struct("Manager")
             .field("registered_count", &self.registry.keys().len())
             .field("is_shutdown", &self.is_shutdown())
-            .finish()
+            .finish_non_exhaustive()
     }
 }

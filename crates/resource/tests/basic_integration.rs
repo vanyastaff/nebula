@@ -16,6 +16,7 @@ use nebula_resource::handle::ResourceHandle;
 use nebula_resource::recovery::{GateState, RecoveryGate, RecoveryGateConfig};
 use nebula_resource::release_queue::ReleaseQueue;
 use nebula_resource::resource::{Resource, ResourceConfig, ResourceMetadata};
+use nebula_resource::ShutdownConfig;
 use nebula_resource::runtime::TopologyRuntime;
 use nebula_resource::runtime::exclusive::ExclusiveRuntime;
 use nebula_resource::runtime::pool::PoolRuntime;
@@ -457,8 +458,6 @@ async fn manager_register_and_acquire_pooled() {
         ..Default::default()
     };
     let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -467,7 +466,6 @@ async fn manager_register_and_acquire_pooled() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -485,13 +483,12 @@ async fn manager_register_and_acquire_pooled() {
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
 
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // Drop manager first (it holds Arc<ReleaseQueue> via ManagedResource),
-    // then the local Arc, so the ReleaseQueue workers can shut down.
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
+    manager
+        .graceful_shutdown(ShutdownConfig {
+            drain_timeout: std::time::Duration::from_millis(50),
+        })
+        .await;
 }
 
 #[tokio::test]
@@ -500,8 +497,6 @@ async fn manager_register_and_acquire_resident() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -510,7 +505,6 @@ async fn manager_register_and_acquire_resident() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -527,11 +521,6 @@ async fn manager_register_and_acquire_resident() {
         nebula_resource::TopologyTag::Resident
     );
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
-
-    drop(handle);
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -540,8 +529,6 @@ async fn manager_shutdown_rejects_acquire() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -550,7 +537,6 @@ async fn manager_shutdown_rejects_acquire() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -567,10 +553,6 @@ async fn manager_shutdown_rejects_acquire() {
     assert!(result.is_err());
     let err = result.err().expect("should be an error");
     assert_eq!(*err.kind(), ErrorKind::Cancelled);
-
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[test]
@@ -711,8 +693,6 @@ async fn register_emits_registered_event() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -721,7 +701,6 @@ async fn register_emits_registered_event() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -732,10 +711,6 @@ async fn register_emits_registered_event() {
         matches!(&event, nebula_resource::ResourceEvent::Registered { key } if key == &resource_key!("test-resident")),
         "expected Registered event, got {event:?}"
     );
-
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -744,8 +719,6 @@ async fn remove_emits_removed_event() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -754,7 +727,6 @@ async fn remove_emits_removed_event() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -769,10 +741,6 @@ async fn remove_emits_removed_event() {
         matches!(&event, nebula_resource::ResourceEvent::Removed { key } if key == &resource_key!("test-resident")),
         "expected Removed event, got {event:?}"
     );
-
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -781,8 +749,6 @@ async fn acquire_emits_success_event() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -791,7 +757,6 @@ async fn acquire_emits_success_event() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -812,11 +777,6 @@ async fn acquire_emits_success_event() {
         matches!(&event, nebula_resource::ResourceEvent::AcquireSuccess { key, .. } if key == &resource_key!("test-resident")),
         "expected AcquireSuccess event, got {event:?}"
     );
-
-    drop(_handle);
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -955,8 +915,6 @@ async fn manager_scope_exact_match() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     let scope = ScopeLevel::Organization("acme".into());
     manager
@@ -966,7 +924,6 @@ async fn manager_scope_exact_match() {
             (),
             scope.clone(),
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -980,11 +937,7 @@ async fn manager_scope_exact_match() {
         .expect("acquire with matching scope should succeed");
 
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
-
     drop(handle);
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -993,8 +946,6 @@ async fn manager_scope_fallback_to_global() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     // Register at Global scope.
     manager
@@ -1004,7 +955,6 @@ async fn manager_scope_fallback_to_global() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -1019,11 +969,7 @@ async fn manager_scope_fallback_to_global() {
         .expect("acquire should fall back to Global");
 
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
-
     drop(handle);
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -1032,8 +978,6 @@ async fn manager_scope_mismatch_not_found() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     // Register at Organization("acme") — no Global fallback.
     manager
@@ -1043,7 +987,6 @@ async fn manager_scope_mismatch_not_found() {
             (),
             ScopeLevel::Organization("acme".into()),
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -1061,10 +1004,6 @@ async fn manager_scope_mismatch_not_found() {
         Ok(_) => panic!("expected NotFound error for mismatched scope"),
     };
     assert_eq!(*err.kind(), ErrorKind::NotFound);
-
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1077,8 +1016,6 @@ async fn metrics_track_acquire_release_create_destroy() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -1087,7 +1024,6 @@ async fn metrics_track_acquire_release_create_destroy() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -1116,10 +1052,6 @@ async fn metrics_track_acquire_release_create_destroy() {
 
     let snap = manager.metrics().snapshot();
     assert_eq!(snap.destroy_total, 1, "remove should record destroy");
-
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1137,8 +1069,6 @@ async fn manager_multiple_resources_coexist() {
         ..Default::default()
     };
     let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -1147,7 +1077,6 @@ async fn manager_multiple_resources_coexist() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -1165,7 +1094,6 @@ async fn manager_multiple_resources_coexist() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -1200,11 +1128,12 @@ async fn manager_multiple_resources_coexist() {
 
     drop(pool_handle);
     drop(resident_handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
+    manager
+        .graceful_shutdown(ShutdownConfig {
+            drain_timeout: std::time::Duration::from_millis(50),
+        })
+        .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1632,8 +1561,6 @@ async fn service_acquire_via_manager() {
     });
     let svc_rt =
         ServiceRuntime::<ServiceTestResource>::new(runtime, service::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -1642,7 +1569,6 @@ async fn service_acquire_via_manager() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Service(svc_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -1658,11 +1584,6 @@ async fn service_acquire_via_manager() {
 
     assert_eq!(handle.topology_tag(), nebula_resource::TopologyTag::Service);
     assert_eq!(resource.token_counter.load(Ordering::Relaxed), 1);
-
-    drop(handle);
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -2162,8 +2083,6 @@ async fn per_resource_metrics_are_independent() {
         ..Default::default()
     };
     let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -2172,7 +2091,6 @@ async fn per_resource_metrics_are_independent() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -2190,7 +2108,6 @@ async fn per_resource_metrics_are_independent() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -2235,9 +2152,11 @@ async fn per_resource_metrics_are_independent() {
     assert_eq!(agg.acquire_total, 1, "aggregate should have 1 acquire");
     assert_eq!(agg.create_total, 2, "aggregate should have 2 creates");
 
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
+    manager
+        .graceful_shutdown(ShutdownConfig {
+            drain_timeout: std::time::Duration::from_millis(50),
+        })
+        .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -2250,8 +2169,6 @@ async fn graceful_shutdown_stops_new_acquires() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -2260,14 +2177,13 @@ async fn graceful_shutdown_stops_new_acquires() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             None,
         )
         .unwrap();
 
     manager
-        .graceful_shutdown(nebula_resource::ShutdownConfig {
+        .graceful_shutdown(ShutdownConfig {
             drain_timeout: std::time::Duration::from_millis(10),
         })
         .await;
@@ -2286,20 +2202,14 @@ async fn graceful_shutdown_stops_new_acquires() {
         ),
         Ok(_) => panic!("acquire after graceful shutdown should fail"),
     }
-
-    drop(rq);
-    drop(manager);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
-async fn graceful_shutdown_keeps_resources_registered() {
+async fn graceful_shutdown_clears_registry() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -2308,28 +2218,24 @@ async fn graceful_shutdown_keeps_resources_registered() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             None,
         )
         .unwrap();
 
-    // Resource stays registered through shutdown — should log but not panic.
+    // Graceful shutdown now clears the registry to allow release queue
+    // workers to drain.
     manager
-        .graceful_shutdown(nebula_resource::ShutdownConfig {
+        .graceful_shutdown(ShutdownConfig {
             drain_timeout: std::time::Duration::from_millis(10),
         })
         .await;
 
     assert!(manager.is_shutdown());
     assert!(
-        manager.contains(&resource_key!("test-resident")),
-        "resource should still be registered after graceful shutdown"
+        !manager.contains(&resource_key!("test-resident")),
+        "registry should be cleared after graceful shutdown"
     );
-
-    drop(rq);
-    drop(manager);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -2488,8 +2394,6 @@ async fn acquire_retries_on_transient_failure() {
     let resource = FailingResidentResource::new(1);
     let resident_rt =
         ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     let resilience = AcquireResilience {
         timeout: None,
@@ -2508,7 +2412,6 @@ async fn acquire_retries_on_transient_failure() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             Some(resilience),
             None,
         )
@@ -2524,11 +2427,6 @@ async fn acquire_retries_on_transient_failure() {
     assert_eq!(handle.load(Ordering::Relaxed), 1);
     // Two creates total: one failure + one success.
     assert_eq!(resource.create_count.load(Ordering::Relaxed), 2);
-
-    drop(handle);
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -2539,8 +2437,6 @@ async fn acquire_no_retry_on_permanent_failure() {
     let resource = PermanentFailResource::new();
     let resident_rt =
         ResidentRuntime::<PermanentFailResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     let resilience = AcquireResilience {
         timeout: None,
@@ -2559,7 +2455,6 @@ async fn acquire_no_retry_on_permanent_failure() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             Some(resilience),
             None,
         )
@@ -2577,10 +2472,6 @@ async fn acquire_no_retry_on_permanent_failure() {
         1,
         "permanent error should not trigger retries"
     );
-
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -2589,8 +2480,6 @@ async fn acquire_succeeds_without_resilience() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -2599,7 +2488,6 @@ async fn acquire_succeeds_without_resilience() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -2612,11 +2500,7 @@ async fn acquire_succeeds_without_resilience() {
         .expect("acquire without resilience should succeed");
 
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
-
     drop(handle);
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -2632,8 +2516,6 @@ async fn acquire_timeout_fires() {
         create_timeout: std::time::Duration::from_secs(60),
         ..Default::default()
     });
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     let resilience = AcquireResilience {
         timeout: Some(std::time::Duration::from_millis(1)),
@@ -2648,7 +2530,6 @@ async fn acquire_timeout_fires() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             Some(resilience),
             None,
         )
@@ -2661,10 +2542,6 @@ async fn acquire_timeout_fires() {
 
     // Should fail — either from timeout or from the transient error.
     assert!(result.is_err(), "acquire should fail with timeout or error");
-
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -3168,8 +3045,6 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     let gate = RecoveryGate::new(RecoveryGateConfig::default());
     // Force permanent failure.
@@ -3184,7 +3059,6 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             Some(Arc::new(gate)),
         )
@@ -3203,10 +3077,6 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
         ErrorKind::Permanent,
         "should be a permanent error"
     );
-
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -3214,8 +3084,6 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     let gate = RecoveryGate::new(RecoveryGateConfig::default());
     // Hold the ticket — gate is InProgress.
@@ -3229,7 +3097,6 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             Some(Arc::new(gate)),
         )
@@ -3248,10 +3115,6 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
         ErrorKind::Transient,
         "should be a transient error"
     );
-
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -3259,8 +3122,6 @@ async fn recovery_gate_allows_acquire_when_idle() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     let gate = RecoveryGate::new(RecoveryGateConfig::default());
 
@@ -3272,7 +3133,6 @@ async fn recovery_gate_allows_acquire_when_idle() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             Some(Arc::new(gate)),
         )
@@ -3283,13 +3143,7 @@ async fn recovery_gate_allows_acquire_when_idle() {
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed when gate is idle");
-
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -3297,8 +3151,6 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     let gate = RecoveryGate::new(RecoveryGateConfig {
         max_attempts: 5,
@@ -3316,7 +3168,6 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             Some(Arc::new(gate)),
         )
@@ -3328,13 +3179,7 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed after backoff expires");
-
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -3342,8 +3187,6 @@ async fn recovery_gate_none_does_not_affect_acquire() {
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     let manager = Manager::new();
     manager
@@ -3353,7 +3196,6 @@ async fn recovery_gate_none_does_not_affect_acquire() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            rq.clone(),
             None,
             None, // no recovery gate
         )
@@ -3364,13 +3206,7 @@ async fn recovery_gate_none_does_not_affect_acquire() {
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed without recovery gate");
-
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -3472,8 +3308,6 @@ async fn reload_config_swaps_config_and_bumps_generation() {
         ..Default::default()
     };
     let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -3482,7 +3316,6 @@ async fn reload_config_swaps_config_and_bumps_generation() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -3502,11 +3335,6 @@ async fn reload_config_swaps_config_and_bumps_generation() {
 
     assert_eq!(managed.generation(), 1);
     assert_eq!(managed.config().fingerprint, 42);
-
-    drop(managed);
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -3518,8 +3346,6 @@ async fn reload_config_rejects_invalid_config() {
         ..Default::default()
     };
     let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -3528,7 +3354,6 @@ async fn reload_config_rejects_invalid_config() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -3544,13 +3369,16 @@ async fn reload_config_rejects_invalid_config() {
     let managed = manager
         .lookup::<ReloadPoolResource>(&ScopeLevel::Global)
         .expect("lookup should succeed");
-    assert_eq!(managed.generation(), 0, "generation should not change on failure");
-    assert_eq!(managed.config().fingerprint, 1, "config should not change on failure");
-
-    drop(managed);
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
+    assert_eq!(
+        managed.generation(),
+        0,
+        "generation should not change on failure"
+    );
+    assert_eq!(
+        managed.config().fingerprint,
+        1,
+        "config should not change on failure"
+    );
 }
 
 #[tokio::test]
@@ -3563,8 +3391,6 @@ async fn reload_config_emits_event() {
         ..Default::default()
     };
     let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -3573,7 +3399,6 @@ async fn reload_config_emits_event() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -3591,10 +3416,6 @@ async fn reload_config_emits_event() {
         matches!(event, nebula_resource::ResourceEvent::ConfigReloaded { ref key } if key == &resource_key!("test-reload-pool")),
         "expected ConfigReloaded event, got {event:?}"
     );
-
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
@@ -3606,8 +3427,6 @@ async fn reload_config_evicts_stale_pool_instances() {
         ..Default::default()
     };
     let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -3616,7 +3435,6 @@ async fn reload_config_evicts_stale_pool_instances() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -3650,11 +3468,12 @@ async fn reload_config_evicts_stale_pool_instances() {
     );
 
     drop(handle2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
+    manager
+        .graceful_shutdown(ShutdownConfig {
+            drain_timeout: std::time::Duration::from_millis(50),
+        })
+        .await;
 }
 
 #[tokio::test]
@@ -3673,8 +3492,6 @@ async fn reload_config_rejected_when_shutdown() {
     let resource = ReloadPoolResource::new();
     let pool_config = nebula_resource::topology::pooled::config::Config::default();
     let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
-    let (rq, rq_handle) = ReleaseQueue::new(1);
-    let rq = Arc::new(rq);
 
     manager
         .register(
@@ -3683,7 +3500,6 @@ async fn reload_config_rejected_when_shutdown() {
             (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
-            rq.clone(),
             None,
             None,
         )
@@ -3695,8 +3511,4 @@ async fn reload_config_rejected_when_shutdown() {
         manager.reload_config::<ReloadPoolResource>(ReloadConfig::new(2), &ScopeLevel::Global);
     assert!(result.is_err());
     assert_eq!(*result.unwrap_err().kind(), ErrorKind::Cancelled);
-
-    drop(manager);
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }

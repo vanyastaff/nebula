@@ -143,6 +143,15 @@ impl Registry {
         self.entries.contains_key(key)
     }
 
+    /// Removes all entries from the registry.
+    ///
+    /// This drops every `Arc<dyn AnyManagedResource>`, releasing their
+    /// resources (including `Arc<ReleaseQueue>` references).
+    pub fn clear(&self) {
+        self.entries.clear();
+        self.type_index.clear();
+    }
+
     /// Scope-aware lookup within a list of entries.
     ///
     /// Prefers an exact scope match; falls back to [`ScopeLevel::Global`].
