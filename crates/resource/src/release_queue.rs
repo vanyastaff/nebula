@@ -4,6 +4,16 @@
 //! pool, destroying tainted leases) across N primary workers and one fallback
 //! worker. Tasks are round-robin distributed to primary workers; if a primary
 //! channel is full, the task falls back to the overflow channel.
+//!
+//! # Shutdown
+//!
+//! Workers exit when either:
+//! - The [`CancellationToken`] is cancelled (drain remaining tasks, then exit).
+//! - All senders are dropped (channel returns `None`).
+//!
+//! When used via [`Manager`](crate::Manager), the manager's cancellation token
+//! is shared with workers, so `Manager::graceful_shutdown` automatically
+//! signals workers to drain without needing to drop the queue.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -11,6 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// A boxed, pinned, sendable future that returns `()`.
 type ReleaseTask = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -20,10 +31,6 @@ type ReleaseTask = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// We use a factory so that the future is not polled until a worker picks
 /// it up, keeping the submit path non-async.
 type TaskFactory = Box<dyn FnOnce() -> ReleaseTask + Send>;
-
-/// Worker timeout — how long a worker waits for the next task before
-/// checking for shutdown.
-const WORKER_RECV_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Maximum time a single release task may execute before being aborted.
 const TASK_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -42,6 +49,17 @@ pub struct ReleaseQueueHandle {
 
 /// Distributes async release tasks across a pool of background workers.
 ///
+/// # Shutdown
+///
+/// There are two ways to shut down the queue:
+///
+/// 1. **Via cancellation token** (preferred for [`Manager`](crate::Manager)):
+///    cancel the shared token → workers drain buffered tasks and exit.
+/// 2. **Via drop** (for standalone use): drop the `ReleaseQueue` → senders
+///    close → workers see `None` and exit.
+///
+/// In both cases, call [`ReleaseQueue::shutdown`] afterward to await workers.
+///
 /// # Examples
 ///
 /// ```no_run
@@ -50,6 +68,7 @@ pub struct ReleaseQueueHandle {
 ///
 /// let (queue, handle) = ReleaseQueue::new(2);
 /// queue.submit(|| Box::pin(async { /* cleanup */ }));
+/// drop(queue);
 /// ReleaseQueue::shutdown(handle).await;
 /// # }
 /// ```
@@ -57,14 +76,37 @@ pub struct ReleaseQueue {
     senders: Vec<mpsc::Sender<TaskFactory>>,
     fallback_tx: mpsc::UnboundedSender<TaskFactory>,
     next: AtomicUsize,
+    cancel: CancellationToken,
+    /// Tracks how many tasks have gone to the fallback channel.
+    fallback_count: AtomicUsize,
 }
 
 impl ReleaseQueue {
-    /// Creates a new release queue with `worker_count` primary workers.
+    /// Creates a new release queue with `worker_count` primary workers
+    /// and its own internal cancellation token.
     ///
     /// Returns the queue (for submitting tasks) and a handle (for shutdown).
+    ///
+    /// # Panics
+    ///
     /// Panics if `worker_count` is zero.
     pub fn new(worker_count: usize) -> (Self, ReleaseQueueHandle) {
+        Self::with_cancel(worker_count, CancellationToken::new())
+    }
+
+    /// Creates a new release queue with a shared cancellation token.
+    ///
+    /// When the token is cancelled, workers drain remaining buffered tasks
+    /// and exit — without requiring the senders to be dropped. This is the
+    /// mechanism used by [`Manager::graceful_shutdown`](crate::Manager::graceful_shutdown).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `worker_count` is zero.
+    pub fn with_cancel(
+        worker_count: usize,
+        cancel: CancellationToken,
+    ) -> (Self, ReleaseQueueHandle) {
         assert!(worker_count > 0, "worker_count must be at least 1");
 
         let mut senders = Vec::with_capacity(worker_count);
@@ -73,16 +115,19 @@ impl ReleaseQueue {
         for _ in 0..worker_count {
             let (tx, rx) = mpsc::channel::<TaskFactory>(CHANNEL_BUFFER);
             senders.push(tx);
-            workers.push(tokio::spawn(Self::worker_loop(rx)));
+            workers.push(tokio::spawn(Self::worker_loop(rx, cancel.clone())));
         }
 
         let (fallback_tx, fallback_rx) = mpsc::unbounded_channel::<TaskFactory>();
-        let fallback_worker = tokio::spawn(Self::worker_loop_unbounded(fallback_rx));
+        let fallback_worker =
+            tokio::spawn(Self::worker_loop_unbounded(fallback_rx, cancel.clone()));
 
         let queue = Self {
             senders,
             fallback_tx,
             next: AtomicUsize::new(0),
+            cancel,
+            fallback_count: AtomicUsize::new(0),
         };
         let handle = ReleaseQueueHandle {
             workers,
@@ -105,6 +150,14 @@ impl ReleaseQueue {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(factory)) => {
                 // Primary is full — use unbounded fallback (never drops).
+                let count = self.fallback_count.fetch_add(1, Ordering::Relaxed) + 1;
+                if count.is_power_of_two() {
+                    tracing::warn!(
+                        fallback_tasks = count,
+                        "release queue primary channels full, using unbounded \
+                         fallback (potential memory pressure)"
+                    );
+                }
                 if let Err(e) = self.fallback_tx.send(factory) {
                     tracing::warn!(
                         "release queue fallback channel closed, \
@@ -118,36 +171,75 @@ impl ReleaseQueue {
         }
     }
 
+    /// Signals workers to drain remaining tasks and exit.
+    ///
+    /// This is equivalent to cancelling the token passed to
+    /// [`with_cancel`](Self::with_cancel). Call before [`shutdown`](Self::shutdown)
+    /// for prompt worker exit without needing to drop the queue.
+    pub fn close(&self) {
+        self.cancel.cancel();
+    }
+
     /// Shuts down all workers gracefully, waiting for in-flight tasks.
+    ///
+    /// Workers must have been signaled to stop first — either by dropping
+    /// the `ReleaseQueue` (closing channels) or by cancelling the token
+    /// (via [`close`](Self::close) or external cancellation).
     pub async fn shutdown(handle: ReleaseQueueHandle) {
-        // Drop senders is done by the caller dropping the ReleaseQueue.
-        // Here we just await the workers.
         for worker in handle.workers {
             let _ = worker.await;
         }
         let _ = handle.fallback_worker.await;
     }
 
-    async fn worker_loop(mut rx: mpsc::Receiver<TaskFactory>) {
+    /// Worker loop for bounded primary channels.
+    ///
+    /// Uses `select!` with `biased` to prefer processing messages over
+    /// checking cancellation — ensuring buffered tasks are drained before
+    /// the worker exits.
+    async fn worker_loop(mut rx: mpsc::Receiver<TaskFactory>, cancel: CancellationToken) {
         loop {
-            match tokio::time::timeout(WORKER_RECV_TIMEOUT, rx.recv()).await {
-                Ok(Some(factory)) => {
-                    Self::execute_task(factory).await;
+            tokio::select! {
+                biased;
+                msg = rx.recv() => {
+                    match msg {
+                        Some(factory) => Self::execute_task(factory).await,
+                        None => break, // channel closed
+                    }
                 }
-                Ok(None) => break,  // channel closed
-                Err(_) => continue, // timeout, loop back
+                _ = cancel.cancelled() => {
+                    // Drain remaining buffered tasks, then exit.
+                    rx.close();
+                    while let Some(factory) = rx.recv().await {
+                        Self::execute_task(factory).await;
+                    }
+                    break;
+                }
             }
         }
     }
 
-    async fn worker_loop_unbounded(mut rx: mpsc::UnboundedReceiver<TaskFactory>) {
+    /// Worker loop for the unbounded fallback channel.
+    async fn worker_loop_unbounded(
+        mut rx: mpsc::UnboundedReceiver<TaskFactory>,
+        cancel: CancellationToken,
+    ) {
         loop {
-            match tokio::time::timeout(WORKER_RECV_TIMEOUT, rx.recv()).await {
-                Ok(Some(factory)) => {
-                    Self::execute_task(factory).await;
+            tokio::select! {
+                biased;
+                msg = rx.recv() => {
+                    match msg {
+                        Some(factory) => Self::execute_task(factory).await,
+                        None => break, // channel closed
+                    }
                 }
-                Ok(None) => break,  // channel closed
-                Err(_) => continue, // timeout, loop back
+                _ = cancel.cancelled() => {
+                    rx.close();
+                    while let Some(factory) = rx.recv().await {
+                        Self::execute_task(factory).await;
+                    }
+                    break;
+                }
             }
         }
     }
