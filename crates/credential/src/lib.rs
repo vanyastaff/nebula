@@ -65,6 +65,13 @@ pub mod traits;
 /// Utilities for crypto, time, etc.
 pub mod utils;
 
+// ── v2 modules ────────────────────────────────────────────────────────────────
+
+/// Authentication scheme types (v2).
+pub mod scheme;
+/// Credential state trait for stored credential data (v2).
+pub mod credential_state;
+
 // ── Root re-exports ─────────────────────────────────────────────────────────
 // Commonly-used types available directly as `nebula_credential::TypeName`.
 
@@ -103,6 +110,12 @@ pub use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
 pub use crate::rotation::{
     CredentialRotationEvent, GracePeriodConfig, RotationError, RotationResult,
 };
+
+// v2: Auth schemes
+pub use scheme::{ApiKeyAuth, BasicAuth, BearerToken, DatabaseAuth, OAuth2Token};
+
+// v2: Credential state
+pub use credential_state::CredentialStateV2;
 
 /// Commonly used types and traits
 pub mod prelude {
