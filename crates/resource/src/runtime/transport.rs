@@ -100,10 +100,15 @@ where
             .await
             .map_err(Into::into)?;
 
+        // Cancel-safety: if the future is dropped between here and the
+        // return of `ResourceHandle`, the guard logs and drops the session.
+        let mut guard = SessionGuard::<R>::new(session);
+
         let runtime = self.runtime.clone();
         let resource_clone = resource.clone();
         let rq = release_queue.clone();
 
+        let session = guard.defuse();
         Ok(ResourceHandle::guarded_with_permit(
             session,
             R::key(),
@@ -122,6 +127,48 @@ where
             },
             Some(permit),
         ))
+    }
+}
+
+/// Cancel-safety guard for a transport session.
+///
+/// Wraps a [`Lease`](Resource::Lease) between `open_session()` and handle
+/// construction. If the future is cancelled after the session opens but
+/// before the handle is built, `Drop` logs the leak and drops the session
+/// — triggering its native `Drop` impl.
+///
+/// Call [`defuse`](Self::defuse) to take the session out once the handle
+/// is safely constructed.
+struct SessionGuard<R: Resource> {
+    session: Option<R::Lease>,
+}
+
+impl<R: Resource> SessionGuard<R> {
+    /// Creates a new guard wrapping the given session.
+    fn new(session: R::Lease) -> Self {
+        Self {
+            session: Some(session),
+        }
+    }
+
+    /// Takes the session out of the guard — it has been safely consumed.
+    ///
+    /// After this call, `Drop` is a no-op.
+    fn defuse(&mut self) -> R::Lease {
+        self.session.take().expect("SessionGuard: already defused")
+    }
+}
+
+impl<R: Resource> Drop for SessionGuard<R> {
+    fn drop(&mut self) {
+        if let Some(session) = self.session.take() {
+            tracing::warn!(
+                resource = %R::key(),
+                "cancel-safety: transport session dropped without async close \
+                 (open_session succeeded but acquire future was cancelled)"
+            );
+            drop(session);
+        }
     }
 }
 

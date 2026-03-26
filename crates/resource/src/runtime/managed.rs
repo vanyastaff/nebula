@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use arc_swap::ArcSwap;
 
+use crate::integration::AcquireResilience;
 use crate::metrics::ResourceMetrics;
 use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
@@ -38,6 +39,8 @@ pub struct ManagedResource<R: Resource> {
     pub(crate) status: ArcSwap<ResourceStatus>,
     /// Per-resource metrics (independent of the aggregate counters on Manager).
     pub(crate) metrics: Arc<ResourceMetrics>,
+    /// Optional resilience configuration (timeout + retry) for acquire.
+    pub(crate) resilience: Option<AcquireResilience>,
 }
 
 impl<R: Resource> ManagedResource<R> {

@@ -7,6 +7,7 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`
 - `ErrorKind` determines retry: Transient/Exhausted = retryable
 - Manager has `acquire_pooled`, `acquire_resident`, etc. (not one generic) — each topology has different trait bounds; all accept `&AcquireOptions`
+- `AcquireResilience` optional on `register()` — when set, all `acquire_*` methods wrap topology calls with timeout + retry (exponential backoff, only retries retryable errors)
 - `AcquireOptions` threaded through all acquire paths — pool, transport, and exclusive use `options.remaining()` for semaphore timeout
 - Transport `Config::acquire_timeout` (default 30s) caps semaphore wait; overridden by `AcquireOptions::deadline` when set
 - Exclusive `Config::acquire_timeout` (default 30s) caps semaphore wait; overridden by `AcquireOptions::deadline` when set
@@ -14,6 +15,7 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - `ResourceHandle` RAII — guarded returns lease to pool on drop, tainted destroys
 - `HandleInner::Guarded` holds `permit: Option<OwnedSemaphorePermit>` — permit drops AFTER catch_unwind in Drop, preventing leak on callback panic
 - `TopologyTag` enum (not `&str`) identifies handle origin — `#[non_exhaustive]`, use `as_str()` for display
+- `Manager::graceful_shutdown(ShutdownConfig)` — async 3-phase: cancel token, drain wait, log remaining; `shutdown()` stays sync for backward compat
 - Manager emits `ResourceEvent` via `broadcast::channel(256)` on register/remove/acquire — subscribe via `subscribe_events()`
 - `Manager.metrics` is aggregate `Arc<ResourceMetrics>` — `ManagedResource.metrics` is per-resource; both incremented on acquire/create
 - Per-resource metrics passed to topology runtimes; aggregate stays on Manager for rollup
@@ -41,4 +43,4 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 - Webhook still uses deprecated v1 compat types; migration tracked separately
 
-<!-- reviewed: 2026-03-25 — per-resource metrics with aggregate rollup -->
+<!-- reviewed: 2026-03-25 — AcquireResilience wired into acquire path with timeout + retry -->

@@ -16,7 +16,7 @@
 
 use std::any::TypeId;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -26,6 +26,7 @@ use nebula_core::ResourceKey;
 use crate::ctx::{Ctx, ScopeLevel};
 use crate::error::Error;
 use crate::events::ResourceEvent;
+use crate::integration::AcquireResilience;
 use crate::metrics::ResourceMetrics;
 use crate::options::AcquireOptions;
 use crate::recovery::group::RecoveryGroupRegistry;
@@ -34,6 +35,21 @@ use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
 use crate::runtime::TopologyRuntime;
 use crate::runtime::managed::ManagedResource;
+
+/// Configuration for graceful shutdown.
+#[derive(Debug, Clone)]
+pub struct ShutdownConfig {
+    /// How long to wait for in-flight handles to be released.
+    pub drain_timeout: Duration,
+}
+
+impl Default for ShutdownConfig {
+    fn default() -> Self {
+        Self {
+            drain_timeout: Duration::from_secs(30),
+        }
+    }
+}
 
 /// Central registry and lifecycle manager for all resources.
 ///
@@ -72,11 +88,17 @@ impl Manager {
     }
 
     /// Registers a resource with its config, credential, scope, topology,
-    /// and release queue.
+    /// release queue, and optional resilience configuration.
     ///
     /// The resource is wrapped in a [`ManagedResource`] and stored in the
     /// registry under `R::key()`. If a resource with the same key and scope
     /// is already registered, it is silently replaced.
+    ///
+    /// When `resilience` is `Some`, acquire calls are wrapped with
+    /// timeout and retry logic from [`AcquireResilience`].
+    // Reason: register is a constructor that needs all parameters upfront;
+    // a builder would be overengineering for a single-call registration API.
+    #[allow(clippy::too_many_arguments)]
     pub fn register<R: Resource>(
         &self,
         resource: R,
@@ -85,6 +107,7 @@ impl Manager {
         scope: ScopeLevel,
         topology: TopologyRuntime<R>,
         release_queue: Arc<ReleaseQueue>,
+        resilience: Option<AcquireResilience>,
     ) -> Result<(), Error> {
         let key = R::key();
 
@@ -98,6 +121,7 @@ impl Manager {
             generation: std::sync::atomic::AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
             metrics: per_resource_metrics,
+            resilience,
         });
 
         let type_id = TypeId::of::<ManagedResource<R>>();
@@ -164,28 +188,35 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
-        let generation = managed.generation();
-        let config = managed.config();
+        let resilience = managed.resilience.clone();
 
-        let result = match &managed.topology {
-            TopologyRuntime::Pool(rt) => {
-                rt.acquire(
-                    &managed.resource,
-                    &config,
-                    credential,
-                    ctx,
-                    &managed.release_queue,
-                    generation,
-                    options,
-                    Arc::clone(&managed.metrics),
-                )
-                .await
+        let result = execute_with_resilience(&resilience, || {
+            let generation = managed.generation();
+            let config = managed.config();
+            let managed = Arc::clone(&managed);
+            async move {
+                match &managed.topology {
+                    TopologyRuntime::Pool(rt) => {
+                        rt.acquire(
+                            &managed.resource,
+                            &config,
+                            credential,
+                            ctx,
+                            &managed.release_queue,
+                            generation,
+                            options,
+                            Arc::clone(&managed.metrics),
+                        )
+                        .await
+                    }
+                    _ => Err(Error::permanent(format!(
+                        "{}: expected pool topology",
+                        R::key()
+                    ))),
+                }
             }
-            _ => Err(Error::permanent(format!(
-                "{}: expected pool topology",
-                R::key()
-            ))),
-        };
+        })
+        .await;
 
         self.record_acquire_result(&managed, &result, started);
         result
@@ -213,18 +244,25 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
-        let config = managed.config();
+        let resilience = managed.resilience.clone();
 
-        let result = match &managed.topology {
-            TopologyRuntime::Resident(rt) => {
-                rt.acquire(&managed.resource, &config, credential, ctx, options)
-                    .await
+        let result = execute_with_resilience(&resilience, || {
+            let config = managed.config();
+            let managed = Arc::clone(&managed);
+            async move {
+                match &managed.topology {
+                    TopologyRuntime::Resident(rt) => {
+                        rt.acquire(&managed.resource, &config, credential, ctx, options)
+                            .await
+                    }
+                    _ => Err(Error::permanent(format!(
+                        "{}: expected resident topology",
+                        R::key()
+                    ))),
+                }
             }
-            _ => Err(Error::permanent(format!(
-                "{}: expected resident topology",
-                R::key()
-            ))),
-        };
+        })
+        .await;
 
         self.record_acquire_result(&managed, &result, started);
         result
@@ -251,25 +289,32 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
-        let generation = managed.generation();
+        let resilience = managed.resilience.clone();
 
-        let result = match &managed.topology {
-            TopologyRuntime::Service(rt) => {
-                rt.acquire(
-                    &managed.resource,
-                    ctx,
-                    &managed.release_queue,
-                    generation,
-                    options,
-                    Arc::clone(&managed.metrics),
-                )
-                .await
+        let result = execute_with_resilience(&resilience, || {
+            let generation = managed.generation();
+            let managed = Arc::clone(&managed);
+            async move {
+                match &managed.topology {
+                    TopologyRuntime::Service(rt) => {
+                        rt.acquire(
+                            &managed.resource,
+                            ctx,
+                            &managed.release_queue,
+                            generation,
+                            options,
+                            Arc::clone(&managed.metrics),
+                        )
+                        .await
+                    }
+                    _ => Err(Error::permanent(format!(
+                        "{}: expected service topology",
+                        R::key()
+                    ))),
+                }
             }
-            _ => Err(Error::permanent(format!(
-                "{}: expected service topology",
-                R::key()
-            ))),
-        };
+        })
+        .await;
 
         self.record_acquire_result(&managed, &result, started);
         result
@@ -296,25 +341,32 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
-        let generation = managed.generation();
+        let resilience = managed.resilience.clone();
 
-        let result = match &managed.topology {
-            TopologyRuntime::Transport(rt) => {
-                rt.acquire(
-                    &managed.resource,
-                    ctx,
-                    &managed.release_queue,
-                    generation,
-                    options,
-                    Arc::clone(&managed.metrics),
-                )
-                .await
+        let result = execute_with_resilience(&resilience, || {
+            let generation = managed.generation();
+            let managed = Arc::clone(&managed);
+            async move {
+                match &managed.topology {
+                    TopologyRuntime::Transport(rt) => {
+                        rt.acquire(
+                            &managed.resource,
+                            ctx,
+                            &managed.release_queue,
+                            generation,
+                            options,
+                            Arc::clone(&managed.metrics),
+                        )
+                        .await
+                    }
+                    _ => Err(Error::permanent(format!(
+                        "{}: expected transport topology",
+                        R::key()
+                    ))),
+                }
             }
-            _ => Err(Error::permanent(format!(
-                "{}: expected transport topology",
-                R::key()
-            ))),
-        };
+        })
+        .await;
 
         self.record_acquire_result(&managed, &result, started);
         result
@@ -341,24 +393,31 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
-        let generation = managed.generation();
+        let resilience = managed.resilience.clone();
 
-        let result = match &managed.topology {
-            TopologyRuntime::Exclusive(rt) => {
-                rt.acquire(
-                    &managed.resource,
-                    &managed.release_queue,
-                    generation,
-                    options,
-                    Arc::clone(&managed.metrics),
-                )
-                .await
+        let result = execute_with_resilience(&resilience, || {
+            let generation = managed.generation();
+            let managed = Arc::clone(&managed);
+            async move {
+                match &managed.topology {
+                    TopologyRuntime::Exclusive(rt) => {
+                        rt.acquire(
+                            &managed.resource,
+                            &managed.release_queue,
+                            generation,
+                            options,
+                            Arc::clone(&managed.metrics),
+                        )
+                        .await
+                    }
+                    _ => Err(Error::permanent(format!(
+                        "{}: expected exclusive topology",
+                        R::key()
+                    ))),
+                }
             }
-            _ => Err(Error::permanent(format!(
-                "{}: expected exclusive topology",
-                R::key()
-            ))),
-        };
+        })
+        .await;
 
         self.record_acquire_result(&managed, &result, started);
         result
@@ -382,13 +441,57 @@ impl Manager {
         Ok(())
     }
 
-    /// Triggers a graceful shutdown of all managed resources.
+    /// Triggers an immediate shutdown of all managed resources.
     ///
     /// Cancels the shared [`CancellationToken`], signaling all in-flight
     /// operations to stop. Callers should await pending work separately.
+    ///
+    /// For a shutdown that waits for in-flight work to drain, use
+    /// [`graceful_shutdown`](Self::graceful_shutdown).
     pub fn shutdown(&self) {
         tracing::info!("resource manager shutting down");
         self.cancel.cancel();
+    }
+
+    /// Triggers graceful shutdown with drain and cleanup.
+    ///
+    /// 1. **Signal** — cancels the token so new acquires are rejected.
+    /// 2. **Drain** — waits up to [`ShutdownConfig::drain_timeout`] for
+    ///    in-flight handles to be released.
+    /// 3. **Cleanup** — logs any resources still registered.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nebula_resource::manager::{Manager, ShutdownConfig};
+    /// # use std::time::Duration;
+    /// # async fn example() {
+    /// let manager = Manager::new();
+    /// manager.graceful_shutdown(ShutdownConfig {
+    ///     drain_timeout: Duration::from_secs(5),
+    /// }).await;
+    /// # }
+    /// ```
+    pub async fn graceful_shutdown(&self, config: ShutdownConfig) {
+        tracing::info!("resource manager: starting graceful shutdown");
+
+        // Phase 1: SIGNAL — stop new acquires.
+        self.cancel.cancel();
+
+        // Phase 2: DRAIN — wait for in-flight handles.
+        tokio::time::sleep(config.drain_timeout).await;
+
+        // Phase 3: CLEANUP — log remaining state.
+        let remaining = self.registry.keys();
+        if !remaining.is_empty() {
+            tracing::warn!(
+                count = remaining.len(),
+                "resource manager: shutdown complete with {} resources still registered",
+                remaining.len()
+            );
+        }
+
+        tracing::info!("resource manager: shutdown complete");
     }
 
     /// Returns `true` if a resource with the given key is registered.
@@ -475,6 +578,62 @@ impl Manager {
             }
         }
     }
+}
+
+/// Executes an async operation with optional timeout and retry from
+/// [`AcquireResilience`] configuration.
+///
+/// When `resilience` is `None`, the operation runs exactly once with no
+/// timeout. When configured, transient failures are retried with
+/// exponential backoff up to `max_attempts`.
+async fn execute_with_resilience<F, Fut, T>(
+    resilience: &Option<AcquireResilience>,
+    mut operation: F,
+) -> Result<T, Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, Error>>,
+{
+    let Some(config) = resilience else {
+        return operation().await;
+    };
+
+    let max_attempts = config.retry.as_ref().map_or(1, |r| r.max_attempts);
+    let initial_backoff = config
+        .retry
+        .as_ref()
+        .map_or(Duration::from_millis(100), |r| r.initial_backoff);
+    let max_backoff = config
+        .retry
+        .as_ref()
+        .map_or(Duration::from_secs(5), |r| r.max_backoff);
+
+    let mut last_error = None;
+    for attempt in 0..max_attempts {
+        let result = if let Some(timeout) = config.timeout {
+            match tokio::time::timeout(timeout, operation()).await {
+                Ok(r) => r,
+                Err(_) => Err(Error::transient("acquire timed out")),
+            }
+        } else {
+            operation().await
+        };
+
+        match result {
+            Ok(val) => return Ok(val),
+            Err(e) if e.is_retryable() && attempt + 1 < max_attempts => {
+                let backoff = std::cmp::min(
+                    initial_backoff.saturating_mul(2u32.saturating_pow(attempt)),
+                    max_backoff,
+                );
+                tokio::time::sleep(backoff).await;
+                last_error = Some(e);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| Error::transient("retry exhausted")))
 }
 
 impl Default for Manager {

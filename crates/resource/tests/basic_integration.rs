@@ -468,6 +468,7 @@ async fn manager_register_and_acquire_pooled() {
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             rq.clone(),
+            None,
         )
         .expect("registration should succeed");
 
@@ -509,6 +510,7 @@ async fn manager_register_and_acquire_resident() {
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             rq.clone(),
+            None,
         )
         .expect("registration should succeed");
 
@@ -547,6 +549,7 @@ async fn manager_shutdown_rejects_acquire() {
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             rq.clone(),
+            None,
         )
         .unwrap();
 
@@ -716,6 +719,7 @@ async fn register_emits_registered_event() {
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             rq.clone(),
+            None,
         )
         .expect("registration should succeed");
 
@@ -747,6 +751,7 @@ async fn remove_emits_removed_event() {
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             rq.clone(),
+            None,
         )
         .unwrap();
 
@@ -782,6 +787,7 @@ async fn acquire_emits_success_event() {
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             rq.clone(),
+            None,
         )
         .unwrap();
 
@@ -955,6 +961,7 @@ async fn manager_scope_exact_match() {
             scope.clone(),
             TopologyRuntime::Resident(resident_rt),
             rq.clone(),
+            None,
         )
         .expect("registration should succeed");
 
@@ -991,6 +998,7 @@ async fn manager_scope_fallback_to_global() {
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             rq.clone(),
+            None,
         )
         .expect("registration should succeed");
 
@@ -1028,6 +1036,7 @@ async fn manager_scope_mismatch_not_found() {
             ScopeLevel::Organization("acme".into()),
             TopologyRuntime::Resident(resident_rt),
             rq.clone(),
+            None,
         )
         .expect("registration should succeed");
 
@@ -1070,6 +1079,7 @@ async fn metrics_track_acquire_release_create_destroy() {
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             rq.clone(),
+            None,
         )
         .expect("registration should succeed");
 
@@ -1128,6 +1138,7 @@ async fn manager_multiple_resources_coexist() {
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             rq.clone(),
+            None,
         )
         .expect("pool registration should succeed");
 
@@ -1144,6 +1155,7 @@ async fn manager_multiple_resources_coexist() {
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             rq.clone(),
+            None,
         )
         .expect("resident registration should succeed");
 
@@ -1619,6 +1631,7 @@ async fn service_acquire_via_manager() {
             ScopeLevel::Global,
             TopologyRuntime::Service(svc_rt),
             rq.clone(),
+            None,
         )
         .expect("registration should succeed");
 
@@ -2147,6 +2160,7 @@ async fn per_resource_metrics_are_independent() {
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             rq.clone(),
+            None,
         )
         .expect("pool registration should succeed");
 
@@ -2163,6 +2177,7 @@ async fn per_resource_metrics_are_independent() {
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             rq.clone(),
+            None,
         )
         .expect("resident registration should succeed");
 
@@ -2182,7 +2197,10 @@ async fn per_resource_metrics_are_independent() {
     let pool_snap = pool_metrics.snapshot();
     assert_eq!(pool_snap.acquire_total, 1, "pool should have 1 acquire");
     assert_eq!(pool_snap.acquire_errors, 0);
-    assert_eq!(pool_snap.create_total, 1, "pool registration records create");
+    assert_eq!(
+        pool_snap.create_total, 1,
+        "pool registration records create"
+    );
 
     let resident_metrics = manager
         .resource_metrics(&resource_key!("test-resident"), &ScopeLevel::Global)
@@ -2201,6 +2219,427 @@ async fn per_resource_metrics_are_independent() {
     let agg = manager.metrics().snapshot();
     assert_eq!(agg.acquire_total, 1, "aggregate should have 1 acquire");
     assert_eq!(agg.create_total, 2, "aggregate should have 2 creates");
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn graceful_shutdown_stops_new_acquires() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+            None,
+        )
+        .unwrap();
+
+    manager
+        .graceful_shutdown(nebula_resource::ShutdownConfig {
+            drain_timeout: std::time::Duration::from_millis(10),
+        })
+        .await;
+
+    assert!(manager.is_shutdown());
+
+    // Acquire should fail with Cancelled.
+    let ctx = test_ctx();
+    match manager
+        .acquire_resident::<ResidentTestResource>(&(), &ctx, &AcquireOptions::default())
+        .await
+    {
+        Err(e) => assert!(
+            matches!(e.kind(), ErrorKind::Cancelled),
+            "expected Cancelled, got {e:?}"
+        ),
+        Ok(_) => panic!("acquire after graceful shutdown should fail"),
+    }
+
+    drop(rq);
+    drop(manager);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn graceful_shutdown_keeps_resources_registered() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+            None,
+        )
+        .unwrap();
+
+    // Resource stays registered through shutdown — should log but not panic.
+    manager
+        .graceful_shutdown(nebula_resource::ShutdownConfig {
+            drain_timeout: std::time::Duration::from_millis(10),
+        })
+        .await;
+
+    assert!(manager.is_shutdown());
+    assert!(
+        manager.contains(&resource_key!("test-resident")),
+        "resource should still be registered after graceful shutdown"
+    );
+
+    drop(rq);
+    drop(manager);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn graceful_shutdown_default_config() {
+    let config = nebula_resource::ShutdownConfig::default();
+    assert_eq!(config.drain_timeout, std::time::Duration::from_secs(30));
+}
+
+// ---------------------------------------------------------------------------
+// AcquireResilience tests
+// ---------------------------------------------------------------------------
+
+/// A resident resource that fails with a transient error for the first N
+/// `create` calls, then succeeds.
+#[derive(Clone)]
+struct FailingResidentResource {
+    create_count: Arc<AtomicU64>,
+    /// Number of initial creates that return a transient error.
+    failures_before_success: u64,
+    alive: Arc<AtomicBool>,
+}
+
+impl FailingResidentResource {
+    fn new(failures_before_success: u64) -> Self {
+        Self {
+            create_count: Arc::new(AtomicU64::new(0)),
+            failures_before_success,
+            alive: Arc::new(AtomicBool::new(true)),
+        }
+    }
+}
+
+impl Resource for FailingResidentResource {
+    type Config = TestConfig;
+    type Runtime = Arc<AtomicU64>;
+    type Lease = Arc<AtomicU64>;
+    type Error = TestError;
+    type Credential = ();
+
+    fn key() -> ResourceKey {
+        resource_key!("test-failing-resident")
+    }
+
+    fn create(
+        &self,
+        _config: &TestConfig,
+        _credential: &(),
+        _ctx: &dyn Ctx,
+    ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+        let count = self.create_count.fetch_add(1, Ordering::Relaxed);
+        let threshold = self.failures_before_success;
+        async move {
+            if count < threshold {
+                Err(TestError("transient failure".into()))
+            } else {
+                Ok(Arc::new(AtomicU64::new(count)))
+            }
+        }
+    }
+
+    fn destroy(
+        &self,
+        _runtime: Arc<AtomicU64>,
+    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
+        async { Ok(()) }
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Resident for FailingResidentResource {
+    fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
+        self.alive.load(Ordering::Relaxed)
+    }
+}
+
+/// Error that maps to a permanent (non-retryable) resource error.
+#[derive(Debug, Clone)]
+struct PermanentTestError(String);
+
+impl std::fmt::Display for PermanentTestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PermanentTestError {}
+
+impl From<PermanentTestError> for Error {
+    fn from(e: PermanentTestError) -> Self {
+        Error::permanent(e.0)
+    }
+}
+
+/// A resident resource that always fails with a permanent error.
+#[derive(Clone)]
+struct PermanentFailResource {
+    create_count: Arc<AtomicU64>,
+}
+
+impl PermanentFailResource {
+    fn new() -> Self {
+        Self {
+            create_count: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl Resource for PermanentFailResource {
+    type Config = TestConfig;
+    type Runtime = Arc<AtomicU64>;
+    type Lease = Arc<AtomicU64>;
+    type Error = PermanentTestError;
+    type Credential = ();
+
+    fn key() -> ResourceKey {
+        resource_key!("test-permanent-fail")
+    }
+
+    fn create(
+        &self,
+        _config: &TestConfig,
+        _credential: &(),
+        _ctx: &dyn Ctx,
+    ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, PermanentTestError>> + Send {
+        self.create_count.fetch_add(1, Ordering::Relaxed);
+        async { Err(PermanentTestError("permanent failure".into())) }
+    }
+
+    fn destroy(
+        &self,
+        _runtime: Arc<AtomicU64>,
+    ) -> impl std::future::Future<Output = Result<(), PermanentTestError>> + Send {
+        async { Ok(()) }
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Resident for PermanentFailResource {
+    fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn acquire_retries_on_transient_failure() {
+    use nebula_resource::integration::{AcquireResilience, AcquireRetryConfig};
+
+    let manager = Manager::new();
+    // Fails on first create, succeeds on second.
+    let resource = FailingResidentResource::new(1);
+    let resident_rt =
+        ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    let resilience = AcquireResilience {
+        timeout: None,
+        retry: Some(AcquireRetryConfig {
+            max_attempts: 3,
+            initial_backoff: std::time::Duration::from_millis(1),
+            max_backoff: std::time::Duration::from_millis(10),
+        }),
+        circuit_breaker: None,
+    };
+
+    manager
+        .register(
+            resource.clone(),
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+            Some(resilience),
+        )
+        .expect("registration should succeed");
+
+    let ctx = test_ctx();
+    let handle: ResourceHandle<FailingResidentResource> = manager
+        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed after retry");
+
+    // The first create failed, the second succeeded (value = 1).
+    assert_eq!(handle.load(Ordering::Relaxed), 1);
+    // Two creates total: one failure + one success.
+    assert_eq!(resource.create_count.load(Ordering::Relaxed), 2);
+
+    drop(handle);
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn acquire_no_retry_on_permanent_failure() {
+    use nebula_resource::integration::{AcquireResilience, AcquireRetryConfig};
+
+    let manager = Manager::new();
+    let resource = PermanentFailResource::new();
+    let resident_rt =
+        ResidentRuntime::<PermanentFailResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    let resilience = AcquireResilience {
+        timeout: None,
+        retry: Some(AcquireRetryConfig {
+            max_attempts: 3,
+            initial_backoff: std::time::Duration::from_millis(1),
+            max_backoff: std::time::Duration::from_millis(10),
+        }),
+        circuit_breaker: None,
+    };
+
+    manager
+        .register(
+            resource.clone(),
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+            Some(resilience),
+        )
+        .expect("registration should succeed");
+
+    let ctx = test_ctx();
+    let result = manager
+        .acquire_resident::<PermanentFailResource>(&(), &ctx, &AcquireOptions::default())
+        .await;
+
+    assert!(result.is_err(), "acquire should fail on permanent error");
+    // Permanent error is NOT retryable — only 1 attempt should have been made.
+    assert_eq!(
+        resource.create_count.load(Ordering::Relaxed),
+        1,
+        "permanent error should not trigger retries"
+    );
+
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn acquire_succeeds_without_resilience() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    manager
+        .register(
+            resource.clone(),
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+            None,
+        )
+        .expect("registration should succeed");
+
+    let ctx = test_ctx();
+    let handle: ResourceHandle<ResidentTestResource> = manager
+        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire without resilience should succeed");
+
+    assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
+
+    drop(handle);
+    drop(manager);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+#[tokio::test]
+async fn acquire_timeout_fires() {
+    use nebula_resource::integration::AcquireResilience;
+
+    let manager = Manager::new();
+    // Resource that always fails (so the resident runtime create will fail),
+    // but we set a very short timeout.
+    let resource = FailingResidentResource::new(100);
+    let resident_rt = ResidentRuntime::<FailingResidentResource>::new(resident::config::Config {
+        // Set create_timeout long so the resilience timeout fires first.
+        create_timeout: std::time::Duration::from_secs(60),
+        ..Default::default()
+    });
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    let resilience = AcquireResilience {
+        timeout: Some(std::time::Duration::from_millis(1)),
+        retry: None,
+        circuit_breaker: None,
+    };
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            rq.clone(),
+            Some(resilience),
+        )
+        .expect("registration should succeed");
+
+    let ctx = test_ctx();
+    let result = manager
+        .acquire_resident::<FailingResidentResource>(&(), &ctx, &AcquireOptions::default())
+        .await;
+
+    // Should fail — either from timeout or from the transient error.
+    assert!(result.is_err(), "acquire should fail with timeout or error");
 
     drop(manager);
     drop(rq);

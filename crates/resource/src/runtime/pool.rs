@@ -153,13 +153,20 @@ where
             Err(e) => return Err(e),
         };
 
+        // Cancel-safety: if the future is dropped between here and
+        // `build_guarded_handle`, the guard ensures we log the leak
+        // and drop the runtime (triggering its native `Drop`).
+        let mut guard = CreateGuard::new(entry);
+
         // Prepare the new instance.
-        if let Err(e) = resource.prepare(&entry.runtime, ctx).await {
+        if let Err(e) = resource.prepare(guard.runtime(), ctx).await {
+            let entry = guard.defuse();
             let _ = resource.destroy(entry.runtime).await;
             // permit drops here, returning the slot.
             return Err(e.into());
         }
 
+        let entry = guard.defuse();
         let lease: R::Lease = entry.runtime.clone().into();
         Ok(self.build_guarded_handle(
             lease,
@@ -197,13 +204,19 @@ where
                 }
             };
 
-            let Some(mut entry) = entry else {
+            let Some(entry) = entry else {
                 return Ok(IdleResult::Empty(permit));
             };
 
+            // Cancel-safety: guard the popped entry through all async
+            // validation steps. If cancelled mid-check, we log + drop
+            // rather than silently leaking the instance.
+            let mut guard = CreateGuard::new(entry);
+
             // Stale fingerprint — destroy silently.
             let current_fp = self.current_fingerprint.load(Ordering::Acquire);
-            if entry.fingerprint != current_fp {
+            if guard.entry().fingerprint != current_fp {
+                let entry = guard.defuse();
                 let _ = resource.destroy(entry.runtime).await;
                 continue;
             }
@@ -212,30 +225,35 @@ where
             if self
                 .config
                 .max_lifetime
-                .is_some_and(|max| entry.metrics.created_at.elapsed() > max)
+                .is_some_and(|max| guard.entry().metrics.created_at.elapsed() > max)
             {
+                let entry = guard.defuse();
                 let _ = resource.destroy(entry.runtime).await;
                 continue;
             }
 
             // Broken check (sync, O(1)).
-            if resource.is_broken(&entry.runtime).is_broken() {
+            if resource.is_broken(guard.runtime()).is_broken() {
+                let entry = guard.defuse();
                 let _ = resource.destroy(entry.runtime).await;
                 continue;
             }
 
             // Optional health check on checkout.
-            if self.config.test_on_checkout && resource.check(&entry.runtime).await.is_err() {
+            if self.config.test_on_checkout && resource.check(guard.runtime()).await.is_err() {
+                let entry = guard.defuse();
                 let _ = resource.destroy(entry.runtime).await;
                 continue;
             }
 
             // Prepare for this execution context.
-            if let Err(e) = resource.prepare(&entry.runtime, ctx).await {
+            if let Err(e) = resource.prepare(guard.runtime(), ctx).await {
+                let entry = guard.defuse();
                 let _ = resource.destroy(entry.runtime).await;
                 return Err(e.into());
             }
 
+            let mut entry = guard.defuse();
             entry.metrics.checkout_count += 1;
 
             let lease: R::Lease = entry.runtime.clone().into();
@@ -406,6 +424,57 @@ async fn release_entry<R>(
         }
         Ok(RecycleDecision::Drop) | Err(_) => {
             let _ = resource.destroy(entry.runtime).await;
+        }
+    }
+}
+
+/// Cancel-safety guard for the create-then-prepare sequence.
+///
+/// Wraps a [`PoolEntry`] between creation and handle construction. If
+/// the future is cancelled (e.g. via `tokio::select!` or timeout) after
+/// `create()` succeeds but before the handle is built, `Drop` logs the
+/// leak and drops the runtime — triggering its native `Drop` impl
+/// (which closes TCP sockets, file handles, etc.).
+///
+/// Call [`defuse`](Self::defuse) to take ownership of the entry once
+/// the handle is safely constructed.
+struct CreateGuard<R: Resource> {
+    entry: Option<PoolEntry<R>>,
+}
+
+impl<R: Resource> CreateGuard<R> {
+    /// Creates a new guard wrapping the given pool entry.
+    fn new(entry: PoolEntry<R>) -> Self {
+        Self { entry: Some(entry) }
+    }
+
+    /// Returns a reference to the inner entry for inspection.
+    fn entry(&self) -> &PoolEntry<R> {
+        self.entry.as_ref().expect("CreateGuard: already defused")
+    }
+
+    /// Returns a reference to the runtime for use in `prepare()`.
+    fn runtime(&self) -> &R::Runtime {
+        &self.entry().runtime
+    }
+
+    /// Takes the entry out of the guard — it has been safely consumed.
+    ///
+    /// After this call, `Drop` is a no-op.
+    fn defuse(&mut self) -> PoolEntry<R> {
+        self.entry.take().expect("CreateGuard: already defused")
+    }
+}
+
+impl<R: Resource> Drop for CreateGuard<R> {
+    fn drop(&mut self) {
+        if let Some(entry) = self.entry.take() {
+            tracing::warn!(
+                resource = %R::key(),
+                "cancel-safety: pool entry dropped without async destroy \
+                 (create succeeded but acquire future was cancelled)"
+            );
+            drop(entry);
         }
     }
 }
