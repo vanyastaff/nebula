@@ -162,14 +162,10 @@ impl Manager {
     ///
     /// Returns an error if [`ResourceConfig::validate()`] fails on the
     /// provided config.
-    // Reason: register is a constructor that needs all parameters upfront;
-    // a builder would be overengineering for a single-call registration API.
-    #[allow(clippy::too_many_arguments)]
     pub fn register<R: Resource>(
         &self,
         resource: R,
         config: R::Config,
-        _credential: R::Credential,
         scope: ScopeLevel,
         topology: TopologyRuntime<R>,
         resilience: Option<AcquireResilience>,
@@ -210,7 +206,7 @@ impl Manager {
 
     /// Registers a pooled resource with sensible defaults.
     ///
-    /// Shorthand for [`register`](Self::register) with `credential = ()`,
+    /// Shorthand for [`register`](Self::register) with
     /// `scope = Global`, no resilience, no recovery gate.
     ///
     /// The pool fingerprint is initialized from
@@ -234,7 +230,6 @@ impl Manager {
         self.register(
             resource,
             config,
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(crate::runtime::pool::PoolRuntime::<R>::new(
                 pool_config,
@@ -247,7 +242,7 @@ impl Manager {
 
     /// Registers a resident resource with sensible defaults.
     ///
-    /// Shorthand for [`register`](Self::register) with `credential = ()`,
+    /// Shorthand for [`register`](Self::register) with
     /// `scope = Global`, no resilience, no recovery gate.
     ///
     /// # Errors
@@ -265,7 +260,6 @@ impl Manager {
         self.register(
             resource,
             config,
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(crate::runtime::resident::ResidentRuntime::<R>::new(
                 resident_config,
@@ -277,7 +271,7 @@ impl Manager {
 
     /// Registers a service resource with sensible defaults.
     ///
-    /// Shorthand for [`register`](Self::register) with `credential = ()`,
+    /// Shorthand for [`register`](Self::register) with
     /// `scope = Global`, no resilience, no recovery gate.
     ///
     /// # Errors
@@ -296,7 +290,6 @@ impl Manager {
         self.register(
             resource,
             config,
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Service(crate::runtime::service::ServiceRuntime::<R>::new(
                 runtime,
@@ -309,7 +302,7 @@ impl Manager {
 
     /// Registers an exclusive resource with sensible defaults.
     ///
-    /// Shorthand for [`register`](Self::register) with `credential = ()`,
+    /// Shorthand for [`register`](Self::register) with
     /// `scope = Global`, no resilience, no recovery gate.
     ///
     /// # Errors
@@ -328,7 +321,6 @@ impl Manager {
         self.register(
             resource,
             config,
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Exclusive(crate::runtime::exclusive::ExclusiveRuntime::<R>::new(
                 runtime,
@@ -341,7 +333,7 @@ impl Manager {
 
     /// Registers a transport resource with sensible defaults.
     ///
-    /// Shorthand for [`register`](Self::register) with `credential = ()`,
+    /// Shorthand for [`register`](Self::register) with
     /// `scope = Global`, no resilience, no recovery gate.
     ///
     /// # Errors
@@ -360,7 +352,6 @@ impl Manager {
         self.register(
             resource,
             config,
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Transport(crate::runtime::transport::TransportRuntime::<R>::new(
                 runtime,
@@ -394,7 +385,6 @@ impl Manager {
         self.register(
             resource,
             config,
-            (),
             options.scope,
             TopologyRuntime::Pool(crate::runtime::pool::PoolRuntime::<R>::new(
                 pool_config,
@@ -426,7 +416,6 @@ impl Manager {
         self.register(
             resource,
             config,
-            (),
             options.scope,
             TopologyRuntime::Resident(crate::runtime::resident::ResidentRuntime::<R>::new(
                 resident_config,
@@ -458,7 +447,6 @@ impl Manager {
         self.register(
             resource,
             config,
-            (),
             options.scope,
             TopologyRuntime::Service(crate::runtime::service::ServiceRuntime::<R>::new(
                 runtime,
@@ -491,7 +479,6 @@ impl Manager {
         self.register(
             resource,
             config,
-            (),
             options.scope,
             TopologyRuntime::Transport(crate::runtime::transport::TransportRuntime::<R>::new(
                 runtime,
@@ -524,7 +511,6 @@ impl Manager {
         self.register(
             resource,
             config,
-            (),
             options.scope,
             TopologyRuntime::Exclusive(crate::runtime::exclusive::ExclusiveRuntime::<R>::new(
                 runtime,

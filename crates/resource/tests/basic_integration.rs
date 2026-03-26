@@ -467,7 +467,6 @@ async fn manager_register_and_acquire_pooled() {
         .register(
             resource.clone(),
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             None,
@@ -506,7 +505,6 @@ async fn manager_register_and_acquire_resident() {
         .register(
             resource.clone(),
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -538,7 +536,6 @@ async fn manager_shutdown_rejects_acquire() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -702,7 +699,6 @@ async fn register_emits_registered_event() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -728,7 +724,6 @@ async fn remove_emits_removed_event() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -758,7 +753,6 @@ async fn acquire_emits_success_event() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -925,7 +919,6 @@ async fn manager_scope_exact_match() {
         .register(
             resource.clone(),
             test_config(),
-            (),
             scope.clone(),
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -956,7 +949,6 @@ async fn manager_scope_fallback_to_global() {
         .register(
             resource.clone(),
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -988,7 +980,6 @@ async fn manager_scope_mismatch_not_found() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Organization("acme".into()),
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -1025,7 +1016,6 @@ async fn metrics_track_acquire_release_create_destroy() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -1078,7 +1068,6 @@ async fn manager_multiple_resources_coexist() {
         .register(
             pool_resource.clone(),
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             None,
@@ -1095,7 +1084,6 @@ async fn manager_multiple_resources_coexist() {
         .register(
             resident_resource.clone(),
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -1570,7 +1558,6 @@ async fn service_acquire_via_manager() {
         .register(
             resource.clone(),
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Service(svc_rt),
             None,
@@ -2092,7 +2079,6 @@ async fn per_resource_metrics_are_independent() {
         .register(
             pool_resource.clone(),
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             None,
@@ -2109,7 +2095,6 @@ async fn per_resource_metrics_are_independent() {
         .register(
             resident_resource.clone(),
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -2178,7 +2163,6 @@ async fn graceful_shutdown_stops_new_acquires() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -2219,7 +2203,6 @@ async fn graceful_shutdown_clears_registry() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -2406,14 +2389,12 @@ async fn acquire_retries_on_transient_failure() {
             initial_backoff: std::time::Duration::from_millis(1),
             max_backoff: std::time::Duration::from_millis(10),
         }),
-        circuit_breaker: None,
     };
 
     manager
         .register(
             resource.clone(),
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             Some(resilience),
@@ -2449,14 +2430,12 @@ async fn acquire_no_retry_on_permanent_failure() {
             initial_backoff: std::time::Duration::from_millis(1),
             max_backoff: std::time::Duration::from_millis(10),
         }),
-        circuit_breaker: None,
     };
 
     manager
         .register(
             resource.clone(),
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             Some(resilience),
@@ -2489,7 +2468,6 @@ async fn acquire_succeeds_without_resilience() {
         .register(
             resource.clone(),
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -2524,14 +2502,12 @@ async fn acquire_timeout_fires() {
     let resilience = AcquireResilience {
         timeout: Some(std::time::Duration::from_millis(1)),
         retry: None,
-        circuit_breaker: None,
     };
 
     manager
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             Some(resilience),
@@ -2563,7 +2539,6 @@ async fn graceful_shutdown_is_idempotent() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -2602,7 +2577,6 @@ async fn topology_mismatch_returns_permanent_error() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             None,
@@ -2648,14 +2622,12 @@ async fn retry_exhaustion_returns_last_transient_error() {
             initial_backoff: std::time::Duration::from_millis(1),
             max_backoff: std::time::Duration::from_millis(5),
         }),
-        circuit_breaker: None,
     };
 
     manager
         .register(
             resource.clone(),
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             Some(resilience),
@@ -2706,7 +2678,6 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -3241,7 +3212,6 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -3279,7 +3249,6 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -3315,7 +3284,6 @@ async fn recovery_gate_allows_acquire_when_idle() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -3350,7 +3318,6 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -3378,7 +3345,6 @@ async fn recovery_gate_none_does_not_affect_acquire() {
         .register(
             resource,
             test_config(),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -3498,7 +3464,6 @@ async fn reload_config_swaps_config_and_bumps_generation() {
         .register(
             resource,
             ReloadConfig::new(1),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             None,
@@ -3536,7 +3501,6 @@ async fn reload_config_rejects_invalid_config() {
         .register(
             resource,
             ReloadConfig::new(1),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             None,
@@ -3581,7 +3545,6 @@ async fn reload_config_emits_event() {
         .register(
             resource,
             ReloadConfig::new(1),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             None,
@@ -3617,7 +3580,6 @@ async fn reload_config_evicts_stale_pool_instances() {
         .register(
             resource.clone(),
             ReloadConfig::new(1),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             None,
@@ -3682,7 +3644,6 @@ async fn reload_config_rejected_when_shutdown() {
         .register(
             resource,
             ReloadConfig::new(1),
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             None,

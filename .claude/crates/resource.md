@@ -6,8 +6,9 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`
 - `ErrorKind` determines retry: Transient/Exhausted = retryable
+- `register()` takes 6 params (no credential param) — convenience methods still require `Credential = ()` bound
 - Manager has per-topology `acquire_*` methods (not one generic) — different trait bounds per topology
-- `AcquireResilience` optional on `register()` — wraps acquire with timeout + retry
+- `AcquireResilience` optional on `register()` — wraps acquire with timeout + retry (no circuit-breaker field; removed as unwired)
 - `ResourceHandle` RAII — guarded returns lease on drop, tainted destroys
 - Guarded permit drops AFTER catch_unwind in Drop — prevents semaphore leak on panic
 - `TopologyTag` is enum (not `&str`), `#[non_exhaustive]`
@@ -37,4 +38,4 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - Depends on: nebula-core, nebula-resource-macros (re-exports `ClassifyError` derive)
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 
-<!-- reviewed: 2026-03-25 — P0+P1 safety fixes, drain-aware shutdown, 8 new tests -->
+<!-- reviewed: 2026-03-25 — removed dead _credential param from register(), removed unwired AcquireCircuitBreakerPreset -->

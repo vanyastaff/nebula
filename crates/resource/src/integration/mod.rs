@@ -6,4 +6,4 @@
 
 pub mod resilience;
 
-pub use resilience::{AcquireCircuitBreakerPreset, AcquireResilience, AcquireRetryConfig};
+pub use resilience::{AcquireResilience, AcquireRetryConfig};

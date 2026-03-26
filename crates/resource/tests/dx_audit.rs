@@ -212,7 +212,6 @@ async fn use_case_1_http_client_pool() {
                 base_url: "https://api.example.com".into(),
                 pool_size: 4,
             },
-            (), // credential
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             None, // resilience
@@ -345,7 +344,6 @@ async fn use_case_2_resident_config_store() {
             ConfigStoreConfig {
                 path: "/etc/app/config.json".into(),
             },
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
@@ -487,7 +485,6 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
             DbConfig {
                 host: "localhost:5432".into(),
             },
-            (),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             Some(resilience),

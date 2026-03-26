@@ -66,7 +66,7 @@ pub use topology::service::{Service, TokenMode};
 pub use topology::transport::Transport;
 pub use topology_tag::TopologyTag;
 
-pub use integration::{AcquireCircuitBreakerPreset, AcquireResilience, AcquireRetryConfig};
+pub use integration::{AcquireResilience, AcquireRetryConfig};
 pub use recovery::{
     GateState, RecoveryGate, RecoveryGateConfig, RecoveryGroupKey, RecoveryGroupRegistry,
     RecoveryTicket, RecoveryWaiter, WatchdogConfig, WatchdogHandle,

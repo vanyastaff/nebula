@@ -385,7 +385,6 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
         .register(
             DbResource::new(),
             config,
-            (),                 // credential
             ScopeLevel::Global, // scope
             TopologyRuntime::Pool(PoolRuntime::<DbResource>::new(pool_config, fingerprint)),
             Some(AcquireResilience::standard()), // resilience
