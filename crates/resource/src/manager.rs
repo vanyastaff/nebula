@@ -38,6 +38,21 @@ use crate::resource::Resource;
 use crate::runtime::TopologyRuntime;
 use crate::runtime::managed::ManagedResource;
 
+/// Snapshot of a resource's health and operational state.
+#[derive(Debug, Clone)]
+pub struct ResourceHealthSnapshot {
+    /// The resource's unique key.
+    pub key: ResourceKey,
+    /// Current lifecycle phase.
+    pub phase: crate::state::ResourcePhase,
+    /// Recovery gate state (if a gate is attached).
+    pub gate_state: Option<crate::recovery::gate::GateState>,
+    /// Aggregate operation counters.
+    pub metrics: crate::metrics::MetricsSnapshot,
+    /// Config generation counter.
+    pub generation: u64,
+}
+
 /// Configuration for graceful shutdown.
 #[derive(Debug, Clone)]
 pub struct ShutdownConfig {
@@ -594,8 +609,9 @@ impl Manager {
                         .await
                     }
                     _ => Err(Error::permanent(format!(
-                        "{}: expected pool topology",
-                        R::key()
+                        "{}: expected Pool topology, registered as {}",
+                        R::key(),
+                        managed.topology.tag()
                     ))),
                 }
             }
@@ -661,8 +677,9 @@ impl Manager {
                             .await
                     }
                     _ => Err(Error::permanent(format!(
-                        "{}: expected resident topology",
-                        R::key()
+                        "{}: expected Resident topology, registered as {}",
+                        R::key(),
+                        managed.topology.tag()
                     ))),
                 }
             }
@@ -734,8 +751,9 @@ impl Manager {
                         .await
                     }
                     _ => Err(Error::permanent(format!(
-                        "{}: expected service topology",
-                        R::key()
+                        "{}: expected Service topology, registered as {}",
+                        R::key(),
+                        managed.topology.tag()
                     ))),
                 }
             }
@@ -747,6 +765,22 @@ impl Manager {
         }
         self.record_acquire_result(&managed, &result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+    }
+
+    /// Acquires a service resource handle without credentials.
+    ///
+    /// Shorthand for [`acquire_service`](Self::acquire_service) with `credential = &()`.
+    pub async fn acquire_service_default<R>(
+        &self,
+        ctx: &dyn Ctx,
+        options: &AcquireOptions,
+    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    where
+        R: crate::topology::service::Service<Credential = ()> + Clone + Send + Sync + 'static,
+        R::Runtime: Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        self.acquire_service::<R>(ctx, options).await
     }
 
     /// Acquires a handle to a transport resource.
@@ -790,8 +824,9 @@ impl Manager {
                         .await
                     }
                     _ => Err(Error::permanent(format!(
-                        "{}: expected transport topology",
-                        R::key()
+                        "{}: expected Transport topology, registered as {}",
+                        R::key(),
+                        managed.topology.tag()
                     ))),
                 }
             }
@@ -803,6 +838,22 @@ impl Manager {
         }
         self.record_acquire_result(&managed, &result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+    }
+
+    /// Acquires a transport resource handle without credentials.
+    ///
+    /// Shorthand for [`acquire_transport`](Self::acquire_transport) with `credential = &()`.
+    pub async fn acquire_transport_default<R>(
+        &self,
+        ctx: &dyn Ctx,
+        options: &AcquireOptions,
+    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    where
+        R: crate::topology::transport::Transport<Credential = ()> + Clone + Send + Sync + 'static,
+        R::Runtime: Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        self.acquire_transport::<R>(ctx, options).await
     }
 
     /// Acquires a handle to an exclusive resource.
@@ -845,8 +896,9 @@ impl Manager {
                         .await
                     }
                     _ => Err(Error::permanent(format!(
-                        "{}: expected exclusive topology",
-                        R::key()
+                        "{}: expected Exclusive topology, registered as {}",
+                        R::key(),
+                        managed.topology.tag()
                     ))),
                 }
             }
@@ -858,6 +910,22 @@ impl Manager {
         }
         self.record_acquire_result(&managed, &result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+    }
+
+    /// Acquires an exclusive resource handle without credentials.
+    ///
+    /// Shorthand for [`acquire_exclusive`](Self::acquire_exclusive) with `credential = &()`.
+    pub async fn acquire_exclusive_default<R>(
+        &self,
+        ctx: &dyn Ctx,
+        options: &AcquireOptions,
+    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    where
+        R: crate::topology::exclusive::Exclusive<Credential = ()> + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        self.acquire_exclusive::<R>(ctx, options).await
     }
 
     /// Hot-reloads the configuration for a registered resource.
@@ -1068,6 +1136,26 @@ impl Manager {
     /// Returns `true` if the manager has been shut down.
     pub fn is_shutdown(&self) -> bool {
         self.cancel.is_cancelled()
+    }
+
+    /// Returns a health snapshot for a registered resource.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound)
+    /// if the resource is not registered for the given scope.
+    pub fn health_check<R: Resource>(
+        &self,
+        scope: &ScopeLevel,
+    ) -> Result<ResourceHealthSnapshot, Error> {
+        let managed = self.lookup::<R>(scope)?;
+        Ok(ResourceHealthSnapshot {
+            key: R::key(),
+            phase: managed.status().phase,
+            gate_state: managed.recovery_gate.as_ref().map(|g| g.state()),
+            metrics: managed.metrics.snapshot(),
+            generation: managed.generation(),
+        })
     }
 
     /// Looks up a managed resource by key and scope, returning the

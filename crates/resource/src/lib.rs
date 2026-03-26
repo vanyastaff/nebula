@@ -50,7 +50,9 @@ pub use ctx::{BasicCtx, Ctx, Extensions, ScopeLevel, ctx_ext};
 pub use error::{Error, ErrorKind, ErrorScope};
 pub use events::ResourceEvent;
 pub use handle::ResourceHandle;
-pub use manager::{Manager, ManagerConfig, RegisterOptions, ShutdownConfig};
+pub use manager::{
+    Manager, ManagerConfig, RegisterOptions, ResourceHealthSnapshot, ShutdownConfig,
+};
 pub use metrics::{MetricsSnapshot, ResourceMetrics};
 pub use options::{AcquireIntent, AcquireOptions};
 pub use registry::{AnyManagedResource, Registry};

@@ -7,14 +7,16 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`
 - `ErrorKind` determines retry: Transient/Exhausted = retryable
 - `register()` takes 6 params (no credential param) — convenience methods still require `Credential = ()` bound
-- Manager has per-topology `acquire_*` methods (not one generic) — different trait bounds per topology
+- Manager has per-topology `acquire_*` methods AND topology-erased `acquire()`/`acquire_default()` — erased dispatch requires R to impl ALL 5 topology traits
+- Per-topology mismatch errors include the actual registered topology tag for actionable diagnostics
 - `AcquireResilience` optional on `register()` — wraps acquire with timeout + retry (no circuit-breaker field; removed as unwired)
 - `ResourceHandle` RAII — guarded returns lease on drop, tainted destroys
 - Guarded permit drops AFTER catch_unwind in Drop — prevents semaphore leak on panic
 - `TopologyTag` is enum (not `&str`), `#[non_exhaustive]`
 - `register_pooled/resident/service/exclusive/transport` convenience methods: `Credential = ()`, `ScopeLevel::Global`, no resilience/gate
 - `register_*_with` variants accept `RegisterOptions` for scope/resilience/gate without full `register()` signature
-- `acquire_pooled_default`/`acquire_resident_default` helpers pass `&()` credential — only for `Credential = ()`
+- `acquire_*_default` helpers constrain `Credential = ()` — exist for all 5 topologies plus topology-erased `acquire_default`
+- `health_check<R>(scope)` returns `ResourceHealthSnapshot` (phase, gate state, metrics, generation) — no async
 - `ScopeLevel` derives `Default` (= `Global`); `RegisterOptions::default()` works out of the box
 - Deprecated `Context`/`Scope` in `compat` for v1 migration
 
@@ -38,4 +40,4 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - Depends on: nebula-core, nebula-resource-macros (re-exports `ClassifyError` derive)
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 
-<!-- reviewed: 2026-03-25 — removed dead _credential param from register(), removed unwired AcquireCircuitBreakerPreset -->
+<!-- reviewed: 2026-03-25 — added health_check(), acquire_service/transport/exclusive_default, improved mismatch error messages with topology tag -->

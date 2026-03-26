@@ -23,6 +23,7 @@ pub mod service;
 pub mod transport;
 
 use crate::resource::Resource;
+use crate::topology_tag::TopologyTag;
 
 /// Dispatch enum for all topology runtimes.
 ///
@@ -44,4 +45,19 @@ pub enum TopologyRuntime<R: Resource> {
     EventSource(event_source::EventSourceRuntime<R>),
     /// Background run loop with restart policy (secondary topology).
     Daemon(daemon::DaemonRuntime<R>),
+}
+
+impl<R: Resource> TopologyRuntime<R> {
+    /// Returns the topology tag for this runtime variant.
+    pub fn tag(&self) -> TopologyTag {
+        match self {
+            Self::Pool(_) => TopologyTag::Pool,
+            Self::Resident(_) => TopologyTag::Resident,
+            Self::Service(_) => TopologyTag::Service,
+            Self::Transport(_) => TopologyTag::Transport,
+            Self::Exclusive(_) => TopologyTag::Exclusive,
+            Self::EventSource(_) => TopologyTag::EventSource,
+            Self::Daemon(_) => TopologyTag::Daemon,
+        }
+    }
 }
