@@ -1,170 +1,165 @@
 # nebula-resource — Writing Adapter Crates
 
-An adapter crate (e.g. `nebula-resource-postgres`, `nebula-resource-redis`)
-wraps a specific driver library and implements the `Resource` trait so that
-`nebula-resource` can pool, health-check, and lifecycle-manage it.
+An adapter crate (e.g. `nebula-resource-postgres`, `nebula-resource-redis`) wraps a
+specific driver library and implements the v2 `Resource` trait so that `nebula-resource`
+can pool, health-check, and lifecycle-manage it.
 
-This guide walks through the complete implementation of a production-quality
-adapter.
-
----
-
-## Table of Contents
-
-- [Crate Layout](#crate-layout)
-- [Step 1: Define Config](#step-1-define-config)
-- [Step 2: Define Instance](#step-2-define-instance)
-- [Step 3: Implement Resource](#step-3-implement-resource)
-- [Step 4: Implement HealthCheckable](#step-4-implement-healthcheckable)
-- [Step 5: Declare Metadata](#step-5-declare-metadata)
-- [Step 6: Integration Tests](#step-6-integration-tests)
-- [Optional: HasResourceComponents](#optional-hasresourcecomponents)
-- [Checklist](#checklist)
+This guide walks through a complete pseudo-Postgres example. Because a real Postgres driver
+is not a workspace dependency, all code blocks use `ignore` to keep them out of `cargo test
+--doc`. Replace `ignore` with `no_run` once you add the driver crate.
 
 ---
 
-## Crate Layout
+## Overview
 
-```
-crates/resource-<driver>/
-├── Cargo.toml
-├── src/
-│   ├── lib.rs          public re-exports
-│   ├── config.rs       Config + validation
-│   ├── instance.rs     Instance type + HealthCheckable impl
-│   └── resource.rs     Resource impl
-└── tests/
-    └── integration.rs  acquire / recycle / health tests
-```
+An adapter crate owns three things:
 
-`Cargo.toml` dependencies:
+1. A **config struct** — operational parameters (host, port, timeouts). No secrets.
+2. A **resource struct** — implements `Resource` with 5 associated types and 4 lifecycle
+   methods. This is the factory that creates and tears down connections.
+3. A **topology impl** — `Pooled`, `Resident`, or another topology trait that tells the
+   manager how to hand out leases. Most database adapters use `Pooled`.
+
+The manager calls `Resource::create` when it needs a new instance, `Pooled::recycle` when
+an instance is returned, and `Resource::destroy` when it is discarded.
+
+---
+
+## Cargo.toml
 
 ```toml
+[package]
+name = "nebula-resource-postgres"
+version = "0.1.0"
+edition = "2024"
+
 [dependencies]
 nebula-resource = { path = "../../crates/resource" }
 nebula-core     = { path = "../../crates/core" }
 thiserror       = { workspace = true }
 tokio           = { workspace = true, features = ["rt-multi-thread"] }
 tracing         = { workspace = true }
-# ... your driver crate
+# your driver:
+# tokio-postgres = "0.7"
 ```
 
 ---
 
 ## Step 1: Define Config
 
-```rust
+`ResourceConfig` holds operational parameters. Implement `validate()` to reject bad inputs
+before the manager tries to create any connections, and `fingerprint()` to enable config
+hot-reload without recreating healthy instances.
+
+```rust,ignore
 // src/config.rs
-use nebula_resource::{Config, Error, FieldViolation, Result};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use nebula_resource::{Error, ResourceConfig};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub struct PostgresConfig {
-    pub dsn: String,
-    pub connect_timeout: std::time::Duration,
-    pub statement_timeout: std::time::Duration,
-    pub ssl_mode: SslMode,
-}
-
-#[derive(Debug, Clone, Default)]
-pub enum SslMode {
-    #[default]
-    Prefer,
-    Require,
-    Disable,
+    pub host: String,
+    pub port: u16,
+    pub database: String,
+    pub connect_timeout_secs: u64,
 }
 
 impl Default for PostgresConfig {
     fn default() -> Self {
         Self {
-            dsn: String::new(),
-            connect_timeout: std::time::Duration::from_secs(10),
-            statement_timeout: std::time::Duration::from_secs(30),
-            ssl_mode: SslMode::Prefer,
+            host: "localhost".into(),
+            port: 5432,
+            database: "postgres".into(),
+            connect_timeout_secs: 10,
         }
     }
 }
 
-impl Config for PostgresConfig {
-    fn validate(&self) -> Result<()> {
-        let mut violations = Vec::new();
-
-        if self.dsn.is_empty() {
-            violations.push(FieldViolation::new(
-                "dsn",
-                "must not be empty",
-                "<empty>",
-            ));
+impl ResourceConfig for PostgresConfig {
+    fn validate(&self) -> Result<(), Error> {
+        if self.host.is_empty() {
+            return Err(Error::permanent("postgres: host must not be empty"));
         }
-
-        if self.connect_timeout.is_zero() {
-            violations.push(FieldViolation::new(
-                "connect_timeout",
-                "must be greater than zero",
-                "0s",
-            ));
+        if self.connect_timeout_secs == 0 {
+            return Err(Error::permanent("postgres: connect_timeout_secs must be > 0"));
         }
-
-        if !violations.is_empty() {
-            return Err(Error::validation(violations));
-        }
-
         Ok(())
+    }
+
+    fn fingerprint(&self) -> u64 {
+        let mut h = DefaultHasher::new();
+        self.hash(&mut h);
+        h.finish()
     }
 }
 ```
 
-**Rules for `Config::validate`:**
-- Return `Error::Validation` with all violations at once, not the first one.
-- Validate format (non-empty DSN, valid URL scheme) but not connectivity.
-  Connectivity is tested by `Resource::create`.
-- Never panic. All validation is fail-fast and error-returning.
+Two rules for `validate`:
+- Reject every bad field, not just the first. Build up errors and return a combined message.
+- Validate format (non-empty host, valid port range), not connectivity. Connectivity is the
+  job of `Resource::create`.
+
+`fingerprint` must be deterministic: same config fields → same fingerprint. When the
+manager detects a fingerprint change after `reload_config`, it evicts idle pool instances
+that were created with the old config.
 
 ---
 
-## Step 2: Define Instance
+## Step 2: Define Error
 
-```rust
-// src/instance.rs
-use std::time::{Duration, Instant};
-use nebula_resource::{HealthCheckable, HealthStatus, Result};
+Your resource's `Error` type must implement `Into<nebula_resource::Error>`. The framework
+uses `ErrorKind` on the converted error to decide whether to retry (`Transient`), give up
+(`Permanent`), or backoff (`Exhausted`).
 
-pub struct PostgresConnection {
-    inner: tokio_postgres::Client,
-    /// Prevents leaking sensitive connection strings in logs.
-    _dsn: std::marker::PhantomData<()>,
+### Option A: `ClassifyError` derive (recommended)
+
+`ClassifyError` generates `From<YourError> for nebula_resource::Error` from per-variant
+`#[classify(...)]` annotations.
+
+```rust,ignore
+// src/error.rs
+use nebula_resource::ClassifyError;
+
+#[derive(Debug, thiserror::Error, ClassifyError)]
+pub enum PostgresError {
+    #[error("connection failed: {0}")]
+    #[classify(transient)]
+    Connect(String),
+
+    #[error("authentication failed: {0}")]
+    #[classify(permanent)]
+    Auth(String),
+
+    #[error("rate limited, retry after {retry_after_secs}s")]
+    #[classify(exhausted(retry_after_secs))]
+    RateLimited { retry_after_secs: u64 },
 }
-
-impl PostgresConnection {
-    pub(crate) fn new(client: tokio_postgres::Client) -> Self {
-        Self { inner: client, _dsn: std::marker::PhantomData }
-    }
-
-    /// Execute a query via the underlying client.
-    pub async fn execute(
-        &self,
-        statement: &str,
-        params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
-    ) -> std::result::Result<u64, tokio_postgres::Error> {
-        self.inner.execute(statement, params).await
-    }
-}
-
-// Do NOT implement Debug to avoid accidentally logging the client state.
-// impl Debug is intentionally omitted.
 ```
 
-### Why no `Debug` on `Instance`?
+### Option B: Manual `From` impl
 
-Debug output of active connections can include internal pointers, buffer state,
-or connection metadata that leaks information in logs. Omit it, or implement a
-redacted version:
+Use this when you do not control the error type (e.g., wrapping a third-party driver error).
 
-```rust
-impl std::fmt::Debug for PostgresConnection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PostgresConnection")
-            .field("status", &"<redacted>")
-            .finish()
+```rust,ignore
+// src/error.rs
+use nebula_resource::{Error, ErrorKind};
+
+#[derive(Debug, thiserror::Error)]
+pub enum PostgresError {
+    #[error("connection failed: {0}")]
+    Connect(String),
+
+    #[error("authentication failed: {0}")]
+    Auth(String),
+}
+
+impl From<PostgresError> for Error {
+    fn from(e: PostgresError) -> Self {
+        match e {
+            PostgresError::Connect(msg) => Error::transient(msg),
+            PostgresError::Auth(msg) => Error::permanent(msg),
+        }
     }
 }
 ```
@@ -173,278 +168,232 @@ impl std::fmt::Debug for PostgresConnection {
 
 ## Step 3: Implement Resource
 
-```rust
+`Resource` is the factory. It describes all five associated types and implements the four
+lifecycle methods. Only `create` is required; `check`, `shutdown`, and `destroy` have
+no-op defaults.
+
+```rust,ignore
 // src/resource.rs
 use nebula_core::ResourceKey;
-use nebula_resource::{
-    Context, Error, Resource, ResourceMetadata, Result,
-};
-use crate::config::PostgresConfig;
-use crate::instance::PostgresConnection;
+use nebula_resource::{resource_key, Credential, Resource, ResourceConfig, ResourceMetadata};
+use nebula_resource::ctx::Ctx;
 
+use crate::config::PostgresConfig;
+use crate::error::PostgresError;
+
+/// A fake connection handle — replace with your driver's client type.
+#[derive(Clone)]
+pub struct PgConnection {
+    pub closed: bool,
+}
+
+/// The resource factory. Stateless — put shared config in `PostgresConfig`.
+#[derive(Clone)]
 pub struct PostgresResource;
 
 impl Resource for PostgresResource {
-    type Config   = PostgresConfig;
-    type Instance = PostgresConnection;
+    /// Operational config — no secrets.
+    type Config = PostgresConfig;
+    /// The live connection handle.
+    type Runtime = PgConnection;
+    /// What callers receive from `acquire_pooled`. Often identical to Runtime.
+    type Lease = PgConnection;
+    /// Resource-specific error, convertible to `nebula_resource::Error`.
+    type Error = PostgresError;
+    /// Use `()` for password-less connections; supply a credential type otherwise.
+    type Credential = ();
 
-    fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::builder(
-            ResourceKey::try_from("postgres").expect("valid key"),
-            "PostgreSQL",
-            "Pooled PostgreSQL connection via tokio-postgres",
-        )
-        .tag("sql")
-        .tag("postgres")
-        .build()
+    fn key() -> ResourceKey {
+        resource_key!("postgres")
     }
 
+    /// Opens a new connection. Called by the pool when it needs more capacity.
+    ///
+    /// Map your driver's connection error to `PostgresError::Connect` (transient)
+    /// or `PostgresError::Auth` (permanent) so the framework knows whether to retry.
     async fn create(
         &self,
         config: &PostgresConfig,
-        ctx: &Context,
-    ) -> Result<PostgresConnection> {
-        // Respect cancellation from the caller's context.
-        let connect = async {
-            let (client, connection) = tokio_postgres::connect(
-                &config.dsn,
-                tokio_postgres::NoTls,
-            )
-            .await
-            .map_err(|e| Error::Initialization {
-                resource_key: ResourceKey::try_from("postgres").unwrap(),
-                reason: e.to_string(),
-                source: Some(Box::new(e)),
-            })?;
+        _credential: &(),
+        _ctx: &dyn Ctx,
+    ) -> Result<PgConnection, PostgresError> {
+        // Replace with: tokio_postgres::connect(&dsn, NoTls).await
+        let _ = config;
+        Ok(PgConnection { closed: false })
+    }
 
-            // Drive the connection in the background.
-            tokio::spawn(async move {
-                if let Err(e) = connection.await {
-                    tracing::error!(error = %e, "postgres connection error");
-                }
-            });
-
-            Ok(PostgresConnection::new(client))
-        };
-
-        if let Some(token) = ctx.cancellation.as_ref() {
-            tokio::select! {
-                result = connect => result,
-                _ = token.cancelled() => Err(Error::Unavailable {
-                    resource_key: ResourceKey::try_from("postgres").unwrap(),
-                    reason: "acquire cancelled".into(),
-                    retryable: true,
-                }),
-            }
-        } else {
-            connect.await
+    /// Pings the connection. Called when `test_on_checkout = true` in PoolConfig.
+    async fn check(&self, runtime: &PgConnection) -> Result<(), PostgresError> {
+        if runtime.closed {
+            return Err(PostgresError::Connect("connection is closed".into()));
         }
-    }
-
-    async fn is_reusable(&self, instance: &PostgresConnection) -> Result<bool> {
-        // A closed connection is no longer reusable.
-        Ok(!instance.inner.is_closed())
-    }
-
-    async fn recycle(&self, instance: &mut PostgresConnection) -> Result<()> {
-        // Discard any uncommitted transaction state.
-        instance
-            .execute("ROLLBACK", &[])
-            .await
-            .map(|_| ())
-            .map_err(|e| Error::Internal {
-                resource_key: ResourceKey::try_from("postgres").unwrap(),
-                message: format!("recycle ROLLBACK failed: {e}"),
-                source: Some(Box::new(e)),
-            })
-    }
-
-    async fn cleanup(&self, instance: PostgresConnection) -> Result<()> {
-        // Nothing special needed — tokio_postgres closes the connection on drop.
-        drop(instance);
+        // Replace with: client.simple_query("").await
         Ok(())
     }
 
-    fn declare_key() -> ResourceKey {
-        ResourceKey::try_from("postgres").expect("valid key")
+    /// Drops the connection cleanly. The default (just drops it) is fine for
+    /// drivers that close on drop, but implement this if you need to send a
+    /// disconnect message.
+    async fn destroy(&self, _runtime: PgConnection) -> Result<(), PostgresError> {
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        let mut m = ResourceMetadata::from_key(&Self::key());
+        m.name = "PostgreSQL".into();
+        m.description = Some("Pooled PostgreSQL connection".into());
+        m.tags = vec!["sql".into(), "postgres".into()];
+        m
     }
 }
 ```
 
-**Important rules for `Resource` implementations:**
-
-| Rule | Reason |
-|------|--------|
-| Always check `ctx.cancellation` in `create` | Prevents orphaned background tasks during shutdown. |
-| Use `Error::Initialization` for `create` failures | Signals a startup problem; the pool will not retry immediately. |
-| Use `Error::Internal` for `recycle` failures | The pool treats this as a transient problem and discards the instance. |
-| Never store config secrets in the `Instance` | Log-safety and memory hygiene. |
-| Keep `recycle` idempotent | It may be called multiple times if a circuit breaker is open. |
-
 ---
 
-## Step 4: Implement HealthCheckable
+## Step 4: Pick and Implement Topology
 
-```rust
-// src/instance.rs (continued)
-use nebula_resource::{HealthCheckable, HealthStatus, Result};
+### Which topology?
 
-impl HealthCheckable for PostgresConnection {
-    async fn health_check(&self) -> Result<HealthStatus> {
-        let start = std::time::Instant::now();
-        match self.execute("SELECT 1", &[]).await {
-            Ok(_) => Ok(HealthStatus::healthy().with_latency(start.elapsed())),
-            Err(e) if self.inner.is_closed() => {
-                Ok(HealthStatus::unhealthy(format!("connection closed: {e}")))
-            }
-            Err(e) => {
-                // Server reachable but query failed — degraded, not dead
-                Ok(HealthStatus::degraded(
-                    format!("query error: {e}"),
-                    0.3, // 30% performance impact
-                ))
-            }
+| Topology | Use when |
+|----------|----------|
+| `Pooled` | Stateful connections (databases, gRPC channels). The manager maintains N instances and checks them out one-at-a-time. |
+| `Resident` | Stateless or internally-pooled clients (`reqwest::Client`, AWS SDK). One instance, cloned on acquire. |
+
+Most database adapters use `Pooled`. HTTP client adapters use `Resident`.
+
+### Pooled implementation
+
+`Pooled` adds three hooks on top of `Resource`:
+
+- `is_broken` — called synchronously in the `Drop` path to decide whether to return an
+  instance to the idle queue or destroy it immediately. Must be O(1), no I/O.
+- `recycle` — called asynchronously when an instance is returned. Use `InstanceMetrics`
+  to retire long-lived or error-prone instances.
+- `prepare` — called after checkout, before the caller receives the lease. Use this for
+  session setup (e.g., `SET search_path`).
+
+```rust,ignore
+// src/resource.rs (continued)
+use nebula_resource::topology::pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision};
+
+impl Pooled for PostgresResource {
+    /// Sync broken check — runs in the Drop path. Check a cheap flag, not the network.
+    fn is_broken(&self, runtime: &PgConnection) -> BrokenCheck {
+        if runtime.closed {
+            BrokenCheck::Broken("connection closed".into())
+        } else {
+            BrokenCheck::Healthy
         }
     }
 
-    fn health_check_interval(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(15)
-    }
-
-    fn health_check_timeout(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(3)
+    /// Decide whether to keep or destroy an instance being returned to the pool.
+    ///
+    /// Drop instances that have lived too long or seen too many errors.
+    async fn recycle(
+        &self,
+        runtime: &PgConnection,
+        metrics: &InstanceMetrics,
+    ) -> Result<RecycleDecision, PostgresError> {
+        if runtime.closed {
+            return Ok(RecycleDecision::Drop);
+        }
+        // Retire instances older than 30 minutes.
+        if metrics.age() > std::time::Duration::from_secs(1800) {
+            return Ok(RecycleDecision::Drop);
+        }
+        // Replace with: client.simple_query("ROLLBACK").await?;
+        Ok(RecycleDecision::Keep)
     }
 }
 ```
 
 ---
 
-## Step 5: Declare Metadata
+## Step 5: Register and Acquire
 
-Use `declare_key` to provide a stable key that does not depend on the type name:
+`Manager::register_pooled` is the zero-boilerplate path for unauthenticated pooled
+resources (no credentials). It sets `scope = Global`, no resilience, no recovery gate.
 
-```rust
-impl Resource for PostgresResource {
-    // ...
-    fn declare_key() -> ResourceKey {
-        ResourceKey::try_from("postgres").expect("static literal is valid")
-    }
-}
+```rust,ignore
+// in your application bootstrap
+use nebula_resource::{Manager, PoolConfig};
+use nebula_resource_postgres::{PostgresConfig, PostgresResource};
+
+let manager = Manager::new();
+
+manager.register_pooled(
+    PostgresResource,
+    PostgresConfig {
+        host: "db.example.com".into(),
+        port: 5432,
+        database: "myapp".into(),
+        connect_timeout_secs: 10,
+    },
+    PoolConfig {
+        max_size: 10,
+        ..PoolConfig::default()
+    },
+)?;
 ```
 
-Use `ResourceRef::of::<PostgresResource>()` in dependent crates to reference
-this resource without hard-coding the key string.
+To acquire a connection in an action or test:
+
+```rust,ignore
+use nebula_resource::{AcquireOptions, Manager};
+use nebula_resource::ctx::BasicCtx;
+use nebula_core::ExecutionId;
+
+let ctx = BasicCtx::new(ExecutionId::new());
+let handle = manager
+    .acquire_pooled::<PostgresResource>(&(), &ctx, &AcquireOptions::default())
+    .await?;
+
+// Use the connection via the RAII handle — it returns to the pool on drop.
+let conn: &PgConnection = &*handle;
+```
+
+If you need credentials or a recovery gate, use `Manager::register` directly and pass the
+full arguments.
 
 ---
 
 ## Step 6: Integration Tests
 
-```rust
+Tests should not require a real database. Use a mock `PgConnection` with atomic flags to
+exercise the lifecycle without network I/O.
+
+```rust,ignore
 // tests/integration.rs
-#[cfg(test)]
-mod tests {
-    use nebula_resource::{Context, Manager, PoolConfig, Scope};
-    use crate::{PostgresConfig, PostgresResource};
+use std::sync::Arc;
+use nebula_core::ExecutionId;
+use nebula_resource::{AcquireOptions, Manager, PoolConfig};
+use nebula_resource::ctx::BasicCtx;
+use nebula_resource_postgres::{PostgresConfig, PostgresResource};
 
-    fn test_config() -> PostgresConfig {
-        PostgresConfig {
-            dsn: std::env::var("TEST_DATABASE_URL")
-                .unwrap_or_else(|_| "postgres://localhost/test".into()),
-            ..Default::default()
-        }
-    }
+#[tokio::test]
+async fn register_and_acquire() {
+    let manager = Manager::new();
+    manager
+        .register_pooled(
+            PostgresResource,
+            PostgresConfig::default(),
+            PoolConfig::default(),
+        )
+        .expect("valid config must register without error");
 
-    #[tokio::test]
-    async fn register_and_acquire() {
-        let manager = Manager::new();
-        manager
-            .register(PostgresResource, test_config(), PoolConfig::default())
-            .expect("registration must succeed with valid config");
+    let ctx = BasicCtx::new(ExecutionId::new());
+    let handle = manager
+        .acquire_pooled::<PostgresResource>(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire must succeed after registration");
 
-        let ctx = Context::new(
-            Scope::Global,
-            nebula_resource::WorkflowId::new(),
-            nebula_resource::ExecutionId::new(),
-        );
+    // Verify the topology tag to ensure the correct path was taken.
+    assert_eq!(handle.topology_tag(), nebula_resource::TopologyTag::Pool);
 
-        let guard = manager
-            .acquire_typed::<PostgresResource>(&ctx)
-            .await
-            .expect("acquire must succeed");
-
-        // Use the connection
-        let _: &crate::instance::PostgresConnection = &*guard;
-    }
-
-    #[tokio::test]
-    async fn recycle_after_acquire() {
-        let manager = Manager::new();
-        manager
-            .register(PostgresResource, test_config(), PoolConfig { max_size: 2, ..Default::default() })
-            .unwrap();
-
-        let ctx = Context::new(
-            Scope::Global,
-            nebula_resource::WorkflowId::new(),
-            nebula_resource::ExecutionId::new(),
-        );
-
-        let guard = manager.acquire_typed::<PostgresResource>(&ctx).await.unwrap();
-        drop(guard); // Returns to pool
-
-        // Pool should have 1 idle connection after release
-        let pool = manager.pool::<PostgresResource>().unwrap();
-        let stats = pool.stats().unwrap();
-        assert_eq!(stats.idle, 1);
-        assert_eq!(stats.active, 0);
-    }
-
-    #[tokio::test]
-    async fn taint_skips_recycle() {
-        let manager = Manager::new();
-        manager
-            .register(PostgresResource, test_config(), PoolConfig::default())
-            .unwrap();
-
-        let ctx = Context::new(
-            Scope::Global,
-            nebula_resource::WorkflowId::new(),
-            nebula_resource::ExecutionId::new(),
-        );
-
-        let mut guard = manager.acquire_typed::<PostgresResource>(&ctx).await.unwrap();
-        guard.taint(); // Signal the connection is broken
-        drop(guard);   // cleanup called, not recycle
-
-        let pool = manager.pool::<PostgresResource>().unwrap();
-        let stats = pool.stats().unwrap();
-        assert_eq!(stats.idle, 0);
-        assert_eq!(stats.destroyed, 1);
-    }
+    // Drop returns the instance to the pool automatically.
+    drop(handle);
 }
 ```
-
----
-
-## Optional: HasResourceComponents
-
-If your resource depends on a credential (e.g. a database password stored in
-`nebula-credential`), implement `HasResourceComponents`:
-
-```rust
-use nebula_resource::{HasResourceComponents, ResourceComponents, ResourceRef};
-use nebula_credential::types::DatabaseCredential;  // example type
-
-impl HasResourceComponents for PostgresResource {
-    fn components() -> ResourceComponents {
-        ResourceComponents::new()
-            .credential::<DatabaseCredential>("postgres-db-cred")
-    }
-}
-```
-
-The engine uses `components()` to pre-validate credentials exist before the
-pool is created, and to wire up credential rotation events to pool recycling.
 
 ---
 
@@ -452,15 +401,15 @@ pool is created, and to wire up credential rotation events to pool recycling.
 
 Before publishing an adapter crate:
 
-- [ ] `Config::validate` rejects all invalid inputs with `Error::Validation`.
-- [ ] `Resource::create` checks `ctx.cancellation` via `tokio::select!`.
-- [ ] `Resource::create` returns `Error::Initialization` on connection failure.
-- [ ] `Resource::recycle` is idempotent and returns `Error::Internal` on failure.
-- [ ] `Resource::cleanup` is infallible (swallow or log errors, never panic).
-- [ ] `Resource::metadata` returns a canonical `ResourceKey` matching `declare_key`.
-- [ ] `Resource::declare_key` uses a static string literal, not a derived name.
-- [ ] `Instance` does not implement `Debug` or implements a redacted version.
-- [ ] `HealthCheckable` is implemented on `Instance` with appropriate interval/timeout.
-- [ ] Integration tests cover: register, acquire, recycle, taint/cleanup.
+- [ ] `ResourceConfig::validate` rejects all invalid inputs without panicking.
+- [ ] `ResourceConfig::fingerprint` is deterministic: equal configs produce equal fingerprints.
+- [ ] `Resource::create` maps driver errors to `Transient` vs `Permanent` `ErrorKind`
+      so the framework knows whether to retry.
+- [ ] `Resource::key()` returns a stable string literal, not a derived type name.
+- [ ] `Pooled::is_broken` is O(1) and performs no I/O — it runs in `Drop`.
+- [ ] `Pooled::recycle` rolls back any open transaction before returning `Keep`.
+- [ ] `Resource::Credential = ()` unless the adapter genuinely needs secret injection.
+- [ ] `Runtime` does not implement `Debug`, or implements a redacted version that omits
+      connection strings and internal buffer state.
+- [ ] Integration tests use a mock/in-memory runtime, not a live network service.
 - [ ] `#![forbid(unsafe_code)]` is set in `lib.rs`.
-- [ ] No credentials or secrets appear in log output.

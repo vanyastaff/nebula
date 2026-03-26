@@ -1,210 +1,235 @@
 # nebula-resource
 
-Resource lifecycle management for the Nebula workflow engine.
-
-`nebula-resource` gives workflow nodes stable, pooled access to expensive external
-clients — database connections, HTTP clients, message-queue producers, and anything
-else that is costly to create and should be reused. It handles the full operational
-lifecycle: create → validate → recycle → health-check → quarantine → shutdown.
-
----
-
-## Table of Contents
-
-- [Core Concepts](#core-concepts)
-- [Quick Start](#quick-start)
-- [Feature Matrix](#feature-matrix)
-- [Crate Layout](#crate-layout)
-- [Documentation](#documentation)
+Type-safe, topology-aware resource management for the Nebula workflow engine.
+`nebula-resource` gives workflow nodes stable, managed access to external
+clients — database connections, HTTP clients, message-queue producers, and
+anything else that is costly to create and should be reused across executions.
+It handles the full operational lifecycle: create → health-check → recycle →
+shutdown → destroy, with built-in resilience, recovery gating, and lifecycle
+event streaming.
 
 ---
 
 ## Core Concepts
 
-| Concept | Description |
-|---------|-------------|
-| **`Resource`** | Trait that defines how to create, validate, recycle, and clean up one type of external resource. |
-| **`Pool<R>`** | Bounded pool of `R::Instance` values with semaphore-guarded concurrency, idle-expiry, and circuit breakers. |
-| **`Manager`** | Central registry. Holds one `Pool<R>` per registered resource type. Handles dependency-ordered startup and graceful shutdown. |
-| **`Guard<T>`** | RAII handle to a checked-out instance. Returns the instance to the pool on drop; taints it for cleanup if marked unhealthy. |
-| **`Scope`** | Containment level: `Global → Tenant → Workflow → Execution → Action → Custom`. Controls which callers may acquire which pool. |
-| **`Context`** | Per-call execution context carrying `Scope`, `WorkflowId`, `ExecutionId`, cancellation token, and an optional telemetry recorder. |
-| **`HealthState`** | `Healthy / Degraded / Unhealthy / Unknown`. The `HealthChecker` monitors instances and triggers quarantine transitions. |
-| **`QuarantineManager`** | Isolates unhealthy resources with exponential-backoff recovery probes. |
-| **`EventBus`** | Broadcasts `ResourceEvent` on every lifecycle transition. Upstream crates subscribe without coupling to internals. |
-| **`HookRegistry`** | Pre/post hooks for acquire, release, create, and cleanup. Hooks can cancel create operations. |
+| Type | Role |
+|------|------|
+| [`Resource`] | Central trait — 5 associated types, 4 lifecycle methods (`create`, `check`, `shutdown`, `destroy`) |
+| [`Pooled`] | Topology trait for N interchangeable instances with checkout/recycle semantics |
+| [`Resident`] | Topology trait for one shared instance cloned on each acquire |
+| [`Service`] | Topology trait for a long-lived runtime that issues short-lived tokens |
+| [`Transport`] | Topology trait for a shared connection with multiplexed sessions |
+| [`Exclusive`] | Topology trait for serialized single-caller access via semaphore |
+| [`Manager`] | Central registry — registration, typed acquire dispatch, graceful shutdown |
+| [`ResourceHandle`] | RAII lease handle; releases or recycles on drop, tainting supported |
+| [`Ctx`] / [`BasicCtx`] | Execution context: scope level, cancellation token, extensions |
+| [`Error`] / [`ErrorKind`] | Unified error with retryability, scope, and optional retry-after hint |
+
+---
+
+## Topology Decision Guide
+
+Choose the topology that matches the resource's concurrency model.
+
+| Topology | Use when | Example |
+|----------|----------|---------|
+| `Pooled` | Multiple interchangeable connections; checkout/recycle needed | PostgreSQL, Redis |
+| `Resident` | One shared object; cheap to clone for each caller | In-memory cache, config store |
+| `Service` | Runtime is long-lived; callers get short-lived tokens from it | OAuth client issuing access tokens |
+| `Transport` | Single connection multiplexed across callers (no per-caller clone) | gRPC channel, AMQP connection |
+| `Exclusive` | Only one caller may use the resource at a time | Rate-limited SMS gateway |
+| `Daemon` | Background task with no direct callers (secondary topology) | Metrics flush loop |
+| `EventSource` | Pull-based subscription stream (secondary topology) | Webhook ingestion tail |
 
 ---
 
 ## Quick Start
 
-### Defining a resource
+### 1. Implement `Resource`
 
-```rust
+```rust,no_run
+use nebula_resource::{
+    resource_key, BasicCtx, Ctx, Error, Manager, PoolConfig, Resource,
+    ResourceConfig, ResourceMetadata,
+};
 use nebula_core::ResourceKey;
-use nebula_resource::{Config, Context, Resource, ResourceMetadata, Result};
 
-// --- Config ------------------------------------------------------------------
+// --- Config (no secrets) -----------------------------------------------------
 
 #[derive(Clone)]
-pub struct HttpConfig {
-    pub base_url: String,
-    pub timeout_secs: u64,
+struct HttpConfig {
+    base_url: String,
+    timeout_ms: u64,
 }
 
-impl Config for HttpConfig {
-    fn validate(&self) -> Result<()> {
+impl ResourceConfig for HttpConfig {
+    fn validate(&self) -> Result<(), Error> {
         if self.base_url.is_empty() {
-            return Err(nebula_resource::Error::configuration("base_url must not be empty"));
+            return Err(Error::permanent("base_url must not be empty"));
         }
         Ok(())
     }
 }
 
-// --- Instance ----------------------------------------------------------------
+// --- Runtime (the live client) -----------------------------------------------
 
-pub struct HttpClient {
-    inner: reqwest::Client,
+#[derive(Clone)]
+struct HttpRuntime {
+    base_url: String,
 }
 
-// --- Resource ----------------------------------------------------------------
+// --- Resource descriptor -----------------------------------------------------
 
-pub struct HttpResource;
+struct HttpResource;
 
 impl Resource for HttpResource {
-    type Config   = HttpConfig;
-    type Instance = HttpClient;
+    type Config     = HttpConfig;
+    type Runtime    = HttpRuntime;
+    type Lease      = HttpRuntime;   // Pooled: Lease == Runtime (cloned on checkout)
+    type Error      = Error;
+    type Credential = ();            // No secrets needed
 
-    fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::builder(
-            ResourceKey::try_from("http.client").expect("valid key"),
-            "HTTP Client",
-            "Reusable reqwest client for outbound HTTP calls",
-        )
-        .tag("http")
-        .build()
+    fn key() -> ResourceKey {
+        resource_key!("http.client")
     }
 
-    async fn create(&self, cfg: &HttpConfig, _ctx: &Context) -> Result<HttpClient> {
-        let inner = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(cfg.timeout_secs))
-            .build()
-            .map_err(|e| nebula_resource::Error::configuration(e.to_string()))?;
-        Ok(HttpClient { inner })
-    }
-
-    async fn is_reusable(&self, instance: &HttpClient) -> Result<bool> {
-        // reqwest clients are always reusable — skip extra validation
-        let _ = instance;
-        Ok(true)
+    async fn create(
+        &self,
+        config: &HttpConfig,
+        _credential: &(),
+        _ctx: &dyn Ctx,
+    ) -> Result<HttpRuntime, Error> {
+        Ok(HttpRuntime { base_url: config.base_url.clone() })
     }
 }
 ```
 
-### Registering and acquiring
+### 2. Implement the topology trait
 
-```rust
-use nebula_resource::{Context, Manager, PoolConfig, Scope};
+For pool topology, implement [`Pooled`] to tell the runtime when an instance
+can be recycled and how to detect a broken one.
 
-// Build a manager (defaults: 1024-event bus, 3-failure quarantine threshold)
-let manager = Manager::new();
+```rust,no_run
+use nebula_resource::topology::pooled::{Pooled, RecycleDecision, BrokenCheck};
 
-// Register the resource — non-async, returns a typed pool handle
-manager.register(HttpResource, HttpConfig { base_url: "https://api.example.com".into(), timeout_secs: 10 }, PoolConfig::default())?;
-
-// Build a call context
-let ctx = Context::new(
-    Scope::try_execution_in_workflow("exec-1", "wf-orders", Some("tenant-a".into()))?,
-    nebula_resource::WorkflowId::new(),
-    nebula_resource::ExecutionId::new(),
-);
-
-// Acquire an instance — returned in a RAII Guard
-let key = nebula_core::ResourceKey::try_from("http.client")?;
-let guard = manager.acquire(&key, &ctx).await?;
-
-// Use via Deref — guard holds the instance until dropped
-let _client: &HttpClient = &*guard;
-
-// Instance is returned to the pool automatically when `guard` is dropped.
-// Call `guard.taint()` before dropping to skip recycling and force cleanup.
-```
-
-### Subscribing to events
-
-```rust
-use nebula_resource::EventBus;
-use std::sync::Arc;
-
-let bus = Arc::new(EventBus::new(1024));
-let mut rx = bus.subscribe();
-
-tokio::spawn(async move {
-    while let Ok(event) = rx.recv().await {
-        tracing::info!(?event, "resource lifecycle event");
+impl Pooled for HttpResource {
+    fn recycle_decision(&self, _runtime: &HttpRuntime) -> RecycleDecision {
+        RecycleDecision::Recycle   // HTTP clients are always reusable
     }
-});
+
+    fn broken_check(&self) -> BrokenCheck {
+        BrokenCheck::None          // No pre-acquire health probe needed
+    }
+}
 ```
+
+### 3. Register and acquire
+
+```rust,no_run
+use nebula_resource::{Manager, PoolConfig, BasicCtx};
+use nebula_resource::ctx::ScopeLevel;
+use nebula_resource::options::AcquireOptions;
+
+#[tokio::main]
+async fn main() -> Result<(), nebula_resource::Error> {
+    let manager = Manager::new();
+
+    // register_pooled: credential = (), scope = Global, no resilience config
+    manager.register_pooled(
+        HttpResource,
+        HttpConfig { base_url: "https://api.example.com".into(), timeout_ms: 5_000 },
+        PoolConfig::default(),
+    )?;
+
+    let ctx = BasicCtx::new(ScopeLevel::Global);
+    let options = AcquireOptions::default();
+
+    // Typed acquire — returns ResourceHandle<HttpResource>
+    let handle = manager.acquire_pooled::<HttpResource>(&(), &ctx, &options).await?;
+
+    // Use via Deref — handle is held until dropped
+    let _runtime: &HttpRuntime = &*handle;
+
+    // Instance recycled automatically on drop.
+    // Call handle.taint() before dropping to skip recycle and force destroy.
+    Ok(())
+}
+```
+
+---
+
+## Error Handling
+
+Every `acquire_*` and `register_*` call returns `Result<_, Error>`. The
+`ErrorKind` enum drives retry decisions:
+
+| Variant | Meaning | Retryable? |
+|---------|---------|-----------|
+| `Transient` | Network blip, timeout | Yes |
+| `Permanent` | Auth failure, bad config | No |
+| `Exhausted { retry_after }` | Rate-limited or quota depleted | Yes (after cooldown) |
+| `Backpressure` | Pool semaphore full | Caller decides |
+| `NotFound` | Key not in registry | No |
+| `Cancelled` | Cancellation token fired | No |
+
+Use `err.is_retryable()` to branch without matching on variants. Use
+`err.retry_after()` to respect rate-limit hints.
+
+The [`ClassifyError`] derive macro generates `From<YourError> for Error`
+conversions that assign the correct `ErrorKind` based on attributes you
+annotate on each variant.
 
 ---
 
 ## Feature Matrix
 
-| Feature | Type | Default |
-|---------|------|---------|
-| Bounded connection pooling | `Pool<R>` | always on |
-| FIFO / LIFO idle selection | `PoolStrategy` | `Fifo` |
-| Backpressure: fail-fast, bounded-wait, adaptive | `PoolBackpressurePolicy` | `BoundedWait(30s)` |
-| Circuit breakers on `create` and `recycle` | `CircuitBreakerConfig` in `PoolConfig` | opt-in |
-| Scope isolation | `Scope` + `Strategy` | `Hierarchical` |
-| RAII taint-on-error guards | `Guard<T>` | always on |
-| Structured health checking | `HealthChecker`, `HealthCheckable` | always on |
-| Automatic quarantine + recovery | `QuarantineManager` | always on |
-| Lifecycle event streaming | `EventBus`, `ResourceEvent` | always on |
-| Pre/post acquire & release hooks | `HookRegistry`, `ResourceHook` | always on |
-| Auto-scaling (utilization-based) | `AutoScaler`, `AutoScalePolicy`, `AutoScalerHandle` | opt-in |
-| Credential binding + rotation | `HasResourceComponents` | opt-in |
-| Telemetry recorder per call | `Recorder` (from `nebula-telemetry`) | opt-in |
-| Latency histograms (HDR) | `LatencyPercentiles` in `PoolStats` | always on |
+| Capability | How to use |
+|------------|-----------|
+| Bounded connection pooling | `register_pooled` + `PoolConfig` |
+| Shared singleton with clone-on-acquire | `register_resident` + `ResidentConfig` |
+| Long-lived runtime, short-lived tokens | `register_service` + `ServiceConfig` |
+| Single-caller serialized access | `register_exclusive` + `ExclusiveConfig` |
+| Retry + timeout on acquire | Pass `AcquireResilience` to `register` |
+| Fast-fail during backend recovery | Pass `Arc<RecoveryGate>` to `register` |
+| Config hot-reload (fingerprint-based) | Implement `ResourceConfig::fingerprint` |
+| Lifecycle event stream | `manager.subscribe_events()` → `broadcast::Receiver<ResourceEvent>` |
+| Async background cleanup | `ReleaseQueue` (owned by `Manager`, transparent to callers) |
+| Atomic operation counters | `ResourceMetrics` via `manager.metrics()` |
 
 ---
 
 ## Crate Layout
 
 ```
-nebula-resource/
+crates/resource/
 ├── src/
-│   ├── lib.rs             Re-exports, prelude
-│   ├── resource.rs        Resource + Config traits
-│   ├── lifecycle.rs       Lifecycle state machine (Created → … → Terminated)
-│   ├── guard.rs           Guard<T> — RAII acquire handle
-│   ├── context.rs         Context — scope, IDs, cancellation, recorder
-│   ├── scope.rs           Scope enum + Strategy
-│   ├── pool.rs            Pool<R> — bounded semaphore pool
-│   ├── manager.rs         Manager + ManagerBuilder — registry and orchestration
-│   ├── health.rs          HealthChecker, HealthCheckable, HealthState
-│   ├── quarantine.rs      QuarantineManager, RecoveryStrategy
-│   ├── events.rs          EventBus, ResourceEvent catalog
-│   ├── hooks.rs           HookRegistry, ResourceHook trait
-│   ├── autoscale.rs       AutoScaler, AutoScalePolicy, AutoScalerHandle
-│   ├── metadata.rs        ResourceMetadata + builder
-│   ├── reference.rs       ResourceRef, ErasedResourceRef, ResourceProvider
-│   ├── error.rs           Error, ErrorCategory, FieldViolation
-│   ├── poison.rs          Poison<T> — async-safe state guard
-│   ├── components.rs      HasResourceComponents, TypedCredentialHandler
-│   ├── instrumented.rs    InstrumentedGuard — telemetry-aware wrapper
-│   ├── metrics.rs         MetricsCollector
-│   ├── dependency_graph.rs (internal) topological startup/shutdown ordering
-│   ├── manager_guard.rs   (internal) AnyGuard, TypedResourceGuard, ResourceHandle
-│   └── manager_pool.rs    (internal) TypedPool, AnyPool, PoolEntry
+│   ├── lib.rs             Re-exports and crate-level docs
+│   ├── resource.rs        Resource trait, ResourceConfig, Credential, ResourceMetadata
+│   ├── manager.rs         Manager, ManagerConfig, ShutdownConfig
+│   ├── registry.rs        Registry, AnyManagedResource — type-erased storage
+│   ├── handle.rs          ResourceHandle — RAII acquire lease
+│   ├── ctx.rs             Ctx trait, BasicCtx, ScopeLevel, Extensions
+│   ├── error.rs           Error, ErrorKind, ErrorScope
+│   ├── events.rs          ResourceEvent — lifecycle observability
+│   ├── options.rs         AcquireOptions, AcquireIntent
+│   ├── metrics.rs         ResourceMetrics, MetricsSnapshot
+│   ├── state.rs           ResourcePhase, ResourceStatus
+│   ├── cell.rs            Cell — ArcSwap-based lock-free cell for resident topologies
+│   ├── release_queue.rs   ReleaseQueue — background async cleanup workers
+│   ├── topology_tag.rs    TopologyTag — discriminant enum
+│   ├── integration.rs     AcquireResilience, AcquireRetryConfig, AcquireCircuitBreakerPreset
+│   ├── recovery/          RecoveryGate, RecoveryGroupRegistry, WatchdogHandle
+│   ├── runtime/           Per-topology runtime wrappers (pool, resident, service, …)
+│   ├── topology/          Per-topology trait definitions (Pooled, Resident, Service, …)
+│   └── compat.rs          Deprecated v1 aliases (Context, Scope) — will be removed
 └── docs/
     ├── README.md                ← this file
-    ├── architecture.md          Design decisions, module map, data flow
-    ├── api-reference.md         Complete public API reference
-    ├── pooling.md               Pool configuration, strategies, backpressure, auto-scaling
-    ├── health-and-quarantine.md Health pipeline, quarantine lifecycle
-    ├── events-and-hooks.md      EventBus catalog, subscriptions, hook system
-    └── adapters.md              Writing Resource adapter / driver crates
+    ├── architecture.md          Module map, data flow, design invariants
+    ├── api-reference.md         Full public API with signatures
+    ├── pooling.md               PoolConfig, recycle policy, broken-check, max-lifetime
+    ├── events-and-hooks.md      ResourceEvent catalog, subscribe_events usage
+    ├── health-and-quarantine.md RecoveryGate, WatchdogHandle, GateState transitions
+    └── adapters.md              Implementing Resource for a driver crate
 ```
 
 ---
@@ -213,9 +238,9 @@ nebula-resource/
 
 | Document | Contents |
 |----------|----------|
-| [`architecture.md`](architecture.md) | Module dependency map, data flow, design invariants, internal types |
-| [`api-reference.md`](api-reference.md) | Every public type, trait, and method with signatures and examples |
-| [`pooling.md`](pooling.md) | `Pool`, `PoolConfig`, strategies, backpressure policies, auto-scaling |
-| [`health-and-quarantine.md`](health-and-quarantine.md) | `HealthChecker`, health states, `QuarantineManager`, recovery |
-| [`events-and-hooks.md`](events-and-hooks.md) | `EventBus`, full event catalog, subscriptions, `HookRegistry` |
-| [`adapters.md`](adapters.md) | Implementing `Resource` for a driver crate (`nebula-resource-postgres`, etc.) |
+| [`architecture.md`](architecture.md) | Module dependency map, data flow, layer invariants |
+| [`api-reference.md`](api-reference.md) | Every public type, trait, and method with signatures |
+| [`pooling.md`](pooling.md) | `PoolConfig`, recycle decisions, broken checks, max-lifetime eviction |
+| [`events-and-hooks.md`](events-and-hooks.md) | `ResourceEvent` catalog, `subscribe_events` patterns |
+| [`health-and-quarantine.md`](health-and-quarantine.md) | `RecoveryGate`, `WatchdogHandle`, gate state transitions |
+| [`adapters.md`](adapters.md) | Writing a `Resource` adapter crate (`nebula-resource-postgres`, etc.) |
