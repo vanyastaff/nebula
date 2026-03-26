@@ -2,7 +2,7 @@
 //!
 //! Loads stored credentials, deserializes state, and projects to
 //! [`AuthScheme`](nebula_core::AuthScheme) via the
-//! [`Credential::project()`](crate::credential_v2::Credential::project) pipeline.
+//! [`Credential::project()`](crate::credential_trait::Credential::project) pipeline.
 //!
 //! For refreshable credentials, use [`CredentialResolver::resolve_with_refresh()`]
 //! which coordinates refresh via [`RefreshCoordinator`] to prevent
@@ -11,16 +11,16 @@
 use std::sync::Arc;
 
 use crate::core::CredentialContext;
+use crate::credential_handle::CredentialHandle;
 use crate::credential_state::CredentialStateV2;
-use crate::credential_v2::Credential;
-use crate::handle_v2::CredentialHandle;
+use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use crate::credential_trait::Credential;
 use crate::refresh::{RefreshAttempt, RefreshCoordinator};
 use crate::resolve::RefreshOutcome;
-use crate::store_v2::{CredentialStoreV2, PutMode, StoreError, StoredCredential};
 
 /// Resolves credentials from storage into typed [`CredentialHandle`]s.
 ///
-/// The resolver loads a [`StoredCredential`](crate::store_v2::StoredCredential),
+/// The resolver loads a [`StoredCredential`](crate::credential_store::StoredCredential),
 /// verifies the `state_kind` matches the expected credential type,
 /// deserializes the state, and projects it to the [`AuthScheme`](nebula_core::AuthScheme).
 ///
@@ -40,12 +40,12 @@ use crate::store_v2::{CredentialStoreV2, PutMode, StoreError, StoredCredential};
 /// let handle = resolver.resolve::<ApiKeyCredential>("my-api-key").await?;
 /// let token = handle.snapshot();
 /// ```
-pub struct CredentialResolver<S: CredentialStoreV2> {
+pub struct CredentialResolver<S: CredentialStore> {
     store: Arc<S>,
     refresh_coordinator: RefreshCoordinator,
 }
 
-impl<S: CredentialStoreV2> CredentialResolver<S> {
+impl<S: CredentialStore> CredentialResolver<S> {
     /// Creates a new resolver backed by the given store.
     pub fn new(store: Arc<S>) -> Self {
         Self {
@@ -58,7 +58,7 @@ impl<S: CredentialStoreV2> CredentialResolver<S> {
     ///
     /// Loads the stored credential, deserializes the state, and
     /// projects it to the [`AuthScheme`](nebula_core::AuthScheme) via
-    /// [`Credential::project()`](crate::credential_v2::Credential::project).
+    /// [`Credential::project()`](crate::credential_trait::Credential::project).
     ///
     /// # Errors
     ///
@@ -296,9 +296,9 @@ pub enum ResolveError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential_store::{PutMode, StoredCredential};
     use crate::credentials::ApiKeyCredential;
     use crate::store_memory::InMemoryStore;
-    use crate::store_v2::{PutMode, StoredCredential};
 
     #[tokio::test]
     async fn resolve_api_key_credential() {

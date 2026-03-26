@@ -82,7 +82,7 @@ pub enum StoreError {
 /// Implementations handle raw bytes — encryption/decryption is done
 /// by the [`EncryptionLayer`](crate::layer::EncryptionLayer) wrapper,
 /// not by the store itself.
-pub trait CredentialStoreV2: Send + Sync {
+pub trait CredentialStore: Send + Sync {
     /// Retrieve a stored credential by ID.
     ///
     /// # Errors

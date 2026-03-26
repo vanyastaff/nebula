@@ -1,6 +1,6 @@
 //! Built-in credential type implementations.
 //!
-//! Each type implements [`Credential`](crate::credential_v2::Credential) using
+//! Each type implements [`Credential`](crate::credential_trait::Credential) using
 //! the v2 unified trait. Static credentials (API key, basic auth, database) use
 //! [`identity_state!`](crate::identity_state) so that `State = Scheme`.
 

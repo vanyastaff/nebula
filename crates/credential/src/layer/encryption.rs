@@ -1,13 +1,13 @@
 //! Encryption layer -- encrypts data before storage, decrypts after retrieval.
 //!
-//! Wraps any [`CredentialStoreV2`] implementation and applies AES-256-GCM
+//! Wraps any [`CredentialStore`] implementation and applies AES-256-GCM
 //! encryption to the [`StoredCredential::data`] field using the existing
 //! [`encrypt`](crate::utils::crypto::encrypt) / [`decrypt`](crate::utils::crypto::decrypt)
 //! functions. Non-data fields (metadata, version, etc.) pass through unchanged.
 
 use std::sync::Arc;
 
-use crate::store_v2::{CredentialStoreV2, PutMode, StoreError, StoredCredential};
+use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
 use crate::utils::crypto::{self, EncryptionKey};
 
 /// Wraps a store with AES-256-GCM encryption on the `data` field.
@@ -33,7 +33,7 @@ impl<S> EncryptionLayer<S> {
     }
 }
 
-impl<S: CredentialStoreV2> CredentialStoreV2 for EncryptionLayer<S> {
+impl<S: CredentialStore> CredentialStore for EncryptionLayer<S> {
     async fn get(&self, id: &str) -> Result<StoredCredential, StoreError> {
         let mut credential = self.inner.get(id).await?;
         credential.data = decrypt_data(&self.key, &credential.data)?;
@@ -82,8 +82,8 @@ fn decrypt_data(key: &EncryptionKey, ciphertext: &[u8]) -> Result<Vec<u8>, Store
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential_store::PutMode;
     use crate::store_memory::InMemoryStore;
-    use crate::store_v2::PutMode;
 
     fn test_key() -> Arc<EncryptionKey> {
         Arc::new(EncryptionKey::from_bytes([0x42; 32]))

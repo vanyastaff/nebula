@@ -8,22 +8,18 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 
 ## Key Decisions
 - `CredentialProvider` = DI for actions; never inject `CredentialManager` directly.
-- v2 modules coexist with v1 (v1 deleted later). RPITIT, no `#[async_trait]`.
-- `PendingState` uses `Zeroize` (not `ZeroizeOnDrop`).
+- v2 coexists with v1. RPITIT, no `#[async_trait]`. `CredentialStateV2` keeps V2 suffix (v1 conflict).
+- `CredentialStore`/`CredentialRegistry` renamed from V2 suffixed names. Files: `credential_trait.rs`, `credential_handle.rs`, `credential_registry.rs`, `credential_store.rs`.
 - `EncryptionLayer<S>` serializes `EncryptedData` as JSON bytes in `data` field.
-- `CredentialRegistryV2`: type-erased dispatch — `register::<C>()` captures deserialize+project closure keyed by `state_kind`.
-- `CredentialResolver` verifies `state_kind` match before deserialize; returns `CredentialHandle<S>` (Arc-wrapped).
-- `RefreshCoordinator`: per-credential `Notify` in `HashMap<String, Arc<Notify>>` behind `Mutex`. Winner refreshes, waiters block on `Notify::notified()`. `complete()` must always be called (even on error).
-- `resolve_with_refresh()` checks `CredentialStateV2::expires_at()`, coordinates via `RefreshCoordinator`, CAS writes refreshed state back.
+- `RefreshCoordinator`: winner refreshes, waiters block on `Notify`. `complete()` must always be called.
 - `SecretString` serializes as `"[REDACTED]"` — tests must construct raw JSON for round-trip.
 
 ## Traps
 - Circular dep: peer with nebula-resource, signal via EventBus only.
 - Storage providers feature-gated: `storage-local`, `-aws`, `-postgres`, `-vault`, `-k8s`.
-- `CredentialId` is a `nebula_core::CredentialId` re-export.
 
 ## Relations
 - Depends on: nebula-core, nebula-eventbus. Peer: nebula-resource.
 
 <!-- reviewed: 2026-03-25 -->
-<!-- updated: 2026-03-25 — RefreshCoordinator for thundering-herd prevention -->
+<!-- updated: 2026-03-25 — polish v2 module names, rename types -->

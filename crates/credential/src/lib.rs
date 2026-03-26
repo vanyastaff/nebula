@@ -65,35 +65,42 @@ pub mod traits;
 /// Utilities for crypto, time, etc.
 pub mod utils;
 
-// ── v2 modules ────────────────────────────────────────────────────────────────
+// ── v2 Core ─────────────────────────────────────────────────────────────────
 
-/// Composable storage layers (encryption, etc.) for v2 stores.
-pub mod layer;
-/// In-memory credential store for testing (v2).
-pub mod store_memory;
-/// v2 credential store trait with layered composition.
-pub mod store_v2;
-
-/// Credential state trait for stored credential data (v2).
+/// Typed credential handle returned by the resolver.
+pub mod credential_handle;
+/// Credential state trait for stored credential data.
+// TODO: rename CredentialStateV2 → CredentialState once v1 CredentialState
+//       (in core::state) is removed.
 pub mod credential_state;
-/// Unified Credential trait replacing six v1 traits (v2).
-pub mod credential_v2;
-/// Built-in credential type implementations (v2).
+/// Unified Credential trait replacing six v1 traits.
+pub mod credential_trait;
+/// Built-in credential type implementations.
 pub mod credentials;
-/// Typed credential handle returned by the resolver (v2).
-pub mod handle_v2;
-/// Typed pending state for interactive flows (v2).
+/// Typed pending state for interactive flows.
 pub mod pending;
-/// Refresh coordination -- thundering herd prevention (v2).
-pub mod refresh;
-/// Type-erased credential registry for runtime dispatch (v2).
-pub mod registry_v2;
-/// Resolve result types: interaction, refresh, test (v2).
+/// Resolve result types: interaction, refresh, test.
 pub mod resolve;
-/// Runtime credential resolution (v2).
-pub mod resolver;
-/// Authentication scheme types (v2).
+/// Authentication scheme types.
 pub mod scheme;
+
+// ── v2 Storage ──────────────────────────────────────────────────────────────
+
+/// Credential store trait with layered composition.
+pub mod credential_store;
+/// Composable storage layers (encryption, etc.) for stores.
+pub mod layer;
+/// In-memory credential store for testing.
+pub mod store_memory;
+
+// ── v2 Resolution ───────────────────────────────────────────────────────────
+
+/// Type-erased credential registry for runtime dispatch.
+pub mod credential_registry;
+/// Refresh coordination -- thundering herd prevention.
+pub mod refresh;
+/// Runtime credential resolution.
+pub mod resolver;
 
 // ── Root re-exports ─────────────────────────────────────────────────────────
 // Commonly-used types available directly as `nebula_credential::TypeName`.
@@ -134,37 +141,37 @@ pub use crate::rotation::{
     CredentialRotationEvent, GracePeriodConfig, RotationError, RotationResult,
 };
 
-// v2: Storage
-pub use layer::EncryptionLayer;
-pub use store_memory::InMemoryStore;
-pub use store_v2::{CredentialStoreV2, PutMode, StoreError, StoredCredential};
-
-// v2: Auth schemes
-pub use scheme::{ApiKeyAuth, BasicAuth, BearerToken, DatabaseAuth, OAuth2Token};
+// v2: Unified Credential trait
+pub use credential_trait::Credential;
 
 // v2: Credential state
 pub use credential_state::CredentialStateV2;
 
+// v2: Auth schemes
+pub use scheme::{ApiKeyAuth, BasicAuth, BearerToken, DatabaseAuth, OAuth2Token};
+
 // v2: Pending state
 pub use pending::{NoPendingState, PendingState};
-
-// v2: Unified Credential trait
-pub use credential_v2::Credential;
 
 // v2: Built-in credential implementations
 pub use credentials::{ApiKeyCredential, BasicAuthCredential, DatabaseCredential};
 
 // v2: Typed handle
-pub use handle_v2::CredentialHandle;
+pub use credential_handle::CredentialHandle;
+
+// v2: Storage
+pub use credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
+pub use layer::EncryptionLayer;
+pub use store_memory::InMemoryStore;
 
 // v2: Registry
-pub use registry_v2::{CredentialRegistryV2, RegistryError};
-
-// v2: Refresh coordination
-pub use refresh::RefreshCoordinator;
+pub use credential_registry::{CredentialRegistry, RegistryError};
 
 // v2: Resolver
 pub use resolver::{CredentialResolver, ResolveError};
+
+// v2: Refresh coordination
+pub use refresh::{RefreshAttempt, RefreshCoordinator};
 
 // v2: Resolve types
 pub use resolve::{

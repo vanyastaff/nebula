@@ -8,7 +8,7 @@ use nebula_parameter::{Parameter, ParameterCollection};
 
 use crate::SecretString;
 use crate::core::{CredentialContext, CredentialDescription, CredentialError};
-use crate::credential_v2::Credential;
+use crate::credential_trait::Credential;
 use crate::pending::NoPendingState;
 use crate::resolve::StaticResolveResult;
 use crate::scheme::BasicAuth;

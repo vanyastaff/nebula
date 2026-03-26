@@ -2,13 +2,13 @@
 //!
 //! Maps `state_kind` strings to projection functions so the resolver can
 //! deserialize and project stored credentials without knowing the concrete
-//! [`Credential`](crate::credential_v2::Credential) type at compile time.
+//! [`Credential`](crate::credential_trait::Credential) type at compile time.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::credential_state::CredentialStateV2;
-use crate::credential_v2::Credential;
+use crate::credential_trait::Credential;
 
 /// A function that projects stored bytes into a type-erased [`AuthScheme`](nebula_core::AuthScheme).
 ///
@@ -25,20 +25,20 @@ type ProjectFn =
 /// # Examples
 ///
 /// ```ignore
-/// use nebula_credential::CredentialRegistryV2;
+/// use nebula_credential::CredentialRegistry;
 /// use nebula_credential::credentials::ApiKeyCredential;
 ///
-/// let mut registry = CredentialRegistryV2::new();
+/// let mut registry = CredentialRegistry::new();
 /// registry.register::<ApiKeyCredential>();
 ///
 /// // Later, project stored bytes without knowing the concrete type:
 /// let scheme = registry.project("bearer", &stored_bytes)?;
 /// ```
-pub struct CredentialRegistryV2 {
+pub struct CredentialRegistry {
     handlers: HashMap<String, ProjectFn>,
 }
 
-impl CredentialRegistryV2 {
+impl CredentialRegistry {
     /// Creates a new, empty registry.
     #[must_use]
     pub fn new() -> Self {
@@ -117,7 +117,7 @@ impl CredentialRegistryV2 {
     }
 }
 
-impl Default for CredentialRegistryV2 {
+impl Default for CredentialRegistry {
     fn default() -> Self {
         Self::new()
     }
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn register_and_project_bearer() {
-        let mut registry = CredentialRegistryV2::new();
+        let mut registry = CredentialRegistry::new();
         registry.register::<ApiKeyCredential>();
 
         assert!(registry.contains("bearer"));
@@ -161,14 +161,14 @@ mod tests {
 
     #[test]
     fn project_unknown_kind_returns_error() {
-        let registry = CredentialRegistryV2::new();
+        let registry = CredentialRegistry::new();
         let result = registry.project("nonexistent", b"{}");
         assert!(matches!(result, Err(RegistryError::UnknownKind(_))));
     }
 
     #[test]
     fn project_invalid_data_returns_deserialize_error() {
-        let mut registry = CredentialRegistryV2::new();
+        let mut registry = CredentialRegistry::new();
         registry.register::<ApiKeyCredential>();
 
         let result = registry.project("bearer", b"not-json");
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn empty_registry() {
-        let registry = CredentialRegistryV2::new();
+        let registry = CredentialRegistry::new();
         assert!(registry.is_empty());
         assert_eq!(registry.len(), 0);
         assert!(!registry.contains("bearer"));

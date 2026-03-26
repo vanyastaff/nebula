@@ -1,14 +1,14 @@
 //! In-memory credential store for testing.
 //!
 //! Data is lost when the store is dropped. Use this in tests rather than
-//! mocking [`CredentialStoreV2`] directly.
+//! mocking [`CredentialStore`] directly.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use crate::store_v2::{CredentialStoreV2, PutMode, StoreError, StoredCredential};
+use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// In-memory store backed by a `HashMap`. Test-only — data lost on drop.
 ///
@@ -34,7 +34,7 @@ impl Default for InMemoryStore {
     }
 }
 
-impl CredentialStoreV2 for InMemoryStore {
+impl CredentialStore for InMemoryStore {
     async fn get(&self, id: &str) -> Result<StoredCredential, StoreError> {
         self.data
             .read()
