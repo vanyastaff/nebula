@@ -17,6 +17,7 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
   - `store_v2` — `CredentialStoreV2` trait (CRUD + CAS), `StoredCredential`, `PutMode`, `StoreError`.
   - `store_memory` — `InMemoryStore` (test-only, `Clone` shares data via `Arc`).
   - `layer/encryption` — `EncryptionLayer<S>` wraps any store with AES-256-GCM on `data` field. Serializes `EncryptedData` as JSON bytes.
+  - `credentials/` — Built-in `Credential` impls: `ApiKeyCredential`, `BasicAuthCredential`, `DatabaseCredential`. All use `identity_state!` (State = Scheme), non-interactive, non-refreshable.
 
 ## Traps
 - Circular dep: peer with nebula-resource, signal via EventBus only.
@@ -27,3 +28,4 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 - Depends on: nebula-core, nebula-eventbus. Peer: nebula-resource.
 
 <!-- reviewed: 2026-03-25 -->
+<!-- updated: 2026-03-25 — Phase 3: credential impls -->

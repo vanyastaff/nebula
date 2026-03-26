@@ -78,6 +78,8 @@ pub mod store_v2;
 pub mod credential_state;
 /// Unified Credential trait replacing six v1 traits (v2).
 pub mod credential_v2;
+/// Built-in credential type implementations (v2).
+pub mod credentials;
 /// Typed pending state for interactive flows (v2).
 pub mod pending;
 /// Resolve result types: interaction, refresh, test (v2).
@@ -140,6 +142,9 @@ pub use pending::{NoPendingState, PendingState};
 
 // v2: Unified Credential trait
 pub use credential_v2::Credential;
+
+// v2: Built-in credential implementations
+pub use credentials::{ApiKeyCredential, BasicAuthCredential, DatabaseCredential};
 
 // v2: Resolve types
 pub use resolve::{
