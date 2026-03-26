@@ -72,7 +72,7 @@ pub use recovery::{
     RecoveryTicket, RecoveryWaiter, WatchdogConfig, WatchdogHandle,
 };
 
-pub use nebula_core::{ExecutionId, ResourceKey, WorkflowId};
+pub use nebula_core::{ExecutionId, ResourceKey, WorkflowId, resource_key};
 
 /// Derive macro that generates `From<T> for nebula_resource::Error`.
 ///

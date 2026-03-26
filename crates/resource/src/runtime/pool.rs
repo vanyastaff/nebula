@@ -61,6 +61,15 @@ pub struct PoolRuntime<R: Resource> {
 
 impl<R: Resource> PoolRuntime<R> {
     /// Creates a new pool runtime with the given config and initial fingerprint.
+    /// Creates a new pool runtime with the given configuration.
+    ///
+    /// The `fingerprint` is a config-change detection token. When
+    /// [`Manager::reload_config`](crate::Manager::reload_config) is called,
+    /// idle instances whose fingerprint differs from the current one are
+    /// evicted. Use `0` as the initial value; the manager updates it
+    /// automatically on reload. Implement
+    /// [`ResourceConfig::fingerprint()`](crate::ResourceConfig::fingerprint)
+    /// on your config type to enable change detection.
     pub fn new(config: Config, fingerprint: u64) -> Self {
         let semaphore = Arc::new(Semaphore::new(config.max_size as usize));
         Self {

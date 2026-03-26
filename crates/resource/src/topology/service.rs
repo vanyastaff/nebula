@@ -21,6 +21,13 @@ pub enum TokenMode {
 /// The runtime lives for the duration of the resource, and callers acquire
 /// lightweight tokens (e.g., API keys, session handles) scoped to their
 /// execution context.
+///
+/// # Acquire bounds
+///
+/// [`Manager::acquire_service`](crate::Manager::acquire_service) requires:
+/// - `R: Clone + Send + Sync + 'static`
+/// - `R::Runtime: Send + Sync + 'static`
+/// - `R::Lease: Send + 'static`
 pub trait Service: Resource {
     /// How this service manages token lifecycle.
     const TOKEN_MODE: TokenMode = TokenMode::Cloned;

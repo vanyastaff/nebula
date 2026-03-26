@@ -64,6 +64,16 @@ impl InstanceMetrics {
 /// Implementors extend [`Resource`] with pool-aware lifecycle hooks:
 /// a sync broken check (for the `Drop` path), an async recycle step,
 /// and an optional per-checkout prepare step.
+///
+/// # Acquire bounds
+///
+/// [`Manager::acquire_pooled`](crate::Manager::acquire_pooled) requires:
+/// - `R: Clone + Send + Sync + 'static`
+/// - `R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static`
+/// - `R::Lease: Into<R::Runtime> + Send + 'static`
+///
+/// If `Runtime` and `Lease` are the same type, the blanket
+/// `impl<T> From<T> for T` satisfies both conversion bounds automatically.
 pub trait Pooled: Resource {
     /// Sync O(1) broken check. Called in the `Drop` path — NO async, NO I/O.
     ///

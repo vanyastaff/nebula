@@ -8,6 +8,16 @@ use crate::resource::Resource;
 ///
 /// The runtime is created once and shared across all callers via `Clone`.
 /// Suitable for stateless or internally-pooled clients (e.g., `reqwest::Client`).
+///
+/// # Acquire bounds
+///
+/// [`Manager::acquire_resident`](crate::Manager::acquire_resident) requires:
+/// - `R: Send + Sync + 'static`
+/// - `R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static`
+/// - `R::Lease: Clone + Send + 'static`
+///
+/// If `Runtime` and `Lease` are the same type, the blanket
+/// `impl<T> From<T> for T` satisfies the conversion bound automatically.
 pub trait Resident: Resource
 where
     Self::Lease: Clone,

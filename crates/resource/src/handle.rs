@@ -312,6 +312,21 @@ impl<R: Resource> Drop for ResourceHandle<R> {
     }
 }
 
+impl<R: Resource> std::fmt::Debug for ResourceHandle<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mode = match &self.inner {
+            HandleInner::Owned(_) => "Owned",
+            HandleInner::Guarded { .. } => "Guarded",
+            HandleInner::Shared { .. } => "Shared",
+        };
+        f.debug_struct("ResourceHandle")
+            .field("resource_key", &self.resource_key)
+            .field("topology_tag", &self.topology_tag)
+            .field("mode", &mode)
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

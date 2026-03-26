@@ -9,6 +9,13 @@ use crate::resource::Resource;
 /// The runtime is protected by a semaphore permit. Only one caller can
 /// hold the lease at a time. Suitable for resources that are not
 /// concurrency-safe (e.g., serial ports, single-writer databases).
+///
+/// # Acquire bounds
+///
+/// [`Manager::acquire_exclusive`](crate::Manager::acquire_exclusive) requires:
+/// - `R: Send + Sync + 'static`
+/// - `R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static`
+/// - `R::Lease: Send + 'static`
 pub trait Exclusive: Resource {
     /// Resets the resource state after each exclusive use.
     ///

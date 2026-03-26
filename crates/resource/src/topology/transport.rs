@@ -9,6 +9,13 @@ use crate::resource::Resource;
 ///
 /// A single long-lived transport (e.g., HTTP/2, gRPC channel, AMQP connection)
 /// multiplexes many short-lived sessions (streams, channels) for callers.
+///
+/// # Acquire bounds
+///
+/// [`Manager::acquire_transport`](crate::Manager::acquire_transport) requires:
+/// - `R: Clone + Send + Sync + 'static`
+/// - `R::Runtime: Send + Sync + 'static`
+/// - `R::Lease: Send + 'static`
 pub trait Transport: Resource {
     /// Opens a new session on the transport.
     ///
