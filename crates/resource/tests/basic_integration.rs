@@ -147,6 +147,10 @@ impl Pooled for PoolTestResource {
     }
 }
 
+// Also impl Exclusive so we can test topology mismatch
+// (register as Pool, call acquire_exclusive).
+impl Exclusive for PoolTestResource {}
+
 // ---------------------------------------------------------------------------
 // Resident mock resource
 // ---------------------------------------------------------------------------
@@ -555,8 +559,8 @@ async fn manager_shutdown_rejects_acquire() {
     assert_eq!(*err.kind(), ErrorKind::Cancelled);
 }
 
-#[test]
-fn remove_nonexistent_returns_not_found() {
+#[tokio::test]
+async fn remove_nonexistent_returns_not_found() {
     let manager = Manager::new();
     let key = resource_key!("does-not-exist");
 
@@ -2542,6 +2546,187 @@ async fn acquire_timeout_fires() {
 
     // Should fail — either from timeout or from the transient error.
     assert!(result.is_err(), "acquire should fail with timeout or error");
+}
+
+// ---------------------------------------------------------------------------
+// graceful_shutdown edge cases
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn graceful_shutdown_is_idempotent() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
+        )
+        .unwrap();
+
+    let short_drain = ShutdownConfig {
+        drain_timeout: std::time::Duration::from_millis(10),
+    };
+
+    // First shutdown.
+    manager.graceful_shutdown(short_drain.clone()).await;
+    assert!(manager.is_shutdown());
+
+    // Second shutdown must not panic or hang.
+    manager.graceful_shutdown(short_drain).await;
+    assert!(manager.is_shutdown());
+}
+
+// ---------------------------------------------------------------------------
+// Topology mismatch
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn topology_mismatch_returns_permanent_error() {
+    let manager = Manager::new();
+    let resource = PoolTestResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        max_size: 2,
+        ..Default::default()
+    };
+    let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Pool(pool_rt),
+            None,
+            None,
+        )
+        .unwrap();
+
+    let ctx = test_ctx();
+
+    // Pool resource, but we call acquire_exclusive — wrong topology.
+    let result = manager
+        .acquire_exclusive::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .await;
+
+    match result {
+        Err(e) => assert!(
+            matches!(e.kind(), ErrorKind::Permanent),
+            "topology mismatch should be a permanent error, got {:?}",
+            e.kind()
+        ),
+        Ok(_) => panic!("wrong topology should fail"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Retry exhaustion
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn retry_exhaustion_returns_last_transient_error() {
+    use nebula_resource::integration::{AcquireResilience, AcquireRetryConfig};
+
+    let manager = Manager::new();
+    // Always fails — failures_before_success > max_attempts.
+    let resource = FailingResidentResource::new(100);
+    let resident_rt =
+        ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
+
+    let resilience = AcquireResilience {
+        timeout: None,
+        retry: Some(AcquireRetryConfig {
+            max_attempts: 3,
+            initial_backoff: std::time::Duration::from_millis(1),
+            max_backoff: std::time::Duration::from_millis(5),
+        }),
+        circuit_breaker: None,
+    };
+
+    manager
+        .register(
+            resource.clone(),
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            Some(resilience),
+            None,
+        )
+        .unwrap();
+
+    let ctx = test_ctx();
+    let result = manager
+        .acquire_resident::<FailingResidentResource>(&(), &ctx, &AcquireOptions::default())
+        .await;
+
+    // All 3 attempts should have been made.
+    assert_eq!(
+        resource.create_count.load(Ordering::Relaxed),
+        3,
+        "should exhaust all max_attempts"
+    );
+
+    // The error should be the transient failure, not a generic message.
+    match result {
+        Err(e) => assert!(
+            matches!(e.kind(), ErrorKind::Transient),
+            "exhausted retries should return last error kind, got {:?}",
+            e.kind()
+        ),
+        Ok(_) => panic!("all attempts should fail"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Acquire failure triggers RecoveryGate
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn acquire_failure_passively_triggers_recovery_gate() {
+    let manager = Manager::new();
+    // Always fails with transient error.
+    let resource = FailingResidentResource::new(100);
+    let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig {
+        max_attempts: 5,
+        base_backoff: std::time::Duration::from_secs(300),
+    }));
+    let resident_rt =
+        ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            None,
+            Some(gate.clone()),
+        )
+        .unwrap();
+
+    let ctx = test_ctx();
+
+    // First acquire fails — should trigger the gate.
+    let _ = manager
+        .acquire_resident::<FailingResidentResource>(&(), &ctx, &AcquireOptions::default())
+        .await;
+
+    // Gate should no longer be Idle.
+    assert!(
+        !matches!(gate.state(), GateState::Idle),
+        "gate should have been triggered by transient acquire failure, got {:?}",
+        gate.state()
+    );
 }
 
 // ---------------------------------------------------------------------------
