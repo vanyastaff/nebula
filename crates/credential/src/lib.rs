@@ -65,6 +65,36 @@ pub mod traits;
 /// Utilities for crypto, time, etc.
 pub mod utils;
 
+// ── v2 modules ────────────────────────────────────────────────────────────────
+
+/// Composable storage layers (encryption, etc.) for v2 stores.
+pub mod layer;
+/// In-memory credential store for testing (v2).
+pub mod store_memory;
+/// v2 credential store trait with layered composition.
+pub mod store_v2;
+
+/// Credential state trait for stored credential data (v2).
+pub mod credential_state;
+/// Unified Credential trait replacing six v1 traits (v2).
+pub mod credential_v2;
+/// Built-in credential type implementations (v2).
+pub mod credentials;
+/// Typed credential handle returned by the resolver (v2).
+pub mod handle_v2;
+/// Typed pending state for interactive flows (v2).
+pub mod pending;
+/// Refresh coordination -- thundering herd prevention (v2).
+pub mod refresh;
+/// Type-erased credential registry for runtime dispatch (v2).
+pub mod registry_v2;
+/// Resolve result types: interaction, refresh, test (v2).
+pub mod resolve;
+/// Runtime credential resolution (v2).
+pub mod resolver;
+/// Authentication scheme types (v2).
+pub mod scheme;
+
 // ── Root re-exports ─────────────────────────────────────────────────────────
 // Commonly-used types available directly as `nebula_credential::TypeName`.
 
@@ -102,6 +132,44 @@ pub use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
 // Rotation
 pub use crate::rotation::{
     CredentialRotationEvent, GracePeriodConfig, RotationError, RotationResult,
+};
+
+// v2: Storage
+pub use layer::EncryptionLayer;
+pub use store_memory::InMemoryStore;
+pub use store_v2::{CredentialStoreV2, PutMode, StoreError, StoredCredential};
+
+// v2: Auth schemes
+pub use scheme::{ApiKeyAuth, BasicAuth, BearerToken, DatabaseAuth, OAuth2Token};
+
+// v2: Credential state
+pub use credential_state::CredentialStateV2;
+
+// v2: Pending state
+pub use pending::{NoPendingState, PendingState};
+
+// v2: Unified Credential trait
+pub use credential_v2::Credential;
+
+// v2: Built-in credential implementations
+pub use credentials::{ApiKeyCredential, BasicAuthCredential, DatabaseCredential};
+
+// v2: Typed handle
+pub use handle_v2::CredentialHandle;
+
+// v2: Registry
+pub use registry_v2::{CredentialRegistryV2, RegistryError};
+
+// v2: Refresh coordination
+pub use refresh::RefreshCoordinator;
+
+// v2: Resolver
+pub use resolver::{CredentialResolver, ResolveError};
+
+// v2: Resolve types
+pub use resolve::{
+    DisplayData, InteractionRequest, RefreshOutcome, RefreshPolicy, ResolveResult,
+    StaticResolveResult, TestResult, UserInput,
 };
 
 /// Commonly used types and traits

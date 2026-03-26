@@ -83,7 +83,7 @@ window acts as the recovery probe.
 nebula-resource/src/
 │
 ├── resource.rs          Resource trait (5 associated types, 4 lifecycle methods)
-│                        ResourceConfig, Credential, ResourceMetadata
+│                        ResourceConfig, ResourceMetadata
 │
 ├── topology/            One trait per access pattern
 │   ├── pooled.rs        Pooled — N interchangeable instances, checkout/recycle

@@ -87,7 +87,7 @@ impl Resource for HttpResource {
     type Runtime    = HttpRuntime;
     type Lease      = HttpRuntime;   // Pooled: Lease == Runtime (cloned on checkout)
     type Error      = Error;
-    type Credential = ();            // No secrets needed
+    type Auth = ();                  // No auth needed
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -96,7 +96,7 @@ impl Resource for HttpResource {
     async fn create(
         &self,
         config: &HttpConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> Result<HttpRuntime, Error> {
         Ok(HttpRuntime { base_url: config.base_url.clone() })
@@ -143,7 +143,7 @@ async fn main() -> Result<(), nebula_resource::Error> {
 
     let ctx = BasicCtx::new(ExecutionId::new());
 
-    // acquire_pooled_default: no credential noise for Credential = ()
+    // acquire_pooled_default: no auth noise for Auth = ()
     let handle = manager
         .acquire_pooled_default::<HttpResource>(&ctx, &AcquireOptions::default())
         .await?;
@@ -250,7 +250,7 @@ correct `ErrorKind::Transient`, `ErrorKind::Permanent`, and
 crates/resource/
 ├── src/
 │   ├── lib.rs             Re-exports and crate-level docs
-│   ├── resource.rs        Resource trait, ResourceConfig, Credential, ResourceMetadata
+│   ├── resource.rs        Resource trait, ResourceConfig, ResourceMetadata
 │   ├── manager.rs         Manager, ManagerConfig, ShutdownConfig
 │   ├── registry.rs        Registry, AnyManagedResource — type-erased storage
 │   ├── handle.rs          ResourceHandle — RAII acquire lease

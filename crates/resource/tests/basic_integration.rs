@@ -98,7 +98,7 @@ impl Resource for PoolTestResource {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = TestError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("test-pool")
@@ -107,7 +107,7 @@ impl Resource for PoolTestResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
@@ -175,7 +175,7 @@ impl Resource for ResidentTestResource {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = TestError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("test-resident")
@@ -184,7 +184,7 @@ impl Resource for ResidentTestResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
@@ -1281,7 +1281,7 @@ impl Resource for ServiceTestResource {
     type Runtime = Arc<ServiceInner>;
     type Lease = ServiceToken;
     type Error = TestError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("test-service")
@@ -1290,7 +1290,7 @@ impl Resource for ServiceTestResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> impl std::future::Future<Output = Result<Arc<ServiceInner>, TestError>> + Send {
         let counter = self.create_counter.clone();
@@ -1366,7 +1366,7 @@ impl Resource for TransportTestResource {
     type Runtime = Arc<TransportInner>;
     type Lease = SessionHandle;
     type Error = TestError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("test-transport")
@@ -1375,7 +1375,7 @@ impl Resource for TransportTestResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> impl std::future::Future<Output = Result<Arc<TransportInner>, TestError>> + Send {
         let counter = self.create_counter.clone();
@@ -1447,7 +1447,7 @@ impl Resource for ExclusiveTestResource {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = TestError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("test-exclusive")
@@ -1456,7 +1456,7 @@ impl Resource for ExclusiveTestResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
@@ -2260,7 +2260,7 @@ impl Resource for FailingResidentResource {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = TestError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("test-failing-resident")
@@ -2269,7 +2269,7 @@ impl Resource for FailingResidentResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let count = self.create_count.fetch_add(1, Ordering::Relaxed);
@@ -2338,7 +2338,7 @@ impl Resource for PermanentFailResource {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = PermanentTestError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("test-permanent-fail")
@@ -2347,7 +2347,7 @@ impl Resource for PermanentFailResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, PermanentTestError>> + Send {
         self.create_count.fetch_add(1, Ordering::Relaxed);
@@ -2713,7 +2713,7 @@ impl Resource for HandleDummyResource {
     type Runtime = u32;
     type Lease = u32;
     type Error = TestError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("handle-dummy")
@@ -2722,7 +2722,7 @@ impl Resource for HandleDummyResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> impl std::future::Future<Output = Result<u32, TestError>> + Send {
         async { Ok(1) }
@@ -2920,7 +2920,7 @@ impl Resource for DropOnRecycleResource {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = TestError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("drop-on-recycle")
@@ -2929,7 +2929,7 @@ impl Resource for DropOnRecycleResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
@@ -3015,7 +3015,7 @@ impl Resource for FailingSessionTransport {
     type Runtime = u32;
     type Lease = u32;
     type Error = TestError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("failing-session")
@@ -3024,7 +3024,7 @@ impl Resource for FailingSessionTransport {
     fn create(
         &self,
         _config: &TestConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> impl std::future::Future<Output = Result<u32, TestError>> + Send {
         async { Ok(1) }
@@ -3112,7 +3112,7 @@ impl Resource for FailingResetExclusive {
     type Runtime = u32;
     type Lease = u32;
     type Error = TestError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("failing-reset")
@@ -3121,7 +3121,7 @@ impl Resource for FailingResetExclusive {
     fn create(
         &self,
         _config: &TestConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> impl std::future::Future<Output = Result<u32, TestError>> + Send {
         async { Ok(1) }
@@ -3420,7 +3420,7 @@ impl Resource for ReloadPoolResource {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = TestError;
-    type Credential = ();
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("test-reload-pool")
@@ -3429,7 +3429,7 @@ impl Resource for ReloadPoolResource {
     fn create(
         &self,
         _config: &ReloadConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();

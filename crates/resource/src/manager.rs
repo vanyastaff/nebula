@@ -154,7 +154,7 @@ impl Manager {
         self.event_tx.subscribe()
     }
 
-    /// Registers a resource with its config, credential, scope, topology,
+    /// Registers a resource with its config, auth, scope, topology,
     /// optional resilience configuration, and optional recovery gate.
     ///
     /// The resource is wrapped in a [`ManagedResource`] and stored in the
@@ -237,7 +237,7 @@ impl Manager {
         pool_config: crate::topology::pooled::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = ()>,
+        R: Resource<Auth = ()>,
     {
         use crate::resource::ResourceConfig as _;
 
@@ -270,7 +270,7 @@ impl Manager {
         resident_config: crate::topology::resident::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = ()>,
+        R: Resource<Auth = ()>,
     {
         self.register(
             resource,
@@ -300,7 +300,7 @@ impl Manager {
         service_config: crate::topology::service::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = ()>,
+        R: Resource<Auth = ()>,
     {
         self.register(
             resource,
@@ -331,7 +331,7 @@ impl Manager {
         exclusive_config: crate::topology::exclusive::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = ()>,
+        R: Resource<Auth = ()>,
     {
         self.register(
             resource,
@@ -362,7 +362,7 @@ impl Manager {
         transport_config: crate::topology::transport::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = ()>,
+        R: Resource<Auth = ()>,
     {
         self.register(
             resource,
@@ -393,7 +393,7 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = ()>,
+        R: Resource<Auth = ()>,
     {
         use crate::resource::ResourceConfig as _;
         let fingerprint = config.fingerprint();
@@ -426,7 +426,7 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = ()>,
+        R: Resource<Auth = ()>,
     {
         self.register(
             resource,
@@ -457,7 +457,7 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = ()>,
+        R: Resource<Auth = ()>,
     {
         self.register(
             resource,
@@ -489,7 +489,7 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = ()>,
+        R: Resource<Auth = ()>,
     {
         self.register(
             resource,
@@ -521,7 +521,7 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = ()>,
+        R: Resource<Auth = ()>,
     {
         self.register(
             resource,
@@ -575,7 +575,7 @@ impl Manager {
     /// - Propagates pool-specific acquire errors.
     pub async fn acquire_pooled<R>(
         &self,
-        credential: &R::Credential,
+        auth: &R::Auth,
         ctx: &dyn Ctx,
         options: &AcquireOptions,
     ) -> Result<crate::handle::ResourceHandle<R>, Error>
@@ -599,7 +599,7 @@ impl Manager {
                         rt.acquire(
                             &managed.resource,
                             &config,
-                            credential,
+                            auth,
                             ctx,
                             &managed.release_queue,
                             generation,
@@ -625,17 +625,17 @@ impl Manager {
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
-    /// Acquires a pooled resource handle without credentials.
+    /// Acquires a pooled resource handle without auth.
     ///
-    /// Shorthand for [`acquire_pooled`](Self::acquire_pooled) with `credential = &()`.
-    /// Only available when `R::Credential = ()`.
+    /// Shorthand for [`acquire_pooled`](Self::acquire_pooled) with `auth = &()`.
+    /// Only available when `R::Auth = ()`.
     pub async fn acquire_pooled_default<R>(
         &self,
         ctx: &dyn Ctx,
         options: &AcquireOptions,
     ) -> Result<crate::handle::ResourceHandle<R>, Error>
     where
-        R: crate::topology::pooled::Pooled<Credential = ()> + Clone + Send + Sync + 'static,
+        R: crate::topology::pooled::Pooled<Auth = ()> + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
@@ -653,7 +653,7 @@ impl Manager {
     /// - Propagates resident-specific acquire errors.
     pub async fn acquire_resident<R>(
         &self,
-        credential: &R::Credential,
+        auth: &R::Auth,
         ctx: &dyn Ctx,
         options: &AcquireOptions,
     ) -> Result<crate::handle::ResourceHandle<R>, Error>
@@ -673,7 +673,7 @@ impl Manager {
             async move {
                 match &managed.topology {
                     TopologyRuntime::Resident(rt) => {
-                        rt.acquire(&managed.resource, &config, credential, ctx, options)
+                        rt.acquire(&managed.resource, &config, auth, ctx, options)
                             .await
                     }
                     _ => Err(Error::permanent(format!(
@@ -693,17 +693,17 @@ impl Manager {
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
-    /// Acquires a resident resource handle without credentials.
+    /// Acquires a resident resource handle without auth.
     ///
-    /// Shorthand for [`acquire_resident`](Self::acquire_resident) with `credential = &()`.
-    /// Only available when `R::Credential = ()`.
+    /// Shorthand for [`acquire_resident`](Self::acquire_resident) with `auth = &()`.
+    /// Only available when `R::Auth = ()`.
     pub async fn acquire_resident_default<R>(
         &self,
         ctx: &dyn Ctx,
         options: &AcquireOptions,
     ) -> Result<crate::handle::ResourceHandle<R>, Error>
     where
-        R: crate::topology::resident::Resident<Credential = ()> + Send + Sync + 'static,
+        R: crate::topology::resident::Resident<Auth = ()> + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Clone + Send + 'static,
     {
@@ -767,16 +767,16 @@ impl Manager {
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
-    /// Acquires a service resource handle without credentials.
+    /// Acquires a service resource handle without auth.
     ///
-    /// Shorthand for [`acquire_service`](Self::acquire_service) with `credential = &()`.
+    /// Shorthand for [`acquire_service`](Self::acquire_service) with `auth = &()`.
     pub async fn acquire_service_default<R>(
         &self,
         ctx: &dyn Ctx,
         options: &AcquireOptions,
     ) -> Result<crate::handle::ResourceHandle<R>, Error>
     where
-        R: crate::topology::service::Service<Credential = ()> + Clone + Send + Sync + 'static,
+        R: crate::topology::service::Service<Auth = ()> + Clone + Send + Sync + 'static,
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
@@ -840,16 +840,16 @@ impl Manager {
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
-    /// Acquires a transport resource handle without credentials.
+    /// Acquires a transport resource handle without auth.
     ///
-    /// Shorthand for [`acquire_transport`](Self::acquire_transport) with `credential = &()`.
+    /// Shorthand for [`acquire_transport`](Self::acquire_transport) with `auth = &()`.
     pub async fn acquire_transport_default<R>(
         &self,
         ctx: &dyn Ctx,
         options: &AcquireOptions,
     ) -> Result<crate::handle::ResourceHandle<R>, Error>
     where
-        R: crate::topology::transport::Transport<Credential = ()> + Clone + Send + Sync + 'static,
+        R: crate::topology::transport::Transport<Auth = ()> + Clone + Send + Sync + 'static,
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
@@ -912,16 +912,16 @@ impl Manager {
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
-    /// Acquires an exclusive resource handle without credentials.
+    /// Acquires an exclusive resource handle without auth.
     ///
-    /// Shorthand for [`acquire_exclusive`](Self::acquire_exclusive) with `credential = &()`.
+    /// Shorthand for [`acquire_exclusive`](Self::acquire_exclusive) with `auth = &()`.
     pub async fn acquire_exclusive_default<R>(
         &self,
         ctx: &dyn Ctx,
         options: &AcquireOptions,
     ) -> Result<crate::handle::ResourceHandle<R>, Error>
     where
-        R: crate::topology::exclusive::Exclusive<Credential = ()> + Clone + Send + Sync + 'static,
+        R: crate::topology::exclusive::Exclusive<Auth = ()> + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Send + 'static,
     {

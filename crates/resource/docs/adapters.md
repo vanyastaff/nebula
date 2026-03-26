@@ -175,7 +175,7 @@ no-op defaults.
 ```rust,ignore
 // src/resource.rs
 use nebula_core::ResourceKey;
-use nebula_resource::{resource_key, Credential, Resource, ResourceConfig, ResourceMetadata};
+use nebula_resource::{resource_key, Resource, ResourceConfig, ResourceMetadata};
 use nebula_resource::ctx::Ctx;
 
 use crate::config::PostgresConfig;
@@ -200,8 +200,8 @@ impl Resource for PostgresResource {
     type Lease = PgConnection;
     /// Resource-specific error, convertible to `nebula_resource::Error`.
     type Error = PostgresError;
-    /// Use `()` for password-less connections; supply a credential type otherwise.
-    type Credential = ();
+    /// Use `()` for unauthenticated resources; supply an auth scheme otherwise.
+    type Auth = ();
 
     fn key() -> ResourceKey {
         resource_key!("postgres")
@@ -214,7 +214,7 @@ impl Resource for PostgresResource {
     async fn create(
         &self,
         config: &PostgresConfig,
-        _credential: &(),
+        _auth: &(),
         _ctx: &dyn Ctx,
     ) -> Result<PgConnection, PostgresError> {
         // Replace with: tokio_postgres::connect(&dsn, NoTls).await
@@ -408,7 +408,7 @@ Before publishing an adapter crate:
 - [ ] `Resource::key()` returns a stable string literal, not a derived type name.
 - [ ] `Pooled::is_broken` is O(1) and performs no I/O — it runs in `Drop`.
 - [ ] `Pooled::recycle` rolls back any open transaction before returning `Keep`.
-- [ ] `Resource::Credential = ()` unless the adapter genuinely needs secret injection.
+- [ ] `Resource::Auth = ()` unless the adapter genuinely needs auth material.
 - [ ] `Runtime` does not implement `Debug`, or implements a redacted version that omits
       connection strings and internal buffer state.
 - [ ] Integration tests use a mock/in-memory runtime, not a live network service.

@@ -10,6 +10,7 @@ Foundation shared by every other crate — IDs, domain keys, scope system, and s
 - `NodeId` identifies a *position in the workflow graph*, not the action type. `ActionKey`/`PluginKey` carry type identity. `NodeDefinition.action_key` is the binding.
 - Compile-time key construction via `plugin_key!`, `action_key!`, etc. macros — validated at compile time.
 - `ScopeLevel` hierarchy: Global → Organization → Project → Workflow → Execution → Action.
+- `AuthScheme` trait lives here as a contract type between credential and resource crates. Marker trait with `Send + Sync + Clone + 'static` bounds. `()` implements it for credential-free resources.
 
 ## Traps
 - Confusing `NodeId` with `ActionKey`: multiple nodes can run the same action; they have different `NodeId`s but the same `ActionKey`.

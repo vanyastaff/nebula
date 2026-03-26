@@ -73,6 +73,15 @@ pub enum CredentialError {
         #[source]
         source: ManagerError,
     },
+
+    /// Operation requires an interactive credential, but this credential
+    /// is non-interactive (v2).
+    #[error("Credential does not support interactive flows")]
+    NotInteractive,
+
+    /// Provider-specific error from a credential implementation (v2).
+    #[error("Provider error: {0}")]
+    Provider(String),
 }
 
 /// Manager operation errors

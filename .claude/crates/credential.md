@@ -1,23 +1,29 @@
 # nebula-credential
-AES-256-GCM credential storage, manager, rotation, and protocol implementations.
+Credential storage, manager, rotation, protocols. v2 rewrite in progress alongside v1.
 
 ## Invariants
-- Credentials are **always encrypted at rest**. `encrypt`/`decrypt` in `utils` module use AES-256-GCM. No plaintext credential storage.
-- `SecretString` zeroizes memory on drop. Never convert to `String` unless absolutely necessary.
-- Never add a direct import from nebula-credential to nebula-resource or vice versa — use `EventBus<CredentialRotatedEvent>`.
+- Credentials **always encrypted at rest** (AES-256-GCM). `SecretString` zeroizes on drop.
+- No direct import between nebula-credential and nebula-resource — use EventBus.
+- All `AuthScheme` `Debug` impls redact secrets.
 
 ## Key Decisions
-- `CredentialProvider` trait = DI for actions. Actions declare credential needs via `ActionDependencies`; the engine injects via `CredentialAccessor` in `Context`. Never inject `CredentialManager` directly.
-- `CredentialManager` wraps storage + cache layer + rotation. Use `CredentialManagerBuilder` to construct.
-- Phases: 1-2 done (core types, manager, storage providers). 3-7 planned (derive macros, provider adapters, moka cache, test infra, protocol stubs).
-- Built-in protocols: `ApiKeyProtocol`, `OAuth2Protocol`, `BasicAuthProtocol`, `HeaderAuthProtocol`, `DatabaseProtocol`, `LdapProtocol`, mTLS, SAML, Kerberos.
+- `CredentialProvider` = DI for actions; never inject `CredentialManager` directly.
+- v2 modules coexist with v1 (v1 deleted later). RPITIT, no `#[async_trait]`.
+- `PendingState` uses `Zeroize` (not `ZeroizeOnDrop`).
+- `EncryptionLayer<S>` serializes `EncryptedData` as JSON bytes in `data` field.
+- `CredentialRegistryV2`: type-erased dispatch — `register::<C>()` captures deserialize+project closure keyed by `state_kind`.
+- `CredentialResolver` verifies `state_kind` match before deserialize; returns `CredentialHandle<S>` (Arc-wrapped).
+- `RefreshCoordinator`: per-credential `Notify` in `HashMap<String, Arc<Notify>>` behind `Mutex`. Winner refreshes, waiters block on `Notify::notified()`. `complete()` must always be called (even on error).
+- `resolve_with_refresh()` checks `CredentialStateV2::expires_at()`, coordinates via `RefreshCoordinator`, CAS writes refreshed state back.
+- `SecretString` serializes as `"[REDACTED]"` — tests must construct raw JSON for round-trip.
 
 ## Traps
-- Circular dep with nebula-resource: the crates are at the same Business Logic layer and must not import each other. Signal credential rotation via EventBus only.
-- Storage providers are feature-gated: `storage-local`, `storage-aws`, `storage-postgres`, `storage-vault`, `storage-k8s`.
-- `CredentialId` here is a `nebula_core::CredentialId` re-export — not a separate type.
+- Circular dep: peer with nebula-resource, signal via EventBus only.
+- Storage providers feature-gated: `storage-local`, `-aws`, `-postgres`, `-vault`, `-k8s`.
+- `CredentialId` is a `nebula_core::CredentialId` re-export.
 
 ## Relations
-- Depends on nebula-core (IDs), nebula-eventbus (rotation events). Peer with nebula-resource (no import between them).
+- Depends on: nebula-core, nebula-eventbus. Peer: nebula-resource.
 
 <!-- reviewed: 2026-03-25 -->
+<!-- updated: 2026-03-25 — RefreshCoordinator for thundering-herd prevention -->

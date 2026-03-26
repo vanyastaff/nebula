@@ -1,0 +1,185 @@
+//! Type-erased credential registry for runtime dispatch.
+//!
+//! Maps `state_kind` strings to projection functions so the resolver can
+//! deserialize and project stored credentials without knowing the concrete
+//! [`Credential`](crate::credential_v2::Credential) type at compile time.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::credential_state::CredentialStateV2;
+use crate::credential_v2::Credential;
+
+/// A function that projects stored bytes into a type-erased [`AuthScheme`](nebula_core::AuthScheme).
+///
+/// Registered per `state_kind`, called by the resolver during
+/// type-erased resolution.
+type ProjectFn =
+    Arc<dyn Fn(&[u8]) -> Result<Box<dyn std::any::Any + Send + Sync>, RegistryError> + Send + Sync>;
+
+/// Registry of credential type handlers.
+///
+/// Maps `state_kind` strings to projection functions that deserialize
+/// stored bytes and project them to their [`AuthScheme`](nebula_core::AuthScheme).
+///
+/// # Examples
+///
+/// ```ignore
+/// use nebula_credential::CredentialRegistryV2;
+/// use nebula_credential::credentials::ApiKeyCredential;
+///
+/// let mut registry = CredentialRegistryV2::new();
+/// registry.register::<ApiKeyCredential>();
+///
+/// // Later, project stored bytes without knowing the concrete type:
+/// let scheme = registry.project("bearer", &stored_bytes)?;
+/// ```
+pub struct CredentialRegistryV2 {
+    handlers: HashMap<String, ProjectFn>,
+}
+
+impl CredentialRegistryV2 {
+    /// Creates a new, empty registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            handlers: HashMap::new(),
+        }
+    }
+
+    /// Registers a credential type for runtime resolution.
+    ///
+    /// Captures the deserialize-then-project pipeline for `C` so that
+    /// stored bytes with `state_kind == C::State::KIND` can be projected
+    /// to `C::Scheme` without compile-time knowledge of `C`.
+    ///
+    /// # Panics
+    ///
+    /// Does not panic. Silently overwrites a previous registration for
+    /// the same `state_kind`.
+    pub fn register<C>(&mut self)
+    where
+        C: Credential,
+        C::Scheme: 'static,
+    {
+        let kind = <C::State as CredentialStateV2>::KIND.to_string();
+        self.handlers.insert(
+            kind,
+            Arc::new(|bytes: &[u8]| {
+                let state: C::State = serde_json::from_slice(bytes)
+                    .map_err(|e| RegistryError::Deserialize(e.to_string()))?;
+                let scheme = C::project(&state);
+                Ok(Box::new(scheme) as Box<dyn std::any::Any + Send + Sync>)
+            }),
+        );
+    }
+
+    /// Projects stored credential data to its type-erased [`AuthScheme`](nebula_core::AuthScheme).
+    ///
+    /// The returned `Box<dyn Any>` can be downcast to the concrete scheme
+    /// type using [`downcast`](Box::downcast).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError::UnknownKind`] if no handler is registered
+    /// for `state_kind`.
+    ///
+    /// Returns [`RegistryError::Deserialize`] if the stored bytes cannot
+    /// be deserialized into the expected state type.
+    pub fn project(
+        &self,
+        state_kind: &str,
+        data: &[u8],
+    ) -> Result<Box<dyn std::any::Any + Send + Sync>, RegistryError> {
+        let handler = self
+            .handlers
+            .get(state_kind)
+            .ok_or_else(|| RegistryError::UnknownKind(state_kind.to_string()))?;
+        handler(data)
+    }
+
+    /// Returns `true` if a handler is registered for the given `state_kind`.
+    #[must_use]
+    pub fn contains(&self, state_kind: &str) -> bool {
+        self.handlers.contains_key(state_kind)
+    }
+
+    /// Returns the number of registered handlers.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.handlers.len()
+    }
+
+    /// Returns `true` if no handlers are registered.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.handlers.is_empty()
+    }
+}
+
+impl Default for CredentialRegistryV2 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Error from registry operations.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum RegistryError {
+    /// No handler registered for the given `state_kind`.
+    #[error("unknown credential kind: {0}")]
+    UnknownKind(String),
+    /// Failed to deserialize stored bytes.
+    #[error("deserialize failed: {0}")]
+    Deserialize(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::credentials::ApiKeyCredential;
+    use crate::scheme::BearerToken;
+
+    #[test]
+    fn register_and_project_bearer() {
+        let mut registry = CredentialRegistryV2::new();
+        registry.register::<ApiKeyCredential>();
+
+        assert!(registry.contains("bearer"));
+        assert_eq!(registry.len(), 1);
+
+        // Construct raw JSON directly because SecretString serializes
+        // as "[REDACTED]" — the real store would hold encrypted raw values.
+        let data = br#"{"token":"test-key"}"#.to_vec();
+
+        let any = registry.project("bearer", &data).unwrap();
+        let projected = any.downcast::<BearerToken>().unwrap();
+        let value = projected.expose().expose_secret(|s| s.to_owned());
+        assert_eq!(value, "test-key");
+    }
+
+    #[test]
+    fn project_unknown_kind_returns_error() {
+        let registry = CredentialRegistryV2::new();
+        let result = registry.project("nonexistent", b"{}");
+        assert!(matches!(result, Err(RegistryError::UnknownKind(_))));
+    }
+
+    #[test]
+    fn project_invalid_data_returns_deserialize_error() {
+        let mut registry = CredentialRegistryV2::new();
+        registry.register::<ApiKeyCredential>();
+
+        let result = registry.project("bearer", b"not-json");
+        assert!(matches!(result, Err(RegistryError::Deserialize(_))));
+    }
+
+    #[test]
+    fn empty_registry() {
+        let registry = CredentialRegistryV2::new();
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+        assert!(!registry.contains("bearer"));
+    }
+}

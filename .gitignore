@@ -233,6 +233,7 @@ credentials/
 
 # Exception: Allow source code for credentials feature
 !apps/desktop/src/features/credentials/
+!crates/credential/src/credentials/
 
 # Configuration files that might contain secrets
 **/config/local.*

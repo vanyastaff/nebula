@@ -38,12 +38,12 @@ pub trait Resource: Send + Sync + 'static {
     type Runtime: Send + Sync + 'static;   // live resource handle
     type Lease: Send + Sync + 'static;     // what callers hold
     type Error: Into<crate::Error> + ...;  // resource-specific error
-    type Credential: Credential;           // secrets injected before create()
+    type Auth: AuthScheme;                 // auth material resolved before create()
 
     fn key() -> ResourceKey;
     fn metadata() -> ResourceMetadata { ... }  // default: derived from key
 
-    fn create(&self, config: &Self::Config, credential: &Self::Credential,
+    fn create(&self, config: &Self::Config, auth: &Self::Auth,
               ctx: &dyn Ctx) -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send;
 
     fn check(&self, runtime: &Self::Runtime)
@@ -65,7 +65,7 @@ If `Runtime` and `Lease` are the same type, the blanket `From<T> for T` satisfie
 
 ### `ResourceConfig`
 
-Operational configuration. Must contain no secrets — credentials go in `Credential`.
+Operational configuration. Must contain no secrets — auth material goes in `Auth`.
 
 ```rust
 pub trait ResourceConfig: Send + Sync + Clone + 'static {
@@ -78,14 +78,12 @@ Two configs with the same non-zero fingerprint are treated as identical during `
 
 ---
 
-### `Credential`
+### `AuthScheme`
 
-Secret material resolved by the framework before `Resource::create`. Use `()` for unauthenticated resources.
+Authentication scheme resolved by the credential system before `Resource::create`. Use `()` for unauthenticated resources. Defined in `nebula-core`.
 
 ```rust
-pub trait Credential: Send + Sync + Clone + 'static {
-    const KIND: &'static str;  // e.g. "oauth2", "api_key", "none"
-}
+pub trait AuthScheme: Send + Sync + Clone + 'static {}
 ```
 
 ---
@@ -301,21 +299,21 @@ impl Manager {
 
     // Registration:
     pub fn register<R: Resource>(
-        &self, resource: R, config: R::Config, credential: R::Credential,
+        &self, resource: R, config: R::Config,
         scope: ScopeLevel, topology: TopologyRuntime<R>,
         resilience: Option<AcquireResilience>,
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<(), Error>;
 
-    // Convenience shorthands (credential = (), scope = Global, no resilience/gate):
-    pub fn register_pooled<R: Resource<Credential = ()>>(
+    // Convenience shorthands (Auth = (), scope = Global, no resilience/gate):
+    pub fn register_pooled<R: Resource<Auth = ()>>(
         &self, resource: R, config: R::Config, pool_config: PoolConfig) -> Result<(), Error>;
-    pub fn register_resident<R: Resource<Credential = ()>>(
+    pub fn register_resident<R: Resource<Auth = ()>>(
         &self, resource: R, config: R::Config, resident_config: ResidentConfig) -> Result<(), Error>;
-    pub fn register_service<R: Resource<Credential = ()>>(
+    pub fn register_service<R: Resource<Auth = ()>>(
         &self, resource: R, config: R::Config, runtime: R::Runtime,
         service_config: ServiceConfig) -> Result<(), Error>;
-    pub fn register_exclusive<R: Resource<Credential = ()>>(
+    pub fn register_exclusive<R: Resource<Auth = ()>>(
         &self, resource: R, config: R::Config, runtime: R::Runtime,
         exclusive_config: ExclusiveConfig) -> Result<(), Error>;
 
@@ -328,7 +326,7 @@ impl Manager {
 
     // Acquire (topology-specific):
     pub async fn acquire_pooled<R: Pooled + Clone + ...>(
-        &self, credential: &R::Credential, ctx: &dyn Ctx, options: &AcquireOptions,
+        &self, auth: &R::Auth, ctx: &dyn Ctx, options: &AcquireOptions,
     ) -> Result<ResourceHandle<R>, Error>;
     pub async fn acquire_resident<R: Resident + ...>(...) -> Result<ResourceHandle<R>, Error>;
     pub async fn acquire_service<R: Service + Clone + ...>(...) -> Result<ResourceHandle<R>, Error>;

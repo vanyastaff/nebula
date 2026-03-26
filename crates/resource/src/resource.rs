@@ -6,7 +6,7 @@
 
 use std::future::Future;
 
-use nebula_core::ResourceKey;
+use nebula_core::{AuthScheme, ResourceKey};
 
 use crate::ctx::Ctx;
 
@@ -43,19 +43,6 @@ pub trait ResourceConfig: Send + Sync + Clone + 'static {
     fn fingerprint(&self) -> u64 {
         0
     }
-}
-
-/// Secret data resolved by the framework before [`Resource::create`].
-///
-/// Credentials are injected, never hard-coded. Use `()` for resources
-/// that require no authentication.
-pub trait Credential: Send + Sync + Clone + 'static {
-    /// A human-readable identifier for the credential kind (e.g., `"oauth2"`, `"api_key"`).
-    const KIND: &'static str;
-}
-
-impl Credential for () {
-    const KIND: &'static str = "none";
 }
 
 /// Resource metadata for UI and diagnostics.
@@ -96,7 +83,7 @@ impl ResourceMetadata {
 /// | `Runtime` | The live resource handle (connection, client, etc.) |
 /// | `Lease` | What callers hold while using the resource |
 /// | `Error` | Resource-specific error, convertible to [`crate::Error`] |
-/// | `Credential` | Secret material injected before `create()` |
+/// | `Auth` | Authentication scheme resolved by the credential system |
 ///
 /// # Lifecycle
 ///
@@ -118,17 +105,20 @@ pub trait Resource: Send + Sync + 'static {
     type Lease: Send + Sync + 'static;
     /// Resource-specific error type.
     type Error: std::error::Error + Send + Sync + Into<crate::Error> + 'static;
-    /// Credential type resolved before `create()`.
-    type Credential: Credential;
+    /// Authentication scheme resolved by the credential system.
+    ///
+    /// Declares what auth material this resource needs (e.g., `BearerToken`,
+    /// `DatabaseAuth`). Use `()` for resources that require no authentication.
+    type Auth: AuthScheme;
 
     /// Returns the unique key identifying this resource type.
     fn key() -> ResourceKey;
 
-    /// Creates a new runtime instance from config and credentials.
+    /// Creates a new runtime instance from config and auth material.
     fn create(
         &self,
         config: &Self::Config,
-        credential: &Self::Credential,
+        auth: &Self::Auth,
         ctx: &dyn Ctx,
     ) -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send;
 

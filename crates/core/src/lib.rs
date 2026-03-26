@@ -28,6 +28,7 @@
 //! let scope = ScopeLevel::Execution(execution_id);
 //! ```
 
+pub mod auth;
 pub mod constants;
 /// Dependency graph primitives shared across crates.
 pub mod deps;
@@ -40,6 +41,7 @@ pub mod types;
 
 // Re-export main types for convenience at the crate root. Downstream crates
 // should prefer `nebula_core::prelude::*` for a stable import surface.
+pub use auth::AuthScheme;
 pub use constants::*;
 pub use deps::*;
 pub use error::*;
