@@ -11,6 +11,7 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - `ResourceHandle` RAII — guarded returns lease on drop, tainted destroys
 - Guarded permit drops AFTER catch_unwind in Drop — prevents semaphore leak on panic
 - `TopologyTag` is enum (not `&str`), `#[non_exhaustive]`
+- `register_pooled/resident/service/exclusive` convenience methods: `Credential = ()`, `ScopeLevel::Global`, no resilience/gate
 - Deprecated `Context`/`Scope` in `compat` for v1 migration
 
 ## Traps

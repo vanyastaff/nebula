@@ -186,6 +186,139 @@ impl Manager {
         Ok(())
     }
 
+    /// Registers a pooled resource with sensible defaults.
+    ///
+    /// Shorthand for [`register`](Self::register) with `credential = ()`,
+    /// `scope = Global`, no resilience, no recovery gate.
+    ///
+    /// The pool fingerprint is initialized from
+    /// [`ResourceConfig::fingerprint()`] on the provided config.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if config validation fails.
+    pub fn register_pooled<R>(
+        &self,
+        resource: R,
+        config: R::Config,
+        pool_config: crate::topology::pooled::config::Config,
+    ) -> Result<(), Error>
+    where
+        R: Resource<Credential = ()>,
+    {
+        use crate::resource::ResourceConfig as _;
+
+        let fingerprint = config.fingerprint();
+        self.register(
+            resource,
+            config,
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Pool(crate::runtime::pool::PoolRuntime::<R>::new(
+                pool_config,
+                fingerprint,
+            )),
+            None,
+            None,
+        )
+    }
+
+    /// Registers a resident resource with sensible defaults.
+    ///
+    /// Shorthand for [`register`](Self::register) with `credential = ()`,
+    /// `scope = Global`, no resilience, no recovery gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if config validation fails.
+    pub fn register_resident<R>(
+        &self,
+        resource: R,
+        config: R::Config,
+        resident_config: crate::topology::resident::config::Config,
+    ) -> Result<(), Error>
+    where
+        R: Resource<Credential = ()>,
+    {
+        self.register(
+            resource,
+            config,
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(
+                crate::runtime::resident::ResidentRuntime::<R>::new(resident_config),
+            ),
+            None,
+            None,
+        )
+    }
+
+    /// Registers a service resource with sensible defaults.
+    ///
+    /// Shorthand for [`register`](Self::register) with `credential = ()`,
+    /// `scope = Global`, no resilience, no recovery gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if config validation fails.
+    pub fn register_service<R>(
+        &self,
+        resource: R,
+        config: R::Config,
+        runtime: R::Runtime,
+        service_config: crate::topology::service::config::Config,
+    ) -> Result<(), Error>
+    where
+        R: Resource<Credential = ()>,
+    {
+        self.register(
+            resource,
+            config,
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Service(crate::runtime::service::ServiceRuntime::<R>::new(
+                runtime,
+                service_config,
+            )),
+            None,
+            None,
+        )
+    }
+
+    /// Registers an exclusive resource with sensible defaults.
+    ///
+    /// Shorthand for [`register`](Self::register) with `credential = ()`,
+    /// `scope = Global`, no resilience, no recovery gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if config validation fails.
+    pub fn register_exclusive<R>(
+        &self,
+        resource: R,
+        config: R::Config,
+        runtime: R::Runtime,
+        exclusive_config: crate::topology::exclusive::config::Config,
+    ) -> Result<(), Error>
+    where
+        R: Resource<Credential = ()>,
+    {
+        self.register(
+            resource,
+            config,
+            (),
+            ScopeLevel::Global,
+            TopologyRuntime::Exclusive(
+                crate::runtime::exclusive::ExclusiveRuntime::<R>::new(
+                    runtime,
+                    exclusive_config,
+                ),
+            ),
+            None,
+            None,
+        )
+    }
+
     /// Looks up a registered `ManagedResource<R>` by type and scope.
     ///
     /// This is the building block for acquire: callers retrieve the managed
