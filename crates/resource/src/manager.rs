@@ -15,10 +15,11 @@
 //! ```
 
 use std::any::TypeId;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 use tokio_util::sync::CancellationToken;
 
 use nebula_core::ResourceKey;
@@ -85,6 +86,8 @@ pub struct Manager {
     event_tx: broadcast::Sender<ResourceEvent>,
     release_queue: Arc<ReleaseQueue>,
     release_queue_handle: tokio::sync::Mutex<Option<ReleaseQueueHandle>>,
+    /// Tracks active `ResourceHandle`s for drain-aware shutdown.
+    drain_tracker: Arc<(AtomicU64, Notify)>,
 }
 
 impl Manager {
@@ -107,6 +110,7 @@ impl Manager {
             event_tx,
             release_queue: Arc::new(release_queue),
             release_queue_handle: tokio::sync::Mutex::new(Some(release_queue_handle)),
+            drain_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
         }
     }
 
@@ -267,7 +271,7 @@ impl Manager {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
         self.record_acquire_result(&managed, &result, started);
-        result
+        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
     /// Acquires a handle to a resident resource.
@@ -317,7 +321,7 @@ impl Manager {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
         self.record_acquire_result(&managed, &result, started);
-        result
+        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
     /// Acquires a handle to a service resource.
@@ -373,7 +377,7 @@ impl Manager {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
         self.record_acquire_result(&managed, &result, started);
-        result
+        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
     /// Acquires a handle to a transport resource.
@@ -429,7 +433,7 @@ impl Manager {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
         self.record_acquire_result(&managed, &result, started);
-        result
+        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
     /// Acquires a handle to an exclusive resource.
@@ -484,7 +488,7 @@ impl Manager {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
         self.record_acquire_result(&managed, &result, started);
-        result
+        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
     /// Hot-reloads the configuration for a registered resource.
@@ -598,8 +602,29 @@ impl Manager {
         //      (they share this token via `ReleaseQueue::with_cancel`).
         self.cancel.cancel();
 
-        // Phase 2: DRAIN — wait for in-flight handles to be released.
-        tokio::time::sleep(config.drain_timeout).await;
+        // Phase 2: DRAIN — wait for in-flight handles to be released,
+        // or timeout if they are not released in time.
+        {
+            let active = self.drain_tracker.0.load(AtomicOrdering::Acquire);
+            if active > 0 {
+                tracing::debug!(active_handles = active, "waiting for handles to drain");
+                let wait_result = tokio::time::timeout(config.drain_timeout, async {
+                    loop {
+                        self.drain_tracker.1.notified().await;
+                        if self.drain_tracker.0.load(AtomicOrdering::Acquire) == 0 {
+                            break;
+                        }
+                    }
+                })
+                .await;
+                if wait_result.is_err() {
+                    tracing::warn!(
+                        active_handles = self.drain_tracker.0.load(AtomicOrdering::Relaxed),
+                        "resource manager: drain timeout expired with handles still active"
+                    );
+                }
+            }
+        }
 
         // Phase 3: CLEAR — drop all ManagedResources so their
         // Arc<ReleaseQueue> refs are released.

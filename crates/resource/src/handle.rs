@@ -7,11 +7,12 @@
 //! - **Shared**: `Arc`-wrapped lease with shared access.
 
 use std::ops::Deref;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use nebula_core::ResourceKey;
-use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::{Notify, OwnedSemaphorePermit};
 
 use crate::resource::Resource;
 use crate::topology_tag::TopologyTag;
@@ -29,6 +30,8 @@ pub struct ResourceHandle<R: Resource> {
     inner: HandleInner<R>,
     resource_key: ResourceKey,
     topology_tag: TopologyTag,
+    /// Optional drain tracker — decrements on drop, notifies when zero.
+    drain_counter: Option<Arc<(AtomicU64, Notify)>>,
 }
 
 enum HandleInner<R: Resource> {
@@ -57,6 +60,7 @@ impl<R: Resource> ResourceHandle<R> {
             inner: HandleInner::Owned(lease),
             resource_key,
             topology_tag,
+            drain_counter: None,
         }
     }
 
@@ -104,6 +108,7 @@ impl<R: Resource> ResourceHandle<R> {
             },
             resource_key,
             topology_tag,
+            drain_counter: None,
         }
     }
 
@@ -125,7 +130,17 @@ impl<R: Resource> ResourceHandle<R> {
             },
             resource_key,
             topology_tag,
+            drain_counter: None,
         }
+    }
+
+    /// Attaches a drain tracker for shutdown coordination.
+    ///
+    /// Increments the counter immediately; decrements on drop.
+    pub(crate) fn with_drain_tracker(mut self, tracker: Arc<(AtomicU64, Notify)>) -> Self {
+        tracker.0.fetch_add(1, AtomicOrdering::Release);
+        self.drain_counter = Some(tracker);
+        self
     }
 
     /// Marks the lease as tainted — it will be destroyed instead of recycled.
@@ -285,6 +300,13 @@ impl<R: Resource> Drop for ResourceHandle<R> {
                         );
                     }
                 }
+            }
+        }
+
+        // Drain tracking: decrement active count and notify shutdown waiters.
+        if let Some(ref tracker) = self.drain_counter {
+            if tracker.0.fetch_sub(1, AtomicOrdering::Release) == 1 {
+                tracker.1.notify_waiters();
             }
         }
     }
