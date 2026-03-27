@@ -94,34 +94,14 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::Mutex;
 
 use crate::foundation::{Validate, ValidationError};
 use crate::validators::{max_length, max_size, min_length, min_size};
 
-// ============================================================================
-// REGEX CACHE — avoids recompiling patterns on every validate_value/evaluate call
-// ============================================================================
-
-/// Global regex cache to avoid recompiling the same pattern string repeatedly.
-/// Keyed by the raw pattern string; values are compiled `Regex` instances.
-static REGEX_CACHE: std::sync::LazyLock<Mutex<HashMap<String, regex::Regex>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Returns a compiled regex for the given pattern, using the cache.
-fn cached_regex(pattern: &str) -> Result<regex::Regex, ValidationError> {
-    {
-        let cache = REGEX_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(re) = cache.get(pattern) {
-            return Ok(re.clone());
-        }
-    }
-    let re = regex::Regex::new(pattern)
-        .map_err(|e| ValidationError::new("invalid_pattern", format!("invalid regex: {e}")))?;
-    let mut cache = REGEX_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    cache.entry(pattern.to_owned()).or_insert(re.clone());
-    Ok(re)
+/// Compiles a regex pattern, returning a validation error if invalid.
+fn compile_regex(pattern: &str) -> Result<regex::Regex, ValidationError> {
+    regex::Regex::new(pattern)
+        .map_err(|e| ValidationError::new("invalid_pattern", format!("invalid regex: {e}")))
 }
 
 // ============================================================================
@@ -425,21 +405,25 @@ impl Rule {
     }
 
     /// Creates a [`Min`](Self::Min) rule from an `f64`.
+    ///
+    /// Returns `None` if `min` is NaN or infinite.
     #[must_use]
-    pub fn min_value_f64(min: f64) -> Self {
-        Self::Min {
-            min: serde_json::Number::from_f64(min).expect("finite f64"),
+    pub fn min_value_f64(min: f64) -> Option<Self> {
+        Some(Self::Min {
+            min: serde_json::Number::from_f64(min)?,
             message: None,
-        }
+        })
     }
 
     /// Creates a [`Max`](Self::Max) rule from an `f64`.
+    ///
+    /// Returns `None` if `max` is NaN or infinite.
     #[must_use]
-    pub fn max_value_f64(max: f64) -> Self {
-        Self::Max {
-            max: serde_json::Number::from_f64(max).expect("finite f64"),
+    pub fn max_value_f64(max: f64) -> Option<Self> {
+        Some(Self::Max {
+            max: serde_json::Number::from_f64(max)?,
             message: None,
-        }
+        })
     }
 
     /// Creates a [`OneOf`](Self::OneOf) rule.
@@ -507,6 +491,34 @@ impl Rule {
             },
             // Predicate variants don't have messages
             other => other,
+        }
+    }
+
+    /// Creates an [`All`](Self::All) rule (logical AND).
+    #[must_use]
+    pub fn all(rules: impl IntoIterator<Item = Self>) -> Self {
+        Self::All {
+            rules: rules.into_iter().collect(),
+        }
+    }
+
+    /// Creates an [`Any`](Self::Any) rule (logical OR).
+    #[must_use]
+    pub fn any(rules: impl IntoIterator<Item = Self>) -> Self {
+        Self::Any {
+            rules: rules.into_iter().collect(),
+        }
+    }
+
+    /// Creates a [`Not`](Self::Not) rule (logical negation).
+    #[must_use]
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "this is a rule constructor, not boolean negation"
+    )]
+    pub fn not(inner: Self) -> Self {
+        Self::Not {
+            inner: Box::new(inner),
         }
     }
 
@@ -633,7 +645,7 @@ impl Rule {
             }
             Self::Pattern { pattern, message } => {
                 if let Some(s) = value.as_str() {
-                    let re = cached_regex(pattern)?;
+                    let re = compile_regex(pattern)?;
                     if !re.is_match(s) {
                         let err = ValidationError::invalid_format("", "regex")
                             .with_param("pattern", pattern.clone());
@@ -802,10 +814,18 @@ impl Rule {
             // ── Context predicates ──────────────────────────────────
             Self::Eq { field, value } => values.get(field).is_some_and(|v| v == value),
             Self::Ne { field, value } => values.get(field).is_none_or(|v| v != value),
-            Self::Gt { field, value } => cmp_number(values.get(field), value, |a, b| a > b),
-            Self::Gte { field, value } => cmp_number(values.get(field), value, |a, b| a >= b),
-            Self::Lt { field, value } => cmp_number(values.get(field), value, |a, b| a < b),
-            Self::Lte { field, value } => cmp_number(values.get(field), value, |a, b| a <= b),
+            Self::Gt { field, value } => {
+                cmp_number_predicate(values.get(field), value, |o| o.is_gt())
+            }
+            Self::Gte { field, value } => {
+                cmp_number_predicate(values.get(field), value, |o| o.is_ge())
+            }
+            Self::Lt { field, value } => {
+                cmp_number_predicate(values.get(field), value, |o| o.is_lt())
+            }
+            Self::Lte { field, value } => {
+                cmp_number_predicate(values.get(field), value, |o| o.is_le())
+            }
             Self::IsTrue { field } => {
                 values.get(field).and_then(serde_json::Value::as_bool) == Some(true)
             }
@@ -838,7 +858,7 @@ impl Rule {
             Self::Matches { field, pattern } => values
                 .get(field)
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|string| cached_regex(pattern).is_ok_and(|re| re.is_match(string))),
+                .is_some_and(|string| compile_regex(pattern).is_ok_and(|re| re.is_match(string))),
             Self::In {
                 field,
                 values: candidates,
@@ -865,19 +885,14 @@ fn override_message(mut error: ValidationError, message: &Option<String>) -> Val
     error
 }
 
-/// Numeric comparison helper.
-fn cmp_number(
+/// Precision-safe numeric comparison for predicate evaluation.
+fn cmp_number_predicate(
     value: Option<&serde_json::Value>,
     rhs: &serde_json::Number,
-    op: impl Fn(f64, f64) -> bool,
+    expected: impl Fn(std::cmp::Ordering) -> bool,
 ) -> bool {
-    let Some(lhs) = value.and_then(serde_json::Value::as_f64) else {
-        return false;
-    };
-    let Some(rhs) = rhs.as_f64() else {
-        return false;
-    };
-    op(lhs, rhs)
+    let Some(val) = value else { return false };
+    json_number_cmp(val, rhs).is_some_and(expected)
 }
 
 // ============================================================================
@@ -2320,5 +2335,23 @@ mod tests {
         let max = Rule::max_value(100);
         assert!(matches!(min, Rule::Min { .. }));
         assert!(matches!(max, Rule::Max { .. }));
+    }
+
+    #[test]
+    fn shorthand_all() {
+        let rule = Rule::all([Rule::min_length(3), Rule::max_length(10)]);
+        assert!(matches!(rule, Rule::All { rules } if rules.len() == 2));
+    }
+
+    #[test]
+    fn shorthand_any() {
+        let rule = Rule::any([Rule::pattern("^a"), Rule::pattern("^b")]);
+        assert!(matches!(rule, Rule::Any { rules } if rules.len() == 2));
+    }
+
+    #[test]
+    fn shorthand_not() {
+        let rule = Rule::not(Rule::min_length(5));
+        assert!(matches!(rule, Rule::Not { .. }));
     }
 }
