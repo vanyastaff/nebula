@@ -3831,6 +3831,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-error"
+version = "0.1.0"
+dependencies = [
+ "nebula-error-macros",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "nebula-error-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "nebula-eventbus"
 version = "0.1.0"
 dependencies = [
