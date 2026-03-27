@@ -395,10 +395,7 @@ mod tests {
 
     #[test]
     fn from_iterator() {
-        let errors = vec![
-            NebulaError::new(val_error()),
-            NebulaError::new(val_error()),
-        ];
+        let errors = vec![NebulaError::new(val_error()), NebulaError::new(val_error())];
         let coll: ErrorCollection<TestErr> = errors.into_iter().collect();
         assert_eq!(coll.len(), 2);
     }

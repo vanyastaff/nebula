@@ -363,9 +363,7 @@ mod tests {
     #[test]
     fn into_inner_recovers_domain_error() {
         let inner = make_error();
-        let err = NebulaError::new(inner)
-            .with_message("gone")
-            .context("ctx");
+        let err = NebulaError::new(inner).with_message("gone").context("ctx");
         let recovered = err.into_inner();
         assert_eq!(recovered.cat, ErrorCategory::Internal);
     }
