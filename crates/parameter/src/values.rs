@@ -417,14 +417,6 @@ pub struct ParameterValuesDiff {
     pub changed: Vec<String>,
 }
 
-/// Backward-compatible type alias.
-#[deprecated(note = "renamed to ParameterValues")]
-pub type FieldValues = ParameterValues;
-
-/// Backward-compatible type alias.
-#[deprecated(note = "renamed to ParameterValue")]
-pub type FieldValue = ParameterValue;
-
 #[cfg(test)]
 mod tests {
     use super::*;

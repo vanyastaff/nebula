@@ -3,12 +3,6 @@
 pub use crate::error::ParameterError;
 pub use crate::values::{ModeValueRef, ParameterValue, ParameterValues};
 
-// Backward compat
-#[deprecated(note = "renamed to ParameterValue")]
-pub use crate::values::ParameterValue as FieldValue;
-#[deprecated(note = "renamed to ParameterValues")]
-pub use crate::values::ParameterValues as FieldValues;
-
 /// Schema-bound validated values view.
 ///
 /// Cannot be constructed outside the crate — only produced by

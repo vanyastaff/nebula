@@ -67,7 +67,6 @@ pub struct LoaderContext {
     pub field_id: String,
     /// Current parameter values at the time of the request.
     ///
-    // TODO: Replace with `crate::values::ParameterValues` once Task 7 renames `FieldValues`.
     pub values: serde_json::Value,
     /// Optional text filter entered by the user (for searchable selects).
     pub filter: Option<String>,
