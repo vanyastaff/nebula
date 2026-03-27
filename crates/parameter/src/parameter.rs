@@ -662,7 +662,11 @@ impl Parameter {
                 *multiple = true;
             }
             _ => {
-                debug_assert_type!(self, ParameterType::Select { .. } | ParameterType::File { .. }, "multiple");
+                debug_assert_type!(
+                    self,
+                    ParameterType::Select { .. } | ParameterType::File { .. },
+                    "multiple"
+                );
             }
         }
         self
@@ -702,7 +706,13 @@ impl Parameter {
                 *depends_on = paths;
             }
             _ => {
-                debug_assert_type!(self, ParameterType::Select { .. } | ParameterType::Filter { .. } | ParameterType::Dynamic { .. }, "depends_on");
+                debug_assert_type!(
+                    self,
+                    ParameterType::Select { .. }
+                        | ParameterType::Filter { .. }
+                        | ParameterType::Dynamic { .. },
+                    "depends_on"
+                );
             }
         }
         self
@@ -1002,7 +1012,11 @@ impl Parameter {
             *fields_loader = Some(FilterFieldLoader::new(f));
             *dynamic_fields = true;
         } else {
-            debug_assert_type!(self, ParameterType::Filter { .. }, "with_filter_field_loader");
+            debug_assert_type!(
+                self,
+                ParameterType::Filter { .. },
+                "with_filter_field_loader"
+            );
         }
         self
     }

@@ -75,6 +75,7 @@ pub use conditions::Condition;
 pub use display_mode::{ComputedReturn, DisplayMode};
 pub use error::ParameterError;
 pub use filter_field::{FilterField, FilterFieldType};
+pub use lint::{LintDiagnostic, LintLevel, lint_collection};
 pub use loader::{FilterFieldLoader, LoaderContext, LoaderError, OptionLoader, RecordLoader};
 pub use loader_result::LoaderResult;
 pub use notice::NoticeSeverity;
@@ -91,7 +92,6 @@ pub use spec::{
     FilterRule,
 };
 pub use transformer::Transformer;
-pub use lint::{lint_collection, LintDiagnostic, LintLevel};
 pub use values::{ModeValueRef, ParameterValue, ParameterValues};
 
 /// Common imports for working with parameters.
@@ -101,6 +101,7 @@ pub mod prelude {
     pub use crate::display_mode::{ComputedReturn, DisplayMode};
     pub use crate::error::ParameterError;
     pub use crate::filter_field::{FilterField, FilterFieldType};
+    pub use crate::lint::{LintDiagnostic, LintLevel, lint_collection};
     pub use crate::loader::{
         FilterFieldLoader, LoaderContext, LoaderError, OptionLoader, RecordLoader,
     };
@@ -119,6 +120,5 @@ pub mod prelude {
         FilterRule,
     };
     pub use crate::transformer::Transformer;
-    pub use crate::lint::{lint_collection, LintDiagnostic, LintLevel};
     pub use crate::values::{ModeValueRef, ParameterValue, ParameterValues};
 }
