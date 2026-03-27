@@ -81,6 +81,18 @@ impl ParameterCollection {
         self.parameters.iter().any(|p| p.id == id)
     }
 
+    /// Appends all parameters from an iterator.
+    #[must_use]
+    pub fn extend(mut self, params: impl IntoIterator<Item = Parameter>) -> Self {
+        self.parameters.extend(params);
+        self
+    }
+
+    /// Returns an iterator over the parameters.
+    pub fn iter(&self) -> std::slice::Iter<'_, Parameter> {
+        self.parameters.iter()
+    }
+
     /// Validates `values` against this collection using strict defaults.
     ///
     /// On success, returns [`ValidatedValues`](crate::runtime::ValidatedValues)
@@ -116,6 +128,32 @@ impl ParameterCollection {
     #[must_use]
     pub fn normalize(&self, values: &ParameterValues) -> ParameterValues {
         crate::normalize::normalize_parameters(&self.parameters, values)
+    }
+}
+
+impl FromIterator<Parameter> for ParameterCollection {
+    fn from_iter<I: IntoIterator<Item = Parameter>>(iter: I) -> Self {
+        Self {
+            parameters: iter.into_iter().collect(),
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a ParameterCollection {
+    type Item = &'a Parameter;
+    type IntoIter = std::slice::Iter<'a, Parameter>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.parameters.iter()
+    }
+}
+
+impl IntoIterator for ParameterCollection {
+    type Item = Parameter;
+    type IntoIter = std::vec::IntoIter<Parameter>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.parameters.into_iter()
     }
 }
 
@@ -228,6 +266,58 @@ mod tests {
         assert!(report.is_ok());
         assert!(!report.has_errors());
         assert!(!report.has_warnings());
+    }
+
+    #[test]
+    fn extend_adds_multiple_parameters() {
+        let base = ParameterCollection::new().add(Parameter::string("name"));
+
+        let extra = vec![Parameter::integer("age"), Parameter::boolean("active")];
+
+        let coll = base.extend(extra);
+        assert_eq!(coll.len(), 3);
+        assert!(coll.contains("name"));
+        assert!(coll.contains("age"));
+        assert!(coll.contains("active"));
+    }
+
+    #[test]
+    fn from_iterator_builds_collection() {
+        let params = vec![Parameter::string("host"), Parameter::integer("port")];
+
+        let coll: ParameterCollection = params.into_iter().collect();
+        assert_eq!(coll.len(), 2);
+        assert!(coll.contains("host"));
+    }
+
+    #[test]
+    fn iter_yields_parameters_in_order() {
+        let coll = ParameterCollection::new()
+            .add(Parameter::string("a"))
+            .add(Parameter::string("b"));
+
+        let ids: Vec<&str> = coll.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn into_iterator_ref() {
+        let coll = ParameterCollection::new().add(Parameter::string("x"));
+
+        let count = (&coll).into_iter().count();
+        assert_eq!(count, 1);
+        // coll still usable
+        assert_eq!(coll.len(), 1);
+    }
+
+    #[test]
+    fn into_iterator_owned() {
+        let coll = ParameterCollection::new()
+            .add(Parameter::string("x"))
+            .add(Parameter::string("y"));
+
+        let params: Vec<Parameter> = coll.into_iter().collect();
+        assert_eq!(params.len(), 2);
     }
 
     #[test]
