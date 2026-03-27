@@ -383,6 +383,136 @@ pub enum Rule {
 }
 
 impl Rule {
+    // ── Shorthand constructors ──────────────────────────────────────────
+
+    /// Creates a [`Pattern`](Self::Pattern) rule.
+    #[must_use]
+    pub fn pattern(pattern: impl Into<String>) -> Self {
+        Self::Pattern {
+            pattern: pattern.into(),
+            message: None,
+        }
+    }
+
+    /// Creates a [`MinLength`](Self::MinLength) rule.
+    #[must_use]
+    pub fn min_length(min: usize) -> Self {
+        Self::MinLength {
+            min,
+            message: None,
+        }
+    }
+
+    /// Creates a [`MaxLength`](Self::MaxLength) rule.
+    #[must_use]
+    pub fn max_length(max: usize) -> Self {
+        Self::MaxLength {
+            max,
+            message: None,
+        }
+    }
+
+    /// Creates a [`Min`](Self::Min) rule from an `i64`.
+    #[must_use]
+    pub fn min_value(min: i64) -> Self {
+        Self::Min {
+            min: serde_json::Number::from(min),
+            message: None,
+        }
+    }
+
+    /// Creates a [`Max`](Self::Max) rule from an `i64`.
+    #[must_use]
+    pub fn max_value(max: i64) -> Self {
+        Self::Max {
+            max: serde_json::Number::from(max),
+            message: None,
+        }
+    }
+
+    /// Creates a [`Min`](Self::Min) rule from an `f64`.
+    #[must_use]
+    pub fn min_value_f64(min: f64) -> Self {
+        Self::Min {
+            min: serde_json::Number::from_f64(min).expect("finite f64"),
+            message: None,
+        }
+    }
+
+    /// Creates a [`Max`](Self::Max) rule from an `f64`.
+    #[must_use]
+    pub fn max_value_f64(max: f64) -> Self {
+        Self::Max {
+            max: serde_json::Number::from_f64(max).expect("finite f64"),
+            message: None,
+        }
+    }
+
+    /// Creates a [`OneOf`](Self::OneOf) rule.
+    #[must_use]
+    pub fn one_of<V: Into<serde_json::Value>>(values: impl IntoIterator<Item = V>) -> Self {
+        Self::OneOf {
+            values: values.into_iter().map(Into::into).collect(),
+            message: None,
+        }
+    }
+
+    /// Creates a [`MinItems`](Self::MinItems) rule.
+    #[must_use]
+    pub fn min_items(min: usize) -> Self {
+        Self::MinItems {
+            min,
+            message: None,
+        }
+    }
+
+    /// Creates a [`MaxItems`](Self::MaxItems) rule.
+    #[must_use]
+    pub fn max_items(max: usize) -> Self {
+        Self::MaxItems {
+            max,
+            message: None,
+        }
+    }
+
+    /// Creates a [`UniqueBy`](Self::UniqueBy) rule.
+    #[must_use]
+    pub fn unique_by(key: impl Into<String>) -> Self {
+        Self::UniqueBy {
+            key: key.into(),
+            message: None,
+        }
+    }
+
+    /// Creates a [`Custom`](Self::Custom) rule.
+    #[must_use]
+    pub fn custom(expression: impl Into<String>) -> Self {
+        Self::Custom {
+            expression: expression.into(),
+            message: None,
+        }
+    }
+
+    /// Attaches a custom error message to this rule.
+    #[must_use]
+    pub fn with_message(self, msg: impl Into<String>) -> Self {
+        let msg = Some(msg.into());
+        match self {
+            Self::Pattern { pattern, .. } => Self::Pattern { pattern, message: msg },
+            Self::MinLength { min, .. } => Self::MinLength { min, message: msg },
+            Self::MaxLength { max, .. } => Self::MaxLength { max, message: msg },
+            Self::Min { min, .. } => Self::Min { min, message: msg },
+            Self::Max { max, .. } => Self::Max { max, message: msg },
+            Self::OneOf { values, .. } => Self::OneOf { values, message: msg },
+            Self::MinItems { min, .. } => Self::MinItems { min, message: msg },
+            Self::MaxItems { max, .. } => Self::MaxItems { max, message: msg },
+            Self::UniqueBy { key, .. } => Self::UniqueBy { key, message: msg },
+            Self::Custom { expression, .. } => Self::Custom { expression, message: msg },
+            // Predicate variants don't have messages
+            other => other,
+        }
+    }
+
     /// Returns `true` if this rule validates a single value
     /// (as opposed to evaluating context predicates).
     ///
@@ -2137,5 +2267,55 @@ mod tests {
             assert!(!r.is_value_rule(), "{r:?} should not be value_rule");
             assert!(!r.is_deferred(), "{r:?} should not be deferred");
         }
+    }
+
+    // ── Shorthand constructors ───────────────────────────────────────────
+
+    #[test]
+    fn shorthand_min_length() {
+        let rule = Rule::min_length(5);
+        assert!(matches!(rule, Rule::MinLength { min: 5, message: None }));
+    }
+
+    #[test]
+    fn shorthand_pattern() {
+        let rule = Rule::pattern(r"^\d+$");
+        if let Rule::Pattern { pattern, message } = &rule {
+            assert_eq!(pattern, r"^\d+$");
+            assert!(message.is_none());
+        } else {
+            panic!("expected Pattern");
+        }
+    }
+
+    #[test]
+    fn shorthand_with_message() {
+        let rule = Rule::min_length(3).with_message("Too short");
+        assert!(matches!(
+            rule,
+            Rule::MinLength {
+                min: 3,
+                message: Some(ref m),
+            } if m == "Too short"
+        ));
+    }
+
+    #[test]
+    fn shorthand_one_of() {
+        let rule = Rule::one_of(["a", "b", "c"]);
+        if let Rule::OneOf { values, message } = &rule {
+            assert_eq!(values.len(), 3);
+            assert!(message.is_none());
+        } else {
+            panic!("expected OneOf");
+        }
+    }
+
+    #[test]
+    fn shorthand_min_max_value() {
+        let min = Rule::min_value(0);
+        let max = Rule::max_value(100);
+        assert!(matches!(min, Rule::Min { .. }));
+        assert!(matches!(max, Rule::Max { .. }));
     }
 }
