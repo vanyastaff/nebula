@@ -877,6 +877,15 @@ impl Rule {
     }
 }
 
+impl crate::foundation::Validate<serde_json::Value> for Rule {
+    fn validate(
+        &self,
+        input: &serde_json::Value,
+    ) -> Result<(), crate::foundation::ValidationError> {
+        self.validate_value(input)
+    }
+}
+
 /// Replaces the error message if an override is provided.
 fn override_message(mut error: ValidationError, message: &Option<String>) -> ValidationError {
     if let Some(msg) = message {
@@ -2353,5 +2362,28 @@ mod tests {
     fn shorthand_not() {
         let rule = Rule::not(Rule::min_length(5));
         assert!(matches!(rule, Rule::Not { .. }));
+    }
+
+    #[test]
+    fn rule_implements_validate_trait() {
+        use crate::foundation::Validate;
+
+        let rule = Rule::min_length(3);
+        assert!(rule.validate(&json!("alice")).is_ok());
+        assert!(rule.validate(&json!("ab")).is_err());
+    }
+
+    #[test]
+    fn rule_composes_with_combinators() {
+        use crate::foundation::{Validate, ValidateExt};
+
+        let combined = Rule::min_length(3).and(Rule::max_length(10));
+        assert!(combined.validate(&json!("hello")).is_ok());
+        assert!(combined.validate(&json!("ab")).is_err());
+        assert!(
+            combined
+                .validate(&json!("a very long string indeed"))
+                .is_err()
+        );
     }
 }
