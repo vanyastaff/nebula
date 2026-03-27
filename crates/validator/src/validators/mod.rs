@@ -65,7 +65,7 @@ pub use content::{Email, MatchesRegex, Url, email, matches_regex, url};
 
 pub use range::{
     ExclusiveRange, GreaterThan, InRange, LessThan, Max, Min, exclusive_range, greater_than,
-    in_range, less_than, max, min,
+    in_range, in_range_f64, in_range_i64, less_than, max, max_f64, max_i64, min, min_f64, min_i64,
 };
 
 pub use size::{

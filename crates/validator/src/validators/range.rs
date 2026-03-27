@@ -130,6 +130,109 @@ crate::validator! {
 }
 
 // ============================================================================
+// CONVENIENCE ALIASES (turbofish-free)
+// ============================================================================
+
+/// Creates a [`Min`] validator for `i64` values (no turbofish needed).
+///
+/// This is a convenience alias for `min::<i64>(value)`, useful when
+/// validating JSON numbers which are represented as `i64`.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_validator::validators::min_i64;
+/// use nebula_validator::foundation::Validate;
+///
+/// assert!(min_i64(18).validate(&25_i64).is_ok());
+/// assert!(min_i64(18).validate(&10_i64).is_err());
+/// ```
+#[must_use]
+pub fn min_i64(value: i64) -> Min<i64> {
+    min(value)
+}
+
+/// Creates a [`Max`] validator for `i64` values (no turbofish needed).
+///
+/// # Examples
+///
+/// ```
+/// use nebula_validator::validators::max_i64;
+/// use nebula_validator::foundation::Validate;
+///
+/// assert!(max_i64(100).validate(&50_i64).is_ok());
+/// assert!(max_i64(100).validate(&200_i64).is_err());
+/// ```
+#[must_use]
+pub fn max_i64(value: i64) -> Max<i64> {
+    max(value)
+}
+
+/// Creates an [`InRange`] validator for `i64` values (no turbofish needed).
+///
+/// # Examples
+///
+/// ```
+/// use nebula_validator::validators::in_range_i64;
+/// use nebula_validator::foundation::Validate;
+///
+/// assert!(in_range_i64(1, 100).validate(&50_i64).is_ok());
+/// assert!(in_range_i64(1, 100).validate(&0_i64).is_err());
+/// ```
+#[must_use]
+pub fn in_range_i64(min_val: i64, max_val: i64) -> InRange<i64> {
+    in_range(min_val, max_val)
+}
+
+/// Creates a [`Min`] validator for `f64` values (no turbofish needed).
+///
+/// # Examples
+///
+/// ```
+/// use nebula_validator::validators::min_f64;
+/// use nebula_validator::foundation::Validate;
+///
+/// assert!(min_f64(0.0).validate(&1.5_f64).is_ok());
+/// assert!(min_f64(0.0).validate(&-1.0_f64).is_err());
+/// ```
+#[must_use]
+pub fn min_f64(value: f64) -> Min<f64> {
+    min(value)
+}
+
+/// Creates a [`Max`] validator for `f64` values (no turbofish needed).
+///
+/// # Examples
+///
+/// ```
+/// use nebula_validator::validators::max_f64;
+/// use nebula_validator::foundation::Validate;
+///
+/// assert!(max_f64(100.0).validate(&50.5_f64).is_ok());
+/// assert!(max_f64(100.0).validate(&200.0_f64).is_err());
+/// ```
+#[must_use]
+pub fn max_f64(value: f64) -> Max<f64> {
+    max(value)
+}
+
+/// Creates an [`InRange`] validator for `f64` values (no turbofish needed).
+///
+/// # Examples
+///
+/// ```
+/// use nebula_validator::validators::in_range_f64;
+/// use nebula_validator::foundation::Validate;
+///
+/// assert!(in_range_f64(0.0, 1.0).validate(&0.5_f64).is_ok());
+/// assert!(in_range_f64(0.0, 1.0).validate(&2.0_f64).is_err());
+/// ```
+#[must_use]
+pub fn in_range_f64(min_val: f64, max_val: f64) -> InRange<f64> {
+    in_range(min_val, max_val)
+}
+
+// ============================================================================
 // TESTS
 // ============================================================================
 
