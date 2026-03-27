@@ -7,7 +7,8 @@ Composable, type-safe validation framework — two paradigms: programmatic combi
 
 ## Key Decisions
 - `Validated<T>` is a proof token: validate once, carry the proof through the system. Don't re-validate the same value.
-- `Rule` enum is JSON-serializable — enables storing validation rules in the database or config files.
+- `Rule` enum is JSON-serializable — enables storing validation rules in the database or config files. `#[non_exhaustive]`.
+- `Rule` has shorthand constructors (`Rule::min_length(5)`, `Rule::pattern(...)`, etc.) and `.with_message()` fluent builder. Struct literals still work.
 - `ExecutionMode` controls which rule categories run (`StaticOnly` skips deferred/async rules for fast paths).
 - Deep combinator types (`And<Or<Not<...>, ...>, ...>`) are inherent to the design. `clippy::type_complexity` is allowed.
 
@@ -18,4 +19,4 @@ Composable, type-safe validation framework — two paradigms: programmatic combi
 ## Relations
 - No nebula deps. Used by nebula-parameter, nebula-macros, nebula-action, nebula-parameter.
 
-<!-- reviewed: 2026-03-24 -->
+<!-- reviewed: 2026-03-26 (added Rule shorthand constructors and with_message()) -->
