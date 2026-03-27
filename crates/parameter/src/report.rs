@@ -8,15 +8,30 @@ use crate::values::ParameterValues;
 ///
 /// Hard errors must be resolved before the values can be accepted.
 /// Warnings are informational and do not block acceptance.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ValidationReport {
     /// Hard validation failures that block accepting the values.
     pub errors: Vec<ParameterError>,
     /// Non-blocking diagnostic notices (e.g. unknown fields under `Warn` profile).
     pub warnings: Vec<ParameterError>,
+    /// The values that were validated (used by `into_validated`).
+    values: ParameterValues,
 }
 
 impl ValidationReport {
+    /// Creates a new report from validation results and the validated values.
+    pub(crate) fn new(
+        errors: Vec<ParameterError>,
+        warnings: Vec<ParameterError>,
+        values: ParameterValues,
+    ) -> Self {
+        Self {
+            errors,
+            warnings,
+            values,
+        }
+    }
+
     /// Returns `true` if the report contains no hard errors.
     #[must_use]
     pub fn is_ok(&self) -> bool {
@@ -53,9 +68,9 @@ impl ValidationReport {
     /// # Errors
     ///
     /// Returns the report unchanged when it contains hard errors.
-    pub fn into_validated(self, values: &ParameterValues) -> Result<ValidatedValues, Self> {
+    pub fn into_validated(self) -> Result<ValidatedValues, Self> {
         if self.errors.is_empty() {
-            Ok(ValidatedValues::new(values.clone()))
+            Ok(ValidatedValues::new(self.values))
         } else {
             Err(self)
         }

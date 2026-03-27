@@ -44,7 +44,7 @@ pub fn validate_with_profile(
     values: &ParameterValues,
     profile: ValidationProfile,
 ) -> ValidationReport {
-    let mut report = ValidationReport::default();
+    let mut report = ValidationReport::new(Vec::new(), Vec::new(), values.clone());
     let values_map = values.as_map();
 
     for param in parameters {
@@ -153,6 +153,7 @@ fn validate_type(
     depth: u8,
     report: &mut ValidationReport,
 ) {
+    #[allow(unreachable_patterns)] // Reason: wildcard arm required for #[non_exhaustive] in downstream crates
     match param_type {
         ParameterType::Number {
             integer, min, max, ..
@@ -215,6 +216,9 @@ fn validate_type(
         | ParameterType::Hidden
         | ParameterType::Computed { .. }
         | ParameterType::Notice { .. } => {}
+
+        // Future variants: skip type-specific validation
+        _ => {}
     }
 }
 
