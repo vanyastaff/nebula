@@ -8,7 +8,8 @@ Composable, type-safe validation framework — two paradigms: programmatic combi
 ## Key Decisions
 - `Validated<T>` is a proof token: validate once, carry the proof through the system. Don't re-validate the same value.
 - `Rule` enum is JSON-serializable — enables storing validation rules in the database or config files. `#[non_exhaustive]`.
-- `Rule` has shorthand constructors (`Rule::min_length(5)`, `Rule::pattern(...)`, `Rule::all/any/not(...)`, etc.) and `.with_message()` fluent builder. Struct literals still work.
+- `Rule` has shorthand constructors (`Rule::min_length(5)`, `Rule::pattern(...)`, `Rule::email()`, `Rule::url()`, `Rule::all/any/not(...)`, etc.) and `.with_message()` fluent builder. Struct literals still work.
+- `collect_json_fields` combinator — validates multiple JSON fields, collects ALL errors (non-short-circuiting).
 - `Rule::min_value_f64`/`max_value_f64` return `Option<Self>` — `None` for NaN/Infinity. No panics.
 - `validate_rules()` returns `Result<(), ValidationErrors>` (not `Vec<ValidationError>`).
 - `min_i64/max_i64/in_range_i64` + `f64` variants — turbofish-free convenience for JSON numbers.
@@ -24,4 +25,4 @@ Composable, type-safe validation framework — two paradigms: programmatic combi
 ## Relations
 - No nebula deps. Used by nebula-parameter, nebula-macros, nebula-action, nebula-parameter.
 
-<!-- reviewed: 2026-03-26 (phase 2: convenience numerics, Rule Validate bridge, ValidationErrors return type) -->
+<!-- reviewed: 2026-03-26 (phase 3: collect_json_fields, Rule::Email/Url) -->
