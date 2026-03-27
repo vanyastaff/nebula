@@ -1,28 +1,30 @@
 # nebula-error
 
-Enterprise error infrastructure for the Nebula workflow engine.
-
-## Layer
-
-Foundation — no upward dependencies. Imported by all crates that need typed errors.
-
-## Key Design Decisions
-
-- **`Cow<'static, str>` for ErrorCode** — most codes are compile-time constants (`&'static str`), but plugins can create runtime codes via `ErrorCode::custom()`. `Cow` avoids allocation for the common case.
-- **ErrorSeverity is ordered** — `Info < Warning < Error` so `max()` picks the worst severity in a collection. Uses discriminant values 0/1/2.
-- **ErrorCategory is `#[non_exhaustive]`** — new categories may be added. ErrorSeverity intentionally is not (closed set of 3).
-- **Serde behind feature flag** — manual impls serialize as lowercase/snake_case strings, not Rust enum variant names.
-- **Classify trait has default impls** — only `category()` and `code()` are required; severity defaults to Error, retryability delegates to category.
+Enterprise error infrastructure. Google error model (Status + typed details) adapted to Rust with AWS SDK wrapper pattern.
 
 ## Invariants
 
-- `ErrorCode::new()` is `const fn` — canonical codes in `codes` module are true constants.
-- Serde round-trip: deserialize(serialize(x)) == x for all types.
-- `is_client_error()` and `is_server_error()` are not exhaustive over all categories (RateLimit and Cancelled are neither).
+- `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`
+- `Classify` trait: 2 required (`category`, `error_code`), 3 optional with defaults
+- `is_retryable()` default from `ErrorCategory`: Timeout, Exhausted, External = retryable
+- `ErrorDetails` keyed by TypeId — one value per type, insert overwrites
+- `ErrorCode` uses `Cow<'static, str>` — static for canonical, owned for plugin runtime codes
+- `ErrorSeverity` ordering: Info < Warning < Error (derives Ord)
+- `NebulaError<E>` requires `E: Classify` — classification delegated to domain error
+- Serde behind feature flag — not forced on all consumers
+- Derive macro behind `derive` feature flag
 
 ## Traps
 
-- `ErrorCategory::RateLimit` is NOT default-retryable (unlike Timeout/Exhausted/External) — rate limiting needs backoff logic, not blind retry.
-- RetryHint serde uses `after_ms` (milliseconds as u64), not Duration's default serde.
+- `ErrorCategory` and `ErrorSeverity` are `#[non_exhaustive]` — match arms need wildcard
+- `RetryHint` is advisory — resilience layer may ignore it
+- `ErrorDetails::insert` overwrites same-type entry silently (no merge)
+- Derive macro panics at compile time for unknown category/severity strings
+- `NebulaError<E>` requires `E: Classify + Debug + Display` for full Error trait impl
 
-<!-- reviewed: 2026-03-26 -->
+## Relations
+
+- Depends on: thiserror (required), serde (optional), nebula-error-macros (optional)
+- Depended on by: (future — all crates during Phase 3 migration)
+
+<!-- reviewed: 2026-03-27 -->
