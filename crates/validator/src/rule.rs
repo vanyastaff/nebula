@@ -17,7 +17,7 @@
 //!
 //! | Category | Variants | Method | Classification |
 //! |---|---|---|---|
-//! | Value validation | `MinLength`, `MaxLength`, `Pattern`, `Min`, `Max`, `OneOf`, `MinItems`, `MaxItems` | [`Rule::validate_value`] | [`Rule::is_value_rule`] |
+//! | Value validation | `MinLength`, `MaxLength`, `Pattern`, `Min`, `Max`, `OneOf`, `MinItems`, `MaxItems`, `Email`, `Url` | [`Rule::validate_value`] | [`Rule::is_value_rule`] |
 //! | Context predicate | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `IsTrue`, `IsFalse`, `Set`, `Empty`, `Contains`, `Matches`, `In` | [`Rule::evaluate`] | [`Rule::is_predicate`] |
 //! | Deferred | `Custom`, `UniqueBy` | skipped at schema time | [`Rule::is_deferred`] |
 //! | Logical combinator | `All`, `Any`, `Not` | both methods | — |
@@ -217,6 +217,20 @@ pub enum Rule {
     MaxItems {
         /// Maximum item count (inclusive).
         max: usize,
+        /// Optional custom error message.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+
+    /// Value must be a valid email address.
+    Email {
+        /// Optional custom error message.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+
+    /// Value must be a valid URL (http/https).
+    Url {
         /// Optional custom error message.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
@@ -447,6 +461,18 @@ impl Rule {
         Self::MaxItems { max, message: None }
     }
 
+    /// Creates an [`Email`](Self::Email) rule.
+    #[must_use]
+    pub fn email() -> Self {
+        Self::Email { message: None }
+    }
+
+    /// Creates a [`Url`](Self::Url) rule.
+    #[must_use]
+    pub fn url() -> Self {
+        Self::Url { message: None }
+    }
+
     /// Creates a [`UniqueBy`](Self::UniqueBy) rule.
     #[must_use]
     pub fn unique_by(key: impl Into<String>) -> Self {
@@ -484,6 +510,8 @@ impl Rule {
             },
             Self::MinItems { min, .. } => Self::MinItems { min, message: msg },
             Self::MaxItems { max, .. } => Self::MaxItems { max, message: msg },
+            Self::Email { .. } => Self::Email { message: msg },
+            Self::Url { .. } => Self::Url { message: msg },
             Self::UniqueBy { key, .. } => Self::UniqueBy { key, message: msg },
             Self::Custom { expression, .. } => Self::Custom {
                 expression,
@@ -539,6 +567,8 @@ impl Rule {
                 | Self::OneOf { .. }
                 | Self::MinItems { .. }
                 | Self::MaxItems { .. }
+                | Self::Email { .. }
+                | Self::Url { .. }
         )
     }
 
@@ -727,6 +757,38 @@ impl Rule {
                     max_size::<serde_json::Value>(*max_val)
                         .validate(items.as_slice())
                         .map_err(|e| override_message(e, message))?;
+                }
+                Ok(())
+            }
+
+            Self::Email { message } => {
+                if let Some(s) = value.as_str() {
+                    static EMAIL_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(
+                        || {
+                            regex::Regex::new(
+                                r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$",
+                            )
+                            .expect("email regex is valid")
+                        },
+                    );
+                    if !EMAIL_RE.is_match(s) {
+                        let err = ValidationError::invalid_format("", "email");
+                        return Err(override_message(err, message));
+                    }
+                }
+                Ok(())
+            }
+            Self::Url { message } => {
+                if let Some(s) = value.as_str() {
+                    static URL_RE: std::sync::LazyLock<regex::Regex> =
+                        std::sync::LazyLock::new(|| {
+                            regex::Regex::new(r"^https?://[^\s/$.?#]+\.[^\s]+$")
+                                .expect("url regex is valid")
+                        });
+                    if !URL_RE.is_match(s) {
+                        let err = ValidationError::invalid_format("", "url");
+                        return Err(override_message(err, message));
+                    }
                 }
                 Ok(())
             }
@@ -1803,6 +1865,8 @@ mod tests {
                 max: 1,
                 message: None,
             },
+            Rule::Email { message: None },
+            Rule::Url { message: None },
         ];
         for rule in &rules {
             assert!(
@@ -2232,6 +2296,8 @@ mod tests {
                 max: 1,
                 message: None,
             },
+            Rule::Email { message: None },
+            Rule::Url { message: None },
         ];
         for r in &value_rules {
             assert!(r.is_value_rule(), "{r:?} should be value_rule");
@@ -2385,5 +2451,31 @@ mod tests {
                 .validate(&json!("a very long string indeed"))
                 .is_err()
         );
+    }
+
+    // ── Email / URL rules ───────────────────────────────────────────────
+
+    #[test]
+    fn email_rule_validates() {
+        let rule = Rule::email();
+        assert!(rule.validate_value(&json!("user@example.com")).is_ok());
+        assert!(rule.validate_value(&json!("not-an-email")).is_err());
+        // Non-string passes silently (consistent with other value rules)
+        assert!(rule.validate_value(&json!(42)).is_ok());
+    }
+
+    #[test]
+    fn url_rule_validates() {
+        let rule = Rule::url();
+        assert!(rule.validate_value(&json!("https://example.com")).is_ok());
+        assert!(rule.validate_value(&json!("not-a-url")).is_err());
+        assert!(rule.validate_value(&json!(42)).is_ok());
+    }
+
+    #[test]
+    fn email_rule_with_custom_message() {
+        let rule = Rule::email().with_message("Please enter a valid email");
+        let err = rule.validate_value(&json!("bad")).unwrap_err();
+        assert_eq!(err.message.as_ref(), "Please enter a valid email");
     }
 }
