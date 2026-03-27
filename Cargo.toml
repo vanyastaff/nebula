@@ -26,6 +26,8 @@ members = [
     "crates/macros",
     "crates/resource-macros",
     "crates/sdk", "crates/auth",
+    "crates/error",
+    "crates/error-macros",
 ]
 exclude = [
     "crates/*/fuzz",
@@ -135,6 +137,10 @@ proptest = "1.10"
 criterion = "0.8.2"
 tokio-test = "0.4"
 test-case = "3.3.1"
+
+# Nebula internal
+nebula-error = { path = "crates/error" }
+nebula-error-macros = { path = "crates/error-macros" }
 
 
 

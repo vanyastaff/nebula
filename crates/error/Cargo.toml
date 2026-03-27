@@ -1,0 +1,33 @@
+[package]
+name = "nebula-error"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Enterprise error infrastructure for the Nebula workflow engine"
+keywords.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+
+[dependencies.serde]
+workspace = true
+optional = true
+
+[dependencies.nebula-error-macros]
+path = "../error-macros"
+optional = true
+
+[features]
+default = []
+serde = ["dep:serde"]
+derive = ["dep:nebula-error-macros"]
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+nebula-error-macros = { path = "../error-macros" }
