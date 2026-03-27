@@ -34,6 +34,7 @@ use crate::path::ParameterPath;
 /// so `Condition::Eq { .. }` becomes `{ "op": "eq", "field": "...", "value": ... }`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Condition {
     /// True when the field value equals `value`.
     Eq {
@@ -226,6 +227,7 @@ impl Condition {
     /// [`ParameterPath::as_str`] representation.
     #[must_use]
     pub fn evaluate(&self, values: &HashMap<String, Value>) -> bool {
+        #[allow(unreachable_patterns)] // Reason: wildcard arm required for #[non_exhaustive] in downstream crates
         match self {
             Self::Eq { field, value } => values.get(field.as_str()) == Some(value),
 
@@ -264,6 +266,9 @@ impl Condition {
             Self::Any { conditions } => conditions.iter().any(|c| c.evaluate(values)),
 
             Self::Not { condition } => !condition.evaluate(values),
+
+            // Future variants: default to false (safe: hidden fields stay hidden)
+            _ => false,
         }
     }
 
@@ -275,6 +280,7 @@ impl Condition {
     /// representation to `refs`.  Useful for dependency analysis and
     /// topological ordering of parameters.
     pub fn field_references<'a>(&'a self, refs: &mut Vec<&'a str>) {
+        #[allow(unreachable_patterns)] // Reason: wildcard arm required for #[non_exhaustive] in downstream crates
         match self {
             Self::Eq { field, .. }
             | Self::Ne { field, .. }
@@ -294,6 +300,9 @@ impl Condition {
             Self::Not { condition } => {
                 condition.field_references(refs);
             }
+
+            // Future variants: no field references by default
+            _ => {}
         }
     }
 }

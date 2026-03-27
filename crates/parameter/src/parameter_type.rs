@@ -34,6 +34,7 @@ fn default_depth() -> u8 {
 /// `ParameterType::String { .. }` becomes `{ "type": "string", ... }`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ParameterType {
     /// Free-form text input.
     String {
