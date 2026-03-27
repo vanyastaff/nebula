@@ -157,6 +157,75 @@ pub fn json_field_optional<V, I: ?Sized>(
     JsonField::optional(pointer, validator)
 }
 
+/// Validates multiple JSON fields and collects all errors (non-short-circuiting).
+///
+/// Unlike chaining `json_field(...).and(json_field(...))` which stops at the
+/// first error, this function runs all validators and returns all errors.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_validator::combinators::{collect_json_fields, json_field};
+/// use nebula_validator::validators::min_length;
+/// use nebula_validator::foundation::Validate;
+/// use serde_json::json;
+///
+/// let validator = collect_json_fields([
+///     json_field("/name", min_length(1)),
+///     json_field("/email", min_length(5)),
+/// ]);
+///
+/// let input = json!({"name": "", "email": "ab"});
+/// let err = validator.validate(&input).unwrap_err();
+/// // Both fields failed — errors are collected, not short-circuited
+/// assert!(err.nested().len() >= 2);
+/// ```
+pub fn collect_json_fields<V, I: ?Sized>(
+    fields: impl IntoIterator<Item = JsonField<V, I>>,
+) -> CollectJsonFields<V, I> {
+    CollectJsonFields {
+        fields: fields.into_iter().collect(),
+        _phantom: PhantomData,
+    }
+}
+
+/// Validates multiple JSON fields and collects all errors.
+///
+/// Created by [`collect_json_fields`].
+#[derive(Debug, Clone)]
+pub struct CollectJsonFields<V, I: ?Sized> {
+    fields: Vec<JsonField<V, I>>,
+    _phantom: PhantomData<fn(&I)>,
+}
+
+impl<V, I> Validate<serde_json::Value> for CollectJsonFields<V, I>
+where
+    V: Validate<I>,
+    I: ?Sized,
+    serde_json::Value: AsValidatable<I>,
+{
+    fn validate(&self, input: &serde_json::Value) -> Result<(), ValidationError> {
+        let mut errors = Vec::new();
+        for field in &self.fields {
+            if let Err(e) = field.validate(input) {
+                errors.push(e);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else if errors.len() == 1 {
+            Err(errors.into_iter().next().unwrap())
+        } else {
+            let count = errors.len();
+            Err(ValidationError::new(
+                "validation_failed",
+                format!("{count} fields failed validation"),
+            )
+            .with_nested(errors))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +308,45 @@ mod tests {
         let v = json_field("", min_length(3));
         assert!(v.validate(&json!("hello")).is_ok());
         assert!(v.validate(&json!("hi")).is_err());
+    }
+
+    #[test]
+    fn collect_json_fields_gathers_all_errors() {
+        let validator = collect_json_fields([
+            json_field("/name", min_length(1)),
+            json_field("/email", min_length(5)),
+        ]);
+
+        // Both name and email fail
+        let input = json!({"name": "", "email": "ab"});
+        let err = validator.validate(&input).unwrap_err();
+        assert!(
+            err.nested().len() >= 2,
+            "expected at least 2 errors, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn collect_json_fields_passes_when_all_valid() {
+        let validator = collect_json_fields([
+            json_field("/name", min_length(1)),
+            json_field("/email", min_length(1)),
+        ]);
+
+        let input = json!({"name": "Alice", "email": "alice@example.com"});
+        assert!(validator.validate(&input).is_ok());
+    }
+
+    #[test]
+    fn collect_json_fields_single_error_not_nested() {
+        let validator = collect_json_fields([
+            json_field("/name", min_length(3)),
+            json_field("/email", min_length(1)),
+        ]);
+
+        let input = json!({"name": "a", "email": "ok"});
+        let err = validator.validate(&input).unwrap_err();
+        // Single error returned directly, not wrapped
+        assert_eq!(err.code.as_ref(), "min_length");
     }
 }

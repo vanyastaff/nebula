@@ -96,7 +96,9 @@ pub use each::{Each, each, each_fail_fast};
 pub use error::CombinatorError;
 pub use factories::{AllOf, AnyOf, all_of, any_of};
 pub use field::{Field, FieldError, FieldValidateExt, MultiField, field, named_field};
-pub use json_field::{JsonField, json_field, json_field_optional};
+pub use json_field::{
+    CollectJsonFields, JsonField, collect_json_fields, json_field, json_field_optional,
+};
 pub use lazy::{Lazy, lazy};
 pub use message::{WithCode, WithMessage, with_code, with_message};
 pub use nested::{
@@ -126,10 +128,10 @@ pub use when::{When, when};
 /// ```
 pub mod prelude {
     pub use super::{
-        AllOf, And, AndAll, AnyOf, Each, Field, FieldValidateExt, JsonField, Lazy, Not, Optional,
-        Or, OrAny, Unless, When, WithCode, WithMessage, all_of, and, and_all, any_of, each,
-        each_fail_fast, field, json_field, json_field_optional, lazy, named_field, not, optional,
-        or, or_any, unless, when, with_code, with_message,
+        AllOf, And, AndAll, AnyOf, CollectJsonFields, Each, Field, FieldValidateExt, JsonField,
+        Lazy, Not, Optional, Or, OrAny, Unless, When, WithCode, WithMessage, all_of, and, and_all,
+        any_of, collect_json_fields, each, each_fail_fast, field, json_field, json_field_optional,
+        lazy, named_field, not, optional, or, or_any, unless, when, with_code, with_message,
     };
 }
 

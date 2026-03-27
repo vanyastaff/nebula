@@ -60,7 +60,8 @@ pub use crate::validators::*;
 // ============================================================================
 
 pub use crate::combinators::{
-    AllOf, AnyOf, CollectionNested, Each, Field, JsonField, MultiField, NestedValidate,
-    OptionalNested, SelfValidating, all_of, and, any_of, collection_nested, each, field,
-    json_field, json_field_optional, named_field, nested_validator, not, optional_nested, or,
+    AllOf, AnyOf, CollectJsonFields, CollectionNested, Each, Field, JsonField, MultiField,
+    NestedValidate, OptionalNested, SelfValidating, all_of, and, any_of, collect_json_fields,
+    collection_nested, each, field, json_field, json_field_optional, named_field, nested_validator,
+    not, optional_nested, or,
 };
