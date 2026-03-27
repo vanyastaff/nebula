@@ -7,7 +7,7 @@
 //!
 //! # Examples
 //!
-//! ```ignore
+//! ```
 //! use nebula_parameter::conditions::Condition;
 //! use nebula_parameter::path::ParameterPath;
 //!

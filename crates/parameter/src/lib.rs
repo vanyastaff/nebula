@@ -2,12 +2,14 @@
 //!
 //! ## Quick Start
 //!
-//! ```ignore
+//! ```
 //! use nebula_parameter::prelude::*;
 //!
 //! let params = ParameterCollection::new()
 //!     .add(Parameter::string("api_key").label("API Key").required().secret())
 //!     .add(Parameter::integer("timeout_ms").label("Timeout (ms)"));
+//!
+//! assert_eq!(params.len(), 2);
 //! ```
 //!
 //! ## Core Types
@@ -89,6 +91,7 @@ pub use spec::{
     FilterRule,
 };
 pub use transformer::Transformer;
+pub use lint::{lint_collection, LintDiagnostic, LintLevel};
 pub use values::{ModeValueRef, ParameterValue, ParameterValues};
 
 /// Common imports for working with parameters.
@@ -116,5 +119,6 @@ pub mod prelude {
         FilterRule,
     };
     pub use crate::transformer::Transformer;
+    pub use crate::lint::{lint_collection, LintDiagnostic, LintLevel};
     pub use crate::values::{ModeValueRef, ParameterValue, ParameterValues};
 }

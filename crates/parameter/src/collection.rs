@@ -23,7 +23,7 @@ use crate::values::ParameterValues;
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
 /// use nebula_parameter::collection::ParameterCollection;
 /// use nebula_parameter::parameter::Parameter;
 /// use serde_json::json;

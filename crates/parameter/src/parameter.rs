@@ -7,7 +7,7 @@
 //!
 //! # Examples
 //!
-//! ```ignore
+//! ```
 //! use nebula_parameter::parameter::Parameter;
 //! use nebula_parameter::conditions::Condition;
 //!
@@ -20,6 +20,8 @@
 //!         .option(serde_json::json!("eu-west-1"), "EU West")
 //!         .searchable(),
 //! ];
+//!
+//! assert_eq!(schema.len(), 3);
 //! ```
 
 use std::future::Future;
