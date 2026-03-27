@@ -12,7 +12,6 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-thiserror = { workspace = true }
 
 [dependencies.serde]
 workspace = true

@@ -16,6 +16,7 @@ use std::fmt;
 /// assert_eq!(ErrorSeverity::default(), ErrorSeverity::Error);
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum ErrorSeverity {
     /// Informational — not an error, but worth noting.
     Info = 0,

@@ -256,6 +256,28 @@ impl<E: Classify + fmt::Debug + fmt::Display> Error for NebulaError<E> {
     }
 }
 
+impl<E: Classify> Classify for NebulaError<E> {
+    fn category(&self) -> ErrorCategory {
+        self.inner.category()
+    }
+
+    fn code(&self) -> ErrorCode {
+        self.inner.code()
+    }
+
+    fn severity(&self) -> ErrorSeverity {
+        self.inner.severity()
+    }
+
+    fn is_retryable(&self) -> bool {
+        self.inner.is_retryable()
+    }
+
+    fn retry_hint(&self) -> Option<RetryHint> {
+        self.inner.retry_hint()
+    }
+}
+
 impl<E: Classify> From<E> for NebulaError<E> {
     fn from(inner: E) -> Self {
         Self::new(inner)

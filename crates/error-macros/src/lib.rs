@@ -346,16 +346,13 @@ fn parse_classify_meta(attr: &syn::Attribute) -> syn::Result<VariantClassificati
         syn::Error::new_spanned(attr, "missing required `category` in #[classify(...)]")
     })?;
 
-    if code.is_none() {
-        return Err(syn::Error::new_spanned(
-            attr,
-            "missing required `code` in #[classify(...)]",
-        ));
-    }
+    let code = code.ok_or_else(|| {
+        syn::Error::new_spanned(attr, "missing required `code` in #[classify(...)]")
+    })?;
 
     Ok(VariantClassification {
         category,
-        code: code.expect("checked above"),
+        code,
         severity,
         retryable,
         retry_after_secs,

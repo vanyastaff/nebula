@@ -9,8 +9,9 @@ Enterprise error infrastructure. Google error model (Status + typed details) ada
 - `is_retryable()` default from `ErrorCategory`: Timeout, Exhausted, External = retryable
 - `ErrorDetails` keyed by TypeId — one value per type, insert overwrites
 - `ErrorCode` uses `Cow<'static, str>` — static for canonical, owned for plugin runtime codes
-- `ErrorSeverity` ordering: Info < Warning < Error (derives Ord)
+- `ErrorSeverity` ordering: Info < Warning < Error (derives Ord), `#[non_exhaustive]`
 - `NebulaError<E>` requires `E: Classify` — classification delegated to domain error
+- `NebulaError<E>` implements `Classify` by delegating to inner — usable anywhere `impl Classify` expected
 - Serde behind feature flag — not forced on all consumers
 - Derive macro behind `derive` feature flag
 
@@ -24,7 +25,7 @@ Enterprise error infrastructure. Google error model (Status + typed details) ada
 
 ## Relations
 
-- Depends on: thiserror (required), serde (optional), nebula-error-macros (optional)
+- Depends on: serde (optional), nebula-error-macros (optional); thiserror in dev-dependencies only
 - Depended on by: (future — all crates during Phase 3 migration)
 
-<!-- reviewed: 2026-03-27 -->
+<!-- reviewed: 2026-03-26 -->
