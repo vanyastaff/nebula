@@ -154,6 +154,41 @@ impl ParameterError {
     }
 }
 
+impl nebula_error::Classify for ParameterError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self.category() {
+            "format" | "type" | "value" | "validation" => {
+                nebula_error::ErrorCategory::Validation
+            }
+            "lookup" => nebula_error::ErrorCategory::NotFound,
+            "serialization" => nebula_error::ErrorCategory::Internal,
+            // Safety: category() only returns the above strings
+            _ => nebula_error::ErrorCategory::Internal,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        // Match directly to get &'static str literals for ErrorCode::new.
+        let code = match self {
+            Self::InvalidKeyFormat { .. } => "PARAM_INVALID_KEY",
+            Self::NotFound { .. } => "PARAM_NOT_FOUND",
+            Self::AlreadyExists { .. } => "PARAM_ALREADY_EXISTS",
+            Self::InvalidType { .. } => "PARAM_INVALID_TYPE",
+            Self::InvalidValue { .. } => "PARAM_INVALID_VALUE",
+            Self::MissingValue { .. } => "PARAM_MISSING_VALUE",
+            Self::UnknownField { .. } => "PARAM_UNKNOWN_FIELD",
+            Self::ValidationIssue { .. } => "PARAM_VALIDATION_ISSUE",
+            Self::DeserializationError { .. } => "PARAM_DESER",
+            Self::SerializationError { .. } => "PARAM_SER",
+        };
+        nebula_error::ErrorCode::new(code)
+    }
+
+    fn is_retryable(&self) -> bool {
+        ParameterError::is_retryable(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

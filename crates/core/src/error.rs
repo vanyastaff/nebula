@@ -394,6 +394,38 @@ impl From<chrono::ParseError> for CoreError {
     }
 }
 
+impl nebula_error::Classify for CoreError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::Validation { .. } | Self::InvalidInput { .. } | Self::Configuration { .. } => {
+                nebula_error::ErrorCategory::Validation
+            }
+            Self::NotFound { .. } => nebula_error::ErrorCategory::NotFound,
+            Self::AlreadyExists { .. } | Self::InvalidState { .. } => {
+                nebula_error::ErrorCategory::Conflict
+            }
+            Self::PermissionDenied { .. } | Self::Authorization { .. } => {
+                nebula_error::ErrorCategory::Authorization
+            }
+            Self::Authentication { .. } => nebula_error::ErrorCategory::Authentication,
+            Self::Timeout { .. } => nebula_error::ErrorCategory::Timeout,
+            Self::ResourceExhausted { .. } => nebula_error::ErrorCategory::Exhausted,
+            Self::Internal { .. }
+            | Self::Serialization { .. }
+            | Self::Deserialization { .. } => nebula_error::ErrorCategory::Internal,
+            Self::Dependency { .. } => nebula_error::ErrorCategory::External,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(self.error_code())
+    }
+
+    fn is_retryable(&self) -> bool {
+        CoreError::is_retryable(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

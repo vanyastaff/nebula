@@ -3747,6 +3747,7 @@ dependencies = [
  "chrono",
  "criterion",
  "domain-key",
+ "nebula-error",
  "postcard",
  "pretty_assertions",
  "serde",
@@ -3992,6 +3993,7 @@ dependencies = [
 name = "nebula-parameter"
 version = "0.1.0"
 dependencies = [
+ "nebula-error",
  "nebula-validator",
  "pretty_assertions",
  "regex",
@@ -4120,6 +4122,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "nebula-core",
+ "nebula-error",
  "redis",
  "serde",
  "serde_json",

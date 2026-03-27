@@ -13,6 +13,7 @@ documentation.workspace = true
 
 [dependencies]
 nebula-core = { path = "../core" }
+nebula-error = { workspace = true }
 
 async-trait = { workspace = true }
 thiserror = { workspace = true }

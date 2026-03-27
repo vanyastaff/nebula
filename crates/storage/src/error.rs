@@ -15,3 +15,21 @@ pub enum StorageError {
     #[error("backend: {0}")]
     Backend(String),
 }
+
+impl nebula_error::Classify for StorageError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::NotFound => nebula_error::ErrorCategory::NotFound,
+            Self::Serialization(_) => nebula_error::ErrorCategory::Internal,
+            Self::Backend(_) => nebula_error::ErrorCategory::External,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        match self {
+            Self::NotFound => nebula_error::ErrorCode::new("STORAGE_NOT_FOUND"),
+            Self::Serialization(_) => nebula_error::ErrorCode::new("STORAGE_SERIALIZATION"),
+            Self::Backend(_) => nebula_error::ErrorCode::new("STORAGE_BACKEND"),
+        }
+    }
+}
