@@ -46,6 +46,10 @@ pub use severity::ErrorSeverity;
 pub use traits::Classify;
 
 /// Convenience result type alias.
+///
+/// Wraps `std::result::Result` with [`NebulaError<E>`] as the error type,
+/// so callers can write `nebula_error::Result<T, MyError>` instead of
+/// `Result<T, NebulaError<MyError>>`.
 pub type Result<T, E> = std::result::Result<T, NebulaError<E>>;
 
 /// Re-export derive macro when feature is enabled.
