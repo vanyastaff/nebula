@@ -30,7 +30,7 @@
 //! assert!(validate_rules(&json!("ab"), &rules, ExecutionMode::StaticOnly).is_err());
 //! ```
 
-use crate::foundation::ValidationError;
+use crate::foundation::ValidationErrors;
 use crate::rule::Rule;
 
 /// Controls which rules are executed.
@@ -66,13 +66,13 @@ pub enum ExecutionMode {
 ///
 /// # Returns
 ///
-/// `Ok(())` if all applicable rules pass, or `Err(Vec<ValidationError>)`
+/// `Ok(())` if all applicable rules pass, or `Err(ValidationErrors)`
 /// with all collected validation failures.
 pub fn validate_rules(
     value: &serde_json::Value,
     rules: &[Rule],
     mode: ExecutionMode,
-) -> Result<(), Vec<ValidationError>> {
+) -> Result<(), ValidationErrors> {
     let mut errors = Vec::new();
 
     for rule in rules {
@@ -94,7 +94,7 @@ pub fn validate_rules(
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(errors)
+        Err(errors.into_iter().collect())
     }
 }
 
@@ -130,7 +130,7 @@ mod tests {
         }];
         let errs = validate_rules(&json!("ab"), &rules, ExecutionMode::StaticOnly).unwrap_err();
         assert_eq!(errs.len(), 1);
-        assert_eq!(errs[0].code.as_ref(), "min_length");
+        assert_eq!(errs.errors()[0].code.as_ref(), "min_length");
     }
 
     #[test]
