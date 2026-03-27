@@ -169,14 +169,18 @@ impl Condition {
 
     /// Create an [`All`](Self::All) condition (logical AND).
     #[must_use]
-    pub fn all(conditions: Vec<Self>) -> Self {
-        Self::All { conditions }
+    pub fn all(conditions: impl IntoIterator<Item = Self>) -> Self {
+        Self::All {
+            conditions: conditions.into_iter().collect(),
+        }
     }
 
     /// Create an [`Any`](Self::Any) condition (logical OR).
     #[must_use]
-    pub fn any(conditions: Vec<Self>) -> Self {
-        Self::Any { conditions }
+    pub fn any(conditions: impl IntoIterator<Item = Self>) -> Self {
+        Self::Any {
+            conditions: conditions.into_iter().collect(),
+        }
     }
 
     /// Create a [`Not`](Self::Not) condition (logical negation).
@@ -425,7 +429,7 @@ mod tests {
 
     #[test]
     fn all_requires_every_sub_condition() {
-        let cond = Condition::all(vec![Condition::set("a"), Condition::set("b")]);
+        let cond = Condition::all([Condition::set("a"), Condition::set("b")]);
         let both = values(&[("a", Value::Bool(true)), ("b", Value::Bool(true))]);
         let one = values(&[("a", Value::Bool(true))]);
         assert!(cond.evaluate(&both));
@@ -434,10 +438,18 @@ mod tests {
 
     #[test]
     fn any_requires_at_least_one() {
-        let cond = Condition::any(vec![Condition::set("a"), Condition::set("b")]);
+        let cond = Condition::any([Condition::set("a"), Condition::set("b")]);
         let one = values(&[("b", Value::Bool(true))]);
         assert!(cond.evaluate(&one));
         assert!(!cond.evaluate(&HashMap::new()));
+    }
+
+    #[test]
+    fn all_accepts_vec() {
+        let conds = vec![Condition::set("a"), Condition::set("b")];
+        let cond = Condition::all(conds);
+        let both = values(&[("a", Value::Bool(true)), ("b", Value::Bool(true))]);
+        assert!(cond.evaluate(&both));
     }
 
     #[test]

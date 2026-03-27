@@ -486,6 +486,13 @@ impl Parameter {
         self.group = Some(group.into());
         self
     }
+
+    /// Enables expression mode (allows `{{ variable }}` interpolation).
+    #[must_use]
+    pub fn expression(mut self) -> Self {
+        self.expression = true;
+        self
+    }
 }
 
 // ── Transformer helpers ────────────────────────────────────────────────────
@@ -539,7 +546,7 @@ macro_rules! debug_assert_type {
         debug_assert!(
             matches!($self.param_type, $( $variant )|+),
             concat!($method, "() called on wrong ParameterType variant: {:?}"),
-            std::mem::discriminant(&$self.param_type)
+            $self.param_type
         );
     };
 }
@@ -1237,6 +1244,12 @@ mod tests {
         let p = Parameter::string("extra").active_when(cond.clone());
         assert_eq!(p.visible_when, Some(cond.clone()));
         assert_eq!(p.required_when, Some(cond));
+    }
+
+    #[test]
+    fn expression_enables_interpolation() {
+        let p = Parameter::string("template").expression();
+        assert!(p.expression);
     }
 
     #[test]
