@@ -530,6 +530,18 @@ impl Parameter {
 
 // ── Type-specific builders ─────────────────────────────────────────────────
 
+/// Asserts in debug builds that `$self.param_type` matches `$variant`.
+/// Zero cost in release builds — catches builder misuse during development.
+macro_rules! debug_assert_type {
+    ($self:expr, $( $variant:pat_param )|+, $method:literal) => {
+        debug_assert!(
+            matches!($self.param_type, $( $variant )|+),
+            concat!($method, "() called on wrong ParameterType variant: {:?}"),
+            std::mem::discriminant(&$self.param_type)
+        );
+    };
+}
+
 impl Parameter {
     // ── String ──────────────────────────────────────────────────────────
 
@@ -538,6 +550,8 @@ impl Parameter {
     pub fn multiline(mut self) -> Self {
         if let ParameterType::String { multiline, .. } = &mut self.param_type {
             *multiline = true;
+        } else {
+            debug_assert_type!(self, ParameterType::String { .. }, "multiline");
         }
         self
     }
@@ -552,6 +566,8 @@ impl Parameter {
     pub fn min(mut self, v: f64) -> Self {
         if let ParameterType::Number { min, .. } = &mut self.param_type {
             *min = serde_json::Number::from_f64(v);
+        } else {
+            debug_assert_type!(self, ParameterType::Number { .. }, "min");
         }
         self
     }
@@ -561,6 +577,8 @@ impl Parameter {
     pub fn max(mut self, v: f64) -> Self {
         if let ParameterType::Number { max, .. } = &mut self.param_type {
             *max = serde_json::Number::from_f64(v);
+        } else {
+            debug_assert_type!(self, ParameterType::Number { .. }, "max");
         }
         self
     }
@@ -570,6 +588,8 @@ impl Parameter {
     pub fn step(mut self, v: f64) -> Self {
         if let ParameterType::Number { step, .. } = &mut self.param_type {
             *step = serde_json::Number::from_f64(v);
+        } else {
+            debug_assert_type!(self, ParameterType::Number { .. }, "step");
         }
         self
     }
@@ -579,6 +599,8 @@ impl Parameter {
     pub fn min_i64(mut self, v: i64) -> Self {
         if let ParameterType::Number { min, .. } = &mut self.param_type {
             *min = Some(serde_json::Number::from(v));
+        } else {
+            debug_assert_type!(self, ParameterType::Number { .. }, "min_i64");
         }
         self
     }
@@ -588,6 +610,8 @@ impl Parameter {
     pub fn max_i64(mut self, v: i64) -> Self {
         if let ParameterType::Number { max, .. } = &mut self.param_type {
             *max = Some(serde_json::Number::from(v));
+        } else {
+            debug_assert_type!(self, ParameterType::Number { .. }, "max_i64");
         }
         self
     }
@@ -597,6 +621,8 @@ impl Parameter {
     pub fn step_i64(mut self, v: i64) -> Self {
         if let ParameterType::Number { step, .. } = &mut self.param_type {
             *step = Some(serde_json::Number::from(v));
+        } else {
+            debug_assert_type!(self, ParameterType::Number { .. }, "step_i64");
         }
         self
     }
@@ -608,6 +634,8 @@ impl Parameter {
     pub fn option(mut self, value: impl Into<serde_json::Value>, label: impl Into<String>) -> Self {
         if let ParameterType::Select { options, .. } = &mut self.param_type {
             options.push(SelectOption::new(value.into(), label));
+        } else {
+            debug_assert_type!(self, ParameterType::Select { .. }, "option");
         }
         self
     }
@@ -617,6 +645,8 @@ impl Parameter {
     pub fn option_with(mut self, opt: SelectOption) -> Self {
         if let ParameterType::Select { options, .. } = &mut self.param_type {
             options.push(opt);
+        } else {
+            debug_assert_type!(self, ParameterType::Select { .. }, "option_with");
         }
         self
     }
@@ -629,7 +659,9 @@ impl Parameter {
             ParameterType::Select { multiple, .. } | ParameterType::File { multiple, .. } => {
                 *multiple = true;
             }
-            _ => {}
+            _ => {
+                debug_assert_type!(self, ParameterType::Select { .. } | ParameterType::File { .. }, "multiple");
+            }
         }
         self
     }
@@ -639,6 +671,8 @@ impl Parameter {
     pub fn allow_custom(mut self) -> Self {
         if let ParameterType::Select { allow_custom, .. } = &mut self.param_type {
             *allow_custom = true;
+        } else {
+            debug_assert_type!(self, ParameterType::Select { .. }, "allow_custom");
         }
         self
     }
@@ -648,6 +682,8 @@ impl Parameter {
     pub fn searchable(mut self) -> Self {
         if let ParameterType::Select { searchable, .. } = &mut self.param_type {
             *searchable = true;
+        } else {
+            debug_assert_type!(self, ParameterType::Select { .. }, "searchable");
         }
         self
     }
@@ -663,7 +699,9 @@ impl Parameter {
             | ParameterType::Dynamic { depends_on, .. } => {
                 *depends_on = paths;
             }
-            _ => {}
+            _ => {
+                debug_assert_type!(self, ParameterType::Select { .. } | ParameterType::Filter { .. } | ParameterType::Dynamic { .. }, "depends_on");
+            }
         }
         self
     }
@@ -676,6 +714,8 @@ impl Parameter {
     pub fn add(mut self, param: Parameter) -> Self {
         if let ParameterType::Object { parameters, .. } = &mut self.param_type {
             parameters.push(param);
+        } else {
+            debug_assert_type!(self, ParameterType::Object { .. }, "add");
         }
         self
     }
@@ -685,6 +725,8 @@ impl Parameter {
     pub fn collapsed(mut self) -> Self {
         if let ParameterType::Object { display_mode, .. } = &mut self.param_type {
             *display_mode = DisplayMode::Collapsed;
+        } else {
+            debug_assert_type!(self, ParameterType::Object { .. }, "collapsed");
         }
         self
     }
@@ -694,6 +736,8 @@ impl Parameter {
     pub fn pick_fields(mut self) -> Self {
         if let ParameterType::Object { display_mode, .. } = &mut self.param_type {
             *display_mode = DisplayMode::PickFields;
+        } else {
+            debug_assert_type!(self, ParameterType::Object { .. }, "pick_fields");
         }
         self
     }
@@ -703,6 +747,8 @@ impl Parameter {
     pub fn sections(mut self) -> Self {
         if let ParameterType::Object { display_mode, .. } = &mut self.param_type {
             *display_mode = DisplayMode::Sections;
+        } else {
+            debug_assert_type!(self, ParameterType::Object { .. }, "sections");
         }
         self
     }
@@ -714,6 +760,8 @@ impl Parameter {
     pub fn min_items(mut self, n: u32) -> Self {
         if let ParameterType::List { min_items, .. } = &mut self.param_type {
             *min_items = Some(n);
+        } else {
+            debug_assert_type!(self, ParameterType::List { .. }, "min_items");
         }
         self
     }
@@ -723,6 +771,8 @@ impl Parameter {
     pub fn max_items(mut self, n: u32) -> Self {
         if let ParameterType::List { max_items, .. } = &mut self.param_type {
             *max_items = Some(n);
+        } else {
+            debug_assert_type!(self, ParameterType::List { .. }, "max_items");
         }
         self
     }
@@ -732,6 +782,8 @@ impl Parameter {
     pub fn unique(mut self) -> Self {
         if let ParameterType::List { unique, .. } = &mut self.param_type {
             *unique = true;
+        } else {
+            debug_assert_type!(self, ParameterType::List { .. }, "unique");
         }
         self
     }
@@ -741,6 +793,8 @@ impl Parameter {
     pub fn sortable(mut self) -> Self {
         if let ParameterType::List { sortable, .. } = &mut self.param_type {
             *sortable = true;
+        } else {
+            debug_assert_type!(self, ParameterType::List { .. }, "sortable");
         }
         self
     }
@@ -752,6 +806,8 @@ impl Parameter {
     pub fn variant(mut self, param: Parameter) -> Self {
         if let ParameterType::Mode { variants, .. } = &mut self.param_type {
             variants.push(param);
+        } else {
+            debug_assert_type!(self, ParameterType::Mode { .. }, "variant");
         }
         self
     }
@@ -764,6 +820,8 @@ impl Parameter {
         } = &mut self.param_type
         {
             *default_variant = Some(key.into());
+        } else {
+            debug_assert_type!(self, ParameterType::Mode { .. }, "default_variant");
         }
         self
     }
@@ -775,6 +833,8 @@ impl Parameter {
     pub fn accept(mut self, accept: impl Into<String>) -> Self {
         if let ParameterType::File { accept: a, .. } = &mut self.param_type {
             *a = Some(accept.into());
+        } else {
+            debug_assert_type!(self, ParameterType::File { .. }, "accept");
         }
         self
     }
@@ -784,6 +844,8 @@ impl Parameter {
     pub fn max_size(mut self, size: u64) -> Self {
         if let ParameterType::File { max_size, .. } = &mut self.param_type {
             *max_size = Some(size);
+        } else {
+            debug_assert_type!(self, ParameterType::File { .. }, "max_size");
         }
         self
     }
@@ -795,6 +857,8 @@ impl Parameter {
     pub fn operators(mut self, ops: Vec<FilterOp>) -> Self {
         if let ParameterType::Filter { operators, .. } = &mut self.param_type {
             *operators = Some(ops);
+        } else {
+            debug_assert_type!(self, ParameterType::Filter { .. }, "operators");
         }
         self
     }
@@ -804,6 +868,8 @@ impl Parameter {
     pub fn allow_groups(mut self, allow: bool) -> Self {
         if let ParameterType::Filter { allow_groups, .. } = &mut self.param_type {
             *allow_groups = allow;
+        } else {
+            debug_assert_type!(self, ParameterType::Filter { .. }, "allow_groups");
         }
         self
     }
@@ -813,6 +879,8 @@ impl Parameter {
     pub fn max_depth(mut self, depth: u8) -> Self {
         if let ParameterType::Filter { max_depth, .. } = &mut self.param_type {
             *max_depth = depth;
+        } else {
+            debug_assert_type!(self, ParameterType::Filter { .. }, "max_depth");
         }
         self
     }
@@ -822,6 +890,8 @@ impl Parameter {
     pub fn filter_field(mut self, field: FilterField) -> Self {
         if let ParameterType::Filter { fields, .. } = &mut self.param_type {
             fields.push(field);
+        } else {
+            debug_assert_type!(self, ParameterType::Filter { .. }, "filter_field");
         }
         self
     }
@@ -831,6 +901,8 @@ impl Parameter {
     pub fn dynamic_fields(mut self) -> Self {
         if let ParameterType::Filter { dynamic_fields, .. } = &mut self.param_type {
             *dynamic_fields = true;
+        } else {
+            debug_assert_type!(self, ParameterType::Filter { .. }, "dynamic_fields");
         }
         self
     }
@@ -842,6 +914,8 @@ impl Parameter {
     pub fn returns_string(mut self) -> Self {
         if let ParameterType::Computed { returns, .. } = &mut self.param_type {
             *returns = ComputedReturn::String;
+        } else {
+            debug_assert_type!(self, ParameterType::Computed { .. }, "returns_string");
         }
         self
     }
@@ -851,6 +925,8 @@ impl Parameter {
     pub fn returns_number(mut self) -> Self {
         if let ParameterType::Computed { returns, .. } = &mut self.param_type {
             *returns = ComputedReturn::Number;
+        } else {
+            debug_assert_type!(self, ParameterType::Computed { .. }, "returns_number");
         }
         self
     }
@@ -860,6 +936,8 @@ impl Parameter {
     pub fn returns_boolean(mut self) -> Self {
         if let ParameterType::Computed { returns, .. } = &mut self.param_type {
             *returns = ComputedReturn::Boolean;
+        } else {
+            debug_assert_type!(self, ParameterType::Computed { .. }, "returns_boolean");
         }
         self
     }
@@ -883,6 +961,8 @@ impl Parameter {
         {
             *loader = Some(OptionLoader::new(f));
             *dynamic = true;
+        } else {
+            debug_assert_type!(self, ParameterType::Select { .. }, "with_option_loader");
         }
         self
     }
@@ -896,6 +976,8 @@ impl Parameter {
     {
         if let ParameterType::Dynamic { loader, .. } = &mut self.param_type {
             *loader = Some(RecordLoader::new(f));
+        } else {
+            debug_assert_type!(self, ParameterType::Dynamic { .. }, "with_record_loader");
         }
         self
     }
@@ -917,6 +999,8 @@ impl Parameter {
         {
             *fields_loader = Some(FilterFieldLoader::new(f));
             *dynamic_fields = true;
+        } else {
+            debug_assert_type!(self, ParameterType::Filter { .. }, "with_filter_field_loader");
         }
         self
     }
@@ -1078,13 +1162,16 @@ mod tests {
     }
 
     #[test]
-    fn multiline_only_affects_string() {
+    fn multiline_enables_textarea_mode() {
         let s = Parameter::string("text").multiline();
         assert_eq!(s.param_type, ParameterType::String { multiline: true });
+    }
 
-        // No-op on non-string types
-        let n = Parameter::number("num").multiline();
-        assert!(matches!(n.param_type, ParameterType::Number { .. }));
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "multiline()")]
+    fn multiline_on_wrong_type_panics_in_debug() {
+        Parameter::number("num").multiline();
     }
 
     #[test]
@@ -1254,5 +1341,54 @@ mod tests {
         assert!(!json.contains("\"multiline\""));
         assert!(!json.contains("\"rules\""));
         assert!(!json.contains("\"transformers\""));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "searchable()")]
+    fn searchable_on_wrong_type_panics_in_debug() {
+        Parameter::string("x").searchable();
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "option()")]
+    fn option_on_wrong_type_panics_in_debug() {
+        Parameter::boolean("x").option("v", "label");
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "min()")]
+    fn min_on_wrong_type_panics_in_debug() {
+        Parameter::string("x").min(0.0);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "collapsed()")]
+    fn collapsed_on_wrong_type_panics_in_debug() {
+        Parameter::string("x").collapsed();
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "variant()")]
+    fn variant_on_wrong_type_panics_in_debug() {
+        Parameter::string("x").variant(Parameter::string("y"));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "min_items()")]
+    fn min_items_on_wrong_type_panics_in_debug() {
+        Parameter::string("x").min_items(1);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "accept()")]
+    fn accept_on_wrong_type_panics_in_debug() {
+        Parameter::string("x").accept("image/*");
     }
 }
