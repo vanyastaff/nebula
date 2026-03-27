@@ -141,10 +141,13 @@ impl Condition {
 
     /// Create a [`OneOf`](Self::OneOf) condition.
     #[must_use]
-    pub fn one_of(field: impl Into<ParameterPath>, values: Vec<Value>) -> Self {
+    pub fn one_of<V: Into<Value>>(
+        field: impl Into<ParameterPath>,
+        values: impl IntoIterator<Item = V>,
+    ) -> Self {
         Self::OneOf {
             field: field.into(),
-            values,
+            values: values.into_iter().map(Into::into).collect(),
         }
     }
 
@@ -182,6 +185,32 @@ impl Condition {
     pub fn not(condition: Self) -> Self {
         Self::Not {
             condition: Box::new(condition),
+        }
+    }
+
+    /// Create a [`Gt`](Self::Gt) condition (numeric greater-than).
+    #[must_use]
+    pub fn gt(field: impl Into<ParameterPath>, value: impl Into<Value>) -> Self {
+        Self::Gt {
+            field: field.into(),
+            value: value.into(),
+        }
+    }
+
+    /// Create a [`Lt`](Self::Lt) condition (numeric less-than).
+    #[must_use]
+    pub fn lt(field: impl Into<ParameterPath>, value: impl Into<Value>) -> Self {
+        Self::Lt {
+            field: field.into(),
+            value: value.into(),
+        }
+    }
+
+    /// Create an [`IsTrue`](Self::IsTrue) condition.
+    #[must_use]
+    pub fn is_true(field: impl Into<ParameterPath>) -> Self {
+        Self::IsTrue {
+            field: field.into(),
         }
     }
 
@@ -364,30 +393,21 @@ mod tests {
 
     #[test]
     fn is_true_matches_boolean_true() {
-        let cond = Condition::eq("enabled", true);
-        let is_true = Condition::IsTrue {
-            field: ParameterPath::from("enabled"),
-        };
+        let cond = Condition::is_true("enabled");
         let vals = values(&[("enabled", Value::Bool(true))]);
         assert!(cond.evaluate(&vals));
-        assert!(is_true.evaluate(&vals));
     }
 
     #[test]
     fn is_true_rejects_false() {
-        let cond = Condition::IsTrue {
-            field: ParameterPath::from("enabled"),
-        };
+        let cond = Condition::is_true("enabled");
         let vals = values(&[("enabled", Value::Bool(false))]);
         assert!(!cond.evaluate(&vals));
     }
 
     #[test]
     fn gt_compares_numerically() {
-        let cond = Condition::Gt {
-            field: ParameterPath::from("count"),
-            value: serde_json::json!(5),
-        };
+        let cond = Condition::gt("count", 5);
         let above = values(&[("count", serde_json::json!(10))]);
         let below = values(&[("count", serde_json::json!(3))]);
         assert!(cond.evaluate(&above));
@@ -396,10 +416,7 @@ mod tests {
 
     #[test]
     fn lt_compares_numerically() {
-        let cond = Condition::Lt {
-            field: ParameterPath::from("count"),
-            value: serde_json::json!(5),
-        };
+        let cond = Condition::lt("count", 5);
         let below = values(&[("count", serde_json::json!(3))]);
         let above = values(&[("count", serde_json::json!(10))]);
         assert!(cond.evaluate(&below));
@@ -436,13 +453,25 @@ mod tests {
         let cond = Condition::all(vec![
             Condition::eq("a", "v"),
             Condition::not(Condition::set("b")),
-            Condition::any(vec![Condition::IsTrue {
-                field: ParameterPath::from("c"),
-            }]),
+            Condition::any(vec![Condition::is_true("c")]),
         ]);
         let mut refs = Vec::new();
         cond.field_references(&mut refs);
         assert_eq!(refs, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn one_of_accepts_string_slices() {
+        let cond = Condition::one_of("color", ["red", "blue"]);
+        let vals = values(&[("color", Value::String("blue".into()))]);
+        assert!(cond.evaluate(&vals));
+    }
+
+    #[test]
+    fn one_of_accepts_integers() {
+        let cond = Condition::one_of("count", [1, 2, 3]);
+        let vals = values(&[("count", serde_json::json!(2))]);
+        assert!(cond.evaluate(&vals));
     }
 
     #[test]
