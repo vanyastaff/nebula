@@ -153,7 +153,8 @@ fn validate_type(
     depth: u8,
     report: &mut ValidationReport,
 ) {
-    #[allow(unreachable_patterns)] // Reason: wildcard arm required for #[non_exhaustive] in downstream crates
+    #[allow(unreachable_patterns)]
+    // Reason: wildcard arm required for #[non_exhaustive] in downstream crates
     match param_type {
         ParameterType::Number {
             integer, min, max, ..

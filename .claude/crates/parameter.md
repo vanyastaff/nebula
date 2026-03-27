@@ -3,7 +3,8 @@ Parameter schema system (RFC 0005) — defines what inputs a workflow node accep
 
 ## Invariants
 - **Ground truth:** `src/parameter.rs` (Parameter struct), `src/parameter_type.rs` (ParameterType enum), `src/collection.rs` (ParameterCollection).
-- `ValidatedValues` only constructible via `ParameterCollection::validate()` — `pub(crate)` constructor.
+- `ValidatedValues` only constructible via `ParameterCollection::validate()` or `ValidationReport::into_validated()` — `pub(crate)` constructor.
+- `ValidationReport` carries values internally — `into_validated()` takes no args. Not `Default`; only constructible via `ValidationReport::new()` (pub(crate)).
 - Loaders are fallible — return `Result<LoaderResult<T>, LoaderError>`.
 - `Condition` (visibility/required predicate) is separate from `Rule` (value constraint). Never mix.
 
@@ -31,4 +32,4 @@ Parameter schema system (RFC 0005) — defines what inputs a workflow node accep
 - Used by nebula-action (re-exports `Parameter`, `ParameterCollection`), nebula-credential, nebula-sdk, nebula-macros.
 - `Rule::field_references()` from nebula-validator used for lint cross-referencing.
 
-<!-- reviewed: 2026-03-26 (DX polish: debug_assert, shorthand constructors, collection ergonomics, ValidatedValues delegation, lint prelude, doctests) -->
+<!-- reviewed: 2026-03-26 (ValidationReport carries values internally, into_validated() no longer takes &ParameterValues) -->

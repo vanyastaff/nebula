@@ -227,7 +227,8 @@ impl Condition {
     /// [`ParameterPath::as_str`] representation.
     #[must_use]
     pub fn evaluate(&self, values: &HashMap<String, Value>) -> bool {
-        #[allow(unreachable_patterns)] // Reason: wildcard arm required for #[non_exhaustive] in downstream crates
+        #[allow(unreachable_patterns)]
+        // Reason: wildcard arm required for #[non_exhaustive] in downstream crates
         match self {
             Self::Eq { field, value } => values.get(field.as_str()) == Some(value),
 
@@ -280,7 +281,8 @@ impl Condition {
     /// representation to `refs`.  Useful for dependency analysis and
     /// topological ordering of parameters.
     pub fn field_references<'a>(&'a self, refs: &mut Vec<&'a str>) {
-        #[allow(unreachable_patterns)] // Reason: wildcard arm required for #[non_exhaustive] in downstream crates
+        #[allow(unreachable_patterns)]
+        // Reason: wildcard arm required for #[non_exhaustive] in downstream crates
         match self {
             Self::Eq { field, .. }
             | Self::Ne { field, .. }

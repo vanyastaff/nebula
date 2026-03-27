@@ -397,19 +397,13 @@ impl Rule {
     /// Creates a [`MinLength`](Self::MinLength) rule.
     #[must_use]
     pub fn min_length(min: usize) -> Self {
-        Self::MinLength {
-            min,
-            message: None,
-        }
+        Self::MinLength { min, message: None }
     }
 
     /// Creates a [`MaxLength`](Self::MaxLength) rule.
     #[must_use]
     pub fn max_length(max: usize) -> Self {
-        Self::MaxLength {
-            max,
-            message: None,
-        }
+        Self::MaxLength { max, message: None }
     }
 
     /// Creates a [`Min`](Self::Min) rule from an `i64`.
@@ -460,19 +454,13 @@ impl Rule {
     /// Creates a [`MinItems`](Self::MinItems) rule.
     #[must_use]
     pub fn min_items(min: usize) -> Self {
-        Self::MinItems {
-            min,
-            message: None,
-        }
+        Self::MinItems { min, message: None }
     }
 
     /// Creates a [`MaxItems`](Self::MaxItems) rule.
     #[must_use]
     pub fn max_items(max: usize) -> Self {
-        Self::MaxItems {
-            max,
-            message: None,
-        }
+        Self::MaxItems { max, message: None }
     }
 
     /// Creates a [`UniqueBy`](Self::UniqueBy) rule.
@@ -498,16 +486,25 @@ impl Rule {
     pub fn with_message(self, msg: impl Into<String>) -> Self {
         let msg = Some(msg.into());
         match self {
-            Self::Pattern { pattern, .. } => Self::Pattern { pattern, message: msg },
+            Self::Pattern { pattern, .. } => Self::Pattern {
+                pattern,
+                message: msg,
+            },
             Self::MinLength { min, .. } => Self::MinLength { min, message: msg },
             Self::MaxLength { max, .. } => Self::MaxLength { max, message: msg },
             Self::Min { min, .. } => Self::Min { min, message: msg },
             Self::Max { max, .. } => Self::Max { max, message: msg },
-            Self::OneOf { values, .. } => Self::OneOf { values, message: msg },
+            Self::OneOf { values, .. } => Self::OneOf {
+                values,
+                message: msg,
+            },
             Self::MinItems { min, .. } => Self::MinItems { min, message: msg },
             Self::MaxItems { max, .. } => Self::MaxItems { max, message: msg },
             Self::UniqueBy { key, .. } => Self::UniqueBy { key, message: msg },
-            Self::Custom { expression, .. } => Self::Custom { expression, message: msg },
+            Self::Custom { expression, .. } => Self::Custom {
+                expression,
+                message: msg,
+            },
             // Predicate variants don't have messages
             other => other,
         }
@@ -2274,7 +2271,13 @@ mod tests {
     #[test]
     fn shorthand_min_length() {
         let rule = Rule::min_length(5);
-        assert!(matches!(rule, Rule::MinLength { min: 5, message: None }));
+        assert!(matches!(
+            rule,
+            Rule::MinLength {
+                min: 5,
+                message: None
+            }
+        ));
     }
 
     #[test]
