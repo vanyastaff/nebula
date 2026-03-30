@@ -63,6 +63,8 @@ pub mod pending_token;
 pub mod resolve;
 /// Authentication scheme types.
 pub mod scheme;
+/// Reusable protocol pattern for static credentials.
+pub mod static_protocol;
 
 // ── v2 Storage ──────────────────────────────────────────────────────────────
 
@@ -128,6 +130,9 @@ pub use credential_key::CredentialKey;
 
 // v2: Unified Credential trait
 pub use credential_trait::Credential;
+
+// v2: Static protocol pattern
+pub use static_protocol::StaticProtocol;
 
 // v2: Credential state
 pub use credential_state::CredentialState;

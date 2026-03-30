@@ -38,5 +38,6 @@ Credential storage, rotation, v2 trait-based system. v1 modules fully deleted.
 - Rotation module: policy, transaction, blue-green, validation (with `TestableCredential`/`RotatableCredential`), retry, backup, events, metrics.
 
 - `CredentialKey` newtype: thin `&'static str` wrapper for credential type identifiers. Non-breaking addition — `Credential::KEY` still uses `&'static str`, `CredentialKey` available for gradual adoption. `credential_key!` macro for compile-time construction.
+- `StaticProtocol` trait: `parameters() + build(values) → Scheme` pattern for non-interactive credentials. `#[derive(Credential)]` will consume this to auto-generate `resolve()`.
 
-<!-- updated: 2026-03-30 — added CredentialKey newtype + credential_key! macro -->
+<!-- updated: 2026-03-30 — added StaticProtocol trait -->
