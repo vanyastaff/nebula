@@ -39,7 +39,7 @@ fn credential_key(id: &str) -> String {
 #[derive(Serialize, Deserialize)]
 struct StoredEntry {
     id: String,
-    #[serde(with = "base64_bytes")]
+    #[serde(with = "crate::utils::serde_base64")]
     data: Vec<u8>,
     state_kind: String,
     state_version: u32,
@@ -49,24 +49,6 @@ struct StoredEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
     metadata: serde_json::Map<String, serde_json::Value>,
-}
-
-/// Base64 encoding helpers for the binary `data` field.
-mod base64_bytes {
-    use base64::Engine;
-    use base64::engine::general_purpose::STANDARD;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    /// Serialize bytes as a base64 string.
-    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&STANDARD.encode(bytes))
-    }
-
-    /// Deserialize a base64 string back into bytes.
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-        let encoded = String::deserialize(d)?;
-        STANDARD.decode(encoded).map_err(serde::de::Error::custom)
-    }
 }
 
 impl From<StoredCredential> for StoredEntry {
@@ -298,19 +280,7 @@ mod tests {
         PostgresStore::new(Arc::new(MockKv::new()))
     }
 
-    fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
-        StoredCredential {
-            id: id.into(),
-            data: data.to_vec(),
-            state_kind: "test".into(),
-            state_version: 1,
-            version: 0,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            expires_at: None,
-            metadata: Default::default(),
-        }
-    }
+    use crate::credential_store::test_helpers::make_credential;
 
     #[tokio::test]
     async fn crud_operations() {

@@ -43,6 +43,14 @@ const MAX_REFRESH_FAILURES: u32 = 5;
 /// Time window for failure counting (5 minutes).
 const FAILURE_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// Per-credential failure tracking for the circuit breaker.
+struct FailureRecord {
+    /// Number of consecutive failures in the current window.
+    count: u32,
+    /// When the current failure window started.
+    window_start: tokio::time::Instant,
+}
+
 /// Coordinates credential refresh to prevent thundering herd.
 ///
 /// Thread-safe: all operations acquire the inner `Mutex`.
@@ -74,8 +82,8 @@ const FAILURE_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
 /// ```
 pub struct RefreshCoordinator {
     in_flight: Mutex<HashMap<String, Arc<Notify>>>,
-    /// Failure counters for circuit breaker: `(count, window_start)`.
-    failure_counts: Mutex<HashMap<String, (u32, tokio::time::Instant)>>,
+    /// Per-credential failure records for circuit breaker.
+    failure_counts: Mutex<HashMap<String, FailureRecord>>,
 }
 
 /// Result of attempting to begin a refresh for a credential.
@@ -150,12 +158,18 @@ impl RefreshCoordinator {
         let mut counts = self.failure_counts.lock().await;
         let entry = counts
             .entry(credential_id.to_string())
-            .or_insert((0, tokio::time::Instant::now()));
-        if entry.1.elapsed() > FAILURE_WINDOW {
+            .or_insert(FailureRecord {
+                count: 0,
+                window_start: tokio::time::Instant::now(),
+            });
+        if entry.window_start.elapsed() > FAILURE_WINDOW {
             // Window expired, reset
-            *entry = (1, tokio::time::Instant::now());
+            *entry = FailureRecord {
+                count: 1,
+                window_start: tokio::time::Instant::now(),
+            };
         } else {
-            entry.0 += 1;
+            entry.count += 1;
         }
     }
 
@@ -171,8 +185,8 @@ impl RefreshCoordinator {
     /// window expires.
     pub async fn is_circuit_open(&self, credential_id: &str) -> bool {
         let counts = self.failure_counts.lock().await;
-        if let Some((count, start)) = counts.get(credential_id) {
-            *count >= MAX_REFRESH_FAILURES && start.elapsed() <= FAILURE_WINDOW
+        if let Some(record) = counts.get(credential_id) {
+            record.count >= MAX_REFRESH_FAILURES && record.window_start.elapsed() <= FAILURE_WINDOW
         } else {
             false
         }

@@ -40,4 +40,11 @@ Credential storage, rotation, v2 trait-based system. v1 modules fully deleted.
 - `CredentialKey` newtype: thin `&'static str` wrapper for credential type identifiers. Non-breaking addition — `Credential::KEY` still uses `&'static str`, `CredentialKey` available for gradual adoption. `credential_key!` macro for compile-time construction.
 - `StaticProtocol` trait: `parameters() + build(values) → Scheme` pattern for non-interactive credentials. `#[derive(Credential)]` will consume this to auto-generate `resolve()`.
 
-<!-- updated: 2026-03-30 — v2 complete: all phases 0-9 done, v1 deleted, derive(Credential) rewritten -->
+- `utils::serde_base64` module: shared base64 serde helpers for `Vec<u8>` fields. Used by all store backends (local, postgres, aws, k8s).
+- `credential_store::test_helpers::make_credential()`: shared `#[cfg(test)]` helper for constructing `StoredCredential` in tests.
+- `OAuth2Pending.grant_type` is `GrantType` enum (was stringly-typed `String`).
+- `oauth2_flow` shares a single `reqwest::Client` via `OnceLock` across all token exchange functions.
+- `EncryptionLayer::put()` saves plaintext data before encrypting to avoid redundant decryption on return.
+- `RefreshCoordinator` uses named `FailureRecord` struct instead of `(u32, Instant)` tuple.
+
+<!-- updated: 2026-03-30 — polished v2 code from review findings -->

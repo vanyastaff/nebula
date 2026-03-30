@@ -113,7 +113,7 @@ impl Default for AwsSecretsConfig {
 #[derive(Serialize, Deserialize)]
 struct SecretPayload {
     id: String,
-    #[serde(with = "base64_bytes")]
+    #[serde(with = "crate::utils::serde_base64")]
     data: Vec<u8>,
     state_kind: String,
     state_version: u32,
@@ -123,24 +123,6 @@ struct SecretPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
     metadata: serde_json::Map<String, serde_json::Value>,
-}
-
-/// Base64 encoding for the `data` field so binary bytes survive JSON round-trips.
-mod base64_bytes {
-    use base64::Engine;
-    use base64::engine::general_purpose::STANDARD;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    /// Serialize bytes as base64.
-    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&STANDARD.encode(bytes))
-    }
-
-    /// Deserialize base64 back to bytes.
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-        let encoded = String::deserialize(d)?;
-        STANDARD.decode(encoded).map_err(serde::de::Error::custom)
-    }
 }
 
 impl From<StoredCredential> for SecretPayload {

@@ -114,10 +114,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
         let stored = self.load_and_verify::<C>(credential_id).await?;
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
 
-        // Check expiration with early refresh window.
-        // Refresh BEFORE the token expires: if the remaining lifetime is
-        // less than or equal to the credential's `early_refresh` window
-        // (default 5 min), trigger refresh proactively.
+        // Refresh proactively before expiry per REFRESH_POLICY.early_refresh.
         let needs_refresh = state.expires_at().is_some_and(|exp| {
             let now = chrono::Utc::now();
             let early = chrono::Duration::from_std(C::REFRESH_POLICY.early_refresh)

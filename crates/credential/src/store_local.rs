@@ -20,7 +20,7 @@ use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCreden
 #[derive(Serialize, Deserialize)]
 struct StoredFile {
     id: String,
-    #[serde(with = "base64_bytes")]
+    #[serde(with = "crate::utils::serde_base64")]
     data: Vec<u8>,
     state_kind: String,
     state_version: u32,
@@ -30,22 +30,6 @@ struct StoredFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
     metadata: serde_json::Map<String, serde_json::Value>,
-}
-
-/// Base64 encoding for the `data` field so binary bytes survive JSON round-trips.
-mod base64_bytes {
-    use base64::Engine;
-    use base64::engine::general_purpose::STANDARD;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&STANDARD.encode(bytes))
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-        let encoded = String::deserialize(d)?;
-        STANDARD.decode(encoded).map_err(serde::de::Error::custom)
-    }
 }
 
 impl From<StoredCredential> for StoredFile {
@@ -326,26 +310,13 @@ impl CredentialStore for LocalFileStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential_store::test_helpers::make_credential;
     use tempfile::TempDir;
 
     fn make_store() -> (LocalFileStore, TempDir) {
         let dir = TempDir::new().unwrap();
         let store = LocalFileStore::new(dir.path());
         (store, dir)
-    }
-
-    fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
-        StoredCredential {
-            id: id.into(),
-            data: data.to_vec(),
-            state_kind: "test".into(),
-            state_version: 1,
-            version: 0,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            expires_at: None,
-            metadata: Default::default(),
-        }
     }
 
     #[tokio::test]

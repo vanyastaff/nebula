@@ -121,19 +121,7 @@ impl CredentialStore for InMemoryStore {
 mod tests {
     use super::*;
 
-    fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
-        StoredCredential {
-            id: id.into(),
-            data: data.to_vec(),
-            state_kind: "test".into(),
-            state_version: 1,
-            version: 0,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            expires_at: None,
-            metadata: Default::default(),
-        }
-    }
+    use crate::credential_store::test_helpers::make_credential;
 
     #[tokio::test]
     async fn crud_operations() {

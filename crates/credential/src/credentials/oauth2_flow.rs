@@ -18,6 +18,19 @@ use super::oauth2::OAuth2State;
 /// HTTP request timeout for OAuth2 token exchanges.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Returns a shared `reqwest::Client` with the standard timeout.
+///
+/// Lazy-initialized via `OnceLock` so the TLS stack is set up once.
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(HTTP_TIMEOUT)
+            .build()
+            .expect("failed to build HTTP client")
+    })
+}
+
 /// Build the authorization URL for the Authorization Code grant.
 ///
 /// Uses [`url::Url`] query encoding so special characters in `client_id`
@@ -52,10 +65,7 @@ pub(crate) async fn exchange_client_credentials(
     client_id: &str,
     client_secret: &str,
 ) -> Result<OAuth2State, CredentialError> {
-    let client = reqwest::Client::builder()
-        .timeout(HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| provider_error(format!("failed to build HTTP client: {e}")))?;
+    let client = http_client();
 
     let mut form: Vec<(&str, String)> = vec![("grant_type", "client_credentials".into())];
 
@@ -101,10 +111,7 @@ pub(crate) async fn exchange_authorization_code(
     client_secret: &str,
     code: &str,
 ) -> Result<OAuth2State, CredentialError> {
-    let client = reqwest::Client::builder()
-        .timeout(HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| provider_error(format!("failed to build HTTP client: {e}")))?;
+    let client = http_client();
 
     let form = vec![
         ("grant_type", "authorization_code"),
@@ -156,10 +163,7 @@ pub(crate) async fn request_device_code(
     config: &OAuth2Config,
     client_id: &str,
 ) -> Result<DeviceCodeResponse, CredentialError> {
-    let client = reqwest::Client::builder()
-        .timeout(HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| provider_error(format!("failed to build HTTP client: {e}")))?;
+    let client = http_client();
 
     let mut form = vec![("client_id", client_id.to_owned())];
     if !config.scopes.is_empty() {
@@ -223,10 +227,7 @@ pub(crate) async fn poll_device_code(
 ) -> Result<OAuth2State, CredentialError> {
     tokio::time::sleep(Duration::from_secs(interval_secs)).await;
 
-    let client = reqwest::Client::builder()
-        .timeout(HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| provider_error(format!("failed to build HTTP client: {e}")))?;
+    let client = http_client();
 
     let form = vec![
         ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
@@ -292,10 +293,7 @@ pub(crate) async fn refresh_token(
         form.push(("scope".to_owned(), config.scopes.join(" ")));
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| provider_error(format!("failed to build HTTP client: {e}")))?;
+    let client = http_client();
 
     let resp = client
         .post(&config.token_url)

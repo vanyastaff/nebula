@@ -102,8 +102,8 @@ pub struct OAuth2Pending {
     pub client_id: String,
     /// OAuth2 client secret (zeroized on drop).
     pub client_secret: String,
-    /// Grant type: `"authorization_code"` or `"device_code"`.
-    pub grant_type: String,
+    /// Grant type for this pending flow.
+    pub grant_type: GrantType,
     /// Device code for device code flow polling.
     pub device_code: Option<String>,
     /// Polling interval in seconds for device code flow.
@@ -255,7 +255,7 @@ impl Credential for OAuth2Credential {
                     config,
                     client_id: client_id.to_owned(),
                     client_secret: client_secret.to_owned(),
-                    grant_type: "authorization_code".to_owned(),
+                    grant_type: GrantType::AuthorizationCode,
                     device_code: None,
                     interval: None,
                 };
@@ -276,7 +276,7 @@ impl Credential for OAuth2Credential {
                     config,
                     client_id: client_id.to_owned(),
                     client_secret: client_secret.to_owned(),
-                    grant_type: "device_code".to_owned(),
+                    grant_type: GrantType::DeviceCode,
                     device_code: Some(device_resp.device_code),
                     interval: Some(device_resp.interval),
                 };
@@ -305,8 +305,8 @@ impl Credential for OAuth2Credential {
         input: &UserInput,
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<OAuth2State, OAuth2Pending>, CredentialError> {
-        match pending.grant_type.as_str() {
-            "authorization_code" => {
+        match pending.grant_type {
+            GrantType::AuthorizationCode => {
                 let code = match input {
                     UserInput::Callback { params } => {
                         params.get("code").cloned().ok_or_else(|| {
@@ -329,7 +329,7 @@ impl Credential for OAuth2Credential {
                 .await?;
                 Ok(ResolveResult::Complete(state))
             }
-            "device_code" => {
+            GrantType::DeviceCode => {
                 if !matches!(input, UserInput::Poll) {
                     return Err(CredentialError::InvalidInput(
                         "device_code flow expects UserInput::Poll".into(),
@@ -364,9 +364,9 @@ impl Credential for OAuth2Credential {
                     }
                 }
             }
-            other => Err(CredentialError::InvalidInput(format!(
-                "unknown grant_type in pending state: {other}"
-            ))),
+            GrantType::ClientCredentials => Err(CredentialError::InvalidInput(
+                "client_credentials flow does not use continue_resolve".into(),
+            )),
         }
     }
 
@@ -576,7 +576,7 @@ mod tests {
                 .build(),
             client_id: "cid".into(),
             client_secret: "cs".into(),
-            grant_type: "authorization_code".into(),
+            grant_type: GrantType::AuthorizationCode,
             device_code: None,
             interval: None,
         };
@@ -595,7 +595,7 @@ mod tests {
                 .build(),
             client_id: "cid".into(),
             client_secret: "cs".into(),
-            grant_type: "authorization_code".into(),
+            grant_type: GrantType::AuthorizationCode,
             device_code: None,
             interval: None,
         };
@@ -617,7 +617,7 @@ mod tests {
                 .build(),
             client_id: "cid".into(),
             client_secret: "cs".into(),
-            grant_type: "device_code".into(),
+            grant_type: GrantType::DeviceCode,
             device_code: Some("dcode".into()),
             interval: Some(5),
         };
@@ -690,7 +690,7 @@ mod tests {
                 .build(),
             client_id: "cid".into(),
             client_secret: "super_secret".into(),
-            grant_type: "authorization_code".into(),
+            grant_type: GrantType::AuthorizationCode,
             device_code: Some("dcode_secret".into()),
             interval: None,
         };
@@ -709,7 +709,7 @@ mod tests {
                 .build(),
             client_id: "cid".into(),
             client_secret: "cs".into(),
-            grant_type: "authorization_code".into(),
+            grant_type: GrantType::AuthorizationCode,
             device_code: None,
             interval: None,
         };
