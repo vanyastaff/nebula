@@ -6,9 +6,10 @@ use thiserror::Error;
 use crate::status::ExecutionStatus;
 
 /// Errors that can occur during workflow execution.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, nebula_error::Classify)]
 pub enum ExecutionError {
     /// A state transition is not valid for the current status.
+    #[classify(category = "validation", code = "EXECUTION:INVALID_TRANSITION")]
     #[error("invalid transition from {from} to {to}")]
     InvalidTransition {
         /// Current status.
@@ -18,55 +19,34 @@ pub enum ExecutionError {
     },
 
     /// A referenced node does not exist in the execution state.
+    #[classify(category = "not_found", code = "EXECUTION:NODE_NOT_FOUND")]
     #[error("node not found: {0}")]
     NodeNotFound(NodeId),
 
     /// The execution plan failed validation.
+    #[classify(category = "validation", code = "EXECUTION:PLAN_VALIDATION")]
     #[error("plan validation: {0}")]
     PlanValidation(String),
 
     /// A budget limit was exceeded.
+    #[classify(category = "exhausted", code = "EXECUTION:BUDGET_EXCEEDED")]
     #[error("budget exceeded: {0}")]
     BudgetExceeded(String),
 
     /// An idempotency key has already been used.
+    #[classify(category = "conflict", code = "EXECUTION:DUPLICATE_KEY")]
     #[error("duplicate idempotency key: {0}")]
     DuplicateIdempotencyKey(String),
 
     /// A serialization or deserialization error.
+    #[classify(category = "internal", code = "EXECUTION:SERIALIZATION")]
     #[error("serialization: {0}")]
     Serialization(#[from] serde_json::Error),
 
     /// The execution was cancelled.
+    #[classify(category = "cancelled", code = "EXECUTION:CANCELLED")]
     #[error("execution cancelled")]
     Cancelled,
-}
-
-impl nebula_error::Classify for ExecutionError {
-    fn category(&self) -> nebula_error::ErrorCategory {
-        match self {
-            Self::InvalidTransition { .. } | Self::PlanValidation(_) => {
-                nebula_error::ErrorCategory::Validation
-            }
-            Self::NodeNotFound(_) => nebula_error::ErrorCategory::NotFound,
-            Self::BudgetExceeded(_) => nebula_error::ErrorCategory::Exhausted,
-            Self::DuplicateIdempotencyKey(_) => nebula_error::ErrorCategory::Conflict,
-            Self::Serialization(_) => nebula_error::ErrorCategory::Internal,
-            Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
-        }
-    }
-
-    fn code(&self) -> nebula_error::ErrorCode {
-        nebula_error::ErrorCode::new(match self {
-            Self::InvalidTransition { .. } => "EXECUTION:INVALID_TRANSITION",
-            Self::NodeNotFound(_) => "EXECUTION:NODE_NOT_FOUND",
-            Self::PlanValidation(_) => "EXECUTION:PLAN_VALIDATION",
-            Self::BudgetExceeded(_) => "EXECUTION:BUDGET_EXCEEDED",
-            Self::DuplicateIdempotencyKey(_) => "EXECUTION:DUPLICATE_KEY",
-            Self::Serialization(_) => "EXECUTION:SERIALIZATION",
-            Self::Cancelled => "EXECUTION:CANCELLED",
-        })
-    }
 }
 
 impl ExecutionError {

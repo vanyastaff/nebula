@@ -7,64 +7,40 @@ use thiserror::Error;
 pub type SystemResult<T> = Result<T, SystemError>;
 
 /// Error types for system operations
-#[derive(Error, Debug)]
+#[derive(Error, Debug, nebula_error::Classify)]
 pub enum SystemError {
     /// Platform-specific error occurred
+    #[classify(category = "internal", code = "SYSTEM:PLATFORM")]
     #[error("Platform error: {0}")]
     PlatformError(String),
     /// Requested feature is not supported on this platform
+    #[classify(category = "unsupported", code = "SYSTEM:UNSUPPORTED")]
     #[error("Feature not supported: {0}")]
     FeatureNotSupported(String),
     /// System resource was not found
+    #[classify(category = "not_found", code = "SYSTEM:NOT_FOUND")]
     #[error("Resource not found: {0}")]
     ResourceNotFound(String),
     /// Permission denied for system operation
+    #[classify(category = "authorization", code = "SYSTEM:PERMISSION_DENIED")]
     #[error("Permission denied: {0}")]
     PermissionDenied(String),
     /// Memory operation failed
+    #[classify(category = "internal", code = "SYSTEM:MEMORY")]
     #[error("Memory operation error: {0}")]
     MemoryOperationError(String),
     /// Failed to parse system data
+    #[classify(category = "internal", code = "SYSTEM:PARSE")]
     #[error("System parse error: {0}")]
     SystemParseError(String),
     /// System operation timed out
+    #[classify(category = "timeout", code = "SYSTEM:TIMEOUT")]
     #[error("System timeout: {0}")]
     SystemTimeout(String),
     /// Hardware-level error occurred
+    #[classify(category = "internal", code = "SYSTEM:HARDWARE")]
     #[error("System hardware error: {0}")]
     SystemHardwareError(String),
-}
-
-impl nebula_error::Classify for SystemError {
-    fn category(&self) -> nebula_error::ErrorCategory {
-        match self {
-            Self::ResourceNotFound(_) => nebula_error::ErrorCategory::NotFound,
-            Self::PermissionDenied(_) => nebula_error::ErrorCategory::Authorization,
-            Self::FeatureNotSupported(_) => nebula_error::ErrorCategory::Unsupported,
-            Self::SystemTimeout(_) => nebula_error::ErrorCategory::Timeout,
-            Self::PlatformError(_)
-            | Self::MemoryOperationError(_)
-            | Self::SystemParseError(_)
-            | Self::SystemHardwareError(_) => nebula_error::ErrorCategory::Internal,
-        }
-    }
-
-    fn code(&self) -> nebula_error::ErrorCode {
-        nebula_error::ErrorCode::new(match self {
-            Self::PlatformError(_) => "SYSTEM:PLATFORM",
-            Self::FeatureNotSupported(_) => "SYSTEM:UNSUPPORTED",
-            Self::ResourceNotFound(_) => "SYSTEM:NOT_FOUND",
-            Self::PermissionDenied(_) => "SYSTEM:PERMISSION_DENIED",
-            Self::MemoryOperationError(_) => "SYSTEM:MEMORY",
-            Self::SystemParseError(_) => "SYSTEM:PARSE",
-            Self::SystemTimeout(_) => "SYSTEM:TIMEOUT",
-            Self::SystemHardwareError(_) => "SYSTEM:HARDWARE",
-        })
-    }
-
-    fn is_retryable(&self) -> bool {
-        matches!(self, Self::SystemTimeout(_))
-    }
 }
 
 impl SystemError {

@@ -3,13 +3,15 @@
 use nebula_core::PluginKey;
 
 /// Errors from plugin operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, nebula_error::Classify)]
 pub enum PluginError {
     /// Plugin not found in the registry.
+    #[classify(category = "not_found", code = "PLUGIN:NOT_FOUND")]
     #[error("plugin not found: {0}")]
     NotFound(PluginKey),
 
     /// A specific version was not found.
+    #[classify(category = "not_found", code = "PLUGIN:VERSION_NOT_FOUND")]
     #[error("version {version} not found for plugin '{key}'")]
     VersionNotFound {
         /// The requested version.
@@ -19,18 +21,22 @@ pub enum PluginError {
     },
 
     /// The plugin is not versioned (it is a single instance).
+    #[classify(category = "validation", code = "PLUGIN:NOT_VERSIONED")]
     #[error("plugin '{0}' is not versioned")]
     NotVersioned(PluginKey),
 
     /// A plugin with this key already exists in the registry.
+    #[classify(category = "conflict", code = "PLUGIN:ALREADY_EXISTS")]
     #[error("plugin '{0}' already exists")]
     AlreadyExists(PluginKey),
 
     /// No versions are available in a `PluginVersions` container.
+    #[classify(category = "not_found", code = "PLUGIN:NO_VERSIONS")]
     #[error("no versions available for plugin '{0}'")]
     NoVersionsAvailable(PluginKey),
 
     /// The key of a plugin being added doesn't match the container's key.
+    #[classify(category = "validation", code = "PLUGIN:KEY_MISMATCH")]
     #[error("key mismatch: plugin has key '{plugin_key}', container has key '{container_key}'")]
     KeyMismatch {
         /// The incoming plugin's key.
@@ -40,6 +46,7 @@ pub enum PluginError {
     },
 
     /// A version already exists in the container.
+    #[classify(category = "conflict", code = "PLUGIN:VERSION_EXISTS")]
     #[error("version {version} already exists for plugin '{key}'")]
     VersionAlreadyExists {
         /// The conflicting version.
@@ -49,6 +56,7 @@ pub enum PluginError {
     },
 
     /// A required field was missing during plugin construction.
+    #[classify(category = "validation", code = "PLUGIN:MISSING_FIELD")]
     #[error("missing required field '{field}' for plugin")]
     MissingRequiredField {
         /// The missing field name.
@@ -56,39 +64,9 @@ pub enum PluginError {
     },
 
     /// Plugin key validation failed.
+    #[classify(category = "validation", code = "PLUGIN:INVALID_KEY")]
     #[error("invalid plugin key: {0}")]
     InvalidKey(<nebula_core::PluginKey as std::str::FromStr>::Err),
-}
-
-impl nebula_error::Classify for PluginError {
-    fn category(&self) -> nebula_error::ErrorCategory {
-        match self {
-            Self::NotFound(_) | Self::VersionNotFound { .. } | Self::NoVersionsAvailable(_) => {
-                nebula_error::ErrorCategory::NotFound
-            }
-            Self::AlreadyExists(_) | Self::VersionAlreadyExists { .. } => {
-                nebula_error::ErrorCategory::Conflict
-            }
-            Self::NotVersioned(_)
-            | Self::KeyMismatch { .. }
-            | Self::MissingRequiredField { .. }
-            | Self::InvalidKey(_) => nebula_error::ErrorCategory::Validation,
-        }
-    }
-
-    fn code(&self) -> nebula_error::ErrorCode {
-        nebula_error::ErrorCode::new(match self {
-            Self::NotFound(_) => "PLUGIN:NOT_FOUND",
-            Self::VersionNotFound { .. } => "PLUGIN:VERSION_NOT_FOUND",
-            Self::NotVersioned(_) => "PLUGIN:NOT_VERSIONED",
-            Self::AlreadyExists(_) => "PLUGIN:ALREADY_EXISTS",
-            Self::NoVersionsAvailable(_) => "PLUGIN:NO_VERSIONS",
-            Self::KeyMismatch { .. } => "PLUGIN:KEY_MISMATCH",
-            Self::VersionAlreadyExists { .. } => "PLUGIN:VERSION_EXISTS",
-            Self::MissingRequiredField { .. } => "PLUGIN:MISSING_FIELD",
-            Self::InvalidKey(_) => "PLUGIN:INVALID_KEY",
-        })
-    }
 }
 
 impl PartialEq for PluginError {

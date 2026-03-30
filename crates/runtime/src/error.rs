@@ -1,9 +1,10 @@
 //! Runtime error types.
 
 /// Errors from the runtime layer.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, nebula_error::Classify)]
 pub enum RuntimeError {
     /// Action not found in the registry.
+    #[classify(category = "not_found", code = "RUNTIME:ACTION_NOT_FOUND")]
     #[error("action not found: {key}")]
     ActionNotFound {
         /// The action key that was looked up.
@@ -11,10 +12,12 @@ pub enum RuntimeError {
     },
 
     /// Action execution failed.
+    #[classify(category = "external", code = "RUNTIME:ACTION_ERROR", retryable = false)]
     #[error("action error: {0}")]
     ActionError(#[from] nebula_action::ActionError),
 
     /// Data limit exceeded.
+    #[classify(category = "exhausted", code = "RUNTIME:DATA_LIMIT", retryable = false)]
     #[error("data limit exceeded: {actual_bytes} bytes > {limit_bytes} bytes")]
     DataLimitExceeded {
         /// Maximum allowed output size.
@@ -24,32 +27,9 @@ pub enum RuntimeError {
     },
 
     /// Internal runtime error.
+    #[classify(category = "internal", code = "RUNTIME:INTERNAL")]
     #[error("runtime error: {0}")]
     Internal(String),
-}
-
-impl nebula_error::Classify for RuntimeError {
-    fn category(&self) -> nebula_error::ErrorCategory {
-        match self {
-            Self::ActionNotFound { .. } => nebula_error::ErrorCategory::NotFound,
-            Self::ActionError(e) => nebula_error::Classify::category(e),
-            Self::DataLimitExceeded { .. } => nebula_error::ErrorCategory::Exhausted,
-            Self::Internal(_) => nebula_error::ErrorCategory::Internal,
-        }
-    }
-
-    fn code(&self) -> nebula_error::ErrorCode {
-        nebula_error::ErrorCode::new(match self {
-            Self::ActionNotFound { .. } => "RUNTIME:ACTION_NOT_FOUND",
-            Self::ActionError(e) => return nebula_error::Classify::code(e),
-            Self::DataLimitExceeded { .. } => "RUNTIME:DATA_LIMIT",
-            Self::Internal(_) => "RUNTIME:INTERNAL",
-        })
-    }
-
-    fn is_retryable(&self) -> bool {
-        RuntimeError::is_retryable(self)
-    }
 }
 
 impl RuntimeError {

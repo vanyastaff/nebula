@@ -2,9 +2,10 @@
 ///
 /// Covers key validation, lookup, type mismatches, serialization,
 /// and declarative validation failures.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, nebula_error::Classify)]
 pub enum ParameterError {
     /// Parameter key does not meet naming rules.
+    #[classify(category = "validation", code = "PARAM_INVALID_KEY")]
     #[error("invalid key format `{key}`: {reason}")]
     InvalidKeyFormat {
         /// The offending key string.
@@ -14,6 +15,7 @@ pub enum ParameterError {
     },
 
     /// Parameter with the given key was not found.
+    #[classify(category = "not_found", code = "PARAM_NOT_FOUND")]
     #[error("parameter not found: `{key}`")]
     NotFound {
         /// The missing key.
@@ -21,6 +23,7 @@ pub enum ParameterError {
     },
 
     /// A parameter with the given key already exists.
+    #[classify(category = "not_found", code = "PARAM_ALREADY_EXISTS")]
     #[error("parameter already exists: `{key}`")]
     AlreadyExists {
         /// The duplicate key.
@@ -28,6 +31,7 @@ pub enum ParameterError {
     },
 
     /// Value type does not match the expected parameter type.
+    #[classify(category = "validation", code = "PARAM_INVALID_TYPE")]
     #[error("invalid type for `{key}`: expected {expected_type}, got {actual_details}")]
     InvalidType {
         /// The parameter key.
@@ -39,6 +43,7 @@ pub enum ParameterError {
     },
 
     /// Value is present but invalid for the parameter's constraints.
+    #[classify(category = "validation", code = "PARAM_INVALID_VALUE")]
     #[error("invalid value for `{key}`: {reason}")]
     InvalidValue {
         /// The parameter key.
@@ -48,6 +53,7 @@ pub enum ParameterError {
     },
 
     /// A required parameter has no value.
+    #[classify(category = "validation", code = "PARAM_MISSING_VALUE")]
     #[error("missing value for required parameter `{key}`")]
     MissingValue {
         /// The missing parameter key.
@@ -55,6 +61,7 @@ pub enum ParameterError {
     },
 
     /// Input contains a field that is not defined by the schema.
+    #[classify(category = "validation", code = "PARAM_UNKNOWN_FIELD")]
     #[error("unknown field `{key}`")]
     UnknownField {
         /// The unrecognised field key.
@@ -62,6 +69,7 @@ pub enum ParameterError {
     },
 
     /// A declarative validation rule failed with structured validator details.
+    #[classify(category = "validation", code = "PARAM_VALIDATION_ISSUE")]
     #[error("validation failed for `{key}` [{code}]: {reason}")]
     ValidationIssue {
         /// The parameter key that failed validation.
@@ -75,6 +83,7 @@ pub enum ParameterError {
     },
 
     /// Failed to deserialize a parameter value.
+    #[classify(category = "internal", code = "PARAM_DESER")]
     #[error("deserialization failed for `{key}`: {error}")]
     DeserializationError {
         /// The parameter key that failed deserialization.
@@ -84,6 +93,7 @@ pub enum ParameterError {
     },
 
     /// Failed to serialize a parameter value.
+    #[classify(category = "internal", code = "PARAM_SER")]
     #[error("serialization failed: {error}")]
     SerializationError {
         /// The underlying error message.
@@ -151,39 +161,6 @@ impl ParameterError {
             Self::ValidationIssue { params, .. } => Some(params.as_slice()),
             _ => None,
         }
-    }
-}
-
-impl nebula_error::Classify for ParameterError {
-    fn category(&self) -> nebula_error::ErrorCategory {
-        match self.category() {
-            "format" | "type" | "value" | "validation" => nebula_error::ErrorCategory::Validation,
-            "lookup" => nebula_error::ErrorCategory::NotFound,
-            "serialization" => nebula_error::ErrorCategory::Internal,
-            // Safety: category() only returns the above strings
-            _ => nebula_error::ErrorCategory::Internal,
-        }
-    }
-
-    fn code(&self) -> nebula_error::ErrorCode {
-        // Match directly to get &'static str literals for ErrorCode::new.
-        let code = match self {
-            Self::InvalidKeyFormat { .. } => "PARAM_INVALID_KEY",
-            Self::NotFound { .. } => "PARAM_NOT_FOUND",
-            Self::AlreadyExists { .. } => "PARAM_ALREADY_EXISTS",
-            Self::InvalidType { .. } => "PARAM_INVALID_TYPE",
-            Self::InvalidValue { .. } => "PARAM_INVALID_VALUE",
-            Self::MissingValue { .. } => "PARAM_MISSING_VALUE",
-            Self::UnknownField { .. } => "PARAM_UNKNOWN_FIELD",
-            Self::ValidationIssue { .. } => "PARAM_VALIDATION_ISSUE",
-            Self::DeserializationError { .. } => "PARAM_DESER",
-            Self::SerializationError { .. } => "PARAM_SER",
-        };
-        nebula_error::ErrorCode::new(code)
-    }
-
-    fn is_retryable(&self) -> bool {
-        ParameterError::is_retryable(self)
     }
 }
 

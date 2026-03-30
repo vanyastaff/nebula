@@ -93,9 +93,10 @@ impl ProblemDetails {
 }
 
 /// Main API Error Type
-#[derive(Debug, Error)]
+#[derive(Debug, Error, nebula_error::Classify)]
 pub enum ApiError {
     /// Validation error (400)
+    #[classify(category = "validation", code = "API:VALIDATION")]
     #[error("Validation failed: {detail}")]
     Validation {
         /// High-level validation summary.
@@ -105,82 +106,54 @@ pub enum ApiError {
     },
 
     /// Authentication error (401)
+    #[classify(category = "authentication", code = "API:UNAUTHORIZED")]
     #[error("Authentication failed: {0}")]
     Unauthorized(String),
 
     /// Authorization error (403)
+    #[classify(category = "authorization", code = "API:FORBIDDEN")]
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
     /// Not found (404)
+    #[classify(category = "not_found", code = "API:NOT_FOUND")]
     #[error("Not found: {0}")]
     NotFound(String),
 
     /// Conflict (409)
+    #[classify(category = "conflict", code = "API:CONFLICT")]
     #[error("Conflict: {0}")]
     Conflict(String),
 
     /// Rate limit exceeded (429)
+    #[classify(category = "rate_limit", code = "API:RATE_LIMIT")]
     #[error("Rate limit exceeded")]
     RateLimitExceeded,
 
     /// Internal server error (500)
+    #[classify(category = "internal", code = "API:INTERNAL")]
     #[error("Internal server error: {0}")]
     Internal(String),
 
     /// Service unavailable (503)
+    #[classify(category = "external", code = "API:SERVICE_UNAVAILABLE")]
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
 
     /// Storage error
+    #[classify(category = "internal", code = "API:STORAGE")]
     #[error("Storage error: {0}")]
     Storage(#[from] nebula_storage::StorageError),
 
     /// Workflow repository error
+    #[classify(category = "internal", code = "API:WORKFLOW_REPO")]
     #[error("Workflow repository error: {0}")]
     WorkflowRepo(#[from] nebula_storage::WorkflowRepoError),
 
     /// Execution repository error
+    #[classify(category = "internal", code = "API:EXECUTION_REPO")]
     #[error("Execution repository error: {0}")]
     ExecutionRepo(#[from] nebula_storage::ExecutionRepoError),
-}
-
-impl nebula_error::Classify for ApiError {
-    fn category(&self) -> nebula_error::ErrorCategory {
-        match self {
-            Self::Validation { .. } => nebula_error::ErrorCategory::Validation,
-            Self::Unauthorized(_) => nebula_error::ErrorCategory::Authentication,
-            Self::Forbidden(_) => nebula_error::ErrorCategory::Authorization,
-            Self::NotFound(_) => nebula_error::ErrorCategory::NotFound,
-            Self::Conflict(_) => nebula_error::ErrorCategory::Conflict,
-            Self::RateLimitExceeded => nebula_error::ErrorCategory::RateLimit,
-            Self::Internal(_)
-            | Self::Storage(_)
-            | Self::WorkflowRepo(_)
-            | Self::ExecutionRepo(_) => nebula_error::ErrorCategory::Internal,
-            Self::ServiceUnavailable(_) => nebula_error::ErrorCategory::External,
-        }
-    }
-
-    fn code(&self) -> nebula_error::ErrorCode {
-        nebula_error::ErrorCode::new(match self {
-            Self::Validation { .. } => "API:VALIDATION",
-            Self::Unauthorized(_) => "API:UNAUTHORIZED",
-            Self::Forbidden(_) => "API:FORBIDDEN",
-            Self::NotFound(_) => "API:NOT_FOUND",
-            Self::Conflict(_) => "API:CONFLICT",
-            Self::RateLimitExceeded => "API:RATE_LIMIT",
-            Self::Internal(_) => "API:INTERNAL",
-            Self::ServiceUnavailable(_) => "API:SERVICE_UNAVAILABLE",
-            Self::Storage(_) => "API:STORAGE",
-            Self::WorkflowRepo(_) => "API:WORKFLOW_REPO",
-            Self::ExecutionRepo(_) => "API:EXECUTION_REPO",
-        })
-    }
-
-    fn is_retryable(&self) -> bool {
-        matches!(self, Self::RateLimitExceeded | Self::ServiceUnavailable(_))
-    }
 }
 
 fn normalize_pointer(pointer: Option<&str>) -> String {

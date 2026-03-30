@@ -6,9 +6,10 @@ use thiserror::Error;
 
 /// Configuration error type
 #[non_exhaustive]
-#[derive(Error, Debug, Clone, Serialize, Deserialize)]
+#[derive(Error, Debug, Clone, Serialize, Deserialize, nebula_error::Classify)]
 pub enum ConfigError {
     /// Configuration file not found
+    #[classify(category = "not_found", code = "CONFIG:FILE_NOT_FOUND")]
     #[error("Configuration file not found: {path}")]
     FileNotFound {
         /// Path to the configuration file
@@ -16,6 +17,7 @@ pub enum ConfigError {
     },
 
     /// Configuration file read error
+    #[classify(category = "internal", code = "CONFIG:FILE_READ")]
     #[error("Failed to read configuration file {path}: {message}")]
     FileReadError {
         /// Path to the configuration file
@@ -25,6 +27,7 @@ pub enum ConfigError {
     },
 
     /// Configuration file parse error
+    #[classify(category = "validation", code = "CONFIG:PARSE")]
     #[error("Failed to parse configuration file {path}: {message}")]
     ParseError {
         /// Path to the configuration file
@@ -34,6 +37,7 @@ pub enum ConfigError {
     },
 
     /// Configuration validation error
+    #[classify(category = "validation", code = "CONFIG:VALIDATION")]
     #[error("Configuration validation failed: {message}")]
     ValidationError {
         /// Error message describing the validation failure
@@ -43,6 +47,7 @@ pub enum ConfigError {
     },
 
     /// Configuration source error
+    #[classify(category = "internal", code = "CONFIG:SOURCE")]
     #[error("Configuration source error: {message}")]
     SourceError {
         /// Error message describing the source error
@@ -52,6 +57,7 @@ pub enum ConfigError {
     },
 
     /// Environment variable not found
+    #[classify(category = "not_found", code = "CONFIG:ENV_NOT_FOUND")]
     #[error("Environment variable not found: {name}")]
     EnvVarNotFound {
         /// Name of the environment variable
@@ -59,6 +65,7 @@ pub enum ConfigError {
     },
 
     /// Environment variable parse error
+    #[classify(category = "validation", code = "CONFIG:ENV_PARSE")]
     #[error("Failed to parse environment variable {name}: {value}")]
     EnvVarParseError {
         /// Name of the environment variable
@@ -68,6 +75,7 @@ pub enum ConfigError {
     },
 
     /// Configuration reload error
+    #[classify(category = "internal", code = "CONFIG:RELOAD")]
     #[error("Failed to reload configuration: {message}")]
     ReloadError {
         /// Error message describing the reload failure
@@ -75,6 +83,7 @@ pub enum ConfigError {
     },
 
     /// Configuration watch error
+    #[classify(category = "internal", code = "CONFIG:WATCH")]
     #[error("Configuration watch error: {message}")]
     WatchError {
         /// Error message describing the watch failure
@@ -82,6 +91,7 @@ pub enum ConfigError {
     },
 
     /// Configuration merge error
+    #[classify(category = "internal", code = "CONFIG:MERGE")]
     #[error("Failed to merge configurations: {message}")]
     MergeError {
         /// Error message describing the merge failure
@@ -89,6 +99,7 @@ pub enum ConfigError {
     },
 
     /// Configuration type error
+    #[classify(category = "validation", code = "CONFIG:TYPE")]
     #[error("Configuration type error: {message}")]
     TypeError {
         /// Error message describing the type mismatch
@@ -100,6 +111,7 @@ pub enum ConfigError {
     },
 
     /// Configuration path error
+    #[classify(category = "internal", code = "CONFIG:PATH")]
     #[error("Configuration path error: {message}")]
     PathError {
         /// Error message describing the path issue
@@ -109,6 +121,7 @@ pub enum ConfigError {
     },
 
     /// Configuration format not supported
+    #[classify(category = "validation", code = "CONFIG:UNSUPPORTED_FORMAT")]
     #[error("Configuration format not supported: {format}")]
     FormatNotSupported {
         /// Format that is not supported
@@ -116,6 +129,7 @@ pub enum ConfigError {
     },
 
     /// Configuration encryption error
+    #[classify(category = "internal", code = "CONFIG:ENCRYPTION")]
     #[error("Configuration encryption error: {message}")]
     EncryptionError {
         /// Error message describing the encryption failure
@@ -123,6 +137,7 @@ pub enum ConfigError {
     },
 
     /// Configuration decryption error
+    #[classify(category = "internal", code = "CONFIG:DECRYPTION")]
     #[error("Configuration decryption error: {message}")]
     DecryptionError {
         /// Error message describing the decryption failure
@@ -130,6 +145,7 @@ pub enum ConfigError {
     },
 
     /// Environment variable interpolation error
+    #[classify(category = "internal", code = "CONFIG:INTERPOLATION")]
     #[error("Environment variable interpolation failed: {message}")]
     InterpolationError {
         /// Error message describing the interpolation failure
@@ -409,52 +425,6 @@ impl ContractErrorCategory {
             ContractErrorCategory::InvalidValue => "invalid_value",
             ContractErrorCategory::WatcherFailed => "watcher_failed",
         }
-    }
-}
-
-impl nebula_error::Classify for ConfigError {
-    fn category(&self) -> nebula_error::ErrorCategory {
-        match self {
-            Self::FileNotFound { .. } | Self::EnvVarNotFound { .. } => {
-                nebula_error::ErrorCategory::NotFound
-            }
-            Self::ValidationError { .. }
-            | Self::TypeError { .. }
-            | Self::EnvVarParseError { .. }
-            | Self::ParseError { .. }
-            | Self::FormatNotSupported { .. } => nebula_error::ErrorCategory::Validation,
-            Self::EncryptionError { .. } | Self::DecryptionError { .. } => {
-                nebula_error::ErrorCategory::Internal
-            }
-            Self::FileReadError { .. }
-            | Self::SourceError { .. }
-            | Self::ReloadError { .. }
-            | Self::WatchError { .. }
-            | Self::MergeError { .. }
-            | Self::PathError { .. }
-            | Self::InterpolationError { .. } => nebula_error::ErrorCategory::Internal,
-        }
-    }
-
-    fn code(&self) -> nebula_error::ErrorCode {
-        nebula_error::ErrorCode::new(match self {
-            Self::FileNotFound { .. } => "CONFIG:FILE_NOT_FOUND",
-            Self::FileReadError { .. } => "CONFIG:FILE_READ",
-            Self::ParseError { .. } => "CONFIG:PARSE",
-            Self::ValidationError { .. } => "CONFIG:VALIDATION",
-            Self::SourceError { .. } => "CONFIG:SOURCE",
-            Self::EnvVarNotFound { .. } => "CONFIG:ENV_NOT_FOUND",
-            Self::EnvVarParseError { .. } => "CONFIG:ENV_PARSE",
-            Self::ReloadError { .. } => "CONFIG:RELOAD",
-            Self::WatchError { .. } => "CONFIG:WATCH",
-            Self::MergeError { .. } => "CONFIG:MERGE",
-            Self::TypeError { .. } => "CONFIG:TYPE",
-            Self::PathError { .. } => "CONFIG:PATH",
-            Self::FormatNotSupported { .. } => "CONFIG:UNSUPPORTED_FORMAT",
-            Self::EncryptionError { .. } => "CONFIG:ENCRYPTION",
-            Self::DecryptionError { .. } => "CONFIG:DECRYPTION",
-            Self::InterpolationError { .. } => "CONFIG:INTERPOLATION",
-        })
     }
 }
 
