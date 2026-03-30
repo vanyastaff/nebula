@@ -82,6 +82,51 @@ pub enum CredentialError {
     /// Provider-specific error from a credential implementation (v2).
     #[error("Provider error: {0}")]
     Provider(String),
+
+    /// Invalid input from user (parameter values).
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+
+    /// Refresh failed with structured error info.
+    #[error("refresh failed ({kind:?}): {source}")]
+    RefreshFailed {
+        /// What kind of refresh failure.
+        kind: RefreshErrorKind,
+        /// Retry guidance for the framework.
+        retry: RetryAdvice,
+        /// Underlying cause.
+        #[source]
+        source: Box<dyn std::error::Error + Send + 'static>,
+    },
+
+    /// Credential revocation failed.
+    #[error("revoke failed: {source}")]
+    RevokeFailed {
+        /// Underlying cause.
+        #[source]
+        source: Box<dyn std::error::Error + Send + 'static>,
+    },
+
+    /// Credential composition not available (no resolver in context).
+    #[error("credential composition not available")]
+    CompositionNotAvailable,
+
+    /// Composed credential resolution failed.
+    #[error("composition failed: {source}")]
+    CompositionFailed {
+        /// Underlying cause.
+        #[source]
+        source: Box<dyn std::error::Error + Send + 'static>,
+    },
+
+    /// Scheme type mismatch between credential and resource.
+    #[error("scheme mismatch: expected {expected}, got {actual}")]
+    SchemeMismatch {
+        /// Expected scheme kind.
+        expected: &'static str,
+        /// Actual scheme kind found.
+        actual: String,
+    },
 }
 
 /// Manager operation errors
@@ -266,6 +311,79 @@ pub enum ValidationError {
     InvalidFormat(String),
 }
 
+/// What kind of refresh failure occurred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RefreshErrorKind {
+    /// Refresh token itself has expired -- needs re-authentication.
+    TokenExpired,
+    /// Credential was explicitly revoked at the provider.
+    TokenRevoked,
+    /// Transient network error -- retry may succeed.
+    TransientNetwork,
+    /// Provider is temporarily unavailable.
+    ProviderUnavailable,
+    /// Protocol-level error (invalid grant, bad response format).
+    ProtocolError,
+}
+
+/// Retry guidance from credential to framework.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RetryAdvice {
+    /// Never retry -- permanent failure.
+    Never,
+    /// Retry immediately.
+    Immediate,
+    /// Retry after the given duration.
+    After(std::time::Duration),
+}
+
+/// Where in the resolution pipeline an error occurred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ResolutionStage {
+    /// Loading state from store.
+    LoadState,
+    /// Decrypting stored data.
+    Decrypt,
+    /// Deserializing state bytes.
+    DeserializeState,
+    /// Projecting scheme from state.
+    ProjectScheme,
+    /// Coercing scheme to resource Auth type.
+    CoerceToResourceAuth,
+    /// Refreshing expired credentials.
+    Refresh,
+}
+
+/// Simple string-based error for convenience constructors.
+#[derive(Debug)]
+struct SimpleError(String);
+
+impl std::fmt::Display for SimpleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SimpleError {}
+
+impl CredentialError {
+    /// Shorthand for `RefreshFailed` with a string message.
+    pub fn refresh(
+        kind: RefreshErrorKind,
+        retry: RetryAdvice,
+        msg: impl std::fmt::Display,
+    ) -> Self {
+        Self::RefreshFailed {
+            kind,
+            retry,
+            source: Box::new(SimpleError(msg.to_string())),
+        }
+    }
+}
+
 impl nebula_error::Classify for CredentialError {
     fn category(&self) -> nebula_error::ErrorCategory {
         match self {
@@ -275,6 +393,12 @@ impl nebula_error::Classify for CredentialError {
             Self::Manager { source } => nebula_error::Classify::category(source),
             Self::NotInteractive => nebula_error::ErrorCategory::Unsupported,
             Self::Provider(_) => nebula_error::ErrorCategory::External,
+            Self::InvalidInput(_) => nebula_error::ErrorCategory::Validation,
+            Self::RefreshFailed { .. } => nebula_error::ErrorCategory::External,
+            Self::RevokeFailed { .. } => nebula_error::ErrorCategory::External,
+            Self::CompositionNotAvailable => nebula_error::ErrorCategory::Internal,
+            Self::CompositionFailed { .. } => nebula_error::ErrorCategory::External,
+            Self::SchemeMismatch { .. } => nebula_error::ErrorCategory::Validation,
         }
     }
 
@@ -286,6 +410,20 @@ impl nebula_error::Classify for CredentialError {
             Self::Manager { source } => nebula_error::Classify::code(source),
             Self::NotInteractive => nebula_error::ErrorCode::new("CREDENTIAL:NOT_INTERACTIVE"),
             Self::Provider(_) => nebula_error::ErrorCode::new("CREDENTIAL:PROVIDER"),
+            Self::InvalidInput(_) => nebula_error::ErrorCode::new("CREDENTIAL:INVALID_INPUT"),
+            Self::RefreshFailed { .. } => {
+                nebula_error::ErrorCode::new("CREDENTIAL:REFRESH_FAILED")
+            }
+            Self::RevokeFailed { .. } => nebula_error::ErrorCode::new("CREDENTIAL:REVOKE_FAILED"),
+            Self::CompositionNotAvailable => {
+                nebula_error::ErrorCode::new("CREDENTIAL:COMPOSITION_UNAVAILABLE")
+            }
+            Self::CompositionFailed { .. } => {
+                nebula_error::ErrorCode::new("CREDENTIAL:COMPOSITION_FAILED")
+            }
+            Self::SchemeMismatch { .. } => {
+                nebula_error::ErrorCode::new("CREDENTIAL:SCHEME_MISMATCH")
+            }
         }
     }
 
@@ -295,6 +433,15 @@ impl nebula_error::Classify for CredentialError {
             Self::Crypto { .. } | Self::Validation { .. } | Self::NotInteractive => false,
             Self::Manager { source } => nebula_error::Classify::is_retryable(source),
             Self::Provider(_) => false,
+            Self::RefreshFailed { kind, .. } => matches!(
+                kind,
+                RefreshErrorKind::TransientNetwork | RefreshErrorKind::ProviderUnavailable
+            ),
+            Self::InvalidInput(_)
+            | Self::RevokeFailed { .. }
+            | Self::CompositionNotAvailable
+            | Self::CompositionFailed { .. }
+            | Self::SchemeMismatch { .. } => false,
         }
     }
 }
@@ -517,5 +664,51 @@ mod tests {
         assert!(cred_err.source().is_some());
         let storage_source = cred_err.source().unwrap();
         assert!(storage_source.source().is_some()); // I/O error is nested
+    }
+
+    #[test]
+    fn refresh_error_convenience() {
+        let err = CredentialError::refresh(
+            RefreshErrorKind::TokenExpired,
+            RetryAdvice::Never,
+            "refresh token expired",
+        );
+        assert!(matches!(
+            err,
+            CredentialError::RefreshFailed {
+                kind: RefreshErrorKind::TokenExpired,
+                ..
+            }
+        ));
+        assert!(err.to_string().contains("refresh failed"));
+    }
+
+    #[test]
+    fn scheme_mismatch_error() {
+        let err = CredentialError::SchemeMismatch {
+            expected: "bearer",
+            actual: "database".to_string(),
+        };
+        assert!(err.to_string().contains("bearer"));
+        assert!(err.to_string().contains("database"));
+    }
+
+    #[test]
+    fn refresh_transient_is_retryable() {
+        use nebula_error::Classify;
+
+        let err = CredentialError::refresh(
+            RefreshErrorKind::TransientNetwork,
+            RetryAdvice::Immediate,
+            "connection reset",
+        );
+        assert!(err.is_retryable());
+
+        let err = CredentialError::refresh(
+            RefreshErrorKind::TokenExpired,
+            RetryAdvice::Never,
+            "expired",
+        );
+        assert!(!err.is_retryable());
     }
 }

@@ -18,8 +18,8 @@ mod status;
 pub use context::CredentialContext;
 pub use description::CredentialDescription;
 pub use error::{
-    CredentialError, CryptoError, ManagerError, ManagerResult, Result, StorageError,
-    ValidationError,
+    CredentialError, CryptoError, ManagerError, ManagerResult, RefreshErrorKind, ResolutionStage,
+    Result, RetryAdvice, StorageError, ValidationError,
 };
 pub use filter::CredentialFilter;
 pub use snapshot::CredentialSnapshot;

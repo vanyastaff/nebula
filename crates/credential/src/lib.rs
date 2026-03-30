@@ -114,8 +114,8 @@ pub use crate::core::result::{CreateResult, InitializeResult};
 pub use crate::core::{
     CredentialContext, CredentialDescription, CredentialError, CredentialFilter, CredentialId,
     CredentialMetadata, CredentialProvider, CredentialRef, CredentialSnapshot, CredentialState,
-    CredentialStatus, CryptoError, ManagerError, ManagerResult, SecretString, StorageError,
-    ValidationError, status_from_metadata,
+    CredentialStatus, CryptoError, ManagerError, ManagerResult, RefreshErrorKind, ResolutionStage,
+    RetryAdvice, SecretString, StorageError, ValidationError, status_from_metadata,
 };
 
 // Traits
