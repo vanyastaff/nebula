@@ -3889,6 +3889,7 @@ dependencies = [
  "chrono",
  "criterion",
  "nebula-core",
+ "nebula-error",
  "nebula-log",
  "nebula-memory",
  "once_cell",
@@ -3964,6 +3965,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "libc",
  "nebula-core",
+ "nebula-error",
  "nebula-log",
  "nebula-system",
  "parking_lot",
@@ -4177,6 +4179,7 @@ name = "nebula-validator"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "nebula-error",
  "pretty_assertions",
  "proptest",
  "regex",

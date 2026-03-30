@@ -2,6 +2,7 @@
 //!
 //! Uses thiserror for clean, idiomatic Rust error definitions.
 
+use nebula_error::{Classify, ErrorCategory, ErrorCode};
 use thiserror::Error;
 
 // ============================================================================
@@ -193,6 +194,43 @@ impl ExpressionError {
         Self::Internal {
             message: message.into(),
         }
+    }
+}
+
+// ============================================================================
+// Classify Implementation
+// ============================================================================
+
+impl Classify for ExpressionError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            // Syntax/Parse/Type/Validation errors → Validation
+            Self::SyntaxError { .. }
+            | Self::ParseError { .. }
+            | Self::TypeError { .. }
+            | Self::InvalidArgument { .. }
+            | Self::DivisionByZero
+            | Self::RegexError { .. }
+            | Self::IndexOutOfBounds { .. }
+            | Self::Validation { .. }
+            | Self::InvalidDate(_) => ErrorCategory::Validation,
+
+            // Not-found variants → NotFound
+            Self::VariableNotFound { .. }
+            | Self::FunctionNotFound { .. }
+            | Self::NotFound { .. } => ErrorCategory::NotFound,
+
+            // Eval, Internal, Json, and catch-all → Internal
+            _ => ErrorCategory::Internal,
+        }
+    }
+
+    fn code(&self) -> ErrorCode {
+        ErrorCode::new(ExpressionError::code(self))
+    }
+
+    fn is_retryable(&self) -> bool {
+        ExpressionError::is_retryable(self)
     }
 }
 

@@ -11,6 +11,8 @@
 
 use std::borrow::Cow;
 
+use nebula_error::{Classify, ErrorCategory, ErrorCode};
+
 /// Crate-level operational error.
 ///
 /// Covers errors that occur during validator setup or proof-token
@@ -43,6 +45,26 @@ pub enum ValidatorError {
 
 /// Result type alias for [`ValidatorError`].
 pub type ValidatorResult<T> = Result<T, ValidatorError>;
+
+impl Classify for ValidatorError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            Self::InvalidConfig { .. } => ErrorCategory::Validation,
+            Self::ValidationFailed(_) => ErrorCategory::Validation,
+        }
+    }
+
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::InvalidConfig { .. } => ErrorCode::new("VALIDATOR:INVALID_CONFIG"),
+            Self::ValidationFailed(_) => ErrorCode::new("VALIDATOR:VALIDATION_FAILED"),
+        }
+    }
+
+    fn is_retryable(&self) -> bool {
+        false
+    }
+}
 
 impl ValidatorError {
     /// Creates an [`InvalidConfig`](Self::InvalidConfig) error.

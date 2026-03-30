@@ -20,6 +20,7 @@ nebula-memory = { path = "../memory", default-features = true, features = ["cach
 
 # Error handling
 thiserror = { workspace = true }
+nebula-error = { workspace = true }
 
 # External dependencies
 serde = { workspace = true }

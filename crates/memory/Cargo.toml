@@ -76,6 +76,7 @@ pin-project = "1.1"
 
 # Errors
 thiserror = { workspace = true }
+nebula-error = { workspace = true }
 
 # Internal crates
 nebula-core = { path = "../core" }

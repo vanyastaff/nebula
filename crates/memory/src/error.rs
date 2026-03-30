@@ -3,6 +3,7 @@
 //! Uses thiserror for clean, idiomatic Rust error definitions.
 
 use core::alloc::Layout;
+use nebula_error::{Classify, ErrorCategory, ErrorCode};
 use thiserror::Error;
 
 // ============================================================================
@@ -350,6 +351,44 @@ impl MemoryError {
     #[must_use]
     pub fn is_invalid_alignment(&self) -> bool {
         matches!(self, Self::InvalidAlignment { .. })
+    }
+}
+
+// ============================================================================
+// Classify Implementation
+// ============================================================================
+
+impl Classify for MemoryError {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            // Pool/Arena/Cache/Budget exhaustion → Exhausted
+            Self::PoolExhausted { .. }
+            | Self::ArenaExhausted { .. }
+            | Self::CacheOverflow { .. }
+            | Self::BudgetExceeded { .. } => ErrorCategory::Exhausted,
+
+            // Cache miss / NotFound → NotFound
+            Self::CacheMiss { .. } | Self::NotFound { .. } => ErrorCategory::NotFound,
+
+            // Config / InvalidOperation → Validation
+            Self::InvalidConfig { .. } | Self::InvalidOperation { .. } => {
+                ErrorCategory::Validation
+            }
+
+            // Feature support → Unsupported
+            Self::NotSupported { .. } => ErrorCategory::Unsupported,
+
+            // Allocation, system errors, and catch-all → Internal
+            _ => ErrorCategory::Internal,
+        }
+    }
+
+    fn code(&self) -> ErrorCode {
+        ErrorCode::new(MemoryError::code(self))
+    }
+
+    fn is_retryable(&self) -> bool {
+        MemoryError::is_retryable(self)
     }
 }
 
