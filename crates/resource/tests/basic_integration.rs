@@ -638,7 +638,7 @@ fn error_retryability() {
     assert!(Error::exhausted("rate limited", None).is_retryable());
     assert!(!Error::permanent("bad config").is_retryable());
     assert!(!Error::cancelled().is_retryable());
-    assert!(!Error::backpressure("pool full").is_retryable());
+    assert!(Error::backpressure("pool full").is_retryable());
 }
 
 // ---------------------------------------------------------------------------

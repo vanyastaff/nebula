@@ -1446,10 +1446,16 @@ where
         match result {
             Ok(val) => return Ok(val),
             Err(e) if e.is_retryable() && attempt + 1 < max_attempts => {
-                let backoff = std::cmp::min(
+                let exp_backoff = std::cmp::min(
                     initial_backoff.saturating_mul(2u32.saturating_pow(attempt)),
                     max_backoff,
                 );
+                // Respect retry_after hint as a minimum delay (e.g., rate limits,
+                // backpressure cooldown). The exponential backoff takes priority
+                // when it already exceeds the hint.
+                let backoff = e
+                    .retry_after()
+                    .map_or(exp_backoff, |hint| exp_backoff.max(hint));
                 // Cap the backoff sleep to the remaining budget so we never
                 // overshoot the overall deadline.
                 let sleep_dur = if let Some(dl) = deadline {

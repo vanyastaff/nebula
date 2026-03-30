@@ -5,7 +5,9 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 ## Invariants
 
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`
-- `ErrorKind` determines retry: Transient/Exhausted = retryable
+- `ErrorKind` determines retry: Transient/Exhausted/Backpressure = retryable
+- `execute_with_resilience` respects `retry_after()` as backoff floor
+- Release queue fallback is bounded (4096) — drops tasks with `tracing::error!` when full
 - `register()` takes 6 params — convenience methods require `Auth = ()` bound
 - `ResourceHandle` RAII — guarded returns lease on drop, tainted destroys
 - Guarded permit drops AFTER catch_unwind in Drop — prevents semaphore leak on panic
@@ -28,4 +30,4 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - Depends on: nebula-core, nebula-resource-macros
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 
-<!-- reviewed: 2026-03-30 -->
+<!-- reviewed: 2026-03-30 (backpressure retryable, retry_hint floor, bounded release queue, new events) -->

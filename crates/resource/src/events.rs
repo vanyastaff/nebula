@@ -63,6 +63,29 @@ pub enum ResourceEvent {
         /// The key of the reloaded resource.
         key: ResourceKey,
     },
+    /// A retry attempt is about to be made after a transient acquire failure.
+    RetryAttempt {
+        /// The key of the resource being retried.
+        key: ResourceKey,
+        /// 1-based attempt number (the initial attempt is not counted).
+        attempt: u32,
+        /// How long the retry will sleep before the next attempt.
+        backoff: Duration,
+        /// Human-readable description of the error that triggered the retry.
+        error: String,
+    },
+    /// Pool backpressure was detected (semaphore full).
+    BackpressureDetected {
+        /// The key of the resource under pressure.
+        key: ResourceKey,
+    },
+    /// A recovery gate changed state.
+    RecoveryGateChanged {
+        /// The key of the resource whose gate transitioned.
+        key: ResourceKey,
+        /// Human-readable description of the new gate state.
+        state: String,
+    },
 }
 
 impl ResourceEvent {
@@ -75,7 +98,10 @@ impl ResourceEvent {
             | Self::AcquireFailed { key, .. }
             | Self::Released { key, .. }
             | Self::HealthChanged { key, .. }
-            | Self::ConfigReloaded { key } => key,
+            | Self::ConfigReloaded { key }
+            | Self::RetryAttempt { key, .. }
+            | Self::BackpressureDetected { key }
+            | Self::RecoveryGateChanged { key, .. } => key,
         }
     }
 }

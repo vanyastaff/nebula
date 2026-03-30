@@ -81,18 +81,25 @@ impl Error {
         self.resource_key.as_ref()
     }
 
-    /// Returns `true` if the error is retryable (transient or exhausted).
+    /// Returns `true` if the error is retryable.
+    ///
+    /// `Transient`, `Exhausted`, and `Backpressure` are retryable because they
+    /// represent transient conditions that resolve with time or backoff.
     pub fn is_retryable(&self) -> bool {
         matches!(
             self.kind,
-            ErrorKind::Transient | ErrorKind::Exhausted { .. }
+            ErrorKind::Transient | ErrorKind::Exhausted { .. } | ErrorKind::Backpressure
         )
     }
 
-    /// Returns the retry-after hint, if this is an exhausted error.
+    /// Returns the retry-after hint, if available.
+    ///
+    /// - `Exhausted` errors carry an explicit `retry_after` from the upstream.
+    /// - `Backpressure` errors return a default 50ms hint (pool slots free up quickly).
     pub fn retry_after(&self) -> Option<Duration> {
         match &self.kind {
             ErrorKind::Exhausted { retry_after } => *retry_after,
+            ErrorKind::Backpressure => Some(Duration::from_millis(50)),
             _ => None,
         }
     }
@@ -247,10 +254,16 @@ mod tests {
     }
 
     #[test]
-    fn backpressure_is_not_retryable() {
+    fn backpressure_is_retryable() {
         let err = Error::backpressure("pool full");
-        assert!(!err.is_retryable());
+        assert!(err.is_retryable());
         assert_eq!(*err.kind(), ErrorKind::Backpressure);
+    }
+
+    #[test]
+    fn backpressure_has_default_retry_after() {
+        let err = Error::backpressure("pool full");
+        assert_eq!(err.retry_after(), Some(Duration::from_millis(50)));
     }
 
     #[test]

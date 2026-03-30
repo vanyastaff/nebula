@@ -38,6 +38,12 @@ const TASK_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
 /// Channel buffer size per primary worker.
 const CHANNEL_BUFFER: usize = 256;
 
+/// Channel buffer size for the fallback worker.
+///
+/// Previously unbounded — now bounded to prevent OOM under sustained overload.
+/// Tasks exceeding this capacity are dropped with a warning.
+const FALLBACK_BUFFER: usize = 4096;
+
 /// Handle to the running release queue workers.
 ///
 /// Must be passed to [`ReleaseQueue::shutdown`] for graceful termination.
@@ -74,11 +80,13 @@ pub struct ReleaseQueueHandle {
 /// ```
 pub struct ReleaseQueue {
     senders: Vec<mpsc::Sender<TaskFactory>>,
-    fallback_tx: mpsc::UnboundedSender<TaskFactory>,
+    fallback_tx: mpsc::Sender<TaskFactory>,
     next: AtomicUsize,
     cancel: CancellationToken,
     /// Tracks how many tasks have gone to the fallback channel.
     fallback_count: AtomicUsize,
+    /// Tracks how many tasks were dropped due to full queues.
+    dropped_count: AtomicUsize,
 }
 
 impl ReleaseQueue {
@@ -118,9 +126,8 @@ impl ReleaseQueue {
             workers.push(tokio::spawn(Self::worker_loop(rx, cancel.clone())));
         }
 
-        let (fallback_tx, fallback_rx) = mpsc::unbounded_channel::<TaskFactory>();
-        let fallback_worker =
-            tokio::spawn(Self::worker_loop_unbounded(fallback_rx, cancel.clone()));
+        let (fallback_tx, fallback_rx) = mpsc::channel::<TaskFactory>(FALLBACK_BUFFER);
+        let fallback_worker = tokio::spawn(Self::worker_loop(fallback_rx, cancel.clone()));
 
         let queue = Self {
             senders,
@@ -128,6 +135,7 @@ impl ReleaseQueue {
             next: AtomicUsize::new(0),
             cancel,
             fallback_count: AtomicUsize::new(0),
+            dropped_count: AtomicUsize::new(0),
         };
         let handle = ReleaseQueueHandle {
             workers,
@@ -149,20 +157,33 @@ impl ReleaseQueue {
         match self.senders[idx].try_send(factory) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(factory)) => {
-                // Primary is full — use unbounded fallback (never drops).
+                // Primary is full — try bounded fallback.
                 let count = self.fallback_count.fetch_add(1, Ordering::Relaxed) + 1;
                 if count.is_power_of_two() {
                     tracing::warn!(
                         fallback_tasks = count,
-                        "release queue primary channels full, using unbounded \
-                         fallback (potential memory pressure)"
+                        "release queue primary channels full, using fallback"
                     );
                 }
-                if let Err(e) = self.fallback_tx.send(factory) {
-                    tracing::warn!(
-                        "release queue fallback channel closed, \
-                         dropping release task: {e}"
-                    );
+                match self.fallback_tx.try_send(factory) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        let dropped =
+                            self.dropped_count.fetch_add(1, Ordering::Relaxed) + 1;
+                        if dropped.is_power_of_two() {
+                            tracing::error!(
+                                dropped_tasks = dropped,
+                                "release queue fallback full — dropping release \
+                                 task (resource may leak)"
+                            );
+                        }
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        tracing::warn!(
+                            "release queue fallback channel closed, \
+                             dropping release task"
+                        );
+                    }
                 }
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -209,31 +230,6 @@ impl ReleaseQueue {
                 }
                 _ = cancel.cancelled() => {
                     // Drain remaining buffered tasks, then exit.
-                    rx.close();
-                    while let Some(factory) = rx.recv().await {
-                        Self::execute_task(factory).await;
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    /// Worker loop for the unbounded fallback channel.
-    async fn worker_loop_unbounded(
-        mut rx: mpsc::UnboundedReceiver<TaskFactory>,
-        cancel: CancellationToken,
-    ) {
-        loop {
-            tokio::select! {
-                biased;
-                msg = rx.recv() => {
-                    match msg {
-                        Some(factory) => Self::execute_task(factory).await,
-                        None => break, // channel closed
-                    }
-                }
-                _ = cancel.cancelled() => {
                     rx.close();
                     while let Some(factory) = rx.recv().await {
                         Self::execute_task(factory).await;
@@ -313,9 +309,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fallback_channel_never_drops_tasks() {
+    async fn fallback_channel_handles_overflow() {
         // Use 1 worker so primary channel has 256 capacity.
-        // Submit more tasks than old total capacity (256 + 1024 = 1280).
+        // Fallback has 4096 capacity. Total: 4352. 1500 < 4352 → no drops.
         let total_tasks: u32 = 1500;
         let (queue, handle) = ReleaseQueue::new(1);
         let counter = Arc::new(AtomicU32::new(0));

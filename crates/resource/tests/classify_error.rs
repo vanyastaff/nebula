@@ -70,7 +70,7 @@ fn exhausted_without_retry_after() {
 fn backpressure_variant_maps_correctly() {
     let err: Error = TestError::PoolFull.into();
     assert_eq!(*err.kind(), ErrorKind::Backpressure);
-    assert!(!err.is_retryable());
+    assert!(err.is_retryable());
 }
 
 #[test]
