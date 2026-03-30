@@ -91,6 +91,7 @@ impl AttrArgs {
     }
 
     /// Get an ident value by key (e.g. `auth_style = PostBody`).
+    #[allow(dead_code)] // Reason: will be used when #[derive(Credential)] is rewritten for v2
     pub fn get_ident(&self, key: &str) -> Option<&Ident> {
         self.get_value(key).and_then(|v| match v {
             AttrValue::Ident(i) => Some(i),
@@ -99,11 +100,13 @@ impl AttrArgs {
     }
 
     /// Get an ident value as a string (e.g. `auth_style = PostBody` → `"PostBody"`).
+    #[allow(dead_code)] // Reason: will be used when #[derive(Credential)] is rewritten for v2
     pub fn get_ident_str(&self, key: &str) -> Option<String> {
         self.get_ident(key).map(|i| i.to_string())
     }
 
     /// Get a boolean value by key (e.g. `pkce = true`).
+    #[allow(dead_code)] // Reason: will be used when #[derive(Credential)] is rewritten for v2
     pub fn get_bool(&self, key: &str) -> Option<bool> {
         self.get_value(key).and_then(|v| match v {
             AttrValue::Lit(Lit::Bool(b)) => Some(b.value()),

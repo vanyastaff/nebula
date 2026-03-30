@@ -10,8 +10,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
 use serde_json::Value;
 
+use super::oauth2_config::{AuthStyle, OAuth2Config};
 use crate::core::CredentialError;
-use crate::protocols::oauth2::config::{AuthStyle, OAuth2Config};
 
 use super::oauth2::OAuth2State;
 

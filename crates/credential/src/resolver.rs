@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use crate::core::CredentialContext;
 use crate::credential_handle::CredentialHandle;
-use crate::credential_state::CredentialStateV2;
+use crate::credential_state::CredentialState;
 use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
 use crate::credential_trait::Credential;
 use crate::refresh::{RefreshAttempt, RefreshCoordinator};
@@ -201,7 +201,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
             .await
             .map_err(ResolveError::Store)?;
 
-        let expected_kind = <C::State as CredentialStateV2>::KIND;
+        let expected_kind = <C::State as CredentialState>::KIND;
         if stored.state_kind != expected_kind {
             return Err(ResolveError::KindMismatch {
                 credential_id: credential_id.to_string(),
@@ -363,7 +363,7 @@ mod tests {
         expires_at: chrono::DateTime<chrono::Utc>,
     }
 
-    impl CredentialStateV2 for ExpiringState {
+    impl CredentialState for ExpiringState {
         const KIND: &'static str = "expiring_test";
         const VERSION: u32 = 1;
 

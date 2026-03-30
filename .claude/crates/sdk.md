@@ -13,8 +13,10 @@ Re-exports of core crates for plugin/action authors — the single entry point f
 - `params!` macro references `nebula_parameter::values::ParameterValues` — this type may change during parameter migration (RFC 0005). Verify it compiles after parameter changes.
 - `simple_action!` macro uses `ProcessAction` trait — verify this trait name is current before referencing it in docs.
 - Re-exports can shadow each other. If something is missing from `prelude::*`, check the individual re-exported crate directly.
+- `#[derive(Credential)]` macro in `nebula-sdk-macros` currently emits `compile_error!("rewrite for v2")` — v1 credential traits were deleted. Needs rewrite for v2 `Credential` trait (Phase 9).
+- SDK prelude now re-exports v2 credential types only. v1 types (CredentialType, StaticProtocol, FlowProtocol, StorageProvider, CredentialManager, etc.) no longer exist.
 
 ## Relations
 - Re-exports: nebula-action, nebula-core, nebula-credential, nebula-macros, nebula-parameter, nebula-plugin, nebula-validator, nebula-workflow, anyhow, async-trait, serde, serde_json, thiserror.
 
-<!-- reviewed: 2026-03-30 — nest macro crates refactor, no invariant changes -->
+<!-- reviewed: 2026-03-30 — v1 credential types removed from prelude, derive(Credential) stubbed -->

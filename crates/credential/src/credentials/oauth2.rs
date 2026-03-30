@@ -18,11 +18,11 @@ use zeroize::Zeroize;
 use nebula_parameter::values::ParameterValues;
 use nebula_parameter::{Parameter, ParameterCollection};
 
+use super::oauth2_config::{GrantType, OAuth2Config};
 use crate::core::{CredentialContext, CredentialDescription, CredentialError};
-use crate::credential_state::CredentialStateV2;
+use crate::credential_state::CredentialState;
 use crate::credential_trait::Credential;
 use crate::pending::PendingState;
-use crate::protocols::oauth2::config::{GrantType, OAuth2Config};
 use crate::resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput};
 use crate::scheme::OAuth2Token;
 use crate::utils::SecretString;
@@ -79,7 +79,7 @@ impl OAuth2State {
     }
 }
 
-impl CredentialStateV2 for OAuth2State {
+impl CredentialState for OAuth2State {
     const KIND: &'static str = "oauth2";
     const VERSION: u32 = 1;
 

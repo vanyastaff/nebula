@@ -5,96 +5,69 @@
 //! # Design Philosophy
 //!
 //! Validation is delegated to credential implementations through traits:
-//! - `TestableCredential` - credentials that can test themselves
-//! - `RotatableCredential` - credentials that support rotation
+//! - [`TestableCredential`] -- credentials that can test themselves
+//! - [`RotatableCredential`] -- credentials that support rotation
 //!
 //! This allows each credential type (MySQL, PostgreSQL, OAuth2, etc.) to implement
 //! their own validation logic using their specific client libraries.
-//!
-//! # Example Implementations
-//!
-//! ```rust,ignore
-//! // MySQL credential with rotation support
-//! pub struct MySqlCredential {
-//!     pub username: String,
-//!     pub password: SecretString,
-//!     pub host: String,
-//!     pub port: u16,
-//!     pub database: String,
-//! }
-//!
-//! #[async_trait]
-//! impl TestableCredential for MySqlCredential {
-//!     async fn test(&self) -> RotationResult<TestResult> {
-//!         let start = Instant::now();
-//!
-//!         // Use mysql_async client library to test connection
-//!         let opts = OptsBuilder::new()
-//!             .user(Some(&self.username))
-//!             .pass(Some(self.password.expose_secret()))
-//!             .ip_or_hostname(&self.host)
-//!             .tcp_port(self.port)
-//!             .db_name(Some(&self.database));
-//!
-//!         let mut conn = Conn::new(opts).await
-//!             .map_err(|e| RotationError::ValidationFailed {
-//!                 credential_id: self.id.clone(),
-//!                 reason: format!("Connection failed: {}", e),
-//!             })?;
-//!
-//!         // Test with SELECT 1 query
-//!         conn.query_drop("SELECT 1").await
-//!             .map_err(|e| RotationError::ValidationFailed {
-//!                 credential_id: self.id.clone(),
-//!                 reason: format!("Query failed: {}", e),
-//!             })?;
-//!
-//!         Ok(TestResult::success(
-//!             "MySQL connection successful",
-//!             "SELECT 1",
-//!             start.elapsed(),
-//!         ))
-//!     }
-//! }
-//!
-//! #[async_trait]
-//! impl RotatableCredential for MySqlCredential {
-//!     async fn rotate(&self) -> RotationResult<Self> {
-//!         // Generate new password
-//!         let new_password = generate_secure_password(32);
-//!
-//!         // Create new credential with same permissions
-//!         let new_cred = MySqlCredential {
-//!             username: format!("{}_v{}", self.username, version),
-//!             password: SecretString::new(new_password),
-//!             host: self.host.clone(),
-//!             port: self.port,
-//!             database: self.database.clone(),
-//!         };
-//!
-//!         // Use admin connection to create new user with same grants
-//!         let admin = self.get_admin_connection().await?;
-//!         admin.create_user_with_grants(&new_cred, &self).await?;
-//!
-//!         Ok(new_cred)
-//!     }
-//!
-//!     async fn cleanup_old(&self) -> RotationResult<()> {
-//!         let admin = self.get_admin_connection().await?;
-//!         admin.drop_user(&self.username).await?;
-//!         Ok(())
-//!     }
-//! }
-//! ```
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::core::{CredentialId, CredentialMetadata};
-use crate::traits::TestableCredential;
 
 use super::error::{RotationError, RotationResult};
 use tokio::time::timeout;
+
+// ── Rotation-specific traits ──────────────────────────────────────────────
+
+/// Trait for credentials that can test themselves during rotation.
+///
+/// Each credential type implements this using their client library:
+/// - **MySQL/PostgreSQL**: `SELECT 1` query
+/// - **OAuth2**: Call userinfo endpoint with token
+/// - **API Key**: Call account/status endpoint
+/// - **Certificate**: Perform TLS handshake
+#[async_trait]
+pub trait TestableCredential: Send + Sync {
+    /// Test the credential by performing an actual operation.
+    ///
+    /// Returns `TestResult` with success/failure details.
+    async fn test(&self) -> RotationResult<TestResult>;
+
+    /// Get test timeout (default: 30 seconds).
+    fn test_timeout(&self) -> Duration {
+        Duration::from_secs(30)
+    }
+}
+
+/// Trait for credentials that support rotation.
+///
+/// Credentials implementing this trait can generate new versions and
+/// cleanup old ones.
+#[async_trait]
+pub trait RotatableCredential: TestableCredential {
+    /// Generate a new version of this credential.
+    ///
+    /// The new credential should have:
+    /// - Different secrets (password, token, key)
+    /// - Same permissions and access levels
+    /// - Same connection details (host, port, database)
+    async fn rotate(&self) -> RotationResult<Self>
+    where
+        Self: Sized;
+
+    /// Clean up old credential after rotation completes.
+    ///
+    /// Optional: implement if cleanup is needed (e.g., delete old database user).
+    /// Called after grace period expires.
+    async fn cleanup_old(&self) -> RotationResult<()> {
+        Ok(())
+    }
+}
+
+// ── TestContext ────────────────────────────────────────────────────────────
 
 /// Context for credential testing
 #[derive(Debug, Clone)]
@@ -153,15 +126,6 @@ impl TestContext {
     ///
     /// * `Ok(TestResult)` - Test completed within timeout
     /// * `Err(RotationError::Timeout)` - Test exceeded timeout
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let context = TestContext::new(cred_id, metadata)
-    ///     .with_timeout(Duration::from_secs(10));
-    ///
-    /// let result = context.test(&mysql_credential).await?;
-    /// ```
     pub async fn test<T: TestableCredential>(&self, credential: &T) -> RotationResult<TestResult> {
         let timeout_duration = self.timeout;
 
@@ -292,8 +256,6 @@ pub enum SuccessCriteria {
 /// Validation failure classification
 ///
 /// Categorizes validation failures to determine appropriate response.
-///
-/// # T074: Validation Failure Handler
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureKind {
@@ -337,23 +299,6 @@ impl FailureKind {
 /// Validation failure handler
 ///
 /// Analyzes validation failures and determines appropriate response.
-///
-/// # T074: Validation Failure Handler
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use nebula_credential::rotation::validation::FailureHandler;
-///
-/// let handler = FailureHandler::new();
-/// let failure_type = handler.classify_error("Connection timeout");
-///
-/// if failure_type.is_transient() {
-///     // Retry validation
-/// } else {
-///     // Trigger rollback
-/// }
-/// ```
 #[derive(Debug, Clone)]
 pub struct FailureHandler {
     /// Maximum retry attempts for transient failures
@@ -436,8 +381,6 @@ impl FailureHandler {
 
     /// Determine if rollback should be triggered
     ///
-    /// # T075: Should Trigger Rollback
-    ///
     /// # Arguments
     ///
     /// * `failure_type` - Type of validation failure
@@ -483,72 +426,10 @@ impl FailureHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-
-    use crate::core::result::InitializeResult;
-    use crate::core::{CredentialContext, CredentialDescription, CredentialError, CredentialState};
-    use crate::traits::{CredentialType, Refreshable, Revocable, RotatableCredential};
-
-    #[derive(Clone, Serialize, Deserialize)]
-    struct MockState;
-
-    impl CredentialState for MockState {
-        const VERSION: u16 = 1;
-        const KIND: &'static str = "mock";
-    }
-
-    #[derive(Serialize, Deserialize)]
-    struct MockInput;
 
     // Mock credential for testing
     struct MockCredential {
         should_pass: bool,
-    }
-
-    #[async_trait]
-    impl CredentialType for MockCredential {
-        type Input = MockInput;
-        type State = MockState;
-
-        fn description() -> CredentialDescription {
-            CredentialDescription::builder()
-                .key("mock")
-                .name("Mock Credential")
-                .description("Mock credential for testing")
-                .properties(nebula_parameter::collection::ParameterCollection::new())
-                .build()
-                .unwrap()
-        }
-
-        async fn initialize(
-            &self,
-            _input: &Self::Input,
-            _ctx: &mut CredentialContext,
-        ) -> Result<InitializeResult<Self::State>, CredentialError> {
-            Ok(InitializeResult::Complete(MockState))
-        }
-    }
-
-    #[async_trait]
-    impl Refreshable for MockCredential {
-        async fn refresh(
-            &self,
-            _state: &mut Self::State,
-            _ctx: &mut CredentialContext,
-        ) -> Result<(), CredentialError> {
-            Ok(())
-        }
-    }
-
-    #[async_trait]
-    impl Revocable for MockCredential {
-        async fn revoke(
-            &self,
-            _state: &mut Self::State,
-            _ctx: &mut CredentialContext,
-        ) -> Result<(), CredentialError> {
-            Ok(())
-        }
     }
 
     #[async_trait]

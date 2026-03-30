@@ -1,8 +1,8 @@
 //! Object-safe supertrait for credential dependency declaration.
+
 use std::any::Any;
 
 use crate::core::CredentialDescription;
-use crate::traits::CredentialType;
 
 /// Object-safe supertrait for declaring credential dependencies.
 ///
@@ -10,7 +10,7 @@ use crate::traits::CredentialType;
 /// "I need a credential of this type." The engine uses `Any::type_id()` on
 /// `dyn AnyCredential` to identify the credential type at registration time.
 ///
-/// Automatically implemented for all `C: CredentialType` via the blanket impl below.
+/// Automatically implemented for all `C: Credential` via the blanket impl below.
 pub trait AnyCredential: Any + Send + Sync + 'static {
     /// The normalized key identifying this credential type.
     fn credential_key(&self) -> &str;
@@ -18,13 +18,11 @@ pub trait AnyCredential: Any + Send + Sync + 'static {
     fn description(&self) -> CredentialDescription;
 }
 
-/// Blanket impl: every `CredentialType` is automatically an `AnyCredential`.
-impl<C: CredentialType + 'static> AnyCredential for C {
+/// Blanket impl: every `Credential` is automatically an `AnyCredential`.
+impl<C: crate::Credential + 'static> AnyCredential for C {
     fn credential_key(&self) -> &str {
-        // SAFETY: `CredentialKey` is a `Deref<Target=str>` backed by an interned
-        // static or leaked string. Leaking here is acceptable because credential
-        // keys are registered once at startup and live for the program lifetime.
-        Box::leak(C::credential_key().to_string().into_boxed_str())
+        // SAFETY: Credential::KEY is a static string reference -- always valid.
+        C::KEY
     }
 
     fn description(&self) -> CredentialDescription {

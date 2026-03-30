@@ -273,6 +273,6 @@ pub use transaction::{
     TransactionPhase, ValidationResult,
 };
 pub use validation::{
-    FailureHandler, FailureKind, SuccessCriteria, TestContext, TestMethod, TestResult,
-    ValidationTest,
+    FailureHandler, FailureKind, RotatableCredential, SuccessCriteria, TestContext, TestMethod,
+    TestResult, TestableCredential, ValidationTest,
 };

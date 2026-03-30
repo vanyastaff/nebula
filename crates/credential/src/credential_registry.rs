@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::credential_state::CredentialStateV2;
+use crate::credential_state::CredentialState;
 use crate::credential_trait::Credential;
 
 /// A function that projects stored bytes into a type-erased [`AuthScheme`](nebula_core::AuthScheme).
@@ -62,7 +62,7 @@ impl CredentialRegistry {
         C: Credential,
         C::Scheme: 'static,
     {
-        let kind = <C::State as CredentialStateV2>::KIND.to_string();
+        let kind = <C::State as CredentialState>::KIND.to_string();
         self.handlers.insert(
             kind,
             Arc::new(|bytes: &[u8]| {

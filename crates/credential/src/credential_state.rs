@@ -1,6 +1,6 @@
 //! Credential state trait for stored credential data.
 //!
-//! [`CredentialState`](CredentialStateV2) represents what gets persisted
+//! [`CredentialState`](CredentialState) represents what gets persisted
 //! in encrypted storage. It may contain refresh internals
 //! (`refresh_token`, `client_secret`) that are NOT exposed to resource
 //! consumers -- those see only the [`AuthScheme`].
@@ -16,7 +16,7 @@ use serde::de::DeserializeOwned;
 /// from this state for consumer use.
 ///
 /// [`AuthScheme`]: nebula_core::AuthScheme
-pub trait CredentialStateV2: Serialize + DeserializeOwned + Send + Sync + 'static {
+pub trait CredentialState: Serialize + DeserializeOwned + Send + Sync + 'static {
     /// Unique identifier for this state type (e.g., `"oauth2_state"`).
     const KIND: &'static str;
     /// Schema version for migration support.
@@ -28,7 +28,7 @@ pub trait CredentialStateV2: Serialize + DeserializeOwned + Send + Sync + 'stati
     }
 }
 
-/// Opt-in macro: make an `AuthScheme` also usable as `CredentialStateV2`.
+/// Opt-in macro: make an `AuthScheme` also usable as `CredentialState`.
 ///
 /// For static credentials where stored state = consumer-facing auth
 /// (e.g., API key, bot token), the state and scheme are the same type.
@@ -37,12 +37,12 @@ pub trait CredentialStateV2: Serialize + DeserializeOwned + Send + Sync + 'stati
 ///
 /// ```ignore
 /// identity_state!(BearerToken, "bearer", 1);
-/// // Now BearerToken can be used as both AuthScheme and CredentialStateV2
+/// // Now BearerToken can be used as both AuthScheme and CredentialState
 /// ```
 #[macro_export]
 macro_rules! identity_state {
     ($ty:ty, $kind:expr, $version:expr) => {
-        impl $crate::credential_state::CredentialStateV2 for $ty {
+        impl $crate::credential_state::CredentialState for $ty {
             const KIND: &'static str = $kind;
             const VERSION: u32 = $version;
         }

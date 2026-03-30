@@ -30,9 +30,9 @@ pub struct StoredCredential {
     pub id: String,
     /// Serialized credential state (encrypted at the `EncryptionLayer` boundary).
     pub data: Vec<u8>,
-    /// State type identifier (`CredentialStateV2::KIND`).
+    /// State type identifier (`CredentialState::KIND`).
     pub state_kind: String,
-    /// Schema version (`CredentialStateV2::VERSION`).
+    /// Schema version (`CredentialState::VERSION`).
     pub state_version: u32,
     /// Monotonic version counter (for CAS).
     pub version: u64,

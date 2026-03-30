@@ -20,7 +20,7 @@ use nebula_parameter::ParameterCollection;
 use nebula_parameter::values::ParameterValues;
 
 use crate::core::{CredentialContext, CredentialDescription, CredentialError};
-use crate::credential_state::CredentialStateV2;
+use crate::credential_state::CredentialState;
 use crate::pending::PendingState;
 use crate::resolve::{RefreshOutcome, RefreshPolicy, ResolveResult, TestResult, UserInput};
 
@@ -34,7 +34,7 @@ use crate::resolve::{RefreshOutcome, RefreshPolicy, ResolveResult, TestResult, U
 ///
 /// - **`Scheme`** -- consumer-facing auth material ([`AuthScheme`]).
 /// - **`State`** -- what gets encrypted and stored
-///   ([`CredentialStateV2`]). May include refresh internals not exposed
+///   ([`CredentialState`]). May include refresh internals not exposed
 ///   to consumers.
 /// - **`Pending`** -- typed ephemeral state for interactive flows
 ///   ([`PendingState`]). Non-interactive credentials use
@@ -97,7 +97,7 @@ pub trait Credential: Send + Sync + 'static {
     /// What gets stored -- may include refresh internals not exposed to
     /// resources. For static credentials: same type as `Scheme`
     /// (use [`identity_state!`](crate::identity_state) macro).
-    type State: CredentialStateV2;
+    type State: CredentialState;
 
     /// Typed pending state for interactive flows.
     ///

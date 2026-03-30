@@ -2,49 +2,31 @@
 //!
 //! A secure, extensible credential management system for workflow automation.
 //!
-//! # Features
+//! # Architecture (v2)
 //!
-//! - **Protocol-agnostic flows** - `OAuth2`, API Keys, JWT, SAML, Kerberos, mTLS
-//! - **Type-safe credentials** - Compile-time verification with generic flows
-//! - **Interactive authentication** - Multi-step flows with user interaction
-//! - **Secure storage** - Zero-copy secrets with automatic zeroization
-//! - **Minimal boilerplate** - ~30-50 lines to add new integrations
-//! - **Provider abstraction** - Decoupled credential access via `CredentialProvider` trait
+//! The credential system uses a trait-based approach:
+//!
+//! - **[`Credential`] trait** -- single unified trait replacing six v1 traits.
+//!   Each credential type implements `resolve()`, `refresh()`, `test()`, and
+//!   `project()` (extracts the auth scheme consumers see).
+//!
+//! - **[`CredentialStore`]** -- composable storage with layered encryption,
+//!   caching, scoping, and audit via [`layer`] module.
+//!
+//! - **[`CredentialRegistry`]** -- type-erased runtime dispatch for credential
+//!   resolution.
+//!
+//! - **[`CredentialResolver`]** -- runtime resolution engine: resolve, refresh,
+//!   test credentials via the registry.
 //!
 //! # Quick Start
 //!
 //! ```rust,ignore
-//! use nebula_credential::{CredentialManager, CredentialContext, SecretString};
-//!
-//! // Create manager
-//! let manager = CredentialManager::builder()
-//!     .with_storage(local_storage)
-//!     .build()?;
-//!
-//! // Store credential
-//! let ctx = CredentialContext::new("user_123");
-//! manager.store("github_token", secret_data, &ctx).await?;
-//!
-//! // Retrieve credential
-//! let secret = manager.get("github_token", &ctx).await?;
+//! use nebula_credential::{
+//!     Credential, CredentialStore, InMemoryStore,
+//!     ApiKeyCredential, BearerToken,
+//! };
 //! ```
-//!
-//! # CredentialProvider Pattern
-//!
-//! For decoupled credential access in actions/triggers:
-//!
-//! ```rust,ignore
-//! use nebula_credential::{CredentialProvider, CredentialRef};
-//!
-//! // Type-safe acquisition
-//! struct GithubToken;
-//! let token = provider.credential::<GithubToken>(&ctx).await?;
-//!
-//! // Dynamic acquisition
-//! let token = provider.get("github_token", &ctx).await?;
-//! ```
-//!
-//! See [`core::reference`] module for details on `CredentialRef` and `CredentialProvider`.
 #![deny(unsafe_code)]
 #![forbid(unsafe_code)]
 
@@ -52,16 +34,8 @@
 pub mod any;
 /// Core types, errors, and primitives
 pub mod core;
-/// Credential manager - high-level API for credential operations
-pub mod manager;
-/// Built-in reusable credential protocols (ApiKey, OAuth2, etc.)
-pub mod protocols;
-/// Storage provider implementations
-pub mod providers;
-/// Credential rotation (Phase 4)
+/// Credential rotation
 pub mod rotation;
-/// Core traits for credentials, storage, and locking
-pub mod traits;
 /// Utilities for crypto, time, etc.
 pub mod utils;
 
@@ -70,8 +44,6 @@ pub mod utils;
 /// Typed credential handle returned by the resolver.
 pub mod credential_handle;
 /// Credential state trait for stored credential data.
-// TODO: rename CredentialStateV2 → CredentialState once v1 CredentialState
-//       (in core::state) is removed.
 pub mod credential_state;
 /// Unified Credential trait replacing six v1 traits.
 pub mod credential_trait;
@@ -135,28 +107,10 @@ pub mod resolver;
 pub use crate::any::AnyCredential;
 
 // Core types & errors
-pub use crate::core::reference::ErasedCredentialRef;
-pub use crate::core::result::{CreateResult, InitializeResult};
 pub use crate::core::{
-    CredentialContext, CredentialDescription, CredentialError, CredentialFilter, CredentialId,
-    CredentialMetadata, CredentialProvider, CredentialRef, CredentialSnapshot, CredentialState,
-    CredentialStatus, CryptoError, ManagerError, ManagerResult, RefreshErrorKind, ResolutionStage,
-    RetryAdvice, SecretString, StorageError, ValidationError, status_from_metadata,
-};
-
-// Traits
-pub use crate::traits::{
-    CredentialResource, CredentialType, DistributedLock, FlowProtocol, InteractiveCredential,
-    LockError, LockGuard, Refreshable, Revocable, RotationStrategy, StateStore, StaticProtocol,
-    StorageProvider,
-};
-
-// Protocols
-pub use crate::protocols::{
-    ApiKeyProtocol, ApiKeyState, AuthStyle, BasicAuthProtocol, BasicAuthState, DatabaseProtocol,
-    DatabaseState, GrantType, HeaderAuthProtocol, HeaderAuthState, KerberosConfig, LdapConfig,
-    LdapProtocol, LdapState, MtlsConfig, OAuth2Config, OAuth2ConfigBuilder, OAuth2Protocol,
-    OAuth2State, SamlBinding, SamlConfig, TlsMode,
+    CredentialContext, CredentialDescription, CredentialError, CredentialId, CredentialMetadata,
+    CredentialSnapshot, CryptoError, ManagerError, ManagerResult, RefreshErrorKind,
+    ResolutionStage, RetryAdvice, SecretString, StorageError, ValidationError,
 };
 
 // Utils - crypto
@@ -171,7 +125,7 @@ pub use crate::rotation::{
 pub use credential_trait::Credential;
 
 // v2: Credential state
-pub use credential_state::CredentialStateV2;
+pub use credential_state::CredentialState;
 
 // v2: Auth schemes
 pub use scheme::{
@@ -233,63 +187,3 @@ pub use resolve::{
     DisplayData, InteractionRequest, RefreshOutcome, RefreshPolicy, ResolveResult,
     StaticResolveResult, TestResult, UserInput,
 };
-
-/// Commonly used types and traits
-pub mod prelude {
-    // Core types
-    pub use crate::core::result::{CreateResult, InitializeResult};
-    pub use crate::core::{
-        CredentialContext, CredentialError, CredentialFilter, CredentialId, CredentialMetadata,
-        CredentialProvider, CredentialRef, CredentialStatus, SecretString, status_from_metadata,
-    };
-
-    // Rotation types
-    pub use crate::rotation::policy::RotationPolicy;
-    pub use crate::rotation::{RotationError, RotationResult};
-
-    // Traits
-    pub use crate::traits::{
-        CredentialResource, CredentialType, DistributedLock, FlowProtocol, InteractiveCredential,
-        LockError, LockGuard, Refreshable, Revocable, StateStore, StaticProtocol, StorageProvider,
-    };
-
-    // Protocols
-    pub use crate::protocols::{
-        ApiKeyProtocol, ApiKeyState, AuthStyle, BasicAuthProtocol, BasicAuthState,
-        DatabaseProtocol, DatabaseState, GrantType, HeaderAuthProtocol, HeaderAuthState,
-        KerberosConfig, LdapConfig, LdapProtocol, LdapState, MtlsConfig, OAuth2Config,
-        OAuth2ConfigBuilder, OAuth2Protocol, OAuth2State, SamlBinding, SamlConfig, TlsMode,
-    };
-
-    // Utils - crypto functions
-    pub use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
-
-    // Storage providers (Phase 2)
-    pub use crate::providers::{ConfigError, MockStorageProvider, ProviderConfig, StorageMetrics};
-
-    #[cfg(feature = "storage-local")]
-    pub use crate::providers::{LocalStorageConfig, LocalStorageProvider};
-
-    #[cfg(feature = "storage-aws")]
-    pub use crate::providers::{AwsSecretsManagerConfig, AwsSecretsManagerProvider};
-
-    #[cfg(feature = "storage-vault")]
-    pub use crate::providers::{HashiCorpVaultProvider, VaultAuthMethod, VaultConfig};
-
-    #[cfg(feature = "storage-k8s")]
-    pub use crate::providers::{KubernetesSecretsConfig, KubernetesSecretsProvider};
-
-    #[cfg(feature = "storage-postgres")]
-    pub use crate::providers::PostgresStorageProvider;
-
-    // Retry utilities
-    pub use crate::utils::RetryPolicy;
-
-    // Credential Manager (Phase 3)
-    pub use crate::manager::{
-        CacheConfig, CacheLayer, CacheStats, CredentialManager, CredentialManagerBuilder,
-        CredentialTypeSchema, EvictionStrategy, ManagerConfig, ValidationDetails, ValidationResult,
-    };
-
-    // Credential Rotation (Phase 4) - Already exported in prelude above
-}
