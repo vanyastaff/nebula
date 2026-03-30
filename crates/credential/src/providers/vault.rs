@@ -199,7 +199,7 @@ impl ProviderConfig for VaultConfig {
 
         // Validate token renewal threshold
         let renewal_secs = self.token_renewal_threshold.as_secs();
-        if renewal_secs < 60 || renewal_secs > 86400 {
+        if !(60..=86400).contains(&renewal_secs) {
             return Err(ConfigError::InvalidValue {
                 field: "token_renewal_threshold".into(),
                 reason: format!(
@@ -372,7 +372,7 @@ impl HashiCorpVaultProvider {
 
     /// Get full secret path (mount + prefix + id).
     fn get_secret_path(&self, id: &CredentialId) -> String {
-        format!("{}/{}", self.config.path_prefix, id.to_string())
+        format!("{}/{id}", self.config.path_prefix)
     }
 }
 
@@ -639,11 +639,11 @@ impl StorageProvider for HashiCorpVaultProvider {
 impl Drop for HashiCorpVaultProvider {
     fn drop(&mut self) {
         // Cancel token renewal task if it exists
-        if let Ok(mut guard) = self.token_renewal_task.try_write() {
-            if let Some(task) = guard.take() {
-                task.abort();
-                tracing::debug!("Aborted Vault token renewal task");
-            }
+        if let Ok(mut guard) = self.token_renewal_task.try_write()
+            && let Some(task) = guard.take()
+        {
+            task.abort();
+            tracing::debug!("Aborted Vault token renewal task");
         }
     }
 }

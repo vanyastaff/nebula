@@ -37,7 +37,7 @@ fn map_kv_error(id: &str, err: KvStorageError, is_write: bool) -> StorageError {
         KvStorageError::Serialization(e) => e.to_string(),
         KvStorageError::NotFound => "not found".to_string(),
     };
-    let source = io::Error::new(io::ErrorKind::Other, msg);
+    let source = io::Error::other(msg);
     if is_write {
         StorageError::WriteFailure {
             id: id.to_string(),
