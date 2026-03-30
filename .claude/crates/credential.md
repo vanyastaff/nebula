@@ -26,6 +26,8 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 - Circular dep: peer with nebula-resource, signal via EventBus only.
 - Storage providers feature-gated: `storage-local`, `-aws`, `-postgres`, `-vault`, `-k8s`.
 - v2 `LocalFileStore` (`store_local.rs`): filesystem `CredentialStore` impl behind `storage-local`. Uses `StoredFile` serde wrapper (base64 `data` field). Atomic write via temp-file rename. Path traversal validation on all ID inputs.
+- v2 `AwsSecretsStore` (`store_aws.rs`): AWS Secrets Manager `CredentialStore` impl behind `storage-aws`. Uses `SecretPayload` serde wrapper (base64 `data`). Secrets named `{prefix}{id}`. CAS uses JSON-level version counter (not AWS VersionId). 64 KB payload limit validated. KMS key, region, endpoint, default tags configurable.
+- v2 `K8sSecretsStore` (`store_k8s.rs`): Kubernetes Secrets `CredentialStore` impl behind `storage-k8s`. Uses `SecretPayload` in `data["credential"]` field. Secret names DNS-safe (lowercased, underscores→hyphens). `state_kind` stored as label for server-side filtering in `list()`. 1 MB payload limit. Namespace isolation, kubeconfig/in-cluster auth.
 
 ## Relations
 - Depends on: nebula-core, nebula-eventbus. Peer: nebula-resource.
