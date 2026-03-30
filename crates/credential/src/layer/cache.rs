@@ -147,9 +147,7 @@ impl<S: CredentialStore> CredentialStore for CacheLayer<S> {
 
         self.misses.fetch_add(1, Ordering::Relaxed);
         let credential = self.inner.get(id).await?;
-        self.cache
-            .insert(id.to_string(), credential.clone())
-            .await;
+        self.cache.insert(id.to_string(), credential.clone()).await;
         Ok(credential)
     }
 
@@ -161,9 +159,7 @@ impl<S: CredentialStore> CredentialStore for CacheLayer<S> {
         // Invalidate before write to prevent stale reads during the write.
         self.cache.invalidate(&credential.id).await;
         let stored = self.inner.put(credential, mode).await?;
-        self.cache
-            .insert(stored.id.clone(), stored.clone())
-            .await;
+        self.cache.insert(stored.id.clone(), stored.clone()).await;
         Ok(stored)
     }
 
