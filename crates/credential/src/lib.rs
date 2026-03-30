@@ -174,7 +174,9 @@ pub use pending_store_memory::InMemoryPendingStore;
 pub use pending_token::PendingToken;
 
 // v2: Built-in credential implementations
-pub use credentials::{ApiKeyCredential, BasicAuthCredential, DatabaseCredential};
+pub use credentials::{
+    ApiKeyCredential, BasicAuthCredential, DatabaseCredential, HeaderAuthCredential,
+};
 
 // v2: Typed handle
 pub use credential_handle::CredentialHandle;
