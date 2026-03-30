@@ -83,14 +83,14 @@ impl<S: CredentialStore> CredentialResolver<S> {
         Ok(CredentialHandle::new(scheme, credential_id))
     }
 
-    /// Resolves a credential, refreshing it if expired.
+    /// Resolves a credential, refreshing it before expiry.
     ///
-    /// If the credential's state reports an expiration time
-    /// ([`CredentialStateV2::expires_at()`]) in the past, the resolver
-    /// coordinates a refresh through the embedded
-    /// [`RefreshCoordinator`]. Only one caller performs the actual
-    /// refresh; others wait and then re-read the updated state from
-    /// the store.
+    /// If the credential's remaining lifetime is within the
+    /// [`RefreshPolicy::early_refresh`](crate::resolve::RefreshPolicy::early_refresh)
+    /// window (default 5 minutes), the resolver proactively triggers a
+    /// refresh through the embedded [`RefreshCoordinator`]. Only one
+    /// caller performs the actual refresh; others wait and then re-read
+    /// the updated state from the store.
     ///
     /// For non-expiring credentials this behaves identically to
     /// [`resolve()`](Self::resolve).
@@ -114,10 +114,16 @@ impl<S: CredentialStore> CredentialResolver<S> {
         let stored = self.load_and_verify::<C>(credential_id).await?;
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
 
-        // Check expiration
-        let needs_refresh = state
-            .expires_at()
-            .is_some_and(|exp| exp <= chrono::Utc::now());
+        // Check expiration with early refresh window.
+        // Refresh BEFORE the token expires: if the remaining lifetime is
+        // less than or equal to the credential's `early_refresh` window
+        // (default 5 min), trigger refresh proactively.
+        let needs_refresh = state.expires_at().is_some_and(|exp| {
+            let now = chrono::Utc::now();
+            let early = chrono::Duration::from_std(C::REFRESH_POLICY.early_refresh)
+                .unwrap_or(chrono::Duration::zero());
+            exp - now <= early
+        });
 
         if !needs_refresh {
             let scheme = C::project(&state);
@@ -301,6 +307,86 @@ mod tests {
     use crate::credentials::ApiKeyCredential;
     use crate::store_memory::InMemoryStore;
 
+    // ── Test credential for early refresh ──────────────────────────────
+
+    use crate::core::{CredentialContext, CredentialDescription, CredentialError};
+    use crate::credential_trait::Credential;
+    use crate::pending::NoPendingState;
+    use crate::resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult};
+    use crate::scheme::BearerToken;
+    use crate::SecretString;
+    use nebula_parameter::ParameterCollection;
+    use nebula_parameter::values::ParameterValues;
+
+    /// State that reports an expiration time.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct ExpiringState {
+        token: String,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    }
+
+    impl CredentialStateV2 for ExpiringState {
+        const KIND: &'static str = "expiring_test";
+        const VERSION: u32 = 1;
+
+        fn expires_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+            Some(self.expires_at)
+        }
+    }
+
+    /// A test credential that is refreshable and uses `ExpiringState`.
+    struct RefreshableTestCredential;
+
+    impl Credential for RefreshableTestCredential {
+        type Scheme = BearerToken;
+        type State = ExpiringState;
+        type Pending = NoPendingState;
+
+        const KEY: &'static str = "refreshable_test";
+        const REFRESHABLE: bool = true;
+        const REFRESH_POLICY: RefreshPolicy = RefreshPolicy {
+            early_refresh: std::time::Duration::from_secs(300), // 5 minutes
+            ..RefreshPolicy::DEFAULT
+        };
+
+        fn description() -> CredentialDescription {
+            CredentialDescription {
+                key: Self::KEY.to_owned(),
+                name: "Refreshable Test".to_owned(),
+                description: "Test credential for early refresh".to_owned(),
+                icon: None,
+                icon_url: None,
+                documentation_url: None,
+                properties: Self::parameters(),
+            }
+        }
+
+        fn parameters() -> ParameterCollection {
+            ParameterCollection::new()
+        }
+
+        fn project(state: &ExpiringState) -> BearerToken {
+            BearerToken::new(SecretString::new(state.token.clone()))
+        }
+
+        async fn resolve(
+            _values: &ParameterValues,
+            _ctx: &CredentialContext,
+        ) -> Result<StaticResolveResult<ExpiringState>, CredentialError> {
+            unreachable!("not used in refresh tests")
+        }
+
+        async fn refresh(
+            state: &mut ExpiringState,
+            _ctx: &CredentialContext,
+        ) -> Result<RefreshOutcome, CredentialError> {
+            // Simulate a successful refresh: new token, new expiry
+            state.token = "refreshed-token".to_owned();
+            state.expires_at = chrono::Utc::now() + chrono::Duration::hours(1);
+            Ok(RefreshOutcome::Refreshed)
+        }
+    }
+
     #[tokio::test]
     async fn resolve_api_key_credential() {
         let store = Arc::new(InMemoryStore::new());
@@ -388,5 +474,81 @@ mod tests {
         let resolver = CredentialResolver::new(store);
         let result = resolver.resolve::<ApiKeyCredential>("bad-data").await;
         assert!(matches!(result, Err(ResolveError::Deserialize { .. })));
+    }
+
+    #[tokio::test]
+    async fn early_refresh_triggers_before_expiry() {
+        let store = Arc::new(InMemoryStore::new());
+
+        // Token expires in 4 minutes -- inside the 5-minute early_refresh window
+        let expires_at = chrono::Utc::now() + chrono::Duration::minutes(4);
+        let state = ExpiringState {
+            token: "old-token".to_owned(),
+            expires_at,
+        };
+        let data = serde_json::to_vec(&state).unwrap();
+
+        let cred = StoredCredential {
+            id: "expiring-cred".into(),
+            data,
+            state_kind: "expiring_test".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: Some(expires_at),
+            metadata: Default::default(),
+        };
+        store.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        let resolver = CredentialResolver::new(store);
+        let ctx = CredentialContext::new("test-user");
+
+        let handle = resolver
+            .resolve_with_refresh::<RefreshableTestCredential>("expiring-cred", &ctx)
+            .await
+            .unwrap();
+
+        // The refresh should have fired because 4 min < 5 min early_refresh
+        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
+        assert_eq!(value, "refreshed-token");
+    }
+
+    #[tokio::test]
+    async fn no_early_refresh_when_outside_window() {
+        let store = Arc::new(InMemoryStore::new());
+
+        // Token expires in 10 minutes -- outside the 5-minute early_refresh window
+        let expires_at = chrono::Utc::now() + chrono::Duration::minutes(10);
+        let state = ExpiringState {
+            token: "still-valid-token".to_owned(),
+            expires_at,
+        };
+        let data = serde_json::to_vec(&state).unwrap();
+
+        let cred = StoredCredential {
+            id: "valid-cred".into(),
+            data,
+            state_kind: "expiring_test".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: Some(expires_at),
+            metadata: Default::default(),
+        };
+        store.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        let resolver = CredentialResolver::new(store);
+        let ctx = CredentialContext::new("test-user");
+
+        let handle = resolver
+            .resolve_with_refresh::<RefreshableTestCredential>("valid-cred", &ctx)
+            .await
+            .unwrap();
+
+        // Should NOT have refreshed -- token still valid outside the window
+        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
+        assert_eq!(value, "still-valid-token");
     }
 }

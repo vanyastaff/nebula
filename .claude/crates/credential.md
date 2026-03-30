@@ -11,7 +11,8 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 - v2 coexists with v1. RPITIT, no `#[async_trait]`. `CredentialStateV2` keeps V2 suffix (v1 conflict).
 - `CredentialStore`/`CredentialRegistry` renamed from V2 suffixed names. Files: `credential_trait.rs`, `credential_handle.rs`, `credential_registry.rs`, `credential_store.rs`.
 - `EncryptionLayer<S>` serializes `EncryptedData` as JSON bytes in `data` field.
-- `RefreshCoordinator`: winner refreshes, waiters block on `Notify`. `complete()` must always be called.
+- `RefreshCoordinator`: winner refreshes, waiters block on `Notify`. `Winner(Arc<Notify>)` + `scopeguard` ensures waiters are woken on any exit (panic, timeout, error). `complete()` removes the in-flight entry.
+- `CredentialResolver::resolve_with_refresh()` uses `REFRESH_POLICY.early_refresh` (default 5 min) to refresh **before** expiry, not after.
 - `SecretString` serializes as `"[REDACTED]"` — tests must construct raw JSON for round-trip.
 
 ## Traps
