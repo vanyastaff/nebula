@@ -245,7 +245,6 @@ impl<E: 'static> RetryConfig<E> {
             sink: Arc::new(NoopSink),
         }
     }
-
 }
 
 // ── retry_with ────────────────────────────────────────────────────────────────
@@ -449,8 +448,12 @@ mod tests {
         }
     }
     impl Classify for TransientErr {
-        fn category(&self) -> ErrorCategory { ErrorCategory::External }
-        fn code(&self) -> ErrorCode { codes::INTERNAL.clone() }
+        fn category(&self) -> ErrorCategory {
+            ErrorCategory::External
+        }
+        fn code(&self) -> ErrorCode {
+            codes::INTERNAL.clone()
+        }
     }
 
     /// Test error with variants for retryable/non-retryable.
@@ -473,7 +476,9 @@ mod tests {
                 Self::RateLimited(_) => ErrorCategory::RateLimit,
             }
         }
-        fn code(&self) -> ErrorCode { codes::INTERNAL.clone() }
+        fn code(&self) -> ErrorCode {
+            codes::INTERNAL.clone()
+        }
         fn retry_hint(&self) -> Option<RetryHint> {
             match self {
                 Self::RateLimited(d) => Some(RetryHint::after(*d)),
@@ -484,7 +489,11 @@ mod tests {
 
     fn fail_twice(counter: &AtomicU32) -> Result<u32, TransientErr> {
         let n = counter.fetch_add(1, Ordering::SeqCst);
-        if n < 2 { Err(TransientErr("fail")) } else { Ok(99) }
+        if n < 2 {
+            Err(TransientErr("fail"))
+        } else {
+            Ok(99)
+        }
     }
 
     #[tokio::test]
@@ -702,7 +711,10 @@ mod tests {
 
         // Auth is not retryable — stops after 1 attempt
         assert_eq!(counter.load(Ordering::SeqCst), 1);
-        assert!(matches!(result, Err(CallError::Operation(TestApiErr::AuthFailed))));
+        assert!(matches!(
+            result,
+            Err(CallError::Operation(TestApiErr::AuthFailed))
+        ));
     }
 
     #[tokio::test]

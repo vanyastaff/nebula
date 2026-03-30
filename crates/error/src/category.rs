@@ -73,11 +73,7 @@ impl ErrorCategory {
     pub const fn is_default_retryable(&self) -> bool {
         matches!(
             self,
-            Self::Timeout
-                | Self::Exhausted
-                | Self::External
-                | Self::RateLimit
-                | Self::Unavailable
+            Self::Timeout | Self::Exhausted | Self::External | Self::RateLimit | Self::Unavailable
         )
     }
 

@@ -168,8 +168,7 @@ impl ReleaseQueue {
                 match self.fallback_tx.try_send(factory) {
                     Ok(()) => {}
                     Err(mpsc::error::TrySendError::Full(_)) => {
-                        let dropped =
-                            self.dropped_count.fetch_add(1, Ordering::Relaxed) + 1;
+                        let dropped = self.dropped_count.fetch_add(1, Ordering::Relaxed) + 1;
                         if dropped.is_power_of_two() {
                             tracing::error!(
                                 dropped_tasks = dropped,
