@@ -92,6 +92,55 @@ pub enum RotationError {
     Internal(String),
 }
 
+impl nebula_error::Classify for RotationError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::InvalidPolicy { .. }
+            | Self::InvalidStateTransition { .. }
+            | Self::ValidationFailed { .. } => nebula_error::ErrorCategory::Validation,
+            Self::TransactionFailed { .. }
+            | Self::RollbackFailed { .. }
+            | Self::BackupFailed { .. }
+            | Self::RestoreFailed { .. }
+            | Self::SchedulerError { .. }
+            | Self::Internal(_) => nebula_error::ErrorCategory::Internal,
+            Self::NotificationFailed { .. } | Self::GracePeriodError { .. } => {
+                nebula_error::ErrorCategory::External
+            }
+            Self::Timeout { .. } => nebula_error::ErrorCategory::Timeout,
+            Self::Storage(e) => nebula_error::Classify::category(e),
+            Self::ConcurrentRotation { .. } => nebula_error::ErrorCategory::Conflict,
+            Self::CredentialNotFound { .. } => nebula_error::ErrorCategory::NotFound,
+            Self::MaxRetriesExceeded { .. } => nebula_error::ErrorCategory::Exhausted,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::InvalidPolicy { .. } => "ROTATION:INVALID_POLICY",
+            Self::InvalidStateTransition { .. } => "ROTATION:INVALID_TRANSITION",
+            Self::ValidationFailed { .. } => "ROTATION:VALIDATION",
+            Self::TransactionFailed { .. } => "ROTATION:TRANSACTION",
+            Self::RollbackFailed { .. } => "ROTATION:ROLLBACK",
+            Self::BackupFailed { .. } => "ROTATION:BACKUP",
+            Self::RestoreFailed { .. } => "ROTATION:RESTORE",
+            Self::SchedulerError { .. } => "ROTATION:SCHEDULER",
+            Self::NotificationFailed { .. } => "ROTATION:NOTIFICATION",
+            Self::GracePeriodError { .. } => "ROTATION:GRACE_PERIOD",
+            Self::Timeout { .. } => "ROTATION:TIMEOUT",
+            Self::Storage(_) => "ROTATION:STORAGE",
+            Self::ConcurrentRotation { .. } => "ROTATION:CONCURRENT",
+            Self::CredentialNotFound { .. } => "ROTATION:NOT_FOUND",
+            Self::MaxRetriesExceeded { .. } => "ROTATION:MAX_RETRIES",
+            Self::Internal(_) => "ROTATION:INTERNAL",
+        })
+    }
+
+    fn is_retryable(&self) -> bool {
+        matches!(self, Self::Timeout { .. } | Self::NotificationFailed { .. })
+    }
+}
+
 /// Result type for rotation operations
 pub type RotationResult<T> = Result<T, RotationError>;
 

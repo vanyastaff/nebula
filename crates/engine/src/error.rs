@@ -77,6 +77,49 @@ pub enum EngineError {
     TaskPanicked(String),
 }
 
+impl nebula_error::Classify for EngineError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::NodeNotFound { .. } => nebula_error::ErrorCategory::NotFound,
+            Self::PlanningFailed(_)
+            | Self::ParameterResolution { .. }
+            | Self::ParameterValidation { .. }
+            | Self::EdgeEvaluationFailed { .. } => nebula_error::ErrorCategory::Validation,
+            Self::NodeFailed { .. } | Self::TaskPanicked(_) => {
+                nebula_error::ErrorCategory::Internal
+            }
+            Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
+            Self::BudgetExceeded(_) => nebula_error::ErrorCategory::Exhausted,
+            Self::Runtime(e) => nebula_error::Classify::category(e),
+            Self::Execution(e) => nebula_error::Classify::category(e),
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::NodeNotFound { .. } => "ENGINE:NODE_NOT_FOUND",
+            Self::PlanningFailed(_) => "ENGINE:PLANNING_FAILED",
+            Self::NodeFailed { .. } => "ENGINE:NODE_FAILED",
+            Self::Cancelled => "ENGINE:CANCELLED",
+            Self::ParameterResolution { .. } => "ENGINE:PARAM_RESOLUTION",
+            Self::ParameterValidation { .. } => "ENGINE:PARAM_VALIDATION",
+            Self::EdgeEvaluationFailed { .. } => "ENGINE:EDGE_EVAL",
+            Self::BudgetExceeded(_) => "ENGINE:BUDGET_EXCEEDED",
+            Self::Runtime(e) => return nebula_error::Classify::code(e),
+            Self::Execution(e) => return nebula_error::Classify::code(e),
+            Self::TaskPanicked(_) => "ENGINE:TASK_PANICKED",
+        })
+    }
+
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::Runtime(e) => nebula_error::Classify::is_retryable(e),
+            Self::Execution(e) => nebula_error::Classify::is_retryable(e),
+            _ => self.category().is_default_retryable(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

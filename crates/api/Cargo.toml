@@ -12,6 +12,7 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
+nebula-error = { workspace = true }
 nebula-storage = { path = "../storage" }
 nebula-config = { path = "../config" }
 nebula-core = { path = "../core" }

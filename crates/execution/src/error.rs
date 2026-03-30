@@ -42,6 +42,33 @@ pub enum ExecutionError {
     Cancelled,
 }
 
+impl nebula_error::Classify for ExecutionError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::InvalidTransition { .. } | Self::PlanValidation(_) => {
+                nebula_error::ErrorCategory::Validation
+            }
+            Self::NodeNotFound(_) => nebula_error::ErrorCategory::NotFound,
+            Self::BudgetExceeded(_) => nebula_error::ErrorCategory::Exhausted,
+            Self::DuplicateIdempotencyKey(_) => nebula_error::ErrorCategory::Conflict,
+            Self::Serialization(_) => nebula_error::ErrorCategory::Internal,
+            Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::InvalidTransition { .. } => "EXECUTION:INVALID_TRANSITION",
+            Self::NodeNotFound(_) => "EXECUTION:NODE_NOT_FOUND",
+            Self::PlanValidation(_) => "EXECUTION:PLAN_VALIDATION",
+            Self::BudgetExceeded(_) => "EXECUTION:BUDGET_EXCEEDED",
+            Self::DuplicateIdempotencyKey(_) => "EXECUTION:DUPLICATE_KEY",
+            Self::Serialization(_) => "EXECUTION:SERIALIZATION",
+            Self::Cancelled => "EXECUTION:CANCELLED",
+        })
+    }
+}
+
 impl ExecutionError {
     /// Create an invalid-transition error from execution statuses.
     pub fn invalid_execution_transition(from: ExecutionStatus, to: ExecutionStatus) -> Self {

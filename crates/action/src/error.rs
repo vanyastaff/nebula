@@ -60,6 +60,39 @@ pub enum ActionError {
     },
 }
 
+impl nebula_error::Classify for ActionError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::Retryable { .. } => nebula_error::ErrorCategory::External,
+            Self::Fatal { .. } => nebula_error::ErrorCategory::Internal,
+            Self::Validation(_) => nebula_error::ErrorCategory::Validation,
+            Self::SandboxViolation { .. } => nebula_error::ErrorCategory::Authorization,
+            Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
+            Self::DataLimitExceeded { .. } => nebula_error::ErrorCategory::Exhausted,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::Retryable { .. } => "ACTION:RETRYABLE",
+            Self::Fatal { .. } => "ACTION:FATAL",
+            Self::Validation(_) => "ACTION:VALIDATION",
+            Self::SandboxViolation { .. } => "ACTION:SANDBOX_VIOLATION",
+            Self::Cancelled => "ACTION:CANCELLED",
+            Self::DataLimitExceeded { .. } => "ACTION:DATA_LIMIT",
+        })
+    }
+
+    fn is_retryable(&self) -> bool {
+        ActionError::is_retryable(self)
+    }
+
+    fn retry_hint(&self) -> Option<nebula_error::RetryHint> {
+        self.backoff_hint()
+            .map(nebula_error::RetryHint::after)
+    }
+}
+
 impl ActionError {
     /// Create a retryable error with no backoff hint.
     pub fn retryable(msg: impl Into<String>) -> Self {

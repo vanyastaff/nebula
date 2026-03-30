@@ -28,6 +28,30 @@ pub enum RuntimeError {
     Internal(String),
 }
 
+impl nebula_error::Classify for RuntimeError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::ActionNotFound { .. } => nebula_error::ErrorCategory::NotFound,
+            Self::ActionError(e) => nebula_error::Classify::category(e),
+            Self::DataLimitExceeded { .. } => nebula_error::ErrorCategory::Exhausted,
+            Self::Internal(_) => nebula_error::ErrorCategory::Internal,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::ActionNotFound { .. } => "RUNTIME:ACTION_NOT_FOUND",
+            Self::ActionError(e) => return nebula_error::Classify::code(e),
+            Self::DataLimitExceeded { .. } => "RUNTIME:DATA_LIMIT",
+            Self::Internal(_) => "RUNTIME:INTERNAL",
+        })
+    }
+
+    fn is_retryable(&self) -> bool {
+        RuntimeError::is_retryable(self)
+    }
+}
+
 impl RuntimeError {
     /// Whether this error originated from a retryable action error.
     pub fn is_retryable(&self) -> bool {

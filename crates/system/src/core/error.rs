@@ -35,6 +35,38 @@ pub enum SystemError {
     SystemHardwareError(String),
 }
 
+impl nebula_error::Classify for SystemError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::ResourceNotFound(_) => nebula_error::ErrorCategory::NotFound,
+            Self::PermissionDenied(_) => nebula_error::ErrorCategory::Authorization,
+            Self::FeatureNotSupported(_) => nebula_error::ErrorCategory::Unsupported,
+            Self::SystemTimeout(_) => nebula_error::ErrorCategory::Timeout,
+            Self::PlatformError(_)
+            | Self::MemoryOperationError(_)
+            | Self::SystemParseError(_)
+            | Self::SystemHardwareError(_) => nebula_error::ErrorCategory::Internal,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::PlatformError(_) => "SYSTEM:PLATFORM",
+            Self::FeatureNotSupported(_) => "SYSTEM:UNSUPPORTED",
+            Self::ResourceNotFound(_) => "SYSTEM:NOT_FOUND",
+            Self::PermissionDenied(_) => "SYSTEM:PERMISSION_DENIED",
+            Self::MemoryOperationError(_) => "SYSTEM:MEMORY",
+            Self::SystemParseError(_) => "SYSTEM:PARSE",
+            Self::SystemTimeout(_) => "SYSTEM:TIMEOUT",
+            Self::SystemHardwareError(_) => "SYSTEM:HARDWARE",
+        })
+    }
+
+    fn is_retryable(&self) -> bool {
+        matches!(self, Self::SystemTimeout(_))
+    }
+}
+
 impl SystemError {
     /// Create a platform error
     pub fn platform_error(message: impl Into<String>) -> Self {

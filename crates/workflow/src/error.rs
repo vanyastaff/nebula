@@ -47,3 +47,23 @@ pub enum WorkflowError {
     #[error("graph error: {0}")]
     GraphError(String),
 }
+
+impl nebula_error::Classify for WorkflowError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        nebula_error::ErrorCategory::Validation
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::EmptyName => "WORKFLOW:EMPTY_NAME",
+            Self::NoNodes => "WORKFLOW:NO_NODES",
+            Self::DuplicateNodeId(_) => "WORKFLOW:DUPLICATE_NODE_ID",
+            Self::UnknownNode(_) => "WORKFLOW:UNKNOWN_NODE",
+            Self::SelfLoop(_) => "WORKFLOW:SELF_LOOP",
+            Self::CycleDetected => "WORKFLOW:CYCLE_DETECTED",
+            Self::NoEntryNodes => "WORKFLOW:NO_ENTRY_NODES",
+            Self::InvalidParameterReference { .. } => "WORKFLOW:INVALID_PARAM_REF",
+            Self::GraphError(_) => "WORKFLOW:GRAPH_ERROR",
+        })
+    }
+}

@@ -17,6 +17,7 @@ dynamic-loading = ["dep:libloading"]
 
 [dependencies]
 nebula-core = { path = "../core" }
+nebula-error = { workspace = true }
 nebula-action = { path = "../action" }
 nebula-credential = { path = "../credential" }
 nebula-resource = { path = "../resource" }

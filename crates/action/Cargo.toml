@@ -14,6 +14,7 @@ documentation.workspace = true
 [dependencies]
 nebula-core = { path = "../core" }
 nebula-credential = { path = "../credential" }
+nebula-error = { workspace = true }
 nebula-parameter = { path = "../parameter" }
 nebula-resource = { path = "../resource" }
 async-trait = { workspace = true }

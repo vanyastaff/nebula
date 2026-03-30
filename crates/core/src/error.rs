@@ -410,9 +410,9 @@ impl nebula_error::Classify for CoreError {
             Self::Authentication { .. } => nebula_error::ErrorCategory::Authentication,
             Self::Timeout { .. } => nebula_error::ErrorCategory::Timeout,
             Self::ResourceExhausted { .. } => nebula_error::ErrorCategory::Exhausted,
-            Self::Internal { .. }
-            | Self::Serialization { .. }
-            | Self::Deserialization { .. } => nebula_error::ErrorCategory::Internal,
+            Self::Internal { .. } | Self::Serialization { .. } | Self::Deserialization { .. } => {
+                nebula_error::ErrorCategory::Internal
+            }
             Self::Dependency { .. } => nebula_error::ErrorCategory::External,
         }
     }

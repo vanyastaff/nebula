@@ -41,6 +41,7 @@ minimal = ["memory"]
 # Core dependencies
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
+nebula-error = { workspace = true }
 thiserror = { workspace = true }
 winapi = "0.3.9"
 

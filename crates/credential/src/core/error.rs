@@ -266,6 +266,128 @@ pub enum ValidationError {
     InvalidFormat(String),
 }
 
+impl nebula_error::Classify for CredentialError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::Storage { source, .. } => nebula_error::Classify::category(source),
+            Self::Crypto { source } => nebula_error::Classify::category(source),
+            Self::Validation { source } => nebula_error::Classify::category(source),
+            Self::Manager { source } => nebula_error::Classify::category(source),
+            Self::NotInteractive => nebula_error::ErrorCategory::Unsupported,
+            Self::Provider(_) => nebula_error::ErrorCategory::External,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        match self {
+            Self::Storage { source, .. } => nebula_error::Classify::code(source),
+            Self::Crypto { source } => nebula_error::Classify::code(source),
+            Self::Validation { source } => nebula_error::Classify::code(source),
+            Self::Manager { source } => nebula_error::Classify::code(source),
+            Self::NotInteractive => nebula_error::ErrorCode::new("CREDENTIAL:NOT_INTERACTIVE"),
+            Self::Provider(_) => nebula_error::ErrorCode::new("CREDENTIAL:PROVIDER"),
+        }
+    }
+
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::Storage { source, .. } => nebula_error::Classify::is_retryable(source),
+            Self::Crypto { .. } | Self::Validation { .. } | Self::NotInteractive => false,
+            Self::Manager { source } => nebula_error::Classify::is_retryable(source),
+            Self::Provider(_) => false,
+        }
+    }
+}
+
+impl nebula_error::Classify for StorageError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::NotFound { .. } => nebula_error::ErrorCategory::NotFound,
+            Self::ReadFailure { .. } | Self::WriteFailure { .. } => {
+                nebula_error::ErrorCategory::Internal
+            }
+            Self::PermissionDenied { .. } => nebula_error::ErrorCategory::Authorization,
+            Self::Timeout { .. } => nebula_error::ErrorCategory::Timeout,
+            Self::NotSupported { .. } => nebula_error::ErrorCategory::Unsupported,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::NotFound { .. } => "CREDENTIAL:STORAGE_NOT_FOUND",
+            Self::ReadFailure { .. } => "CREDENTIAL:STORAGE_READ",
+            Self::WriteFailure { .. } => "CREDENTIAL:STORAGE_WRITE",
+            Self::PermissionDenied { .. } => "CREDENTIAL:STORAGE_PERMISSION",
+            Self::Timeout { .. } => "CREDENTIAL:STORAGE_TIMEOUT",
+            Self::NotSupported { .. } => "CREDENTIAL:STORAGE_UNSUPPORTED",
+        })
+    }
+
+    fn is_retryable(&self) -> bool {
+        matches!(self, Self::Timeout { .. })
+    }
+}
+
+impl nebula_error::Classify for CryptoError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        nebula_error::ErrorCategory::Internal
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::DecryptionFailed => "CREDENTIAL:CRYPTO_DECRYPT",
+            Self::EncryptionFailed(_) => "CREDENTIAL:CRYPTO_ENCRYPT",
+            Self::KeyDerivation(_) => "CREDENTIAL:CRYPTO_KEY",
+            Self::NonceGeneration => "CREDENTIAL:CRYPTO_NONCE",
+            Self::UnsupportedVersion(_) => "CREDENTIAL:CRYPTO_VERSION",
+        })
+    }
+}
+
+impl nebula_error::Classify for ValidationError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        nebula_error::ErrorCategory::Validation
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::EmptyCredentialId => "CREDENTIAL:EMPTY_ID",
+            Self::InvalidCredentialId { .. } => "CREDENTIAL:INVALID_ID",
+            Self::InvalidFormat(_) => "CREDENTIAL:INVALID_FORMAT",
+        })
+    }
+}
+
+impl nebula_error::Classify for ManagerError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::NotFound { .. } => nebula_error::ErrorCategory::NotFound,
+            Self::StorageError { .. } => nebula_error::ErrorCategory::Internal,
+            Self::CacheError(_) => nebula_error::ErrorCategory::Internal,
+            Self::ValidationError { .. } | Self::SchemaValidation { .. } => {
+                nebula_error::ErrorCategory::Validation
+            }
+            Self::ScopeViolation { .. } | Self::ScopeRequired { .. } => {
+                nebula_error::ErrorCategory::Authorization
+            }
+            Self::BatchError { .. } => nebula_error::ErrorCategory::Internal,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::NotFound { .. } => "CREDENTIAL:MGR_NOT_FOUND",
+            Self::StorageError { .. } => "CREDENTIAL:MGR_STORAGE",
+            Self::CacheError(_) => "CREDENTIAL:MGR_CACHE",
+            Self::ValidationError { .. } => "CREDENTIAL:MGR_VALIDATION",
+            Self::ScopeViolation { .. } => "CREDENTIAL:MGR_SCOPE_VIOLATION",
+            Self::ScopeRequired { .. } => "CREDENTIAL:MGR_SCOPE_REQUIRED",
+            Self::BatchError { .. } => "CREDENTIAL:MGR_BATCH",
+            Self::SchemaValidation { .. } => "CREDENTIAL:MGR_SCHEMA",
+        })
+    }
+}
+
 /// Result type alias for credential operations
 pub type Result<T> = std::result::Result<T, CredentialError>;
 

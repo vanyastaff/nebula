@@ -371,9 +371,7 @@ impl Classify for MemoryError {
             Self::CacheMiss { .. } | Self::NotFound { .. } => ErrorCategory::NotFound,
 
             // Config / InvalidOperation → Validation
-            Self::InvalidConfig { .. } | Self::InvalidOperation { .. } => {
-                ErrorCategory::Validation
-            }
+            Self::InvalidConfig { .. } | Self::InvalidOperation { .. } => ErrorCategory::Validation,
 
             // Feature support → Unsupported
             Self::NotSupported { .. } => ErrorCategory::Unsupported,

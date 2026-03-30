@@ -75,6 +75,48 @@ pub enum Error {
     Other(String),
 }
 
+impl nebula_error::Classify for Error {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::Config(_) | Self::InvalidPath(_) | Self::PayloadParse(_) => {
+                nebula_error::ErrorCategory::Validation
+            }
+            Self::ServerStart(_) | Self::BindFailed { .. } => nebula_error::ErrorCategory::Internal,
+            Self::RouteConflict { .. } => nebula_error::ErrorCategory::Conflict,
+            Self::RouteNotFound { .. } => nebula_error::ErrorCategory::NotFound,
+            Self::TriggerFailed(_) => nebula_error::ErrorCategory::External,
+            Self::SignatureInvalid => nebula_error::ErrorCategory::Authentication,
+            Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
+            Self::Resource(e) => nebula_error::Classify::category(e),
+            Self::Timeout { .. } => nebula_error::ErrorCategory::Timeout,
+            Self::Other(_) => nebula_error::ErrorCategory::Internal,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::Config(_) => "WEBHOOK:CONFIG",
+            Self::ServerStart(_) => "WEBHOOK:SERVER_START",
+            Self::BindFailed { .. } => "WEBHOOK:BIND_FAILED",
+            Self::RouteConflict { .. } => "WEBHOOK:ROUTE_CONFLICT",
+            Self::RouteNotFound { .. } => "WEBHOOK:ROUTE_NOT_FOUND",
+            Self::InvalidPath(_) => "WEBHOOK:INVALID_PATH",
+            Self::TriggerFailed(_) => "WEBHOOK:TRIGGER_FAILED",
+            Self::PayloadParse(_) => "WEBHOOK:PAYLOAD_PARSE",
+            Self::SignatureInvalid => "WEBHOOK:SIGNATURE_INVALID",
+            Self::Cancelled => "WEBHOOK:CANCELLED",
+            Self::Resource(_) => "WEBHOOK:RESOURCE",
+            Self::Timeout { .. } => "WEBHOOK:TIMEOUT",
+            Self::Other(_) => "WEBHOOK:OTHER",
+        })
+    }
+
+    fn is_retryable(&self) -> bool {
+        matches!(self, Self::Timeout { .. } | Self::TriggerFailed(_))
+            || matches!(self, Self::Resource(e) if nebula_error::Classify::is_retryable(e))
+    }
+}
+
 impl Error {
     /// Create a configuration error
     pub fn config(msg: impl Into<String>) -> Self {

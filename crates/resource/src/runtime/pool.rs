@@ -622,15 +622,8 @@ where
                     .await
             }
             WarmupStrategy::Staggered { interval } => {
-                self.warmup_staggered(
-                    resource,
-                    resource_config,
-                    auth,
-                    ctx,
-                    target,
-                    interval,
-                )
-                .await
+                self.warmup_staggered(resource, resource_config, auth, ctx, target, interval)
+                    .await
             }
         }
     }

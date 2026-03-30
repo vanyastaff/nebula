@@ -31,3 +31,28 @@ pub enum LogError {
     #[error("Internal error: {0}")]
     Internal(String),
 }
+
+impl nebula_error::Classify for LogError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::Config(_) | Self::Filter(_) | Self::Precedence(_) | Self::Policy(_) => {
+                nebula_error::ErrorCategory::Validation
+            }
+            Self::Io(_) => nebula_error::ErrorCategory::Internal,
+            Self::Telemetry(_) => nebula_error::ErrorCategory::External,
+            Self::Internal(_) => nebula_error::ErrorCategory::Internal,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::Config(_) => "LOG:CONFIG",
+            Self::Filter(_) => "LOG:FILTER",
+            Self::Precedence(_) => "LOG:PRECEDENCE",
+            Self::Policy(_) => "LOG:POLICY",
+            Self::Io(_) => "LOG:IO",
+            Self::Telemetry(_) => "LOG:TELEMETRY",
+            Self::Internal(_) => "LOG:INTERNAL",
+        })
+    }
+}

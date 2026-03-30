@@ -166,6 +166,39 @@ impl std::error::Error for Error {
     }
 }
 
+impl nebula_error::Classify for Error {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match &self.kind {
+            ErrorKind::Transient => nebula_error::ErrorCategory::External,
+            ErrorKind::Permanent => nebula_error::ErrorCategory::Internal,
+            ErrorKind::Exhausted { .. } => nebula_error::ErrorCategory::Exhausted,
+            ErrorKind::Backpressure => nebula_error::ErrorCategory::RateLimit,
+            ErrorKind::NotFound => nebula_error::ErrorCategory::NotFound,
+            ErrorKind::Cancelled => nebula_error::ErrorCategory::Cancelled,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match &self.kind {
+            ErrorKind::Transient => "RESOURCE:TRANSIENT",
+            ErrorKind::Permanent => "RESOURCE:PERMANENT",
+            ErrorKind::Exhausted { .. } => "RESOURCE:EXHAUSTED",
+            ErrorKind::Backpressure => "RESOURCE:BACKPRESSURE",
+            ErrorKind::NotFound => "RESOURCE:NOT_FOUND",
+            ErrorKind::Cancelled => "RESOURCE:CANCELLED",
+        })
+    }
+
+    fn is_retryable(&self) -> bool {
+        self.is_retryable()
+    }
+
+    fn retry_hint(&self) -> Option<nebula_error::RetryHint> {
+        self.retry_after()
+            .map(nebula_error::RetryHint::after)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

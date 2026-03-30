@@ -412,6 +412,52 @@ impl ContractErrorCategory {
     }
 }
 
+impl nebula_error::Classify for ConfigError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::FileNotFound { .. } | Self::EnvVarNotFound { .. } => {
+                nebula_error::ErrorCategory::NotFound
+            }
+            Self::ValidationError { .. }
+            | Self::TypeError { .. }
+            | Self::EnvVarParseError { .. }
+            | Self::ParseError { .. }
+            | Self::FormatNotSupported { .. } => nebula_error::ErrorCategory::Validation,
+            Self::EncryptionError { .. } | Self::DecryptionError { .. } => {
+                nebula_error::ErrorCategory::Internal
+            }
+            Self::FileReadError { .. }
+            | Self::SourceError { .. }
+            | Self::ReloadError { .. }
+            | Self::WatchError { .. }
+            | Self::MergeError { .. }
+            | Self::PathError { .. }
+            | Self::InterpolationError { .. } => nebula_error::ErrorCategory::Internal,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::FileNotFound { .. } => "CONFIG:FILE_NOT_FOUND",
+            Self::FileReadError { .. } => "CONFIG:FILE_READ",
+            Self::ParseError { .. } => "CONFIG:PARSE",
+            Self::ValidationError { .. } => "CONFIG:VALIDATION",
+            Self::SourceError { .. } => "CONFIG:SOURCE",
+            Self::EnvVarNotFound { .. } => "CONFIG:ENV_NOT_FOUND",
+            Self::EnvVarParseError { .. } => "CONFIG:ENV_PARSE",
+            Self::ReloadError { .. } => "CONFIG:RELOAD",
+            Self::WatchError { .. } => "CONFIG:WATCH",
+            Self::MergeError { .. } => "CONFIG:MERGE",
+            Self::TypeError { .. } => "CONFIG:TYPE",
+            Self::PathError { .. } => "CONFIG:PATH",
+            Self::FormatNotSupported { .. } => "CONFIG:UNSUPPORTED_FORMAT",
+            Self::EncryptionError { .. } => "CONFIG:ENCRYPTION",
+            Self::DecryptionError { .. } => "CONFIG:DECRYPTION",
+            Self::InterpolationError { .. } => "CONFIG:INTERPOLATION",
+        })
+    }
+}
+
 // Implement From for common error types
 impl From<std::io::Error> for ConfigError {
     fn from(err: std::io::Error) -> Self {

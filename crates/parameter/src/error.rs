@@ -157,9 +157,7 @@ impl ParameterError {
 impl nebula_error::Classify for ParameterError {
     fn category(&self) -> nebula_error::ErrorCategory {
         match self.category() {
-            "format" | "type" | "value" | "validation" => {
-                nebula_error::ErrorCategory::Validation
-            }
+            "format" | "type" | "value" | "validation" => nebula_error::ErrorCategory::Validation,
             "lookup" => nebula_error::ErrorCategory::NotFound,
             "serialization" => nebula_error::ErrorCategory::Internal,
             // Safety: category() only returns the above strings

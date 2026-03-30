@@ -145,6 +145,44 @@ pub enum ApiError {
     ExecutionRepo(#[from] nebula_storage::ExecutionRepoError),
 }
 
+impl nebula_error::Classify for ApiError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::Validation { .. } => nebula_error::ErrorCategory::Validation,
+            Self::Unauthorized(_) => nebula_error::ErrorCategory::Authentication,
+            Self::Forbidden(_) => nebula_error::ErrorCategory::Authorization,
+            Self::NotFound(_) => nebula_error::ErrorCategory::NotFound,
+            Self::Conflict(_) => nebula_error::ErrorCategory::Conflict,
+            Self::RateLimitExceeded => nebula_error::ErrorCategory::RateLimit,
+            Self::Internal(_)
+            | Self::Storage(_)
+            | Self::WorkflowRepo(_)
+            | Self::ExecutionRepo(_) => nebula_error::ErrorCategory::Internal,
+            Self::ServiceUnavailable(_) => nebula_error::ErrorCategory::External,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::Validation { .. } => "API:VALIDATION",
+            Self::Unauthorized(_) => "API:UNAUTHORIZED",
+            Self::Forbidden(_) => "API:FORBIDDEN",
+            Self::NotFound(_) => "API:NOT_FOUND",
+            Self::Conflict(_) => "API:CONFLICT",
+            Self::RateLimitExceeded => "API:RATE_LIMIT",
+            Self::Internal(_) => "API:INTERNAL",
+            Self::ServiceUnavailable(_) => "API:SERVICE_UNAVAILABLE",
+            Self::Storage(_) => "API:STORAGE",
+            Self::WorkflowRepo(_) => "API:WORKFLOW_REPO",
+            Self::ExecutionRepo(_) => "API:EXECUTION_REPO",
+        })
+    }
+
+    fn is_retryable(&self) -> bool {
+        matches!(self, Self::RateLimitExceeded | Self::ServiceUnavailable(_))
+    }
+}
+
 fn normalize_pointer(pointer: Option<&str>) -> String {
     let pointer = pointer.unwrap_or("/").trim();
     if pointer.is_empty() || pointer == "#" {

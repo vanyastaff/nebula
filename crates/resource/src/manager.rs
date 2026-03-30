@@ -1017,10 +1017,7 @@ impl Manager {
     /// // }
     /// # }
     /// ```
-    pub async fn pool_stats<R>(
-        &self,
-        scope: &ScopeLevel,
-    ) -> Option<crate::runtime::pool::PoolStats>
+    pub async fn pool_stats<R>(&self, scope: &ScopeLevel) -> Option<crate::runtime::pool::PoolStats>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
@@ -1057,10 +1054,7 @@ impl Manager {
     /// // manager.warmup_pool::<MyDb>(&ctx).await.unwrap();
     /// # }
     /// ```
-    pub async fn warmup_pool<R>(
-        &self,
-        ctx: &dyn Ctx,
-    ) -> Result<usize, Error>
+    pub async fn warmup_pool<R>(&self, ctx: &dyn Ctx) -> Result<usize, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
@@ -1072,9 +1066,7 @@ impl Manager {
         let auth = R::Auth::default();
         match &managed.topology {
             TopologyRuntime::Pool(rt) => {
-                let count = rt
-                    .warmup(&managed.resource, &config, &auth, ctx)
-                    .await;
+                let count = rt.warmup(&managed.resource, &config, &auth, ctx).await;
                 Ok(count)
             }
             _ => Err(Error::permanent(format!(
@@ -1431,9 +1423,7 @@ where
 
     // Compute the overall deadline once. All attempts and backoff sleeps share
     // this budget so the timeout is truly wall-clock bounded end-to-end.
-    let deadline = config
-        .timeout
-        .map(|t| std::time::Instant::now() + t);
+    let deadline = config.timeout.map(|t| std::time::Instant::now() + t);
 
     let mut last_error = None;
     for attempt in 0..max_attempts {

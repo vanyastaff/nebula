@@ -39,6 +39,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 
 # Error handling
+nebula-error = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

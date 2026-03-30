@@ -26,6 +26,7 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 
 # Errors
+nebula-error = { workspace = true }
 thiserror = { workspace = true }
 
 # Format parsers

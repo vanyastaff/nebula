@@ -60,6 +60,37 @@ pub enum PluginError {
     InvalidKey(<nebula_core::PluginKey as std::str::FromStr>::Err),
 }
 
+impl nebula_error::Classify for PluginError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::NotFound(_) | Self::VersionNotFound { .. } | Self::NoVersionsAvailable(_) => {
+                nebula_error::ErrorCategory::NotFound
+            }
+            Self::AlreadyExists(_) | Self::VersionAlreadyExists { .. } => {
+                nebula_error::ErrorCategory::Conflict
+            }
+            Self::NotVersioned(_)
+            | Self::KeyMismatch { .. }
+            | Self::MissingRequiredField { .. }
+            | Self::InvalidKey(_) => nebula_error::ErrorCategory::Validation,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new(match self {
+            Self::NotFound(_) => "PLUGIN:NOT_FOUND",
+            Self::VersionNotFound { .. } => "PLUGIN:VERSION_NOT_FOUND",
+            Self::NotVersioned(_) => "PLUGIN:NOT_VERSIONED",
+            Self::AlreadyExists(_) => "PLUGIN:ALREADY_EXISTS",
+            Self::NoVersionsAvailable(_) => "PLUGIN:NO_VERSIONS",
+            Self::KeyMismatch { .. } => "PLUGIN:KEY_MISMATCH",
+            Self::VersionAlreadyExists { .. } => "PLUGIN:VERSION_EXISTS",
+            Self::MissingRequiredField { .. } => "PLUGIN:MISSING_FIELD",
+            Self::InvalidKey(_) => "PLUGIN:INVALID_KEY",
+        })
+    }
+}
+
 impl PartialEq for PluginError {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {

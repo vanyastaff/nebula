@@ -13,6 +13,7 @@ default = []
 
 [dependencies]
 nebula-core = { path = "../core" }
+nebula-error = { workspace = true }
 nebula-action = { path = "../action" }
 nebula-expression = { path = "../expression" }
 nebula-plugin = { path = "../plugin" }

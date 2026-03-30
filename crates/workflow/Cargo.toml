@@ -13,6 +13,7 @@ documentation.workspace = true
 
 [dependencies]
 nebula-core = { path = "../core" }
+nebula-error = { workspace = true }
 petgraph = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
