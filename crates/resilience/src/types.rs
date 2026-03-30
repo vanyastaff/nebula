@@ -7,7 +7,7 @@ use std::time::Duration;
 /// `E` is the caller's own error type — never forced to map into a resilience error.
 /// Errors produced by the patterns themselves (circuit open, bulkhead full, etc.)
 /// are separate variants.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallError<E> {
     /// The operation itself returned an error (possibly after retries exhausted).
     Operation(E),
@@ -32,7 +32,10 @@ pub enum CallError<E> {
     /// Load shed — system is overloaded, request rejected without queuing.
     LoadShed,
     /// Rate limit exceeded.
-    RateLimited,
+    RateLimited {
+        /// Optional hint for when to retry. `None` means unknown.
+        retry_after: Option<Duration>,
+    },
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for CallError<E> {
@@ -48,7 +51,10 @@ impl<E: std::fmt::Display> std::fmt::Display for CallError<E> {
             Self::Cancelled { reason: Some(r) } => write!(f, "operation cancelled: {r}"),
             Self::Cancelled { reason: None } => write!(f, "operation cancelled"),
             Self::LoadShed => write!(f, "request load-shed due to overload"),
-            Self::RateLimited => write!(f, "rate limit exceeded"),
+            Self::RateLimited {
+                retry_after: Some(d),
+            } => write!(f, "rate limit exceeded (retry after {d:?})"),
+            Self::RateLimited { retry_after: None } => write!(f, "rate limit exceeded"),
         }
     }
 }
@@ -75,7 +81,7 @@ impl<E> CallError<E> {
     pub const fn is_retriable(&self) -> bool {
         matches!(
             self,
-            Self::Timeout(_) | Self::RateLimited | Self::BulkheadFull
+            Self::Timeout(_) | Self::RateLimited { .. } | Self::BulkheadFull
         )
     }
 
@@ -119,7 +125,16 @@ impl<E> CallError<E> {
             Self::Timeout(d) => CallError::Timeout(d),
             Self::Cancelled { reason } => CallError::Cancelled { reason },
             Self::LoadShed => CallError::LoadShed,
-            Self::RateLimited => CallError::RateLimited,
+            Self::RateLimited { retry_after } => CallError::RateLimited { retry_after },
+        }
+    }
+
+    /// Returns the retry-after hint for `RateLimited` errors, if available.
+    #[must_use]
+    pub const fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::RateLimited { retry_after } => *retry_after,
+            _ => None,
         }
     }
 }
@@ -178,7 +193,7 @@ impl<E> CallError<E> {
             Self::RetriesExhausted { .. } => CallErrorKind::RetriesExhausted,
             Self::Cancelled { .. } => CallErrorKind::Cancelled,
             Self::LoadShed => CallErrorKind::LoadShed,
-            Self::RateLimited => CallErrorKind::RateLimited,
+            Self::RateLimited { .. } => CallErrorKind::RateLimited,
         }
     }
 }
@@ -215,8 +230,20 @@ mod tests {
 
     #[test]
     fn rate_limited_is_retriable() {
-        let e: CallError<MyErr> = CallError::RateLimited;
+        let e: CallError<MyErr> = CallError::RateLimited { retry_after: None };
         assert!(e.is_retriable());
+    }
+
+    #[test]
+    fn rate_limited_retry_after_accessor() {
+        let e: CallError<MyErr> = CallError::RateLimited {
+            retry_after: Some(Duration::from_secs(5)),
+        };
+        assert_eq!(e.retry_after(), Some(Duration::from_secs(5)));
+        assert!(e.is_retriable());
+
+        let e2: CallError<MyErr> = CallError::RateLimited { retry_after: None };
+        assert_eq!(e2.retry_after(), None);
     }
 
     #[test]

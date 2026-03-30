@@ -138,7 +138,9 @@ where
                 Err(CallError::Timeout(d)) => Err(CallError::Timeout(d)),
                 Err(CallError::Cancelled { reason }) => Err(CallError::Cancelled { reason }),
                 Err(CallError::LoadShed) => Err(CallError::LoadShed),
-                Err(CallError::RateLimited) => Err(CallError::RateLimited),
+                Err(CallError::RateLimited { retry_after }) => {
+                    Err(CallError::RateLimited { retry_after })
+                }
             }
         })
     }

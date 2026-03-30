@@ -172,7 +172,6 @@ impl Bulkhead {
         // decrement waiting_count so the queue slot isn't permanently leaked.
         let wait_guard = WaitCountGuard {
             count: &self.waiting_count,
-            armed: true,
         };
 
         // Wait for a permit (with optional timeout)
@@ -203,16 +202,14 @@ impl Bulkhead {
 ///
 /// Prevents the queue counter from leaking when the `acquire_permit` future
 /// is dropped mid-wait (e.g. by `tokio::select!` or a pipeline timeout).
+/// Defuse with `std::mem::forget(guard)` when decrementing manually.
 struct WaitCountGuard<'a> {
     count: &'a AtomicUsize,
-    armed: bool,
 }
 
 impl Drop for WaitCountGuard<'_> {
     fn drop(&mut self) {
-        if self.armed {
-            self.count.fetch_sub(1, Ordering::AcqRel);
-        }
+        self.count.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

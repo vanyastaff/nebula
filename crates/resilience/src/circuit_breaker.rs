@@ -25,6 +25,18 @@ pub struct CircuitBreakerConfig {
     pub min_operations: u32,
     /// Whether timeouts count as failures. Default: true.
     pub count_timeouts_as_failures: bool,
+    /// Multiplier for reset timeout on consecutive opens. Default: 1.0 (no increase).
+    pub break_duration_multiplier: f64,
+    /// Maximum reset timeout cap when using dynamic break duration. Default: 5 minutes.
+    pub max_break_duration: Duration,
+    /// Duration threshold above which a successful call is considered "slow". `None` = disabled.
+    pub slow_call_threshold: Option<Duration>,
+    /// Slow call rate threshold (0.0--1.0). If slow calls / total >= this, CB trips. Default: 1.0.
+    pub slow_call_rate_threshold: f64,
+    /// Size of the count-based sliding window. 0 = use simple counters (default).
+    pub sliding_window_size: u32,
+    /// Failure rate threshold (0.0--1.0) used with sliding window. `None` = use `failure_threshold` count.
+    pub failure_rate_threshold: Option<f64>,
 }
 
 impl Default for CircuitBreakerConfig {
@@ -35,6 +47,12 @@ impl Default for CircuitBreakerConfig {
             half_open_max_ops: 1,
             min_operations: 5,
             count_timeouts_as_failures: true,
+            break_duration_multiplier: 1.0,
+            max_break_duration: Duration::from_secs(300),
+            slow_call_threshold: None,
+            slow_call_rate_threshold: 1.0,
+            sliding_window_size: 0,
+            failure_rate_threshold: None,
         }
     }
 }
@@ -56,6 +74,27 @@ impl CircuitBreakerConfig {
         if self.half_open_max_ops == 0 {
             return Err(ConfigError::new("half_open_max_ops", "must be >= 1"));
         }
+        if self.break_duration_multiplier < 1.0 {
+            return Err(ConfigError::new(
+                "break_duration_multiplier",
+                "must be >= 1.0",
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.slow_call_rate_threshold) {
+            return Err(ConfigError::new(
+                "slow_call_rate_threshold",
+                "must be between 0.0 and 1.0",
+            ));
+        }
+        if self
+            .failure_rate_threshold
+            .is_some_and(|r| !(0.0..=1.0).contains(&r))
+        {
+            return Err(ConfigError::new(
+                "failure_rate_threshold",
+                "must be between 0.0 and 1.0",
+            ));
+        }
         Ok(())
     }
 }
@@ -73,6 +112,10 @@ pub enum Outcome {
     Timeout,
     /// Operation was cancelled — never counted as a failure.
     Cancelled,
+    /// Operation succeeded but exceeded the slow call threshold.
+    SlowSuccess,
+    /// Operation failed and exceeded the slow call threshold.
+    SlowFailure,
 }
 
 // ── State machine (internal) ──────────────────────────────────────────────────
@@ -95,7 +138,11 @@ pub struct CircuitBreakerStats {
     pub failures: u32,
     /// Total operations in current window.
     pub total: u32,
+    /// Number of slow calls in current window.
+    pub slow_calls: u32,
 }
+
+type StateChangeCallback = Box<dyn Fn(CircuitState, CircuitState) + Send + Sync>;
 
 /// Circuit breaker — protects downstream calls by rejecting requests when failure rate is high.
 ///
@@ -111,6 +158,73 @@ pub struct CircuitBreaker {
     state: Mutex<InnerState>,
     clock: Arc<dyn Clock>,
     sink: Arc<dyn MetricsSink>,
+    on_state_change: Option<StateChangeCallback>,
+}
+
+/// Fixed-size ring buffer of call outcomes for rate-based circuit breaking.
+#[derive(Debug)]
+struct SlidingWindow {
+    buffer: Vec<OutcomeEntry>,
+    head: usize,
+    len: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct OutcomeEntry {
+    is_failure: bool,
+    is_slow: bool,
+}
+
+impl SlidingWindow {
+    fn new(size: usize) -> Self {
+        Self {
+            buffer: vec![OutcomeEntry::default(); size],
+            head: 0,
+            len: 0,
+        }
+    }
+
+    fn record(&mut self, entry: OutcomeEntry) {
+        let cap = self.buffer.len();
+        self.buffer[self.head] = entry;
+        self.head = (self.head + 1) % cap;
+        if self.len < cap {
+            self.len += 1;
+        }
+    }
+
+    // Reason: usize to u32 cast is safe for practical window sizes (< 2^32).
+    #[allow(clippy::cast_possible_truncation)]
+    const fn total(&self) -> u32 {
+        self.len as u32
+    }
+
+    // Reason: usize to u32 cast is safe for practical window sizes (< 2^32).
+    #[allow(clippy::cast_possible_truncation)]
+    fn failure_count(&self) -> u32 {
+        self.active_entries().filter(|e| e.is_failure).count() as u32
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn slow_count(&self) -> u32 {
+        self.active_entries().filter(|e| e.is_slow).count() as u32
+    }
+
+    fn active_entries(&self) -> impl Iterator<Item = &OutcomeEntry> {
+        if self.len < self.buffer.len() {
+            self.buffer[..self.len].iter()
+        } else {
+            self.buffer.iter()
+        }
+    }
+
+    fn reset(&mut self) {
+        self.head = 0;
+        self.len = 0;
+        for entry in &mut self.buffer {
+            *entry = OutcomeEntry::default();
+        }
+    }
 }
 
 struct InnerState {
@@ -119,6 +233,12 @@ struct InnerState {
     total: u32,
     /// Number of active probe operations in `HalfOpen` state.
     half_open_probes: u32,
+    /// Number of consecutive times the circuit has opened (for dynamic break duration).
+    consecutive_opens: u32,
+    /// Number of slow calls in the current window.
+    slow_calls: u32,
+    /// Sliding window (used when `config.sliding_window_size > 0`).
+    window: Option<SlidingWindow>,
 }
 
 impl CircuitBreaker {
@@ -129,6 +249,7 @@ impl CircuitBreaker {
     /// Returns `Err(ConfigError)` if configuration is invalid.
     pub fn new(config: CircuitBreakerConfig) -> Result<Self, ConfigError> {
         config.validate()?;
+        let window_size = config.sliding_window_size;
         Ok(Self {
             config,
             state: Mutex::new(InnerState {
@@ -136,9 +257,17 @@ impl CircuitBreaker {
                 failures: 0,
                 total: 0,
                 half_open_probes: 0,
+                consecutive_opens: 0,
+                slow_calls: 0,
+                window: if window_size > 0 {
+                    Some(SlidingWindow::new(window_size as usize))
+                } else {
+                    None
+                },
             }),
             clock: Arc::new(SystemClock),
             sink: Arc::new(NoopSink),
+            on_state_change: None,
         })
     }
 
@@ -156,6 +285,91 @@ impl CircuitBreaker {
         self
     }
 
+    /// Register a callback for circuit state transitions.
+    #[must_use]
+    pub fn on_state_change<F>(mut self, f: F) -> Self
+    where
+        F: Fn(CircuitState, CircuitState) + Send + Sync + 'static,
+    {
+        self.on_state_change = Some(Box::new(f));
+        self
+    }
+
+    /// Classify an operation result with timing information.
+    ///
+    /// If `slow_call_threshold` is configured and `duration` exceeds it,
+    /// returns `SlowSuccess`/`SlowFailure` instead of `Success`/`Failure`.
+    #[must_use]
+    pub fn classify_outcome(&self, success: bool, duration: Duration) -> Outcome {
+        let is_slow = self
+            .config
+            .slow_call_threshold
+            .is_some_and(|threshold| duration >= threshold);
+        match (success, is_slow) {
+            (true, false) => Outcome::Success,
+            (true, true) => Outcome::SlowSuccess,
+            (false, false) => Outcome::Failure,
+            (false, true) => Outcome::SlowFailure,
+        }
+    }
+
+    /// Manually force the circuit open, rejecting all calls until reset timeout or [`force_close`].
+    pub fn force_open(&self) {
+        let mut inner = self.state.lock();
+        let prev = to_circuit_state(inner.state);
+        inner.state = State::Open {
+            opened_at: self.clock.now(),
+        };
+        inner.half_open_probes = 0;
+        drop(inner);
+        if prev != CircuitState::Open {
+            self.sink.record(ResilienceEvent::CircuitStateChanged {
+                from: prev,
+                to: CircuitState::Open,
+            });
+            if let Some(ref cb) = self.on_state_change {
+                cb(prev, CircuitState::Open);
+            }
+        }
+    }
+
+    /// Manually close the circuit, resetting all counters.
+    pub fn force_close(&self) {
+        let mut inner = self.state.lock();
+        let prev = to_circuit_state(inner.state);
+        inner.state = State::Closed;
+        inner.failures = 0;
+        inner.total = 0;
+        inner.half_open_probes = 0;
+        inner.consecutive_opens = 0;
+        inner.slow_calls = 0;
+        if let Some(ref mut window) = inner.window {
+            window.reset();
+        }
+        drop(inner);
+        if prev != CircuitState::Closed {
+            self.sink.record(ResilienceEvent::CircuitStateChanged {
+                from: prev,
+                to: CircuitState::Closed,
+            });
+            if let Some(ref cb) = self.on_state_change {
+                cb(prev, CircuitState::Closed);
+            }
+        }
+    }
+
+    // Reason: u32 cast to i32 for powi is safe within realistic consecutive_opens range.
+    #[allow(clippy::cast_possible_wrap)]
+    fn effective_reset_timeout(&self, consecutive_opens: u32) -> Duration {
+        if consecutive_opens <= 1 || self.config.break_duration_multiplier <= 1.0 {
+            return self.config.reset_timeout;
+        }
+        let exponent = consecutive_opens - 1;
+        let multiplied = self.config.reset_timeout.as_secs_f64()
+            * self.config.break_duration_multiplier.powi(exponent as i32);
+        Duration::from_secs_f64(multiplied).min(self.config.max_break_duration)
+    }
+
     /// Execute a closure under the circuit breaker.
     ///
     /// If the returned future is dropped before completion, the probe slot
@@ -171,12 +385,10 @@ impl CircuitBreaker {
     {
         self.can_execute()?;
         let guard = ProbeGuard(self);
+        let start = self.clock.now();
         let result = f().await;
-        let outcome = if result.is_ok() {
-            Outcome::Success
-        } else {
-            Outcome::Failure
-        };
+        let duration = self.clock.now().duration_since(start);
+        let outcome = self.classify_outcome(result.is_ok(), duration);
         // Defuse the guard — we'll record the real outcome instead.
         std::mem::forget(guard);
         self.record_outcome(outcome);
@@ -190,8 +402,9 @@ impl CircuitBreaker {
     /// Returns `Err(CallError::CircuitOpen)` when the circuit is open
     /// or the half-open probe limit has been reached.
     pub fn can_execute<E>(&self) -> Result<(), CallError<E>> {
+        let mut transition: Option<(CircuitState, CircuitState)> = None;
         let mut inner = self.state.lock();
-        match inner.state {
+        let result = match inner.state {
             State::Closed => Ok(()),
             State::HalfOpen => {
                 if inner.half_open_probes >= self.config.half_open_max_ops {
@@ -203,23 +416,86 @@ impl CircuitBreaker {
             }
             State::Open { opened_at } => {
                 let elapsed = self.clock.now().duration_since(opened_at);
-                if elapsed >= self.config.reset_timeout {
+                let timeout = self.effective_reset_timeout(inner.consecutive_opens);
+                if elapsed >= timeout {
                     let prev = to_circuit_state(inner.state);
                     inner.state = State::HalfOpen;
                     inner.failures = 0;
                     inner.total = 0;
+                    inner.slow_calls = 0;
                     inner.half_open_probes = 1; // this call is the first probe
-                    drop(inner);
-                    self.sink.record(ResilienceEvent::CircuitStateChanged {
-                        from: prev,
-                        to: CircuitState::HalfOpen,
-                    });
+                    if let Some(ref mut window) = inner.window {
+                        window.reset();
+                    }
+                    transition = Some((prev, CircuitState::HalfOpen));
                     Ok(())
                 } else {
                     Err(CallError::CircuitOpen)
                 }
             }
+        };
+        drop(inner);
+        if let Some((from, to)) = transition {
+            self.sink
+                .record(ResilienceEvent::CircuitStateChanged { from, to });
+            if let Some(ref cb) = self.on_state_change {
+                cb(from, to);
+            }
         }
+        result
+    }
+
+    /// Whether the failure rate/count has exceeded the configured threshold.
+    fn should_trip_on_failure(&self, inner: &InnerState) -> bool {
+        if let (Some(window), Some(rate_threshold)) =
+            (&inner.window, self.config.failure_rate_threshold)
+        {
+            window.total() >= self.config.min_operations
+                && f64::from(window.failure_count()) / f64::from(window.total()) >= rate_threshold
+        } else {
+            inner.failures >= self.config.failure_threshold
+                && inner.total >= self.config.min_operations
+        }
+    }
+
+    /// Whether the slow call rate has exceeded the configured threshold.
+    fn slow_rate_trips(&self, inner: &InnerState) -> bool {
+        if self.config.slow_call_threshold.is_none() {
+            return false;
+        }
+        let (total, slow) = inner
+            .window
+            .as_ref()
+            .map_or((inner.total, inner.slow_calls), |window| {
+                (window.total(), window.slow_count())
+            });
+        total >= self.config.min_operations
+            && f64::from(slow) / f64::from(total) >= self.config.slow_call_rate_threshold
+    }
+
+    /// Transition to `Open` from the current state, returning the transition pair.
+    fn trip_open(&self, inner: &mut InnerState) -> (CircuitState, CircuitState) {
+        let prev = to_circuit_state(inner.state);
+        inner.state = State::Open {
+            opened_at: self.clock.now(),
+        };
+        inner.consecutive_opens += 1;
+        (prev, CircuitState::Open)
+    }
+
+    /// Reset all counters and transition to `Closed` from the current state.
+    fn close_from_half_open(inner: &mut InnerState) -> (CircuitState, CircuitState) {
+        let prev = to_circuit_state(inner.state);
+        inner.state = State::Closed;
+        inner.failures = 0;
+        inner.total = 0;
+        inner.slow_calls = 0;
+        inner.half_open_probes = 0;
+        inner.consecutive_opens = 0;
+        if let Some(ref mut window) = inner.window {
+            window.reset();
+        }
+        (prev, CircuitState::Closed)
     }
 
     /// Record an operation outcome directly (useful when driving the CB from external code).
@@ -227,10 +503,8 @@ impl CircuitBreaker {
     /// In the Closed state, each success decrements the failure counter by one ("leaky bucket"
     /// forgiveness). This means that interleaved successes slowly erase past failures,
     /// preventing the breaker from tripping on intermittent errors.
-    // Reason: the lock guard is held intentionally across the entire match to ensure
-    // atomic state transitions — dropping early would create a TOCTOU window.
-    #[allow(clippy::significant_drop_tightening)]
     pub fn record_outcome(&self, outcome: Outcome) {
+        let mut transition: Option<(CircuitState, CircuitState)> = None;
         let mut inner = self.state.lock();
         match outcome {
             Outcome::Cancelled => {
@@ -240,18 +514,16 @@ impl CircuitBreaker {
             }
             Outcome::Success => {
                 if inner.state == State::HalfOpen {
-                    let prev = to_circuit_state(inner.state);
-                    inner.state = State::Closed;
-                    inner.failures = 0;
-                    inner.total = 0;
-                    inner.half_open_probes = 0;
-                    self.sink.record(ResilienceEvent::CircuitStateChanged {
-                        from: prev,
-                        to: CircuitState::Closed,
-                    });
+                    transition = Some(Self::close_from_half_open(&mut inner));
                 } else {
                     inner.failures = inner.failures.saturating_sub(1);
                     inner.total = inner.total.saturating_add(1);
+                    if let Some(ref mut window) = inner.window {
+                        window.record(OutcomeEntry {
+                            is_failure: false,
+                            is_slow: false,
+                        });
+                    }
                 }
             }
             Outcome::Failure | Outcome::Timeout => {
@@ -260,30 +532,62 @@ impl CircuitBreaker {
                 }
                 inner.failures = inner.failures.saturating_add(1);
                 inner.total = inner.total.saturating_add(1);
-
-                if inner.state == State::HalfOpen {
-                    // Any failure in HalfOpen sends us back to Open.
-                    let prev = to_circuit_state(inner.state);
-                    inner.state = State::Open {
-                        opened_at: self.clock.now(),
-                    };
-                    inner.half_open_probes = 0;
-                    self.sink.record(ResilienceEvent::CircuitStateChanged {
-                        from: prev,
-                        to: CircuitState::Open,
-                    });
-                } else if inner.failures >= self.config.failure_threshold
-                    && inner.total >= self.config.min_operations
-                {
-                    let prev = to_circuit_state(inner.state);
-                    inner.state = State::Open {
-                        opened_at: self.clock.now(),
-                    };
-                    self.sink.record(ResilienceEvent::CircuitStateChanged {
-                        from: prev,
-                        to: CircuitState::Open,
+                if let Some(ref mut window) = inner.window {
+                    window.record(OutcomeEntry {
+                        is_failure: true,
+                        is_slow: false,
                     });
                 }
+
+                if inner.state == State::HalfOpen {
+                    inner.half_open_probes = 0;
+                    transition = Some(self.trip_open(&mut inner));
+                } else if self.should_trip_on_failure(&inner) {
+                    transition = Some(self.trip_open(&mut inner));
+                }
+            }
+            Outcome::SlowSuccess => {
+                inner.slow_calls = inner.slow_calls.saturating_add(1);
+                inner.total = inner.total.saturating_add(1);
+                if let Some(ref mut window) = inner.window {
+                    window.record(OutcomeEntry {
+                        is_failure: false,
+                        is_slow: true,
+                    });
+                }
+                if inner.state == State::HalfOpen {
+                    transition = Some(Self::close_from_half_open(&mut inner));
+                } else {
+                    inner.failures = inner.failures.saturating_sub(1);
+                    if self.slow_rate_trips(&inner) {
+                        transition = Some(self.trip_open(&mut inner));
+                    }
+                }
+            }
+            Outcome::SlowFailure => {
+                inner.slow_calls = inner.slow_calls.saturating_add(1);
+                inner.failures = inner.failures.saturating_add(1);
+                inner.total = inner.total.saturating_add(1);
+                if let Some(ref mut window) = inner.window {
+                    window.record(OutcomeEntry {
+                        is_failure: true,
+                        is_slow: true,
+                    });
+                }
+                if inner.state == State::HalfOpen {
+                    inner.half_open_probes = 0;
+                    transition = Some(self.trip_open(&mut inner));
+                } else if self.should_trip_on_failure(&inner) || self.slow_rate_trips(&inner) {
+                    transition = Some(self.trip_open(&mut inner));
+                }
+            }
+        }
+        drop(inner);
+        if let Some((from, to)) = transition {
+            self.sink
+                .record(ResilienceEvent::CircuitStateChanged { from, to });
+            if let Some(ref cb) = self.on_state_change {
+                cb(from, to);
             }
         }
     }
@@ -296,10 +600,17 @@ impl CircuitBreaker {
     /// Returns a stats snapshot.
     pub fn stats(&self) -> CircuitBreakerStats {
         let inner = self.state.lock();
+        let state = to_circuit_state(inner.state);
+        let (failures, total, slow_calls) = inner.window.as_ref().map_or_else(
+            || (inner.failures, inner.total, inner.slow_calls),
+            |window| (window.failure_count(), window.total(), window.slow_count()),
+        );
+        drop(inner);
         CircuitBreakerStats {
-            state: to_circuit_state(inner.state),
-            failures: inner.failures,
-            total: inner.total,
+            state,
+            failures,
+            total,
+            slow_calls,
         }
     }
 }
@@ -350,6 +661,12 @@ mod tests {
             half_open_max_ops: 1,
             min_operations: 1,
             count_timeouts_as_failures: true,
+            break_duration_multiplier: 1.0,
+            max_break_duration: Duration::from_secs(300),
+            slow_call_threshold: None,
+            slow_call_rate_threshold: 1.0,
+            sliding_window_size: 0,
+            failure_rate_threshold: None,
         }
     }
 
@@ -503,5 +820,248 @@ mod tests {
         // Complete the probe successfully
         cb.record_outcome(Outcome::Success);
         assert_eq!(cb.circuit_state(), CS::Closed);
+    }
+
+    #[tokio::test]
+    async fn force_open_rejects_calls() {
+        let cb = CircuitBreaker::new(default_config()).unwrap();
+        cb.force_open();
+        assert_eq!(cb.circuit_state(), CS::Open);
+        let err: CallError<&str> = cb
+            .call::<(), _, _>(|| Box::pin(async { Ok(()) }))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CallError::CircuitOpen));
+    }
+
+    #[tokio::test]
+    async fn force_close_resets_circuit() {
+        let cb = CircuitBreaker::new(default_config()).unwrap();
+        for _ in 0..3 {
+            cb.record_outcome(Outcome::Failure);
+        }
+        assert_eq!(cb.circuit_state(), CS::Open);
+        cb.force_close();
+        assert_eq!(cb.circuit_state(), CS::Closed);
+        let result = cb.call::<u32, &str, _>(|| Box::pin(async { Ok(42) })).await;
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn on_state_change_fires_on_open() {
+        let transitions = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let t = transitions.clone();
+
+        let cb = CircuitBreaker::new(default_config())
+            .unwrap()
+            .on_state_change(move |from, to| {
+                t.lock().unwrap().push((from, to));
+            });
+
+        for _ in 0..3 {
+            let _ = cb
+                .call::<(), &str, _>(|| Box::pin(async { Err("fail") }))
+                .await;
+        }
+
+        let t = transitions.lock().unwrap();
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0], (CS::Closed, CS::Open));
+    }
+
+    #[tokio::test]
+    async fn dynamic_break_duration_increases_on_repeated_opens() {
+        use crate::clock::MockClock;
+        let clock = Arc::new(MockClock::new());
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 2,
+            reset_timeout: Duration::from_millis(100),
+            half_open_max_ops: 1,
+            min_operations: 1,
+            count_timeouts_as_failures: true,
+            break_duration_multiplier: 2.0,
+            max_break_duration: Duration::from_secs(10),
+            slow_call_threshold: None,
+            slow_call_rate_threshold: 1.0,
+            sliding_window_size: 0,
+            failure_rate_threshold: None,
+        })
+        .unwrap()
+        .with_clock(Arc::clone(&clock) as Arc<dyn crate::clock::Clock>);
+
+        // First trip
+        cb.record_outcome(Outcome::Failure);
+        cb.record_outcome(Outcome::Failure);
+        assert_eq!(cb.circuit_state(), CS::Open);
+
+        // Wait 110ms (> first reset_timeout of 100ms)
+        clock.advance(Duration::from_millis(110));
+        assert!(cb.can_execute::<&str>().is_ok());
+        assert_eq!(cb.circuit_state(), CS::HalfOpen);
+
+        // Fail again → consecutive_opens = 2, effective timeout = 200ms
+        cb.record_outcome(Outcome::Failure);
+        assert_eq!(cb.circuit_state(), CS::Open);
+
+        // Wait 110ms — NOT enough (need 200ms)
+        clock.advance(Duration::from_millis(110));
+        assert!(matches!(
+            cb.can_execute::<&str>(),
+            Err(CallError::CircuitOpen)
+        ));
+
+        // Wait 100ms more (total 220ms > 200ms)
+        clock.advance(Duration::from_millis(100));
+        assert!(cb.can_execute::<&str>().is_ok());
+    }
+
+    #[tokio::test]
+    async fn slow_calls_trip_breaker() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 100,
+            slow_call_threshold: Some(Duration::from_millis(10)),
+            slow_call_rate_threshold: 0.5,
+            min_operations: 3,
+            ..default_config()
+        })
+        .unwrap();
+
+        // 3 slow successes -> 100% slow rate > 50% threshold
+        cb.record_outcome(Outcome::SlowSuccess);
+        cb.record_outcome(Outcome::SlowSuccess);
+        cb.record_outcome(Outcome::SlowSuccess);
+        assert_eq!(cb.circuit_state(), CS::Open);
+    }
+
+    #[test]
+    fn classify_outcome_detects_slow_calls() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            slow_call_threshold: Some(Duration::from_millis(100)),
+            ..CircuitBreakerConfig::default()
+        })
+        .unwrap();
+
+        assert!(matches!(
+            cb.classify_outcome(true, Duration::from_millis(50)),
+            Outcome::Success
+        ));
+        assert!(matches!(
+            cb.classify_outcome(true, Duration::from_millis(150)),
+            Outcome::SlowSuccess
+        ));
+        assert!(matches!(
+            cb.classify_outcome(false, Duration::from_millis(150)),
+            Outcome::SlowFailure
+        ));
+        assert!(matches!(
+            cb.classify_outcome(false, Duration::from_millis(50)),
+            Outcome::Failure
+        ));
+    }
+
+    #[tokio::test]
+    async fn slow_calls_below_threshold_dont_trip() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 100,
+            slow_call_threshold: Some(Duration::from_millis(10)),
+            slow_call_rate_threshold: 0.5,
+            min_operations: 4,
+            ..default_config()
+        })
+        .unwrap();
+
+        // 1 slow + 3 normal = 25% < 50%
+        cb.record_outcome(Outcome::SlowSuccess);
+        cb.record_outcome(Outcome::Success);
+        cb.record_outcome(Outcome::Success);
+        cb.record_outcome(Outcome::Success);
+        assert_eq!(cb.circuit_state(), CS::Closed);
+    }
+
+    #[tokio::test]
+    async fn sliding_window_forgets_old_outcomes() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 3,
+            sliding_window_size: 5,
+            failure_rate_threshold: Some(0.6),
+            min_operations: 3,
+            ..default_config()
+        })
+        .unwrap();
+
+        // 3 failures -> 3/3 = 100% > 60% -> trips
+        cb.record_outcome(Outcome::Failure);
+        cb.record_outcome(Outcome::Failure);
+        cb.record_outcome(Outcome::Failure);
+        assert_eq!(cb.circuit_state(), CS::Open);
+
+        cb.force_close();
+
+        // 5 calls: 2 failures, 3 successes -> 2/5 = 40% < 60% -> stays closed
+        cb.record_outcome(Outcome::Success);
+        cb.record_outcome(Outcome::Success);
+        cb.record_outcome(Outcome::Failure);
+        cb.record_outcome(Outcome::Success);
+        cb.record_outcome(Outcome::Failure);
+        assert_eq!(cb.circuit_state(), CS::Closed);
+
+        // One more failure pushes oldest (success) out:
+        // window = [S, F, S, F, F] -> 3/5 = 60% >= 60% -> trips
+        cb.record_outcome(Outcome::Failure);
+        assert_eq!(cb.circuit_state(), CS::Open);
+    }
+
+    #[test]
+    fn sliding_window_without_rate_threshold_uses_count() {
+        // sliding_window_size > 0 but failure_rate_threshold is None -> count-based
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 3,
+            sliding_window_size: 10,
+            failure_rate_threshold: None,
+            min_operations: 1,
+            ..default_config()
+        })
+        .unwrap();
+
+        cb.record_outcome(Outcome::Failure);
+        cb.record_outcome(Outcome::Failure);
+        assert_eq!(cb.circuit_state(), CS::Closed);
+        cb.record_outcome(Outcome::Failure);
+        assert_eq!(cb.circuit_state(), CS::Open);
+    }
+
+    #[test]
+    fn invalid_failure_rate_threshold_rejected() {
+        let result = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_rate_threshold: Some(1.5),
+            ..default_config()
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn sliding_window_stats_reflect_window() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 100,
+            sliding_window_size: 3,
+            failure_rate_threshold: Some(0.9),
+            min_operations: 1,
+            ..default_config()
+        })
+        .unwrap();
+
+        cb.record_outcome(Outcome::Failure);
+        cb.record_outcome(Outcome::Failure);
+        cb.record_outcome(Outcome::Success);
+
+        let stats = cb.stats();
+        assert_eq!(stats.total, 3);
+        assert_eq!(stats.failures, 2);
+
+        // Push oldest failure out of window
+        cb.record_outcome(Outcome::Success);
+        let stats = cb.stats();
+        assert_eq!(stats.total, 3);
+        assert_eq!(stats.failures, 1);
     }
 }

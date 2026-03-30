@@ -1,6 +1,6 @@
 //! Timeout pattern — wraps futures with a deadline, returning `CallError::Timeout`.
 
-use futures::Future;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout as tokio_timeout;

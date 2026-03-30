@@ -164,7 +164,7 @@ impl RateLimiter for TokenBucket {
             Ok(())
         } else {
             drop(state);
-            Err(CallError::RateLimited)
+            Err(CallError::RateLimited { retry_after: None })
         }
     }
 
@@ -174,7 +174,9 @@ impl RateLimiter for TokenBucket {
         Fut: Future<Output = Result<T, E>> + Send,
         T: Send,
     {
-        self.acquire().await.map_err(|_| CallError::RateLimited)?;
+        self.acquire()
+            .await
+            .map_err(|_| CallError::RateLimited { retry_after: None })?;
         operation().await.map_err(CallError::Operation)
     }
 
@@ -218,17 +220,30 @@ pub struct LeakyBucket {
 }
 
 impl LeakyBucket {
-    /// Create new leaky bucket
-    #[must_use]
-    pub fn new(capacity: usize, leak_rate: f64) -> Self {
-        Self {
+    /// Create new leaky bucket.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ConfigError)` if `capacity` is 0 or > 100,000,
+    /// or `leak_rate` is outside 0.001..=10,000.0.
+    pub fn new(capacity: usize, leak_rate: f64) -> Result<Self, crate::ConfigError> {
+        if capacity == 0 || capacity > 100_000 {
+            return Err(crate::ConfigError::new("capacity", "must be 1..=100,000"));
+        }
+        if !(0.001..=10_000.0).contains(&leak_rate) {
+            return Err(crate::ConfigError::new(
+                "leak_rate",
+                "must be 0.001..=10,000.0",
+            ));
+        }
+        Ok(Self {
             capacity,
             state: Mutex::new(LeakyBucketState {
                 level: 0,
                 last_leak: Instant::now(),
             }),
             leak_rate,
-        }
+        })
     }
 }
 
@@ -250,7 +265,7 @@ impl RateLimiter for LeakyBucket {
             Ok(())
         } else {
             drop(state);
-            Err(CallError::RateLimited)
+            Err(CallError::RateLimited { retry_after: None })
         }
     }
 
@@ -260,7 +275,9 @@ impl RateLimiter for LeakyBucket {
         Fut: Future<Output = Result<T, E>> + Send,
         T: Send,
     {
-        self.acquire().await.map_err(|_| CallError::RateLimited)?;
+        self.acquire()
+            .await
+            .map_err(|_| CallError::RateLimited { retry_after: None })?;
         operation().await.map_err(CallError::Operation)
     }
 
@@ -295,14 +312,24 @@ pub struct SlidingWindow {
 }
 
 impl SlidingWindow {
-    /// Create new sliding window rate limiter
-    #[must_use]
-    pub fn new(window_duration: Duration, max_requests: usize) -> Self {
-        Self {
+    /// Create new sliding window rate limiter.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ConfigError)` if `max_requests` is 0
+    /// or `window_duration` is zero.
+    pub fn new(window_duration: Duration, max_requests: usize) -> Result<Self, crate::ConfigError> {
+        if max_requests == 0 {
+            return Err(crate::ConfigError::new("max_requests", "must be >= 1"));
+        }
+        if window_duration.is_zero() {
+            return Err(crate::ConfigError::new("window_duration", "must be > 0"));
+        }
+        Ok(Self {
             window_duration,
             max_requests,
             requests: Arc::new(Mutex::new(VecDeque::new())),
-        }
+        })
     }
 
     fn clean_old_requests_locked(
@@ -356,7 +383,7 @@ impl RateLimiter for SlidingWindow {
             Ok(())
         } else {
             drop(requests);
-            Err(CallError::RateLimited)
+            Err(CallError::RateLimited { retry_after: None })
         }
     }
 
@@ -366,7 +393,9 @@ impl RateLimiter for SlidingWindow {
         Fut: Future<Output = Result<T, E>> + Send,
         T: Send,
     {
-        self.acquire().await.map_err(|_| CallError::RateLimited)?;
+        self.acquire()
+            .await
+            .map_err(|_| CallError::RateLimited { retry_after: None })?;
         operation().await.map_err(CallError::Operation)
     }
 
@@ -534,7 +563,9 @@ impl RateLimiter for AdaptiveRateLimiter {
         Fut: Future<Output = Result<T, E>> + Send,
         T: Send,
     {
-        self.acquire().await.map_err(|_| CallError::RateLimited)?;
+        self.acquire()
+            .await
+            .map_err(|_| CallError::RateLimited { retry_after: None })?;
         let result = operation().await;
 
         match &result {
@@ -639,7 +670,7 @@ mod governor_impl {
         async fn acquire(&self) -> Result<(), CallError<()>> {
             match self.limiter.check() {
                 Ok(()) => Ok(()),
-                Err(_) => Err(CallError::RateLimited),
+                Err(_) => Err(CallError::RateLimited { retry_after: None }),
             }
         }
 
@@ -649,7 +680,9 @@ mod governor_impl {
             Fut: Future<Output = Result<T, E>> + Send,
             T: Send,
         {
-            self.acquire().await.map_err(|_| CallError::RateLimited)?;
+            self.acquire()
+                .await
+                .map_err(|_| CallError::RateLimited { retry_after: None })?;
             operation().await.map_err(CallError::Operation)
         }
 
@@ -675,7 +708,7 @@ mod governor_impl {
             }
 
             let result = limiter.acquire().await;
-            assert!(matches!(result, Err(CallError::RateLimited)));
+            assert!(matches!(result, Err(CallError::RateLimited { .. })));
         }
 
         #[tokio::test]
@@ -699,5 +732,36 @@ mod tests {
         let limiter = TokenBucket::new(1, 0.001).unwrap();
         assert!(limiter.acquire().await.is_ok());
         assert!(limiter.acquire().await.is_err());
+    }
+
+    #[test]
+    fn leaky_bucket_rejects_zero_capacity() {
+        assert!(LeakyBucket::new(0, 1.0).is_err());
+    }
+
+    #[test]
+    fn leaky_bucket_rejects_invalid_leak_rate() {
+        assert!(LeakyBucket::new(10, 0.0).is_err());
+        assert!(LeakyBucket::new(10, -1.0).is_err());
+    }
+
+    #[test]
+    fn leaky_bucket_accepts_valid_config() {
+        assert!(LeakyBucket::new(10, 1.0).is_ok());
+    }
+
+    #[test]
+    fn sliding_window_rejects_zero_requests() {
+        assert!(SlidingWindow::new(std::time::Duration::from_secs(1), 0).is_err());
+    }
+
+    #[test]
+    fn sliding_window_rejects_zero_duration() {
+        assert!(SlidingWindow::new(std::time::Duration::ZERO, 10).is_err());
+    }
+
+    #[test]
+    fn sliding_window_accepts_valid_config() {
+        assert!(SlidingWindow::new(std::time::Duration::from_secs(1), 10).is_ok());
     }
 }

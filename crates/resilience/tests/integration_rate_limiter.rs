@@ -23,7 +23,7 @@ async fn test_token_bucket_rate_limiting() {
 
 #[tokio::test]
 async fn test_sliding_window_accuracy() {
-    let limiter = SlidingWindow::new(Duration::from_millis(100), 5);
+    let limiter = SlidingWindow::new(Duration::from_millis(100), 5).unwrap();
 
     // Fill the window
     for _ in 0..5 {

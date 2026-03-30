@@ -19,22 +19,19 @@ use crate::{
     retry::{RetryConfig, retry_with},
 };
 
-// ── Execution phases ──────────────────────────────────────────────────────────
+// ── Execution ────────────────────────────────────────────────────────────────
 //
-// To eliminate per-step Box::pin allocations the pipeline is split into three
-// phases that are processed iteratively:
+// Steps are processed recursively by `run_operation_with_shells`. Each step
+// type is handled exactly once, in order:
 //
-//  1. Pre-phase  — steps executed *before* the operation (outermost → innermost):
-//     LoadShed, RateLimiter, (open) CircuitBreaker check, Bulkhead acquire.
+// - LoadShed / RateLimiter: checked before recursing to inner steps.
+// - CircuitBreaker: `can_execute()` + `ProbeGuard` + `record_outcome()`.
+// - Bulkhead: `acquire()` permit held for the inner scope.
+// - Timeout / Retry: wrap the remainder of the pipeline.
 //
-//  2. Inner-phase — the actual operation call, wrapped once by CB/Bulkhead
-//     wrappers and the optional Timeout/Retry shells.
-//
-//  3. Post-phase — outcome recording after the operation returns.
-//
-// Only Timeout and Retry still produce a single Box::pin each (Timeout requires
+// Only Timeout and Retry produce a Box::pin each (Timeout requires
 // it for `tokio::time::timeout`; Retry needs async recursion for back-off).
-// Every other step is now allocation-free.
+// Every other step is allocation-free.
 
 /// Async predicate for rate limiting — returns `Ok(())` or `Err(CallError::RateLimited)`.
 pub type RateLimitCheck =
@@ -201,22 +198,38 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
         let boxed = move || -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> { Box::pin(f()) };
         execute_pipeline(Arc::clone(&self.steps), Arc::new(boxed)).await
     }
-}
 
-// ── Iterative pipeline executor ───────────────────────────────────────────────
-//
-// Processes steps in two passes to avoid per-step Box::pin:
-//
-//  Pass 1 (forward, idx 0 → N-1): guard steps — LoadShed, RateLimiter,
-//          CircuitBreaker::can_execute, Bulkhead::acquire.
-//          Returns early on rejection without touching the operation.
-//
-//  Pass 2: find the innermost Timeout / Retry shell (if any) and execute
-//          the operation through it.  CB and Bulkhead outcome recording
-//          happens after the operation returns.
-//
-// Only one Box::pin per Timeout shell and one per Retry step are created,
-// instead of one per pipeline step as in the old recursive approach.
+    /// Execute `f` through the pipeline with a fallback strategy.
+    ///
+    /// If the pipeline returns an error and the fallback's
+    /// [`should_fallback`](crate::fallback::FallbackStrategy::should_fallback) returns true,
+    /// the fallback strategy is invoked to recover.
+    ///
+    /// # Errors
+    ///
+    /// Returns the fallback's error if both the pipeline and fallback fail.
+    pub async fn call_with_fallback<T, F, Fut>(
+        &self,
+        f: F,
+        fallback: &dyn crate::fallback::FallbackStrategy<T, E>,
+    ) -> Result<T, CallError<E>>
+    where
+        T: Send + Sync + 'static,
+        F: Fn() -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+    {
+        match self.call(f).await {
+            Ok(v) => Ok(v),
+            Err(err) => {
+                if fallback.should_fallback(&err) {
+                    fallback.fallback(err).await
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
+}
 
 async fn execute_pipeline<T, E, F>(steps: Arc<Vec<Step<E>>>, f: Arc<F>) -> Result<T, CallError<E>>
 where
@@ -224,70 +237,11 @@ where
     E: Send + 'static,
     F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync + 'static,
 {
-    // ── Pass 1: guard checks (no allocations) ─────────────────────────────────
-    //
-    // Collect permits/handles we need to clean up after the operation.
-    // For CircuitBreaker and Bulkhead we call the lower-level API directly so
-    // we can record the outcome ourselves after the operation completes.
-
-    use crate::bulkhead::BulkheadPermit;
-    use crate::circuit_breaker::Outcome;
-
-    // Indices of CB/Bulkhead steps that were successfully entered (for outcome recording).
-    let mut entered_cb: Vec<Arc<CircuitBreaker>> = Vec::new();
-    // RAII permit handles — dropped when this scope exits, releasing the slot.
-    let mut bh_permits: Vec<BulkheadPermit> = Vec::new();
-
-    for step in steps.iter() {
-        match step {
-            Step::LoadShed(predicate) => {
-                if predicate() {
-                    return Err(CallError::LoadShed);
-                }
-            }
-            Step::RateLimiter(check) => {
-                check().await.map_err(|_| CallError::RateLimited)?;
-            }
-            Step::CircuitBreaker(cb) => {
-                cb.can_execute()?;
-                entered_cb.push(Arc::clone(cb));
-            }
-            Step::Bulkhead(bh) => {
-                let permit = bh.acquire::<E>().await?;
-                bh_permits.push(permit);
-            }
-            // Timeout and Retry are handled in pass 2.
-            Step::Timeout(_) | Step::Retry(_) => {}
-        }
-    }
-
-    // ── Pass 2: find the outermost Timeout/Retry shell and execute ────────────
-    //
-    // Walk steps to find the first Timeout or Retry entry (outermost wrapper).
-    // If neither exists, execute the operation directly.
-
-    let result = run_operation_with_shells(&steps, 0, Arc::clone(&f)).await;
-
-    // ── Post: record CB outcomes ──────────────────────────────────────────────
-    let outcome = match &result {
-        Err(CallError::Operation(_) | CallError::RetriesExhausted { .. }) => Outcome::Failure,
-        Err(CallError::Timeout(_)) => Outcome::Timeout,
-        Err(CallError::Cancelled { .. }) => Outcome::Cancelled,
-        _ => Outcome::Success, // Ok / LoadShed / RateLimited / etc. — CB already rejected above
-    };
-    for cb in &entered_cb {
-        cb.record_outcome(outcome);
-    }
-
-    // Permits are held until here so the bulkhead slots stay reserved for the
-    // entire duration of the operation; drop them explicitly before returning.
-    drop(bh_permits);
-    result
+    run_operation_with_shells(&steps, 0, f).await
 }
 
-/// Recursively apply only Timeout and Retry shells (one `Box::pin` per shell),
-/// then call the user function.  `CircuitBreaker` and `Bulkhead` guards have
-/// already been processed by `execute_pipeline`; their wrappers are skipped here.
+/// Recursively apply pipeline steps (one `Box::pin` per Timeout/Retry shell),
+/// then call the user function.
 fn run_operation_with_shells<T, E, F>(
     steps: &Arc<Vec<Step<E>>>,
     idx: usize,
@@ -319,13 +273,17 @@ where
                 let result = run_operation_with_shells(&steps, idx + 1, Arc::clone(&f)).await;
                 // Defuse guard — record the real outcome instead.
                 std::mem::forget(guard);
-                match &result {
-                    Ok(_) => cb.record_outcome(Outcome::Success),
-                    Err(CallError::Operation(_)) => cb.record_outcome(Outcome::Failure),
-                    // Non-operation errors (rate limit, load shed, etc.) from inner
-                    // steps are not the downstream's fault — don't count them.
-                    Err(_) => cb.record_outcome(Outcome::Cancelled),
-                }
+                let outcome = match &result {
+                    Ok(_) => Outcome::Success,
+                    Err(CallError::Operation(_) | CallError::RetriesExhausted { .. }) => {
+                        Outcome::Failure
+                    }
+                    Err(CallError::Timeout(_)) => Outcome::Timeout,
+                    // Cancelled, rate limit, load shed, bulkhead full — not
+                    // the downstream's fault; don't count as failures.
+                    Err(_) => Outcome::Cancelled,
+                };
+                cb.record_outcome(outcome);
                 result
             }
             Step::Bulkhead(bh) => {
@@ -333,7 +291,9 @@ where
                 run_operation_with_shells(&steps, idx + 1, f).await
             }
             Step::RateLimiter(check) => {
-                check().await.map_err(|_| CallError::RateLimited)?;
+                check()
+                    .await
+                    .map_err(|_| CallError::RateLimited { retry_after: None })?;
                 run_operation_with_shells(&steps, idx + 1, f).await
             }
             Step::LoadShed(predicate) => {
@@ -425,7 +385,7 @@ fn map_retry_result<T, E: Send>(
         Err(CallError::CircuitOpen) => Err(CallError::CircuitOpen),
         Err(CallError::BulkheadFull) => Err(CallError::BulkheadFull),
         Err(CallError::Timeout(d)) => Err(CallError::Timeout(d)),
-        Err(CallError::RateLimited) => Err(CallError::RateLimited),
+        Err(CallError::RateLimited { retry_after }) => Err(CallError::RateLimited { retry_after }),
         Err(CallError::LoadShed) => Err(CallError::LoadShed),
         Err(CallError::Cancelled { reason }) => Err(CallError::Cancelled { reason }),
     }
@@ -434,7 +394,7 @@ fn map_retry_result<T, E: Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CallError, retry::BackoffConfig};
+    use crate::{CallError, CircuitBreaker, retry::BackoffConfig};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 
@@ -523,7 +483,8 @@ mod tests {
         let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default()).unwrap());
 
         // Rate limiter that always rejects
-        let rl: RateLimitCheck = Arc::new(|| Box::pin(async { Err(CallError::RateLimited) }));
+        let rl: RateLimitCheck =
+            Arc::new(|| Box::pin(async { Err(CallError::RateLimited { retry_after: None }) }));
 
         let pipeline = ResiliencePipeline::<&str>::builder()
             .circuit_breaker(cb)
@@ -535,6 +496,108 @@ mod tests {
             .await;
 
         // Should return RateLimited, not panic
-        assert!(matches!(result, Err(CallError::RateLimited)));
+        assert!(matches!(result, Err(CallError::RateLimited { .. })));
+    }
+
+    #[tokio::test]
+    async fn pipeline_cb_half_open_allows_single_probe() {
+        use crate::circuit_breaker::{CircuitBreakerConfig, Outcome};
+        use crate::sink::CircuitState;
+
+        let cb = Arc::new(
+            CircuitBreaker::new(CircuitBreakerConfig {
+                failure_threshold: 2,
+                reset_timeout: Duration::from_millis(50),
+                half_open_max_ops: 1,
+                min_operations: 1,
+                count_timeouts_as_failures: true,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+
+        // Trip the breaker
+        cb.record_outcome(Outcome::Failure);
+        cb.record_outcome(Outcome::Failure);
+        assert_eq!(cb.circuit_state(), CircuitState::Open);
+
+        // Wait for reset timeout
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        // Pipeline should succeed through HalfOpen → Closed
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .circuit_breaker(Arc::clone(&cb))
+            .build();
+
+        let result = pipeline
+            .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
+            .await;
+
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(cb.circuit_state(), CircuitState::Closed);
+    }
+
+    #[tokio::test]
+    async fn pipeline_bulkhead_takes_single_permit() {
+        let bh = Arc::new(
+            crate::Bulkhead::new(crate::BulkheadConfig {
+                max_concurrency: 2,
+                queue_size: 1,
+                timeout: None,
+            })
+            .unwrap(),
+        );
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .bulkhead(Arc::clone(&bh))
+            .build();
+
+        // After pipeline.call completes, the permit should be released
+        let result = pipeline
+            .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
+            .await;
+        assert_eq!(result.unwrap(), 42);
+
+        // Both permits should be available again
+        assert_eq!(bh.available_permits(), 2);
+    }
+
+    #[tokio::test]
+    async fn pipeline_call_with_fallback_recovers() {
+        use crate::fallback::ValueFallback;
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .timeout(Duration::from_millis(10))
+            .build();
+
+        let fallback = ValueFallback::new(99u32);
+
+        let result = pipeline
+            .call_with_fallback(
+                || {
+                    Box::pin(async {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        Ok::<u32, &str>(42)
+                    })
+                },
+                &fallback,
+            )
+            .await;
+
+        assert_eq!(result.unwrap(), 99);
+    }
+
+    #[tokio::test]
+    async fn pipeline_call_with_fallback_passes_through_on_success() {
+        use crate::fallback::ValueFallback;
+
+        let pipeline = ResiliencePipeline::<&str>::builder().build();
+        let fallback = ValueFallback::new(0u32);
+
+        let result = pipeline
+            .call_with_fallback(|| Box::pin(async { Ok::<u32, &str>(42) }), &fallback)
+            .await;
+
+        assert_eq!(result.unwrap(), 42);
     }
 }
