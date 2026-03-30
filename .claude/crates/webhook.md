@@ -20,3 +20,5 @@ Inbound webhook server — UUID-isolated endpoints per trigger, single server pe
 - Depends on nebula-resource (for `Context`). Used by nebula-runtime for webhook trigger management.
 
 <\!-- reviewed: 2026-03-25 -->
+
+<!-- reviewed: 2026-03-30 -->

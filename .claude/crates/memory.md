@@ -27,4 +27,4 @@ High-performance memory management — arenas, pools, LRU/TTL caching, memory pr
 - Optional dep on nebula-log (feature: `logging`), nebula-system for pressure detection.
 - Only consumer: nebula-expression (uses `ConcurrentComputeCache`, `CacheConfig`, `CacheMetrics`, `MemoryError`).
 
-<!-- reviewed: 2026-03-20 -->
+<!-- reviewed: 2026-03-30 -->

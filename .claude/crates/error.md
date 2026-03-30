@@ -26,6 +26,6 @@ Enterprise error infrastructure. Google error model (Status + typed details) ada
 ## Relations
 
 - Depends on: serde (optional), nebula-error-macros (optional); thiserror in dev-dependencies only
-- Depended on by: (future — all crates during Phase 3 migration)
+- Depended on by: all 21 crates (Classify migration complete 2026-03-30)
 
-<!-- reviewed: 2026-03-26 -->
+<!-- reviewed: 2026-03-30 -->

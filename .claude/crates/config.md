@@ -19,3 +19,5 @@ Multi-source configuration with env interpolation, hot-reload, and typed access.
 
 ## Relations
 - Depends on nebula-log (re-exports `info!`, `debug!` etc. in prelude). Used by nebula-api, nebula-runtime, and any crate needing runtime configuration.
+
+<!-- reviewed: 2026-03-30 -->

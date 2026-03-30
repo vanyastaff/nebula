@@ -18,3 +18,5 @@ Workflow definition types and DAG model — pure data, no execution.
 
 ## Relations
 - Depends on nebula-core (IDs, DependencyGraph primitives). Used by nebula-engine, nebula-storage.
+
+<!-- reviewed: 2026-03-30 -->

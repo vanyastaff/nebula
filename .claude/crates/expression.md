@@ -18,3 +18,5 @@ n8n-compatible expression language evaluating `serde_json::Value` — used in wo
 
 ## Relations
 - No nebula deps (standalone). Used by nebula-workflow and nebula-engine for dynamic parameter resolution.
+
+<!-- reviewed: 2026-03-30 -->

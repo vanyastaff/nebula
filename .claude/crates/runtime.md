@@ -17,3 +17,5 @@ Action execution layer — ActionRegistry, InProcessSandbox, data policies, and 
 
 ## Relations
 - Depends on nebula-action, nebula-core. Used by nebula-engine. Sits between engine (scheduling) and action (business logic).
+
+<!-- reviewed: 2026-03-30 -->

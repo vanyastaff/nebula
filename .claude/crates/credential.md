@@ -21,5 +21,5 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 ## Relations
 - Depends on: nebula-core, nebula-eventbus. Peer: nebula-resource.
 
-<!-- reviewed: 2026-03-25 -->
+<!-- reviewed: 2026-03-30 -->
 <!-- updated: 2026-03-25 — polish v2 module names, rename types -->

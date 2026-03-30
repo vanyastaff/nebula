@@ -31,4 +31,4 @@ Execution event bus, TelemetryService trait, W3C trace context, and buffered cal
 ## Relations
 - Wraps nebula-eventbus. Used by nebula-metrics (re-exports Counter/Gauge/Histogram), nebula-resource (re-exports CallRecord types).
 
-<!-- reviewed: 2026-03-19 -->
+<!-- reviewed: 2026-03-30 -->
