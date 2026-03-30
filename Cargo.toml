@@ -59,7 +59,7 @@ tokio-stream = "0.1"
 # Serialization
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = "1.0.149"
-serde_with = "3.17.0"
+serde_with = "3.18.0"
 
 # Logging and tracing
 thiserror = { version = "2.0.18" }
