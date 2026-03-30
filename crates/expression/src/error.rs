@@ -2,7 +2,6 @@
 //!
 //! Uses thiserror for clean, idiomatic Rust error definitions.
 
-use nebula_error::{Classify, ErrorCategory, ErrorCode};
 use thiserror::Error;
 
 // ============================================================================
@@ -11,53 +10,65 @@ use thiserror::Error;
 
 /// Expression evaluation and parsing errors
 #[non_exhaustive]
-#[derive(Error, Debug)]
+#[derive(Error, Debug, nebula_error::Classify)]
 pub enum ExpressionError {
     /// Syntax error in expression
+    #[classify(category = "validation", code = "EXPR:SYNTAX")]
     #[error("Expression syntax error: {message}")]
     SyntaxError { message: String },
 
     /// Parse error
+    #[classify(category = "validation", code = "EXPR:PARSE")]
     #[error("Expression parse error: {message}")]
     ParseError { message: String },
 
     /// Evaluation error
+    #[classify(category = "internal", code = "EXPR:EVAL")]
     #[error("Expression evaluation error: {message}")]
     EvalError { message: String },
 
     /// Type mismatch error
+    #[classify(category = "validation", code = "EXPR:TYPE")]
     #[error("Type error: expected {expected}, found {actual}")]
     TypeError { expected: String, actual: String },
 
     /// Variable not found
+    #[classify(category = "not_found", code = "EXPR:VAR_NOT_FOUND")]
     #[error("Variable '{name}' not found")]
     VariableNotFound { name: String },
 
     /// Function not found
+    #[classify(category = "not_found", code = "EXPR:FUNC_NOT_FOUND")]
     #[error("Function '{name}' not found")]
     FunctionNotFound { name: String },
 
     /// Invalid function argument
+    #[classify(category = "validation", code = "EXPR:INVALID_ARG")]
     #[error("Invalid argument for {function}: {message}")]
     InvalidArgument { function: String, message: String },
 
     /// Division by zero
+    #[classify(category = "validation", code = "EXPR:DIV_ZERO")]
     #[error("Division by zero")]
     DivisionByZero,
 
     /// Regex compilation or matching error
+    #[classify(category = "validation", code = "EXPR:REGEX")]
     #[error("Regex error: {message}")]
     RegexError { message: String },
 
     /// Index out of bounds
+    #[classify(category = "validation", code = "EXPR:INDEX_OOB")]
     #[error("Index out of bounds: index {index} is out of range for array of length {length}")]
     IndexOutOfBounds { index: usize, length: usize },
 
     /// Validation error (general)
+    #[classify(category = "validation", code = "EXPR:VALIDATION")]
     #[error("Validation error: {message}")]
     Validation { message: String },
 
     /// Not found error (general)
+    #[classify(category = "not_found", code = "EXPR:NOT_FOUND")]
     #[error("{resource_type} not found: {resource_id}")]
     NotFound {
         resource_type: String,
@@ -65,47 +76,22 @@ pub enum ExpressionError {
     },
 
     /// Internal error
+    #[classify(category = "internal", code = "EXPR:INTERNAL", retryable = true)]
     #[error("Internal error: {message}")]
     Internal { message: String },
 
     /// JSON error
+    #[classify(category = "internal", code = "EXPR:JSON", retryable = true)]
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
     /// Invalid date format error
+    #[classify(category = "validation", code = "EXPR:INVALID_DATE")]
     #[error("Invalid date format: {0}")]
     InvalidDate(#[from] chrono::format::ParseError),
 }
 
 impl ExpressionError {
-    /// Get error code for categorization
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::SyntaxError { .. } => "EXPR:SYNTAX",
-            Self::ParseError { .. } => "EXPR:PARSE",
-            Self::EvalError { .. } => "EXPR:EVAL",
-            Self::TypeError { .. } => "EXPR:TYPE",
-            Self::VariableNotFound { .. } => "EXPR:VAR_NOT_FOUND",
-            Self::FunctionNotFound { .. } => "EXPR:FUNC_NOT_FOUND",
-            Self::InvalidArgument { .. } => "EXPR:INVALID_ARG",
-            Self::DivisionByZero => "EXPR:DIV_ZERO",
-            Self::RegexError { .. } => "EXPR:REGEX",
-            Self::IndexOutOfBounds { .. } => "EXPR:INDEX_OOB",
-            Self::Validation { .. } => "EXPR:VALIDATION",
-            Self::NotFound { .. } => "EXPR:NOT_FOUND",
-            Self::Internal { .. } => "EXPR:INTERNAL",
-            Self::Json(_) => "EXPR:JSON",
-            Self::InvalidDate(_) => "EXPR:INVALID_DATE",
-        }
-    }
-
-    /// Check if error is retryable
-    pub fn is_retryable(&self) -> bool {
-        // Expression errors are generally not retryable
-        // Only internal errors might benefit from retry
-        matches!(self, Self::Internal { .. } | Self::Json(_))
-    }
-
     // ============================================================================
     // Convenience Constructors
     // ============================================================================
@@ -194,43 +180,6 @@ impl ExpressionError {
         Self::Internal {
             message: message.into(),
         }
-    }
-}
-
-// ============================================================================
-// Classify Implementation
-// ============================================================================
-
-impl Classify for ExpressionError {
-    fn category(&self) -> ErrorCategory {
-        match self {
-            // Syntax/Parse/Type/Validation errors → Validation
-            Self::SyntaxError { .. }
-            | Self::ParseError { .. }
-            | Self::TypeError { .. }
-            | Self::InvalidArgument { .. }
-            | Self::DivisionByZero
-            | Self::RegexError { .. }
-            | Self::IndexOutOfBounds { .. }
-            | Self::Validation { .. }
-            | Self::InvalidDate(_) => ErrorCategory::Validation,
-
-            // Not-found variants → NotFound
-            Self::VariableNotFound { .. }
-            | Self::FunctionNotFound { .. }
-            | Self::NotFound { .. } => ErrorCategory::NotFound,
-
-            // Eval, Internal, Json, and catch-all → Internal
-            _ => ErrorCategory::Internal,
-        }
-    }
-
-    fn code(&self) -> ErrorCode {
-        ErrorCode::new(ExpressionError::code(self))
-    }
-
-    fn is_retryable(&self) -> bool {
-        ExpressionError::is_retryable(self)
     }
 }
 
@@ -344,6 +293,7 @@ impl ExpressionErrorExt for ExpressionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nebula_error::Classify;
 
     #[test]
     fn test_error_creation() {
