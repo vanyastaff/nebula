@@ -31,7 +31,7 @@ tracing-subscriber = { workspace = true, features = [
 
 
 # Error handling
-nebula-error = { workspace = true }
+nebula-error = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 
 # Serialization
