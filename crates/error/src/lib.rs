@@ -54,4 +54,4 @@ pub type Result<T, E> = std::result::Result<T, NebulaError<E>>;
 
 /// Re-export derive macro when feature is enabled.
 #[cfg(feature = "derive")]
-pub use nebula_error_macros::Classify as DeriveClassify;
+pub use nebula_error_macros::Classify;
