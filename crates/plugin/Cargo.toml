@@ -18,18 +18,13 @@ dynamic-loading = ["dep:libloading"]
 [dependencies]
 nebula-core = { path = "../core" }
 nebula-error = { workspace = true }
-nebula-action = { path = "../action" }
-nebula-credential = { path = "../credential" }
-nebula-resource = { path = "../resource" }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-async-trait = { workspace = true }
 
 # Optional: dynamic library loading
 libloading = { version = "0.9", optional = true }
 
 [dev-dependencies]
-pretty_assertions = { workspace = true }

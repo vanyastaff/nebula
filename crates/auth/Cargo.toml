@@ -9,24 +9,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# Core types (IDs, keys, scopes)
-nebula-core = { path = "../core" }
-
-# Parameter definitions (Schema, FieldValues)
-nebula-parameter = { path = "../parameter" }
-
-# Errors
-thiserror = { workspace = true }
-
-# Serialization
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-
 # Security
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 
 # Utilities
-chrono = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

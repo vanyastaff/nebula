@@ -45,7 +45,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 futures = { workspace = true }
-rand = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 loom = "0.7"

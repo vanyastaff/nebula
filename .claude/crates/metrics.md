@@ -16,3 +16,5 @@ Standard `nebula_*` metric naming constants, TelemetryAdapter, Prometheus text e
 
 ## Relations
 - Re-exports `Counter`, `Gauge`, `Histogram`, `MetricsRegistry` from nebula-telemetry. Used by nebula-api for the `/metrics` endpoint.
+
+<\!-- reviewed: 2026-03-30 -->

@@ -20,6 +20,5 @@ regex = { workspace = true }
 nebula-validator = { path = "../validator" }
 
 [dev-dependencies]
-pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
 reqwest = { workspace = true, features = ["json", "rustls"] }

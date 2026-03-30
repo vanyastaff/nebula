@@ -9,3 +9,5 @@ Authentication and authorization primitives for Nebula.
 
 ## Relations
 - Planned to support nebula-api authentication (JWT validation, session management).
+
+<\!-- reviewed: 2026-03-30 -->
