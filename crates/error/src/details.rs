@@ -92,6 +92,14 @@ impl ErrorDetails {
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
+
+    /// Removes and returns the stored value of type `T`, if present.
+    pub fn remove<T: ErrorDetail>(&mut self) -> Option<T> {
+        self.map
+            .remove(&TypeId::of::<T>())
+            .and_then(|boxed| boxed.downcast::<T>().ok())
+            .map(|boxed| *boxed)
+    }
 }
 
 impl Default for ErrorDetails {
@@ -170,6 +178,22 @@ mod tests {
 
         assert_eq!(details.get::<Alpha>().unwrap().value, 2);
         assert_eq!(details.len(), 1);
+    }
+
+    #[test]
+    fn remove_returns_value() {
+        let mut details = ErrorDetails::new();
+        details.insert(Alpha { value: 42 });
+        let removed = details.remove::<Alpha>();
+        assert_eq!(removed.unwrap().value, 42);
+        assert!(!details.has::<Alpha>());
+    }
+
+    #[test]
+    fn remove_missing_returns_none() {
+        let mut details = ErrorDetails::new();
+        let removed = details.remove::<Alpha>();
+        assert!(removed.is_none());
     }
 
     #[test]

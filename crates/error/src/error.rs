@@ -194,6 +194,50 @@ impl<E: Classify> NebulaError<E> {
         self.inner
     }
 
+    /// Transforms the inner error type while preserving all metadata
+    /// (message, details, context chain, source).
+    ///
+    /// Useful for converting between crate-specific error types when
+    /// propagating errors across crate boundaries.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_error::{Classify, ErrorCategory, ErrorCode, NebulaError, codes};
+    ///
+    /// # #[derive(Debug)]
+    /// # struct A;
+    /// # impl std::fmt::Display for A {
+    /// #     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("a") }
+    /// # }
+    /// # impl Classify for A {
+    /// #     fn category(&self) -> ErrorCategory { ErrorCategory::Internal }
+    /// #     fn code(&self) -> ErrorCode { codes::INTERNAL.clone() }
+    /// # }
+    /// # #[derive(Debug)]
+    /// # struct B;
+    /// # impl std::fmt::Display for B {
+    /// #     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("b") }
+    /// # }
+    /// # impl Classify for B {
+    /// #     fn category(&self) -> ErrorCategory { ErrorCategory::External }
+    /// #     fn code(&self) -> ErrorCode { codes::EXTERNAL.clone() }
+    /// # }
+    /// let err = NebulaError::new(A).with_message("msg").context("ctx");
+    /// let mapped: NebulaError<B> = err.map_inner(|_| B);
+    /// assert_eq!(mapped.to_string(), "msg");
+    /// ```
+    #[must_use]
+    pub fn map_inner<F: Classify>(self, f: impl FnOnce(E) -> F) -> NebulaError<F> {
+        NebulaError {
+            inner: f(self.inner),
+            message: self.message,
+            details: self.details,
+            context_chain: self.context_chain,
+            source: self.source,
+        }
+    }
+
     // --- Detail access ---
 
     /// Returns a reference to a specific detail type, if present.
@@ -401,6 +445,37 @@ mod tests {
         // Also check std::error::Error::source
         let std_src = Error::source(&err).expect("std source");
         assert!(std_src.to_string().contains("file gone"));
+    }
+
+    #[test]
+    fn map_inner_transforms_error_type() {
+        #[derive(Debug, Clone)]
+        struct OtherError(ErrorCategory);
+
+        impl fmt::Display for OtherError {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "other({})", self.0)
+            }
+        }
+
+        impl Classify for OtherError {
+            fn category(&self) -> ErrorCategory {
+                self.0
+            }
+            fn code(&self) -> ErrorCode {
+                codes::EXTERNAL.clone()
+            }
+        }
+
+        let original = NebulaError::new(make_error())
+            .with_message("test msg")
+            .context("ctx1");
+
+        let mapped = original.map_inner(|_inner| OtherError(ErrorCategory::External));
+
+        assert_eq!(mapped.category(), ErrorCategory::External);
+        assert_eq!(mapped.to_string(), "test msg");
+        assert_eq!(mapped.context_chain().len(), 1);
     }
 
     #[test]

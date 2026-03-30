@@ -52,7 +52,8 @@ impl ErrorCategory {
     /// Whether this category is retryable by default.
     ///
     /// Returns `true` for [`Timeout`](Self::Timeout),
-    /// [`Exhausted`](Self::Exhausted), and [`External`](Self::External).
+    /// [`Exhausted`](Self::Exhausted), [`External`](Self::External),
+    /// and [`RateLimit`](Self::RateLimit).
     ///
     /// # Examples
     ///
@@ -60,10 +61,14 @@ impl ErrorCategory {
     /// use nebula_error::ErrorCategory;
     ///
     /// assert!(ErrorCategory::Timeout.is_default_retryable());
+    /// assert!(ErrorCategory::RateLimit.is_default_retryable());
     /// assert!(!ErrorCategory::NotFound.is_default_retryable());
     /// ```
     pub const fn is_default_retryable(&self) -> bool {
-        matches!(self, Self::Timeout | Self::Exhausted | Self::External)
+        matches!(
+            self,
+            Self::Timeout | Self::Exhausted | Self::External | Self::RateLimit
+        )
     }
 
     /// Whether this category represents a client-side error.
@@ -208,6 +213,11 @@ mod tests {
     #[test]
     fn external_is_default_retryable() {
         assert!(ErrorCategory::External.is_default_retryable());
+    }
+
+    #[test]
+    fn rate_limit_is_default_retryable() {
+        assert!(ErrorCategory::RateLimit.is_default_retryable());
     }
 
     #[test]

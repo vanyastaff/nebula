@@ -43,7 +43,7 @@ pub use details::{ErrorDetail, ErrorDetails};
 pub use error::NebulaError;
 pub use retry::RetryHint;
 pub use severity::ErrorSeverity;
-pub use traits::Classify;
+pub use traits::{Classify, ErrorClassifier};
 
 /// Convenience result type alias.
 ///

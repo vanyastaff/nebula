@@ -67,6 +67,72 @@ pub trait Classify {
     }
 }
 
+/// A predicate-based error classifier for filtering errors by category.
+///
+/// Used by the resilience layer to decide which errors to retry, route,
+/// or escalate without requiring a full `Classify` implementation.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_error::{Classify, ErrorCategory, ErrorCode, ErrorClassifier, codes};
+///
+/// let transient_only = ErrorClassifier::new(|cat| matches!(
+///     cat,
+///     ErrorCategory::Timeout | ErrorCategory::RateLimit | ErrorCategory::External
+/// ));
+///
+/// struct TimeoutErr;
+/// impl Classify for TimeoutErr {
+///     fn category(&self) -> ErrorCategory { ErrorCategory::Timeout }
+///     fn code(&self) -> ErrorCode { codes::TIMEOUT.clone() }
+/// }
+///
+/// assert!(transient_only.matches(&TimeoutErr));
+/// ```
+pub struct ErrorClassifier {
+    predicate: Box<dyn Fn(ErrorCategory) -> bool + Send + Sync>,
+}
+
+impl ErrorClassifier {
+    /// Creates a classifier from a category predicate.
+    #[must_use]
+    pub fn new(predicate: impl Fn(ErrorCategory) -> bool + Send + Sync + 'static) -> Self {
+        Self {
+            predicate: Box::new(predicate),
+        }
+    }
+
+    /// Returns `true` if the error's category matches the predicate.
+    pub fn matches(&self, error: &impl Classify) -> bool {
+        (self.predicate)(error.category())
+    }
+
+    /// A built-in classifier that matches all default-retryable categories.
+    #[must_use]
+    pub fn retryable() -> Self {
+        Self::new(|cat| cat.is_default_retryable())
+    }
+
+    /// A built-in classifier that matches all client errors.
+    #[must_use]
+    pub fn client_errors() -> Self {
+        Self::new(|cat| cat.is_client_error())
+    }
+
+    /// A built-in classifier that matches all server errors.
+    #[must_use]
+    pub fn server_errors() -> Self {
+        Self::new(|cat| cat.is_server_error())
+    }
+}
+
+impl std::fmt::Debug for ErrorClassifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ErrorClassifier").finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +215,41 @@ mod tests {
         let hint = err.retry_hint().expect("should have retry hint");
         assert_eq!(hint.after, Some(Duration::from_secs(30)));
         assert_eq!(hint.max_attempts, Some(5));
+    }
+
+    #[test]
+    fn error_classifier_retryable_matches_timeout() {
+        let classifier = ErrorClassifier::retryable();
+        let err = MinimalError {
+            cat: ErrorCategory::Timeout,
+        };
+        assert!(classifier.matches(&err));
+    }
+
+    #[test]
+    fn error_classifier_retryable_rejects_validation() {
+        let classifier = ErrorClassifier::retryable();
+        let err = MinimalError {
+            cat: ErrorCategory::Validation,
+        };
+        assert!(!classifier.matches(&err));
+    }
+
+    #[test]
+    fn error_classifier_custom_predicate() {
+        let only_auth = ErrorClassifier::new(|cat| {
+            matches!(
+                cat,
+                ErrorCategory::Authentication | ErrorCategory::Authorization
+            )
+        });
+        let auth = MinimalError {
+            cat: ErrorCategory::Authentication,
+        };
+        let timeout = MinimalError {
+            cat: ErrorCategory::Timeout,
+        };
+        assert!(only_auth.matches(&auth));
+        assert!(!only_auth.matches(&timeout));
     }
 }
