@@ -16,6 +16,8 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 - `CredentialResolver::resolve_with_refresh()` uses `REFRESH_POLICY.early_refresh` (default 5 min) to refresh **before** expiry, not after.
 - `CredentialContext` carries optional `callback_url`, `app_url`, `session_id` (private, with builder + accessors) for interactive OAuth2/SAML flows.
 - `SecretString` serializes as `"[REDACTED]"` — tests must construct raw JSON for round-trip.
+- `PendingToken`: 32-byte CSPRNG, URL-safe base64 no-pad, `Display` redacts. `generate()` is `pub(crate)` — used by `PendingStateStore` impls.
+- `PendingStateStore` trait: 4-dimensional token binding (credential_kind, owner_id, session_id, token_id). Separate from `CredentialStore` — different lifecycle (minutes vs years), TTL-enforced, single-use consume.
 
 ## Traps
 - Circular dep: peer with nebula-resource, signal via EventBus only.
@@ -26,6 +28,6 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 
 - `CredentialError` v2 variants: `InvalidInput`, `RefreshFailed` (with `RefreshErrorKind` + `RetryAdvice`), `RevokeFailed`, `CompositionNotAvailable`, `CompositionFailed`, `SchemeMismatch`. Supporting enums: `RefreshErrorKind`, `RetryAdvice`, `ResolutionStage` — all `#[non_exhaustive]`.
 
-<!-- reviewed: 2026-03-30 — AuthScheme extended with KIND, expires_at, serde bounds; all 5 scheme impls updated -->
+<!-- reviewed: 2026-03-30 — 13 AuthScheme types complete: added HeaderAuth, HmacSecret, SshAuth, CertificateAuth, AwsAuth, LdapAuth, SamlAuth, KerberosAuth -->
 <!-- updated: 2026-03-25 — polish v2 module names, rename types -->
 <!-- reviewed: 2026-03-30 — absorbed auth RFCs into plans/, auth crate deleted -->
