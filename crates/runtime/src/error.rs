@@ -12,7 +12,11 @@ pub enum RuntimeError {
     },
 
     /// Action execution failed.
-    #[classify(category = "external", code = "RUNTIME:ACTION_ERROR", retryable = false)]
+    #[classify(
+        category = "external",
+        code = "RUNTIME:ACTION_ERROR",
+        retryable = false
+    )]
     #[error("action error: {0}")]
     ActionError(#[from] nebula_action::ActionError),
 

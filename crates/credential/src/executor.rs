@@ -179,9 +179,7 @@ mod tests {
             serde_json::Value::String("sk-test-key".into()),
         );
 
-        let result =
-            execute_resolve::<ApiKeyCredential, _>(&values, &ctx, &store)
-                .await;
+        let result = execute_resolve::<ApiKeyCredential, _>(&values, &ctx, &store).await;
 
         assert!(
             matches!(result, Ok(ResolveResponse::Complete(_))),
@@ -195,9 +193,7 @@ mod tests {
         let ctx = CredentialContext::new("user-1");
         let values = ParameterValues::new(); // missing required api_key
 
-        let result =
-            execute_resolve::<ApiKeyCredential, _>(&values, &ctx, &store)
-                .await;
+        let result = execute_resolve::<ApiKeyCredential, _>(&values, &ctx, &store).await;
 
         assert!(
             matches!(result, Err(ExecutorError::Credential(_))),
@@ -213,11 +209,13 @@ mod tests {
         let input = UserInput::Poll;
 
         let result =
-            execute_continue::<ApiKeyCredential, _>(&bogus_token, &input, &ctx, &store)
-                .await;
+            execute_continue::<ApiKeyCredential, _>(&bogus_token, &input, &ctx, &store).await;
 
         assert!(
-            matches!(result, Err(ExecutorError::PendingStore(PendingStoreError::NotFound))),
+            matches!(
+                result,
+                Err(ExecutorError::PendingStore(PendingStoreError::NotFound))
+            ),
             "expected PendingStore NotFound error, got: {result:?}"
         );
     }

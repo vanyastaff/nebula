@@ -196,8 +196,7 @@ mod tests {
 
         // Simulate legacy write: encrypt without AAD and store directly
         let plaintext = b"legacy-secret";
-        let encrypted =
-            crate::utils::crypto::encrypt(&key, plaintext).unwrap();
+        let encrypted = crate::utils::crypto::encrypt(&key, plaintext).unwrap();
         let encrypted_bytes = serde_json::to_vec(&encrypted).unwrap();
 
         let cred = StoredCredential {

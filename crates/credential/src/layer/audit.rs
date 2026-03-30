@@ -235,7 +235,10 @@ mod tests {
         store.get("audit-1").await.unwrap();
 
         let events = sink.events();
-        let get_event = events.iter().find(|e| e.operation == AuditOperation::Get).unwrap();
+        let get_event = events
+            .iter()
+            .find(|e| e.operation == AuditOperation::Get)
+            .unwrap();
         assert_eq!(get_event.credential_id, "audit-1");
         assert_eq!(get_event.result, AuditResult::Success);
     }
@@ -249,7 +252,10 @@ mod tests {
         store.put(cred, PutMode::CreateOnly).await.unwrap();
 
         let events = sink.events();
-        let put_event = events.iter().find(|e| e.operation == AuditOperation::Put).unwrap();
+        let put_event = events
+            .iter()
+            .find(|e| e.operation == AuditOperation::Put)
+            .unwrap();
         assert_eq!(put_event.credential_id, "audit-2");
         assert_eq!(put_event.result, AuditResult::Success);
     }

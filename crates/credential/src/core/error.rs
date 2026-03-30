@@ -411,9 +411,7 @@ impl nebula_error::Classify for CredentialError {
             Self::NotInteractive => nebula_error::ErrorCode::new("CREDENTIAL:NOT_INTERACTIVE"),
             Self::Provider(_) => nebula_error::ErrorCode::new("CREDENTIAL:PROVIDER"),
             Self::InvalidInput(_) => nebula_error::ErrorCode::new("CREDENTIAL:INVALID_INPUT"),
-            Self::RefreshFailed { .. } => {
-                nebula_error::ErrorCode::new("CREDENTIAL:REFRESH_FAILED")
-            }
+            Self::RefreshFailed { .. } => nebula_error::ErrorCode::new("CREDENTIAL:REFRESH_FAILED"),
             Self::RevokeFailed { .. } => nebula_error::ErrorCode::new("CREDENTIAL:REVOKE_FAILED"),
             Self::CompositionNotAvailable => {
                 nebula_error::ErrorCode::new("CREDENTIAL:COMPOSITION_UNAVAILABLE")

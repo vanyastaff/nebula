@@ -63,9 +63,8 @@ impl PendingStateStore for InMemoryPendingStore {
         session_id: &str,
         pending: P,
     ) -> Result<PendingToken, PendingStoreError> {
-        let data = serde_json::to_vec(&pending).map_err(|e| {
-            PendingStoreError::Backend(Box::new(e))
-        })?;
+        let data =
+            serde_json::to_vec(&pending).map_err(|e| PendingStoreError::Backend(Box::new(e)))?;
         let expires_at = Utc::now() + pending.expires_in();
         let token = PendingToken::generate();
 
@@ -85,10 +84,7 @@ impl PendingStateStore for InMemoryPendingStore {
         Ok(token)
     }
 
-    async fn get<P: PendingState>(
-        &self,
-        token: &PendingToken,
-    ) -> Result<P, PendingStoreError> {
+    async fn get<P: PendingState>(&self, token: &PendingToken) -> Result<P, PendingStoreError> {
         let entries = self.entries.read().await;
         let entry = entries
             .get(token.as_str())
@@ -98,9 +94,7 @@ impl PendingStateStore for InMemoryPendingStore {
             return Err(PendingStoreError::Expired);
         }
 
-        serde_json::from_slice(&entry.data).map_err(|e| {
-            PendingStoreError::Backend(Box::new(e))
-        })
+        serde_json::from_slice(&entry.data).map_err(|e| PendingStoreError::Backend(Box::new(e)))
     }
 
     async fn consume<P: PendingState>(
@@ -139,15 +133,10 @@ impl PendingStateStore for InMemoryPendingStore {
             });
         }
 
-        serde_json::from_slice(&entry.data).map_err(|e| {
-            PendingStoreError::Backend(Box::new(e))
-        })
+        serde_json::from_slice(&entry.data).map_err(|e| PendingStoreError::Backend(Box::new(e)))
     }
 
-    async fn delete(
-        &self,
-        token: &PendingToken,
-    ) -> Result<(), PendingStoreError> {
+    async fn delete(&self, token: &PendingToken) -> Result<(), PendingStoreError> {
         self.entries.write().await.remove(token.as_str());
         Ok(())
     }

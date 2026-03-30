@@ -87,12 +87,7 @@ impl From<StoredFile> for StoredCredential {
 /// Rejects IDs containing path separators (`/`, `\`), the parent-directory
 /// marker (`..`), and empty strings.
 fn validate_id(id: &str) -> Result<(), StoreError> {
-    if id.is_empty()
-        || id.contains('/')
-        || id.contains('\\')
-        || id.contains("..")
-        || id == "."
-    {
+    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") || id == "." {
         return Err(StoreError::Backend(
             format!("invalid credential id (path traversal rejected): {id}").into(),
         ));
@@ -177,8 +172,8 @@ impl LocalFileStore {
     async fn read_file(&self, path: &Path) -> Result<Option<StoredCredential>, StoreError> {
         match tokio::fs::read(path).await {
             Ok(bytes) => {
-                let file: StoredFile = serde_json::from_slice(&bytes)
-                    .map_err(|e| StoreError::Backend(Box::new(e)))?;
+                let file: StoredFile =
+                    serde_json::from_slice(&bytes).map_err(|e| StoreError::Backend(Box::new(e)))?;
                 Ok(Some(file.into()))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

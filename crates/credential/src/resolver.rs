@@ -131,7 +131,11 @@ impl<S: CredentialStore> CredentialResolver<S> {
         }
 
         // Circuit breaker: skip refresh if too many recent failures
-        if self.refresh_coordinator.is_circuit_open(credential_id).await {
+        if self
+            .refresh_coordinator
+            .is_circuit_open(credential_id)
+            .await
+        {
             tracing::warn!(
                 credential_id,
                 "circuit breaker open: too many refresh failures, serving potentially stale credential"
@@ -159,11 +163,8 @@ impl<S: CredentialStore> CredentialResolver<S> {
             }
             RefreshAttempt::Waiter(notify) => {
                 // 60s max wait -- don't hang forever if winner is slow
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(60),
-                    notify.notified(),
-                )
-                .await
+                match tokio::time::timeout(std::time::Duration::from_secs(60), notify.notified())
+                    .await
                 {
                     Ok(()) => {}
                     Err(_) => {
@@ -346,12 +347,12 @@ mod tests {
 
     // ── Test credential for early refresh ──────────────────────────────
 
+    use crate::SecretString;
     use crate::core::{CredentialContext, CredentialDescription, CredentialError};
     use crate::credential_trait::Credential;
     use crate::pending::NoPendingState;
     use crate::resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult};
     use crate::scheme::BearerToken;
-    use crate::SecretString;
     use nebula_parameter::ParameterCollection;
     use nebula_parameter::values::ParameterValues;
 

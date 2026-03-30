@@ -248,8 +248,7 @@ impl K8sSecretsStore {
 
             kube_config.accept_invalid_certs = config.accept_invalid_certs;
 
-            Client::try_from(kube_config)
-                .map_err(|e| StoreError::Backend(e.to_string().into()))?
+            Client::try_from(kube_config).map_err(|e| StoreError::Backend(e.to_string().into()))?
         } else {
             Client::try_default()
                 .await
@@ -311,10 +310,7 @@ impl K8sSecretsStore {
     }
 
     /// Build annotations from config defaults and credential timestamps.
-    fn build_annotations(
-        &self,
-        credential: &StoredCredential,
-    ) -> BTreeMap<String, String> {
+    fn build_annotations(&self, credential: &StoredCredential) -> BTreeMap<String, String> {
         let mut annotations = BTreeMap::new();
         for (k, v) in &self.config.annotations {
             annotations.insert(k.clone(), v.clone());
@@ -521,11 +517,7 @@ impl CredentialStore for K8sSecretsStore {
             .await
             .map_err(|e| StoreError::Backend(e.to_string().into()))?;
 
-        let prefix = self
-            .config
-            .prefix
-            .to_lowercase()
-            .replace('_', "-");
+        let prefix = self.config.prefix.to_lowercase().replace('_', "-");
         let mut ids = Vec::new();
 
         for secret in secrets.items {
@@ -600,9 +592,7 @@ mod tests {
     fn secret_name_lowercases_and_replaces_underscores() {
         let prefix = "nebula-";
         let id = "My_API_Token";
-        let name = format!("{prefix}{id}")
-            .to_lowercase()
-            .replace('_', "-");
+        let name = format!("{prefix}{id}").to_lowercase().replace('_', "-");
         assert_eq!(name, "nebula-my-api-token");
     }
 

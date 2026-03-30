@@ -85,7 +85,13 @@ pub(crate) async fn exchange_client_credentials(
         .map_err(|e| provider_error(format!("client credentials exchange failed: {e}")))?;
 
     let body: Value = parse_token_response(resp).await?;
-    state_from_token_response(&body, &config.scopes, client_id, client_secret, &config.token_url)
+    state_from_token_response(
+        &body,
+        &config.scopes,
+        client_id,
+        client_secret,
+        &config.token_url,
+    )
 }
 
 /// Exchange authorization code for access token (Authorization Code grant).
@@ -122,7 +128,13 @@ pub(crate) async fn exchange_authorization_code(
         .map_err(|e| provider_error(format!("authorization code exchange failed: {e}")))?;
 
     let body: Value = parse_token_response(resp).await?;
-    state_from_token_response(&body, &config.scopes, client_id, client_secret, &config.token_url)
+    state_from_token_response(
+        &body,
+        &config.scopes,
+        client_id,
+        client_secret,
+        &config.token_url,
+    )
 }
 
 /// Device code response from authorization server (RFC 8628).
@@ -445,8 +457,7 @@ mod tests {
         });
 
         let state =
-            state_from_token_response(&body, &[], "cid", "csecret", "https://t.com/token")
-                .unwrap();
+            state_from_token_response(&body, &[], "cid", "csecret", "https://t.com/token").unwrap();
         assert_eq!(state.access_token, "tok_123");
         assert_eq!(state.token_type, "Bearer");
         assert_eq!(state.refresh_token.as_deref(), Some("ref_456"));

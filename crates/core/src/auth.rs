@@ -8,8 +8,8 @@
 //! nebula-resource depend on it — it is a contract type, not an
 //! implementation detail of either crate.
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 /// Consumer-facing authentication material.
 ///

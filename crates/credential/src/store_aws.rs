@@ -242,8 +242,7 @@ impl AwsSecretsStore {
     /// size limit.
     fn serialize_payload(credential: &StoredCredential) -> Result<String, StoreError> {
         let payload: SecretPayload = credential.clone().into();
-        let json =
-            serde_json::to_string(&payload).map_err(|e| StoreError::Backend(Box::new(e)))?;
+        let json = serde_json::to_string(&payload).map_err(|e| StoreError::Backend(Box::new(e)))?;
 
         if json.len() > MAX_PAYLOAD_BYTES {
             return Err(StoreError::Backend(
@@ -265,12 +264,9 @@ impl AwsSecretsStore {
 
         match result {
             Ok(output) => {
-                let secret_string =
-                    output
-                        .secret_string()
-                        .ok_or_else(|| StoreError::Backend(
-                            "secret does not contain string data".into(),
-                        ))?;
+                let secret_string = output.secret_string().ok_or_else(|| {
+                    StoreError::Backend("secret does not contain string data".into())
+                })?;
                 let payload: SecretPayload = serde_json::from_str(secret_string)
                     .map_err(|e| StoreError::Backend(Box::new(e)))?;
                 Ok(Some(payload.into()))
@@ -352,11 +348,7 @@ impl CredentialStore for AwsSecretsStore {
                 .map_err(|e| StoreError::Backend(e.to_string().into()))?;
         } else {
             // Create new secret.
-            let mut req = self
-                .client
-                .create_secret()
-                .name(&name)
-                .secret_string(&json);
+            let mut req = self.client.create_secret().name(&name).secret_string(&json);
 
             if let Some(kms) = &self.config.kms_key_id {
                 req = req.kms_key_id(kms);
@@ -463,12 +455,7 @@ impl CredentialStore for AwsSecretsStore {
     async fn exists(&self, id: &str) -> Result<bool, StoreError> {
         let name = self.secret_name(id);
 
-        let result = self
-            .client
-            .describe_secret()
-            .secret_id(&name)
-            .send()
-            .await;
+        let result = self.client.describe_secret().secret_id(&name).send().await;
 
         match result {
             Ok(_) => Ok(true),

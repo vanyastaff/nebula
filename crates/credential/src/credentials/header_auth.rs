@@ -59,9 +59,7 @@ impl Credential for HeaderAuthCredential {
             .add(
                 Parameter::string("header_name")
                     .label("Header Name")
-                    .description(
-                        "Name of the HTTP header (e.g. X-Api-Key, X-Auth-Token)",
-                    )
+                    .description("Name of the HTTP header (e.g. X-Api-Key, X-Auth-Token)")
                     .placeholder("X-Api-Key")
                     .required(),
             )
@@ -83,15 +81,11 @@ impl Credential for HeaderAuthCredential {
         _ctx: &CredentialContext,
     ) -> Result<StaticResolveResult<HeaderAuth>, CredentialError> {
         let header_name = values.get_string("header_name").ok_or_else(|| {
-            CredentialError::Provider(
-                "missing required field 'header_name'".to_owned(),
-            )
+            CredentialError::Provider("missing required field 'header_name'".to_owned())
         })?;
 
         let header_value = values.get_string("header_value").ok_or_else(|| {
-            CredentialError::Provider(
-                "missing required field 'header_value'".to_owned(),
-            )
+            CredentialError::Provider("missing required field 'header_value'".to_owned())
         })?;
 
         let secret = SecretString::new(header_value.to_owned());
@@ -141,9 +135,7 @@ mod tests {
             serde_json::Value::String("tok_secret_123".into()),
         );
         let ctx = CredentialContext::new("test-user");
-        let result = HeaderAuthCredential::resolve(&values, &ctx)
-            .await
-            .unwrap();
+        let result = HeaderAuthCredential::resolve(&values, &ctx).await.unwrap();
         match result {
             StaticResolveResult::Complete(header_auth) => {
                 assert_eq!(header_auth.name(), "X-Auth-Token");

@@ -37,9 +37,7 @@ impl TryFrom<ApiKeyAuth> for BearerToken {
     /// bearer-style `Authorization` header.
     fn try_from(api: ApiKeyAuth) -> Result<Self, Self::Error> {
         match &api.placement {
-            ApiKeyPlacement::Header { name }
-                if name.eq_ignore_ascii_case("authorization") =>
-            {
+            ApiKeyPlacement::Header { name } if name.eq_ignore_ascii_case("authorization") => {
                 // The key value itself is the bearer token -- the header name
                 // is just placement metadata.
                 Ok(BearerToken::new(api.key().clone()))

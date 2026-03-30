@@ -23,9 +23,7 @@ use crate::credential_state::CredentialStateV2;
 use crate::credential_trait::Credential;
 use crate::pending::PendingState;
 use crate::protocols::oauth2::config::{GrantType, OAuth2Config};
-use crate::resolve::{
-    DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput,
-};
+use crate::resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput};
 use crate::scheme::OAuth2Token;
 use crate::utils::SecretString;
 
@@ -267,17 +265,13 @@ impl Credential for OAuth2Credential {
                 })
             }
             GrantType::ClientCredentials => {
-                let state = oauth2_flow::exchange_client_credentials(
-                    &config,
-                    client_id,
-                    client_secret,
-                )
-                .await?;
+                let state =
+                    oauth2_flow::exchange_client_credentials(&config, client_id, client_secret)
+                        .await?;
                 Ok(ResolveResult::Complete(state))
             }
             GrantType::DeviceCode => {
-                let device_resp =
-                    oauth2_flow::request_device_code(&config, client_id).await?;
+                let device_resp = oauth2_flow::request_device_code(&config, client_id).await?;
                 let pending = OAuth2Pending {
                     config,
                     client_id: client_id.to_owned(),
@@ -314,9 +308,11 @@ impl Credential for OAuth2Credential {
         match pending.grant_type.as_str() {
             "authorization_code" => {
                 let code = match input {
-                    UserInput::Callback { params } => params.get("code").cloned().ok_or_else(
-                        || CredentialError::InvalidInput("callback missing 'code' param".into()),
-                    )?,
+                    UserInput::Callback { params } => {
+                        params.get("code").cloned().ok_or_else(|| {
+                            CredentialError::InvalidInput("callback missing 'code' param".into())
+                        })?
+                    }
                     _ => {
                         return Err(CredentialError::InvalidInput(
                             "authorization_code flow expects UserInput::Callback with 'code'"
@@ -356,9 +352,7 @@ impl Credential for OAuth2Credential {
                     Ok(state) => Ok(ResolveResult::Complete(state)),
                     Err(e) => {
                         let msg = e.to_string();
-                        if msg.contains("authorization_pending")
-                            || msg.contains("slow_down")
-                        {
+                        if msg.contains("authorization_pending") || msg.contains("slow_down") {
                             Ok(ResolveResult::Retry {
                                 after: Duration::from_secs(interval),
                             })
@@ -588,8 +582,7 @@ mod tests {
         };
 
         let ctx = CredentialContext::new("test-user");
-        let result =
-            OAuth2Credential::continue_resolve(&pending, &UserInput::Poll, &ctx).await;
+        let result = OAuth2Credential::continue_resolve(&pending, &UserInput::Poll, &ctx).await;
         assert!(result.is_err());
     }
 

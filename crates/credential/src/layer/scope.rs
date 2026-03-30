@@ -280,10 +280,7 @@ mod tests {
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
 
         // Access as tenant-2
-        let store = ScopeLayer::new(
-            inner,
-            Arc::new(FixedScope(Some("tenant-2".to_owned()))),
-        );
+        let store = ScopeLayer::new(inner, Arc::new(FixedScope(Some("tenant-2".to_owned()))));
         let err = store.get("cred-2").await.unwrap_err();
         assert!(matches!(err, StoreError::NotFound { .. }));
     }
@@ -307,10 +304,7 @@ mod tests {
         let cred = make_credential("cred-unscoped");
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
 
-        let store = ScopeLayer::new(
-            inner,
-            Arc::new(FixedScope(Some("any-tenant".to_owned()))),
-        );
+        let store = ScopeLayer::new(inner, Arc::new(FixedScope(Some("any-tenant".to_owned()))));
         let fetched = store.get("cred-unscoped").await.unwrap();
         assert_eq!(fetched.id, "cred-unscoped");
     }
@@ -335,10 +329,7 @@ mod tests {
         let cred = make_credential_with_owner("cred-5", "tenant-1");
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
 
-        let store = ScopeLayer::new(
-            inner,
-            Arc::new(FixedScope(Some("tenant-2".to_owned()))),
-        );
+        let store = ScopeLayer::new(inner, Arc::new(FixedScope(Some("tenant-2".to_owned()))));
         let update = make_credential("cred-5");
         let err = store.put(update, PutMode::Overwrite).await.unwrap_err();
         assert!(matches!(err, StoreError::NotFound { .. }));
@@ -350,10 +341,7 @@ mod tests {
         let cred = make_credential_with_owner("cred-6", "tenant-1");
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
 
-        let store = ScopeLayer::new(
-            inner,
-            Arc::new(FixedScope(Some("tenant-1".to_owned()))),
-        );
+        let store = ScopeLayer::new(inner, Arc::new(FixedScope(Some("tenant-1".to_owned()))));
         let mut update = make_credential("cred-6");
         update.data = b"updated-data".to_vec();
         let stored = store.put(update, PutMode::Overwrite).await.unwrap();
@@ -378,10 +366,7 @@ mod tests {
         let cred = make_credential_with_owner("cred-7", "tenant-1");
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
 
-        let store = ScopeLayer::new(
-            inner,
-            Arc::new(FixedScope(Some("tenant-2".to_owned()))),
-        );
+        let store = ScopeLayer::new(inner, Arc::new(FixedScope(Some("tenant-2".to_owned()))));
         let err = store.delete("cred-7").await.unwrap_err();
         assert!(matches!(err, StoreError::NotFound { .. }));
     }

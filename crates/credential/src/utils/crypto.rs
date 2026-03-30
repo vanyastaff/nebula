@@ -258,7 +258,10 @@ pub fn encrypt_with_aad(
 
     let nonce = nonce_generator().next();
 
-    let payload = Payload { msg: plaintext, aad };
+    let payload = Payload {
+        msg: plaintext,
+        aad,
+    };
 
     let ciphertext = cipher
         .encrypt(&nonce, payload)
