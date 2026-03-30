@@ -79,6 +79,10 @@ pub mod credential_trait;
 pub mod credentials;
 /// Typed pending state for interactive flows.
 pub mod pending;
+/// Pending state store trait for interactive credential flows.
+pub mod pending_store;
+/// Opaque token for pending interactive flows.
+pub mod pending_token;
 /// Resolve result types: interaction, refresh, test.
 pub mod resolve;
 /// Authentication scheme types.
@@ -148,10 +152,18 @@ pub use credential_trait::Credential;
 pub use credential_state::CredentialStateV2;
 
 // v2: Auth schemes
-pub use scheme::{ApiKeyAuth, BasicAuth, BearerToken, DatabaseAuth, OAuth2Token};
+pub use scheme::{
+    ApiKeyAuth, AwsAuth, BasicAuth, BearerToken, CertificateAuth, DatabaseAuth, HeaderAuth,
+    HmacSecret, KerberosAuth, LdapAuth, LdapBindMethod, LdapTlsMode, OAuth2Token, SamlAuth,
+    SshAuth, SshAuthMethod,
+};
 
 // v2: Pending state
 pub use pending::{NoPendingState, PendingState};
+
+// v2: Pending state store
+pub use pending_store::{PendingStateStore, PendingStoreError};
+pub use pending_token::PendingToken;
 
 // v2: Built-in credential implementations
 pub use credentials::{ApiKeyCredential, BasicAuthCredential, DatabaseCredential};
