@@ -20,4 +20,4 @@ Structured logging foundation for Nebula, built on `tracing` — single pipeline
 ## Relations
 - No nebula deps. Used by almost every crate. Wraps `tracing` macros — importing crates use `nebula_log::{info, debug, ...}` macros, not `tracing::` directly.
 
-<!-- reviewed: 2026-03-30 — Classify migration, no invariant changes -->
+<!-- reviewed: 2026-03-30 — derive Classify migration -->

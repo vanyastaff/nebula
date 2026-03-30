@@ -63,6 +63,6 @@ NotFound, Validation, Authentication, Authorization, Conflict, RateLimit, Timeou
 
 - Depends on: serde (optional), nebula-error-macros (optional); thiserror in dev-dependencies only
 - Depended on by: all 21 crates (Classify migration complete 2026-03-30)
-- nebula-memory is the first crate using `#[derive(Classify)]` — reference impl for migrating others
+- nebula-memory, nebula-log, nebula-telemetry use `#[derive(Classify)]` — reference impls for migrating others
 
 <!-- reviewed: 2026-03-30 (PartialEq<&str>, Classify re-export rename) -->
