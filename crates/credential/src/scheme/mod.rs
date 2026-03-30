@@ -9,6 +9,7 @@ mod aws;
 mod basic;
 mod bearer;
 mod certificate;
+mod coercion;
 mod database;
 mod header;
 mod hmac;
