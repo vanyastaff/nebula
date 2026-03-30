@@ -81,6 +81,8 @@ pub mod credentials;
 pub mod pending;
 /// Pending state store trait for interactive credential flows.
 pub mod pending_store;
+/// In-memory pending state store for testing and development.
+pub mod pending_store_memory;
 /// Opaque token for pending interactive flows.
 pub mod pending_token;
 /// Resolve result types: interaction, refresh, test.
@@ -163,6 +165,7 @@ pub use pending::{NoPendingState, PendingState};
 
 // v2: Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};
+pub use pending_store_memory::InMemoryPendingStore;
 pub use pending_token::PendingToken;
 
 // v2: Built-in credential implementations
