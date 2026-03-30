@@ -28,6 +28,7 @@ full = ["governor", "humantime"]
 tokio = { workspace = true, features = ["sync", "time"] }
 
 # Errors and serialization
+nebula-error = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 
@@ -39,7 +40,7 @@ tokio-util = { workspace = true, features = ["rt"] }
 fastrand = "2.3"
 tracing = { workspace = true }
 
-# No internal nebula deps — this crate is fully standalone
+# Only nebula-error — no other internal deps
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }

@@ -88,8 +88,7 @@ impl nebula_error::Classify for ActionError {
     }
 
     fn retry_hint(&self) -> Option<nebula_error::RetryHint> {
-        self.backoff_hint()
-            .map(nebula_error::RetryHint::after)
+        self.backoff_hint().map(nebula_error::RetryHint::after)
     }
 }
 

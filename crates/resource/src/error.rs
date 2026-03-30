@@ -194,8 +194,7 @@ impl nebula_error::Classify for Error {
     }
 
     fn retry_hint(&self) -> Option<nebula_error::RetryHint> {
-        self.retry_after()
-            .map(nebula_error::RetryHint::after)
+        self.retry_after().map(nebula_error::RetryHint::after)
     }
 }
 

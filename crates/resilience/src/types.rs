@@ -139,6 +139,40 @@ impl<E> CallError<E> {
     }
 }
 
+impl<E: nebula_error::Classify> nebula_error::Classify for CallError<E> {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::Operation(e) | Self::RetriesExhausted { last: e, .. } => e.category(),
+            Self::CircuitOpen | Self::LoadShed | Self::BulkheadFull => {
+                nebula_error::ErrorCategory::Exhausted
+            }
+            Self::Timeout(_) => nebula_error::ErrorCategory::Timeout,
+            Self::Cancelled { .. } => nebula_error::ErrorCategory::Cancelled,
+            Self::RateLimited { .. } => nebula_error::ErrorCategory::RateLimit,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        match self {
+            Self::Operation(e) | Self::RetriesExhausted { last: e, .. } => e.code(),
+            Self::CircuitOpen => nebula_error::ErrorCode::new("RESILIENCE:CIRCUIT_OPEN"),
+            Self::BulkheadFull => nebula_error::ErrorCode::new("RESILIENCE:BULKHEAD_FULL"),
+            Self::Timeout(_) => nebula_error::ErrorCode::new("RESILIENCE:TIMEOUT"),
+            Self::Cancelled { .. } => nebula_error::ErrorCode::new("RESILIENCE:CANCELLED"),
+            Self::LoadShed => nebula_error::ErrorCode::new("RESILIENCE:LOAD_SHED"),
+            Self::RateLimited { .. } => nebula_error::ErrorCode::new("RESILIENCE:RATE_LIMITED"),
+        }
+    }
+
+    fn is_retryable(&self) -> bool {
+        self.is_retriable()
+    }
+
+    fn retry_hint(&self) -> Option<nebula_error::RetryHint> {
+        self.retry_after().map(nebula_error::RetryHint::after)
+    }
+}
+
 /// Returned from pattern constructors when configuration is invalid.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("invalid resilience config: {message}")]
@@ -147,6 +181,16 @@ pub struct ConfigError {
     pub field: &'static str,
     /// Human-readable description of the validation error.
     pub message: String,
+}
+
+impl nebula_error::Classify for ConfigError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        nebula_error::ErrorCategory::Validation
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        nebula_error::ErrorCode::new("RESILIENCE:CONFIG")
+    }
 }
 
 impl ConfigError {
