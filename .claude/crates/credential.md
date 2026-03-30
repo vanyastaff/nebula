@@ -11,7 +11,7 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 - v2 coexists with v1. RPITIT, no `#[async_trait]`. `CredentialStateV2` keeps V2 suffix (v1 conflict).
 - `CredentialStore`/`CredentialRegistry` renamed from V2 suffixed names. Files: `credential_trait.rs`, `credential_handle.rs`, `credential_registry.rs`, `credential_store.rs`.
 - `CredentialHandle` uses `ArcSwap<S>` — `snapshot()` returns `Arc<S>`, `replace()` (pub(crate)) enables hot-swap by `RefreshCoordinator`. Clone creates independent `ArcSwap` with same underlying `Arc`.
-- `EncryptionLayer<S>` serializes `EncryptedData` as JSON bytes in `data` field.
+- `EncryptionLayer<S>` serializes `EncryptedData` as JSON bytes in `data` field. Uses credential ID as AAD (Additional Authenticated Data) in AES-256-GCM to prevent record-swapping. Decrypt falls back to no-AAD for backward compat with legacy data.
 - `AuditLayer<S>` logs credential access metadata (id, operation, result, timestamp) via pluggable `AuditSink` trait. Never sees plaintext — sits between `ScopeLayer` and `EncryptionLayer`. Uses `"*"` as credential_id for list ops. Maps `AlreadyExists`/`VersionConflict` to `AuditResult::Conflict`.
 - `CacheLayer<S>` wraps any `CredentialStore` with moka LRU+TTL cache. Caches **ciphertext** (sits below `EncryptionLayer`). Invalidates on put/delete. `list()` passes through uncached. `exists()` checks cache first.
 - `ScopeLayer<S>` outermost layer — multi-tenant isolation via `ScopeResolver` trait. Checks `metadata["owner_id"]` on get/delete, injects on put. `None` owner = admin bypass. Mismatch returns `NotFound` (no existence leak). `list()`/`exists()` pass through (backend filtering needed for full isolation).

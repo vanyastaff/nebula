@@ -6,7 +6,7 @@
 use crate::core::CryptoError;
 use aes_gcm::{
     Aes256Gcm,
-    aead::{Aead, KeyInit},
+    aead::{Aead, KeyInit, Payload},
 };
 use argon2::{Argon2, ParamsBuilder};
 use serde::{Deserialize, Serialize};
@@ -228,6 +228,102 @@ pub fn decrypt(key: &EncryptionKey, encrypted: &EncryptedData) -> Result<Vec<u8>
     Ok(plaintext)
 }
 
+/// Encrypt plaintext using AES-256-GCM with Additional Authenticated Data (AAD).
+///
+/// AAD binds the ciphertext to a context (e.g., credential ID), preventing
+/// record-swapping attacks where encrypted data is copied between records.
+/// The AAD is authenticated but not encrypted -- it must be provided again
+/// at decryption time for verification.
+///
+/// # Arguments
+///
+/// * `key` - Encryption key (256 bits)
+/// * `plaintext` - Data to encrypt
+/// * `aad` - Additional authenticated data (e.g., credential ID bytes)
+///
+/// # Returns
+///
+/// Encrypted data with nonce and authentication tag
+///
+/// # Errors
+///
+/// Returns `CryptoError::EncryptionFailed` if encryption fails
+pub fn encrypt_with_aad(
+    key: &EncryptionKey,
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<EncryptedData, CryptoError> {
+    let cipher = Aes256Gcm::new_from_slice(key.as_bytes())
+        .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
+
+    let nonce = nonce_generator().next();
+
+    let payload = Payload { msg: plaintext, aad };
+
+    let ciphertext = cipher
+        .encrypt(&nonce, payload)
+        .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
+
+    // Split ciphertext and tag (last 16 bytes)
+    let (ct, tag_slice) = ciphertext.split_at(ciphertext.len() - 16);
+    let mut tag = [0u8; 16];
+    tag.copy_from_slice(tag_slice);
+
+    let mut nonce_bytes = [0u8; 12];
+    nonce_bytes.copy_from_slice(nonce.as_slice());
+
+    Ok(EncryptedData::new(nonce_bytes, ct.to_vec(), tag))
+}
+
+/// Decrypt ciphertext using AES-256-GCM with Additional Authenticated Data (AAD).
+///
+/// The AAD provided must match the AAD used during encryption, otherwise
+/// decryption fails. This prevents record-swapping attacks.
+///
+/// # Arguments
+///
+/// * `key` - Encryption key (256 bits)
+/// * `encrypted` - Encrypted data with nonce and tag
+/// * `aad` - Additional authenticated data (must match what was used for encryption)
+///
+/// # Returns
+///
+/// Decrypted plaintext
+///
+/// # Errors
+///
+/// Returns `CryptoError::DecryptionFailed` if decryption fails or AAD mismatch
+/// Returns `CryptoError::UnsupportedVersion` if encryption version not supported
+pub fn decrypt_with_aad(
+    key: &EncryptionKey,
+    encrypted: &EncryptedData,
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    if !encrypted.is_supported_version() {
+        return Err(CryptoError::UnsupportedVersion(encrypted.version));
+    }
+
+    let cipher =
+        Aes256Gcm::new_from_slice(key.as_bytes()).map_err(|_| CryptoError::DecryptionFailed)?;
+
+    let nonce = aes_gcm::Nonce::from_slice(&encrypted.nonce);
+
+    // Combine ciphertext and tag for decryption
+    let mut ciphertext_with_tag = encrypted.ciphertext.clone();
+    ciphertext_with_tag.extend_from_slice(&encrypted.tag);
+
+    let payload = Payload {
+        msg: ciphertext_with_tag.as_ref(),
+        aad,
+    };
+
+    let plaintext = cipher
+        .decrypt(nonce, payload)
+        .map_err(|_| CryptoError::DecryptionFailed)?;
+
+    Ok(plaintext)
+}
+
 // ============================================================================
 // OAuth2/PKCE Utilities
 // ============================================================================
@@ -332,6 +428,53 @@ mod tests {
         // With extremely high probability, random components should differ
         // (collision probability is 1 in 2^32 = 1 in 4.3 billion)
         assert_ne!(random1, random2);
+    }
+
+    // ========================================================================
+    // AAD Encryption Tests
+    // ========================================================================
+
+    #[test]
+    fn encrypt_with_aad_round_trips() {
+        let key = EncryptionKey::from_bytes([0x42; 32]);
+        let plaintext = b"hello world";
+        let aad = b"credential-id-1";
+
+        let encrypted = encrypt_with_aad(&key, plaintext, aad).unwrap();
+        let decrypted = decrypt_with_aad(&key, &encrypted, aad).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn decrypt_with_wrong_aad_fails() {
+        let key = EncryptionKey::from_bytes([0x42; 32]);
+        let plaintext = b"hello world";
+
+        let encrypted = encrypt_with_aad(&key, plaintext, b"cred-1").unwrap();
+        let result = decrypt_with_aad(&key, &encrypted, b"cred-2");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decrypt_aad_data_without_aad_fails() {
+        let key = EncryptionKey::from_bytes([0x42; 32]);
+        let plaintext = b"hello world";
+
+        // Encrypt with AAD, try to decrypt without
+        let encrypted = encrypt_with_aad(&key, plaintext, b"cred-1").unwrap();
+        let result = decrypt(&key, &encrypted);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decrypt_no_aad_data_with_aad_fails() {
+        let key = EncryptionKey::from_bytes([0x42; 32]);
+        let plaintext = b"hello world";
+
+        // Encrypt without AAD, try to decrypt with AAD
+        let encrypted = encrypt(&key, plaintext).unwrap();
+        let result = decrypt_with_aad(&key, &encrypted, b"cred-1");
+        assert!(result.is_err());
     }
 
     // ========================================================================

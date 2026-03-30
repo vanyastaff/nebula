@@ -1,9 +1,13 @@
 //! Encryption layer -- encrypts data before storage, decrypts after retrieval.
 //!
 //! Wraps any [`CredentialStore`] implementation and applies AES-256-GCM
-//! encryption to the [`StoredCredential::data`] field using the existing
-//! [`encrypt`](crate::utils::crypto::encrypt) / [`decrypt`](crate::utils::crypto::decrypt)
-//! functions. Non-data fields (metadata, version, etc.) pass through unchanged.
+//! encryption to the [`StoredCredential::data`] field. The credential ID is
+//! bound as Additional Authenticated Data (AAD), preventing record-swapping
+//! attacks where encrypted data from one credential is copied to another.
+//!
+//! For backward compatibility, decryption falls back to no-AAD mode if
+//! AAD-based decryption fails, allowing legacy data to be read transparently.
+//! New writes always use AAD binding.
 
 use std::sync::Arc;
 
@@ -36,7 +40,7 @@ impl<S> EncryptionLayer<S> {
 impl<S: CredentialStore> CredentialStore for EncryptionLayer<S> {
     async fn get(&self, id: &str) -> Result<StoredCredential, StoreError> {
         let mut credential = self.inner.get(id).await?;
-        credential.data = decrypt_data(&self.key, &credential.data)?;
+        credential.data = decrypt_data(&self.key, &credential.data, id)?;
         Ok(credential)
     }
 
@@ -45,10 +49,11 @@ impl<S: CredentialStore> CredentialStore for EncryptionLayer<S> {
         mut credential: StoredCredential,
         mode: PutMode,
     ) -> Result<StoredCredential, StoreError> {
-        credential.data = encrypt_data(&self.key, &credential.data)?;
+        let id = credential.id.clone();
+        credential.data = encrypt_data(&self.key, &credential.data, &id)?;
         let mut stored = self.inner.put(credential, mode).await?;
         // Return with plaintext data so callers see what they stored
-        stored.data = decrypt_data(&self.key, &stored.data)?;
+        stored.data = decrypt_data(&self.key, &stored.data, &id)?;
         Ok(stored)
     }
 
@@ -65,17 +70,33 @@ impl<S: CredentialStore> CredentialStore for EncryptionLayer<S> {
     }
 }
 
-/// Encrypt plaintext data, serializing the [`EncryptedData`] envelope to bytes.
-fn encrypt_data(key: &EncryptionKey, plaintext: &[u8]) -> Result<Vec<u8>, StoreError> {
-    let encrypted =
-        crypto::encrypt(key, plaintext).map_err(|e| StoreError::Backend(Box::new(e)))?;
+/// Encrypt plaintext data with the credential ID as AAD, serializing the
+/// [`EncryptedData`](crypto::EncryptedData) envelope to bytes.
+///
+/// The credential ID is bound as Additional Authenticated Data (AAD),
+/// preventing record-swapping attacks where encrypted data from one
+/// credential is copied to another.
+fn encrypt_data(key: &EncryptionKey, plaintext: &[u8], id: &str) -> Result<Vec<u8>, StoreError> {
+    let encrypted = crypto::encrypt_with_aad(key, plaintext, id.as_bytes())
+        .map_err(|e| StoreError::Backend(Box::new(e)))?;
     serde_json::to_vec(&encrypted).map_err(|e| StoreError::Backend(Box::new(e)))
 }
 
-/// Deserialize an [`EncryptedData`] envelope and decrypt.
-fn decrypt_data(key: &EncryptionKey, ciphertext: &[u8]) -> Result<Vec<u8>, StoreError> {
+/// Deserialize an [`EncryptedData`](crypto::EncryptedData) envelope and decrypt.
+///
+/// Tries decryption with AAD (current format) first, then falls back to
+/// no-AAD decryption for backward compatibility with data encrypted before
+/// AAD binding was introduced.
+fn decrypt_data(key: &EncryptionKey, ciphertext: &[u8], id: &str) -> Result<Vec<u8>, StoreError> {
     let encrypted: crypto::EncryptedData =
         serde_json::from_slice(ciphertext).map_err(|e| StoreError::Backend(Box::new(e)))?;
+
+    // Try with AAD first (current format)
+    if let Ok(data) = crypto::decrypt_with_aad(key, &encrypted, id.as_bytes()) {
+        return Ok(data);
+    }
+
+    // Fall back to no-AAD decryption (legacy format)
     crypto::decrypt(key, &encrypted).map_err(|e| StoreError::Backend(Box::new(e)))
 }
 
@@ -143,6 +164,59 @@ mod tests {
 
         store.delete("enc-3").await.unwrap();
         assert!(!store.exists("enc-3").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn aad_prevents_record_swapping() {
+        let inner = InMemoryStore::new();
+        let key = test_key();
+        let store = EncryptionLayer::new(inner.clone(), key);
+
+        let cred = make_credential("cred-1", b"secret-data");
+        store.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        // Read raw encrypted data from inner store and insert it under a different ID
+        let raw = inner.get("cred-1").await.unwrap();
+        let swapped = StoredCredential {
+            id: "cred-2".into(),
+            ..raw
+        };
+        inner.put(swapped, PutMode::CreateOnly).await.unwrap();
+
+        // Reading cred-2 through the encryption layer should fail because
+        // the AAD (credential ID) doesn't match
+        let err = store.get("cred-2").await.unwrap_err();
+        assert!(matches!(err, StoreError::Backend(_)));
+    }
+
+    #[tokio::test]
+    async fn legacy_data_without_aad_still_readable() {
+        let inner = InMemoryStore::new();
+        let key = test_key();
+
+        // Simulate legacy write: encrypt without AAD and store directly
+        let plaintext = b"legacy-secret";
+        let encrypted =
+            crate::utils::crypto::encrypt(&key, plaintext).unwrap();
+        let encrypted_bytes = serde_json::to_vec(&encrypted).unwrap();
+
+        let cred = StoredCredential {
+            id: "legacy-1".into(),
+            data: encrypted_bytes,
+            state_kind: "test".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: None,
+            metadata: Default::default(),
+        };
+        inner.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        // Read through encryption layer -- should fall back to no-AAD decrypt
+        let store = EncryptionLayer::new(inner, key);
+        let fetched = store.get("legacy-1").await.unwrap();
+        assert_eq!(fetched.data, b"legacy-secret");
     }
 
     #[tokio::test]
