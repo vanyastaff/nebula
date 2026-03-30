@@ -19,7 +19,7 @@ nebula-workflow = { path = "../workflow" }
 nebula-parameter = { path = "../parameter" }
 nebula-credential = { path = "../credential" }
 nebula-plugin = { path = "../plugin" }
-nebula-macros = { path = "../macros" }
+nebula-macros = { path = "macros" }
 nebula-validator = { path = "../validator" }
 
 # Async runtime

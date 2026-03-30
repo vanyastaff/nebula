@@ -29,4 +29,3 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 
 <!-- reviewed: 2026-03-30 -->
-<!-- reviewed: 2026-03-30 -->
