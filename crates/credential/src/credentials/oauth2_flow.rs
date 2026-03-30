@@ -1,0 +1,535 @@
+//! OAuth2 HTTP helpers for token exchange, device code polling, and refresh.
+//!
+//! Extracted from the v1 `FlowProtocol` implementation. All functions use
+//! v2 error types ([`CredentialError::Provider`] / [`CredentialError::InvalidInput`])
+//! and operate on the v2 [`OAuth2State`](super::oauth2::OAuth2State).
+
+use std::time::Duration;
+
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use chrono::Utc;
+use serde_json::Value;
+
+use crate::core::CredentialError;
+use crate::protocols::oauth2::config::{AuthStyle, OAuth2Config};
+
+use super::oauth2::OAuth2State;
+
+/// HTTP request timeout for OAuth2 token exchanges.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Build the authorization URL for the Authorization Code grant.
+///
+/// Uses [`url::Url`] query encoding so special characters in `client_id`
+/// or scope values are always properly percent-encoded.
+pub(crate) fn build_auth_url(
+    config: &OAuth2Config,
+    client_id: &str,
+) -> Result<String, CredentialError> {
+    let mut url = url::Url::parse(&config.auth_url)
+        .map_err(|e| provider_error(format!("invalid auth_url: {e}")))?;
+
+    {
+        let mut q = url.query_pairs_mut();
+        q.append_pair("response_type", "code");
+        q.append_pair("client_id", client_id);
+
+        if !config.scopes.is_empty() {
+            q.append_pair("scope", &config.scopes.join(" "));
+        }
+
+        if config.pkce {
+            q.append_pair("code_challenge_method", "S256");
+        }
+    }
+
+    Ok(url.to_string())
+}
+
+/// Exchange client credentials for an access token (Client Credentials grant).
+pub(crate) async fn exchange_client_credentials(
+    config: &OAuth2Config,
+    client_id: &str,
+    client_secret: &str,
+) -> Result<OAuth2State, CredentialError> {
+    let client = reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| provider_error(format!("failed to build HTTP client: {e}")))?;
+
+    let mut form: Vec<(&str, String)> = vec![("grant_type", "client_credentials".into())];
+
+    if !config.scopes.is_empty() {
+        form.push(("scope", config.scopes.join(" ")));
+    }
+
+    let mut req = client.post(&config.token_url);
+
+    match config.auth_style {
+        AuthStyle::Header => {
+            let credentials = BASE64.encode(format!("{client_id}:{client_secret}"));
+            req = req
+                .header("Authorization", format!("Basic {credentials}"))
+                .form(&form);
+        }
+        AuthStyle::PostBody => {
+            form.push(("client_id", client_id.to_owned()));
+            form.push(("client_secret", client_secret.to_owned()));
+            req = req.form(&form);
+        }
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| provider_error(format!("client credentials exchange failed: {e}")))?;
+
+    let body: Value = parse_token_response(resp).await?;
+    state_from_token_response(&body, &config.scopes, client_id, client_secret, &config.token_url)
+}
+
+/// Exchange authorization code for access token (Authorization Code grant).
+pub(crate) async fn exchange_authorization_code(
+    config: &OAuth2Config,
+    client_id: &str,
+    client_secret: &str,
+    code: &str,
+) -> Result<OAuth2State, CredentialError> {
+    let client = reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| provider_error(format!("failed to build HTTP client: {e}")))?;
+
+    let form = vec![
+        ("grant_type", "authorization_code"),
+        ("code", code),
+        ("client_id", client_id),
+        ("client_secret", client_secret),
+    ];
+
+    let mut req = client.post(&config.token_url);
+    match config.auth_style {
+        AuthStyle::Header => {
+            let credentials = BASE64.encode(format!("{client_id}:{client_secret}"));
+            req = req.header("Authorization", format!("Basic {credentials}"));
+        }
+        AuthStyle::PostBody => {}
+    }
+    let resp = req
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| provider_error(format!("authorization code exchange failed: {e}")))?;
+
+    let body: Value = parse_token_response(resp).await?;
+    state_from_token_response(&body, &config.scopes, client_id, client_secret, &config.token_url)
+}
+
+/// Device code response from authorization server (RFC 8628).
+pub(crate) struct DeviceCodeResponse {
+    /// The device code for polling.
+    pub device_code: String,
+    /// The user code to display.
+    pub user_code: String,
+    /// URL where the user enters the code.
+    pub verification_url: String,
+    /// Seconds until the device code expires.
+    pub expires_in: Option<u64>,
+    /// Polling interval in seconds.
+    pub interval: u64,
+}
+
+/// Request a device code from the authorization server (Device Code grant).
+pub(crate) async fn request_device_code(
+    config: &OAuth2Config,
+    client_id: &str,
+) -> Result<DeviceCodeResponse, CredentialError> {
+    let client = reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| provider_error(format!("failed to build HTTP client: {e}")))?;
+
+    let mut form = vec![("client_id", client_id.to_owned())];
+    if !config.scopes.is_empty() {
+        form.push(("scope", config.scopes.join(" ")));
+    }
+
+    let resp = client
+        .post(&config.auth_url)
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| provider_error(format!("device code request failed: {e}")))?;
+
+    let body: Value = parse_token_response(resp).await?;
+
+    let user_code = body
+        .get("user_code")
+        .and_then(Value::as_str)
+        .ok_or_else(|| provider_error("device code response missing 'user_code'".into()))?
+        .to_owned();
+
+    // RFC 8628 uses "verification_uri", but some providers use "verification_url".
+    let verification_url = body
+        .get("verification_uri")
+        .or_else(|| body.get("verification_url"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| provider_error("device code response missing 'verification_uri'".into()))?
+        .to_owned();
+
+    let expires_in = body.get("expires_in").and_then(Value::as_u64);
+    // RFC 8628: default 5 seconds
+    let interval = body.get("interval").and_then(Value::as_u64).unwrap_or(5);
+
+    let device_code = body
+        .get("device_code")
+        .and_then(Value::as_str)
+        .ok_or_else(|| provider_error("device code response missing 'device_code'".into()))?
+        .to_owned();
+
+    Ok(DeviceCodeResponse {
+        device_code,
+        user_code,
+        verification_url,
+        expires_in,
+        interval,
+    })
+}
+
+/// Poll token endpoint for device code grant (RFC 8628).
+///
+/// Waits `interval_secs` before polling. Returns the completed state on
+/// success, or a `CredentialError::Provider` whose message contains
+/// `"authorization_pending"`, `"slow_down"`, or `"expired_token"` on
+/// expected device-flow errors.
+pub(crate) async fn poll_device_code(
+    config: &OAuth2Config,
+    client_id: &str,
+    client_secret: &str,
+    device_code: &str,
+    interval_secs: u64,
+) -> Result<OAuth2State, CredentialError> {
+    tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+
+    let client = reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| provider_error(format!("failed to build HTTP client: {e}")))?;
+
+    let form = vec![
+        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+        ("device_code", device_code),
+        ("client_id", client_id),
+        ("client_secret", client_secret),
+    ];
+
+    let resp = client
+        .post(&config.token_url)
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| provider_error(format!("device code poll failed: {e}")))?;
+
+    let status = resp.status();
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| provider_error(format!("failed to parse device poll response: {e}")))?;
+
+    if status.is_success() {
+        state_from_token_response(
+            &body,
+            &config.scopes,
+            client_id,
+            client_secret,
+            &config.token_url,
+        )
+    } else {
+        let error = body
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        Err(provider_error(format!("device code poll error: {error}")))
+    }
+}
+
+/// Refresh an OAuth2 access token using the stored refresh token.
+///
+/// Mutates `state` in place: updates `access_token`, `expires_at`, and
+/// optionally `refresh_token` and `token_type` from the response.
+///
+/// # Errors
+///
+/// Returns `CredentialError::Provider` if no `refresh_token` is available
+/// or if the HTTP request fails.
+pub(crate) async fn refresh_token(
+    state: &mut OAuth2State,
+    config: &OAuth2Config,
+) -> Result<(), CredentialError> {
+    let refresh_tok = state
+        .refresh_token
+        .as_deref()
+        .ok_or_else(|| provider_error("no refresh_token available for token refresh".into()))?;
+
+    let mut form = vec![
+        ("grant_type".to_owned(), "refresh_token".to_owned()),
+        ("refresh_token".to_owned(), refresh_tok.to_owned()),
+    ];
+
+    if !config.scopes.is_empty() {
+        form.push(("scope".to_owned(), config.scopes.join(" ")));
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| provider_error(format!("failed to build HTTP client: {e}")))?;
+
+    let resp = client
+        .post(&config.token_url)
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| provider_error(format!("refresh token request failed: {e}")))?;
+
+    let body: Value = parse_token_response(resp).await?;
+    update_state_from_token_response(state, &body);
+    Ok(())
+}
+
+// ── Internal helpers ────────────────────────────────────────────────────
+
+/// Parse an HTTP response as a JSON token response.
+///
+/// Returns an error if the HTTP status is not 2xx or the body is not valid JSON.
+async fn parse_token_response(resp: reqwest::Response) -> Result<Value, CredentialError> {
+    let status = resp.status();
+    if !status.is_success() {
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(provider_error(format!(
+            "token endpoint returned {status}: {body_text}"
+        )));
+    }
+    resp.json::<Value>()
+        .await
+        .map_err(|e| provider_error(format!("failed to parse token response: {e}")))
+}
+
+/// Build an [`OAuth2State`] from a token endpoint JSON response.
+///
+/// Falls back to `default_scopes` when the response does not include `scope`.
+/// Embeds `client_id`, `client_secret`, and `token_url` for later refresh.
+fn state_from_token_response(
+    body: &Value,
+    default_scopes: &[String],
+    client_id: &str,
+    client_secret: &str,
+    token_url: &str,
+) -> Result<OAuth2State, CredentialError> {
+    let access_token = body
+        .get("access_token")
+        .and_then(Value::as_str)
+        .ok_or_else(|| provider_error("token response missing 'access_token'".into()))?
+        .to_owned();
+
+    let token_type = body
+        .get("token_type")
+        .and_then(Value::as_str)
+        .unwrap_or("Bearer")
+        .to_owned();
+
+    let refresh_token = body
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    let expires_at = body
+        .get("expires_in")
+        .and_then(Value::as_u64)
+        .map(|secs| Utc::now() + chrono::Duration::seconds(secs as i64));
+
+    let scopes = body
+        .get("scope")
+        .and_then(Value::as_str)
+        .map(|s| s.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_else(|| default_scopes.to_vec());
+
+    Ok(OAuth2State {
+        access_token,
+        token_type,
+        refresh_token,
+        expires_at,
+        scopes,
+        client_id: client_id.to_owned(),
+        client_secret: client_secret.to_owned(),
+        token_url: token_url.to_owned(),
+    })
+}
+
+/// Update an existing [`OAuth2State`] from a refresh token response.
+///
+/// Only overwrites fields present in the response. A missing `refresh_token`
+/// preserves the existing one (per RFC 6749 Section 6).
+fn update_state_from_token_response(state: &mut OAuth2State, body: &Value) {
+    if let Some(token) = body.get("access_token").and_then(Value::as_str) {
+        state.access_token = token.to_owned();
+    }
+    if let Some(tt) = body.get("token_type").and_then(Value::as_str) {
+        state.token_type = tt.to_owned();
+    }
+    if let Some(rt) = body.get("refresh_token").and_then(Value::as_str) {
+        state.refresh_token = Some(rt.to_owned());
+    }
+    if let Some(secs) = body.get("expires_in").and_then(Value::as_u64) {
+        state.expires_at = Some(Utc::now() + chrono::Duration::seconds(secs as i64));
+    }
+    if let Some(scope) = body.get("scope").and_then(Value::as_str) {
+        state.scopes = scope.split_whitespace().map(str::to_owned).collect();
+    }
+}
+
+/// Build a `CredentialError::Provider` from an HTTP/network-related message.
+fn provider_error(message: String) -> CredentialError {
+    CredentialError::Provider(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_auth_url_includes_pkce() {
+        let config = OAuth2Config::authorization_code()
+            .auth_url("https://example.com/auth")
+            .token_url("https://example.com/token")
+            .pkce(true)
+            .build();
+
+        let url = build_auth_url(&config, "cid").unwrap();
+        assert!(url.contains("code_challenge_method=S256"));
+    }
+
+    #[test]
+    fn build_auth_url_without_scopes() {
+        let config = OAuth2Config::authorization_code()
+            .auth_url("https://example.com/auth")
+            .token_url("https://example.com/token")
+            .build();
+
+        let url = build_auth_url(&config, "cid").unwrap();
+        assert!(!url.contains("scope="));
+        assert!(url.contains("response_type=code"));
+        assert!(url.contains("client_id=cid"));
+    }
+
+    #[test]
+    fn build_auth_url_with_scopes() {
+        let config = OAuth2Config::authorization_code()
+            .auth_url("https://example.com/auth")
+            .token_url("https://example.com/token")
+            .scopes(["read", "write"])
+            .build();
+
+        let url = build_auth_url(&config, "cid").unwrap();
+        assert!(url.contains("scope=read+write"));
+    }
+
+    #[test]
+    fn state_from_token_response_parses_full() {
+        let body = serde_json::json!({
+            "access_token": "tok_123",
+            "token_type": "Bearer",
+            "refresh_token": "ref_456",
+            "expires_in": 3600,
+            "scope": "read write"
+        });
+
+        let state =
+            state_from_token_response(&body, &[], "cid", "csecret", "https://t.com/token")
+                .unwrap();
+        assert_eq!(state.access_token, "tok_123");
+        assert_eq!(state.token_type, "Bearer");
+        assert_eq!(state.refresh_token.as_deref(), Some("ref_456"));
+        assert!(state.expires_at.is_some());
+        assert_eq!(state.scopes, vec!["read", "write"]);
+        assert_eq!(state.client_id, "cid");
+        assert_eq!(state.client_secret, "csecret");
+        assert_eq!(state.token_url, "https://t.com/token");
+    }
+
+    #[test]
+    fn state_from_token_response_uses_default_scopes() {
+        let body = serde_json::json!({
+            "access_token": "tok_123"
+        });
+
+        let defaults = vec!["read".to_owned()];
+        let state =
+            state_from_token_response(&body, &defaults, "cid", "csecret", "https://t.com/token")
+                .unwrap();
+        assert_eq!(state.scopes, vec!["read"]);
+        assert_eq!(state.token_type, "Bearer");
+    }
+
+    #[test]
+    fn update_state_preserves_existing_refresh_token() {
+        let mut state = OAuth2State {
+            access_token: "old".into(),
+            token_type: "Bearer".into(),
+            refresh_token: Some("keep_me".into()),
+            expires_at: None,
+            scopes: vec![],
+            client_id: "cid".into(),
+            client_secret: "cs".into(),
+            token_url: "https://t.com/token".into(),
+        };
+
+        let body = serde_json::json!({
+            "access_token": "new_tok"
+        });
+
+        update_state_from_token_response(&mut state, &body);
+        assert_eq!(state.access_token, "new_tok");
+        assert_eq!(state.refresh_token.as_deref(), Some("keep_me"));
+    }
+
+    #[test]
+    fn update_state_replaces_all_fields() {
+        let mut state = OAuth2State {
+            access_token: "old".into(),
+            token_type: "Bearer".into(),
+            refresh_token: Some("old_rt".into()),
+            expires_at: None,
+            scopes: vec!["read".into()],
+            client_id: "cid".into(),
+            client_secret: "cs".into(),
+            token_url: "https://t.com/token".into(),
+        };
+
+        let body = serde_json::json!({
+            "access_token": "new_tok",
+            "token_type": "mac",
+            "refresh_token": "new_rt",
+            "expires_in": 1800,
+            "scope": "write"
+        });
+
+        update_state_from_token_response(&mut state, &body);
+        assert_eq!(state.access_token, "new_tok");
+        assert_eq!(state.token_type, "mac");
+        assert_eq!(state.refresh_token.as_deref(), Some("new_rt"));
+        assert!(state.expires_at.is_some());
+        assert_eq!(state.scopes, vec!["write"]);
+    }
+
+    #[test]
+    fn invalid_auth_url_returns_error() {
+        let config = OAuth2Config::authorization_code()
+            .auth_url("not a url")
+            .token_url("https://t.com/token")
+            .build();
+
+        let result = build_auth_url(&config, "cid");
+        assert!(result.is_err());
+    }
+}

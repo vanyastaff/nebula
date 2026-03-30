@@ -8,11 +8,14 @@ pub mod api_key;
 pub mod basic_auth;
 pub mod database;
 pub mod header_auth;
+pub mod oauth2;
+pub mod oauth2_flow;
 
 pub use api_key::ApiKeyCredential;
 pub use basic_auth::BasicAuthCredential;
 pub use database::DatabaseCredential;
 pub use header_auth::HeaderAuthCredential;
+pub use oauth2::{OAuth2Credential, OAuth2Pending, OAuth2State};
 
 // ── identity_state! invocations ─────────────────────────────────────────
 //

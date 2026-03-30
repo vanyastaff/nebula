@@ -176,7 +176,9 @@ pub use pending_token::PendingToken;
 // v2: Built-in credential implementations
 pub use credentials::{
     ApiKeyCredential, BasicAuthCredential, DatabaseCredential, HeaderAuthCredential,
+    OAuth2Credential, OAuth2Pending,
 };
+pub use credentials::OAuth2State as OAuth2StateV2;
 
 // v2: Typed handle
 pub use credential_handle::CredentialHandle;
