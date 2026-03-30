@@ -209,15 +209,15 @@ pub trait CredentialType: Send + Sync + 'static {
 }
 
 pub trait StaticProtocol: Send + Sync + 'static {
-    type State: Send + Sync + Clone + 'static;
+    type Scheme: Clone + Send + Sync + 'static;
 
     fn parameters() -> crate::collection::ParameterCollection
     where
         Self: Sized;
 
-    fn build_state(
+    fn build(
         values: &crate::values::ParameterValues,
-    ) -> Result<Self::State, crate::core::CredentialError>
+    ) -> ::std::result::Result<Self::Scheme, crate::core::CredentialError>
     where
         Self: Sized;
 }
@@ -562,3 +562,60 @@ pub mod collection {
         }
     }
 }
+
+// ── v2 Credential trait stubs ─────────────────────────────────────────────
+
+/// Stub `NoPendingState` for proc-macro tests.
+pub struct NoPendingState;
+
+/// Stub `CredentialContext` re-export at crate root.
+pub use crate::core::CredentialContext;
+
+/// Stub `CredentialError` re-export at crate root.
+pub use crate::core::CredentialError;
+
+/// Stub `CredentialDescription` re-export at crate root.
+pub use crate::core::CredentialDescription;
+
+pub mod resolve {
+    pub enum ResolveResult<S, P = crate::NoPendingState> {
+        Complete(S),
+        _Pending(P),
+    }
+
+    pub type StaticResolveResult<S> = ResolveResult<S, crate::NoPendingState>;
+}
+
+/// Stub v2 `Credential` trait for proc-macro tests.
+pub trait Credential: Send + Sync + 'static {
+    type Scheme: Clone + Send + Sync + 'static;
+    type State: Clone + Send + Sync + 'static;
+    type Pending;
+
+    const KEY: &'static str;
+
+    fn description() -> crate::core::CredentialDescription
+    where
+        Self: Sized;
+
+    fn parameters() -> crate::collection::ParameterCollection
+    where
+        Self: Sized;
+
+    fn project(state: &Self::State) -> Self::Scheme
+    where
+        Self: Sized;
+
+    fn resolve(
+        values: &crate::values::ParameterValues,
+        ctx: &crate::core::CredentialContext,
+    ) -> impl ::std::future::Future<
+        Output = ::std::result::Result<
+            crate::resolve::StaticResolveResult<Self::Scheme>,
+            crate::core::CredentialError,
+        >,
+    > + ::std::marker::Send
+    where
+        Self: Sized;
+}
+

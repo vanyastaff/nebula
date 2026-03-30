@@ -152,7 +152,17 @@ pub fn derive_plugin(input: TokenStream) -> TokenStream {
     plugin::derive(input)
 }
 
-/// Derive macro for the `Credential` trait.
+/// Derive macro for the v2 `Credential` trait.
+///
+/// Generates a full [`Credential`] impl for static (non-interactive)
+/// credentials backed by a [`StaticProtocol`]. The generated impl uses
+/// `State = Scheme` (identity path), `Pending = NoPendingState`, and
+/// all capability flags default to `false`.
+///
+/// # Requirements
+///
+/// The `Scheme` type must have an `identity_state!(SchemeType, "kind", version)`
+/// invocation so that `CredentialState` is implemented with `State = Scheme`.
 ///
 /// # Attributes
 ///
@@ -160,33 +170,26 @@ pub fn derive_plugin(input: TokenStream) -> TokenStream {
 ///
 /// - `key = "..."` - Unique credential type key (required)
 /// - `name = "..."` - Human-readable name (required)
-/// - `description = "..."` - Short description (required)
-/// - `input = Type` - Input type for initialization (required)
-/// - `state = Type` - State type for persistence (required)
+/// - `scheme = Type` - Auth scheme type, also used as `State` (required)
+/// - `protocol = Type` - `StaticProtocol` impl for `parameters()` and `build()` (required)
+/// - `icon = "..."` - Icon identifier for UI (optional)
+/// - `doc_url = "..."` - Documentation URL (optional)
 ///
 /// # Example
 ///
 /// ```ignore
+/// use nebula_credential::{Credential, StaticProtocol};
+/// use nebula_macros::Credential;
+///
 /// #[derive(Credential)]
 /// #[credential(
-///     key = "api_key",
-///     name = "API Key",
-///     description = "Simple API key authentication",
-///     input = ApiKeyInput,
-///     state = ApiKeyState
+///     key = "postgres",
+///     name = "PostgreSQL",
+///     scheme = DatabaseAuth,
+///     protocol = DatabaseProtocol,
+///     icon = "postgres",
 /// )]
-/// pub struct ApiKeyCredential;
-///
-/// #[derive(Serialize, Deserialize)]
-/// pub struct ApiKeyInput {
-///     pub key: String,
-/// }
-///
-/// #[derive(Clone, Serialize, Deserialize)]
-/// pub struct ApiKeyState {
-///     pub key: String,
-///     pub created_at: DateTime<Utc>,
-/// }
+/// pub struct PostgresCredential;
 /// ```
 #[proc_macro_derive(Credential, attributes(credential, oauth2, ldap))]
 pub fn derive_credential(input: TokenStream) -> TokenStream {

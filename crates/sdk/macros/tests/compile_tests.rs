@@ -29,11 +29,11 @@ fn test_resource_derive() {
     t.pass("tests/ui/resource_pass.rs");
 }
 
-// TODO(v2): Re-enable when #[derive(Credential)] is rewritten for v2 Credential trait.
-// #[test]
-// fn test_credential_derive() { ... }
-// #[test]
-// fn test_credential_flow_derive() { ... }
+#[test]
+fn test_credential_derive() {
+    let t = trybuild::TestCases::new();
+    t.pass("tests/ui/credential_pass.rs");
+}
 
 #[test]
 fn test_parameters_derive() {
