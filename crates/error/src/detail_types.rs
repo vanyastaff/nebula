@@ -201,6 +201,96 @@ pub struct PreconditionViolation {
     pub description: String,
 }
 
+/// Execution context identifying where in a workflow an error occurred.
+///
+/// Attach this to errors that originate during workflow execution so
+/// that error handlers, loggers, and monitoring can correlate failures
+/// back to specific nodes and runs.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_error::{ErrorDetails, ExecutionContext};
+///
+/// let mut details = ErrorDetails::new();
+/// details.insert(ExecutionContext {
+///     node_id: Some("http-fetch-1".into()),
+///     workflow_id: Some("wf-daily-report".into()),
+///     correlation_id: Some("req-abc-123".into()),
+///     attempt: Some(2),
+/// });
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionContext {
+    /// The node that produced this error, if known.
+    pub node_id: Option<String>,
+    /// The workflow run that this error belongs to.
+    pub workflow_id: Option<String>,
+    /// A correlation ID for distributed tracing (e.g. OTel trace ID).
+    pub correlation_id: Option<String>,
+    /// The retry attempt number (1-based), if this is a retried operation.
+    pub attempt: Option<u32>,
+}
+
+impl ErrorDetail for ExecutionContext {}
+
+/// Routing hint for error-edge traversal in workflow DAGs.
+///
+/// When a node fails and the DAG has error edges, this detail tells
+/// the engine which error handler to route to, or whether the error
+/// should go to a dead letter queue.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_error::{ErrorDetails, ErrorRoute};
+///
+/// let mut details = ErrorDetails::new();
+/// details.insert(ErrorRoute {
+///     suggested_handler: Some("alert-oncall".into()),
+///     dead_letter: false,
+/// });
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorRoute {
+    /// Name/ID of the suggested error handler node.
+    pub suggested_handler: Option<String>,
+    /// Whether this error should be routed to the dead letter queue.
+    pub dead_letter: bool,
+}
+
+impl ErrorDetail for ErrorRoute {}
+
+/// Type mismatch between connected DAG nodes.
+///
+/// Attached when a type validation check detects that an upstream
+/// node's output type doesn't match a downstream node's expected
+/// input type. This prevents silent casts and data corruption.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_error::{ErrorDetails, TypeMismatch};
+///
+/// let mut details = ErrorDetails::new();
+/// details.insert(TypeMismatch {
+///     expected: "u64".into(),
+///     actual: "f64".into(),
+///     location: Some("edge: fetch → transform".into()),
+/// });
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeMismatch {
+    /// The expected type name.
+    pub expected: String,
+    /// The actual type name.
+    pub actual: String,
+    /// Where in the DAG this mismatch was detected.
+    pub location: Option<String>,
+}
+
+impl ErrorDetail for TypeMismatch {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,5 +365,63 @@ mod tests {
         assert!(details.has::<ResourceInfo>());
         assert!(details.has::<QuotaInfo>());
         assert_eq!(details.len(), 3);
+    }
+
+    #[test]
+    fn execution_context_stored_and_retrieved() {
+        let mut details = ErrorDetails::new();
+        details.insert(ExecutionContext {
+            node_id: Some("http-fetch-1".into()),
+            workflow_id: Some("wf-daily-report".into()),
+            correlation_id: Some("req-abc-123".into()),
+            attempt: Some(2),
+        });
+
+        let ctx = details.get::<ExecutionContext>().unwrap();
+        assert_eq!(ctx.node_id.as_deref(), Some("http-fetch-1"));
+        assert_eq!(ctx.attempt, Some(2));
+    }
+
+    #[test]
+    fn error_route_stored_and_retrieved() {
+        let mut details = ErrorDetails::new();
+        details.insert(ErrorRoute {
+            suggested_handler: Some("retry-with-backoff".into()),
+            dead_letter: false,
+        });
+
+        let route = details.get::<ErrorRoute>().unwrap();
+        assert_eq!(
+            route.suggested_handler.as_deref(),
+            Some("retry-with-backoff")
+        );
+        assert!(!route.dead_letter);
+    }
+
+    #[test]
+    fn error_route_dead_letter() {
+        let mut details = ErrorDetails::new();
+        details.insert(ErrorRoute {
+            suggested_handler: None,
+            dead_letter: true,
+        });
+
+        let route = details.get::<ErrorRoute>().unwrap();
+        assert!(route.dead_letter);
+    }
+
+    #[test]
+    fn type_mismatch_stored_and_retrieved() {
+        let mut details = ErrorDetails::new();
+        details.insert(TypeMismatch {
+            expected: "JsonObject".into(),
+            actual: "JsonArray".into(),
+            location: Some("edge from http-fetch → parse-response".into()),
+        });
+
+        let tm = details.get::<TypeMismatch>().unwrap();
+        assert_eq!(tm.expected, "JsonObject");
+        assert_eq!(tm.actual, "JsonArray");
+        assert!(tm.location.is_some());
     }
 }
