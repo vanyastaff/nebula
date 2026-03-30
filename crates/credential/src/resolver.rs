@@ -130,6 +130,16 @@ impl<S: CredentialStore> CredentialResolver<S> {
             return Ok(CredentialHandle::new(scheme, credential_id));
         }
 
+        // Circuit breaker: skip refresh if too many recent failures
+        if self.refresh_coordinator.is_circuit_open(credential_id).await {
+            tracing::warn!(
+                credential_id,
+                "circuit breaker open: too many refresh failures, serving potentially stale credential"
+            );
+            let scheme = C::project(&state);
+            return Ok(CredentialHandle::new(scheme, credential_id));
+        }
+
         // Coordinate refresh -- only one caller does the work
         match self.refresh_coordinator.try_refresh(credential_id).await {
             RefreshAttempt::Winner(notify) => {
@@ -138,12 +148,32 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 let result = self
                     .perform_refresh::<C>(credential_id, state, stored, ctx)
                     .await;
+                // Track success/failure for circuit breaker
+                if result.is_ok() {
+                    self.refresh_coordinator.record_success(credential_id).await;
+                } else {
+                    self.refresh_coordinator.record_failure(credential_id).await;
+                }
                 self.refresh_coordinator.complete(credential_id).await;
                 result
             }
             RefreshAttempt::Waiter(notify) => {
-                notify.notified().await;
-                // Re-read from store -- the winner updated it
+                // 60s max wait -- don't hang forever if winner is slow
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    notify.notified(),
+                )
+                .await
+                {
+                    Ok(()) => {}
+                    Err(_) => {
+                        tracing::warn!(
+                            credential_id,
+                            "refresh waiter timed out after 60s, re-reading from store"
+                        );
+                    }
+                }
+                // Re-read from store regardless (winner may have updated)
                 self.resolve::<C>(credential_id).await
             }
         }
@@ -209,12 +239,19 @@ impl<S: CredentialStore> CredentialResolver<S> {
     where
         C: Credential,
     {
-        let outcome = C::refresh(&mut state, ctx)
-            .await
-            .map_err(|e| ResolveError::Refresh {
-                credential_id: credential_id.to_string(),
-                reason: e.to_string(),
-            })?;
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            C::refresh(&mut state, ctx),
+        )
+        .await
+        .map_err(|_| ResolveError::Refresh {
+            credential_id: credential_id.to_string(),
+            reason: "framework timeout: refresh took longer than 30s".to_string(),
+        })?
+        .map_err(|e| ResolveError::Refresh {
+            credential_id: credential_id.to_string(),
+            reason: e.to_string(),
+        })?;
 
         match outcome {
             RefreshOutcome::Refreshed => {

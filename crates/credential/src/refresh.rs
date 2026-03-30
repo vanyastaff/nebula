@@ -38,9 +38,18 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, Notify};
 
+/// Max consecutive refresh failures before circuit opens.
+const MAX_REFRESH_FAILURES: u32 = 5;
+/// Time window for failure counting (5 minutes).
+const FAILURE_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Coordinates credential refresh to prevent thundering herd.
 ///
 /// Thread-safe: all operations acquire the inner `Mutex`.
+///
+/// Includes a per-credential circuit breaker: after [`MAX_REFRESH_FAILURES`]
+/// consecutive failures within [`FAILURE_WINDOW`], the circuit opens and
+/// further refresh attempts are skipped until the window expires.
 ///
 /// # Examples
 ///
@@ -65,6 +74,8 @@ use tokio::sync::{Mutex, Notify};
 /// ```
 pub struct RefreshCoordinator {
     in_flight: Mutex<HashMap<String, Arc<Notify>>>,
+    /// Failure counters for circuit breaker: `(count, window_start)`.
+    failure_counts: Mutex<HashMap<String, (u32, tokio::time::Instant)>>,
 }
 
 /// Result of attempting to begin a refresh for a credential.
@@ -92,6 +103,7 @@ impl RefreshCoordinator {
     pub fn new() -> Self {
         Self {
             in_flight: Mutex::new(HashMap::new()),
+            failure_counts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -128,6 +140,42 @@ impl RefreshCoordinator {
     /// Primarily useful for testing and diagnostics.
     pub async fn in_flight_count(&self) -> usize {
         self.in_flight.lock().await.len()
+    }
+
+    /// Records a refresh failure for circuit breaker tracking.
+    ///
+    /// Increments the failure counter within the current window, or
+    /// resets the window if it has expired.
+    pub async fn record_failure(&self, credential_id: &str) {
+        let mut counts = self.failure_counts.lock().await;
+        let entry = counts
+            .entry(credential_id.to_string())
+            .or_insert((0, tokio::time::Instant::now()));
+        if entry.1.elapsed() > FAILURE_WINDOW {
+            // Window expired, reset
+            *entry = (1, tokio::time::Instant::now());
+        } else {
+            entry.0 += 1;
+        }
+    }
+
+    /// Records a successful refresh, resetting the circuit breaker.
+    pub async fn record_success(&self, credential_id: &str) {
+        self.failure_counts.lock().await.remove(credential_id);
+    }
+
+    /// Returns `true` if the circuit breaker is open (too many failures).
+    ///
+    /// The circuit opens after [`MAX_REFRESH_FAILURES`] consecutive
+    /// failures within [`FAILURE_WINDOW`], and stays open until the
+    /// window expires.
+    pub async fn is_circuit_open(&self, credential_id: &str) -> bool {
+        let counts = self.failure_counts.lock().await;
+        if let Some((count, start)) = counts.get(credential_id) {
+            *count >= MAX_REFRESH_FAILURES && start.elapsed() <= FAILURE_WINDOW
+        } else {
+            false
+        }
     }
 }
 
@@ -291,5 +339,40 @@ mod tests {
     async fn default_creates_empty_coordinator() {
         let coord = RefreshCoordinator::default();
         assert_eq!(coord.in_flight_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_opens_after_max_failures() {
+        let coord = RefreshCoordinator::new();
+        for _ in 0..5 {
+            coord.record_failure("cred-1").await;
+        }
+        assert!(coord.is_circuit_open("cred-1").await);
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_closed_initially() {
+        let coord = RefreshCoordinator::new();
+        assert!(!coord.is_circuit_open("cred-1").await);
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_resets_on_success() {
+        let coord = RefreshCoordinator::new();
+        for _ in 0..5 {
+            coord.record_failure("cred-1").await;
+        }
+        assert!(coord.is_circuit_open("cred-1").await);
+        coord.record_success("cred-1").await;
+        assert!(!coord.is_circuit_open("cred-1").await);
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_below_threshold_stays_closed() {
+        let coord = RefreshCoordinator::new();
+        for _ in 0..4 {
+            coord.record_failure("cred-1").await;
+        }
+        assert!(!coord.is_circuit_open("cred-1").await);
     }
 }
