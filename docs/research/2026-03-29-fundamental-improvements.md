@@ -389,6 +389,8 @@
 
 **Рекомендация**: **A** — уже почти есть в `nebula-resilience` (`is_retriable()`), расширить до configurable classifier. **C** — добавить global budget (уже есть `total_budget` в `RetryConfig`). **D** — при реализации fan-out/fan-in. **E** — формализация B через supervision vocabulary.
 
+> **✅ A IMPLEMENTED (2026-03-30)**: `retry()` / `retry_with()` теперь требуют `E: Classify` и автоматически фильтруют non-retryable ошибки через `is_retryable()`. `retry_hint().after` уважается как backoff floor. `RetryInfo` удалён в пользу `RetryHint` как `ErrorDetail`. `is_retriable()` переименован в `is_retryable()`.
+
 **Крейты**: `nebula-resilience` (RetryConfig расширение), `nebula-engine` (group retry, budget enforcement), `nebula-execution` (fan-out item retry)
 
 ---
