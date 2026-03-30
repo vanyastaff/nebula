@@ -25,4 +25,4 @@ Composable, type-safe validation framework — two paradigms: programmatic combi
 ## Relations
 - No nebula deps. Used by nebula-parameter, nebula-macros, nebula-action, nebula-parameter.
 
-<!-- reviewed: 2026-03-30 -->
+<!-- reviewed: 2026-03-30 — derive Classify migration -->

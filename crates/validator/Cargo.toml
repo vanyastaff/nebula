@@ -14,7 +14,7 @@ documentation.workspace = true
 [dependencies]
 # Error handling
 thiserror = { workspace = true }
-nebula-error = { workspace = true }
+nebula-error = { workspace = true, features = ["derive"] }
 
 # Small vector optimization for error params
 smallvec = "1.15"

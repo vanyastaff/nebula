@@ -11,8 +11,6 @@
 
 use std::borrow::Cow;
 
-use nebula_error::{Classify, ErrorCategory, ErrorCode};
-
 /// Crate-level operational error.
 ///
 /// Covers errors that occur during validator setup or proof-token
@@ -26,10 +24,11 @@ use nebula_error::{Classify, ErrorCategory, ErrorCode};
 /// let err = ValidatorError::invalid_config("min must be <= max");
 /// assert_eq!(err.to_string(), "invalid configuration: min must be <= max");
 /// ```
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, nebula_error::Classify)]
 #[non_exhaustive]
 pub enum ValidatorError {
     /// Invalid validator configuration (e.g., `min > max`).
+    #[classify(category = "validation", code = "VALIDATOR:INVALID_CONFIG", retryable = false)]
     #[error("invalid configuration: {message}")]
     InvalidConfig {
         /// Human-readable description of the configuration problem.
@@ -39,32 +38,13 @@ pub enum ValidatorError {
     /// A validation failure wrapped as an operational error.
     ///
     /// Used when a proof token cannot be issued because validation failed.
+    #[classify(category = "validation", code = "VALIDATOR:VALIDATION_FAILED", retryable = false)]
     #[error("validation failed: {0}")]
     ValidationFailed(#[from] crate::foundation::ValidationError),
 }
 
 /// Result type alias for [`ValidatorError`].
 pub type ValidatorResult<T> = Result<T, ValidatorError>;
-
-impl Classify for ValidatorError {
-    fn category(&self) -> ErrorCategory {
-        match self {
-            Self::InvalidConfig { .. } => ErrorCategory::Validation,
-            Self::ValidationFailed(_) => ErrorCategory::Validation,
-        }
-    }
-
-    fn code(&self) -> ErrorCode {
-        match self {
-            Self::InvalidConfig { .. } => ErrorCode::new("VALIDATOR:INVALID_CONFIG"),
-            Self::ValidationFailed(_) => ErrorCode::new("VALIDATOR:VALIDATION_FAILED"),
-        }
-    }
-
-    fn is_retryable(&self) -> bool {
-        false
-    }
-}
 
 impl ValidatorError {
     /// Creates an [`InvalidConfig`](Self::InvalidConfig) error.
