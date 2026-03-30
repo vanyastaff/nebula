@@ -75,6 +75,38 @@ impl fmt::Display for ErrorCode {
     }
 }
 
+/// Allows comparing an [`ErrorCode`] directly with a `&str`.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_error::ErrorCode;
+///
+/// let code = ErrorCode::new("NOT_FOUND");
+/// assert_eq!(code, "NOT_FOUND");
+/// ```
+impl PartialEq<&str> for ErrorCode {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+/// Allows comparing a `&str` directly with an [`ErrorCode`].
+///
+/// # Examples
+///
+/// ```
+/// use nebula_error::ErrorCode;
+///
+/// let code = ErrorCode::new("NOT_FOUND");
+/// assert_eq!("NOT_FOUND", code);
+/// ```
+impl PartialEq<ErrorCode> for &str {
+    fn eq(&self, other: &ErrorCode) -> bool {
+        *self == other.as_str()
+    }
+}
+
 #[cfg(feature = "serde")]
 impl serde::Serialize for ErrorCode {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -187,5 +219,13 @@ mod tests {
         let mut set = HashSet::new();
         set.insert(ErrorCode::new("TEST"));
         assert!(set.contains(&ErrorCode::custom("TEST")));
+    }
+
+    #[test]
+    fn error_code_eq_str() {
+        let code = ErrorCode::new("MY_CODE");
+        assert_eq!(code, "MY_CODE");
+        assert_eq!("MY_CODE", code);
+        assert_ne!(code, "OTHER");
     }
 }
