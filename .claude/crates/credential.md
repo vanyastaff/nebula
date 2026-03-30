@@ -13,6 +13,7 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 - `CredentialHandle` uses `ArcSwap<S>` — `snapshot()` returns `Arc<S>`, `replace()` (pub(crate)) enables hot-swap by `RefreshCoordinator`. Clone creates independent `ArcSwap` with same underlying `Arc`.
 - `EncryptionLayer<S>` serializes `EncryptedData` as JSON bytes in `data` field.
 - `CacheLayer<S>` wraps any `CredentialStore` with moka LRU+TTL cache. Caches **ciphertext** (sits below `EncryptionLayer`). Invalidates on put/delete. `list()` passes through uncached. `exists()` checks cache first.
+- `ScopeLayer<S>` outermost layer — multi-tenant isolation via `ScopeResolver` trait. Checks `metadata["owner_id"]` on get/delete, injects on put. `None` owner = admin bypass. Mismatch returns `NotFound` (no existence leak). `list()`/`exists()` pass through (backend filtering needed for full isolation).
 - `RefreshCoordinator`: winner refreshes, waiters block on `Notify`. `Winner(Arc<Notify>)` + `scopeguard` ensures waiters are woken on any exit (panic, timeout, error). `complete()` removes the in-flight entry. Circuit breaker: 5 failures in 5 min opens circuit, skips refresh and serves stale. Waiter timeout: 60s max wait on `Notify`. Framework timeout: 30s hard limit on `C::refresh()` calls.
 - `CredentialResolver::resolve_with_refresh()` uses `REFRESH_POLICY.early_refresh` (default 5 min) to refresh **before** expiry, not after.
 - `CredentialContext` carries optional `callback_url`, `app_url`, `session_id` (private, with builder + accessors) for interactive OAuth2/SAML flows.

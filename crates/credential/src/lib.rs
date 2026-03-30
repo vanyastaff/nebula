@@ -177,18 +177,21 @@ pub use pending_store_memory::InMemoryPendingStore;
 pub use pending_token::PendingToken;
 
 // v2: Built-in credential implementations
+pub use credentials::OAuth2State as OAuth2StateV2;
 pub use credentials::{
     ApiKeyCredential, BasicAuthCredential, DatabaseCredential, HeaderAuthCredential,
     OAuth2Credential, OAuth2Pending,
 };
-pub use credentials::OAuth2State as OAuth2StateV2;
 
 // v2: Typed handle
 pub use credential_handle::CredentialHandle;
 
 // v2: Storage
 pub use credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
-pub use layer::{CacheConfig, CacheLayer, CacheStats, EncryptionLayer};
+pub use layer::{
+    AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
+    CacheStats, EncryptionLayer, ScopeLayer, ScopeResolver,
+};
 #[cfg(feature = "storage-local")]
 pub use store_local::LocalFileStore;
 pub use store_memory::InMemoryStore;
