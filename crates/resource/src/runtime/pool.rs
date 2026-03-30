@@ -10,7 +10,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
@@ -46,6 +46,28 @@ enum IdleResult<R: Resource> {
     /// No usable idle instance — the permit is returned so the caller
     /// can create a new instance.
     Empty(OwnedSemaphorePermit),
+}
+
+/// A point-in-time snapshot of pool utilization.
+///
+/// Returned by [`PoolRuntime::stats`] and [`Manager::pool_stats`](crate::Manager::pool_stats).
+///
+/// # Note
+///
+/// `idle` and `in_use` are sampled separately and may not add up to `capacity`
+/// precisely due to concurrent activity between reads.
+#[derive(Debug, Clone, Copy)]
+pub struct PoolStats {
+    /// Number of instances currently sitting idle in the pool.
+    pub idle: usize,
+    /// Maximum number of concurrently active leases (`max_size` from config).
+    pub capacity: u32,
+    /// Number of permits currently available in the semaphore.
+    ///
+    /// A value of `capacity - in_use` in a quiescent pool.
+    pub available_permits: usize,
+    /// Number of instances currently checked out by callers.
+    pub in_use: usize,
 }
 
 /// Runtime state for a pool topology.
@@ -94,6 +116,23 @@ impl<R: Resource> PoolRuntime<R> {
     /// Returns the number of idle instances currently in the pool.
     pub async fn idle_count(&self) -> usize {
         self.idle.lock().await.len()
+    }
+
+    /// Returns a snapshot of current pool utilization.
+    ///
+    /// `idle` is sampled under the idle queue lock; `available_permits` is
+    /// read atomically from the semaphore. Both reads are best-effort and
+    /// may be slightly inconsistent in high-concurrency scenarios.
+    pub async fn stats(&self) -> PoolStats {
+        let idle = self.idle.lock().await.len();
+        let available_permits = self.semaphore.available_permits();
+        let in_use = (self.config.max_size as usize).saturating_sub(available_permits);
+        PoolStats {
+            idle,
+            capacity: self.config.max_size,
+            available_permits,
+            in_use,
+        }
     }
 }
 
@@ -422,9 +461,16 @@ where
                 metrics.record_release();
 
                 let runtime: R::Runtime = returned_lease.into();
+                // Track tainted returns in error_count so `Pooled::recycle`
+                // implementations can make informed keep-or-drop decisions
+                // based on accumulated failure history.
+                let mut instance_metrics = entry.metrics.clone();
+                if tainted {
+                    instance_metrics.error_count += 1;
+                }
                 let entry = PoolEntry {
                     runtime,
-                    metrics: entry.metrics.clone(),
+                    metrics: instance_metrics,
                     fingerprint: entry.fingerprint,
                     returned_at: None, // set by release_entry on idle push
                 };
@@ -445,6 +491,245 @@ where
             },
             Some(permit),
         )
+    }
+
+    /// Attempts a non-blocking acquire: returns immediately with
+    /// [`ErrorKind::Backpressure`](crate::ErrorKind::Backpressure) if the pool
+    /// is at capacity (all `max_size` slots hold active [`ResourceHandle`](crate::ResourceHandle)s).
+    ///
+    /// Unlike [`acquire`](Self::acquire), this method never queues — use it
+    /// when you want to shed load rather than queue callers.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::Backpressure`](crate::ErrorKind::Backpressure) if all `max_size` slots are occupied.
+    /// - [`ErrorKind::Transient`](crate::ErrorKind::Transient) if creation or preparation fails.
+    // Reason: same as acquire — options is a distinct concern from resource/config/ctx.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn try_acquire(
+        &self,
+        resource: &R,
+        resource_config: &R::Config,
+        auth: &R::Auth,
+        ctx: &dyn Ctx,
+        release_queue: &Arc<ReleaseQueue>,
+        generation: u64,
+        _options: &AcquireOptions,
+        metrics: Arc<ResourceMetrics>,
+    ) -> Result<ResourceHandle<R>, Error> {
+        // Non-blocking semaphore attempt — fail immediately if pool is full.
+        let permit = match self.semaphore.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                return Err(Error::backpressure(format!(
+                    "{}: pool full — all {} slots in use (non-blocking acquire returned immediately)",
+                    R::key(),
+                    self.config.max_size,
+                )));
+            }
+        };
+
+        // Try the idle queue first.
+        let permit = match self
+            .try_acquire_idle(
+                resource,
+                ctx,
+                release_queue,
+                generation,
+                permit,
+                Arc::clone(&metrics),
+            )
+            .await?
+        {
+            IdleResult::Found(handle) => return Ok(handle),
+            IdleResult::Empty(permit) => permit,
+        };
+
+        // No idle instance — create a new one.
+        let entry = match self
+            .create_entry(resource, resource_config, auth, ctx)
+            .await
+        {
+            Ok(e) => e,
+            Err(e) => return Err(e),
+        };
+
+        let mut guard = CreateGuard::new(entry);
+        if let Err(e) = resource.prepare(guard.runtime(), ctx).await {
+            let entry = guard.defuse();
+            let _ = resource.destroy(entry.runtime).await;
+            return Err(e.into());
+        }
+
+        let entry = guard.defuse();
+        let lease: R::Lease = entry.runtime.clone().into();
+        Ok(self.build_guarded_handle(
+            lease,
+            entry,
+            permit,
+            resource.clone(),
+            release_queue.clone(),
+            generation,
+            metrics,
+        ))
+    }
+
+    /// Warms up the pool by pre-creating up to `min_size` instances and
+    /// depositing them into the idle queue.
+    ///
+    /// Should be called once after registration, before the pool receives
+    /// production traffic, to eliminate cold-start latency on the first
+    /// batch of requests.
+    ///
+    /// Returns the number of instances successfully created.
+    ///
+    /// # Strategy behaviour
+    ///
+    /// | Strategy | Behaviour |
+    /// |----------|-----------|
+    /// | `None` | No-op — returns 0 immediately. |
+    /// | `Sequential` | Creates instances one at a time until `min_size` or failure. |
+    /// | `Parallel` | Falls back to `Sequential`; true parallel warmup planned for a future release. |
+    /// | `Staggered { interval }` | Creates one instance, sleeps `interval`, repeats. |
+    ///
+    /// Instances are pushed directly into the idle queue without consuming
+    /// semaphore permits — permits are only held by active
+    /// [`ResourceHandle`](crate::ResourceHandle)s.
+    ///
+    /// If a creation fails, warmup stops early and returns the count created
+    /// so far (partial warmup is acceptable; on-demand creation handles the rest).
+    pub async fn warmup(
+        &self,
+        resource: &R,
+        resource_config: &R::Config,
+        auth: &R::Auth,
+        ctx: &dyn Ctx,
+    ) -> usize {
+        use crate::topology::pooled::config::WarmupStrategy;
+
+        let target = self.config.min_size as usize;
+        if target == 0 {
+            return 0;
+        }
+
+        match self.config.warmup {
+            WarmupStrategy::None => 0,
+            // Parallel warmup requires `Arc<dyn Ctx>` to share across spawned
+            // tasks. Until the Ctx API exposes an Arc variant, we fall back to
+            // sequential to avoid an API-breaking change.
+            WarmupStrategy::Sequential | WarmupStrategy::Parallel => {
+                self.warmup_sequential(resource, resource_config, auth, ctx, target)
+                    .await
+            }
+            WarmupStrategy::Staggered { interval } => {
+                self.warmup_staggered(
+                    resource,
+                    resource_config,
+                    auth,
+                    ctx,
+                    target,
+                    interval,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Sequential warmup helper: creates one instance at a time.
+    async fn warmup_sequential(
+        &self,
+        resource: &R,
+        resource_config: &R::Config,
+        auth: &R::Auth,
+        ctx: &dyn Ctx,
+        target: usize,
+    ) -> usize {
+        let mut created = 0usize;
+        for _ in 0..target {
+            match self
+                .create_entry(resource, resource_config, auth, ctx)
+                .await
+            {
+                Ok(mut entry) => {
+                    entry.returned_at = Some(Instant::now());
+                    self.idle.lock().await.push_back(entry);
+                    created += 1;
+                    tracing::debug!(
+                        key = %R::key(),
+                        created,
+                        target,
+                        "pool warmup: instance created"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        key = %R::key(),
+                        error = %e,
+                        created,
+                        target,
+                        "pool warmup: create failed, stopping early"
+                    );
+                    break;
+                }
+            }
+        }
+        if created > 0 {
+            tracing::info!(key = %R::key(), created, target, "pool warmup complete");
+        }
+        created
+    }
+
+    /// Staggered warmup helper: sleeps `interval` between each instance creation.
+    async fn warmup_staggered(
+        &self,
+        resource: &R,
+        resource_config: &R::Config,
+        auth: &R::Auth,
+        ctx: &dyn Ctx,
+        target: usize,
+        interval: Duration,
+    ) -> usize {
+        let mut created = 0usize;
+        for i in 0..target {
+            if i > 0 {
+                tokio::time::sleep(interval).await;
+            }
+            match self
+                .create_entry(resource, resource_config, auth, ctx)
+                .await
+            {
+                Ok(mut entry) => {
+                    entry.returned_at = Some(Instant::now());
+                    self.idle.lock().await.push_back(entry);
+                    created += 1;
+                    tracing::debug!(
+                        key = %R::key(),
+                        created,
+                        target,
+                        "pool warmup (staggered): instance created"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        key = %R::key(),
+                        error = %e,
+                        created,
+                        target,
+                        "pool warmup (staggered): create failed, stopping early"
+                    );
+                    break;
+                }
+            }
+        }
+        if created > 0 {
+            tracing::info!(
+                key = %R::key(),
+                created,
+                target,
+                "pool warmup (staggered) complete"
+            );
+        }
+        created
     }
 }
 

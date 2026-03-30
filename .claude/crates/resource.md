@@ -29,3 +29,4 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 
 <!-- reviewed: 2026-03-25 — renamed Resource::Credential to Resource::Auth (AuthScheme from nebula-core) -->
+<!-- reviewed: 2026-03-29 — fixed timeout-per-attempt bug in execute_with_resilience; fixed ResourceMetrics atomic ordering (Acquire→Relaxed); implemented PoolRuntime::warmup (WarmupStrategy was dead config), PoolRuntime::try_acquire (non-blocking), PoolRuntime::stats → PoolStats{idle,capacity,available_permits,in_use}; fixed InstanceMetrics.error_count (never incremented → now tracks tainted returns); added Manager::try_acquire_pooled, try_acquire_pooled_default, pool_stats, warmup_pool; PoolStats exported from lib.rs -->

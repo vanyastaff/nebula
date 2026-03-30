@@ -928,6 +928,163 @@ impl Manager {
         self.acquire_exclusive::<R>(ctx, options).await
     }
 
+    /// Attempts a non-blocking acquire of a pooled resource.
+    ///
+    /// Returns immediately with [`ErrorKind::Backpressure`](crate::error::ErrorKind::Backpressure)
+    /// if all `max_size` pool slots are currently occupied by active handles.
+    /// Unlike [`acquire_pooled`](Self::acquire_pooled), this method **never** queues
+    /// the caller — use it to shed load rather than back-pressure callers.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::Backpressure`](crate::error::ErrorKind::Backpressure) if the pool is full.
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is registered.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting down.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using pool topology.
+    pub async fn try_acquire_pooled<R>(
+        &self,
+        auth: &R::Auth,
+        ctx: &dyn Ctx,
+        options: &AcquireOptions,
+    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    where
+        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Into<R::Runtime> + Send + 'static,
+    {
+        let started = Instant::now();
+        let managed = self.lookup::<R>(ctx.scope())?;
+        check_recovery_gate(&managed.recovery_gate)?;
+
+        let result = match &managed.topology {
+            TopologyRuntime::Pool(rt) => {
+                let config = managed.config();
+                let generation = managed.generation();
+                rt.try_acquire(
+                    &managed.resource,
+                    &config,
+                    auth,
+                    ctx,
+                    &managed.release_queue,
+                    generation,
+                    options,
+                    Arc::clone(&managed.metrics),
+                )
+                .await
+            }
+            _ => Err(Error::permanent(format!(
+                "{}: expected Pool topology for try_acquire, registered as {}",
+                R::key(),
+                managed.topology.tag()
+            ))),
+        };
+
+        if let Err(e) = &result {
+            trigger_recovery_on_failure(&managed.recovery_gate, e);
+        }
+        self.record_acquire_result(&managed, &result, started);
+        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+    }
+
+    /// Non-blocking pooled acquire without auth.
+    ///
+    /// Shorthand for [`try_acquire_pooled`](Self::try_acquire_pooled) with `auth = &()`.
+    /// Only available when `R::Auth = ()`.
+    pub async fn try_acquire_pooled_default<R>(
+        &self,
+        ctx: &dyn Ctx,
+        options: &AcquireOptions,
+    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    where
+        R: crate::topology::pooled::Pooled<Auth = ()> + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Into<R::Runtime> + Send + 'static,
+    {
+        self.try_acquire_pooled::<R>(&(), ctx, options).await
+    }
+
+    /// Returns a snapshot of current pool utilization for a registered Pool resource.
+    ///
+    /// Returns `None` if the resource is not registered or does not use Pool topology.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nebula_resource::{Manager, ScopeLevel};
+    /// # async fn example(manager: &Manager) {
+    /// // if let Some(stats) = manager.pool_stats::<MyDb>(&ScopeLevel::Global).await {
+    /// //     println!("pool: {}/{} slots in use, {} idle", stats.in_use, stats.capacity, stats.idle);
+    /// // }
+    /// # }
+    /// ```
+    pub async fn pool_stats<R>(
+        &self,
+        scope: &ScopeLevel,
+    ) -> Option<crate::runtime::pool::PoolStats>
+    where
+        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Into<R::Runtime> + Send + 'static,
+    {
+        let managed = self.lookup::<R>(scope).ok()?;
+        match &managed.topology {
+            TopologyRuntime::Pool(rt) => Some(rt.stats().await),
+            _ => None,
+        }
+    }
+
+    /// Warms up a registered Pool resource by pre-creating instances up to `min_size`.
+    ///
+    /// This fills the idle queue before production traffic hits, eliminating
+    /// cold-start latency on the first batch of requests. Warmup follows the
+    /// [`WarmupStrategy`](crate::topology::pooled::config::WarmupStrategy) set
+    /// in the pool's configuration.
+    ///
+    /// Uses [`Default::default()`] for auth, which works for `R::Auth = ()` and
+    /// any auth type that has a meaningful default.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is registered.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using pool topology.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nebula_resource::{Manager, ScopeLevel};
+    /// # async fn example(manager: &Manager) {
+    /// # let ctx = nebula_resource::BasicCtx::new(nebula_core::ExecutionId::new());
+    /// // manager.warmup_pool::<MyDb>(&ctx).await.unwrap();
+    /// # }
+    /// ```
+    pub async fn warmup_pool<R>(
+        &self,
+        ctx: &dyn Ctx,
+    ) -> Result<usize, Error>
+    where
+        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Into<R::Runtime> + Send + 'static,
+        R::Auth: Default,
+    {
+        let managed = self.lookup::<R>(ctx.scope())?;
+        let config = managed.config();
+        let auth = R::Auth::default();
+        match &managed.topology {
+            TopologyRuntime::Pool(rt) => {
+                let count = rt
+                    .warmup(&managed.resource, &config, &auth, ctx)
+                    .await;
+                Ok(count)
+            }
+            _ => Err(Error::permanent(format!(
+                "{}: warmup_pool requires Pool topology, registered as {}",
+                R::key(),
+                managed.topology.tag()
+            ))),
+        }
+    }
+
     /// Hot-reloads the configuration for a registered resource.
     ///
     /// Validates the new config, swaps it into the [`ArcSwap`](arc_swap::ArcSwap),
@@ -1245,6 +1402,11 @@ fn trigger_recovery_on_failure(gate: &Option<Arc<RecoveryGate>>, error: &Error) 
 /// When `resilience` is `None`, the operation runs exactly once with no
 /// timeout. When configured, transient failures are retried with
 /// exponential backoff up to `max_attempts`.
+///
+/// The `timeout` in [`AcquireResilience`] is an **overall wall-clock deadline**
+/// shared across all attempts and backoff sleeps. Each attempt receives only
+/// the time remaining before the deadline, and backoff sleeps are capped to
+/// the same remaining budget.
 async fn execute_with_resilience<F, Fut, T>(
     resilience: &Option<AcquireResilience>,
     mut operation: F,
@@ -1267,12 +1429,25 @@ where
         .as_ref()
         .map_or(Duration::from_secs(5), |r| r.max_backoff);
 
+    // Compute the overall deadline once. All attempts and backoff sleeps share
+    // this budget so the timeout is truly wall-clock bounded end-to-end.
+    let deadline = config
+        .timeout
+        .map(|t| std::time::Instant::now() + t);
+
     let mut last_error = None;
     for attempt in 0..max_attempts {
-        let result = if let Some(timeout) = config.timeout {
-            match tokio::time::timeout(timeout, operation()).await {
-                Ok(r) => r,
-                Err(_) => Err(Error::transient("acquire timed out")),
+        let result = if let Some(dl) = deadline {
+            let remaining = dl
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or(Duration::ZERO);
+            if remaining.is_zero() {
+                Err(Error::transient("acquire timed out"))
+            } else {
+                match tokio::time::timeout(remaining, operation()).await {
+                    Ok(r) => r,
+                    Err(_) => Err(Error::transient("acquire timed out")),
+                }
             }
         } else {
             operation().await
@@ -1285,7 +1460,17 @@ where
                     initial_backoff.saturating_mul(2u32.saturating_pow(attempt)),
                     max_backoff,
                 );
-                tokio::time::sleep(backoff).await;
+                // Cap the backoff sleep to the remaining budget so we never
+                // overshoot the overall deadline.
+                let sleep_dur = if let Some(dl) = deadline {
+                    let remaining = dl
+                        .checked_duration_since(std::time::Instant::now())
+                        .unwrap_or(Duration::ZERO);
+                    backoff.min(remaining)
+                } else {
+                    backoff
+                };
+                tokio::time::sleep(sleep_dur).await;
                 last_error = Some(e);
             }
             Err(e) => return Err(e),

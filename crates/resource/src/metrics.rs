@@ -8,8 +8,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Atomic counters for resource operations.
 ///
-/// All counters use relaxed ordering for increments (fire-and-forget)
-/// and acquire ordering for reads (via [`snapshot`](Self::snapshot)).
+/// All counters use [`Relaxed`](std::sync::atomic::Ordering::Relaxed) ordering.
+/// These are advisory monotonic counters — there is no ordering guarantee
+/// between individual fields in a [`snapshot`](Self::snapshot), and reads may
+/// observe slightly stale values on weakly-ordered architectures. This is
+/// intentional: the overhead of stronger ordering is not justified for
+/// fire-and-forget telemetry counters.
 ///
 /// # Examples
 ///
@@ -71,13 +75,18 @@ impl ResourceMetrics {
     }
 
     /// Captures a point-in-time snapshot of all counters.
+    ///
+    /// Each counter is read with [`Relaxed`](std::sync::atomic::Ordering::Relaxed)
+    /// ordering. The snapshot is not atomic across all five fields — concurrent
+    /// increments may be observed in any combination. This is acceptable for
+    /// best-effort telemetry.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
-            acquire_total: self.acquire_total.load(Ordering::Acquire),
-            acquire_errors: self.acquire_errors.load(Ordering::Acquire),
-            release_total: self.release_total.load(Ordering::Acquire),
-            create_total: self.create_total.load(Ordering::Acquire),
-            destroy_total: self.destroy_total.load(Ordering::Acquire),
+            acquire_total: self.acquire_total.load(Ordering::Relaxed),
+            acquire_errors: self.acquire_errors.load(Ordering::Relaxed),
+            release_total: self.release_total.load(Ordering::Relaxed),
+            create_total: self.create_total.load(Ordering::Relaxed),
+            destroy_total: self.destroy_total.load(Ordering::Relaxed),
         }
     }
 }

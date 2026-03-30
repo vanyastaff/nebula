@@ -87,7 +87,7 @@ pub use runtime::daemon::DaemonRuntime;
 pub use runtime::event_source::EventSourceRuntime;
 pub use runtime::exclusive::ExclusiveRuntime;
 pub use runtime::managed::ManagedResource;
-pub use runtime::pool::PoolRuntime;
+pub use runtime::pool::{PoolRuntime, PoolStats};
 pub use runtime::resident::ResidentRuntime;
 pub use runtime::service::ServiceRuntime;
 pub use runtime::transport::TransportRuntime;
