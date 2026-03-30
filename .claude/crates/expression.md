@@ -22,4 +22,4 @@ n8n-compatible expression language evaluating `serde_json::Value` — used in wo
 - Depends on nebula-memory (feature: `cache`) for `ConcurrentComputeCache`, `CacheConfig`, `CacheStats`.
 - Used by nebula-workflow and nebula-engine for dynamic parameter resolution.
 
-<!-- reviewed: 2026-03-30 -->
+<!-- reviewed: 2026-03-30 — derive Classify migration -->

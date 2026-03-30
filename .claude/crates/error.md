@@ -63,6 +63,6 @@ NotFound, Validation, Authentication, Authorization, Conflict, RateLimit, Timeou
 
 - Depends on: serde (optional), nebula-error-macros (optional); thiserror in dev-dependencies only
 - Depended on by: all 21 crates (Classify migration complete 2026-03-30)
-- nebula-memory, nebula-log, nebula-telemetry use `#[derive(Classify)]` — reference impls for migrating others
+- 14 crates use `#[derive(Classify)]`. Remaining manual impls: core (cascade risk), credential (active dev), action/engine (dynamic delegation), resilience (generic `CallError<E>`)
 
 <!-- reviewed: 2026-03-30 (PartialEq<&str>, Classify re-export rename) -->
