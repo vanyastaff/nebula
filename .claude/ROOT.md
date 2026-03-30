@@ -7,7 +7,10 @@ DAG-based workflow automation engine in Rust (n8n/Zapier).
 core · validator · parameter · expression · memory · workflow · execution
 
 **Cross-cutting** (importable at any layer)
-log · system · eventbus · telemetry · metrics · config · resilience
+log · system · eventbus · telemetry · metrics · config · resilience · error
+
+**Derive macros**
+macros · error-macros · resource-macros
 
 **Business logic**
 credential · resource · action · plugin
