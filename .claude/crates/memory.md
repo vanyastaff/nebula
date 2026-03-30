@@ -4,6 +4,7 @@ High-performance memory management — arenas, pools, LRU/TTL caching, memory pr
 ## Invariants
 - All major subsystems are feature-gated: `arena`, `pool`, `cache`, `budget`, `monitoring`. Default: `std` + `pool` + `arena` + `cache` + `budget` + `logging`.
 - `GlobalAllocatorManager` is lazily initialized via `LazyLock` — no `init()` call required.
+- `MemoryError` uses `#[derive(nebula_error::Classify)]` — no manual impl. Consumers must `use nebula_error::Classify` to call `.code()` / `.is_retryable()`.
 - Error type `MemoryError` uses `Box<str>` for string fields to avoid excess heap capacity.
 - Internal module is `foundation` (not `core`) to avoid shadowing `::core`.
 - `ConcurrentComputeCache` uses random eviction (not LRU) — no access metadata tracked on reads.
@@ -22,6 +23,7 @@ High-performance memory management — arenas, pools, LRU/TTL caching, memory pr
 - `ConcurrentComputeCache` honors only `max_entries`, `initial_capacity`, `ttl` from `CacheConfig`. Other fields (`policy`, `track_metrics`, `load_factor`, `auto_cleanup`) are ignored.
 - `MemoryBudget` enforces memory limits per context (requires `budget` feature).
 - Error constructors are pure (no logging side-effects) — log at call site.
+- `not_supported()` constructor takes `&'static str` and creates `NotSupported` variant (not `InvalidState`).
 - `align_up` uses `wrapping_add` for overflow safety; `checked_align_up` returns `Option<usize>` for allocation paths.
 - Arena `alloc_bytes_aligned` uses a loop instead of recursion to prevent stack overflow.
 - Zero-size allocations return a dangling pointer (prevents aliasing with next real allocation).
@@ -41,4 +43,4 @@ High-performance memory management — arenas, pools, LRU/TTL caching, memory pr
 - Optional dep on nebula-log (feature: `logging`), nebula-system for pressure detection.
 - Only consumer: nebula-expression (uses `ConcurrentComputeCache`, `CacheConfig`, `CacheStats`, `MemoryError`).
 
-<!-- reviewed: 2026-03-30 -->
+<!-- reviewed: 2026-03-30 (derive Classify migration) -->

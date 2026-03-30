@@ -15,8 +15,9 @@ Enterprise error infrastructure. Google error model (Status + typed details) ada
 - `NebulaError::map_inner()` preserves message, details, context_chain, source while transforming inner type
 - **`RetryHint` is both a Classify return type AND an ErrorDetail** — can be attached to `NebulaError` via `.with_detail()`
 - `RetryInfo` removed — use `RetryHint` instead
+- `ErrorCode` implements `PartialEq<&str>` — ergonomic comparisons in tests and application code
 - Serde behind feature flag — not forced on all consumers
-- Derive macro behind `derive` feature flag
+- Derive macro behind `derive` feature flag, re-exported as `nebula_error::Classify` (not `DeriveClassify`)
 
 ## Categories (14)
 
@@ -62,5 +63,6 @@ NotFound, Validation, Authentication, Authorization, Conflict, RateLimit, Timeou
 
 - Depends on: serde (optional), nebula-error-macros (optional); thiserror in dev-dependencies only
 - Depended on by: all 21 crates (Classify migration complete 2026-03-30)
+- nebula-memory is the first crate using `#[derive(Classify)]` — reference impl for migrating others
 
-<!-- reviewed: 2026-03-30 (RetryInfo removed, RetryHint as ErrorDetail) -->
+<!-- reviewed: 2026-03-30 (PartialEq<&str>, Classify re-export rename) -->
