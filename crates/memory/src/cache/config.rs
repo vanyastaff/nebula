@@ -154,42 +154,61 @@ impl CacheConfig {
     }
 
     /// Validate the configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError::InvalidConfig`] with a specific message describing
+    /// which field failed validation and why.
     pub fn validate(&self) -> MemoryResult<()> {
         if self.max_entries == 0 {
-            return Err(MemoryError::invalid_config("configuration error"));
+            return Err(MemoryError::invalid_config(
+                "max_entries must be greater than 0",
+            ));
         }
 
         if !(0.1..=0.95).contains(&self.load_factor) {
-            return Err(MemoryError::invalid_config("configuration error"));
+            return Err(MemoryError::invalid_config(&format!(
+                "load_factor must be between 0.1 and 0.95, got {}",
+                self.load_factor
+            )));
         }
 
         if let Some(ttl) = self.ttl
             && ttl.as_nanos() == 0
         {
-            return Err(MemoryError::invalid_config("configuration error"));
+            return Err(MemoryError::invalid_config("ttl must be greater than zero"));
         }
 
         if let Some(initial) = self.initial_capacity
             && initial > self.max_entries
         {
-            return Err(MemoryError::invalid_config("configuration error"));
+            return Err(MemoryError::invalid_config(&format!(
+                "initial_capacity ({initial}) must not exceed max_entries ({})",
+                self.max_entries
+            )));
         }
 
         if let Some(cleanup_interval) = self.cleanup_interval {
             if cleanup_interval.as_nanos() == 0 {
-                return Err(MemoryError::invalid_config("configuration error"));
+                return Err(MemoryError::invalid_config(
+                    "cleanup_interval must be greater than zero",
+                ));
             }
 
             if let Some(ttl) = self.ttl
                 && cleanup_interval >= ttl
             {
-                return Err(MemoryError::invalid_config("configuration error"));
+                return Err(MemoryError::invalid_config(
+                    "cleanup_interval must be less than ttl",
+                ));
             }
         }
 
         // Validate policy-specific requirements
         if self.policy == EvictionPolicy::TTL && self.ttl.is_none() {
-            return Err(MemoryError::invalid_config("configuration error"));
+            return Err(MemoryError::invalid_config(
+                "TTL eviction policy requires ttl to be set",
+            ));
         }
 
         Ok(())
@@ -485,17 +504,46 @@ mod tests {
         assert!(config.validate().is_ok());
 
         // Invalid max_entries
-        let config = CacheConfig::new(0);
-        assert!(config.validate().is_err());
+        let err = CacheConfig::new(0).validate().unwrap_err();
+        assert!(err.to_string().contains("max_entries"), "{err}");
 
         // Invalid load_factor - set directly since with_load_factor clamps
         let mut config = CacheConfig::new(100);
         config.load_factor = 1.5;
-        assert!(config.validate().is_err());
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("load_factor"), "{err}");
 
         // Invalid initial_capacity
-        let config = CacheConfig::new(100).with_initial_capacity(200);
-        assert!(config.validate().is_err());
+        let err = CacheConfig::new(100)
+            .with_initial_capacity(200)
+            .validate()
+            .unwrap_err();
+        assert!(err.to_string().contains("initial_capacity"), "{err}");
+
+        // TTL policy without ttl value
+        let err = CacheConfig::new(100)
+            .with_policy(EvictionPolicy::TTL)
+            .validate()
+            .unwrap_err();
+        assert!(err.to_string().contains("TTL eviction policy"), "{err}");
+
+        // Zero TTL
+        let err = CacheConfig::new(100)
+            .with_ttl(Duration::ZERO)
+            .validate()
+            .unwrap_err();
+        assert!(err.to_string().contains("ttl must be greater"), "{err}");
+
+        // cleanup_interval >= ttl
+        let err = CacheConfig::new(100)
+            .with_ttl(Duration::from_secs(10))
+            .with_cleanup_interval(Duration::from_secs(10))
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("cleanup_interval must be less"),
+            "{err}"
+        );
     }
 
     #[test]

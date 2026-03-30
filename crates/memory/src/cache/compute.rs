@@ -18,10 +18,13 @@ use super::config::{CacheConfig, CacheMetrics, EvictionPolicy};
 use crate::error::{MemoryError, MemoryResult};
 
 /// Trait for cache keys
-pub trait CacheKey: Hash + Eq + Clone {}
+///
+/// All types that are hashable, equatable, cloneable, and thread-safe
+/// automatically implement this trait via the blanket implementation.
+pub trait CacheKey: Hash + Eq + Clone + Send + Sync {}
 
 // Implement CacheKey for common types
-impl<T: Hash + Eq + Clone> CacheKey for T {}
+impl<T: Hash + Eq + Clone + Send + Sync> CacheKey for T {}
 
 /// Result type for cache operations
 pub type CacheResult<T> = Result<T, MemoryError>;

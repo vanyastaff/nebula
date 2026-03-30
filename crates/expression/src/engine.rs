@@ -12,12 +12,12 @@ use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::policy::EvaluationPolicy;
 use nebula_log::{debug, trace};
-use nebula_memory::cache::{CacheConfig, ConcurrentComputeCache};
+use nebula_memory::cache::{CacheConfig, CacheStats, ConcurrentComputeCache};
 use serde_json::Value;
 use std::sync::Arc;
 
 /// Lightweight cache observability snapshot for `ExpressionEngine`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CacheOverview {
     /// Whether expression parsing cache is enabled.
     pub expr_cache_enabled: bool,
@@ -27,6 +27,14 @@ pub struct CacheOverview {
     pub expr_entries: usize,
     /// Current number of entries in template cache.
     pub template_entries: usize,
+    /// Expression cache hits since last reset.
+    pub expr_hits: u64,
+    /// Expression cache misses since last reset.
+    pub expr_misses: u64,
+    /// Template cache hits since last reset.
+    pub template_hits: u64,
+    /// Template cache misses since last reset.
+    pub template_misses: u64,
 }
 
 /// Expression engine with parsing and evaluation capabilities
@@ -265,34 +273,33 @@ impl ExpressionEngine {
 
     /// Return a lightweight cache snapshot for observability.
     pub fn cache_overview(&self) -> CacheOverview {
+        let expr_stats = self.expr_cache.as_ref().map(|c| c.stats());
+        let tmpl_stats = self.template_cache.as_ref().map(|c| c.stats());
+
         CacheOverview {
             expr_cache_enabled: self.expr_cache.is_some(),
             template_cache_enabled: self.template_cache.is_some(),
-            expr_entries: self.expr_cache.as_ref().map_or(0, |cache| cache.len()),
-            template_entries: self.template_cache.as_ref().map_or(0, |cache| cache.len()),
+            expr_entries: self.expr_cache.as_ref().map_or(0, |c| c.len()),
+            template_entries: self.template_cache.as_ref().map_or(0, |c| c.len()),
+            expr_hits: expr_stats.as_ref().map_or(0, |s| s.hits),
+            expr_misses: expr_stats.as_ref().map_or(0, |s| s.misses),
+            template_hits: tmpl_stats.as_ref().map_or(0, |s| s.hits),
+            template_misses: tmpl_stats.as_ref().map_or(0, |s| s.misses),
         }
     }
 
-    /// Get expression cache statistics (stub for compatibility)
+    /// Get a point-in-time snapshot of expression cache statistics.
     ///
-    /// Note: ConcurrentComputeCache doesn't track detailed metrics for performance.
-    /// Use expr_cache_size() to get the number of entries instead.
-    pub fn expr_cache_stats(&self) -> Option<nebula_memory::cache::CacheMetrics> {
-        None // ConcurrentComputeCache doesn't have metrics
+    /// Returns `None` if expression caching is disabled.
+    pub fn expr_cache_stats(&self) -> Option<CacheStats> {
+        self.expr_cache.as_ref().map(|c| c.stats())
     }
 
-    /// Get template cache statistics (stub for compatibility)
+    /// Get a point-in-time snapshot of template cache statistics.
     ///
-    /// Note: ConcurrentComputeCache doesn't track detailed metrics for performance.
-    /// Use template_cache_size() to get the number of entries instead.
-    pub fn template_cache_stats(&self) -> Option<nebula_memory::cache::CacheMetrics> {
-        None // ConcurrentComputeCache doesn't have metrics
-    }
-
-    /// Get cache statistics (legacy - always returns None now)
-    #[deprecated(note = "Use expr_cache_size() or template_cache_size() instead")]
-    pub fn cache_stats(&self) -> Option<nebula_memory::cache::CacheMetrics> {
-        None
+    /// Returns `None` if template caching is disabled.
+    pub fn template_cache_stats(&self) -> Option<CacheStats> {
+        self.template_cache.as_ref().map(|c| c.stats())
     }
 }
 
@@ -800,6 +807,8 @@ mod tests {
         assert!(!overview.template_cache_enabled);
         assert_eq!(overview.expr_entries, 0);
         assert_eq!(overview.template_entries, 0);
+        assert_eq!(overview.expr_hits, 0);
+        assert_eq!(overview.expr_misses, 0);
     }
 
     #[test]
@@ -815,5 +824,31 @@ mod tests {
         assert!(overview.template_cache_enabled);
         assert!(overview.expr_entries >= 1);
         assert!(overview.template_entries >= 1);
+    }
+
+    #[test]
+    fn test_cache_stats_populated_after_evaluation() {
+        let engine = ExpressionEngine::with_cache_size(100);
+        let context = EvaluationContext::new();
+
+        // First eval = miss, second eval = hit
+        let _ = engine.evaluate("2 + 3", &context).unwrap();
+        let _ = engine.evaluate("2 + 3", &context).unwrap();
+
+        let stats = engine.expr_cache_stats().expect("cache should be enabled");
+        assert!(
+            stats.hits >= 1,
+            "expected at least 1 hit, got {}",
+            stats.hits
+        );
+        assert!(
+            stats.misses >= 1,
+            "expected at least 1 miss, got {}",
+            stats.misses
+        );
+
+        let overview = engine.cache_overview();
+        assert!(overview.expr_hits >= 1);
+        assert!(overview.expr_misses >= 1);
     }
 }
