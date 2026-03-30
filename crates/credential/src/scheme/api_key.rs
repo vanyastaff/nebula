@@ -55,7 +55,9 @@ impl ApiKeyAuth {
     }
 }
 
-impl AuthScheme for ApiKeyAuth {}
+impl AuthScheme for ApiKeyAuth {
+    const KIND: &'static str = "api_key";
+}
 
 impl std::fmt::Debug for ApiKeyAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

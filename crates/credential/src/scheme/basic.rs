@@ -42,7 +42,9 @@ impl BasicAuth {
     }
 }
 
-impl AuthScheme for BasicAuth {}
+impl AuthScheme for BasicAuth {
+    const KIND: &'static str = "basic";
+}
 
 impl std::fmt::Debug for BasicAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

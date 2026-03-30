@@ -72,7 +72,9 @@ impl DatabaseAuth {
     }
 }
 
-impl AuthScheme for DatabaseAuth {}
+impl AuthScheme for DatabaseAuth {
+    const KIND: &'static str = "database";
+}
 
 impl std::fmt::Debug for DatabaseAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

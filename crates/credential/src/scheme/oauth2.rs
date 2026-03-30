@@ -65,7 +65,13 @@ impl OAuth2Token {
     }
 }
 
-impl AuthScheme for OAuth2Token {}
+impl AuthScheme for OAuth2Token {
+    const KIND: &'static str = "oauth2";
+
+    fn expires_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.expires_at
+    }
+}
 
 impl std::fmt::Debug for OAuth2Token {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

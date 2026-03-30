@@ -34,7 +34,9 @@ impl BearerToken {
     }
 }
 
-impl AuthScheme for BearerToken {}
+impl AuthScheme for BearerToken {
+    const KIND: &'static str = "bearer";
+}
 
 impl std::fmt::Debug for BearerToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

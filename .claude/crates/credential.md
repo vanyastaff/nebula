@@ -22,6 +22,6 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 ## Relations
 - Depends on: nebula-core, nebula-eventbus. Peer: nebula-resource.
 
-<!-- reviewed: 2026-03-30 -->
+<!-- reviewed: 2026-03-30 — AuthScheme extended with KIND, expires_at, serde bounds; all 5 scheme impls updated -->
 <!-- updated: 2026-03-25 — polish v2 module names, rename types -->
 <!-- reviewed: 2026-03-30 — absorbed auth RFCs into plans/, auth crate deleted -->
