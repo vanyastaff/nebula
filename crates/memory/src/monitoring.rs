@@ -5,8 +5,6 @@
 
 use core::time::Duration;
 
-use std::sync::{Arc, Mutex};
-
 #[cfg(feature = "logging")]
 use nebula_log::{error, info, warn};
 use nebula_system::memory::{self, MemoryInfo, MemoryPressure};
@@ -65,7 +63,6 @@ pub enum PressureAction {
 #[derive(Debug)]
 pub struct MemoryMonitor {
     config: MonitoringConfig,
-    last_check: Arc<Mutex<Option<std::time::Instant>>>,
     last_pressure: MemoryPressure,
     pressure_change_count: usize,
 }
@@ -80,7 +77,6 @@ impl MemoryMonitor {
     pub fn with_config(config: MonitoringConfig) -> Self {
         Self {
             config,
-            last_check: Arc::new(Mutex::new(None)),
             last_pressure: MemoryPressure::Low,
             pressure_change_count: 0,
         }

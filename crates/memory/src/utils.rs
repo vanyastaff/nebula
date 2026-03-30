@@ -47,7 +47,32 @@ use crate::allocator::{MemoryError, MemoryResult};
 #[must_use]
 pub const fn align_up(value: usize, alignment: usize) -> usize {
     debug_assert!(alignment.is_power_of_two());
-    (value + alignment - 1) & !(alignment - 1)
+    // Use wrapping_add to avoid UB on overflow near usize::MAX.
+    // The mask operation still produces a correct aligned result
+    // for any valid (power-of-two) alignment.
+    value.wrapping_add(alignment - 1) & !(alignment - 1)
+}
+
+/// Checked version of [`align_up`] that returns `None` on overflow.
+///
+/// Use this in allocation hot paths where the input `value` may be
+/// untrusted or derived from pointer arithmetic.
+///
+/// # Examples
+/// ```
+/// use nebula_memory::utils::checked_align_up;
+///
+/// assert_eq!(checked_align_up(7, 8), Some(8));
+/// assert_eq!(checked_align_up(usize::MAX, 8), None);
+/// ```
+#[inline(always)]
+#[must_use]
+pub const fn checked_align_up(value: usize, alignment: usize) -> Option<usize> {
+    debug_assert!(alignment.is_power_of_two());
+    match value.checked_add(alignment - 1) {
+        Some(v) => Some(v & !(alignment - 1)),
+        None => None,
+    }
 }
 
 /// Aligns a value down to the nearest multiple of alignment

@@ -1,11 +1,10 @@
 //! Cursor implementations for bump allocator
 //!
-//! Provides both atomic (thread-safe) and cell-based (single-thread) cursors.
+//! Provides atomic cursor for thread-safe bump pointer tracking.
 
-use core::cell::Cell;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// Trait for cursor abstraction (atomic or cell-based)
+/// Trait for cursor abstraction
 pub(super) trait Cursor: Send + Sync {
     fn load(&self, ordering: Ordering) -> usize;
     fn store(&self, val: usize, ordering: Ordering);
@@ -18,7 +17,10 @@ pub(super) trait Cursor: Send + Sync {
     ) -> Result<usize, usize>;
 }
 
-/// Atomic cursor for multi-threaded access
+/// Atomic cursor for thread-safe access
+///
+/// On x86, `Relaxed` atomic operations compile to plain load/store instructions,
+/// so there is zero overhead compared to a non-atomic Cell-based approach.
 pub(super) struct AtomicCursor(AtomicUsize);
 
 impl AtomicCursor {
@@ -49,45 +51,3 @@ impl Cursor for AtomicCursor {
         self.0.compare_exchange_weak(current, new, success, failure)
     }
 }
-
-/// Cell-based cursor for single-threaded access (faster, no atomic overhead)
-pub(super) struct CellCursor(Cell<usize>);
-
-impl CellCursor {
-    pub fn new(val: usize) -> Self {
-        Self(Cell::new(val))
-    }
-}
-
-impl Cursor for CellCursor {
-    #[inline]
-    fn load(&self, _ordering: Ordering) -> usize {
-        self.0.get()
-    }
-
-    #[inline]
-    fn store(&self, val: usize, _ordering: Ordering) {
-        self.0.set(val);
-    }
-
-    #[inline]
-    fn compare_exchange_weak(
-        &self,
-        current: usize,
-        new: usize,
-        _success: Ordering,
-        _failure: Ordering,
-    ) -> Result<usize, usize> {
-        let actual = self.0.get();
-        if actual == current {
-            self.0.set(new);
-            Ok(actual)
-        } else {
-            Err(actual)
-        }
-    }
-}
-
-// SAFETY: CellCursor is only used in single-threaded mode
-unsafe impl Send for CellCursor {}
-unsafe impl Sync for CellCursor {}

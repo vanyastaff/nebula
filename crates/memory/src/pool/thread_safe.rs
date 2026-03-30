@@ -374,7 +374,11 @@ impl<T: Poolable> ThreadSafePool<T> {
     pub fn clear(&self) {
         let mut inner = match self.inner.lock() {
             Ok(guard) => guard,
-            Err(poison) => poison.into_inner(),
+            Err(poison) => {
+                #[cfg(feature = "logging")]
+                nebula_log::warn!("ThreadSafePool mutex poisoned in clear(), recovering");
+                poison.into_inner()
+            }
         };
 
         for obj in inner.objects.drain(..) {
@@ -384,7 +388,10 @@ impl<T: Poolable> ThreadSafePool<T> {
         #[cfg(feature = "stats")]
         {
             self.stats.record_clear();
-            self.update_memory_stats();
+            // Inline memory stats update instead of calling update_memory_stats(),
+            // which would deadlock by re-acquiring self.inner.
+            // After drain, pool is empty → memory usage is 0.
+            self.stats.update_memory(0);
         }
     }
 

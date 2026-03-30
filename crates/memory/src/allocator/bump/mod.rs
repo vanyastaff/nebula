@@ -29,7 +29,7 @@ mod cursor;
 
 pub use checkpoint::{BumpCheckpoint, BumpScope};
 pub use config::BumpConfig;
-use cursor::{AtomicCursor, CellCursor, Cursor};
+use cursor::{AtomicCursor, Cursor};
 
 use crate::allocator::{
     Allocator, BulkAllocator, MemoryError, MemoryResult, MemoryUsage, OptionalStats, Resettable,
@@ -95,11 +95,10 @@ impl BumpAllocator {
         let start_addr = unsafe { (*memory.get()).as_ptr() as usize };
         let end_addr = start_addr + capacity;
 
-        let cursor: Box<dyn Cursor> = if config.thread_safe {
-            Box::new(AtomicCursor::new(start_addr))
-        } else {
-            Box::new(CellCursor::new(start_addr))
-        };
+        // Always use AtomicCursor — on x86, Relaxed atomic ops compile to plain
+        // load/store with zero overhead. This eliminates the unsound CellCursor
+        // which required `unsafe impl Sync` on a `Cell<usize>`.
+        let cursor: Box<dyn Cursor> = Box::new(AtomicCursor::new(start_addr));
 
         let track_stats = config.track_stats;
 
@@ -378,7 +377,7 @@ unsafe impl Allocator for BumpAllocator {
 // - Atomic cursor (AtomicCursor) provides thread-safe allocation
 // - CAS operations prevent race conditions
 // - Memory buffer wrapped in SyncUnsafeCell (proven Sync above)
-// - When thread_safe=false, CellCursor is used (not thread-safe, but correct for !Send)
+// - AtomicCursor is always used (zero overhead on x86 with Relaxed ordering)
 unsafe impl ThreadSafeAllocator for BumpAllocator {}
 
 // SAFETY: BumpAllocator implements BulkAllocator using default trait methods.
@@ -473,14 +472,15 @@ impl crate::allocator::sealed::AllocatorInternal for BumpAllocator {
         // - Checkpoint validated above (correct generation, allocator, bounds)
         // - Setting cursor to checkpoint offset is safe (within [start_addr, end_addr))
         // - Updates stats to reflect restored state
+        // Capture usage BEFORE restoring cursor so we can compute freed bytes
+        let old_used = self.used();
+
         let restored_addr = self.start_addr + checkpoint.offset;
         self.cursor.store(restored_addr, Ordering::Release);
 
-        // Update stats to reflect rewound state
-        let freed_bytes = self.used();
-        if freed_bytes > checkpoint.offset {
-            self.stats
-                .record_deallocation(freed_bytes - checkpoint.offset);
+        // Record deallocation stats for the freed region
+        if old_used > checkpoint.offset {
+            self.stats.record_deallocation(old_used - checkpoint.offset);
         }
 
         Ok(())

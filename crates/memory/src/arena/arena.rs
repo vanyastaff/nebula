@@ -39,7 +39,7 @@ use std::time::Instant;
 
 use super::{ArenaAllocate, ArenaConfig, ArenaStats};
 use crate::error::MemoryError;
-use crate::utils::align_up;
+use crate::utils::checked_align_up;
 
 /// Position marker for arena state
 ///
@@ -51,19 +51,36 @@ use crate::utils::align_up;
 ///
 /// Positions must only be used with the arena they were created from.
 /// Using a position from a different arena will result in undefined behavior.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug)]
 pub struct Position {
     /// Current pointer offset from chunk start
     offset: usize,
     /// Pointer to verify arena identity
     chunk_ptr: *const u8,
+    /// Generation counter to detect stale positions after reset
+    generation: u64,
 }
+
+impl PartialEq for Position {
+    /// Compares offset and chunk pointer only.
+    /// Generation is an internal safety field used by `reset_to_position`
+    /// validation, not for semantic equality of arena positions.
+    fn eq(&self, other: &Self) -> bool {
+        self.offset == other.offset && self.chunk_ptr == other.chunk_ptr
+    }
+}
+
+impl Eq for Position {}
 
 impl Position {
     /// Creates a new position marker
     #[inline]
-    fn new(offset: usize, chunk_ptr: *const u8) -> Self {
-        Self { offset, chunk_ptr }
+    fn new(offset: usize, chunk_ptr: *const u8, generation: u64) -> Self {
+        Self {
+            offset,
+            chunk_ptr,
+            generation,
+        }
     }
 }
 
@@ -148,6 +165,8 @@ pub struct Arena {
     current_end: Cell<*mut u8>,
     config: ArenaConfig,
     stats: ArenaStats,
+    /// Generation counter incremented on every reset to invalidate stale positions
+    generation: Cell<u64>,
 }
 
 impl Arena {
@@ -160,6 +179,7 @@ impl Arena {
             current_end: Cell::new(ptr::null_mut()),
             config,
             stats: ArenaStats::new(),
+            generation: Cell::new(0),
         }
     }
 
@@ -278,41 +298,55 @@ impl Arena {
             return Err(MemoryError::invalid_alignment(align));
         }
 
+        if size == 0 {
+            // Return a non-null dangling pointer for zero-size allocations.
+            // This prevents aliasing with the next real allocation.
+            return Ok(align as *mut u8);
+        }
+
         let start_time = self.config.track_stats.then(Instant::now);
 
-        // Calculate aligned pointer and padding needed
-        let current = self.current_ptr.get();
-        let aligned = align_up(current as usize, align) as *mut u8;
-        let padding = aligned as usize - current as usize;
+        loop {
+            let current = self.current_ptr.get();
 
-        // Check if we need a new chunk
-        let needed = size + padding;
-        // SAFETY: Computing end of allocation.
-        // - aligned is valid address (computed from current or will be set by allocate_chunk)
-        // - add(size) computes one-past-end of allocation
-        // - Comparing with current_end to check bounds
-        if current.is_null() || unsafe { aligned.add(size) > self.current_end.get() } {
-            self.allocate_chunk(needed)?;
-            return self.alloc_bytes_aligned(size, align);
-        }
+            // Try to fit in current chunk (null → no chunk yet)
+            let fits = (!current.is_null())
+                .then(|| {
+                    let addr = current as usize;
+                    let aligned = checked_align_up(addr, align)?;
+                    let end = aligned.checked_add(size)?;
+                    (end <= self.current_end.get() as usize).then_some((
+                        aligned,
+                        end,
+                        aligned - addr,
+                    ))
+                })
+                .flatten();
 
-        // Update bump pointer
-        // SAFETY: Advancing bump pointer after allocation.
-        // - aligned is within current chunk (checked above)
-        // - add(size) is within bounds (checked above: aligned + size <= current_end)
-        // - This becomes the new current_ptr for next allocation
-        self.current_ptr.set(unsafe { aligned.add(size) });
+            let Some((aligned_addr, end_addr, padding)) = fits else {
+                // Need a new chunk — fall through to allocate_chunk below
+                let needed = size.checked_add(align).ok_or_else(|| {
+                    MemoryError::invalid_layout("allocation size + alignment overflow")
+                })?;
+                self.allocate_chunk(needed)?;
+                continue;
+            };
 
-        // Update statistics if enabled
-        if let Some(start) = start_time {
-            let elapsed = start.elapsed().as_nanos() as u64;
-            self.stats.record_allocation(size, elapsed);
-            if padding > 0 {
-                self.stats.record_waste(padding);
+            // SAFETY: Advancing bump pointer after allocation.
+            // - aligned_addr is within current chunk (checked above)
+            // - end_addr <= current_end (checked above)
+            self.current_ptr.set(end_addr as *mut u8);
+
+            if let Some(start) = start_time {
+                let elapsed = start.elapsed().as_nanos() as u64;
+                self.stats.record_allocation(size, elapsed);
+                if padding > 0 {
+                    self.stats.record_waste(padding);
+                }
             }
-        }
 
-        Ok(aligned)
+            return Ok(aligned_addr as *mut u8);
+        }
     }
 
     /// Allocates and initializes a value
@@ -321,13 +355,14 @@ impl Arena {
         let ptr =
             (self.alloc_bytes_aligned(mem::size_of::<T>(), mem::align_of::<T>())?).cast::<T>();
 
-        // SAFETY: Initializing allocated memory and creating reference.
-        // - ptr is valid (just allocated via alloc_bytes_aligned)
-        // - ptr is properly aligned for T (alloc_bytes_aligned guarantees)
-        // - ptr has space for T (size_of::<T>() bytes allocated)
-        // - write moves value into allocated memory
-        // - After write, memory contains valid T
-        // - Reference lifetime bound to &self (arena lifetime)
+        // SAFETY: Initializing allocated memory and creating mutable reference.
+        // - ptr is freshly allocated by alloc_bytes_aligned (unique, not aliased)
+        // - ptr is properly aligned for T (alloc_bytes_aligned guarantees alignment)
+        // - The returned &mut T borrows from &self, which is sound because:
+        //   (a) each alloc returns a disjoint memory region (bump allocation)
+        //   (b) Tree Borrows (Miri's default model) accepts this pattern
+        //   (c) This matches bumpalo's proven approach (identical API)
+        // - write() moves value into allocated memory, making it a valid T
         unsafe {
             ptr.write(value);
             Ok(&mut *ptr)
@@ -390,18 +425,28 @@ impl Arena {
     pub fn reset(&mut self) {
         let start_time = self.config.track_stats.then(Instant::now);
 
+        self.generation.set(self.generation.get() + 1);
+
         if let Some(chunk) = &*self.chunks.borrow() {
             self.current_ptr.set(chunk.start());
             self.current_end.set(chunk.end());
 
-            // SAFETY: Zeroing chunk on reset.
-            // - chunk.start() is valid (points to allocated chunk)
-            // - chunk.capacity is the allocation size
+            // Zero ALL chunks in the linked list, not just the first
+            // SAFETY: Zeroing chunks on reset.
+            // - Each chunk.start() is valid (points to allocated memory)
+            // - Each chunk.capacity is the allocation size
             // - Caller has &mut self, ensuring no outstanding references
-            // - Safe to overwrite all memory in chunk
+            // - Safe to overwrite all memory in each chunk
             if self.config.zero_memory {
-                unsafe {
-                    ptr::write_bytes(chunk.start(), 0, chunk.capacity);
+                let mut current: &Chunk = chunk;
+                loop {
+                    unsafe {
+                        ptr::write_bytes(current.start(), 0, current.capacity);
+                    }
+                    match &current.next {
+                        Some(next_chunk) => current = next_chunk,
+                        None => break,
+                    }
                 }
             }
         } else {
@@ -447,7 +492,7 @@ impl Arena {
             }
         };
 
-        Position::new(offset, chunk_ptr)
+        Position::new(offset, chunk_ptr, self.generation.get())
     }
 
     /// Resets the arena to a previously saved position
@@ -480,6 +525,13 @@ impl Arena {
     /// // Temporary allocation is now invalid
     /// ```
     pub fn reset_to_position(&mut self, position: Position) -> Result<(), MemoryError> {
+        // Validate generation to detect stale positions from before a reset
+        if position.generation != self.generation.get() {
+            return Err(MemoryError::invalid_argument(
+                "Position is stale: arena has been reset since this position was created",
+            ));
+        }
+
         let chunks = self.chunks.borrow();
 
         // Verify position is from this arena

@@ -201,7 +201,8 @@ impl MemoryBudget {
         let mut budget = Self::new(config);
 
         // Set parent and add self to parent's children
-        let budget_mut = Arc::get_mut(&mut budget).unwrap();
+        let budget_mut = Arc::get_mut(&mut budget)
+            .expect("budget Arc has no other references immediately after creation");
         budget_mut.parent = Some(parent.clone());
         parent.children.lock().push(Arc::downgrade(&budget));
 
@@ -274,6 +275,12 @@ impl MemoryBudget {
     }
 
     /// Request memory allocation
+    ///
+    /// # Lock ordering
+    ///
+    /// This method acquires locks in this order: `used` → `config` → `peak` → `stats` → `history`.
+    /// For parent-child hierarchies: child locks first, then calls `parent.request_memory()`.
+    /// **Never acquire these locks in reverse order** to prevent deadlock.
     pub fn request_memory(&self, size: usize) -> MemoryResult<()> {
         if size == 0 {
             return Ok(());
@@ -326,6 +333,10 @@ impl MemoryBudget {
     }
 
     /// Release memory
+    ///
+    /// If the child over-releases (size > used), the amount is clamped via
+    /// `saturating_sub`. Only the **actually released** amount is propagated
+    /// to the parent, preventing accounting drift.
     pub fn release_memory(&self, size: usize) {
         if size == 0 {
             return;
@@ -333,17 +344,21 @@ impl MemoryBudget {
 
         let mut used = self.used.lock();
 
-        // Ensure we don't underflow
-        *used = used.saturating_sub(size);
+        // Compute actual release (clamped to prevent underflow)
+        let before = *used;
+        *used = before.saturating_sub(size);
+        let actual_released = before - *used;
 
         // Update history if enabled
         if let Some(ref mut history) = *self.history.lock() {
             history.add(*used);
         }
 
-        // Release from parent if needed
-        if let Some(ref parent) = self.parent {
-            parent.release_memory(size);
+        // Propagate only the actually released amount to parent
+        if actual_released > 0
+            && let Some(ref parent) = self.parent
+        {
+            parent.release_memory(actual_released);
         }
     }
 

@@ -278,15 +278,23 @@ impl StackAllocator {
                     ptr::write_bytes(ptr.as_ptr(), pattern, layout.size());
                 }
 
-                // This is the most recent allocation, we can safely pop it
-                self.top.store(expected_start, Ordering::Release);
-
-                // Update statistics
-                if self.config.track_stats {
-                    self.total_deallocs.fetch_add(1, Ordering::Relaxed);
+                // Atomically pop the most recent allocation.
+                // Use CAS instead of store to prevent concurrent deallocs from
+                // silently reverting each other's operations.
+                match self.top.compare_exchange(
+                    current_top,
+                    expected_start,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        if self.config.track_stats {
+                            self.total_deallocs.fetch_add(1, Ordering::Relaxed);
+                        }
+                        true
+                    }
+                    Err(_) => false, // concurrent modification, pop fails safely
                 }
-
-                true
             } else {
                 // Not the most recent allocation, cannot pop
                 false

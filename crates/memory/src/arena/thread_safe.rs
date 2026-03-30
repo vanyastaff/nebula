@@ -27,7 +27,7 @@ use std::time::Instant;
 
 use super::{ArenaAllocate, ArenaConfig, ArenaStats};
 use crate::error::MemoryError;
-use crate::utils::align_up;
+use crate::utils::checked_align_up;
 
 /// Thread-safe memory chunk with atomic bump pointer
 struct ThreadSafeChunk {
@@ -64,10 +64,11 @@ impl ThreadSafeChunk {
         let mut current = self.used.load(Ordering::Relaxed);
 
         loop {
-            // Align the absolute address, then convert back to offset
-            let aligned_addr = align_up(base + current, align);
-            let aligned_pos = aligned_addr - base;
-            let new_used = aligned_pos + size;
+            // Use checked arithmetic to prevent overflow on untrusted inputs
+            let abs_addr = base.checked_add(current)?;
+            let aligned_addr = checked_align_up(abs_addr, align)?;
+            let aligned_pos = aligned_addr.checked_sub(base)?;
+            let new_used = aligned_pos.checked_add(size)?;
 
             if new_used > self.capacity {
                 return None;
@@ -197,7 +198,9 @@ impl ThreadSafeArena {
     fn allocate_chunk(&self, min_size: usize) -> Result<(), MemoryError> {
         let _lock = self.chunk_mutex.lock();
 
-        // Double-check if another thread already allocated
+        // Double-check if another thread already allocated a chunk with enough capacity.
+        // We only check remaining capacity rather than doing a speculative try_alloc
+        // with alignment=1, which would waste space on an allocation we don't need.
         let current = self.current_chunk.load(Ordering::Acquire);
         if !current.is_null() {
             // SAFETY: current_chunk is only set to non-null pointers created from Arc::as_ptr.
@@ -205,7 +208,8 @@ impl ThreadSafeArena {
             // - Acquire ordering synchronizes with Release store in allocate_chunk
             // - Multiple threads can safely read the chunk (Chunk is Sync)
             let chunk = unsafe { &*current };
-            if chunk.try_alloc(min_size, 1).is_some() {
+            let used = chunk.used.load(Ordering::Relaxed);
+            if chunk.capacity.saturating_sub(used) >= min_size {
                 return Ok(());
             }
         }
@@ -262,42 +266,33 @@ impl ThreadSafeArena {
 
         let start_time = self.config.track_stats.then(Instant::now);
 
-        // Fast path: try current chunk first
-        let current = self.current_chunk.load(Ordering::Acquire);
-        if !current.is_null() {
+        loop {
+            // Fast path: try current chunk first
+            let current = self.current_chunk.load(Ordering::Acquire);
             // SAFETY: Dereferencing current_chunk pointer (fast path).
             // - Pointer is from Arc::as_ptr, kept alive by Arc in self.chunks
             // - Acquire ordering synchronizes with Release in allocate_chunk
             // - Chunk is Sync, so concurrent access is safe
-            let chunk = unsafe { &*current };
-            if let Some(ptr) = chunk.try_alloc(size, align) {
+            let fast_alloc = (!current.is_null())
+                .then(|| unsafe { &*current }.try_alloc(size, align))
+                .flatten();
+
+            if let Some(ptr) = fast_alloc {
                 if let Some(start) = start_time {
                     self.stats
                         .record_allocation(size, start.elapsed().as_nanos() as u64);
                 }
                 return Ok(ptr);
             }
+
+            // Slow path: allocate new chunk, then loop back to retry fast path.
+            // Another thread may have allocated a chunk concurrently, so we
+            // always re-check the fast path after allocate_chunk returns.
+            let needed = size.checked_add(align).ok_or_else(|| {
+                MemoryError::invalid_layout("allocation size + alignment overflow")
+            })?;
+            self.allocate_chunk(needed)?;
         }
-
-        // Slow path: allocate new chunk
-        self.allocate_chunk(size + align)?;
-
-        // Try again with new chunk
-        let current = self.current_chunk.load(Ordering::Acquire);
-        // SAFETY: Dereferencing current_chunk after successful chunk allocation.
-        // - allocate_chunk() just set current_chunk to a valid Arc pointer
-        // - Acquire ordering synchronizes with Release store
-        // - Chunk cannot be deallocated (still in self.chunks)
-        let chunk = unsafe { &*current };
-        chunk
-            .try_alloc(size, align)
-            .ok_or(MemoryError::allocation_failed(0, 1))
-            .inspect(|_ptr| {
-                if let Some(start) = start_time {
-                    self.stats
-                        .record_allocation(size, start.elapsed().as_nanos() as u64);
-                }
-            })
     }
 
     /// Allocates and initializes a value (thread-safe)
