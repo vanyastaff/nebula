@@ -3,7 +3,6 @@
 //! Uses thiserror for clean, idiomatic Rust error definitions.
 
 use core::alloc::Layout;
-use nebula_error::{Classify, ErrorCategory, ErrorCode};
 use thiserror::Error;
 
 // ============================================================================
@@ -13,32 +12,40 @@ use thiserror::Error;
 /// Memory management errors
 #[must_use = "errors should be handled"]
 #[non_exhaustive]
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Debug, Clone, nebula_error::Classify)]
 pub enum MemoryError {
     // --- Allocation Errors ---
+    #[classify(category = "internal", code = "MEM:ALLOC:FAILED")]
     #[error("Memory allocation failed: {size} bytes with {align} byte alignment")]
     AllocationFailed { size: usize, align: usize },
 
+    #[classify(category = "internal", code = "MEM:ALLOC:LAYOUT")]
     #[error("Invalid memory layout: {reason}")]
     InvalidLayout { reason: Box<str> },
 
+    #[classify(category = "internal", code = "MEM:ALLOC:OVERFLOW")]
     #[error("Size overflow during operation: {operation}")]
     SizeOverflow { operation: Box<str> },
 
+    #[classify(category = "internal", code = "MEM:ALLOC:ALIGN")]
     #[error("Invalid alignment: {alignment}")]
     InvalidAlignment { alignment: usize },
 
+    #[classify(category = "internal", code = "MEM:ALLOC:MAX")]
     #[error("Allocation exceeds maximum size: {size} bytes (max: {max_size})")]
     ExceedsMaxSize { size: usize, max_size: usize },
 
     // --- Pool Errors ---
+    #[classify(category = "exhausted", code = "MEM:POOL:EXHAUSTED")]
     #[error("Memory pool '{pool_id}' exhausted (capacity: {capacity})")]
     PoolExhausted { pool_id: Box<str>, capacity: usize },
 
+    #[classify(category = "validation", code = "MEM:CONFIG:INVALID")]
     #[error("Invalid configuration: {reason}")]
     InvalidConfig { reason: Box<str> },
 
     // --- Arena Errors ---
+    #[classify(category = "exhausted", code = "MEM:ARENA:EXHAUSTED")]
     #[error("Arena '{arena_id}' exhausted: requested {requested} bytes, available {available}")]
     ArenaExhausted {
         arena_id: Box<str>,
@@ -47,36 +54,45 @@ pub enum MemoryError {
     },
 
     // --- Cache Errors ---
+    #[classify(category = "not_found", code = "MEM:CACHE:MISS", retryable = true)]
     #[error("Cache miss for key: {key}")]
     CacheMiss { key: Box<str> },
 
+    #[classify(category = "exhausted", code = "MEM:CACHE:OVERFLOW")]
     #[error("Cache overflow: {current} bytes used, {max} bytes maximum")]
     CacheOverflow { current: usize, max: usize },
 
+    #[classify(category = "validation", code = "MEM:CACHE:KEY")]
     #[error("Invalid cache key: {reason}")]
     InvalidCacheKey { reason: Box<str> },
 
     // --- Budget Errors ---
+    #[classify(category = "exhausted", code = "MEM:BUDGET:EXCEEDED")]
     #[error("Memory budget exceeded: {used} bytes used, {limit} bytes limit")]
     BudgetExceeded { used: usize, limit: usize },
 
     // --- System Errors ---
+    #[classify(category = "internal", code = "MEM:SYSTEM:CORRUPTION")]
     #[error("Memory corruption detected in {component}: {details}")]
     Corruption {
         component: Box<str>,
         details: Box<str>,
     },
 
+    #[classify(category = "internal", code = "MEM:SYSTEM:CONCURRENT")]
     #[error("Concurrent access error: {details}")]
     ConcurrentAccess { details: Box<str> },
 
+    #[classify(category = "internal", code = "MEM:SYSTEM:STATE")]
     #[error("Invalid state: {reason}")]
     InvalidState { reason: Box<str> },
 
+    #[classify(category = "internal", code = "MEM:SYSTEM:INIT")]
     #[error("Initialization failed: {reason}")]
     InitializationFailed { reason: Box<str> },
 
     // --- Feature Support Errors ---
+    #[classify(category = "unsupported", code = "MEM:FEATURE:UNSUPPORTED")]
     #[error("Feature not supported: {feature}{}", context.as_ref().map(|c| format!(" ({c})")).unwrap_or_default())]
     NotSupported {
         feature: &'static str,
@@ -84,53 +100,16 @@ pub enum MemoryError {
     },
 
     // --- General Errors ---
+    #[classify(category = "not_found", code = "MEM:NOT_FOUND")]
     #[error("Operation not found: {reason}")]
     NotFound { reason: Box<str> },
 
+    #[classify(category = "validation", code = "MEM:INVALID_OP")]
     #[error("Invalid operation: {reason}")]
     InvalidOperation { reason: Box<str> },
 }
 
 impl MemoryError {
-    /// Check if error is retryable
-    #[must_use]
-    pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            Self::PoolExhausted { .. }
-                | Self::ArenaExhausted { .. }
-                | Self::CacheOverflow { .. }
-                | Self::BudgetExceeded { .. }
-                | Self::CacheMiss { .. }
-        )
-    }
-
-    /// Get error code for categorization
-    #[must_use]
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::AllocationFailed { .. } => "MEM:ALLOC:FAILED",
-            Self::InvalidLayout { .. } => "MEM:ALLOC:LAYOUT",
-            Self::SizeOverflow { .. } => "MEM:ALLOC:OVERFLOW",
-            Self::InvalidAlignment { .. } => "MEM:ALLOC:ALIGN",
-            Self::ExceedsMaxSize { .. } => "MEM:ALLOC:MAX",
-            Self::PoolExhausted { .. } => "MEM:POOL:EXHAUSTED",
-            Self::InvalidConfig { .. } => "MEM:CONFIG:INVALID",
-            Self::ArenaExhausted { .. } => "MEM:ARENA:EXHAUSTED",
-            Self::CacheMiss { .. } => "MEM:CACHE:MISS",
-            Self::CacheOverflow { .. } => "MEM:CACHE:OVERFLOW",
-            Self::InvalidCacheKey { .. } => "MEM:CACHE:KEY",
-            Self::BudgetExceeded { .. } => "MEM:BUDGET:EXCEEDED",
-            Self::Corruption { .. } => "MEM:SYSTEM:CORRUPTION",
-            Self::ConcurrentAccess { .. } => "MEM:SYSTEM:CONCURRENT",
-            Self::InvalidState { .. } => "MEM:SYSTEM:STATE",
-            Self::InitializationFailed { .. } => "MEM:SYSTEM:INIT",
-            Self::NotSupported { .. } => "MEM:FEATURE:UNSUPPORTED",
-            Self::NotFound { .. } => "MEM:NOT_FOUND",
-            Self::InvalidOperation { .. } => "MEM:INVALID_OP",
-        }
-    }
-
     // ============================================================================
     // Convenience Constructors - Allocation Errors
     // ============================================================================
@@ -329,9 +308,11 @@ impl MemoryError {
     }
 
     /// Create not supported error
-    pub fn not_supported(operation: &str) -> Self {
-        Self::InvalidState {
-            reason: format!("operation not supported: {operation}").into_boxed_str(),
+    #[must_use]
+    pub fn not_supported(feature: &'static str) -> Self {
+        Self::NotSupported {
+            feature,
+            context: None,
         }
     }
 
@@ -355,42 +336,6 @@ impl MemoryError {
 }
 
 // ============================================================================
-// Classify Implementation
-// ============================================================================
-
-impl Classify for MemoryError {
-    fn category(&self) -> ErrorCategory {
-        match self {
-            // Pool/Arena/Cache/Budget exhaustion → Exhausted
-            Self::PoolExhausted { .. }
-            | Self::ArenaExhausted { .. }
-            | Self::CacheOverflow { .. }
-            | Self::BudgetExceeded { .. } => ErrorCategory::Exhausted,
-
-            // Cache miss / NotFound → NotFound
-            Self::CacheMiss { .. } | Self::NotFound { .. } => ErrorCategory::NotFound,
-
-            // Config / InvalidOperation → Validation
-            Self::InvalidConfig { .. } | Self::InvalidOperation { .. } => ErrorCategory::Validation,
-
-            // Feature support → Unsupported
-            Self::NotSupported { .. } => ErrorCategory::Unsupported,
-
-            // Allocation, system errors, and catch-all → Internal
-            _ => ErrorCategory::Internal,
-        }
-    }
-
-    fn code(&self) -> ErrorCode {
-        ErrorCode::new(MemoryError::code(self))
-    }
-
-    fn is_retryable(&self) -> bool {
-        MemoryError::is_retryable(self)
-    }
-}
-
-// ============================================================================
 // Result Types
 // ============================================================================
 
@@ -404,6 +349,7 @@ pub type MemoryResult<T> = core::result::Result<T, MemoryError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nebula_error::Classify;
 
     #[test]
     fn test_memory_error_creation() {

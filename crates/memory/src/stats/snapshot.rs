@@ -195,7 +195,7 @@ impl MemorySnapshot {
             SnapshotFormat::Text => Ok(self.format_text()),
             SnapshotFormat::Json => self.format_json(),
             SnapshotFormat::Csv => Ok(self.format_csv()),
-            SnapshotFormat::Binary => Err(MemoryError::not_supported("not supported")),
+            SnapshotFormat::Binary => Err(MemoryError::not_supported("binary snapshot format")),
         }
     }
 
