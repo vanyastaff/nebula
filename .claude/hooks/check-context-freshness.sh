@@ -30,6 +30,10 @@ fi
 
 missing_updates=""
 for crate in $changed_crates; do
+    # Skip deleted crates — no context file needed
+    if [[ ! -d "crates/${crate}" ]]; then
+        continue
+    fi
     context_file=".claude/crates/${crate}.md"
     if [[ ! -f "$context_file" ]]; then
         missing_updates="${missing_updates}\n- .claude/crates/${crate}.md is MISSING (new crate needs a context file)"

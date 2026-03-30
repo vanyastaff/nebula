@@ -23,4 +23,4 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 
 <!-- reviewed: 2026-03-30 -->
 <!-- updated: 2026-03-25 — polish v2 module names, rename types -->
-<!-- reviewed: 2026-03-30 — dep bumps: vaultrs 0.8, aws-sdk-secretsmanager 1.103, kube 3.1, k8s-openapi 0.27.1 -->
+<!-- reviewed: 2026-03-30 — absorbed auth RFCs into plans/, auth crate deleted -->
