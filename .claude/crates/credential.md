@@ -37,4 +37,6 @@ Credential storage, rotation, v2 trait-based system. v1 modules fully deleted.
 - v2 built-in credentials: `ApiKeyCredential`, `BasicAuthCredential`, `DatabaseCredential`, `HeaderAuthCredential`, `OAuth2Credential`.
 - Rotation module: policy, transaction, blue-green, validation (with `TestableCredential`/`RotatableCredential`), retry, backup, events, metrics.
 
-<!-- updated: 2026-03-30 — v1 modules deleted, CredentialStateV2 renamed to CredentialState -->
+- `CredentialKey` newtype: thin `&'static str` wrapper for credential type identifiers. Non-breaking addition — `Credential::KEY` still uses `&'static str`, `CredentialKey` available for gradual adoption. `credential_key!` macro for compile-time construction.
+
+<!-- updated: 2026-03-30 — added CredentialKey newtype + credential_key! macro -->

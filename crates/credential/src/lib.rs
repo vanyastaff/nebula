@@ -43,6 +43,8 @@ pub mod utils;
 
 /// Typed credential handle returned by the resolver.
 pub mod credential_handle;
+/// Newtype for credential type keys.
+pub mod credential_key;
 /// Credential state trait for stored credential data.
 pub mod credential_state;
 /// Unified Credential trait replacing six v1 traits.
@@ -120,6 +122,9 @@ pub use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
 pub use crate::rotation::{
     CredentialRotationEvent, GracePeriodConfig, RotationError, RotationResult,
 };
+
+// v2: Credential key newtype
+pub use credential_key::CredentialKey;
 
 // v2: Unified Credential trait
 pub use credential_trait::Credential;
