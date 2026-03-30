@@ -20,4 +20,4 @@ Fault-tolerance patterns: circuit breaker, retry, bulkhead, rate limiter, timeou
 ## Relations
 - Depends on: nebula-error. Used by nebula-resource for pool resilience.
 
-<!-- reviewed: 2026-03-30 (Classify-aware retry: auto-classify, hint floor, is_retriable→is_retryable) -->
+<!-- reviewed: 2026-03-30 — Classify-aware retry, no new invariant changes -->
