@@ -22,7 +22,7 @@
 //! let coord = RefreshCoordinator::new();
 //!
 //! match coord.try_refresh("cred-1").await {
-//!     RefreshAttempt::Winner => {
+//!     RefreshAttempt::Winner(_notify) => {
 //!         // Perform refresh...
 //!         coord.complete("cred-1").await;
 //!     }
@@ -52,7 +52,7 @@ use tokio::sync::{Mutex, Notify};
 /// // First caller wins
 /// assert!(matches!(
 ///     coord.try_refresh("cred-1").await,
-///     RefreshAttempt::Winner,
+///     RefreshAttempt::Winner(_),
 /// ));
 ///
 /// // Second caller waits
@@ -72,7 +72,14 @@ pub struct RefreshCoordinator {
 pub enum RefreshAttempt {
     /// This caller won the race -- should perform the refresh,
     /// then call [`RefreshCoordinator::complete()`].
-    Winner,
+    ///
+    /// Carries the [`Notify`] handle so the caller can wrap it in a
+    /// `scopeguard` to guarantee waiters are woken on any exit path
+    /// (panic, timeout, error).
+    Winner(
+        /// Handle to notify waiters when refresh completes.
+        Arc<Notify>,
+    ),
     /// Another caller is already refreshing -- wait on the [`Notify`].
     Waiter(
         /// Handle to wait on until the winner completes.
@@ -99,8 +106,9 @@ impl RefreshCoordinator {
         if let Some(notify) = map.get(credential_id) {
             RefreshAttempt::Waiter(Arc::clone(notify))
         } else {
-            map.insert(credential_id.to_string(), Arc::new(Notify::new()));
-            RefreshAttempt::Winner
+            let notify = Arc::new(Notify::new());
+            map.insert(credential_id.to_string(), Arc::clone(&notify));
+            RefreshAttempt::Winner(notify)
         }
     }
 
@@ -137,7 +145,7 @@ mod tests {
     async fn first_caller_wins() {
         let coord = RefreshCoordinator::new();
         let attempt = coord.try_refresh("cred-1").await;
-        assert!(matches!(attempt, RefreshAttempt::Winner));
+        assert!(matches!(attempt, RefreshAttempt::Winner(_)));
         assert_eq!(coord.in_flight_count().await, 1);
     }
 
@@ -145,7 +153,7 @@ mod tests {
     async fn second_caller_waits() {
         let coord = RefreshCoordinator::new();
         let first = coord.try_refresh("cred-1").await;
-        assert!(matches!(first, RefreshAttempt::Winner));
+        assert!(matches!(first, RefreshAttempt::Winner(_)));
 
         let second = coord.try_refresh("cred-1").await;
         assert!(matches!(second, RefreshAttempt::Waiter(_)));
@@ -167,13 +175,13 @@ mod tests {
 
         // Winner starts refresh
         let attempt = coord.try_refresh("cred-1").await;
-        assert!(matches!(attempt, RefreshAttempt::Winner));
+        assert!(matches!(attempt, RefreshAttempt::Winner(_)));
 
         // Waiter gets Notify
         let waiter_attempt = coord.try_refresh("cred-1").await;
         let notify = match waiter_attempt {
             RefreshAttempt::Waiter(n) => n,
-            RefreshAttempt::Winner => panic!("expected Waiter"),
+            RefreshAttempt::Winner(_) => panic!("expected Waiter"),
         };
 
         // Use a oneshot to signal the waiter task is ready
@@ -206,8 +214,8 @@ mod tests {
         let b = coord.try_refresh("cred-b").await;
 
         // Both should win -- different credentials
-        assert!(matches!(a, RefreshAttempt::Winner));
-        assert!(matches!(b, RefreshAttempt::Winner));
+        assert!(matches!(a, RefreshAttempt::Winner(_)));
+        assert!(matches!(b, RefreshAttempt::Winner(_)));
         assert_eq!(coord.in_flight_count().await, 2);
 
         coord.complete("cred-a").await;
@@ -231,12 +239,12 @@ mod tests {
 
         // First round
         let first = coord.try_refresh("cred-1").await;
-        assert!(matches!(first, RefreshAttempt::Winner));
+        assert!(matches!(first, RefreshAttempt::Winner(_)));
         coord.complete("cred-1").await;
 
         // Second round -- same credential can be refreshed again
         let second = coord.try_refresh("cred-1").await;
-        assert!(matches!(second, RefreshAttempt::Winner));
+        assert!(matches!(second, RefreshAttempt::Winner(_)));
         coord.complete("cred-1").await;
     }
 
@@ -254,7 +262,7 @@ mod tests {
             let attempt = coord.try_refresh("cred-1").await;
             let notify = match attempt {
                 RefreshAttempt::Waiter(n) => n,
-                RefreshAttempt::Winner => panic!("expected Waiter"),
+                RefreshAttempt::Winner(_) => panic!("expected Waiter"),
             };
             let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
             ready_rxs.push(ready_rx);

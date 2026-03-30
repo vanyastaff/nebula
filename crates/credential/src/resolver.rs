@@ -126,11 +126,12 @@ impl<S: CredentialStore> CredentialResolver<S> {
 
         // Coordinate refresh -- only one caller does the work
         match self.refresh_coordinator.try_refresh(credential_id).await {
-            RefreshAttempt::Winner => {
+            RefreshAttempt::Winner(notify) => {
+                // scopeguard: always notify waiters, even on panic/timeout
+                let _guard = scopeguard::guard(notify, |n| n.notify_waiters());
                 let result = self
                     .perform_refresh::<C>(credential_id, state, stored, ctx)
                     .await;
-                // Always complete to wake waiters, even on error
                 self.refresh_coordinator.complete(credential_id).await;
                 result
             }

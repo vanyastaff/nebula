@@ -3767,6 +3767,7 @@ dependencies = [
  "rand 0.10.0",
  "reqwest 0.13.2",
  "schemars 1.2.1",
+ "scopeguard",
  "serde",
  "serde_json",
  "sha2",
