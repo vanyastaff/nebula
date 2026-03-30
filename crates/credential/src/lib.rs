@@ -96,6 +96,9 @@ pub mod scheme;
 pub mod credential_store;
 /// Composable storage layers (encryption, etc.) for stores.
 pub mod layer;
+/// Filesystem-based credential store for desktop/single-node use.
+#[cfg(feature = "storage-local")]
+pub mod store_local;
 /// In-memory credential store for testing.
 pub mod store_memory;
 
@@ -185,7 +188,9 @@ pub use credential_handle::CredentialHandle;
 
 // v2: Storage
 pub use credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
-pub use layer::EncryptionLayer;
+pub use layer::{CacheConfig, CacheLayer, CacheStats, EncryptionLayer};
+#[cfg(feature = "storage-local")]
+pub use store_local::LocalFileStore;
 pub use store_memory::InMemoryStore;
 
 // v2: Registry
