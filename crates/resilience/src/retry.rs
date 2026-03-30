@@ -1,4 +1,8 @@
-//! Retry pattern — unified API, predicate-based error classification.
+//! Retry pattern — unified API with [`Classify`](nebula_error::Classify)-aware error filtering.
+//!
+//! When `E` implements [`Classify`](nebula_error::Classify), retry automatically skips
+//! non-retryable errors (authentication, validation, etc.) and respects
+//! [`retry_hint()`](nebula_error::Classify::retry_hint) as a backoff delay floor.
 
 use std::future::Future;
 
@@ -124,10 +128,6 @@ pub enum JitterConfig {
 
 // ── RetryConfig ───────────────────────────────────────────────────────────────
 
-/// Configuration for the retry pattern.
-///
-/// By default retries all errors up to `max_attempts`.
-/// Use [`retry_if`](RetryConfig::retry_if) to restrict retries to specific error classes.
 /// Type alias for the retry predicate closure.
 type RetryPredicate<E> = Box<dyn Fn(&E) -> bool + Send + Sync>;
 
@@ -136,8 +136,12 @@ type RetryNotify<E> = Box<dyn Fn(&E, Duration, u32) + Send + Sync>;
 
 /// Configuration for the retry pattern.
 ///
-/// By default retries all errors up to `max_attempts`.
-/// Use [`retry_if`](RetryConfig::retry_if) to restrict retries to specific error classes.
+/// When used with [`retry_with`] (which requires `E: Classify`), errors are
+/// automatically filtered by [`is_retryable()`](nebula_error::Classify::is_retryable)
+/// and [`retry_hint()`](nebula_error::Classify::retry_hint) is respected as a
+/// backoff delay floor.
+///
+/// Use [`retry_if`](RetryConfig::retry_if) to override the default classification.
 pub struct RetryConfig<E = ()> {
     /// Maximum number of attempts (including the first).
     pub max_attempts: u32,
@@ -197,9 +201,10 @@ impl<E: 'static> RetryConfig<E> {
         self
     }
 
-    /// Only retry when this predicate returns `true`.
+    /// Override the default retry predicate.
     ///
-    /// Without a predicate, all errors are retried.
+    /// Without a predicate, [`retry_with`] uses
+    /// [`is_retryable()`](nebula_error::Classify::is_retryable) to decide.
     #[must_use]
     pub fn retry_if<F>(mut self, f: F) -> Self
     where
@@ -241,27 +246,100 @@ impl<E: 'static> RetryConfig<E> {
         }
     }
 
-    fn should_retry(&self, err: &E) -> bool {
-        self.predicate.as_ref().is_none_or(|p| p(err))
-    }
 }
 
 // ── retry_with ────────────────────────────────────────────────────────────────
 
 /// Execute `f` with retry according to `config`.
 ///
-/// - If all attempts fail and retrying was allowed: returns `Err(CallError::RetriesExhausted)`
-/// - If the predicate says don't retry: returns `Err(CallError::Operation)` immediately
+/// Error classification is automatic via [`Classify`](nebula_error::Classify):
+/// - Without a predicate, only errors where
+///   [`is_retryable()`](nebula_error::Classify::is_retryable) returns `true` are retried
+/// - [`retry_hint().after`](nebula_error::RetryHint::after) is respected as a
+///   minimum backoff delay
+/// - A [`retry_if`](RetryConfig::retry_if) predicate overrides classification
 ///
 /// # Errors
 ///
 /// Returns `Err(CallError::RetriesExhausted)` when all attempts are exhausted,
-/// or `Err(CallError::Operation)` if the retry predicate rejects the error.
+/// or `Err(CallError::Operation)` if the error is not retryable.
 ///
 /// # Panics
 ///
 /// Panics if `config.max_attempts` is 0 (this is prevented by [`RetryConfig::new`]).
 pub async fn retry_with<T, E, F, Fut>(config: RetryConfig<E>, mut f: F) -> Result<T, CallError<E>>
+where
+    E: nebula_error::Classify + 'static,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>> + Send,
+{
+    let mut last_err: Option<E> = None;
+    let mut total_delay = Duration::ZERO;
+
+    for attempt in 0..config.max_attempts {
+        match f().await {
+            Ok(value) => return Ok(value),
+            Err(e) => {
+                let is_last = attempt + 1 >= config.max_attempts;
+
+                // Auto-classify: use predicate if set, otherwise delegate to Classify
+                let should_retry = config
+                    .predicate
+                    .as_ref()
+                    .map_or_else(|| e.is_retryable(), |p| p(&e));
+
+                config.sink.record(ResilienceEvent::RetryAttempt {
+                    attempt: attempt + 1,
+                    will_retry: !is_last && should_retry,
+                });
+
+                if !should_retry {
+                    return Err(CallError::Operation(e));
+                }
+
+                if is_last {
+                    last_err = Some(e);
+                    break;
+                }
+
+                // Compute delay: backoff + jitter, floored by retry_hint
+                let mut delay = apply_jitter(config.backoff.delay_for(attempt), &config.jitter);
+                if let Some(floor) = e.retry_hint().and_then(|h| h.after) {
+                    delay = delay.max(floor);
+                }
+
+                if let Some(ref notify) = config.on_retry {
+                    notify(&e, delay, attempt + 1);
+                }
+                last_err = Some(e);
+                if !delay.is_zero() {
+                    if config
+                        .total_budget
+                        .is_some_and(|budget| total_delay + delay > budget)
+                    {
+                        break;
+                    }
+                    total_delay += delay;
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    }
+
+    Err(CallError::RetriesExhausted {
+        attempts: config.max_attempts,
+        last: last_err.expect("at least one attempt was made"),
+    })
+}
+
+/// Internal retry without [`Classify`](nebula_error::Classify) bound.
+///
+/// Used by the pipeline, which wraps errors in `Option<E>`.
+/// Retries all errors when no predicate is set (old behavior).
+pub(crate) async fn retry_with_inner<T, E, F, Fut>(
+    config: RetryConfig<E>,
+    mut f: F,
+) -> Result<T, CallError<E>>
 where
     E: 'static,
     F: FnMut() -> Fut,
@@ -275,25 +353,22 @@ where
             Ok(value) => return Ok(value),
             Err(e) => {
                 let is_last = attempt + 1 >= config.max_attempts;
-                let predicate_allows = config.should_retry(&e);
+                let should_retry = config.predicate.as_ref().is_none_or(|p| p(&e));
 
                 config.sink.record(ResilienceEvent::RetryAttempt {
                     attempt: attempt + 1,
-                    will_retry: !is_last && predicate_allows,
+                    will_retry: !is_last && should_retry,
                 });
 
-                if !predicate_allows {
-                    // Predicate says don't retry — surface immediately as Operation
+                if !should_retry {
                     return Err(CallError::Operation(e));
                 }
 
                 if is_last {
-                    // All attempts exhausted — will return RetriesExhausted below
                     last_err = Some(e);
                     break;
                 }
 
-                // Will retry — apply backoff + jitter and continue
                 let delay = apply_jitter(config.backoff.delay_for(attempt), &config.jitter);
                 if let Some(ref notify) = config.on_retry {
                     notify(&e, delay, attempt + 1);
@@ -321,16 +396,20 @@ where
 
 /// Convenience: retry up to `n` times with no backoff.
 ///
+/// Non-retryable errors (authentication, validation, etc.) are skipped
+/// automatically via [`Classify::is_retryable()`](nebula_error::Classify::is_retryable).
+///
 /// # Errors
 ///
-/// Returns `Err(CallError::RetriesExhausted)` when all `n` attempts are exhausted.
+/// Returns `Err(CallError::RetriesExhausted)` when all `n` attempts are exhausted,
+/// or `Err(CallError::Operation)` if the error is not retryable.
 ///
 /// # Panics
 ///
 /// Panics if `n` is 0 (use [`retry_with`] with [`RetryConfig::new`] for fallible construction).
 pub async fn retry<T, E, F, Fut>(n: u32, f: F) -> Result<T, CallError<E>>
 where
-    E: 'static,
+    E: nebula_error::Classify + 'static,
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>> + Send,
 {
@@ -356,13 +435,56 @@ fn apply_jitter(delay: Duration, jitter: &JitterConfig) -> Duration {
 mod tests {
     use super::*;
     use crate::{CallError, RecordingSink};
+    use nebula_error::{Classify, ErrorCategory, ErrorCode, RetryHint, codes};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 
-    fn fail_twice(counter: &AtomicU32) -> Result<u32, &'static str> {
+    /// Test error type implementing Classify. Always retryable.
+    #[derive(Debug, Clone, PartialEq)]
+    struct TransientErr(&'static str);
+    impl std::fmt::Display for TransientErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+    impl Classify for TransientErr {
+        fn category(&self) -> ErrorCategory { ErrorCategory::External }
+        fn code(&self) -> ErrorCode { codes::INTERNAL.clone() }
+    }
+
+    /// Test error with variants for retryable/non-retryable.
+    #[derive(Debug)]
+    enum TestApiErr {
+        Timeout,
+        AuthFailed,
+        RateLimited(Duration),
+    }
+    impl std::fmt::Display for TestApiErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{self:?}")
+        }
+    }
+    impl Classify for TestApiErr {
+        fn category(&self) -> ErrorCategory {
+            match self {
+                Self::Timeout => ErrorCategory::Timeout,
+                Self::AuthFailed => ErrorCategory::Authentication,
+                Self::RateLimited(_) => ErrorCategory::RateLimit,
+            }
+        }
+        fn code(&self) -> ErrorCode { codes::INTERNAL.clone() }
+        fn retry_hint(&self) -> Option<RetryHint> {
+            match self {
+                Self::RateLimited(d) => Some(RetryHint::after(*d)),
+                _ => None,
+            }
+        }
+    }
+
+    fn fail_twice(counter: &AtomicU32) -> Result<u32, TransientErr> {
         let n = counter.fetch_add(1, Ordering::SeqCst);
-        if n < 2 { Err("fail") } else { Ok(99) }
+        if n < 2 { Err(TransientErr("fail")) } else { Ok(99) }
     }
 
     #[tokio::test]
@@ -373,11 +495,11 @@ mod tests {
             .unwrap()
             .backoff(BackoffConfig::Fixed(Duration::from_millis(1)));
 
-        let result: Result<(), CallError<&str>> = retry_with(config, || {
+        let result: Result<(), CallError<TransientErr>> = retry_with(config, || {
             let c = c.clone();
             Box::pin(async move {
                 c.fetch_add(1, Ordering::SeqCst);
-                Err("fail")
+                Err(TransientErr("fail"))
             })
         })
         .await;
@@ -397,7 +519,7 @@ mod tests {
             .unwrap()
             .backoff(BackoffConfig::Fixed(Duration::from_millis(1)));
 
-        let result: Result<u32, CallError<&str>> = retry_with(config, || {
+        let result: Result<u32, CallError<TransientErr>> = retry_with(config, || {
             let c = c.clone();
             Box::pin(async move { fail_twice(&c) })
         })
@@ -407,33 +529,27 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 
-    #[derive(Debug)]
-    enum MyErr {
-        #[allow(dead_code)]
-        Transient,
-        Permanent,
-    }
-
     #[tokio::test]
-    async fn retry_if_predicate_stops_on_permanent_error() {
+    async fn retry_if_predicate_overrides_classify() {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
 
+        // Timeout IS retryable by Classify, but predicate says no
         let config = RetryConfig::new(5)
             .unwrap()
             .backoff(BackoffConfig::Fixed(Duration::from_millis(1)))
-            .retry_if(|e: &MyErr| matches!(e, MyErr::Transient));
+            .retry_if(|_: &TestApiErr| false);
 
         let result = retry_with(config, || {
             let c = c.clone();
             Box::pin(async move {
                 c.fetch_add(1, Ordering::SeqCst);
-                Err::<u32, MyErr>(MyErr::Permanent)
+                Err::<u32, TestApiErr>(TestApiErr::Timeout)
             })
         })
         .await;
 
-        // Should stop after 1 attempt — Permanent is not retryable
+        // Custom predicate takes precedence → 1 attempt
         assert_eq!(counter.load(Ordering::SeqCst), 1);
         assert!(matches!(result, Err(CallError::Operation(_))));
     }
@@ -446,8 +562,8 @@ mod tests {
             .backoff(BackoffConfig::Fixed(Duration::from_millis(1)))
             .with_sink(sink.clone());
 
-        let _: Result<(), CallError<&str>> =
-            retry_with(config, || Box::pin(async { Err("fail") })).await;
+        let _: Result<(), CallError<TransientErr>> =
+            retry_with(config, || Box::pin(async { Err(TransientErr("fail")) })).await;
 
         assert_eq!(sink.count("retry_attempt"), 3);
     }
@@ -483,12 +599,12 @@ mod tests {
         let config = RetryConfig::new(3)
             .unwrap()
             .backoff(BackoffConfig::Fixed(Duration::from_millis(1)))
-            .on_retry(move |_err: &&str, delay: Duration, attempt: u32| {
+            .on_retry(move |_err: &TransientErr, delay: Duration, attempt: u32| {
                 n.lock().unwrap().push((attempt, delay));
             });
 
-        let _: Result<(), CallError<&str>> =
-            retry_with(config, || Box::pin(async { Err("fail") })).await;
+        let _: Result<(), CallError<TransientErr>> =
+            retry_with(config, || Box::pin(async { Err(TransientErr("fail")) })).await;
 
         let notifs = notifications.lock().unwrap();
         assert_eq!(notifs.len(), 2); // 2 retries (3 attempts - 1 initial)
@@ -511,8 +627,8 @@ mod tests {
             });
 
         let start = std::time::Instant::now();
-        let _: Result<(), CallError<&str>> =
-            retry_with(config, || Box::pin(async { Err("fail") })).await;
+        let _: Result<(), CallError<TransientErr>> =
+            retry_with(config, || Box::pin(async { Err(TransientErr("fail")) })).await;
         let elapsed = start.elapsed();
 
         // 2 retries × base = 20ms minimum (no jitter on first attempt which uses attempt=0)
@@ -568,6 +684,70 @@ mod tests {
         assert_eq!(cfg.delay_for(0), Duration::ZERO);
     }
 
+    // ── Classify integration tests ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn retry_auto_skips_non_retryable() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+
+        let result = retry(3, || {
+            let c = c.clone();
+            Box::pin(async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err::<(), _>(TestApiErr::AuthFailed)
+            })
+        })
+        .await;
+
+        // Auth is not retryable — stops after 1 attempt
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert!(matches!(result, Err(CallError::Operation(TestApiErr::AuthFailed))));
+    }
+
+    #[tokio::test]
+    async fn retry_auto_retries_retryable() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+
+        let result = retry(3, || {
+            let c = c.clone();
+            Box::pin(async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err::<(), _>(TestApiErr::Timeout)
+            })
+        })
+        .await;
+
+        // Timeout IS retryable — exhausts all 3 attempts
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+        assert!(matches!(
+            result,
+            Err(CallError::RetriesExhausted { attempts: 3, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn retry_respects_hint_floor() {
+        let start = std::time::Instant::now();
+        let config = RetryConfig::new(2)
+            .unwrap()
+            .backoff(BackoffConfig::Fixed(Duration::from_millis(1)));
+
+        // RateLimited error with 50ms hint — should override 1ms backoff
+        let _: Result<(), CallError<TestApiErr>> = retry_with(config, || {
+            Box::pin(async { Err(TestApiErr::RateLimited(Duration::from_millis(50))) })
+        })
+        .await;
+
+        let elapsed = start.elapsed();
+        // 1 retry with hint floor of 50ms — should take at least ~50ms
+        assert!(
+            elapsed >= Duration::from_millis(45),
+            "expected >= 45ms (hint floor), got {elapsed:?}"
+        );
+    }
+
     #[tokio::test]
     async fn total_budget_stops_retries_early() {
         let counter = Arc::new(AtomicU32::new(0));
@@ -579,11 +759,11 @@ mod tests {
             .total_budget(Duration::from_millis(120));
 
         let start = std::time::Instant::now();
-        let _: Result<(), CallError<&str>> = retry_with(config, || {
+        let _: Result<(), CallError<TransientErr>> = retry_with(config, || {
             let c = c.clone();
             Box::pin(async move {
                 c.fetch_add(1, Ordering::SeqCst);
-                Err("fail")
+                Err(TransientErr("fail"))
             })
         })
         .await;

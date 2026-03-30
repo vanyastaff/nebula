@@ -72,13 +72,13 @@ impl<E: std::error::Error + 'static> std::error::Error for CallError<E> {
 impl<E> CallError<E> {
     /// Returns true if the error class suggests a retry might succeed.
     ///
-    /// `Timeout`, `RateLimited`, and `BulkheadFull` are considered retriable because
+    /// `Timeout`, `RateLimited`, and `BulkheadFull` are considered retryable because
     /// they represent transient resource pressure, not permanent failures.
     ///
-    /// `Operation` is never automatically retriable — the caller must supply a predicate
-    /// via `RetryConfig::retry_if` to classify their own errors.
+    /// `Operation` is never automatically retryable — classification is delegated
+    /// to the inner error's [`Classify`](nebula_error::Classify) implementation.
     #[must_use]
-    pub const fn is_retriable(&self) -> bool {
+    pub const fn is_retryable(&self) -> bool {
         matches!(
             self,
             Self::Timeout(_) | Self::RateLimited { .. } | Self::BulkheadFull
@@ -165,7 +165,10 @@ impl<E: nebula_error::Classify> nebula_error::Classify for CallError<E> {
     }
 
     fn is_retryable(&self) -> bool {
-        self.is_retriable()
+        matches!(
+            self,
+            Self::Timeout(_) | Self::RateLimited { .. } | Self::BulkheadFull
+        )
     }
 
     fn retry_hint(&self) -> Option<nebula_error::RetryHint> {
@@ -255,27 +258,27 @@ mod tests {
     }
 
     #[test]
-    fn operation_is_not_retriable() {
+    fn operation_is_not_retryable() {
         let e: CallError<MyErr> = CallError::Operation(MyErr::Timeout);
-        assert!(!e.is_retriable());
+        assert!(!e.is_retryable());
     }
 
     #[test]
-    fn circuit_open_is_not_retriable() {
+    fn circuit_open_is_not_retryable() {
         let e: CallError<MyErr> = CallError::CircuitOpen;
-        assert!(!e.is_retriable());
+        assert!(!e.is_retryable());
     }
 
     #[test]
-    fn timeout_is_retriable() {
+    fn timeout_is_retryable() {
         let e: CallError<MyErr> = CallError::Timeout(std::time::Duration::from_secs(1));
-        assert!(e.is_retriable());
+        assert!(e.is_retryable());
     }
 
     #[test]
-    fn rate_limited_is_retriable() {
+    fn rate_limited_is_retryable() {
         let e: CallError<MyErr> = CallError::RateLimited { retry_after: None };
-        assert!(e.is_retriable());
+        assert!(e.is_retryable());
     }
 
     #[test]
@@ -284,24 +287,24 @@ mod tests {
             retry_after: Some(Duration::from_secs(5)),
         };
         assert_eq!(e.retry_after(), Some(Duration::from_secs(5)));
-        assert!(e.is_retriable());
+        assert!(e.is_retryable());
 
         let e2: CallError<MyErr> = CallError::RateLimited { retry_after: None };
         assert_eq!(e2.retry_after(), None);
     }
 
     #[test]
-    fn bulkhead_full_is_retriable() {
+    fn bulkhead_full_is_retryable() {
         let e: CallError<MyErr> = CallError::BulkheadFull;
-        assert!(e.is_retriable());
+        assert!(e.is_retryable());
     }
 
     #[test]
-    fn cancelled_is_not_retriable() {
+    fn cancelled_is_not_retryable() {
         let e: CallError<MyErr> = CallError::Cancelled {
             reason: Some("shutdown".into()),
         };
-        assert!(!e.is_retriable());
+        assert!(!e.is_retryable());
     }
 
     #[test]

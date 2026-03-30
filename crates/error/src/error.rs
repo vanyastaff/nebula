@@ -116,7 +116,7 @@ impl<E: Classify> NebulaError<E> {
     ///
     /// ```
     /// use nebula_error::{
-    ///     Classify, ErrorCategory, ErrorCode, NebulaError, RetryInfo, codes,
+    ///     Classify, ErrorCategory, ErrorCode, NebulaError, RetryHint, codes,
     /// };
     /// use std::time::Duration;
     ///
@@ -132,12 +132,9 @@ impl<E: Classify> NebulaError<E> {
     /// #     fn code(&self) -> ErrorCode { codes::TIMEOUT.clone() }
     /// # }
     /// let err = NebulaError::new(E)
-    ///     .with_detail(RetryInfo {
-    ///         retry_delay: Some(Duration::from_secs(1)),
-    ///         max_attempts: Some(3),
-    ///     });
+    ///     .with_detail(RetryHint::after(Duration::from_secs(1)).with_max_attempts(3));
     ///
-    /// assert!(err.detail::<RetryInfo>().is_some());
+    /// assert!(err.detail::<RetryHint>().is_some());
     /// ```
     #[must_use]
     pub fn with_detail<D: ErrorDetail>(mut self, detail: D) -> Self {
@@ -331,7 +328,7 @@ impl<E: Classify> From<E> for NebulaError<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ResourceInfo, RetryInfo, codes};
+    use crate::{ResourceInfo, RetryHint, codes};
     use std::time::Duration;
 
     #[derive(Debug, Clone)]
@@ -409,17 +406,14 @@ mod tests {
     #[test]
     fn with_detail() {
         let err = NebulaError::new(make_error())
-            .with_detail(RetryInfo {
-                retry_delay: Some(Duration::from_secs(5)),
-                max_attempts: Some(3),
-            })
+            .with_detail(RetryHint::after(Duration::from_secs(5)).with_max_attempts(3))
             .with_detail(ResourceInfo {
                 resource_type: "workflow".into(),
                 resource_name: "wf-1".into(),
                 owner: None,
             });
 
-        let retry = err.detail::<RetryInfo>().expect("retry info");
+        let retry = err.detail::<RetryHint>().expect("retry hint");
         assert_eq!(retry.max_attempts, Some(3));
 
         let resource = err.detail::<ResourceInfo>().expect("resource info");

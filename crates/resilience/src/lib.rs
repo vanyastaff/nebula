@@ -47,17 +47,34 @@
 //!
 //! # Retry
 //!
+//! When `E` implements [`Classify`](nebula_error::Classify), retry automatically
+//! skips non-retryable errors and respects `retry_hint()` as a backoff floor.
+//!
 //! ```rust,no_run
 //! use nebula_resilience::retry::{RetryConfig, BackoffConfig, retry_with};
 //! use nebula_resilience::CallError;
+//! use nebula_error::{Classify, ErrorCategory, ErrorCode, codes};
 //! use std::time::Duration;
+//!
+//! #[derive(Debug)]
+//! struct ApiError;
+//! impl std::fmt::Display for ApiError {
+//!     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//!         f.write_str("api error")
+//!     }
+//! }
+//! impl Classify for ApiError {
+//!     fn category(&self) -> ErrorCategory { ErrorCategory::External }
+//!     fn code(&self) -> ErrorCode { codes::INTERNAL.clone() }
+//! }
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let config = RetryConfig::<&str>::new(3)?
+//!     let config = RetryConfig::<ApiError>::new(3)?
 //!         .backoff(BackoffConfig::Fixed(Duration::from_millis(50)));
 //!
-//!     let result: Result<u32, CallError<&str>> = retry_with(config, || Box::pin(async {
+//!     // Non-retryable errors (auth, validation) are skipped automatically
+//!     let result: Result<u32, CallError<ApiError>> = retry_with(config, || Box::pin(async {
 //!         Ok(42u32)
 //!     })).await;
 //!     Ok(())

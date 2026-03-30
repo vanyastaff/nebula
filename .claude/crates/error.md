@@ -13,6 +13,8 @@ Enterprise error infrastructure. Google error model (Status + typed details) ada
 - `NebulaError<E>` requires `E: Classify` — classification delegated to domain error
 - `NebulaError<E>` implements `Classify` by delegating to inner — usable anywhere `impl Classify` expected
 - `NebulaError::map_inner()` preserves message, details, context_chain, source while transforming inner type
+- **`RetryHint` is both a Classify return type AND an ErrorDetail** — can be attached to `NebulaError` via `.with_detail()`
+- `RetryInfo` removed — use `RetryHint` instead
 - Serde behind feature flag — not forced on all consumers
 - Derive macro behind `derive` feature flag
 
@@ -20,9 +22,9 @@ Enterprise error infrastructure. Google error model (Status + typed details) ada
 
 NotFound, Validation, Authentication, Authorization, Conflict, RateLimit, Timeout, Exhausted, Cancelled, Internal, External, Unsupported, **Unavailable** (503, retryable), **DataTooLarge** (413, client error)
 
-## Detail Types (12)
+## Detail Types (11)
 
-- `RetryInfo` — retry delay + max attempts
+- `RetryHint` — retry delay + max attempts (also returned by `Classify::retry_hint()`)
 - `ResourceInfo` — resource type/name/owner
 - `BadRequest` / `FieldViolation` — field-level validation errors
 - `DebugInfo` — diagnostic detail + stack entries
@@ -49,7 +51,7 @@ NotFound, Validation, Authentication, Authorization, Conflict, RateLimit, Timeou
 ## Traps
 
 - `ErrorCategory` and `ErrorSeverity` are `#[non_exhaustive]` — match arms need wildcard
-- `RetryHint` is advisory — resilience layer may ignore it
+- `RetryHint` is advisory — resilience layer uses it as backoff floor, not absolute
 - `ErrorDetails::insert` overwrites same-type entry silently (no merge)
 - Derive macro panics at compile time for unknown category/severity strings
 - `NebulaError<E>` requires `E: Classify + Debug + Display` for full Error trait impl
@@ -61,4 +63,4 @@ NotFound, Validation, Authentication, Authorization, Conflict, RateLimit, Timeou
 - Depends on: serde (optional), nebula-error-macros (optional); thiserror in dev-dependencies only
 - Depended on by: all 21 crates (Classify migration complete 2026-03-30)
 
-<!-- reviewed: 2026-03-30 -->
+<!-- reviewed: 2026-03-30 (RetryInfo removed, RetryHint as ErrorDetail) -->

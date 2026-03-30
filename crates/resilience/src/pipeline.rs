@@ -16,7 +16,7 @@ use crate::{
     CallError,
     bulkhead::Bulkhead,
     circuit_breaker::{CircuitBreaker, Outcome, ProbeGuard},
-    retry::{RetryConfig, retry_with},
+    retry::{RetryConfig, retry_with_inner},
 };
 
 // ── Execution ────────────────────────────────────────────────────────────────
@@ -328,7 +328,7 @@ where
         .jitter(config.jitter.clone())
         .retry_if(move |e: &Option<E>| e.is_some() && bail_check.lock().is_none());
 
-    let result = retry_with(inner_config, {
+    let result = retry_with_inner(inner_config, {
         let steps = Arc::clone(&steps);
         let f = Arc::clone(&f);
         let bail = Arc::clone(&bail);

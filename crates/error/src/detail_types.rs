@@ -5,37 +5,12 @@
 //! [`ErrorDetail`](crate::ErrorDetail) marker trait.
 
 use std::borrow::Cow;
-use std::time::Duration;
 
 use crate::code::ErrorCode;
 use crate::details::ErrorDetail;
+use crate::retry::RetryHint;
 
-/// Advisory retry information attached to a retriable error.
-///
-/// Mirrors `google.rpc.RetryInfo`. Consumers can inspect this to decide
-/// how long to wait before retrying and how many attempts remain.
-///
-/// # Examples
-///
-/// ```
-/// use nebula_error::{ErrorDetails, RetryInfo};
-/// use std::time::Duration;
-///
-/// let mut details = ErrorDetails::new();
-/// details.insert(RetryInfo {
-///     retry_delay: Some(Duration::from_millis(500)),
-///     max_attempts: Some(3),
-/// });
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RetryInfo {
-    /// Suggested delay before the next retry attempt.
-    pub retry_delay: Option<Duration>,
-    /// Maximum number of retry attempts the caller should make.
-    pub max_attempts: Option<u32>,
-}
-
-impl ErrorDetail for RetryInfo {}
+impl ErrorDetail for RetryHint {}
 
 /// Identifies the resource an error relates to.
 ///
@@ -378,18 +353,16 @@ mod tests {
     use super::*;
     use crate::codes;
     use crate::details::ErrorDetails;
+    use std::time::Duration;
 
     #[test]
-    fn retry_info_stored_and_retrieved() {
+    fn retry_hint_stored_and_retrieved() {
         let mut details = ErrorDetails::new();
-        let info = RetryInfo {
-            retry_delay: Some(Duration::from_secs(5)),
-            max_attempts: Some(3),
-        };
-        details.insert(info.clone());
+        let hint = RetryHint::after(Duration::from_secs(5)).with_max_attempts(3);
+        details.insert(hint.clone());
 
-        let retrieved = details.get::<RetryInfo>().unwrap();
-        assert_eq!(retrieved, &info);
+        let retrieved = details.get::<RetryHint>().unwrap();
+        assert_eq!(retrieved, &hint);
     }
 
     #[test]
@@ -428,10 +401,7 @@ mod tests {
     #[test]
     fn multiple_detail_types_coexist() {
         let mut details = ErrorDetails::new();
-        details.insert(RetryInfo {
-            retry_delay: None,
-            max_attempts: Some(1),
-        });
+        details.insert(RetryHint::max_attempts(1));
         details.insert(ResourceInfo {
             resource_type: "node".into(),
             resource_name: "http-1".into(),
@@ -443,7 +413,7 @@ mod tests {
             used: 150,
         });
 
-        assert!(details.has::<RetryInfo>());
+        assert!(details.has::<RetryHint>());
         assert!(details.has::<ResourceInfo>());
         assert!(details.has::<QuotaInfo>());
         assert_eq!(details.len(), 3);

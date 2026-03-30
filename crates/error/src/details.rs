@@ -36,18 +36,15 @@ pub trait ErrorDetail: Any + Send + Sync + fmt::Debug {}
 /// # Examples
 ///
 /// ```
-/// use nebula_error::{ErrorDetails, RetryInfo};
+/// use nebula_error::{ErrorDetails, RetryHint};
 /// use std::time::Duration;
 ///
 /// let mut details = ErrorDetails::new();
-/// details.insert(RetryInfo {
-///     retry_delay: Some(Duration::from_secs(5)),
-///     max_attempts: Some(3),
-/// });
+/// details.insert(RetryHint::after(Duration::from_secs(5)).with_max_attempts(3));
 ///
-/// assert!(details.has::<RetryInfo>());
-/// let info = details.get::<RetryInfo>().unwrap();
-/// assert_eq!(info.max_attempts, Some(3));
+/// assert!(details.has::<RetryHint>());
+/// let hint = details.get::<RetryHint>().unwrap();
+/// assert_eq!(hint.max_attempts, Some(3));
 /// ```
 pub struct ErrorDetails {
     map: HashMap<TypeId, Box<dyn Any + Send + Sync>>,

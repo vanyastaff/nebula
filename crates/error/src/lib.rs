@@ -37,8 +37,7 @@ pub use code::{ErrorCode, codes};
 pub use collection::{BatchResult, ErrorCollection};
 pub use detail_types::{
     BadRequest, DebugInfo, DependencyInfo, ErrorRoute, ExecutionContext, FieldViolation, HelpLink,
-    PreconditionFailure, PreconditionViolation, QuotaInfo, RequestInfo, ResourceInfo, RetryInfo,
-    TypeMismatch,
+    PreconditionFailure, PreconditionViolation, QuotaInfo, RequestInfo, ResourceInfo, TypeMismatch,
 };
 pub use details::{ErrorDetail, ErrorDetails};
 pub use error::NebulaError;
