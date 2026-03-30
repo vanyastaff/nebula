@@ -28,6 +28,11 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 
 - `CredentialError` v2 variants: `InvalidInput`, `RefreshFailed` (with `RefreshErrorKind` + `RetryAdvice`), `RevokeFailed`, `CompositionNotAvailable`, `CompositionFailed`, `SchemeMismatch`. Supporting enums: `RefreshErrorKind`, `RetryAdvice`, `ResolutionStage` — all `#[non_exhaustive]`.
 
+- v2 built-in credentials have enriched `parameters()` with descriptions, placeholders, and defaults from v1 protocol logic. `DatabaseCredential`: port defaults to 5432, `ssl_mode` defaults to "prefer" and is parsed into `SslMode` enum. `ApiKeyCredential`: optional `server` URL field. `SslMode` re-exported from crate root.
+- Scheme coercion impls in `scheme/coercion.rs`: `From<OAuth2Token> for BearerToken` (infallible), `TryFrom<ApiKeyAuth> for BearerToken` (Authorization header only, case-insensitive), `TryFrom<SamlAuth> for BearerToken` (requires assertion_b64). Errors use `CredentialError::SchemeMismatch`.
+- `executor.rs`: framework-level `execute_resolve`/`execute_continue` free functions. 30s hard timeout via `tokio::time::timeout`. Handles `PendingState` lifecycle (put/consume via `PendingStateStore`). Returns `ResolveResponse<S>` (Complete/Pending/Retry). `ExecutorError` wraps timeout, credential, and store errors.
+
+<!-- reviewed: 2026-03-30 — scheme coercion module added -->
 <!-- reviewed: 2026-03-30 — 13 AuthScheme types complete: added HeaderAuth, HmacSecret, SshAuth, CertificateAuth, AwsAuth, LdapAuth, SamlAuth, KerberosAuth -->
 <!-- updated: 2026-03-25 — polish v2 module names, rename types -->
 <!-- reviewed: 2026-03-30 — absorbed auth RFCs into plans/, auth crate deleted -->

@@ -24,7 +24,7 @@ pub use aws::AwsAuth;
 pub use basic::BasicAuth;
 pub use bearer::BearerToken;
 pub use certificate::CertificateAuth;
-pub use database::DatabaseAuth;
+pub use database::{DatabaseAuth, SslMode};
 pub use header::HeaderAuth;
 pub use hmac::HmacSecret;
 pub use kerberos::KerberosAuth;

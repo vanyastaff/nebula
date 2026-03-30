@@ -52,12 +52,20 @@ impl Credential for ApiKeyCredential {
     }
 
     fn parameters() -> ParameterCollection {
-        ParameterCollection::new().add(
-            Parameter::string("api_key")
-                .label("API Key")
-                .required()
-                .secret(),
-        )
+        ParameterCollection::new()
+            .add(
+                Parameter::string("server")
+                    .label("Server URL")
+                    .description("Base URL of the service (e.g. https://api.example.com)")
+                    .placeholder("https://api.example.com"),
+            )
+            .add(
+                Parameter::string("api_key")
+                    .label("API Key")
+                    .description("Secret API token or personal access token")
+                    .required()
+                    .secret(),
+            )
     }
 
     fn project(state: &BearerToken) -> BearerToken {
@@ -126,5 +134,20 @@ mod tests {
         let ctx = CredentialContext::new("test-user");
         let result = ApiKeyCredential::resolve(&values, &ctx).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parameters_contains_server_and_api_key() {
+        let params = ApiKeyCredential::parameters();
+        assert!(params.contains("server"));
+        assert!(params.contains("api_key"));
+        assert_eq!(params.len(), 2);
+    }
+
+    #[test]
+    fn server_is_optional() {
+        let params = ApiKeyCredential::parameters();
+        let server = params.get("server").unwrap();
+        assert!(!server.required);
     }
 }

@@ -42,10 +42,16 @@ impl Credential for BasicAuthCredential {
 
     fn parameters() -> ParameterCollection {
         ParameterCollection::new()
-            .add(Parameter::string("username").label("Username").required())
+            .add(
+                Parameter::string("username")
+                    .label("Username")
+                    .description("Username for HTTP Basic authentication")
+                    .required(),
+            )
             .add(
                 Parameter::string("password")
                     .label("Password")
+                    .description("Password for HTTP Basic authentication")
                     .required()
                     .secret(),
             )

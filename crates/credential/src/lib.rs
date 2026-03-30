@@ -99,6 +99,11 @@ pub mod layer;
 /// In-memory credential store for testing.
 pub mod store_memory;
 
+// ── v2 Executor ────────────────────────────────────────────────────────
+
+/// Framework executor for credential resolution with timeouts.
+pub mod executor;
+
 // ── v2 Resolution ───────────────────────────────────────────────────────────
 
 /// Type-erased credential registry for runtime dispatch.
@@ -157,7 +162,7 @@ pub use credential_state::CredentialStateV2;
 pub use scheme::{
     ApiKeyAuth, AwsAuth, BasicAuth, BearerToken, CertificateAuth, DatabaseAuth, HeaderAuth,
     HmacSecret, KerberosAuth, LdapAuth, LdapBindMethod, LdapTlsMode, OAuth2Token, SamlAuth,
-    SshAuth, SshAuthMethod,
+    SshAuth, SshAuthMethod, SslMode,
 };
 
 // v2: Pending state
@@ -187,6 +192,9 @@ pub use resolver::{CredentialResolver, ResolveError};
 
 // v2: Refresh coordination
 pub use refresh::{RefreshAttempt, RefreshCoordinator};
+
+// v2: Framework executor
+pub use executor::{ExecutorError, ResolveResponse, execute_continue, execute_resolve};
 
 // v2: Resolve types
 pub use resolve::{
