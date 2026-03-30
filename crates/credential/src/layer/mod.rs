@@ -3,6 +3,8 @@
 //! Layers wrap an inner store to add cross-cutting concerns (encryption,
 //! caching, auditing) without modifying the store implementation itself.
 
+pub mod cache;
 pub mod encryption;
 
+pub use cache::{CacheConfig, CacheLayer, CacheStats};
 pub use encryption::EncryptionLayer;

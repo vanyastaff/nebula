@@ -12,6 +12,7 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 - `CredentialStore`/`CredentialRegistry` renamed from V2 suffixed names. Files: `credential_trait.rs`, `credential_handle.rs`, `credential_registry.rs`, `credential_store.rs`.
 - `CredentialHandle` uses `ArcSwap<S>` — `snapshot()` returns `Arc<S>`, `replace()` (pub(crate)) enables hot-swap by `RefreshCoordinator`. Clone creates independent `ArcSwap` with same underlying `Arc`.
 - `EncryptionLayer<S>` serializes `EncryptedData` as JSON bytes in `data` field.
+- `CacheLayer<S>` wraps any `CredentialStore` with moka LRU+TTL cache. Caches **ciphertext** (sits below `EncryptionLayer`). Invalidates on put/delete. `list()` passes through uncached. `exists()` checks cache first.
 - `RefreshCoordinator`: winner refreshes, waiters block on `Notify`. `Winner(Arc<Notify>)` + `scopeguard` ensures waiters are woken on any exit (panic, timeout, error). `complete()` removes the in-flight entry. Circuit breaker: 5 failures in 5 min opens circuit, skips refresh and serves stale. Waiter timeout: 60s max wait on `Notify`. Framework timeout: 30s hard limit on `C::refresh()` calls.
 - `CredentialResolver::resolve_with_refresh()` uses `REFRESH_POLICY.early_refresh` (default 5 min) to refresh **before** expiry, not after.
 - `CredentialContext` carries optional `callback_url`, `app_url`, `session_id` (private, with builder + accessors) for interactive OAuth2/SAML flows.
@@ -22,6 +23,7 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 ## Traps
 - Circular dep: peer with nebula-resource, signal via EventBus only.
 - Storage providers feature-gated: `storage-local`, `-aws`, `-postgres`, `-vault`, `-k8s`.
+- v2 `LocalFileStore` (`store_local.rs`): filesystem `CredentialStore` impl behind `storage-local`. Uses `StoredFile` serde wrapper (base64 `data` field). Atomic write via temp-file rename. Path traversal validation on all ID inputs.
 
 ## Relations
 - Depends on: nebula-core, nebula-eventbus. Peer: nebula-resource.
@@ -37,3 +39,4 @@ Credential storage, manager, rotation, protocols. v2 rewrite in progress alongsi
 <!-- reviewed: 2026-03-30 — 13 AuthScheme types complete: added HeaderAuth, HmacSecret, SshAuth, CertificateAuth, AwsAuth, LdapAuth, SamlAuth, KerberosAuth -->
 <!-- updated: 2026-03-25 — polish v2 module names, rename types -->
 <!-- reviewed: 2026-03-30 — absorbed auth RFCs into plans/, auth crate deleted -->
+<!-- reviewed: 2026-03-30 — rotation framework verified v2-compatible: all 13 modules use only crate::core types (CredentialId, CredentialMetadata, CredentialState v2), no v1 manager imports -->
