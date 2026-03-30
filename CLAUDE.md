@@ -1,6 +1,6 @@
-# CLAUDE.md — Working Memory for AI Sessions
+# CLAUDE.md
 
-Last updated: **2026-03-18**
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ---
 
@@ -10,12 +10,54 @@ Last updated: **2026-03-18**
 
 ---
 
+## Architecture
+
+### Layer system (enforced by `cargo deny`)
+
+```
+API layer          api · webhook · auth
+  ↑
+Exec layer         engine · runtime · storage · macros · sdk
+  ↑
+Business layer     credential · resource · action · plugin
+  ↑
+Core layer         core · validator · parameter · expression · memory · workflow · execution
+
+Cross-cutting      log · system · eventbus · telemetry · metrics · config · resilience · error
+(importable at any layer)
+```
+
+Arrows mean "depends on". No upward dependencies — enforce via `deny.toml`.
+
+### Data flow
+
+```
+Trigger (webhook/cron/event)
+  → Engine resolves workflow DAG
+    → Runtime schedules nodes (topological order)
+      → Each node: Action::execute(Context) → serde_json::Value
+        → Context provides: credentials (encrypted), resources, parameters, logger
+          → Cross-crate signals via EventBus (e.g., CredentialRotatedEvent)
+```
+
+### Key patterns
+- **`serde_json::Value`** is the universal data type — workflow data, action I/O, config, expressions
+- **`Context` trait** for DI into actions — credentials, resources, logger injected, never constructed
+- **`EventBus<E>`** for cross-crate signals — prevents circular deps (especially credential↔resource)
+- **`NebulaError<E>`** with `Classify` trait — typed errors in libs (`thiserror`), `anyhow` in binaries
+- **`NodeId`** = graph position; **`ActionKey`** = action type identity — multiple nodes can share an action
+
+### Desktop app
+Tauri-based desktop surface in `apps/desktop/` — currently in development.
+
+---
+
 ## Active Constraints
 
 - **No upward dependencies.** Use slim DTOs if needed; enforce via `deny.toml`.
-- **`nebula-core` stays small.** It's imported everywhere.
-- **Credentials always encrypted at rest.** `CredentialAccessor` injected via `Context`; no global lookups.
-- **EventBus for all cross-crate signals.** Never add direct imports to "fix" missing signals.
+- **`nebula-core` stays small.** It's imported everywhere — new ID types safe, trait changes cascade to 25+ crates.
+- **Credentials always encrypted at rest.** AES-256-GCM; `SecretString` zeroizes on drop. `CredentialAccessor` injected via `Context`; no global lookups.
+- **EventBus for all cross-crate signals.** In-memory, best-effort, no persistence. Never add direct imports to "fix" missing signals.
 - **Actions use DI via `Context`.** Never construct runtime-managed types inside actions.
 - **Parameter provider API is error-based.** `register_*()` returns `Result`; no panics.
 - **`InProcessSandbox` only in Phase 2.** No OS-process/WASM isolation until Phase 3.
@@ -43,20 +85,22 @@ Use code-review-graph MCP tools for code exploration.
 
 ```bash
 # Fast local check (use this by default)
-cargo fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace
+rtk cargo fmt && rtk cargo clippy --workspace -- -D warnings && rtk cargo nextest run --workspace
 
 # Single crate (fastest iteration)
-cargo nextest run -p nebula-<crate>
+rtk cargo check -p nebula-<crate> && rtk cargo nextest run -p nebula-<crate>
 
 # Full validation (before PR)
-cargo fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace && cargo test --workspace --doc && cargo deny check
+rtk cargo fmt && rtk cargo clippy --workspace -- -D warnings && rtk cargo nextest run --workspace && rtk cargo test --workspace --doc && rtk cargo deny check
 
 # Compose API contract
-cargo bench --no-run -p nebula-resilience
+rtk cargo bench --no-run -p nebula-resilience
 
 # Context file budgets
 bash .claude/validate.sh
 ```
+
+`cargo nextest run` replaces `cargo test` — parallel execution, better output. Doctests run separately (`cargo test --doc`) because nextest doesn't support them.
 
 ---
 
@@ -84,137 +128,3 @@ Workspace context lives in `.claude/` — do not re-derive what is already docum
 - **After global decisions change**: update `decisions.md` or `pitfalls.md`.
 - **After work state changes**: update `active-work.md`.
 - A Stop hook enforces this: completion is blocked if a crate was modified but its context file was not touched.
-
-<!-- rtk-instructions v2 -->
-# RTK (Rust Token Killer) - Token-Optimized Commands
-
-## Golden Rule
-
-**Always prefix commands with `rtk`**. If RTK has a dedicated filter, it uses it. If not, it passes through unchanged. This means RTK is always safe to use.
-
-**Important**: Even in command chains with `&&`, use `rtk`:
-```bash
-# ❌ Wrong
-git add . && git commit -m "msg" && git push
-
-# ✅ Correct
-rtk git add . && rtk git commit -m "msg" && rtk git push
-```
-
-## RTK Commands by Workflow
-
-### Build & Compile (80-90% savings)
-```bash
-rtk cargo build         # Cargo build output
-rtk cargo check         # Cargo check output
-rtk cargo clippy        # Clippy warnings grouped by file (80%)
-rtk tsc                 # TypeScript errors grouped by file/code (83%)
-rtk lint                # ESLint/Biome violations grouped (84%)
-rtk prettier --check    # Files needing format only (70%)
-rtk next build          # Next.js build with route metrics (87%)
-```
-
-### Test (90-99% savings)
-```bash
-rtk cargo test          # Cargo test failures only (90%)
-rtk vitest run          # Vitest failures only (99.5%)
-rtk playwright test     # Playwright failures only (94%)
-rtk test <cmd>          # Generic test wrapper - failures only
-```
-
-### Git (59-80% savings)
-```bash
-rtk git status          # Compact status
-rtk git log             # Compact log (works with all git flags)
-rtk git diff            # Compact diff (80%)
-rtk git show            # Compact show (80%)
-rtk git add             # Ultra-compact confirmations (59%)
-rtk git commit          # Ultra-compact confirmations (59%)
-rtk git push            # Ultra-compact confirmations
-rtk git pull            # Ultra-compact confirmations
-rtk git branch          # Compact branch list
-rtk git fetch           # Compact fetch
-rtk git stash           # Compact stash
-rtk git worktree        # Compact worktree
-```
-
-Note: Git passthrough works for ALL subcommands, even those not explicitly listed.
-
-### GitHub (26-87% savings)
-```bash
-rtk gh pr view <num>    # Compact PR view (87%)
-rtk gh pr checks        # Compact PR checks (79%)
-rtk gh run list         # Compact workflow runs (82%)
-rtk gh issue list       # Compact issue list (80%)
-rtk gh api              # Compact API responses (26%)
-```
-
-### JavaScript/TypeScript Tooling (70-90% savings)
-```bash
-rtk pnpm list           # Compact dependency tree (70%)
-rtk pnpm outdated       # Compact outdated packages (80%)
-rtk pnpm install        # Compact install output (90%)
-rtk npm run <script>    # Compact npm script output
-rtk npx <cmd>           # Compact npx command output
-rtk prisma              # Prisma without ASCII art (88%)
-```
-
-### Files & Search (60-75% savings)
-```bash
-rtk ls <path>           # Tree format, compact (65%)
-rtk read <file>         # Code reading with filtering (60%)
-rtk grep <pattern>      # Search grouped by file (75%)
-rtk find <pattern>      # Find grouped by directory (70%)
-```
-
-### Analysis & Debug (70-90% savings)
-```bash
-rtk err <cmd>           # Filter errors only from any command
-rtk log <file>          # Deduplicated logs with counts
-rtk json <file>         # JSON structure without values
-rtk deps                # Dependency overview
-rtk env                 # Environment variables compact
-rtk summary <cmd>       # Smart summary of command output
-rtk diff                # Ultra-compact diffs
-```
-
-### Infrastructure (85% savings)
-```bash
-rtk docker ps           # Compact container list
-rtk docker images       # Compact image list
-rtk docker logs <c>     # Deduplicated logs
-rtk kubectl get         # Compact resource list
-rtk kubectl logs        # Deduplicated pod logs
-```
-
-### Network (65-70% savings)
-```bash
-rtk curl <url>          # Compact HTTP responses (70%)
-rtk wget <url>          # Compact download output (65%)
-```
-
-### Meta Commands
-```bash
-rtk gain                # View token savings statistics
-rtk gain --history      # View command history with savings
-rtk discover            # Analyze Claude Code sessions for missed RTK usage
-rtk proxy <cmd>         # Run command without filtering (for debugging)
-rtk init                # Add RTK instructions to CLAUDE.md
-rtk init --global       # Add RTK to ~/.claude/CLAUDE.md
-```
-
-## Token Savings Overview
-
-| Category | Commands | Typical Savings |
-|----------|----------|-----------------|
-| Tests | vitest, playwright, cargo test | 90-99% |
-| Build | next, tsc, lint, prettier | 70-87% |
-| Git | status, log, diff, add, commit | 59-80% |
-| GitHub | gh pr, gh run, gh issue | 26-87% |
-| Package Managers | pnpm, npm, npx | 70-90% |
-| Files | ls, read, grep, find | 60-75% |
-| Infrastructure | docker, kubectl | 85% |
-| Network | curl, wget | 65-70% |
-
-Overall average: **60-90% token reduction** on common development operations.
-<!-- /rtk-instructions -->
