@@ -14,7 +14,7 @@ Credential storage, rotation, v2 trait-based system. v1 modules fully deleted.
 - `TestableCredential` and `RotatableCredential` traits moved from deleted `traits/` into `rotation/validation.rs` (they're rotation-specific).
 - `AnyCredential` trait rewritten: blanket impl on v2 `Credential` (was on v1 `CredentialType`).
 - `CredentialSnapshot` kept in `core/snapshot.rs` — used by `nebula-action` for passing credential data to actions.
-- `#[derive(Credential)]` macro emits compile_error directing to manual impl — will be rewritten for v2 Credential trait.
+- `#[derive(Credential)]` macro generates v2 `Credential` impl from `#[credential(key, name, scheme, protocol)]` attrs. Delegates to `StaticProtocol`. State = Scheme identity path, NoPendingState.
 - `CredentialHandle` uses `ArcSwap<S>` — `snapshot()` returns `Arc<S>`, `replace()` (pub(crate)) enables hot-swap by `RefreshCoordinator`.
 - `EncryptionLayer<S>` uses credential ID as AAD in AES-256-GCM. Decrypt falls back to no-AAD for backward compat.
 - `AuditLayer<S>` logs credential access metadata via pluggable `AuditSink` trait. Never sees plaintext.
@@ -29,7 +29,7 @@ Credential storage, rotation, v2 trait-based system. v1 modules fully deleted.
 - Circular dep: peer with nebula-resource, signal via EventBus only.
 - Storage providers feature-gated: `storage-local`, `-aws`, `-postgres`, `-vault`, `-k8s`.
 - v1 prelude deleted — crates using `nebula_credential::prelude::*` must switch to explicit v2 imports.
-- `#[derive(Credential)]` macro broken by design until rewritten — emits compile_error.
+- `#[derive(Credential)]` requires `identity_state!` invocation for the scheme type separately — macro doesn't generate it.
 
 ## Relations
 - Depends on: nebula-core, nebula-eventbus. Peer: nebula-resource.
@@ -40,4 +40,4 @@ Credential storage, rotation, v2 trait-based system. v1 modules fully deleted.
 - `CredentialKey` newtype: thin `&'static str` wrapper for credential type identifiers. Non-breaking addition — `Credential::KEY` still uses `&'static str`, `CredentialKey` available for gradual adoption. `credential_key!` macro for compile-time construction.
 - `StaticProtocol` trait: `parameters() + build(values) → Scheme` pattern for non-interactive credentials. `#[derive(Credential)]` will consume this to auto-generate `resolve()`.
 
-<!-- updated: 2026-03-30 — added StaticProtocol trait -->
+<!-- updated: 2026-03-30 — v2 complete: all phases 0-9 done, v1 deleted, derive(Credential) rewritten -->
