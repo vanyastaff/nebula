@@ -48,7 +48,7 @@ documentation = "https://docs.rs/nebula"
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs"] }
+tokio = { version = "1.50.0", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs"] }
 tokio-util = "0.7.18"
 rayon = { version = "1.11.0" }
 async-trait = "0.1.89"
@@ -82,7 +82,7 @@ petgraph = "0.8"
 bitflags = "2.11"
 domain-key = { version = "0.4.2", features = ["serde", "uuid-v4"] }
 bon = { version = "3.9.0" }
-uuid = { version = "1.20", features = ["v4", "serde"] }
+uuid = { version = "1.23", features = ["v4", "serde"] }
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 im = { version = "15.1", features = ["serde"] }
 smallvec = { version = "1.15", features = ["union", "const_generics"] }
@@ -133,7 +133,7 @@ metrics-exporter-prometheus = "0.18.1"
 pretty_assertions = "1.4"
 mockall = "0.14.0"
 tempfile = "3.26.0"
-proptest = "1.10"
+proptest = "1.11"
 criterion = "0.8.2"
 tokio-test = "0.4"
 test-case = "3.3.1"
