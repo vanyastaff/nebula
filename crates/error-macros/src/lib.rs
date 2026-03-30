@@ -256,13 +256,16 @@ fn category_from_str(s: &str, span: &dyn quote::ToTokens) -> syn::Result<TokenSt
         "internal" => quote! { Internal },
         "external" => quote! { External },
         "unsupported" => quote! { Unsupported },
+        "unavailable" => quote! { Unavailable },
+        "data_too_large" => quote! { DataTooLarge },
         _ => {
             return Err(syn::Error::new_spanned(
                 span,
                 format!(
                     "unknown category `{s}` — expected one of: not_found, validation, \
                      authentication, authorization, conflict, rate_limit, timeout, \
-                     exhausted, cancelled, internal, external, unsupported"
+                     exhausted, cancelled, internal, external, unsupported, \
+                     unavailable, data_too_large"
                 ),
             ));
         }

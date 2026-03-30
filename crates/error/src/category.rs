@@ -46,14 +46,19 @@ pub enum ErrorCategory {
     External,
     /// The requested operation is not supported.
     Unsupported,
+    /// The service is temporarily unavailable (overloaded, maintenance).
+    Unavailable,
+    /// The payload or data exceeds size limits.
+    DataTooLarge,
 }
 
 impl ErrorCategory {
     /// Whether this category is retryable by default.
     ///
-    /// Returns `true` for [`Timeout`](Self::Timeout),
-    /// [`Exhausted`](Self::Exhausted), [`External`](Self::External),
-    /// and [`RateLimit`](Self::RateLimit).
+    /// Returns `true` for transient failures that may succeed on retry:
+    /// [`Timeout`](Self::Timeout), [`Exhausted`](Self::Exhausted),
+    /// [`External`](Self::External), [`RateLimit`](Self::RateLimit),
+    /// and [`Unavailable`](Self::Unavailable).
     ///
     /// # Examples
     ///
@@ -62,12 +67,17 @@ impl ErrorCategory {
     ///
     /// assert!(ErrorCategory::Timeout.is_default_retryable());
     /// assert!(ErrorCategory::RateLimit.is_default_retryable());
+    /// assert!(ErrorCategory::Unavailable.is_default_retryable());
     /// assert!(!ErrorCategory::NotFound.is_default_retryable());
     /// ```
     pub const fn is_default_retryable(&self) -> bool {
         matches!(
             self,
-            Self::Timeout | Self::Exhausted | Self::External | Self::RateLimit
+            Self::Timeout
+                | Self::Exhausted
+                | Self::External
+                | Self::RateLimit
+                | Self::Unavailable
         )
     }
 
@@ -90,6 +100,7 @@ impl ErrorCategory {
                 | Self::Authorization
                 | Self::Conflict
                 | Self::Unsupported
+                | Self::DataTooLarge
         )
     }
 
@@ -106,7 +117,7 @@ impl ErrorCategory {
     pub const fn is_server_error(&self) -> bool {
         matches!(
             self,
-            Self::Internal | Self::External | Self::Timeout | Self::Exhausted
+            Self::Internal | Self::External | Self::Timeout | Self::Exhausted | Self::Unavailable
         )
     }
 
@@ -134,6 +145,8 @@ impl ErrorCategory {
             Self::Internal => "internal",
             Self::External => "external",
             Self::Unsupported => "unsupported",
+            Self::Unavailable => "unavailable",
+            Self::DataTooLarge => "data_too_large",
         }
     }
 }
@@ -168,6 +181,8 @@ impl<'de> serde::Deserialize<'de> for ErrorCategory {
             "internal" => Ok(Self::Internal),
             "external" => Ok(Self::External),
             "unsupported" => Ok(Self::Unsupported),
+            "unavailable" => Ok(Self::Unavailable),
+            "data_too_large" => Ok(Self::DataTooLarge),
             other => Err(serde::de::Error::unknown_variant(
                 other,
                 &[
@@ -183,6 +198,8 @@ impl<'de> serde::Deserialize<'de> for ErrorCategory {
                     "internal",
                     "external",
                     "unsupported",
+                    "unavailable",
+                    "data_too_large",
                 ],
             )),
         }
@@ -231,6 +248,16 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_is_default_retryable() {
+        assert!(ErrorCategory::Unavailable.is_default_retryable());
+    }
+
+    #[test]
+    fn data_too_large_is_not_default_retryable() {
+        assert!(!ErrorCategory::DataTooLarge.is_default_retryable());
+    }
+
+    #[test]
     fn client_errors_are_correct() {
         let client = [
             ErrorCategory::NotFound,
@@ -239,6 +266,7 @@ mod tests {
             ErrorCategory::Authorization,
             ErrorCategory::Conflict,
             ErrorCategory::Unsupported,
+            ErrorCategory::DataTooLarge,
         ];
         for cat in &client {
             assert!(cat.is_client_error(), "{cat} should be client error");
@@ -251,6 +279,7 @@ mod tests {
             ErrorCategory::Exhausted,
             ErrorCategory::Cancelled,
             ErrorCategory::RateLimit,
+            ErrorCategory::Unavailable,
         ];
         for cat in &not_client {
             assert!(!cat.is_client_error(), "{cat} should not be client error");
@@ -264,6 +293,7 @@ mod tests {
             ErrorCategory::External,
             ErrorCategory::Timeout,
             ErrorCategory::Exhausted,
+            ErrorCategory::Unavailable,
         ];
         for cat in &server {
             assert!(cat.is_server_error(), "{cat} should be server error");
@@ -278,6 +308,7 @@ mod tests {
             ErrorCategory::Cancelled,
             ErrorCategory::RateLimit,
             ErrorCategory::Unsupported,
+            ErrorCategory::DataTooLarge,
         ];
         for cat in &not_server {
             assert!(!cat.is_server_error(), "{cat} should not be server error");
@@ -299,6 +330,8 @@ mod tests {
             ErrorCategory::Internal,
             ErrorCategory::External,
             ErrorCategory::Unsupported,
+            ErrorCategory::Unavailable,
+            ErrorCategory::DataTooLarge,
         ];
         for cat in &all {
             // as_str should produce a non-empty string

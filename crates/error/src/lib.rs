@@ -36,8 +36,9 @@ pub use category::ErrorCategory;
 pub use code::{ErrorCode, codes};
 pub use collection::{BatchResult, ErrorCollection};
 pub use detail_types::{
-    BadRequest, DebugInfo, ErrorRoute, ExecutionContext, FieldViolation, PreconditionFailure,
-    PreconditionViolation, QuotaInfo, ResourceInfo, RetryInfo, TypeMismatch,
+    BadRequest, DebugInfo, DependencyInfo, ErrorRoute, ExecutionContext, FieldViolation, HelpLink,
+    PreconditionFailure, PreconditionViolation, QuotaInfo, RequestInfo, ResourceInfo, RetryInfo,
+    TypeMismatch,
 };
 pub use details::{ErrorDetail, ErrorDetails};
 pub use error::NebulaError;

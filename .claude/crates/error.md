@@ -6,7 +6,7 @@ Enterprise error infrastructure. Google error model (Status + typed details) ada
 
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`
 - `Classify` trait: 2 required (`category`, `error_code`), 3 optional with defaults
-- `is_retryable()` default from `ErrorCategory`: Timeout, Exhausted, External, RateLimit = retryable
+- `is_retryable()` default from `ErrorCategory`: Timeout, Exhausted, External, RateLimit, Unavailable = retryable
 - `ErrorDetails` keyed by TypeId — one value per type, insert overwrites
 - `ErrorCode` uses `Cow<'static, str>` — static for canonical, owned for plugin runtime codes
 - `ErrorSeverity` ordering: Info < Warning < Error (derives Ord), `#[non_exhaustive]`
@@ -16,7 +16,11 @@ Enterprise error infrastructure. Google error model (Status + typed details) ada
 - Serde behind feature flag — not forced on all consumers
 - Derive macro behind `derive` feature flag
 
-## Detail Types
+## Categories (14)
+
+NotFound, Validation, Authentication, Authorization, Conflict, RateLimit, Timeout, Exhausted, Cancelled, Internal, External, Unsupported, **Unavailable** (503, retryable), **DataTooLarge** (413, client error)
+
+## Detail Types (12)
 
 - `RetryInfo` — retry delay + max attempts
 - `ResourceInfo` — resource type/name/owner
@@ -27,6 +31,9 @@ Enterprise error infrastructure. Google error model (Status + typed details) ada
 - `ExecutionContext` — node_id, workflow_id, correlation_id, attempt (workflow tracing)
 - `ErrorRoute` — suggested_handler, dead_letter (error-edge routing)
 - `TypeMismatch` — expected, actual, location (DAG edge type validation)
+- `HelpLink` — url + description (documentation/troubleshooting links)
+- `RequestInfo` — request_id + serving_data (API-layer correlation)
+- `DependencyInfo` — service, endpoint, status_code (downstream failure info)
 
 ## HTTP Mapping
 
@@ -47,6 +54,7 @@ Enterprise error infrastructure. Google error model (Status + typed details) ada
 - Derive macro panics at compile time for unknown category/severity strings
 - `NebulaError<E>` requires `E: Classify + Debug + Display` for full Error trait impl
 - `from_http_status(429)` returns `RateLimit`, not `Exhausted` — lossy reverse mapping
+- `DataTooLarge` is NOT default-retryable (client must reduce payload size)
 
 ## Relations
 

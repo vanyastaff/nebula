@@ -118,6 +118,10 @@ pub mod codes {
     pub const EXTERNAL: ErrorCode = ErrorCode::new("EXTERNAL");
     /// Unsupported operation.
     pub const UNSUPPORTED: ErrorCode = ErrorCode::new("UNSUPPORTED");
+    /// Service temporarily unavailable.
+    pub const UNAVAILABLE: ErrorCode = ErrorCode::new("UNAVAILABLE");
+    /// Payload too large.
+    pub const DATA_TOO_LARGE: ErrorCode = ErrorCode::new("DATA_TOO_LARGE");
 }
 
 #[cfg(test)]

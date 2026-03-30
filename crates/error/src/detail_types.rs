@@ -291,6 +291,88 @@ pub struct TypeMismatch {
 
 impl ErrorDetail for TypeMismatch {}
 
+/// A link to documentation or a troubleshooting guide.
+///
+/// Mirrors `google.rpc.Help`. Attach this to errors that have known
+/// resolutions or relevant documentation pages.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_error::{ErrorDetails, HelpLink};
+///
+/// let mut details = ErrorDetails::new();
+/// details.insert(HelpLink {
+///     url: "https://docs.nebula.dev/errors/AUTH_EXPIRED".into(),
+///     description: "How to refresh expired credentials".into(),
+/// });
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelpLink {
+    /// URL to documentation or a troubleshooting page.
+    pub url: String,
+    /// Human-readable description of what the link covers.
+    pub description: String,
+}
+
+impl ErrorDetail for HelpLink {}
+
+/// Request identity for API-layer error correlation.
+///
+/// Attach this to errors originating from API requests so that
+/// support teams and monitoring can correlate log entries.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_error::{ErrorDetails, RequestInfo};
+///
+/// let mut details = ErrorDetails::new();
+/// details.insert(RequestInfo {
+///     request_id: "req-550e8400-e29b".into(),
+///     serving_data: Some("api-server-3".into()),
+/// });
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestInfo {
+    /// Unique request identifier (e.g. UUID, trace ID).
+    pub request_id: String,
+    /// Optional identifier for the serving infrastructure (server, region).
+    pub serving_data: Option<String>,
+}
+
+impl ErrorDetail for RequestInfo {}
+
+/// Information about a failed downstream dependency.
+///
+/// Attach this to [`External`](crate::ErrorCategory::External) or
+/// [`Unavailable`](crate::ErrorCategory::Unavailable) errors to
+/// identify which service failed and how.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_error::{ErrorDetails, DependencyInfo};
+///
+/// let mut details = ErrorDetails::new();
+/// details.insert(DependencyInfo {
+///     service: "stripe-api".into(),
+///     endpoint: Some("POST /v1/charges".into()),
+///     status_code: Some(503),
+/// });
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyInfo {
+    /// Name of the downstream service that failed.
+    pub service: String,
+    /// The endpoint or operation that was called.
+    pub endpoint: Option<String>,
+    /// HTTP status code returned by the dependency, if applicable.
+    pub status_code: Option<u16>,
+}
+
+impl ErrorDetail for DependencyInfo {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,6 +490,42 @@ mod tests {
 
         let route = details.get::<ErrorRoute>().unwrap();
         assert!(route.dead_letter);
+    }
+
+    #[test]
+    fn help_link_stored_and_retrieved() {
+        let mut details = ErrorDetails::new();
+        details.insert(HelpLink {
+            url: "https://docs.nebula.dev/errors/AUTH_EXPIRED".into(),
+            description: "How to refresh expired credentials".into(),
+        });
+        let link = details.get::<HelpLink>().unwrap();
+        assert_eq!(link.url, "https://docs.nebula.dev/errors/AUTH_EXPIRED");
+    }
+
+    #[test]
+    fn request_info_stored_and_retrieved() {
+        let mut details = ErrorDetails::new();
+        details.insert(RequestInfo {
+            request_id: "req-abc-123".into(),
+            serving_data: Some("api-server-3".into()),
+        });
+        let info = details.get::<RequestInfo>().unwrap();
+        assert_eq!(info.request_id, "req-abc-123");
+        assert_eq!(info.serving_data.as_deref(), Some("api-server-3"));
+    }
+
+    #[test]
+    fn dependency_info_stored_and_retrieved() {
+        let mut details = ErrorDetails::new();
+        details.insert(DependencyInfo {
+            service: "stripe-api".into(),
+            endpoint: Some("POST /v1/charges".into()),
+            status_code: Some(503),
+        });
+        let dep = details.get::<DependencyInfo>().unwrap();
+        assert_eq!(dep.service, "stripe-api");
+        assert_eq!(dep.status_code, Some(503));
     }
 
     #[test]

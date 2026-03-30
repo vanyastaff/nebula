@@ -15,5 +15,5 @@ Foundation — companion proc-macro crate for nebula-error.
 
 - Must not depend on nebula-error (circular dependency). Only uses syn/quote/proc-macro2.
 
-<!-- reviewed: 2026-03-26 -->
+<!-- reviewed: 2026-03-30 -->
 

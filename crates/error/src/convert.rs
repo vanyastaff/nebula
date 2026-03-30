@@ -24,6 +24,8 @@ impl ErrorCategory {
     /// | Internal | 500 |
     /// | External | 502 |
     /// | Unsupported | 501 |
+    /// | Unavailable | 503 |
+    /// | DataTooLarge | 413 |
     ///
     /// # Examples
     ///
@@ -48,6 +50,8 @@ impl ErrorCategory {
             Self::Internal => 500,
             Self::External => 502,
             Self::Unsupported => 501,
+            Self::Unavailable => 503,
+            Self::DataTooLarge => 413,
         }
     }
 
@@ -78,7 +82,9 @@ impl ErrorCategory {
             500 => Some(Self::Internal),
             501 => Some(Self::Unsupported),
             502 => Some(Self::External),
+            503 => Some(Self::Unavailable),
             504 => Some(Self::Timeout),
+            413 => Some(Self::DataTooLarge),
             _ => None,
         }
     }
@@ -149,6 +155,16 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_maps_to_503() {
+        assert_eq!(ErrorCategory::Unavailable.http_status_code(), 503);
+    }
+
+    #[test]
+    fn data_too_large_maps_to_413() {
+        assert_eq!(ErrorCategory::DataTooLarge.http_status_code(), 413);
+    }
+
+    #[test]
     fn round_trip_unique_statuses() {
         // All categories with unique HTTP status codes should round-trip.
         for cat in [
@@ -163,6 +179,8 @@ mod tests {
             ErrorCategory::Internal,
             ErrorCategory::External,
             ErrorCategory::Unsupported,
+            ErrorCategory::Unavailable,
+            ErrorCategory::DataTooLarge,
         ] {
             let code = cat.http_status_code();
             let recovered = ErrorCategory::from_http_status(code);
