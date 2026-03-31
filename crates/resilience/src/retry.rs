@@ -392,10 +392,12 @@ where
                 last_err = Some(e);
 
                 // Budget check: wall-clock time + next delay exceeds budget → stop
-                if config
-                    .total_budget
-                    .is_some_and(|budget| start.elapsed() + delay > budget)
-                {
+                if config.total_budget.is_some_and(|budget| {
+                    start
+                        .elapsed()
+                        .checked_add(delay)
+                        .is_none_or(|spent| spent > budget)
+                }) {
                     break;
                 }
 
@@ -444,13 +446,22 @@ fn apply_jitter(delay: Duration, jitter: &JitterConfig, attempt: u32) -> Duratio
     match jitter {
         JitterConfig::None => delay,
         JitterConfig::Full { factor, seed } => {
+            if !factor.is_finite() || *factor <= 0.0 {
+                return delay;
+            }
+
             let base = delay.as_secs_f64();
+            let clamped_factor = factor.min(1.0);
             let rand_val = seed.map_or_else(fastrand::f64, |s| {
                 // Mix seed with attempt so each retry gets different jitter
                 fastrand::Rng::with_seed(s.wrapping_add(u64::from(attempt))).f64()
             });
-            let jitter_amount = base * factor * rand_val;
-            Duration::from_secs_f64(base + jitter_amount)
+            let jitter_amount = base * clamped_factor * rand_val;
+            let total = base + jitter_amount;
+            if !total.is_finite() || total.is_sign_negative() {
+                return delay;
+            }
+            Duration::from_secs_f64(total.min(Duration::MAX.as_secs_f64()))
         }
     }
 }
@@ -709,6 +720,30 @@ mod tests {
             d0 != d1 || d1 != d2,
             "seeded jitter should vary per attempt: d0={d0:?}, d1={d1:?}, d2={d2:?}"
         );
+    }
+
+    #[test]
+    fn jitter_with_non_finite_factor_falls_back_to_base_delay() {
+        let delay = Duration::from_millis(100);
+        let jitter = JitterConfig::Full {
+            factor: f64::INFINITY,
+            seed: Some(42),
+        };
+
+        assert_eq!(apply_jitter(delay, &jitter, 0), delay);
+    }
+
+    #[tokio::test]
+    async fn total_budget_check_handles_large_backoff_without_panic() {
+        let config = RetryConfig::new(3)
+            .unwrap()
+            .backoff(BackoffConfig::Custom(vec![Duration::MAX]))
+            .total_budget(Duration::from_secs(1));
+
+        let result: Result<(), CallError<TransientErr>> =
+            retry_with(config, || Box::pin(async { Err(TransientErr("fail")) })).await;
+
+        assert!(matches!(result, Err(CallError::RetriesExhausted { .. })));
     }
 
     #[test]

@@ -11,6 +11,7 @@ Fault-tolerance patterns: circuit breaker, retry, bulkhead, rate limiter, timeou
 - **Only `nebula-error` dep** — otherwise standalone.
 - `RateLimiter` trait: `call()` has default impl (acquire + operation). Override only for custom behavior (e.g. AdaptiveRateLimiter).
 - **`total_budget`** is wall-clock based — tracks elapsed time including operation execution.
+- **Retry budget check uses `checked_add`** — huge backoff durations cannot panic on `Duration` overflow.
 - **`HedgeExecutor::new()` returns `Result`** — validates `HedgeConfig`.
 - **All patterns use `.call()` method** — unified verb across all executors.
 - **`CircuitBreaker::try_acquire()`** — returns `Result`, not `bool`.
@@ -31,6 +32,7 @@ Fault-tolerance patterns: circuit breaker, retry, bulkhead, rate limiter, timeou
 - **Field name**: `max_half_open_operations` (not `half_open_max_ops`).
 - **`ChainFallback::then()`** (not `add`). **`PriorityFallback`** uses `Vec` (not `HashMap`).
 - **Seeded jitter** mixes seed with attempt number — each retry gets different jitter.
+- **Jitter factor hardening**: non-finite/negative values fall back to base delay; factor is clamped to `<= 1.0` to match docs.
 - **`MockClock::now()`** includes real elapsed time (Instant limitation on stable Rust). Use large advances in tests.
 - **Bulkhead queue timeout** returns `CallError::Timeout`, not `BulkheadFull`.
 
@@ -58,4 +60,4 @@ Prefer `ResiliencePipeline` for composing multiple patterns — it handles layer
 ## Relations
 - Depends on: nebula-error. Used by nebula-resource (pool resilience), nebula-credential (refresh CB).
 
-<!-- reviewed: 2026-03-31 — deep invariant audit: 8 bug fixes, 14 integration tests, 7 benchmark suites -->
+<!-- reviewed: 2026-03-31 — deep invariant audit + retry overflow/jitter hardening -->
