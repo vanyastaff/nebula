@@ -4,12 +4,13 @@
 //! whether it should trip a circuit breaker, trigger a retry, or be silently
 //! ignored. [`ErrorClassifier`] maps application errors to an [`ErrorClass`].
 //!
-//! # Priority chain
+//! # Classification priority
 //!
 //! When used with [`RetryConfig`](crate::retry::RetryConfig):
-//! 1. `retry_if` predicate (explicit override) — highest priority
-//! 2. `ErrorClassifier::classify` → [`ErrorClass::is_retryable`]
-//! 3. [`Classify::is_retryable`](nebula_error::Classify::is_retryable) — default fallback
+//! 1. [`ErrorClassifier`] (set via [`with_classifier`](crate::retry::RetryConfig::with_classifier)
+//!    or [`retry_if`](crate::retry::RetryConfig::retry_if) shorthand)
+//! 2. [`Classify::is_retryable()`](nebula_error::Classify::is_retryable) — default fallback
+//!    when no classifier is set
 //!
 //! # Examples
 //!
@@ -54,7 +55,7 @@ use std::sync::Arc;
 ///
 /// *Timeout behavior in CB is controlled by
 /// [`count_timeouts_as_failures`](crate::circuit_breaker::CircuitBreakerConfig::count_timeouts_as_failures).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum ErrorClass {
     /// Temporary issue — retry, counts as CB failure.

@@ -108,6 +108,11 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     }
 
     /// Add a retry step.
+    ///
+    /// **Note:** Pipeline retry uses `BackoffConfig` for delay timing.
+    /// [`retry_hint().after`](nebula_error::Classify::retry_hint) from individual errors
+    /// is **not** applied in the pipeline path — use [`retry_with`](crate::retry::retry_with)
+    /// directly if retry-after hints are needed.
     #[must_use]
     pub fn retry(mut self, config: RetryConfig<E>) -> Self {
         self.steps.push(Step::Retry(config));
