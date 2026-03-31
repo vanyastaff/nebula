@@ -1,85 +1,86 @@
 //! Resilience patterns for building fault-tolerant Rust services.
 //!
-//! Patterns: retry, circuit breaker, bulkhead, rate limiter, timeout, hedge, load shed.
-//! All return `CallError<E>` so callers keep their own error type.
+//! Seven patterns — retry, circuit breaker, bulkhead, rate limiter, timeout,
+//! hedge, load shed — composable via [`ResiliencePipeline`].
 //!
-//! # Quick Start
+//! Every pattern returns [`CallError<E>`] where `E` is your own error type —
+//! no forced mapping, no type erasure.
+//!
+//! # Quick Start — Pipeline
 //!
 //! ```rust,no_run
 //! use nebula_resilience::{ResiliencePipeline, CallError};
 //! use nebula_resilience::retry::{RetryConfig, BackoffConfig};
 //! use std::time::Duration;
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let pipeline = ResiliencePipeline::<&str>::builder()
-//!         .timeout(Duration::from_secs(5))
-//!         .retry(RetryConfig::new(3)?.backoff(BackoffConfig::Fixed(Duration::from_millis(100))))
-//!         .build();
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let pipeline = ResiliencePipeline::<String>::builder()
+//!     .timeout(Duration::from_secs(5))
+//!     .retry(RetryConfig::new(3)?.backoff(BackoffConfig::exponential_default()))
+//!     .build();
 //!
-//!     let result = pipeline.call(|| Box::pin(async {
-//!         Ok::<_, &str>("success")
-//!     })).await;
-//!     Ok(())
-//! }
+//! let value = pipeline.call(|| Box::pin(async {
+//!     Ok::<_, String>("success".into())
+//! })).await?;
+//! # Ok(())
+//! # }
 //! ```
 //!
-//! # Circuit Breaker
+//! # Standalone Patterns
+//!
+//! Each pattern also works independently:
 //!
 //! ```rust,no_run
 //! use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
-//! use std::time::Duration;
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let cb = CircuitBreaker::new(CircuitBreakerConfig {
-//!         failure_threshold: 5,
-//!         reset_timeout: Duration::from_secs(30),
-//!         ..Default::default()
-//!     })?;
-//!
-//!     let result = cb.call(|| Box::pin(async {
-//!         Ok::<_, &str>("success")
-//!     })).await;
-//!     Ok(())
-//! }
-//! ```
-//!
-//! # Retry
-//!
-//! When `E` implements [`Classify`](nebula_error::Classify), retry automatically
-//! skips non-retryable errors and respects `retry_hint()` as a backoff floor.
-//!
-//! ```rust,no_run
 //! use nebula_resilience::retry::{RetryConfig, BackoffConfig, retry_with};
 //! use nebula_resilience::CallError;
-//! use nebula_error::{Classify, ErrorCategory, ErrorCode, codes};
 //! use std::time::Duration;
 //!
-//! #[derive(Debug)]
-//! struct ApiError;
-//! impl std::fmt::Display for ApiError {
-//!     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//!         f.write_str("api error")
-//!     }
-//! }
-//! impl Classify for ApiError {
-//!     fn category(&self) -> ErrorCategory { ErrorCategory::External }
-//!     fn code(&self) -> ErrorCode { codes::INTERNAL.clone() }
-//! }
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! // Circuit breaker
+//! let cb = CircuitBreaker::new(CircuitBreakerConfig {
+//!     failure_threshold: 5,
+//!     reset_timeout: Duration::from_secs(30),
+//!     ..Default::default()
+//! })?;
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let config = RetryConfig::<ApiError>::new(3)?
-//!         .backoff(BackoffConfig::Fixed(Duration::from_millis(50)));
+//! let result = cb.call(|| Box::pin(async {
+//!     Ok::<_, &str>("ok")
+//! })).await;
 //!
-//!     // Non-retryable errors (auth, validation) are skipped automatically
-//!     let result: Result<u32, CallError<ApiError>> = retry_with(config, || Box::pin(async {
-//!         Ok(42u32)
-//!     })).await;
-//!     Ok(())
-//! }
+//! // Retry with Classify-aware error filtering
+//! let config = RetryConfig::<&str>::new(3)?
+//!     .backoff(BackoffConfig::Fixed(Duration::from_millis(50)));
+//!
+//! let result = retry_with(config, || Box::pin(async {
+//!     Ok::<_, &str>("ok")
+//! })).await;
+//! # Ok(())
+//! # }
 //! ```
+//!
+//! # Error Model
+//!
+//! [`CallError<E>`] is `#[non_exhaustive]` with variants for each pattern:
+//!
+//! | Variant | Retryable | Produced by |
+//! |---------|-----------|-------------|
+//! | `Operation(E)` | depends on `E` | user's operation |
+//! | `Timeout(Duration)` | yes | timeout, bulkhead queue |
+//! | `RateLimited { retry_after }` | yes | rate limiter |
+//! | `BulkheadFull` | yes | bulkhead |
+//! | `CircuitOpen` | no | circuit breaker |
+//! | `RetriesExhausted { attempts, last }` | no | retry |
+//! | `Cancelled { reason }` | no | cancellation |
+//! | `LoadShed` | no | load shedder |
+//! | `FallbackFailed { reason }` | no | fallback |
+//!
+//! # Observability
+//!
+//! Inject a [`MetricsSink`] into any pattern to receive [`ResilienceEvent`]s.
+//! Use [`RecordingSink`] in tests for assertion-friendly event capture.
 
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::perf)]
 // Reason: types like CircuitBreakerConfig deliberately repeat the module name for readability.
@@ -87,9 +88,9 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
-// ── Modules (flat) ──────────────────────────────────────────────────────────
+// ── Modules ────────────────────────────────────────────────────────────────
 
-// Core types
+// Core
 pub mod cancellation;
 pub mod error;
 pub mod policy;
@@ -112,15 +113,14 @@ pub mod clock;
 pub mod gate;
 pub mod pipeline;
 
-// ── Re-exports: core types ──────────────────────────────────────────────────
+// ── Re-exports ─────────────────────────────────────────────────────────────
 
+// Core types
 pub use error::{CallError, CallErrorKind, CallResult, ConfigError};
 pub use policy::{ConstantLoad, LoadSignal, PolicySource};
-
 pub use cancellation::{CancellableFuture, CancellationContext, CancellationExt};
 
-// ── Re-exports: patterns ────────────────────────────────────────────────────
-
+// Patterns
 pub use bulkhead::{Bulkhead, BulkheadConfig};
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 pub use fallback::{FallbackStrategy, ValueFallback};
@@ -130,30 +130,11 @@ pub use rate_limiter::{AdaptiveRateLimiter, LeakyBucket, RateLimiter, SlidingWin
 pub use retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
 pub use timeout::{TimeoutExecutor, timeout};
 
-// ── Re-exports: observability ───────────────────────────────────────────────
-
+// Observability
 pub use sink::{
     CircuitState, MetricsSink, NoopSink, RecordingSink, ResilienceEvent, ResilienceEventKind,
 };
 
-// ── Re-exports: infrastructure ──────────────────────────────────────────────
-
+// Infrastructure
 pub use gate::{Gate, GateClosed, GateGuard};
 pub use pipeline::{LoadShedPredicate, PipelineBuilder, RateLimitCheck, ResiliencePipeline};
-
-/// Type-level constants for common configurations.
-pub mod constants {
-    use std::time::Duration;
-
-    /// Default timeout duration (30 seconds).
-    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-    /// Default number of retry attempts.
-    pub const DEFAULT_RETRY_ATTEMPTS: usize = 3;
-    /// Default circuit breaker failure threshold.
-    pub const DEFAULT_FAILURE_THRESHOLD: usize = 5;
-    /// Default rate limit (requests per second).
-    pub const DEFAULT_RATE_LIMIT: f64 = 100.0;
-}
-
-/// Library version with compile-time embedding
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
