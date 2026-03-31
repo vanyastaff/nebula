@@ -344,15 +344,7 @@ impl CircuitBreaker {
     pub fn force_close(&self) {
         let mut inner = self.state.lock();
         let prev = to_circuit_state(inner.state);
-        inner.state = State::Closed;
-        inner.failures = 0;
-        inner.total = 0;
-        inner.half_open_probes = 0;
-        inner.consecutive_opens = 0;
-        inner.slow_calls = 0;
-        if let Some(ref mut window) = inner.window {
-            window.reset();
-        }
+        Self::reset_counters(&mut inner);
         drop(inner);
         if prev != CircuitState::Closed {
             self.sink.record(ResilienceEvent::CircuitStateChanged {
@@ -372,9 +364,11 @@ impl CircuitBreaker {
             return self.config.reset_timeout;
         }
         let exponent = consecutive_opens - 1;
-        let multiplied = self.config.reset_timeout.as_secs_f64()
-            * self.config.break_duration_multiplier.powi(exponent as i32);
-        Duration::from_secs_f64(multiplied).min(self.config.max_break_duration)
+        let max_secs = self.config.max_break_duration.as_secs_f64();
+        let multiplied = (self.config.reset_timeout.as_secs_f64()
+            * self.config.break_duration_multiplier.powi(exponent as i32))
+        .min(max_secs);
+        Duration::from_secs_f64(multiplied)
     }
 
     /// Execute a closure under the circuit breaker.
@@ -490,9 +484,8 @@ impl CircuitBreaker {
         (prev, CircuitState::Open)
     }
 
-    /// Reset all counters and transition to `Closed` from the current state.
-    fn close_from_half_open(inner: &mut InnerState) -> (CircuitState, CircuitState) {
-        let prev = to_circuit_state(inner.state);
+    /// Reset all counters and set state to `Closed`.
+    fn reset_counters(inner: &mut InnerState) {
         inner.state = State::Closed;
         inner.failures = 0;
         inner.total = 0;
@@ -502,6 +495,12 @@ impl CircuitBreaker {
         if let Some(ref mut window) = inner.window {
             window.reset();
         }
+    }
+
+    /// Reset all counters and transition to `Closed` from the current state.
+    fn close_from_half_open(inner: &mut InnerState) -> (CircuitState, CircuitState) {
+        let prev = to_circuit_state(inner.state);
+        Self::reset_counters(inner);
         (prev, CircuitState::Closed)
     }
 

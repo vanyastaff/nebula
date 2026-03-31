@@ -174,9 +174,11 @@ impl HedgeExecutor {
                     hedges_sent += 1;
 
                     if self.config.exponential_backoff {
-                        hedge_delay = Duration::from_secs_f64(
-                            hedge_delay.as_secs_f64() * self.config.backoff_multiplier,
-                        );
+                        let next_secs = hedge_delay.as_secs_f64()
+                            * self.config.backoff_multiplier;
+                        // Cap at 1 hour to avoid Duration::from_secs_f64 panic on
+                        // overflow to infinity with large max_hedges.
+                        hedge_delay = Duration::from_secs_f64(next_secs.min(3600.0));
                     }
                     delay.as_mut().reset(Instant::now() + hedge_delay);
                 }
@@ -265,9 +267,13 @@ impl AdaptiveHedgeExecutor {
 
         let hedge_delay = {
             let tracker = self.latency_tracker.read().await;
-            tracker
+            let delay = tracker
                 .percentile(self.target_percentile)
-                .unwrap_or(self.base_config.hedge_delay)
+                .unwrap_or(self.base_config.hedge_delay);
+            drop(tracker);
+            // Enforce minimum delay to prevent burst-firing all hedges at once
+            // when recorded latencies are near-zero (e.g., cached responses).
+            delay.max(Duration::from_micros(1))
         };
 
         let config = HedgeConfig {

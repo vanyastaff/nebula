@@ -148,10 +148,11 @@ impl TokenBucket {
         })
     }
 
-    /// Set burst size.
+    /// Set burst size (clamped to `1..=100,000`).
     #[must_use = "builder methods must be chained or built"]
     pub fn with_burst(self, burst_size: usize) -> Self {
-        self.burst_size.store(burst_size, Ordering::Release);
+        self.burst_size
+            .store(burst_size.clamp(1, 100_000), Ordering::Release);
         self
     }
 
@@ -198,18 +199,24 @@ impl RateLimiter for TokenBucket {
         }
     }
 
+    // Reason: usize burst_size cast to f64 for token math — acceptable for rate limiting.
+    #[allow(clippy::cast_precision_loss)]
     async fn current_rate(&self) -> f64 {
         let state = self.state.lock();
+        let now = Instant::now();
+        let elapsed = now.duration_since(state.last_refill).as_secs_f64();
         let tokens = state.tokens;
         drop(state);
-        tokens
+        let refill_rate = f64::from_bits(self.refill_rate.load(Ordering::Acquire));
+        let burst = self.burst_size.load(Ordering::Acquire);
+        elapsed.mul_add(refill_rate, tokens).min(burst as f64)
     }
 
-    // Reason: usize capacity cast to f64 for token reset — acceptable for rate limiting.
+    // Reason: usize burst_size cast to f64 for token reset — acceptable for rate limiting.
     #[allow(clippy::cast_precision_loss)]
     async fn reset(&self) {
         let mut state = self.state.lock();
-        state.tokens = self.capacity as f64;
+        state.tokens = self.burst_size.load(Ordering::Acquire) as f64;
         state.last_refill = Instant::now();
     }
 }
@@ -296,11 +303,21 @@ impl RateLimiter for LeakyBucket {
         }
     }
 
-    // Reason: usize capacity cast to f64 — acceptable for rate reporting.
-    #[allow(clippy::cast_precision_loss)]
+    // Reason: f64 leak amount cast to usize and usize capacity cast to f64 — acceptable for rate reporting.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     async fn current_rate(&self) -> f64 {
         let state = self.state.lock();
-        (self.capacity - state.level) as f64
+        let now = Instant::now();
+        let elapsed = now.duration_since(state.last_leak).as_secs_f64();
+        let level = state.level;
+        drop(state);
+        let leaked = (elapsed * self.leak_rate) as usize;
+        let current_level = level.saturating_sub(leaked);
+        (self.capacity - current_level) as f64
     }
 
     async fn reset(&self) {

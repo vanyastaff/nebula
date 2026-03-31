@@ -363,10 +363,11 @@ where
     let bail: Arc<Mutex<Option<CallError<E>>>> = Arc::new(Mutex::new(None));
     let bail_check = Arc::clone(&bail);
 
-    let inner_config = RetryConfig::<Option<E>>::new_unchecked(config.max_attempts)
+    let mut inner_config = RetryConfig::<Option<E>>::new_unchecked(config.max_attempts)
         .backoff(config.backoff.clone())
         .jitter(config.jitter.clone())
         .retry_if(move |e: &Option<E>| e.is_some() && bail_check.lock().is_none());
+    inner_config.total_budget = config.total_budget;
 
     let result = retry_with_inner(inner_config, {
         let steps = Arc::clone(&steps);
