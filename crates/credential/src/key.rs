@@ -74,7 +74,7 @@ impl PartialEq<&str> for CredentialKey {
 #[macro_export]
 macro_rules! credential_key {
     ($key:expr) => {
-        $crate::credential_key::CredentialKey::new($key)
+        $crate::key::CredentialKey::new($key)
     };
 }
 

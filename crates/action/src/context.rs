@@ -17,7 +17,7 @@ use crate::capability::{
     default_resource_accessor, default_trigger_scheduler,
 };
 use crate::error::ActionError;
-use nebula_credential::core::CredentialSnapshot;
+use nebula_credential::CredentialSnapshot;
 
 /// Base trait for action execution contexts.
 ///
@@ -261,8 +261,8 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use nebula_credential::core::CredentialMetadata;
-    use nebula_credential::core::CredentialSnapshot;
+    use nebula_credential::CredentialMetadata;
+    use nebula_credential::CredentialSnapshot;
 
     use crate::capability::{ActionLogLevel, ActionLogger, ExecutionEmitter, TriggerScheduler};
 

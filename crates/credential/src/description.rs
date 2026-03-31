@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// # Example
 ///
 /// ```
-/// use nebula_credential::core::CredentialDescription;
+/// use nebula_credential::CredentialDescription;
 /// use nebula_parameter::{Parameter, ParameterCollection};
 ///
 /// let properties = ParameterCollection::new()

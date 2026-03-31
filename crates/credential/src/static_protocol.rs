@@ -32,7 +32,7 @@ use nebula_core::AuthScheme;
 use nebula_parameter::ParameterCollection;
 use nebula_parameter::values::ParameterValues;
 
-use crate::core::CredentialError;
+use crate::error::CredentialError;
 
 /// Reusable protocol for static (non-interactive) credentials.
 ///

@@ -35,29 +35,18 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
+use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
 use tokio::sync::{Mutex, Notify};
-
-/// Max consecutive refresh failures before circuit opens.
-const MAX_REFRESH_FAILURES: u32 = 5;
-/// Time window for failure counting (5 minutes).
-const FAILURE_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
-
-/// Per-credential failure tracking for the circuit breaker.
-struct FailureRecord {
-    /// Number of consecutive failures in the current window.
-    count: u32,
-    /// When the current failure window started.
-    window_start: tokio::time::Instant,
-}
 
 /// Coordinates credential refresh to prevent thundering herd.
 ///
 /// Thread-safe: all operations acquire the inner `Mutex`.
 ///
-/// Includes a per-credential circuit breaker: after [`MAX_REFRESH_FAILURES`]
-/// consecutive failures within [`FAILURE_WINDOW`], the circuit opens and
-/// further refresh attempts are skipped until the window expires.
+/// Includes a per-credential circuit breaker (via `nebula_resilience::CircuitBreaker`):
+/// after 5 consecutive failures the circuit opens for 5 minutes, then transitions
+/// to half-open to probe recovery.
 ///
 /// # Examples
 ///
@@ -82,8 +71,8 @@ struct FailureRecord {
 /// ```
 pub struct RefreshCoordinator {
     in_flight: Mutex<HashMap<String, Arc<Notify>>>,
-    /// Per-credential failure records for circuit breaker.
-    failure_counts: Mutex<HashMap<String, FailureRecord>>,
+    /// Per-credential circuit breakers via `nebula-resilience`.
+    circuit_breakers: parking_lot::Mutex<HashMap<String, Arc<CircuitBreaker>>>,
 }
 
 /// Result of attempting to begin a refresh for a credential.
@@ -111,8 +100,24 @@ impl RefreshCoordinator {
     pub fn new() -> Self {
         Self {
             in_flight: Mutex::new(HashMap::new()),
-            failure_counts: Mutex::new(HashMap::new()),
+            circuit_breakers: parking_lot::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Returns or creates a per-credential circuit breaker.
+    fn get_or_create_cb(&self, credential_id: &str) -> Arc<CircuitBreaker> {
+        let mut cbs = self.circuit_breakers.lock();
+        cbs.entry(credential_id.to_string())
+            .or_insert_with(|| {
+                let config = CircuitBreakerConfig {
+                    failure_threshold: 5,
+                    reset_timeout: Duration::from_secs(300),
+                    min_operations: 1,
+                    ..Default::default()
+                };
+                Arc::new(CircuitBreaker::new(config).expect("valid CB config"))
+            })
+            .clone()
     }
 
     /// Attempts to begin a refresh for the given credential.
@@ -151,45 +156,22 @@ impl RefreshCoordinator {
     }
 
     /// Records a refresh failure for circuit breaker tracking.
-    ///
-    /// Increments the failure counter within the current window, or
-    /// resets the window if it has expired.
     pub async fn record_failure(&self, credential_id: &str) {
-        let mut counts = self.failure_counts.lock().await;
-        let entry = counts
-            .entry(credential_id.to_string())
-            .or_insert(FailureRecord {
-                count: 0,
-                window_start: tokio::time::Instant::now(),
-            });
-        if entry.window_start.elapsed() > FAILURE_WINDOW {
-            // Window expired, reset
-            *entry = FailureRecord {
-                count: 1,
-                window_start: tokio::time::Instant::now(),
-            };
-        } else {
-            entry.count += 1;
-        }
+        self.get_or_create_cb(credential_id)
+            .record_outcome(Outcome::Failure);
     }
 
     /// Records a successful refresh, resetting the circuit breaker.
     pub async fn record_success(&self, credential_id: &str) {
-        self.failure_counts.lock().await.remove(credential_id);
+        // Remove the CB entirely on success — full reset.
+        self.circuit_breakers.lock().remove(credential_id);
     }
 
     /// Returns `true` if the circuit breaker is open (too many failures).
-    ///
-    /// The circuit opens after [`MAX_REFRESH_FAILURES`] consecutive
-    /// failures within [`FAILURE_WINDOW`], and stays open until the
-    /// window expires.
     pub async fn is_circuit_open(&self, credential_id: &str) -> bool {
-        let counts = self.failure_counts.lock().await;
-        if let Some(record) = counts.get(credential_id) {
-            record.count >= MAX_REFRESH_FAILURES && record.window_start.elapsed() <= FAILURE_WINDOW
-        } else {
-            false
-        }
+        let cbs = self.circuit_breakers.lock();
+        cbs.get(credential_id)
+            .is_some_and(|cb| cb.can_execute::<()>().is_err())
     }
 }
 

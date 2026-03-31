@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 
 use crate::pending::PendingState;
 use crate::pending_store::{PendingStateStore, PendingStoreError};
-use crate::pending_token::PendingToken;
+use crate::pending::PendingToken;
 
 /// In-memory pending store backed by a `HashMap`.
 ///

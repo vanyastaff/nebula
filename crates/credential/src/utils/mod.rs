@@ -3,8 +3,6 @@
 pub mod crypto;
 pub mod retry;
 pub mod secret_string;
-pub mod time;
-pub mod validation;
 
 /// Serde helpers for [`SecretString`] that preserve the actual value.
 ///
@@ -57,5 +55,3 @@ pub use crypto::{
 };
 pub use retry::{RetryPolicy, retry_with_policy};
 pub use secret_string::SecretString;
-pub use time::{from_unix_timestamp, to_unix_timestamp, unix_now};
-pub use validation::validate_encrypted_size;

@@ -13,7 +13,7 @@
 
 use super::api_key::ApiKeyPlacement;
 use super::{ApiKeyAuth, BearerToken, OAuth2Token, SamlAuth};
-use crate::core::CredentialError;
+use crate::error::CredentialError;
 
 // -- OAuth2Token -> BearerToken (infallible) ----------------------------------
 

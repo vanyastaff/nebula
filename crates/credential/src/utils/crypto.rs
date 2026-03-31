@@ -3,7 +3,7 @@
 //! Provides AES-256-GCM encryption with Argon2id key derivation,
 //! OAuth2/PKCE utilities, and secure random generation.
 
-use crate::core::CryptoError;
+use crate::error::CryptoError;
 use aes_gcm::{
     Aes256Gcm,
     aead::{Aead, KeyInit, Payload},

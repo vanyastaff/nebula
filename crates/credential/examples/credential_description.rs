@@ -3,7 +3,7 @@
 //! This example demonstrates how to define credential type schemas
 //! that can be used for type registry and documentation.
 
-use nebula_credential::core::CredentialDescription;
+use nebula_credential::CredentialDescription;
 use nebula_parameter::{Parameter, ParameterCollection};
 
 fn main() {

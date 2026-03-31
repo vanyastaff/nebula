@@ -13,8 +13,8 @@ use crate::pending::{NoPendingState, PendingState};
 
 // ── ResolveResult ──────────────────────────────────────────────────────
 
-/// Outcome of [`Credential::resolve`](crate::credential_trait::Credential::resolve)
-/// or [`Credential::continue_resolve`](crate::credential_trait::Credential::continue_resolve).
+/// Outcome of [`Credential::resolve`](crate::credential::Credential::resolve)
+/// or [`Credential::continue_resolve`](crate::credential::Credential::continue_resolve).
 ///
 /// # Variants
 ///
@@ -137,7 +137,7 @@ pub enum UserInput {
 // ── RefreshOutcome ─────────────────────────────────────────────────────
 
 /// Represents **successful or expected** outcomes from
-/// [`Credential::refresh`](crate::credential_trait::Credential::refresh).
+/// [`Credential::refresh`](crate::credential::Credential::refresh).
 ///
 /// All **failures** go through
 /// `Err(CredentialError::...)`.
@@ -157,7 +157,7 @@ pub enum RefreshOutcome {
 // ── TestResult ─────────────────────────────────────────────────────────
 
 /// Outcome of
-/// [`Credential::test`](crate::credential_trait::Credential::test).
+/// [`Credential::test`](crate::credential::Credential::test).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TestResult {
@@ -177,7 +177,7 @@ pub enum TestResult {
 /// Controls when and how the framework refreshes this credential.
 ///
 /// Used as an associated const on the
-/// [`Credential`](crate::credential_trait::Credential) trait:
+/// [`Credential`](crate::credential::Credential) trait:
 /// `const REFRESH_POLICY: RefreshPolicy`.
 ///
 /// All fields are const-compatible (`Duration::from_secs` is `const fn`

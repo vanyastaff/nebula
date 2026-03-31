@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// Receives audit events for logging or persistence.
 ///
@@ -181,7 +181,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::credential_store::PutMode;
+    use crate::store::PutMode;
     use crate::store_memory::InMemoryStore;
 
     struct CollectingSink {

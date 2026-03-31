@@ -32,63 +32,53 @@
 
 /// Object-safe supertrait for credential dependency declaration.
 pub mod any;
-/// Core types, errors, and primitives
-pub mod core;
-/// Credential rotation
-pub mod rotation;
-/// Utilities for crypto, time, etc.
-pub mod utils;
-
-// ── v2 Core ─────────────────────────────────────────────────────────────────
-
-/// Typed credential handle returned by the resolver.
-pub mod credential_handle;
-/// Newtype for credential type keys.
-pub mod credential_key;
-/// Credential state trait for stored credential data.
-pub mod credential_state;
+/// Credential operation context.
+pub mod context;
 /// Unified Credential trait replacing six v1 traits.
-pub mod credential_trait;
+pub mod credential;
 /// Built-in credential type implementations.
 pub mod credentials;
+/// Credential type description schema.
+pub mod description;
+/// Error types for credential operations.
+pub mod error;
+/// Typed credential handle returned by the resolver.
+pub mod handle;
+/// Newtype for credential type keys.
+pub mod key;
+/// Credential metadata.
+pub mod metadata;
 /// Typed pending state for interactive flows.
 pub mod pending;
 /// Pending state store trait for interactive credential flows.
 pub mod pending_store;
 /// In-memory pending state store for testing and development.
 pub mod pending_store_memory;
-/// Opaque token for pending interactive flows.
-pub mod pending_token;
+/// Type-erased credential registry for runtime dispatch.
+pub mod registry;
 /// Resolve result types: interaction, refresh, test.
 pub mod resolve;
+/// Credential rotation
+pub mod rotation;
 /// Authentication scheme types.
 pub mod scheme;
+/// Credential snapshot.
+pub mod snapshot;
+/// Credential state trait for stored credential data.
+pub mod state;
 /// Reusable protocol pattern for static credentials.
 pub mod static_protocol;
+/// Utilities for crypto, time, etc.
+pub mod utils;
 
 // ── v2 Storage ──────────────────────────────────────────────────────────────
 
 /// Credential store trait with layered composition.
-pub mod credential_store;
+pub mod store;
 /// Composable storage layers (encryption, etc.) for stores.
 pub mod layer;
-/// AWS Secrets Manager credential store.
-#[cfg(feature = "storage-aws")]
-pub mod store_aws;
-/// Kubernetes Secrets credential store.
-#[cfg(feature = "storage-k8s")]
-pub mod store_k8s;
-/// Filesystem-based credential store for desktop/single-node use.
-#[cfg(feature = "storage-local")]
-pub mod store_local;
 /// In-memory credential store for testing.
 pub mod store_memory;
-/// Postgres-backed credential store via `nebula-storage` KV layer.
-#[cfg(feature = "storage-postgres")]
-pub mod store_postgres;
-/// HashiCorp Vault credential store using KV v2 engine.
-#[cfg(feature = "storage-vault")]
-pub mod store_vault;
 
 // ── v2 Executor ────────────────────────────────────────────────────────
 
@@ -97,8 +87,6 @@ pub mod executor;
 
 // ── v2 Resolution ───────────────────────────────────────────────────────────
 
-/// Type-erased credential registry for runtime dispatch.
-pub mod credential_registry;
 /// Refresh coordination -- thundering herd prevention.
 pub mod refresh;
 /// Runtime credential resolution.
@@ -111,14 +99,17 @@ pub mod resolver;
 pub use crate::any::AnyCredential;
 
 // Core types & errors
-pub use crate::core::{
-    CredentialContext, CredentialDescription, CredentialError, CredentialId, CredentialMetadata,
-    CredentialSnapshot, CryptoError, ManagerError, ManagerResult, RefreshErrorKind,
-    ResolutionStage, RetryAdvice, SecretString, StorageError, ValidationError,
+pub use crate::context::CredentialContext;
+pub use crate::description::CredentialDescription;
+pub use crate::error::{
+    CredentialError, CryptoError, RefreshErrorKind, ResolutionStage, RetryAdvice, ValidationError,
 };
+pub use crate::metadata::CredentialMetadata;
+pub use crate::snapshot::CredentialSnapshot;
+pub use nebula_core::CredentialId;
 
 // Utils - crypto
-pub use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
+pub use crate::utils::{EncryptedData, EncryptionKey, SecretString, decrypt, encrypt};
 
 // Rotation
 pub use crate::rotation::{
@@ -126,16 +117,16 @@ pub use crate::rotation::{
 };
 
 // v2: Credential key newtype
-pub use credential_key::CredentialKey;
+pub use key::CredentialKey;
 
 // v2: Unified Credential trait
-pub use credential_trait::Credential;
+pub use credential::Credential;
 
 // v2: Static protocol pattern
 pub use static_protocol::StaticProtocol;
 
 // v2: Credential state
-pub use credential_state::CredentialState;
+pub use state::CredentialState;
 
 // v2: Auth schemes
 pub use scheme::{
@@ -145,12 +136,11 @@ pub use scheme::{
 };
 
 // v2: Pending state
-pub use pending::{NoPendingState, PendingState};
+pub use pending::{NoPendingState, PendingState, PendingToken};
 
 // v2: Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};
 pub use pending_store_memory::InMemoryPendingStore;
-pub use pending_token::PendingToken;
 
 // v2: Built-in credential implementations
 pub use credentials::{
@@ -159,28 +149,18 @@ pub use credentials::{
 };
 
 // v2: Typed handle
-pub use credential_handle::CredentialHandle;
+pub use handle::CredentialHandle;
 
 // v2: Storage
-pub use credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
+pub use store::{CredentialStore, PutMode, StoreError, StoredCredential};
 pub use layer::{
     AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
     CacheStats, EncryptionLayer, ScopeLayer, ScopeResolver,
 };
-#[cfg(feature = "storage-aws")]
-pub use store_aws::{AwsSecretsConfig, AwsSecretsStore};
-#[cfg(feature = "storage-k8s")]
-pub use store_k8s::{K8sSecretsConfig, K8sSecretsStore};
-#[cfg(feature = "storage-local")]
-pub use store_local::LocalFileStore;
 pub use store_memory::InMemoryStore;
-#[cfg(feature = "storage-postgres")]
-pub use store_postgres::PostgresStore;
-#[cfg(feature = "storage-vault")]
-pub use store_vault::{VaultAuthMethod, VaultConfig, VaultConfigError, VaultStore};
 
 // v2: Registry
-pub use credential_registry::{CredentialRegistry, RegistryError};
+pub use registry::{CredentialRegistry, RegistryError};
 
 // v2: Resolver
 pub use resolver::{CredentialResolver, ResolveError};

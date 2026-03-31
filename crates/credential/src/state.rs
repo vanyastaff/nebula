@@ -42,7 +42,7 @@ pub trait CredentialState: Serialize + DeserializeOwned + Send + Sync + 'static 
 #[macro_export]
 macro_rules! identity_state {
     ($ty:ty, $kind:expr, $version:expr) => {
-        impl $crate::credential_state::CredentialState for $ty {
+        impl $crate::state::CredentialState for $ty {
             const KIND: &'static str = $kind;
             const VERSION: u32 = $version;
         }

@@ -13,7 +13,7 @@ use crate::utils::SecretString;
 /// Produced by: OAuth2 credential via `project()`.
 /// Consumed by: HTTP APIs requiring OAuth2 bearer auth.
 ///
-/// [`CredentialState`]: crate::credential_state::CredentialState
+/// [`CredentialState`]: crate::state::CredentialState
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OAuth2Token {
     access_token: SecretString,

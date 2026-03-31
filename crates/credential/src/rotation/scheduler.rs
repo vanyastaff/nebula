@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::CredentialId;
+use nebula_core::CredentialId;
 use crate::rotation::RotationResult;
 use crate::rotation::policy::{BeforeExpiryConfig, PeriodicConfig, ScheduledConfig};
 

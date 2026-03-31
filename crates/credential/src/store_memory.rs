@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// In-memory store backed by a `HashMap`. Test-only — data lost on drop.
 ///
@@ -121,7 +121,7 @@ impl CredentialStore for InMemoryStore {
 mod tests {
     use super::*;
 
-    use crate::credential_store::test_helpers::make_credential;
+    use crate::store::test_helpers::make_credential;
 
     #[tokio::test]
     async fn crud_operations() {

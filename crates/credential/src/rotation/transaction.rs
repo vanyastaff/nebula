@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::core::CredentialId;
+use nebula_core::CredentialId;
 
 use super::error::RotationResult;
 use super::state::RotationState;

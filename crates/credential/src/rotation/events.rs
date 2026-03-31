@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::error::RotationResult;
-use crate::core::CredentialId;
+use nebula_core::CredentialId;
 
 /// Rollback data (boxed to reduce enum size)
 #[derive(Debug, Clone, Serialize, Deserialize)]

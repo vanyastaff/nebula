@@ -10,7 +10,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::core::CredentialId;
+use nebula_core::CredentialId;
 
 /// Rotation metrics collector
 ///

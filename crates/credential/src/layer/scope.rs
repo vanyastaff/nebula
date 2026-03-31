@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// The metadata key used to store the owner identifier.
 const OWNER_KEY: &str = "owner_id";
@@ -217,7 +217,7 @@ fn verify_owner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credential_store::PutMode;
+    use crate::store::PutMode;
     use crate::store_memory::InMemoryStore;
 
     struct FixedScope(Option<String>);

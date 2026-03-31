@@ -2,7 +2,7 @@
 
 use std::any::Any;
 
-use crate::core::CredentialDescription;
+use crate::description::CredentialDescription;
 
 /// Object-safe supertrait for declaring credential dependencies.
 ///
