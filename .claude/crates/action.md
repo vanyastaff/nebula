@@ -20,4 +20,4 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 
 ## Relations
 - Depends on nebula-core, nebula-parameter (re-exports Field/Schema). Used by nebula-engine, nebula-runtime, nebula-sdk.
-<!-- reviewed: 2026-03-30 -->
+<!-- reviewed: 2026-03-31 -->
