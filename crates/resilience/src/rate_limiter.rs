@@ -389,19 +389,6 @@ impl SlidingWindow {
         }
     }
 
-    /// Eagerly drop all entries older than the window — called only when the
-    /// deque is at or above `max_requests`. Amortised O(1) during bursty
-    /// traffic; O(n) per request at steady-state when traffic equals the limit.
-    fn clean_old_requests_if_full(
-        requests: &mut VecDeque<Instant>,
-        now: Instant,
-        window_duration: Duration,
-        max_requests: usize,
-    ) {
-        if requests.len() >= max_requests {
-            Self::clean_old_requests_locked(requests, now, window_duration);
-        }
-    }
 }
 
 impl RateLimiter for SlidingWindow {
@@ -409,14 +396,11 @@ impl RateLimiter for SlidingWindow {
         let now = Instant::now();
         let mut requests = self.requests.lock();
 
-        // Only run O(n) cleanup when the deque is full; otherwise a simple
-        // length check is sufficient and avoids scanning on every call.
-        Self::clean_old_requests_if_full(
-            &mut requests,
-            now,
-            self.window_duration,
-            self.max_requests,
-        );
+        // Always evict expired entries before checking capacity.
+        // The deque is sorted by insertion time, so we only scan from the
+        // front until we hit a non-expired entry — O(k) where k is the
+        // number of expired entries (typically 0–1 at steady-state).
+        Self::clean_old_requests_locked(&mut requests, now, self.window_duration);
 
         if requests.len() < self.max_requests {
             requests.push_back(now);
