@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 use crate::utils::crypto::{self, EncryptionKey};
 
 /// Wraps a store with AES-256-GCM encryption on the `data` field.
@@ -104,14 +104,14 @@ fn decrypt_data(key: &EncryptionKey, ciphertext: &[u8], id: &str) -> Result<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credential_store::PutMode;
+    use crate::store::PutMode;
     use crate::store_memory::InMemoryStore;
 
     fn test_key() -> Arc<EncryptionKey> {
         Arc::new(EncryptionKey::from_bytes([0x42; 32]))
     }
 
-    use crate::credential_store::test_helpers::make_credential;
+    use crate::store::test_helpers::make_credential;
 
     #[tokio::test]
     async fn round_trip_encrypts_and_decrypts() {

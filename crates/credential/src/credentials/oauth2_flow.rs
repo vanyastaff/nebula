@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::oauth2::OAuth2State;
 use super::oauth2_config::{AuthStyle, OAuth2Config};
-use crate::core::CredentialError;
+use crate::error::CredentialError;
 
 /// HTTP request timeout for OAuth2 token exchanges.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);

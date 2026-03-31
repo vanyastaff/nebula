@@ -21,7 +21,7 @@ use std::sync::Arc;
 use nebula_storage::{Storage, StorageError as KvStorageError};
 use serde::{Deserialize, Serialize};
 
-use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// Key prefix used for credential entries in the KV store.
 const CRED_KEY_PREFIX: &str = "cred:";
@@ -280,7 +280,7 @@ mod tests {
         PostgresStore::new(Arc::new(MockKv::new()))
     }
 
-    use crate::credential_store::test_helpers::make_credential;
+    use crate::store::test_helpers::make_credential;
 
     #[tokio::test]
     async fn crud_operations() {

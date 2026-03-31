@@ -46,7 +46,7 @@ use tokio::task::JoinHandle;
 use vaultrs::client::{Client, VaultClient, VaultClientSettingsBuilder};
 use vaultrs::kv2;
 
-use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 use crate::utils::RetryPolicy;
 
 // ── Config error ────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use moka::future::Cache;
 
-use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// Configuration for the credential cache.
 ///
@@ -184,10 +184,10 @@ impl<S: CredentialStore> CredentialStore for CacheLayer<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credential_store::PutMode;
+    use crate::store::PutMode;
     use crate::store_memory::InMemoryStore;
 
-    use crate::credential_store::test_helpers::make_credential;
+    use crate::store::test_helpers::make_credential;
 
     #[tokio::test]
     async fn cache_hit_returns_cached() {

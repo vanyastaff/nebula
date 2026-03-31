@@ -96,7 +96,7 @@
 //!
 //! ```rust,no_run
 //! use nebula_credential::rotation::BlueGreenRotation;
-//! use nebula_credential::core::CredentialId;
+//! use nebula_credential::CredentialId;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let blue = CredentialId::new();

@@ -11,7 +11,7 @@
 //! Errors automatically convert to [`CredentialError`] via `From` implementations:
 //!
 //! ```
-//! use nebula_credential::core::{StorageError, CredentialError};
+//! use nebula_credential::{StorageError, CredentialError};
 //!
 //! // Storage errors convert automatically
 //! let storage_err = StorageError::NotFound {
@@ -24,7 +24,8 @@
 //! Using `?` operator for automatic conversion:
 //!
 //! ```no_run
-//! use nebula_credential::core::{Result, StorageError};
+//! use nebula_credential::error::Result;
+//! use nebula_credential::StorageError;
 //!
 //! fn load_credential(id: &str) -> Result<String> {
 //!     // StorageError automatically converts to CredentialError

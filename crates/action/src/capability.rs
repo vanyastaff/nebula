@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use nebula_core::id::ExecutionId;
-use nebula_credential::core::CredentialSnapshot;
+use nebula_credential::CredentialSnapshot;
 
 use crate::ActionError;
 

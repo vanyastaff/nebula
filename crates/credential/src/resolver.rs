@@ -2,7 +2,7 @@
 //!
 //! Loads stored credentials, deserializes state, and projects to
 //! [`AuthScheme`](nebula_core::AuthScheme) via the
-//! [`Credential::project()`](crate::credential_trait::Credential::project) pipeline.
+//! [`Credential::project()`](crate::credential::Credential::project) pipeline.
 //!
 //! For refreshable credentials, use [`CredentialResolver::resolve_with_refresh()`]
 //! which coordinates refresh via [`RefreshCoordinator`] to prevent
@@ -10,17 +10,17 @@
 
 use std::sync::Arc;
 
-use crate::core::CredentialContext;
-use crate::credential_handle::CredentialHandle;
-use crate::credential_state::CredentialState;
-use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
-use crate::credential_trait::Credential;
+use crate::context::CredentialContext;
+use crate::credential::Credential;
+use crate::handle::CredentialHandle;
+use crate::state::CredentialState;
+use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 use crate::refresh::{RefreshAttempt, RefreshCoordinator};
 use crate::resolve::RefreshOutcome;
 
 /// Resolves credentials from storage into typed [`CredentialHandle`]s.
 ///
-/// The resolver loads a [`StoredCredential`](crate::credential_store::StoredCredential),
+/// The resolver loads a [`StoredCredential`](crate::store::StoredCredential),
 /// verifies the `state_kind` matches the expected credential type,
 /// deserializes the state, and projects it to the [`AuthScheme`](nebula_core::AuthScheme).
 ///
@@ -58,7 +58,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     ///
     /// Loads the stored credential, deserializes the state, and
     /// projects it to the [`AuthScheme`](nebula_core::AuthScheme) via
-    /// [`Credential::project()`](crate::credential_trait::Credential::project).
+    /// [`Credential::project()`](crate::credential::Credential::project).
     ///
     /// # Errors
     ///
@@ -347,15 +347,17 @@ pub enum ResolveError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credential_store::{PutMode, StoredCredential};
+    use crate::store::{PutMode, StoredCredential};
     use crate::credentials::ApiKeyCredential;
     use crate::store_memory::InMemoryStore;
 
     // ── Test credential for early refresh ──────────────────────────────
 
     use crate::SecretString;
-    use crate::core::{CredentialContext, CredentialDescription, CredentialError};
-    use crate::credential_trait::Credential;
+    use crate::context::CredentialContext;
+    use crate::credential::Credential;
+    use crate::description::CredentialDescription;
+    use crate::error::CredentialError;
     use crate::pending::NoPendingState;
     use crate::resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult};
     use crate::scheme::BearerToken;

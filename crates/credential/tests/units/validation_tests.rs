@@ -1,4 +1,4 @@
-use nebula_credential::core::{CredentialId, ValidationError};
+use nebula_credential::{CredentialId, ValidationError};
 use nebula_credential::utils::SecretString;
 use nebula_core::CredentialKey;
 

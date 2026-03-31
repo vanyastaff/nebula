@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::error::{RotationError, RotationResult};
-use crate::core::CredentialId;
+use nebula_core::CredentialId;
 
 /// Blue-Green rotation state
 ///

@@ -40,7 +40,7 @@ use kube::Client;
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
 use serde::{Deserialize, Serialize};
 
-use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// Maximum payload size for a Kubernetes Secret (1 MB).
 const MAX_PAYLOAD_BYTES: usize = 1_000_000;

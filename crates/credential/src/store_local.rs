@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// JSON-serializable representation of a [`StoredCredential`] on disk.
 #[derive(Serialize, Deserialize)]
@@ -310,7 +310,7 @@ impl CredentialStore for LocalFileStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credential_store::test_helpers::make_credential;
+    use crate::store::test_helpers::make_credential;
     use tempfile::TempDir;
 
     fn make_store() -> (LocalFileStore, TempDir) {

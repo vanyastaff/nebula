@@ -19,9 +19,11 @@ use nebula_parameter::values::ParameterValues;
 use nebula_parameter::{Parameter, ParameterCollection};
 
 use super::oauth2_config::{AuthStyle, GrantType, OAuth2Config};
-use crate::core::{CredentialContext, CredentialDescription, CredentialError};
-use crate::credential_state::CredentialState;
-use crate::credential_trait::Credential;
+use crate::context::CredentialContext;
+use crate::credential::Credential;
+use crate::description::CredentialDescription;
+use crate::error::CredentialError;
+use crate::state::CredentialState;
 use crate::pending::PendingState;
 use crate::resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput};
 use crate::scheme::OAuth2Token;

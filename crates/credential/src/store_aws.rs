@@ -32,7 +32,7 @@ use std::time::Duration;
 use aws_sdk_secretsmanager::Client as SecretsManagerClient;
 use serde::{Deserialize, Serialize};
 
-use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// Maximum payload size for AWS Secrets Manager (64 KB).
 const MAX_PAYLOAD_BYTES: usize = 64 * 1024;

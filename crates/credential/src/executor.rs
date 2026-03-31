@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use nebula_parameter::values::ParameterValues;
 
-use crate::core::{CredentialContext, CredentialError};
-use crate::credential_trait::Credential;
+use crate::context::CredentialContext;
+use crate::credential::Credential;
+use crate::error::CredentialError;
 use crate::pending_store::{PendingStateStore, PendingStoreError};
 use crate::pending_token::PendingToken;
 use crate::resolve::{InteractionRequest, ResolveResult, UserInput};

@@ -81,7 +81,7 @@ impl CredentialMetadata {
     /// # Example
     ///
     /// ```
-    /// use nebula_credential::core::CredentialMetadata;
+    /// use nebula_credential::CredentialMetadata;
     ///
     /// let mut metadata = CredentialMetadata::new();
     /// assert_eq!(metadata.version, 1);
@@ -106,7 +106,7 @@ impl CredentialMetadata {
     /// # Example
     ///
     /// ```
-    /// use nebula_credential::core::CredentialMetadata;
+    /// use nebula_credential::CredentialMetadata;
     /// use std::time::Duration;
     ///
     /// let mut metadata = CredentialMetadata::new();
@@ -130,7 +130,7 @@ impl CredentialMetadata {
     /// # Example
     ///
     /// ```
-    /// use nebula_credential::core::CredentialMetadata;
+    /// use nebula_credential::CredentialMetadata;
     /// use std::time::Duration;
     ///
     /// let mut metadata = CredentialMetadata::new();

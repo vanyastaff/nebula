@@ -4,7 +4,7 @@
 
 use thiserror::Error;
 
-use crate::core::CredentialId;
+use nebula_core::CredentialId;
 
 /// Errors that can occur during credential rotation
 #[derive(Debug, Error)]
@@ -70,7 +70,7 @@ pub enum RotationError {
 
     /// Storage provider error
     #[error("Storage error: {0}")]
-    Storage(#[from] crate::core::CredentialError),
+    Storage(#[from] crate::error::CredentialError),
 
     /// Concurrent rotation detected
     #[error("Rotation already in progress for credential {credential_id}")]

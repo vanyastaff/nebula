@@ -2,7 +2,7 @@
 //!
 //! Tests for error messages, context propagation, and actionable error information.
 
-use nebula_credential::core::{CredentialError, CryptoError, StorageError, ValidationError};
+use nebula_credential::{CredentialError, CryptoError, StorageError, ValidationError};
 use std::io;
 
 /// Test: StorageError::NotFound includes credential ID

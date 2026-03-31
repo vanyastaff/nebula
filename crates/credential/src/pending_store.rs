@@ -7,7 +7,7 @@ use crate::pending_token::PendingToken;
 
 /// Manages ephemeral pending state for interactive credential flows.
 ///
-/// Separate subsystem from [`CredentialStore`](crate::credential_store::CredentialStore):
+/// Separate subsystem from [`CredentialStore`](crate::store::CredentialStore):
 /// different lifecycle (minutes, not years), TTL-enforced, single-use consume.
 ///
 /// # Security: 4-dimensional token binding

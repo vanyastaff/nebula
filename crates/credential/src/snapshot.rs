@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::CredentialMetadata;
+use crate::metadata::CredentialMetadata;
 
 /// A point-in-time snapshot of a stored credential.
 ///

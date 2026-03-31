@@ -19,8 +19,10 @@ use nebula_core::AuthScheme;
 use nebula_parameter::ParameterCollection;
 use nebula_parameter::values::ParameterValues;
 
-use crate::core::{CredentialContext, CredentialDescription, CredentialError};
-use crate::credential_state::CredentialState;
+use crate::context::CredentialContext;
+use crate::description::CredentialDescription;
+use crate::error::CredentialError;
+use crate::state::CredentialState;
 use crate::pending::PendingState;
 use crate::resolve::{RefreshOutcome, RefreshPolicy, ResolveResult, TestResult, UserInput};
 
