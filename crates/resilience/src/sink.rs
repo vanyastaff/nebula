@@ -89,10 +89,7 @@ impl RecordingSink {
     /// Count events matching a given kind string.
     #[must_use]
     pub fn count(&self, kind: &str) -> usize {
-        self.events()
-            .iter()
-            .filter(|e| event_kind(e) == kind)
-            .count()
+        self.events().iter().filter(|e| e.kind() == kind).count()
     }
 
     /// Returns true if a `CircuitStateChanged` event to `to` was recorded.
@@ -110,15 +107,19 @@ impl MetricsSink for RecordingSink {
     }
 }
 
-const fn event_kind(e: &ResilienceEvent) -> &'static str {
-    match e {
-        ResilienceEvent::CircuitStateChanged { .. } => "circuit_state_changed",
-        ResilienceEvent::RetryAttempt { .. } => "retry_attempt",
-        ResilienceEvent::BulkheadRejected => "bulkhead_rejected",
-        ResilienceEvent::TimeoutElapsed { .. } => "timeout_elapsed",
-        ResilienceEvent::HedgeFired { .. } => "hedge_fired",
-        ResilienceEvent::RateLimitExceeded => "rate_limit_exceeded",
-        ResilienceEvent::LoadShed => "load_shed",
+impl ResilienceEvent {
+    /// Returns a static string identifying the event kind.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::CircuitStateChanged { .. } => "circuit_state_changed",
+            Self::RetryAttempt { .. } => "retry_attempt",
+            Self::BulkheadRejected => "bulkhead_rejected",
+            Self::TimeoutElapsed { .. } => "timeout_elapsed",
+            Self::HedgeFired { .. } => "hedge_fired",
+            Self::RateLimitExceeded => "rate_limit_exceeded",
+            Self::LoadShed => "load_shed",
+        }
     }
 }
 

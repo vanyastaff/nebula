@@ -91,9 +91,8 @@
 
 // Core types
 pub mod cancellation;
-pub mod policy_source;
-pub mod signals;
-pub mod types;
+pub mod error;
+pub mod policy;
 
 // Observability
 pub mod sink;
@@ -115,22 +114,21 @@ pub mod pipeline;
 
 // ── Re-exports: core types ──────────────────────────────────────────────────
 
-pub use policy_source::PolicySource;
-pub use signals::{ConstantLoad, LoadSignal};
-pub use types::{CallError, CallErrorKind, CallResult, ConfigError};
+pub use error::{CallError, CallErrorKind, CallResult, ConfigError};
+pub use policy::{ConstantLoad, LoadSignal, PolicySource};
 
 pub use cancellation::{CancellableFuture, CancellationContext, CancellationExt};
 
 // ── Re-exports: patterns ────────────────────────────────────────────────────
 
 pub use bulkhead::{Bulkhead, BulkheadConfig};
-pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
+pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 pub use fallback::{FallbackStrategy, ValueFallback};
 pub use hedge::{HedgeConfig, HedgeExecutor};
 pub use load_shed::load_shed;
 pub use rate_limiter::{AdaptiveRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket};
 pub use retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
-pub use timeout::{TimeoutExecutor, timeout, timeout as timeout_fn};
+pub use timeout::{TimeoutExecutor, timeout};
 
 // ── Re-exports: observability ───────────────────────────────────────────────
 
@@ -140,13 +138,6 @@ pub use sink::{CircuitState, MetricsSink, NoopSink, RecordingSink, ResilienceEve
 
 pub use gate::{Gate, GateClosed, GateGuard};
 pub use pipeline::{LoadShedPredicate, PipelineBuilder, RateLimitCheck, ResiliencePipeline};
-
-/// Functional resilience API — convenience functions for simple cases.
-pub mod resilience {
-    pub use crate::load_shed::load_shed;
-    pub use crate::retry::{retry, retry_with};
-    pub use crate::timeout::timeout as with_timeout;
-}
 
 /// Type-level constants for common configurations.
 pub mod constants {

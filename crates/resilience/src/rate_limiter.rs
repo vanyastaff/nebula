@@ -20,7 +20,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::{Mutex, RwLock};
@@ -34,24 +34,28 @@ use crate::CallError;
 /// Rate limiter trait.
 ///
 /// Returns `Err(CallError::RateLimited)` when the rate limit is exceeded.
-#[allow(async_fn_in_trait)]
+///
+/// All async methods return `Send` futures, matching the `Send + Sync` bound on the trait.
 pub trait RateLimiter: Send + Sync {
     /// Try to acquire permission. Returns `Err(CallError::RateLimited)` if limit hit.
-    async fn acquire(&self) -> Result<(), CallError<()>>;
+    fn acquire(&self) -> impl Future<Output = Result<(), CallError<()>>> + Send;
 
-    /// Acquire permission then execute `operation`. Returns `Err(CallError::RateLimited)` or
+    /// Acquire permission then call `operation`. Returns `Err(CallError::RateLimited)` or
     /// the operation's own error wrapped in `CallError::Operation`.
-    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+    fn call<T, E, F, Fut>(
+        &self,
+        operation: F,
+    ) -> impl Future<Output = Result<T, CallError<E>>> + Send
     where
         F: FnOnce() -> Fut + Send,
         Fut: Future<Output = Result<T, E>> + Send,
         T: Send;
 
     /// Returns the current rate or available capacity (implementation-dependent).
-    async fn current_rate(&self) -> f64;
+    fn current_rate(&self) -> impl Future<Output = f64> + Send;
 
     /// Clears all state and resets to initial conditions.
-    async fn reset(&self);
+    fn reset(&self) -> impl Future<Output = ()> + Send;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -77,15 +81,17 @@ struct TokenBucketState {
 /// let limiter = TokenBucket::new(100, 10.0).unwrap();
 /// ```
 pub struct TokenBucket {
-    /// Maximum tokens in bucket
+    /// Maximum tokens in bucket (initial value, used by `reset`).
     capacity: usize,
     /// Mutable runtime state
     state: Mutex<TokenBucketState>,
     /// Token refill rate per second — stored atomically for lock-free reads
     /// and updated in-place by `update_rate` to avoid re-allocation.
     refill_rate: AtomicU64,
-    /// Burst size
-    burst_size: usize,
+    /// Burst size — the live cap on accumulated tokens.
+    /// Stored atomically so it can be updated alongside `refill_rate` by
+    /// the adaptive rate limiter without rebuilding the `TokenBucket`.
+    burst_size: AtomicUsize,
 }
 
 impl fmt::Debug for TokenBucket {
@@ -124,14 +130,14 @@ impl TokenBucket {
                 last_refill: Instant::now(),
             }),
             refill_rate: AtomicU64::new(refill_rate.to_bits()),
-            burst_size: capacity,
+            burst_size: AtomicUsize::new(capacity),
         })
     }
 
-    /// Set burst size
+    /// Set burst size.
     #[must_use = "builder methods must be chained or built"]
-    pub const fn with_burst(mut self, burst_size: usize) -> Self {
-        self.burst_size = burst_size;
+    pub fn with_burst(self, burst_size: usize) -> Self {
+        self.burst_size.store(burst_size, Ordering::Release);
         self
     }
 
@@ -142,6 +148,15 @@ impl TokenBucket {
     pub fn update_rate(&self, new_rate: f64) {
         let clamped = new_rate.clamp(0.001, 10_000.0);
         self.refill_rate.store(clamped.to_bits(), Ordering::Release);
+    }
+
+    /// Update the burst size in-place.
+    ///
+    /// Used by the adaptive rate limiter to keep burst capacity in sync with the
+    /// adjusted rate. Clamped to `1..=100,000`.
+    pub fn update_burst(&self, new_burst: usize) {
+        self.burst_size
+            .store(new_burst.clamp(1, 100_000), Ordering::Release);
     }
 }
 
@@ -154,8 +169,9 @@ impl RateLimiter for TokenBucket {
         let now = Instant::now();
         let elapsed = now.duration_since(state.last_refill).as_secs_f64();
         let refill_rate = f64::from_bits(self.refill_rate.load(Ordering::Acquire));
+        let burst = self.burst_size.load(Ordering::Acquire);
         let tokens_to_add = elapsed * refill_rate;
-        state.tokens = (state.tokens + tokens_to_add).min(self.burst_size as f64);
+        state.tokens = (state.tokens + tokens_to_add).min(burst as f64);
         state.last_refill = now;
 
         if state.tokens >= 1.0 {
@@ -168,7 +184,7 @@ impl RateLimiter for TokenBucket {
         }
     }
 
-    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+    async fn call<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         F: FnOnce() -> Fut + Send,
         Fut: Future<Output = Result<T, E>> + Send,
@@ -269,7 +285,7 @@ impl RateLimiter for LeakyBucket {
         }
     }
 
-    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+    async fn call<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         F: FnOnce() -> Fut + Send,
         Fut: Future<Output = Result<T, E>> + Send,
@@ -387,7 +403,7 @@ impl RateLimiter for SlidingWindow {
         }
     }
 
-    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+    async fn call<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         F: FnOnce() -> Fut + Send,
         Fut: Future<Output = Result<T, E>> + Send,
@@ -421,26 +437,30 @@ impl RateLimiter for SlidingWindow {
 // ADAPTIVE RATE LIMITER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Mutable state behind a single lock.
+/// Mutable state behind a single lock — only fields that need coordinated mutation.
 struct AdaptiveState {
     inner: Arc<TokenBucket>,
-    success_count: usize,
-    error_count: usize,
     last_stats_reset: Instant,
     current_rate: f64,
     initial_rate: f64,
 }
 
-/// Adaptive rate limiter that adjusts based on error rates
+/// Adaptive rate limiter that adjusts based on error rates.
 ///
 /// Automatically adjusts rate limiting based on success/error ratios.
 /// - High error rate (>10%) → decrease rate
 /// - Low error rate (<1%) → increase rate
+///
+/// Counters are lock-free atomics; the write lock is only taken for rate adjustment.
 pub struct AdaptiveRateLimiter {
     state: Arc<RwLock<AdaptiveState>>,
     /// Lock-free copy of `current_rate` for cheap reads without taking the lock.
     /// Stored as `f64::to_bits()` / read via `f64::from_bits()`.
     atomic_rate: AtomicU64,
+    /// Lock-free success counter — swapped to zero on adjustment.
+    success_count: AtomicU64,
+    /// Lock-free error counter — swapped to zero on adjustment.
+    error_count: AtomicU64,
     stats_window: Duration,
     min_rate: f64,
     max_rate: f64,
@@ -452,8 +472,8 @@ impl AdaptiveRateLimiter {
     /// # Errors
     ///
     /// Returns `Err(ConfigError)` if any rate is outside `TokenBucket`'s valid range
-    /// (`refill_rate` 0.001..=10,000, derived capacity 1..=100,000) or if
-    /// `min_rate > max_rate` or `initial_rate` is outside `[min_rate, max_rate]`.
+    /// (`refill_rate` 0.001..=10,000, derived capacity 1..=100,000), if
+    /// `min_rate > max_rate`, or if `initial_rate` is outside `[min_rate, max_rate]`.
     // Reason: f64 rates cast to usize for token bucket capacity — acceptable for rate limiting.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn new(
@@ -463,6 +483,12 @@ impl AdaptiveRateLimiter {
     ) -> Result<Self, crate::ConfigError> {
         if min_rate > max_rate {
             return Err(crate::ConfigError::new("min_rate", "must be <= max_rate"));
+        }
+        if initial_rate < min_rate || initial_rate > max_rate {
+            return Err(crate::ConfigError::new(
+                "initial_rate",
+                format!("must be within [{min_rate}, {max_rate}]"),
+            ));
         }
         // Validate that all rates in [min_rate, max_rate] produce valid TokenBucket configs.
         // The extremes are sufficient since TokenBucket validates capacity and refill_rate.
@@ -483,35 +509,59 @@ impl AdaptiveRateLimiter {
         Ok(Self {
             state: Arc::new(RwLock::new(AdaptiveState {
                 inner: Arc::new(token_bucket),
-                success_count: 0,
-                error_count: 0,
                 last_stats_reset: Instant::now(),
                 current_rate: initial_rate,
                 initial_rate,
             })),
             atomic_rate: AtomicU64::new(initial_rate.to_bits()),
+            success_count: AtomicU64::new(0),
+            error_count: AtomicU64::new(0),
             stats_window: Duration::from_mins(1),
             min_rate,
             max_rate,
         })
     }
 
-    /// Adjust rate based on error rate. Caller must hold the lock.
-    // Reason: usize counts cast to f64 for rate calculation, and f64 rate cast to usize for
+    /// Try to adjust rate if stats window has elapsed.
+    ///
+    /// Uses a read lock for the fast path (window not yet elapsed) and only takes
+    /// a write lock when adjustment is needed.
+    fn maybe_adjust_rate(&self) {
+        // Fast path: read lock to check window
+        let needs_adjust = {
+            let state = self.state.read();
+            state.last_stats_reset.elapsed() >= self.stats_window
+        };
+
+        if !needs_adjust {
+            return;
+        }
+
+        // Slow path: write lock for adjustment
+        let mut state = self.state.write();
+        // Double-check after acquiring write lock (another thread may have adjusted)
+        if state.last_stats_reset.elapsed() < self.stats_window {
+            return;
+        }
+
+        let success = self.success_count.swap(0, Ordering::Relaxed);
+        let error = self.error_count.swap(0, Ordering::Relaxed);
+        self.do_adjust_rate(&mut state, success, error);
+        drop(state);
+    }
+
+    /// Perform the rate adjustment. Caller must hold the write lock.
+    // Reason: u64 counts cast to f64 for rate calculation, and f64 rate cast to usize for
     // token bucket capacity — acceptable for approximate rate limiting.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    fn adjust_rate_locked(&self, state: &mut AdaptiveState) {
-        if state.last_stats_reset.elapsed() < self.stats_window {
-            return;
-        }
-
-        let total = state.success_count + state.error_count;
+    fn do_adjust_rate(&self, state: &mut AdaptiveState, success: u64, error: u64) {
+        let total = success + error;
         if total > 0 {
-            let error_rate = state.error_count as f64 / total as f64;
+            let error_rate = error as f64 / total as f64;
 
             if error_rate > 0.1 {
                 state.current_rate = (state.current_rate * 0.9).max(self.min_rate);
@@ -519,31 +569,28 @@ impl AdaptiveRateLimiter {
                 state.current_rate = (state.current_rate * 1.1).min(self.max_rate);
             }
 
-            // Update the bucket in-place instead of allocating a new Arc<TokenBucket>.
+            // Update rate and burst capacity in-place to stay in sync.
             state.inner.update_rate(state.current_rate);
+            state
+                .inner
+                .update_burst(state.current_rate.max(1.0) as usize);
             self.atomic_rate
                 .store(state.current_rate.to_bits(), Ordering::Release);
         }
 
-        state.success_count = 0;
-        state.error_count = 0;
         state.last_stats_reset = Instant::now();
     }
 
-    /// Record success
+    /// Record a successful operation.
     pub fn record_success(&self) {
-        let mut state = self.state.write();
-        state.success_count += 1;
-        self.adjust_rate_locked(&mut state);
-        drop(state);
+        self.success_count.fetch_add(1, Ordering::Relaxed);
+        self.maybe_adjust_rate();
     }
 
-    /// Record error
+    /// Record a failed operation.
     pub fn record_error(&self) {
-        let mut state = self.state.write();
-        state.error_count += 1;
-        self.adjust_rate_locked(&mut state);
-        drop(state);
+        self.error_count.fetch_add(1, Ordering::Relaxed);
+        self.maybe_adjust_rate();
     }
 }
 
@@ -557,7 +604,7 @@ impl RateLimiter for AdaptiveRateLimiter {
         limiter.acquire().await
     }
 
-    async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+    async fn call<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         F: FnOnce() -> Fut + Send,
         Fut: Future<Output = Result<T, E>> + Send,
@@ -583,9 +630,9 @@ impl RateLimiter for AdaptiveRateLimiter {
     // Reason: f64 rate cast to usize for token bucket capacity — acceptable for rate limiting.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     async fn reset(&self) {
+        self.success_count.store(0, Ordering::Relaxed);
+        self.error_count.store(0, Ordering::Relaxed);
         let mut state = self.state.write();
-        state.success_count = 0;
-        state.error_count = 0;
         state.last_stats_reset = Instant::now();
         state.current_rate = state.initial_rate;
         state.inner = Arc::new(
@@ -674,7 +721,7 @@ mod governor_impl {
             }
         }
 
-        async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+        async fn call<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
         where
             F: FnOnce() -> Fut + Send,
             Fut: Future<Output = Result<T, E>> + Send,
@@ -712,9 +759,9 @@ mod governor_impl {
         }
 
         #[tokio::test]
-        async fn execute_succeeds_within_capacity() {
+        async fn call_succeeds_within_capacity() {
             let limiter = GovernorRateLimiter::new(100.0, 10);
-            let result = limiter.execute(|| async { Ok::<i32, &str>(42) }).await;
+            let result = limiter.call(|| async { Ok::<i32, &str>(42) }).await;
             assert_eq!(result.unwrap(), 42);
         }
     }
@@ -763,5 +810,64 @@ mod tests {
     #[test]
     fn sliding_window_accepts_valid_config() {
         assert!(SlidingWindow::new(std::time::Duration::from_secs(1), 10).is_ok());
+    }
+
+    // ── B2: AdaptiveRateLimiter rejects initial_rate outside bounds ──────
+
+    #[test]
+    fn adaptive_rejects_initial_rate_below_min() {
+        let result = AdaptiveRateLimiter::new(1.0, 10.0, 100.0);
+        assert!(result.is_err(), "should reject initial_rate below min_rate");
+    }
+
+    #[test]
+    fn adaptive_rejects_initial_rate_above_max() {
+        let result = AdaptiveRateLimiter::new(500.0, 10.0, 100.0);
+        assert!(result.is_err(), "should reject initial_rate above max_rate");
+    }
+
+    #[test]
+    fn adaptive_accepts_initial_rate_at_bounds() {
+        assert!(AdaptiveRateLimiter::new(10.0, 10.0, 100.0).is_ok());
+        assert!(AdaptiveRateLimiter::new(100.0, 10.0, 100.0).is_ok());
+    }
+
+    // ── B1: update_burst keeps burst in sync with rate ──────────────────
+
+    #[tokio::test]
+    async fn token_bucket_update_burst_limits_tokens() {
+        let limiter = TokenBucket::new(10, 0.001).unwrap();
+        // Exhaust initial tokens
+        for _ in 0..10 {
+            assert!(limiter.acquire().await.is_ok());
+        }
+        assert!(limiter.acquire().await.is_err());
+
+        // Reset and reduce burst to 3
+        limiter.reset().await;
+        limiter.update_burst(3);
+
+        // Should only get 3 tokens now (burst caps refill)
+        for _ in 0..3 {
+            assert!(limiter.acquire().await.is_ok());
+        }
+        assert!(limiter.acquire().await.is_err());
+    }
+
+    // ── M3: atomic counters work correctly ──────────────────────────────
+
+    #[tokio::test]
+    async fn adaptive_record_success_and_error_are_lock_free() {
+        let limiter = AdaptiveRateLimiter::new(50.0, 10.0, 100.0).unwrap();
+        // Should not deadlock or panic with many concurrent calls
+        for _ in 0..100 {
+            limiter.record_success();
+        }
+        for _ in 0..50 {
+            limiter.record_error();
+        }
+        // Rate should still be around initial since stats_window (1 min) hasn't elapsed
+        let rate = limiter.current_rate().await;
+        assert!((rate - 50.0).abs() < 0.001, "expected ~50.0, got {rate}");
     }
 }

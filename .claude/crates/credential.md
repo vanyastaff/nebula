@@ -31,3 +31,4 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - Rotation module: policy, transaction, blue-green, validation, retry, backup, events, metrics.
 
 <!-- updated: 2026-03-31 — beta refactor: flat structure, resilience integration, error consolidation, store backends removed -->
+<!-- reviewed: 2026-03-31 -->

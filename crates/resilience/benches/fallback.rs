@@ -12,8 +12,8 @@ use nebula_resilience::fallback::{
 use std::hint::black_box;
 use std::sync::Arc;
 
-fn fallback_execute_overhead(c: &mut Criterion) {
-    let mut group = c.benchmark_group("fallback/execute");
+fn fallback_call_overhead(c: &mut Criterion) {
+    let mut group = c.benchmark_group("fallback/call");
 
     group.bench_function("value_success_path", |b| {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
@@ -24,7 +24,7 @@ fn fallback_execute_overhead(c: &mut Criterion) {
             let operation = Arc::clone(&operation);
             async move {
                 let result = operation
-                    .execute(|| async { Ok::<_, CallError<&str>>("primary".to_string()) })
+                    .call(|| async { Ok::<_, CallError<&str>>("primary".to_string()) })
                     .await;
                 black_box(result)
             }
@@ -40,7 +40,7 @@ fn fallback_execute_overhead(c: &mut Criterion) {
             let operation = Arc::clone(&operation);
             async move {
                 let result = operation
-                    .execute(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
+                    .call(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
                     .await;
                 black_box(result)
             }
@@ -59,7 +59,7 @@ fn fallback_execute_overhead(c: &mut Criterion) {
             let operation = Arc::clone(&operation);
             async move {
                 let result = operation
-                    .execute(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
+                    .call(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
                     .await;
                 black_box(result)
             }
@@ -90,7 +90,7 @@ fn fallback_contention(c: &mut Criterion) {
                             let operation = Arc::clone(&operation);
                             handles.push(tokio::spawn(async move {
                                 operation
-                                    .execute(|| async {
+                                    .call(|| async {
                                         Err::<String, CallError<&str>>(CallError::LoadShed)
                                     })
                                     .await
@@ -109,5 +109,5 @@ fn fallback_contention(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, fallback_execute_overhead, fallback_contention);
+criterion_group!(benches, fallback_call_overhead, fallback_contention);
 criterion_main!(benches);

@@ -149,7 +149,9 @@ pub struct RetryConfig<E = ()> {
     pub backoff: BackoffConfig,
     /// Optional jitter applied to backoff delays.
     pub jitter: JitterConfig,
-    /// If set, retries stop when cumulative sleep time would exceed this budget.
+    /// If set, retries stop when total elapsed wall-clock time plus the next backoff
+    /// delay would exceed this duration. This bounds the total time spent retrying,
+    /// including both operation execution and sleep time.
     pub total_budget: Option<Duration>,
     predicate: Option<RetryPredicate<E>>,
     on_retry: Option<RetryNotify<E>>,
@@ -194,7 +196,8 @@ impl<E: 'static> RetryConfig<E> {
         self
     }
 
-    /// Set a total delay budget — retries stop if cumulative sleep time would exceed this.
+    /// Set a total time budget — retries stop if elapsed wall-clock time plus the next
+    /// backoff delay would exceed this duration.
     #[must_use]
     pub const fn total_budget(mut self, budget: Duration) -> Self {
         self.total_budget = Some(budget);
@@ -266,69 +269,19 @@ impl<E: 'static> RetryConfig<E> {
 /// # Panics
 ///
 /// Panics if `config.max_attempts` is 0 (this is prevented by [`RetryConfig::new`]).
-pub async fn retry_with<T, E, F, Fut>(config: RetryConfig<E>, mut f: F) -> Result<T, CallError<E>>
+pub async fn retry_with<T, E, F, Fut>(config: RetryConfig<E>, f: F) -> Result<T, CallError<E>>
 where
     E: nebula_error::Classify + 'static,
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>> + Send,
 {
-    let mut last_err: Option<E> = None;
-    let mut total_delay = Duration::ZERO;
-
-    for attempt in 0..config.max_attempts {
-        match f().await {
-            Ok(value) => return Ok(value),
-            Err(e) => {
-                let is_last = attempt + 1 >= config.max_attempts;
-
-                // Auto-classify: use predicate if set, otherwise delegate to Classify
-                let should_retry = config
-                    .predicate
-                    .as_ref()
-                    .map_or_else(|| e.is_retryable(), |p| p(&e));
-
-                config.sink.record(ResilienceEvent::RetryAttempt {
-                    attempt: attempt + 1,
-                    will_retry: !is_last && should_retry,
-                });
-
-                if !should_retry {
-                    return Err(CallError::Operation(e));
-                }
-
-                if is_last {
-                    last_err = Some(e);
-                    break;
-                }
-
-                // Compute delay: backoff + jitter, floored by retry_hint
-                let mut delay = apply_jitter(config.backoff.delay_for(attempt), &config.jitter);
-                if let Some(floor) = e.retry_hint().and_then(|h| h.after) {
-                    delay = delay.max(floor);
-                }
-
-                if let Some(ref notify) = config.on_retry {
-                    notify(&e, delay, attempt + 1);
-                }
-                last_err = Some(e);
-                if !delay.is_zero() {
-                    if config
-                        .total_budget
-                        .is_some_and(|budget| total_delay + delay > budget)
-                    {
-                        break;
-                    }
-                    total_delay += delay;
-                    tokio::time::sleep(delay).await;
-                }
-            }
-        }
-    }
-
-    Err(CallError::RetriesExhausted {
-        attempts: config.max_attempts,
-        last: last_err.expect("at least one attempt was made"),
-    })
+    retry_loop(
+        &config,
+        f,
+        |e: &E| e.is_retryable(),
+        |e: &E| e.retry_hint().and_then(|h| h.after),
+    )
+    .await
 }
 
 /// Internal retry without [`Classify`](nebula_error::Classify) bound.
@@ -337,7 +290,25 @@ where
 /// Retries all errors when no predicate is set (old behavior).
 pub(crate) async fn retry_with_inner<T, E, F, Fut>(
     config: RetryConfig<E>,
+    f: F,
+) -> Result<T, CallError<E>>
+where
+    E: 'static,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>> + Send,
+{
+    retry_loop(&config, f, |_| true, |_| None).await
+}
+
+/// Core retry loop shared by [`retry_with`] and [`retry_with_inner`].
+///
+/// `default_should_retry` is called when no predicate is set on the config.
+/// `hint_fn` extracts an optional backoff floor from the error (e.g., `retry_hint().after`).
+async fn retry_loop<T, E, F, Fut>(
+    config: &RetryConfig<E>,
     mut f: F,
+    default_should_retry: impl Fn(&E) -> bool,
+    hint_fn: impl Fn(&E) -> Option<Duration>,
 ) -> Result<T, CallError<E>>
 where
     E: 'static,
@@ -345,14 +316,18 @@ where
     Fut: Future<Output = Result<T, E>> + Send,
 {
     let mut last_err: Option<E> = None;
-    let mut total_delay = Duration::ZERO;
+    let start = std::time::Instant::now();
 
     for attempt in 0..config.max_attempts {
         match f().await {
             Ok(value) => return Ok(value),
             Err(e) => {
                 let is_last = attempt + 1 >= config.max_attempts;
-                let should_retry = config.predicate.as_ref().is_none_or(|p| p(&e));
+
+                let should_retry = config
+                    .predicate
+                    .as_ref()
+                    .map_or_else(|| default_should_retry(&e), |p| p(&e));
 
                 config.sink.record(ResilienceEvent::RetryAttempt {
                     attempt: attempt + 1,
@@ -368,19 +343,25 @@ where
                     break;
                 }
 
-                let delay = apply_jitter(config.backoff.delay_for(attempt), &config.jitter);
+                let mut delay = apply_jitter(config.backoff.delay_for(attempt), &config.jitter);
+                if let Some(floor) = hint_fn(&e) {
+                    delay = delay.max(floor);
+                }
+
                 if let Some(ref notify) = config.on_retry {
                     notify(&e, delay, attempt + 1);
                 }
                 last_err = Some(e);
+
+                // Budget check: wall-clock time + next delay exceeds budget → stop
+                if config
+                    .total_budget
+                    .is_some_and(|budget| start.elapsed() + delay > budget)
+                {
+                    break;
+                }
+
                 if !delay.is_zero() {
-                    if config
-                        .total_budget
-                        .is_some_and(|budget| total_delay + delay > budget)
-                    {
-                        break;
-                    }
-                    total_delay += delay;
                     tokio::time::sleep(delay).await;
                 }
             }
@@ -787,5 +768,99 @@ mod tests {
             elapsed < Duration::from_millis(300),
             "took too long: {elapsed:?}"
         );
+    }
+
+    // ── B3: total_budget works with zero-delay backoff ───────────────────
+
+    #[tokio::test]
+    async fn total_budget_limits_zero_delay_retries() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+
+        // Zero delay + tiny budget → budget should still stop retries
+        // because wall-clock time of executing ops eventually exceeds budget.
+        let config = RetryConfig::new(1000)
+            .unwrap()
+            .backoff(BackoffConfig::Fixed(Duration::ZERO))
+            .total_budget(Duration::from_millis(50));
+
+        let _: Result<(), CallError<TransientErr>> = retry_with(config, || {
+            let c = c.clone();
+            Box::pin(async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                // Each op sleeps 5ms → after ~10 ops, 50ms budget is hit
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                Err(TransientErr("fail"))
+            })
+        })
+        .await;
+
+        let attempts = counter.load(Ordering::SeqCst);
+        // With 5ms per op and 50ms budget, should stop around 10 attempts (not 1000)
+        assert!(
+            attempts < 50,
+            "expected budget to stop retries, got {attempts} attempts"
+        );
+    }
+
+    // ── B4: pipeline forwards retry_after from rate limiter ──────────────
+
+    #[tokio::test]
+    async fn pipeline_forwards_rate_limiter_retry_after() {
+        use crate::pipeline::{RateLimitCheck, ResiliencePipeline};
+
+        let hint = Duration::from_secs(42);
+        let rl: RateLimitCheck = Arc::new(move || {
+            Box::pin(async move {
+                Err(CallError::RateLimited {
+                    retry_after: Some(hint),
+                })
+            })
+        });
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .rate_limiter(rl)
+            .build();
+
+        let result = pipeline
+            .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
+            .await;
+
+        match result {
+            Err(CallError::RateLimited { retry_after }) => {
+                assert_eq!(
+                    retry_after,
+                    Some(hint),
+                    "retry_after hint should be forwarded"
+                );
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+    }
+
+    // ── D1: rate_limiter_from convenience method ─────────────────────────
+
+    #[tokio::test]
+    async fn pipeline_rate_limiter_from_works() {
+        use crate::pipeline::ResiliencePipeline;
+        use crate::rate_limiter::TokenBucket;
+
+        let rl = Arc::new(TokenBucket::new(1, 0.001).unwrap());
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .rate_limiter_from(Arc::clone(&rl))
+            .build();
+
+        // First call succeeds (1 token available)
+        let result = pipeline
+            .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
+            .await;
+        assert_eq!(result.unwrap(), 42);
+
+        // Second call should be rate limited (no tokens left)
+        let result = pipeline
+            .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
+            .await;
+        assert!(matches!(result, Err(CallError::RateLimited { .. })));
     }
 }

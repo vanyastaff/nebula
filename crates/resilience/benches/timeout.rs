@@ -5,7 +5,7 @@
 //! - Cancellation-path latency when timeout expires
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use nebula_resilience::timeout_fn;
+use nebula_resilience::timeout;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -26,7 +26,7 @@ fn timeout_wrapper_overhead(c: &mut Criterion) {
         let timeout_duration = Duration::from_secs(5);
 
         b.to_async(&rt).iter(|| async {
-            let result = timeout_fn(timeout_duration, async {
+            let result = timeout(timeout_duration, async {
                 tokio::task::yield_now().await;
                 Ok::<_, &str>(black_box(42_u64))
             })
@@ -49,7 +49,7 @@ fn timeout_cancellation_latency(c: &mut Criterion) {
 
         b.to_async(&rt).iter(|| async {
             let start = Instant::now();
-            let result = timeout_fn(
+            let result = timeout(
                 timeout_duration,
                 futures::future::pending::<Result<(), &str>>(),
             )
@@ -66,7 +66,7 @@ fn timeout_cancellation_latency(c: &mut Criterion) {
 
         b.to_async(&rt).iter(|| async {
             let start = Instant::now();
-            let result = timeout_fn(
+            let result = timeout(
                 timeout_duration,
                 futures::future::pending::<Result<(), &str>>(),
             )

@@ -39,8 +39,8 @@ cargo bench -p nebula-resilience
 
 Measures circuit breaker performance:
 - **closed/execute_success**: Throughput when circuit is closed (happy path)
-- **can_execute/closed**: Check overhead when circuit is closed
-- **can_execute/open**: Check overhead when circuit is open
+- **try_acquire/closed**: Check overhead when circuit is closed
+- **try_acquire/open**: Check overhead when circuit is open
 - **transitions/closed_to_open**: Time to trigger circuit open
 - **transitions/halfopen_to_closed**: Time to recover circuit
 - **stats/stats_collection**: Metrics collection overhead

@@ -16,7 +16,7 @@ async fn test_fault_injection_value_fallback_on_timeout() {
     let operation = FallbackOperation::new(fallback);
 
     let result = operation
-        .execute(|| async {
+        .call(|| async {
             Err::<String, CallError<&str>>(CallError::Timeout(Duration::from_millis(50)))
         })
         .await;
@@ -36,7 +36,7 @@ async fn test_fault_injection_function_fallback_receives_original_error() {
 
     let operation = FallbackOperation::new(fallback);
     let result = operation
-        .execute(|| async { Err::<String, CallError<&str>>(CallError::CircuitOpen) })
+        .call(|| async { Err::<String, CallError<&str>>(CallError::CircuitOpen) })
         .await;
 
     assert!(result.is_ok());
@@ -50,7 +50,7 @@ async fn test_fault_injection_cache_fallback_uses_cached_value() {
 
     let operation = FallbackOperation::new(fallback);
     let result = operation
-        .execute(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
+        .call(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
         .await;
 
     assert!(result.is_ok());
@@ -65,7 +65,7 @@ async fn test_fault_injection_cache_fallback_expired_value_returns_original_erro
 
     let operation = FallbackOperation::new(fallback);
     let result = operation
-        .execute(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
+        .call(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
         .await;
 
     assert!(result.is_err());
@@ -84,7 +84,7 @@ async fn test_fault_injection_cache_fallback_stale_if_error_returns_expired_valu
 
     let operation = FallbackOperation::new(fallback);
     let result = operation
-        .execute(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
+        .call(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
         .await;
 
     assert!(result.is_ok());
@@ -108,7 +108,7 @@ async fn test_fault_injection_chain_fallback_cascades_to_next_strategy() {
 
     let operation = FallbackOperation::new(chain);
     let result = operation
-        .execute(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
+        .call(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
         .await;
 
     assert!(result.is_ok());
@@ -131,7 +131,7 @@ async fn test_fault_injection_priority_fallback_routes_by_error_kind() {
     let operation = FallbackOperation::new(priority);
 
     let timeout_result = operation
-        .execute(|| async {
+        .call(|| async {
             Err::<String, CallError<&str>>(CallError::Timeout(Duration::from_millis(10)))
         })
         .await;
@@ -139,7 +139,7 @@ async fn test_fault_injection_priority_fallback_routes_by_error_kind() {
     assert_eq!(timeout_result.unwrap(), "timeout-route");
 
     let unmatched_result = operation
-        .execute(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
+        .call(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
         .await;
     assert!(unmatched_result.is_ok());
     assert_eq!(unmatched_result.unwrap(), "default-route");
@@ -155,7 +155,7 @@ async fn test_fault_injection_priority_fallback_without_default_returns_original
     let operation = FallbackOperation::new(priority);
 
     let result = operation
-        .execute(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
+        .call(|| async { Err::<String, CallError<&str>>(CallError::LoadShed) })
         .await;
 
     assert!(result.is_err());

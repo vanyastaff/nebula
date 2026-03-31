@@ -81,8 +81,8 @@ fn rate_limiter_acquire(c: &mut Criterion) {
     group.finish();
 }
 
-fn rate_limiter_execute(c: &mut Criterion) {
-    let mut group = c.benchmark_group("rate_limiter/execute");
+fn rate_limiter_call(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rate_limiter/call");
 
     // TokenBucket execute
     group.bench_function("token_bucket_1000rps", |b| {
@@ -93,7 +93,7 @@ fn rate_limiter_execute(c: &mut Criterion) {
             let limiter = Arc::clone(&limiter);
             async move {
                 let result = limiter
-                    .execute(|| async { Ok::<_, CallError<()>>(black_box(42)) })
+                    .call(|| async { Ok::<_, CallError<()>>(black_box(42)) })
                     .await;
                 black_box(result)
             }
@@ -116,7 +116,7 @@ fn rate_limiter_execute(c: &mut Criterion) {
             let limiter = Arc::clone(&limiter);
             async move {
                 let result = limiter
-                    .execute(|| async { Ok::<_, CallError<()>>(black_box(42)) })
+                    .call(|| async { Ok::<_, CallError<()>>(black_box(42)) })
                     .await;
                 black_box(result)
             }
@@ -133,7 +133,7 @@ fn rate_limiter_execute(c: &mut Criterion) {
             let limiter = Arc::clone(&limiter);
             async move {
                 let result = limiter
-                    .execute(|| async { Ok::<_, CallError<()>>(black_box(42)) })
+                    .call(|| async { Ok::<_, CallError<()>>(black_box(42)) })
                     .await;
                 black_box(result)
             }
@@ -231,7 +231,7 @@ fn rate_limiter_contention(c: &mut Criterion) {
 criterion_group!(
     benches,
     rate_limiter_acquire,
-    rate_limiter_execute,
+    rate_limiter_call,
     rate_limiter_current_rate,
     rate_limiter_contention,
 );

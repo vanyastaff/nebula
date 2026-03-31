@@ -25,7 +25,7 @@ use crate::{
 // type is handled exactly once, in order:
 //
 // - LoadShed / RateLimiter: checked before recursing to inner steps.
-// - CircuitBreaker: `can_execute()` + `ProbeGuard` + `record_outcome()`.
+// - CircuitBreaker: `try_acquire()` + `ProbeGuard` + `record_outcome()`.
 // - Bulkhead: `acquire()` permit held for the inner scope.
 // - Timeout / Retry: wrap the remainder of the pipeline.
 //
@@ -99,21 +99,28 @@ impl<E: Send + 'static> PipelineBuilder<E> {
         self
     }
 
-    /// Add a rate limiter step.
+    /// Add a rate limiter step using a concrete `RateLimiter` implementation.
     ///
-    /// The `check` closure is called before each operation to acquire a permit.
-    /// Use it to bridge any `RateLimiter` implementation:
+    /// This is the ergonomic way to add rate limiting — it handles the closure
+    /// bridging automatically:
     ///
     /// ```rust,ignore
     /// let rl = Arc::new(TokenBucket::new(100, 10.0).unwrap());
-    /// builder.rate_limiter({
-    ///     let rl = Arc::clone(&rl);
-    ///     Arc::new(move || {
-    ///         let rl = Arc::clone(&rl);
-    ///         Box::pin(async move { rl.acquire().await })
-    ///     })
-    /// })
+    /// builder.rate_limiter_from(rl)
     /// ```
+    #[must_use]
+    pub fn rate_limiter_from<RL: crate::RateLimiter + 'static>(self, rl: Arc<RL>) -> Self {
+        let check: RateLimitCheck = Arc::new(move || {
+            let rl = Arc::clone(&rl);
+            Box::pin(async move { rl.acquire().await })
+        });
+        self.rate_limiter(check)
+    }
+
+    /// Add a rate limiter step with a custom check closure.
+    ///
+    /// Prefer [`rate_limiter_from`](Self::rate_limiter_from) for standard `RateLimiter`
+    /// implementations. Use this for custom bridging logic.
     #[must_use]
     pub fn rate_limiter(mut self, check: RateLimitCheck) -> Self {
         self.steps.push(Step::RateLimiter(check));
@@ -152,6 +159,7 @@ fn validate_order<E>(steps: &[Step<E>]) {
 
     let retry_pos = names.iter().position(|&n| n == "retry");
     let timeout_pos = names.iter().position(|&n| n == "timeout");
+    let rate_limiter_pos = names.iter().position(|&n| n == "rate_limiter");
 
     if let (Some(r), Some(t)) = (retry_pos, timeout_pos)
         && t > r
@@ -159,6 +167,15 @@ fn validate_order<E>(steps: &[Step<E>]) {
         tracing::warn!(
             "ResiliencePipeline: timeout is inside retry (each attempt gets its own timeout). \
              Move timeout before retry for a single deadline across all attempts."
+        );
+    }
+
+    if let (Some(r), Some(rl)) = (retry_pos, rate_limiter_pos)
+        && rl > r
+    {
+        tracing::warn!(
+            "ResiliencePipeline: rate_limiter is inside retry (rate-limited rejections trigger retries). \
+             Move rate_limiter before retry to reject before entering the retry loop."
         );
     }
 }
@@ -268,7 +285,7 @@ where
             }
             Step::Retry(config) => run_retry_step(config, Arc::clone(&steps), idx, f).await,
             Step::CircuitBreaker(cb) => {
-                cb.can_execute()?;
+                cb.try_acquire()?;
                 let guard = ProbeGuard(cb);
                 let result = run_operation_with_shells(&steps, idx + 1, Arc::clone(&f)).await;
                 // Defuse guard — record the real outcome instead.
@@ -291,9 +308,9 @@ where
                 run_operation_with_shells(&steps, idx + 1, f).await
             }
             Step::RateLimiter(check) => {
-                check()
-                    .await
-                    .map_err(|_| CallError::RateLimited { retry_after: None })?;
+                check().await.map_err(|e| CallError::RateLimited {
+                    retry_after: e.retry_after(),
+                })?;
                 run_operation_with_shells(&steps, idx + 1, f).await
             }
             Step::LoadShed(predicate) => {
@@ -508,7 +525,7 @@ mod tests {
             CircuitBreaker::new(CircuitBreakerConfig {
                 failure_threshold: 2,
                 reset_timeout: Duration::from_millis(50),
-                half_open_max_ops: 1,
+                max_half_open_operations: 1,
                 min_operations: 1,
                 count_timeouts_as_failures: true,
                 ..Default::default()

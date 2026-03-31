@@ -20,7 +20,7 @@ pub struct CircuitBreakerConfig {
     /// How long to wait in Open state before transitioning to `HalfOpen`.
     pub reset_timeout: Duration,
     /// Max concurrent probe operations allowed in `HalfOpen` state. Default: 1.
-    pub half_open_max_ops: u32,
+    pub max_half_open_operations: u32,
     /// Minimum number of operations required before failures can trip the breaker. Default: 5.
     pub min_operations: u32,
     /// Whether timeouts count as failures. Default: true.
@@ -44,7 +44,7 @@ impl Default for CircuitBreakerConfig {
         Self {
             failure_threshold: 5,
             reset_timeout: Duration::from_secs(30),
-            half_open_max_ops: 1,
+            max_half_open_operations: 1,
             min_operations: 5,
             count_timeouts_as_failures: true,
             break_duration_multiplier: 1.0,
@@ -63,7 +63,7 @@ impl CircuitBreakerConfig {
     /// # Errors
     ///
     /// Returns `Err(ConfigError)` if `failure_threshold` is 0, `reset_timeout` is zero,
-    /// or `half_open_max_ops` is 0.
+    /// or `max_half_open_operations` is 0.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.failure_threshold == 0 {
             return Err(ConfigError::new("failure_threshold", "must be >= 1"));
@@ -71,8 +71,11 @@ impl CircuitBreakerConfig {
         if self.reset_timeout.is_zero() {
             return Err(ConfigError::new("reset_timeout", "must be > 0"));
         }
-        if self.half_open_max_ops == 0 {
-            return Err(ConfigError::new("half_open_max_ops", "must be >= 1"));
+        if self.max_half_open_operations == 0 {
+            return Err(ConfigError::new("max_half_open_operations", "must be >= 1"));
+        }
+        if self.min_operations == 0 {
+            return Err(ConfigError::new("min_operations", "must be >= 1"));
         }
         if self.break_duration_multiplier < 1.0 {
             return Err(ConfigError::new(
@@ -383,7 +386,7 @@ impl CircuitBreaker {
     where
         Fut: std::future::Future<Output = Result<T, E>> + Send,
     {
-        self.can_execute()?;
+        self.try_acquire()?;
         let guard = ProbeGuard(self);
         let start = self.clock.now();
         let result = f().await;
@@ -401,13 +404,13 @@ impl CircuitBreaker {
     ///
     /// Returns `Err(CallError::CircuitOpen)` when the circuit is open
     /// or the half-open probe limit has been reached.
-    pub fn can_execute<E>(&self) -> Result<(), CallError<E>> {
+    pub fn try_acquire<E>(&self) -> Result<(), CallError<E>> {
         let mut transition: Option<(CircuitState, CircuitState)> = None;
         let mut inner = self.state.lock();
         let result = match inner.state {
             State::Closed => Ok(()),
             State::HalfOpen => {
-                if inner.half_open_probes >= self.config.half_open_max_ops {
+                if inner.half_open_probes >= self.config.max_half_open_operations {
                     Err(CallError::CircuitOpen)
                 } else {
                     inner.half_open_probes = inner.half_open_probes.saturating_add(1);
@@ -658,7 +661,7 @@ mod tests {
         CircuitBreakerConfig {
             failure_threshold: 3,
             reset_timeout: Duration::from_millis(100),
-            half_open_max_ops: 1,
+            max_half_open_operations: 1,
             min_operations: 1,
             count_timeouts_as_failures: true,
             break_duration_multiplier: 1.0,
@@ -721,7 +724,7 @@ mod tests {
     #[tokio::test]
     async fn half_open_enforces_max_probes() {
         let cb = CircuitBreaker::new(CircuitBreakerConfig {
-            half_open_max_ops: 1,
+            max_half_open_operations: 1,
             ..default_config()
         })
         .unwrap();
@@ -736,26 +739,26 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(110)).await;
 
         // First probe should succeed (transitions to HalfOpen)
-        assert!(cb.can_execute::<&str>().is_ok());
+        assert!(cb.try_acquire::<&str>().is_ok());
         assert_eq!(cb.circuit_state(), CS::HalfOpen);
 
         // Second probe should be rejected (max_probes=1 reached)
         assert!(matches!(
-            cb.can_execute::<&str>(),
+            cb.try_acquire::<&str>(),
             Err(CallError::CircuitOpen)
         ));
 
         // After the probe succeeds, breaker closes and allows new calls
         cb.record_outcome(Outcome::Success);
         assert_eq!(cb.circuit_state(), CS::Closed);
-        assert!(cb.can_execute::<&str>().is_ok());
+        assert!(cb.try_acquire::<&str>().is_ok());
     }
 
     #[tokio::test]
     async fn half_open_failure_reopens_breaker() {
         let sink = RecordingSink::new();
         let cb = CircuitBreaker::new(CircuitBreakerConfig {
-            half_open_max_ops: 1,
+            max_half_open_operations: 1,
             ..default_config()
         })
         .unwrap()
@@ -770,7 +773,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(110)).await;
 
         // Enter HalfOpen
-        assert!(cb.can_execute::<&str>().is_ok());
+        assert!(cb.try_acquire::<&str>().is_ok());
         assert_eq!(cb.circuit_state(), CS::HalfOpen);
 
         // Probe fails → back to Open
@@ -782,7 +785,7 @@ mod tests {
     async fn dropped_call_releases_probe_slot() {
         let cb = Arc::new(
             CircuitBreaker::new(CircuitBreakerConfig {
-                half_open_max_ops: 1,
+                max_half_open_operations: 1,
                 ..default_config()
             })
             .unwrap(),
@@ -814,7 +817,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(110)).await;
 
         // This must succeed — the probe slot was properly released
-        assert!(cb.can_execute::<&str>().is_ok());
+        assert!(cb.try_acquire::<&str>().is_ok());
         assert_eq!(cb.circuit_state(), CS::HalfOpen);
 
         // Complete the probe successfully
@@ -876,7 +879,7 @@ mod tests {
         let cb = CircuitBreaker::new(CircuitBreakerConfig {
             failure_threshold: 2,
             reset_timeout: Duration::from_millis(100),
-            half_open_max_ops: 1,
+            max_half_open_operations: 1,
             min_operations: 1,
             count_timeouts_as_failures: true,
             break_duration_multiplier: 2.0,
@@ -896,7 +899,7 @@ mod tests {
 
         // Wait 110ms (> first reset_timeout of 100ms)
         clock.advance(Duration::from_millis(110));
-        assert!(cb.can_execute::<&str>().is_ok());
+        assert!(cb.try_acquire::<&str>().is_ok());
         assert_eq!(cb.circuit_state(), CS::HalfOpen);
 
         // Fail again → consecutive_opens = 2, effective timeout = 200ms
@@ -906,13 +909,13 @@ mod tests {
         // Wait 110ms — NOT enough (need 200ms)
         clock.advance(Duration::from_millis(110));
         assert!(matches!(
-            cb.can_execute::<&str>(),
+            cb.try_acquire::<&str>(),
             Err(CallError::CircuitOpen)
         ));
 
         // Wait 100ms more (total 220ms > 200ms)
         clock.advance(Duration::from_millis(100));
-        assert!(cb.can_execute::<&str>().is_ok());
+        assert!(cb.try_acquire::<&str>().is_ok());
     }
 
     #[tokio::test]
@@ -1063,5 +1066,17 @@ mod tests {
         let stats = cb.stats();
         assert_eq!(stats.total, 3);
         assert_eq!(stats.failures, 1);
+    }
+
+    // ── C1: min_operations validation ────────────────────────────────────
+
+    #[test]
+    fn rejects_min_operations_zero() {
+        let config = CircuitBreakerConfig {
+            min_operations: 0,
+            ..default_config()
+        };
+        let err = CircuitBreaker::new(config).unwrap_err();
+        assert_eq!(err.field, "min_operations");
     }
 }

@@ -18,7 +18,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::types::{CallError, CallErrorKind};
+use crate::error::{CallError, CallErrorKind};
 
 // =============================================================================
 // FALLBACK STRATEGY TRAIT
@@ -106,10 +106,6 @@ where
 {
     /// Execute the fallback function.
     ///
-    /// The original `Operation(E)` error is erased to `Operation(())` before being
-    /// passed to the closure. If the closure returns `Err(CallError::Operation(()))`,
-    /// it is mapped to `Err(CallError::Cancelled)` since `Operation(())` carries
-    /// no meaningful payload.
     /// The original `Operation(E)` is erased to `Operation(())` before being passed
     /// to the closure — the closure cannot inspect the caller's error type. If the
     /// closure returns `Err(CallError::Operation(()))`, it is converted to
@@ -361,13 +357,13 @@ impl<T, E> FallbackOperation<T, E> {
         Self { fallback_strategy }
     }
 
-    /// Execute with fallback.
+    /// Call with fallback.
     ///
     /// # Errors
     ///
     /// Returns the fallback strategy's error if both the operation and fallback fail,
     /// or the original error if the fallback strategy declines to handle it.
-    pub async fn execute<F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+    pub async fn call<F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<T, CallError<E>>>,
@@ -540,7 +536,7 @@ mod tests {
     async fn fallback_operation_returns_primary_result_on_success() {
         let op: FallbackOperation<u32, &str> =
             FallbackOperation::new(Arc::new(ValueFallback::new(0u32)));
-        let result = op.execute(|| async { Ok(42u32) }).await;
+        let result = op.call(|| async { Ok(42u32) }).await;
         assert_eq!(result.unwrap(), 42);
     }
 
@@ -548,9 +544,7 @@ mod tests {
     async fn fallback_operation_invokes_fallback_on_error() {
         let op: FallbackOperation<u32, &str> =
             FallbackOperation::new(Arc::new(ValueFallback::new(99u32)));
-        let result = op
-            .execute(|| async { Err::<u32, _>(timeout_error()) })
-            .await;
+        let result = op.call(|| async { Err::<u32, _>(timeout_error()) }).await;
         assert_eq!(result.unwrap(), 99);
     }
 }

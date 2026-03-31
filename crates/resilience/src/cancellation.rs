@@ -71,7 +71,7 @@ impl CancellationContext {
         self.reason.as_deref()
     }
 
-    /// Execute an operation with cancellation support.
+    /// Call an operation with cancellation support.
     ///
     /// # Errors
     ///
@@ -80,7 +80,7 @@ impl CancellationContext {
     #[tracing::instrument(skip(self, operation), fields(
         cancellation_reason = self.reason.as_deref().unwrap_or("none")
     ))]
-    pub async fn execute<F, Fut, T, E>(&self, operation: F) -> Result<T, CallError<E>>
+    pub async fn call<F, Fut, T, E>(&self, operation: F) -> Result<T, CallError<E>>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<T, CallError<E>>>,
@@ -99,7 +99,7 @@ impl CancellationContext {
         }
     }
 
-    /// Execute with timeout and cancellation.
+    /// Call with timeout and cancellation.
     ///
     /// # Errors
     ///
@@ -110,7 +110,7 @@ impl CancellationContext {
         timeout_ms = timeout.as_millis(),
         cancellation_reason = self.reason.as_deref().unwrap_or("none")
     ))]
-    pub async fn execute_with_timeout<F, Fut, T, E>(
+    pub async fn call_with_timeout<F, Fut, T, E>(
         &self,
         operation: F,
         timeout: std::time::Duration,
@@ -229,9 +229,7 @@ mod tests {
     async fn test_cancellation_context() {
         let ctx = CancellationContext::new();
 
-        let result = ctx
-            .execute(|| async { Ok::<i32, CallError<&str>>(42) })
-            .await;
+        let result = ctx.call(|| async { Ok::<i32, CallError<&str>>(42) }).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 42);
     }
@@ -247,7 +245,7 @@ mod tests {
         });
 
         let result: Result<i32, CallError<&str>> = ctx
-            .execute(|| async {
+            .call(|| async {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 Ok(42)
             })
@@ -262,7 +260,7 @@ mod tests {
         let ctx = CancellationContext::with_reason("test");
 
         let result: Result<i32, CallError<&str>> = ctx
-            .execute_with_timeout(
+            .call_with_timeout(
                 || async {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     Ok(42)
@@ -283,7 +281,7 @@ mod tests {
         let child_clone = child.clone();
         let task = tokio::spawn(async move {
             child_clone
-                .execute(|| async {
+                .call(|| async {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     Ok::<i32, CallError<&str>>(42)
                 })

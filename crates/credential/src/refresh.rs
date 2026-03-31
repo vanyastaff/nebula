@@ -171,7 +171,7 @@ impl RefreshCoordinator {
     pub async fn is_circuit_open(&self, credential_id: &str) -> bool {
         let cbs = self.circuit_breakers.lock();
         cbs.get(credential_id)
-            .is_some_and(|cb| cb.can_execute::<()>().is_err())
+            .is_some_and(|cb| cb.try_acquire::<()>().is_err())
     }
 }
 

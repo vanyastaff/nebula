@@ -4,7 +4,7 @@
 //!
 //! # Cancel safety
 //!
-//! `HedgeExecutor::execute` is **not cancel-safe**. If the returned future is dropped,
+//! `HedgeExecutor::call` is **not cancel-safe**. If the returned future is dropped,
 //! already-spawned `tokio::spawn` tasks continue running in the background until they
 //! complete or are individually aborted. This is intentional: the hedge pattern assumes
 //! speculative work is cheap to abandon at the infrastructure level.
@@ -48,6 +48,32 @@ impl Default for HedgeConfig {
     }
 }
 
+impl HedgeConfig {
+    /// Validate configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ConfigError)` if `hedge_delay` is zero, `max_hedges` is 0,
+    /// or `backoff_multiplier` is not finite or less than 1.0 when exponential backoff is enabled.
+    pub fn validate(&self) -> Result<(), crate::ConfigError> {
+        if self.hedge_delay.is_zero() {
+            return Err(crate::ConfigError::new("hedge_delay", "must be > 0"));
+        }
+        if self.max_hedges == 0 {
+            return Err(crate::ConfigError::new("max_hedges", "must be >= 1"));
+        }
+        if self.exponential_backoff
+            && (!self.backoff_multiplier.is_finite() || self.backoff_multiplier < 1.0)
+        {
+            return Err(crate::ConfigError::new(
+                "backoff_multiplier",
+                "must be >= 1.0 when exponential_backoff is enabled",
+            ));
+        }
+        Ok(())
+    }
+}
+
 // ── HedgeExecutor ─────────────────────────────────────────────────────────────
 
 /// Executes an operation with hedging: fires duplicate requests after a delay and returns
@@ -59,12 +85,16 @@ pub struct HedgeExecutor {
 
 impl HedgeExecutor {
     /// Create a new hedge executor.
-    #[must_use]
-    pub fn new(config: HedgeConfig) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ConfigError)` if the configuration is invalid.
+    pub fn new(config: HedgeConfig) -> Result<Self, crate::ConfigError> {
+        config.validate()?;
+        Ok(Self {
             config,
             sink: Arc::new(NoopSink),
-        }
+        })
     }
 
     /// Inject a metrics sink.
@@ -74,7 +104,7 @@ impl HedgeExecutor {
         self
     }
 
-    /// Execute `operation` with hedging.
+    /// Call `operation` with hedging.
     ///
     /// - Returns the first `Ok(T)` result, aborting remaining requests.
     /// - Returns the last `Err` if all attempts fail.
@@ -87,7 +117,7 @@ impl HedgeExecutor {
     /// # Cancel safety
     ///
     /// Not cancel-safe — see module-level documentation.
-    pub async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+    pub async fn call<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         T: Send + 'static,
         E: Send + 'static,
@@ -159,14 +189,18 @@ pub struct AdaptiveHedgeExecutor {
 
 impl AdaptiveHedgeExecutor {
     /// Create a new adaptive hedge executor.
-    #[must_use]
-    pub fn new(config: HedgeConfig) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ConfigError)` if the configuration is invalid.
+    pub fn new(config: HedgeConfig) -> Result<Self, crate::ConfigError> {
+        config.validate()?;
+        Ok(Self {
             base_config: config,
             latency_tracker: Arc::new(tokio::sync::RwLock::new(LatencyTracker::new(1000))),
             target_percentile: 0.95,
             sink: Arc::new(NoopSink),
-        }
+        })
     }
 
     /// Set the target latency percentile for hedge delay calculation.
@@ -192,7 +226,7 @@ impl AdaptiveHedgeExecutor {
         self
     }
 
-    /// Execute with adaptive hedging.
+    /// Call with adaptive hedging.
     ///
     /// # Errors
     ///
@@ -202,7 +236,7 @@ impl AdaptiveHedgeExecutor {
     /// # Cancel safety
     ///
     /// Not cancel-safe — see module-level documentation.
-    pub async fn execute<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
+    pub async fn call<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         T: Send + 'static,
         E: Send + 'static,
@@ -226,7 +260,9 @@ impl AdaptiveHedgeExecutor {
             config,
             sink: Arc::clone(&self.sink),
         };
-        let result = executor.execute(operation).await;
+        // Config was pre-validated at AdaptiveHedgeExecutor construction;
+        // only hedge_delay differs (computed from percentile), which is always > 0.
+        let result = executor.call(operation).await;
 
         self.latency_tracker.write().await.record(start.elapsed());
         result
@@ -318,10 +354,11 @@ mod tests {
             hedge_delay: Duration::from_millis(50),
             max_hedges: 2,
             ..Default::default()
-        });
+        })
+        .unwrap();
 
         let result = executor
-            .execute(|| {
+            .call(|| {
                 let c = c.clone();
                 Box::pin(async move {
                     c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -341,10 +378,11 @@ mod tests {
             max_hedges: 1,
             ..Default::default()
         })
+        .unwrap()
         .with_sink(sink.clone());
 
         let _ = executor
-            .execute(|| {
+            .call(|| {
                 Box::pin(async {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     Ok::<_, &str>("late")
@@ -353,5 +391,40 @@ mod tests {
             .await;
 
         assert!(sink.count("hedge_fired") > 0);
+    }
+
+    // ── C2: HedgeConfig validation ───────────────────────────────────────
+
+    #[test]
+    fn rejects_zero_hedge_delay() {
+        let config = HedgeConfig {
+            hedge_delay: Duration::ZERO,
+            ..Default::default()
+        };
+        assert_eq!(config.validate().unwrap_err().field, "hedge_delay");
+    }
+
+    #[test]
+    fn rejects_zero_max_hedges() {
+        let config = HedgeConfig {
+            max_hedges: 0,
+            ..Default::default()
+        };
+        assert_eq!(config.validate().unwrap_err().field, "max_hedges");
+    }
+
+    #[test]
+    fn rejects_invalid_backoff_multiplier() {
+        let config = HedgeConfig {
+            exponential_backoff: true,
+            backoff_multiplier: 0.5,
+            ..Default::default()
+        };
+        assert_eq!(config.validate().unwrap_err().field, "backoff_multiplier");
+    }
+
+    #[test]
+    fn accepts_valid_config() {
+        assert!(HedgeExecutor::new(HedgeConfig::default()).is_ok());
     }
 }
