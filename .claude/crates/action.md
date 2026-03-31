@@ -12,6 +12,7 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - `ActionResult` carries both output data and flow-control intent (branch, wait, error).
 - `ActionOutput` has 4 variants: inline JSON value, binary blob reference, deferred (async result), stream.
 - `capability` module: `CredentialAccessor`, `ResourceAccessor`, `ActionLogger`, `ExecutionEmitter`, `TriggerScheduler` — these are the DI interfaces.
+- `credential_typed::<S>()` on `ActionContext`/`TriggerContext` consumes the snapshot via `into_project::<S>()` and maps `SnapshotError` to `ActionError::Fatal`. This is the primary typed credential access path for action authors.
 
 ## Traps
 - `#[derive(Action)]` requires **unit structs** (no fields). Config goes in a separate type injected as a dependency.
@@ -20,4 +21,4 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 
 ## Relations
 - Depends on nebula-core, nebula-parameter (re-exports Field/Schema). Used by nebula-engine, nebula-runtime, nebula-sdk.
-<!-- reviewed: 2026-03-31 -->
+<!-- reviewed: 2026-03-31 — added credential_typed<S>() to ActionContext and TriggerContext -->

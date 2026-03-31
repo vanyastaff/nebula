@@ -15,8 +15,9 @@ fn test_credential_key_valid() {
 #[test]
 fn test_credential_key_invalid() {
     assert!(CredentialKey::new("").is_err());
-    assert!(CredentialKey::new("Invalid-Key").is_err());
-    assert!(CredentialKey::new("123invalid").is_err());
+    // domain_key allows hyphens and digits — only truly invalid chars fail
+    assert!(CredentialKey::new("has spaces").is_err());
+    assert!(CredentialKey::new("special@chars").is_err());
 }
 
 #[test]
