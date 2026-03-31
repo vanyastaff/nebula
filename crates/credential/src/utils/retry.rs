@@ -1,10 +1,13 @@
-//! Retry logic with exponential backoff
+//! Retry logic with exponential backoff — delegates to [`nebula_resilience`].
 //!
-//! Provides retry policies and execution utilities for cloud storage providers.
+//! [`RetryPolicy`] is a config facade that builds
+//! [`nebula_resilience::RetryConfig`] internally.
 
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::time::Duration;
+
+use nebula_resilience::retry::{BackoffConfig, JitterConfig, RetryConfig};
 
 /// Retry policy configuration for exponential backoff
 ///
@@ -131,127 +134,72 @@ impl RetryPolicy {
         Ok(())
     }
 
-    /// Calculate delay for a given attempt number
-    ///
-    /// # Arguments
-    ///
-    /// * `attempt` - Retry attempt number (0-based)
-    ///
-    /// # Returns
-    ///
-    /// Duration to wait before this attempt, capped at max_delay_ms
-    pub fn calculate_delay(&self, attempt: u32) -> Duration {
-        let delay_ms = self.base_delay_ms as f64 * self.multiplier.powi(attempt as i32);
-        let capped_delay_ms = delay_ms.min(self.max_delay_ms as f64) as u64;
+    /// Build a [`RetryConfig`] from this policy.
+    fn to_retry_config<E: 'static>(&self) -> RetryConfig<E> {
+        // max_retries is the number of retries; RetryConfig.max_attempts includes the initial try.
+        let max_attempts = self.max_retries + 1;
+        let jitter = if self.jitter {
+            JitterConfig::Full {
+                factor: 0.25,
+                seed: None,
+            }
+        } else {
+            JitterConfig::None
+        };
 
-        Duration::from_millis(capped_delay_ms)
-    }
-
-    /// Apply jitter to a delay
-    ///
-    /// # Arguments
-    ///
-    /// * `delay` - Base delay duration
-    ///
-    /// # Returns
-    ///
-    /// Duration with ±25% jitter applied (if jitter is enabled)
-    pub fn apply_jitter(&self, delay: Duration) -> Duration {
-        if !self.jitter {
-            return delay;
-        }
-
-        use rand::RngExt;
-        let mut rng = rand::rng();
-
-        // Apply ±25% jitter
-        let delay_ms = delay.as_millis() as f64;
-        let jitter_range = delay_ms * 0.25;
-        let jitter = rng.random_range(-jitter_range..=jitter_range);
-
-        let jittered_ms = (delay_ms + jitter).max(0.0) as u64;
-        Duration::from_millis(jittered_ms)
+        RetryConfig::new(max_attempts)
+            .expect("max_retries validated at construction")
+            .backoff(BackoffConfig::Exponential {
+                base: Duration::from_millis(self.base_delay_ms),
+                multiplier: self.multiplier,
+                max: Duration::from_millis(self.max_delay_ms),
+            })
+            .jitter(jitter)
     }
 }
 
-/// Execute an async operation with retry logic
+/// Execute an async operation with retry logic.
 ///
-/// Automatically retries transient failures using exponential backoff with jitter.
-/// Logs retry attempts using tracing.
-///
-/// # Arguments
-///
-/// * `policy` - Retry policy configuration
-/// * `operation` - Async function to execute (receives attempt number)
-///
-/// # Returns
-///
-/// * `Ok(T)` - Operation succeeded
-/// * `Err(E)` - Operation failed after all retries exhausted
+/// Delegates to [`nebula_resilience::retry_with`] with exponential backoff.
+/// The operation closure no longer receives an attempt number — use
+/// [`on_retry`](RetryConfig::on_retry) for per-attempt logging.
 ///
 /// # Example
 ///
 /// ```rust,ignore
 /// use nebula_credential::utils::{RetryPolicy, retry_with_policy};
 ///
-/// async fn flaky_operation(attempt: u32) -> Result<String, String> {
-///     if attempt < 2 {
-///         Err("Transient error".into())
-///     } else {
-///         Ok("Success".into())
-///     }
-/// }
-///
 /// let policy = RetryPolicy::default();
-/// let result = retry_with_policy(&policy, flaky_operation).await;
+/// let result = retry_with_policy(&policy, || async {
+///     Ok::<_, MyError>("success")
+/// }).await;
 /// assert!(result.is_ok());
 /// ```
-pub async fn retry_with_policy<F, Fut, T, E>(policy: &RetryPolicy, mut operation: F) -> Result<T, E>
+pub async fn retry_with_policy<F, Fut, T, E>(policy: &RetryPolicy, f: F) -> Result<T, E>
 where
-    F: FnMut(u32) -> Fut,
-    Fut: Future<Output = Result<T, E>>,
-    E: std::fmt::Display,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>> + Send,
+    E: nebula_error::Classify + std::fmt::Display + Send + 'static,
 {
-    let mut last_error = None;
+    let config =
+        policy
+            .to_retry_config::<E>()
+            .on_retry(|err: &E, delay: Duration, attempt: u32| {
+                tracing::warn!(
+                    attempt,
+                    delay_ms = delay.as_millis(),
+                    error = %err,
+                    "Operation failed, retrying after delay"
+                );
+            });
 
-    for attempt in 0..=policy.max_retries {
-        // Try operation
-        match operation(attempt).await {
-            Ok(result) => {
-                if attempt > 0 {
-                    tracing::info!(attempt = attempt, "Operation succeeded after retry");
-                }
-                return Ok(result);
-            }
-            Err(err) => {
-                if attempt < policy.max_retries {
-                    // Calculate delay with jitter
-                    let base_delay = policy.calculate_delay(attempt);
-                    let delay = policy.apply_jitter(base_delay);
-
-                    tracing::warn!(
-                        attempt = attempt,
-                        delay_ms = delay.as_millis(),
-                        error = %err,
-                        "Operation failed, retrying after delay"
-                    );
-
-                    tokio::time::sleep(delay).await;
-                    last_error = Some(err);
-                } else {
-                    tracing::error!(
-                        attempt = attempt,
-                        error = %err,
-                        "Operation failed after all retries exhausted"
-                    );
-                    return Err(err);
-                }
-            }
-        }
-    }
-
-    // This should never happen due to the loop structure, but handle it anyway
-    Err(last_error.expect("Should have last error"))
+    nebula_resilience::retry_with(config, f)
+        .await
+        .map_err(|call_err| match call_err {
+            nebula_resilience::CallError::Operation(e)
+            | nebula_resilience::CallError::RetriesExhausted { last: e, .. } => e,
+            _ => unreachable!("retry_with only returns Operation or RetriesExhausted"),
+        })
 }
 
 #[cfg(test)]
@@ -334,95 +282,53 @@ mod tests {
         assert!(policy.validate().is_err());
     }
 
-    #[test]
-    fn test_calculate_delay() {
-        let policy = RetryPolicy {
-            max_retries: 5,
-            base_delay_ms: 100,
-            max_delay_ms: 1_000,
-            multiplier: 2.0,
-            jitter: false,
-        };
+    // Backoff calculation and jitter tests are covered by nebula-resilience.
+    // These tests verify the retry_with_policy integration.
 
-        // Attempt 0: 100ms * 2^0 = 100ms
-        assert_eq!(policy.calculate_delay(0).as_millis(), 100);
-
-        // Attempt 1: 100ms * 2^1 = 200ms
-        assert_eq!(policy.calculate_delay(1).as_millis(), 200);
-
-        // Attempt 2: 100ms * 2^2 = 400ms
-        assert_eq!(policy.calculate_delay(2).as_millis(), 400);
-
-        // Attempt 3: 100ms * 2^3 = 800ms
-        assert_eq!(policy.calculate_delay(3).as_millis(), 800);
-
-        // Attempt 4: 100ms * 2^4 = 1600ms, capped at 1000ms
-        assert_eq!(policy.calculate_delay(4).as_millis(), 1_000);
+    /// Test error implementing Classify.
+    #[derive(Debug, Clone, PartialEq)]
+    struct TestErr(&'static str);
+    impl std::fmt::Display for TestErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
     }
-
-    #[test]
-    fn test_apply_jitter_disabled() {
-        let policy = RetryPolicy {
-            jitter: false,
-            ..Default::default()
-        };
-
-        let delay = Duration::from_millis(100);
-        let jittered = policy.apply_jitter(delay);
-
-        assert_eq!(jittered, delay);
-    }
-
-    #[test]
-    fn test_apply_jitter_enabled() {
-        let policy = RetryPolicy {
-            jitter: true,
-            ..Default::default()
-        };
-
-        let delay = Duration::from_millis(100);
-
-        // Run multiple times to test jitter range
-        for _ in 0..10 {
-            let jittered = policy.apply_jitter(delay);
-            let jittered_ms = jittered.as_millis() as i64;
-
-            // Should be within ±25% of 100ms (75-125ms)
-            assert!((75..=125).contains(&jittered_ms));
+    impl nebula_error::Classify for TestErr {
+        fn category(&self) -> nebula_error::ErrorCategory {
+            nebula_error::ErrorCategory::External
+        }
+        fn code(&self) -> nebula_error::ErrorCode {
+            nebula_error::codes::INTERNAL
         }
     }
 
     #[tokio::test]
-    async fn test_retry_with_policy_success_first_attempt() {
+    async fn retry_with_policy_success_first_attempt() {
         let policy = RetryPolicy::default();
 
-        let result =
-            retry_with_policy(&policy, |_attempt| async { Ok::<_, String>("success") }).await;
+        let result: Result<&str, TestErr> =
+            retry_with_policy(&policy, || async { Ok("success") }).await;
 
         assert_eq!(result.unwrap(), "success");
     }
 
-    #[expect(
-        clippy::excessive_nesting,
-        reason = "async closure inside retry_with_policy call naturally requires this depth"
-    )]
     #[tokio::test]
-    async fn test_retry_with_policy_success_after_retries() {
+    async fn retry_with_policy_success_after_retries() {
         let policy = RetryPolicy {
             max_retries: 3,
-            base_delay_ms: 10, // Short delay for test
+            base_delay_ms: 10,
             max_delay_ms: 100,
             multiplier: 2.0,
             jitter: false,
         };
 
-        let mut attempt_count = 0;
+        let counter = std::sync::atomic::AtomicU32::new(0);
 
-        let result = retry_with_policy(&policy, |_attempt| {
-            attempt_count += 1;
+        let result: Result<&str, TestErr> = retry_with_policy(&policy, || {
+            let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             async move {
-                if attempt_count < 3 {
-                    Err("transient error")
+                if n < 2 {
+                    Err(TestErr("transient"))
                 } else {
                     Ok("success")
                 }
@@ -431,11 +337,11 @@ mod tests {
         .await;
 
         assert_eq!(result.unwrap(), "success");
-        assert_eq!(attempt_count, 3);
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
-    async fn test_retry_with_policy_exhausted() {
+    async fn retry_with_policy_exhausted() {
         let policy = RetryPolicy {
             max_retries: 2,
             base_delay_ms: 10,
@@ -444,16 +350,15 @@ mod tests {
             jitter: false,
         };
 
-        let mut attempt_count = 0;
+        let counter = std::sync::atomic::AtomicU32::new(0);
 
-        let result = retry_with_policy(&policy, |_attempt| {
-            attempt_count += 1;
-            async move { Err::<String, _>("permanent error") }
+        let result: Result<&str, TestErr> = retry_with_policy(&policy, || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Err(TestErr("permanent")) }
         })
         .await;
 
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "permanent error");
-        assert_eq!(attempt_count, 3); // Initial + 2 retries
+        assert_eq!(result.unwrap_err(), TestErr("permanent"));
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 3); // Initial + 2 retries
     }
 }

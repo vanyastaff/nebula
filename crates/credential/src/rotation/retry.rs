@@ -1,14 +1,18 @@
-//! Retry Logic with Exponential Backoff
+//! Retry logic with exponential backoff — delegates to [`nebula_resilience`].
 //!
-//! Provides retry functionality for rotation operations.
+//! [`RotationRetryPolicy`] is a config facade that builds
+//! [`nebula_resilience::RetryConfig`] internally.
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tokio::time::sleep;
+
+use nebula_resilience::retry::{BackoffConfig, JitterConfig, RetryConfig};
 
 use super::error::RotationError;
 
-/// Retry policy configuration
+/// Retry policy configuration for rotation operations.
+///
+/// Wraps [`nebula_resilience::RetryConfig`] with rotation-specific defaults.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RotationRetryPolicy {
     /// Maximum number of retry attempts
@@ -51,25 +55,26 @@ impl RotationRetryPolicy {
         }
     }
 
-    /// Calculate backoff duration for given attempt number
-    ///
-    /// Applies exponential backoff with ±10% jitter to prevent thundering herd.
-    pub fn backoff_duration(&self, attempt: u32) -> Duration {
-        use rand::RngExt;
-
-        let base_ms = self.initial_backoff.as_millis() as f32;
-        let multiplier = self.backoff_multiplier.powi(attempt as i32);
-        let backoff_ms = base_ms * multiplier;
-
-        // Apply ±10% jitter to prevent thundering herd
-        let jitter = rand::rng().random_range(0.9..=1.1);
-        let jittered_ms = (backoff_ms * jitter) as u64;
-
-        Duration::from_millis(jittered_ms).min(self.max_backoff)
+    /// Build a [`RetryConfig`] from this policy.
+    fn to_retry_config<E: 'static>(&self) -> RetryConfig<E> {
+        RetryConfig::new(self.max_attempts)
+            .expect("max_attempts validated at construction")
+            .backoff(BackoffConfig::Exponential {
+                base: self.initial_backoff,
+                multiplier: f64::from(self.backoff_multiplier),
+                max: self.max_backoff,
+            })
+            .jitter(JitterConfig::Full {
+                factor: 0.1,
+                seed: None,
+            })
     }
 }
 
-/// Retry an async operation with exponential backoff
+/// Retry an async operation with exponential backoff.
+///
+/// Delegates to [`nebula_resilience::retry_with`] when `E: Classify`,
+/// or uses a retry-all predicate for generic error types.
 ///
 /// # Example
 ///
@@ -82,105 +87,65 @@ impl RotationRetryPolicy {
 pub async fn retry_with_backoff<F, Fut, T, E>(
     policy: &RotationRetryPolicy,
     operation_name: &str,
-    mut f: F,
+    f: F,
 ) -> Result<T, RotationError>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, E>>,
-    E: std::fmt::Display + std::fmt::Debug,
+    Fut: std::future::Future<Output = Result<T, E>> + Send,
+    E: std::fmt::Display + nebula_error::Classify + Send + 'static,
 {
-    let mut last_error: Option<String> = None;
+    let op_name = operation_name.to_owned();
+    let max = policy.max_attempts;
 
-    for attempt in 0..policy.max_attempts {
-        match f().await {
-            Ok(result) => return Ok(result),
-            Err(e) => {
-                let error_str = e.to_string();
-                last_error = Some(error_str.clone());
+    let config = policy
+        .to_retry_config::<E>()
+        .retry_if(|_: &E| true)
+        .on_retry(move |err: &E, delay: Duration, attempt: u32| {
+            tracing::warn!(
+                operation = %op_name,
+                attempt,
+                delay_ms = delay.as_millis(),
+                error = %err,
+                "Retry attempt failed"
+            );
+        });
 
-                tracing::warn!(
-                    operation = operation_name,
-                    attempt = attempt + 1,
-                    max_attempts = policy.max_attempts,
-                    error = %error_str,
-                    "Retry attempt failed"
-                );
-
-                // Don't sleep after the last attempt
-                if attempt < policy.max_attempts - 1 {
-                    let backoff = policy.backoff_duration(attempt);
-                    tracing::debug!(
-                        operation = operation_name,
-                        backoff_ms = backoff.as_millis(),
-                        "Backing off before next retry"
-                    );
-                    sleep(backoff).await;
-                }
-            }
+    nebula_resilience::retry_with(config, f).await.map_err(|e| {
+        let last_msg = e
+            .into_operation()
+            .map(|e| format!(" (last error: {e})"))
+            .unwrap_or_default();
+        RotationError::MaxRetriesExceeded {
+            operation: format!("{operation_name}{last_msg}"),
+            max_attempts: max,
         }
-    }
-
-    let error_context = last_error
-        .map(|e| format!(" (last error: {})", e))
-        .unwrap_or_default();
-
-    Err(RotationError::MaxRetriesExceeded {
-        operation: format!("{}{}", operation_name, error_context),
-        max_attempts: policy.max_attempts,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
-    #[test]
-    fn test_backoff_calculation() {
-        let policy = RotationRetryPolicy::default();
-
-        // First attempt: 100ms * 2^0 = 100ms ± 10% jitter (90-110ms)
-        let backoff_0 = policy.backoff_duration(0);
-        assert!(
-            backoff_0 >= Duration::from_millis(90) && backoff_0 <= Duration::from_millis(110),
-            "Expected 90-110ms, got {:?}",
-            backoff_0
-        );
-
-        // Second attempt: 100ms * 2^1 = 200ms ± 10% jitter (180-220ms)
-        let backoff_1 = policy.backoff_duration(1);
-        assert!(
-            backoff_1 >= Duration::from_millis(180) && backoff_1 <= Duration::from_millis(220),
-            "Expected 180-220ms, got {:?}",
-            backoff_1
-        );
-
-        // Third attempt: 100ms * 2^2 = 400ms ± 10% jitter (360-440ms)
-        let backoff_2 = policy.backoff_duration(2);
-        assert!(
-            backoff_2 >= Duration::from_millis(360) && backoff_2 <= Duration::from_millis(440),
-            "Expected 360-440ms, got {:?}",
-            backoff_2
-        );
-
-        // Fourth attempt: 100ms * 2^3 = 800ms ± 10% jitter (720-880ms)
-        let backoff_3 = policy.backoff_duration(3);
-        assert!(
-            backoff_3 >= Duration::from_millis(720) && backoff_3 <= Duration::from_millis(880),
-            "Expected 720-880ms, got {:?}",
-            backoff_3
-        );
-
-        // Large attempt should cap at max_backoff (32s)
-        let backoff_large = policy.backoff_duration(10);
-        assert_eq!(
-            backoff_large,
-            Duration::from_secs(32),
-            "Large attempt should cap at max_backoff"
-        );
+    /// Test error that implements Classify (retryable by default).
+    #[derive(Debug)]
+    struct TestErr(&'static str);
+    impl std::fmt::Display for TestErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+    impl nebula_error::Classify for TestErr {
+        fn category(&self) -> nebula_error::ErrorCategory {
+            nebula_error::ErrorCategory::External
+        }
+        fn code(&self) -> nebula_error::ErrorCode {
+            nebula_error::codes::INTERNAL
+        }
     }
 
     #[tokio::test]
-    async fn test_retry_success_on_first_attempt() {
+    async fn retry_success_on_first_attempt() {
         let policy = RotationRetryPolicy {
             max_attempts: 3,
             initial_backoff: Duration::from_millis(10),
@@ -188,22 +153,21 @@ mod tests {
             max_backoff: Duration::from_secs(1),
         };
 
-        use std::sync::atomic::{AtomicU32, Ordering};
         let counter = AtomicU32::new(0);
 
         let result = retry_with_backoff(&policy, "test_op", || async {
             counter.fetch_add(1, Ordering::SeqCst);
-            Ok::<i32, String>(42)
+            Ok::<i32, TestErr>(42)
         })
         .await
         .unwrap();
 
         assert_eq!(result, 42);
-        assert_eq!(counter.load(Ordering::SeqCst), 1); // Only tried once
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
-    async fn test_retry_success_on_second_attempt() {
+    async fn retry_success_on_second_attempt() {
         let policy = RotationRetryPolicy {
             max_attempts: 3,
             initial_backoff: Duration::from_millis(10),
@@ -211,26 +175,25 @@ mod tests {
             max_backoff: Duration::from_secs(1),
         };
 
-        use std::sync::atomic::{AtomicU32, Ordering};
         let counter = AtomicU32::new(0);
 
         let result = retry_with_backoff(&policy, "test_op", || async {
             let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
             if count == 1 {
-                Err("first attempt fails".to_string())
+                Err(TestErr("first attempt fails"))
             } else {
-                Ok::<i32, String>(42)
+                Ok::<i32, TestErr>(42)
             }
         })
         .await
         .unwrap();
 
         assert_eq!(result, 42);
-        assert_eq!(counter.load(Ordering::SeqCst), 2); // Tried twice
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
-    async fn test_retry_max_attempts_exceeded() {
+    async fn retry_max_attempts_exceeded() {
         let policy = RotationRetryPolicy {
             max_attempts: 3,
             initial_backoff: Duration::from_millis(10),
@@ -238,22 +201,22 @@ mod tests {
             max_backoff: Duration::from_secs(1),
         };
 
-        use std::sync::atomic::{AtomicU32, Ordering};
         let counter = AtomicU32::new(0);
 
         let result = retry_with_backoff(&policy, "test_op", || async {
             counter.fetch_add(1, Ordering::SeqCst);
-            Err::<i32, String>("always fails".to_string())
+            Err::<i32, TestErr>(TestErr("always fails"))
         })
         .await;
 
         assert!(result.is_err());
-        assert_eq!(counter.load(Ordering::SeqCst), 3); // Tried max_attempts times
-        match result.unwrap_err() {
-            RotationError::MaxRetriesExceeded { max_attempts, .. } => {
-                assert_eq!(max_attempts, 3);
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+        assert!(matches!(
+            result.unwrap_err(),
+            RotationError::MaxRetriesExceeded {
+                max_attempts: 3,
+                ..
             }
-            _ => panic!("Expected MaxRetriesExceeded error"),
-        }
+        ));
     }
 }
