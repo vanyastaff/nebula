@@ -56,6 +56,26 @@ pub enum ResilienceEvent {
     LoadShed,
 }
 
+/// Fieldless discriminant of [`ResilienceEvent`] for type-safe event filtering.
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ResilienceEventKind {
+    /// [`ResilienceEvent::CircuitStateChanged`]
+    CircuitStateChanged,
+    /// [`ResilienceEvent::RetryAttempt`]
+    RetryAttempt,
+    /// [`ResilienceEvent::BulkheadRejected`]
+    BulkheadRejected,
+    /// [`ResilienceEvent::TimeoutElapsed`]
+    TimeoutElapsed,
+    /// [`ResilienceEvent::HedgeFired`]
+    HedgeFired,
+    /// [`ResilienceEvent::RateLimitExceeded`]
+    RateLimitExceeded,
+    /// [`ResilienceEvent::LoadShed`]
+    LoadShed,
+}
+
 /// Receives resilience events for observability (metrics, logging, `EventBus`).
 ///
 /// This trait is designed to be implemented by downstream crates.
@@ -92,9 +112,9 @@ impl RecordingSink {
         self.events.lock().clone()
     }
 
-    /// Count events matching a given kind string.
+    /// Count events matching a given kind.
     #[must_use]
-    pub fn count(&self, kind: &str) -> usize {
+    pub fn count(&self, kind: ResilienceEventKind) -> usize {
         self.events().iter().filter(|e| e.kind() == kind).count()
     }
 
@@ -114,17 +134,17 @@ impl MetricsSink for RecordingSink {
 }
 
 impl ResilienceEvent {
-    /// Returns a static string identifying the event kind.
+    /// Returns the fieldless discriminant of this event.
     #[must_use]
-    pub const fn kind(&self) -> &'static str {
+    pub const fn kind(&self) -> ResilienceEventKind {
         match self {
-            Self::CircuitStateChanged { .. } => "circuit_state_changed",
-            Self::RetryAttempt { .. } => "retry_attempt",
-            Self::BulkheadRejected => "bulkhead_rejected",
-            Self::TimeoutElapsed { .. } => "timeout_elapsed",
-            Self::HedgeFired { .. } => "hedge_fired",
-            Self::RateLimitExceeded => "rate_limit_exceeded",
-            Self::LoadShed => "load_shed",
+            Self::CircuitStateChanged { .. } => ResilienceEventKind::CircuitStateChanged,
+            Self::RetryAttempt { .. } => ResilienceEventKind::RetryAttempt,
+            Self::BulkheadRejected => ResilienceEventKind::BulkheadRejected,
+            Self::TimeoutElapsed { .. } => ResilienceEventKind::TimeoutElapsed,
+            Self::HedgeFired { .. } => ResilienceEventKind::HedgeFired,
+            Self::RateLimitExceeded => ResilienceEventKind::RateLimitExceeded,
+            Self::LoadShed => ResilienceEventKind::LoadShed,
         }
     }
 }
@@ -138,7 +158,7 @@ mod tests {
         let sink = RecordingSink::new();
         sink.record(ResilienceEvent::BulkheadRejected);
         sink.record(ResilienceEvent::BulkheadRejected);
-        assert_eq!(sink.count("bulkhead_rejected"), 2);
+        assert_eq!(sink.count(ResilienceEventKind::BulkheadRejected), 2);
     }
 
     #[test]

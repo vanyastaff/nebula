@@ -37,6 +37,11 @@ pub enum CallError<E> {
         /// Optional hint for when to retry. `None` means unknown.
         retry_after: Option<Duration>,
     },
+    /// The fallback strategy itself failed after the primary operation failed.
+    FallbackFailed {
+        /// Human-readable reason for the fallback failure.
+        reason: Option<String>,
+    },
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for CallError<E> {
@@ -56,6 +61,8 @@ impl<E: std::fmt::Display> std::fmt::Display for CallError<E> {
                 retry_after: Some(d),
             } => write!(f, "rate limit exceeded (retry after {d:?})"),
             Self::RateLimited { retry_after: None } => write!(f, "rate limit exceeded"),
+            Self::FallbackFailed { reason: Some(r) } => write!(f, "fallback failed: {r}"),
+            Self::FallbackFailed { reason: None } => write!(f, "fallback failed"),
         }
     }
 }
@@ -127,6 +134,7 @@ impl<E> CallError<E> {
             Self::Cancelled { reason } => CallError::Cancelled { reason },
             Self::LoadShed => CallError::LoadShed,
             Self::RateLimited { retry_after } => CallError::RateLimited { retry_after },
+            Self::FallbackFailed { reason } => CallError::FallbackFailed { reason },
         }
     }
 
@@ -150,6 +158,7 @@ impl<E> CallError<E> {
             Self::Cancelled { reason } => CallError::Cancelled { reason },
             Self::LoadShed => CallError::LoadShed,
             Self::RateLimited { retry_after } => CallError::RateLimited { retry_after },
+            Self::FallbackFailed { reason } => CallError::FallbackFailed { reason },
         }
     }
 
@@ -173,6 +182,7 @@ impl<E: nebula_error::Classify> nebula_error::Classify for CallError<E> {
             Self::Timeout(_) => nebula_error::ErrorCategory::Timeout,
             Self::Cancelled { .. } => nebula_error::ErrorCategory::Cancelled,
             Self::RateLimited { .. } => nebula_error::ErrorCategory::RateLimit,
+            Self::FallbackFailed { .. } => nebula_error::ErrorCategory::Internal,
         }
     }
 
@@ -185,6 +195,9 @@ impl<E: nebula_error::Classify> nebula_error::Classify for CallError<E> {
             Self::Cancelled { .. } => nebula_error::ErrorCode::new("RESILIENCE:CANCELLED"),
             Self::LoadShed => nebula_error::ErrorCode::new("RESILIENCE:LOAD_SHED"),
             Self::RateLimited { .. } => nebula_error::ErrorCode::new("RESILIENCE:RATE_LIMITED"),
+            Self::FallbackFailed { .. } => {
+                nebula_error::ErrorCode::new("RESILIENCE:FALLBACK_FAILED")
+            }
         }
     }
 
@@ -250,6 +263,8 @@ pub enum CallErrorKind {
     LoadShed,
     /// [`CallError::RateLimited`]
     RateLimited,
+    /// [`CallError::FallbackFailed`]
+    FallbackFailed,
 }
 
 impl<E> CallError<E> {
@@ -265,6 +280,7 @@ impl<E> CallError<E> {
             Self::Cancelled { .. } => CallErrorKind::Cancelled,
             Self::LoadShed => CallErrorKind::LoadShed,
             Self::RateLimited { .. } => CallErrorKind::RateLimited,
+            Self::FallbackFailed { .. } => CallErrorKind::FallbackFailed,
         }
     }
 }

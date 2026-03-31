@@ -433,7 +433,7 @@ fn apply_jitter(delay: Duration, jitter: &JitterConfig) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CallError, RecordingSink};
+    use crate::{CallError, RecordingSink, ResilienceEventKind};
     use nebula_error::{Classify, ErrorCategory, ErrorCode, RetryHint, codes};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -574,7 +574,7 @@ mod tests {
         let _: Result<(), CallError<TransientErr>> =
             retry_with(config, || Box::pin(async { Err(TransientErr("fail")) })).await;
 
-        assert_eq!(sink.count("retry_attempt"), 3);
+        assert_eq!(sink.count(ResilienceEventKind::RetryAttempt), 3);
     }
 
     #[test]

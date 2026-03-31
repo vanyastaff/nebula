@@ -130,12 +130,12 @@ where
             match (self.function)(erased).await {
                 Ok(value) => Ok(value),
                 Err(e) => Err(e.flat_map_inner(
-                    |()| CallError::Cancelled {
+                    |()| CallError::FallbackFailed {
                         reason: Some(
                             "fallback returned Operation(()) — original error was erased".into(),
                         ),
                     },
-                    |_, ()| CallError::Cancelled {
+                    |_, ()| CallError::FallbackFailed {
                         reason: Some(
                             "fallback returned RetriesExhausted(()) — original error was erased"
                                 .into(),

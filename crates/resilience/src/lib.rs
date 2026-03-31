@@ -132,7 +132,9 @@ pub use timeout::{TimeoutExecutor, timeout};
 
 // ── Re-exports: observability ───────────────────────────────────────────────
 
-pub use sink::{CircuitState, MetricsSink, NoopSink, RecordingSink, ResilienceEvent};
+pub use sink::{
+    CircuitState, MetricsSink, NoopSink, RecordingSink, ResilienceEvent, ResilienceEventKind,
+};
 
 // ── Re-exports: infrastructure ──────────────────────────────────────────────
 

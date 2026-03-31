@@ -97,7 +97,7 @@ impl TimeoutExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CallError, RecordingSink};
+    use crate::{CallError, RecordingSink, ResilienceEventKind};
 
     #[tokio::test]
     async fn timeout_success() {
@@ -143,7 +143,7 @@ mod tests {
         .await;
 
         assert!(matches!(result, Err(CallError::Timeout(_))));
-        assert_eq!(sink.count("timeout_elapsed"), 1);
+        assert_eq!(sink.count(ResilienceEventKind::TimeoutElapsed), 1);
     }
 
     #[tokio::test]
@@ -158,6 +158,6 @@ mod tests {
             })
             .await;
 
-        assert_eq!(sink.count("timeout_elapsed"), 1);
+        assert_eq!(sink.count(ResilienceEventKind::TimeoutElapsed), 1);
     }
 }

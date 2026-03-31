@@ -362,7 +362,7 @@ impl LatencyTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RecordingSink;
+    use crate::{RecordingSink, ResilienceEventKind};
 
     #[tokio::test]
     async fn returns_first_success() {
@@ -409,7 +409,7 @@ mod tests {
             })
             .await;
 
-        assert!(sink.count("hedge_fired") > 0);
+        assert!(sink.count(ResilienceEventKind::HedgeFired) > 0);
     }
 
     // ── C2: HedgeConfig validation ───────────────────────────────────────

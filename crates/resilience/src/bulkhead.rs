@@ -256,7 +256,7 @@ impl Bulkhead {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CallError, RecordingSink};
+    use crate::{CallError, RecordingSink, ResilienceEventKind};
     use std::time::Duration;
 
     fn cfg(max: usize) -> BulkheadConfig {
@@ -327,7 +327,7 @@ mod tests {
         // This one should be rejected and emit an event
         let _ = bh.acquire::<&str>().await;
 
-        assert!(sink.count("bulkhead_rejected") > 0);
+        assert!(sink.count(ResilienceEventKind::BulkheadRejected) > 0);
     }
 
     #[tokio::test]
