@@ -125,6 +125,22 @@ pub enum Outcome {
     SlowFailure,
 }
 
+impl From<crate::classifier::ErrorClass> for Outcome {
+    /// Map an [`ErrorClass`](crate::classifier::ErrorClass) to a circuit breaker [`Outcome`].
+    ///
+    /// - `Cancelled`, `Overload`, `Permanent` → `Cancelled` (don't trip)
+    /// - `Timeout` → `Timeout` (respects `count_timeouts_as_failures`)
+    /// - `Transient`, `Unavailable`, `Unknown` → `Failure` (trips breaker)
+    fn from(class: crate::classifier::ErrorClass) -> Self {
+        use crate::classifier::ErrorClass;
+        match class {
+            ErrorClass::Cancelled | ErrorClass::Overload | ErrorClass::Permanent => Self::Cancelled,
+            ErrorClass::Timeout => Self::Timeout,
+            ErrorClass::Transient | ErrorClass::Unavailable | ErrorClass::Unknown => Self::Failure,
+        }
+    }
+}
+
 // ── State machine (internal) ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -373,6 +389,11 @@ impl CircuitBreaker {
 
     /// Execute a closure under the circuit breaker.
     ///
+    /// All errors count as failures (equivalent to
+    /// [`AlwaysTransient`](crate::classifier::AlwaysTransient) classifier).
+    /// Use [`call_with_classifier`](Self::call_with_classifier) for
+    /// error-type-aware outcome mapping.
+    ///
     /// If the returned future is dropped before completion, the probe slot
     /// (if in `HalfOpen` state) is automatically released.
     ///
@@ -390,7 +411,53 @@ impl CircuitBreaker {
         let result = f().await;
         let duration = self.clock.now().duration_since(start);
         let outcome = self.classify_outcome(result.is_ok(), duration);
-        // Defuse the guard — we'll record the real outcome instead.
+        guard.defuse();
+        self.record_outcome(outcome);
+        result.map_err(CallError::Operation)
+    }
+
+    /// Execute a closure under the circuit breaker with error classification.
+    ///
+    /// Uses the provided [`ErrorClassifier`] to determine how each error
+    /// affects the circuit state:
+    ///
+    /// | [`ErrorClass`] | CB outcome |
+    /// |------------------------------|--------------------------------------|
+    /// | `Cancelled`, `Overload` | `Cancelled` — doesn't trip breaker |
+    /// | `Permanent` | `Cancelled` — downstream is healthy |
+    /// | `Timeout` | `Timeout` — respects `count_timeouts` |
+    /// | `Transient`, `Unavailable`, `Unknown` | `Failure` / `SlowFailure` |
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::CircuitOpen)` if the breaker is open,
+    /// or `Err(CallError::Operation)` if the operation itself fails.
+    pub async fn call_with_classifier<T, E, Fut>(
+        &self,
+        classifier: &dyn crate::classifier::ErrorClassifier<E>,
+        f: impl FnOnce() -> Fut,
+    ) -> Result<T, CallError<E>>
+    where
+        Fut: std::future::Future<Output = Result<T, E>> + Send,
+    {
+        self.try_acquire()?;
+        let mut guard = ProbeGuard::new(self);
+        let start = self.clock.now();
+        let result = f().await;
+        let duration = self.clock.now().duration_since(start);
+
+        let outcome = match &result {
+            Ok(_) => self.classify_outcome(true, duration),
+            Err(e) => {
+                let class = classifier.classify(e);
+                if class.counts_as_failure() {
+                    self.classify_outcome(false, duration)
+                } else {
+                    class.into()
+                }
+            }
+        };
+
         guard.defuse();
         self.record_outcome(outcome);
         result.map_err(CallError::Operation)

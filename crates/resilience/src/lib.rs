@@ -92,6 +92,7 @@
 
 // Core
 pub mod cancellation;
+pub mod classifier;
 pub mod error;
 pub mod policy;
 
@@ -116,9 +117,10 @@ pub mod pipeline;
 // ── Re-exports ─────────────────────────────────────────────────────────────
 
 // Core types
+pub use cancellation::{CancellableFuture, CancellationContext, CancellationExt};
+pub use classifier::{ErrorClass, ErrorClassifier, FnClassifier, NebulaClassifier};
 pub use error::{CallError, CallErrorKind, CallResult, ConfigError};
 pub use policy::{ConstantLoad, LoadSignal, PolicySource};
-pub use cancellation::{CancellableFuture, CancellationContext, CancellationExt};
 
 // Patterns
 pub use bulkhead::{Bulkhead, BulkheadConfig};

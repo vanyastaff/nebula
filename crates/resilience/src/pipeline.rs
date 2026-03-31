@@ -17,6 +17,7 @@ use crate::{
     CallError,
     bulkhead::Bulkhead,
     circuit_breaker::{CircuitBreaker, Outcome, ProbeGuard},
+    classifier::ErrorClassifier,
     retry::{RetryConfig, retry_with_inner},
 };
 
@@ -58,6 +59,7 @@ enum Step<E: 'static> {
 /// Builder for [`ResiliencePipeline`].
 pub struct PipelineBuilder<E: 'static> {
     steps: Vec<Step<E>>,
+    classifier: Option<Arc<dyn ErrorClassifier<E>>>,
 }
 
 impl<E: 'static> fmt::Debug for PipelineBuilder<E> {
@@ -78,7 +80,24 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     /// Create a new builder.
     #[must_use]
     pub const fn new() -> Self {
-        Self { steps: Vec::new() }
+        Self {
+            steps: Vec::new(),
+            classifier: None,
+        }
+    }
+
+    /// Set an [`ErrorClassifier`] for the pipeline.
+    ///
+    /// When set, the circuit breaker step uses
+    /// [`call_with_classifier`](CircuitBreaker::call_with_classifier) instead of
+    /// [`call`](CircuitBreaker::call), and the retry step inherits the classifier.
+    ///
+    /// Without a classifier, the pipeline behaves as before: all operation errors
+    /// count as CB failures and retry uses `Classify::is_retryable()`.
+    #[must_use]
+    pub fn classifier(mut self, classifier: Arc<dyn ErrorClassifier<E>>) -> Self {
+        self.classifier = Some(classifier);
+        self
     }
 
     /// Add a timeout step (outermost wrapper if added first).
@@ -150,7 +169,21 @@ impl<E: Send + 'static> PipelineBuilder<E> {
         validate_order(&self.steps);
         ResiliencePipeline {
             steps: Arc::new(self.steps),
+            classifier: self.classifier,
         }
+    }
+}
+
+/// Convenience: set [`NebulaClassifier`](crate::classifier::NebulaClassifier)
+/// when `E` implements [`Classify`](nebula_error::Classify).
+impl<E: nebula_error::Classify + Send + Sync + 'static> PipelineBuilder<E> {
+    /// Use [`NebulaClassifier`](crate::classifier::NebulaClassifier) to automatically
+    /// map [`ErrorCategory`](nebula_error::ErrorCategory) to [`ErrorClass`](crate::classifier::ErrorClass).
+    ///
+    /// This is the recommended default for pipelines where `E: Classify`.
+    #[must_use]
+    pub fn classify_errors(self) -> Self {
+        self.classifier(Arc::new(crate::classifier::NebulaClassifier))
     }
 }
 
@@ -197,6 +230,7 @@ fn validate_order<E>(steps: &[Step<E>]) {
 /// Build via [`ResiliencePipeline::builder()`].
 pub struct ResiliencePipeline<E: 'static> {
     steps: Arc<Vec<Step<E>>>,
+    classifier: Option<Arc<dyn ErrorClassifier<E>>>,
 }
 
 impl<E: 'static> fmt::Debug for ResiliencePipeline<E> {
@@ -231,7 +265,12 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
         // type for Arc<F> sharing across retry iterations) only allocates
         // once per call instead of once per pipeline step.
         let boxed = move || -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> { Box::pin(f()) };
-        execute_pipeline(Arc::clone(&self.steps), Arc::new(boxed)).await
+        execute_pipeline(
+            Arc::clone(&self.steps),
+            self.classifier.clone(),
+            Arc::new(boxed),
+        )
+        .await
     }
 
     /// Execute `f` through the pipeline with a fallback strategy.
@@ -266,19 +305,24 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     }
 }
 
-async fn execute_pipeline<T, E, F>(steps: Arc<Vec<Step<E>>>, f: Arc<F>) -> Result<T, CallError<E>>
+async fn execute_pipeline<T, E, F>(
+    steps: Arc<Vec<Step<E>>>,
+    classifier: Option<Arc<dyn ErrorClassifier<E>>>,
+    f: Arc<F>,
+) -> Result<T, CallError<E>>
 where
     T: Send + 'static,
     E: Send + 'static,
     F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync + 'static,
 {
-    run_operation_with_shells(&steps, 0, f).await
+    run_operation_with_shells(&steps, classifier, 0, f).await
 }
 
 /// Recursively apply pipeline steps (one `Box::pin` per Timeout/Retry shell),
 /// then call the user function.
 fn run_operation_with_shells<T, E, F>(
     steps: &Arc<Vec<Step<E>>>,
+    classifier: Option<Arc<dyn ErrorClassifier<E>>>,
     idx: usize,
     f: Arc<F>,
 ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send>>
@@ -287,7 +331,6 @@ where
     E: Send + 'static,
     F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync + 'static,
 {
-    // Find the next Timeout or Retry step starting from `idx`.
     let steps = Arc::clone(steps);
     Box::pin(async move {
         if idx >= steps.len() {
@@ -297,49 +340,69 @@ where
         match &steps[idx] {
             Step::Timeout(d) => {
                 let d = *d;
-                tokio::time::timeout(d, run_operation_with_shells(&steps, idx + 1, f))
-                    .await
-                    .unwrap_or_else(|_| Err(CallError::Timeout(d)))
+                tokio::time::timeout(
+                    d,
+                    run_operation_with_shells(&steps, classifier.clone(), idx + 1, f),
+                )
+                .await
+                .unwrap_or_else(|_| Err(CallError::Timeout(d)))
             }
-            Step::Retry(config) => run_retry_step(config, Arc::clone(&steps), idx, f).await,
+            Step::Retry(config) => {
+                run_retry_step(config, Arc::clone(&steps), classifier, idx, f).await
+            }
             Step::CircuitBreaker(cb) => {
                 cb.try_acquire()?;
                 let mut guard = ProbeGuard::new(cb);
-                let result = run_operation_with_shells(&steps, idx + 1, Arc::clone(&f)).await;
-                // Defuse guard — record the real outcome instead.
+                let result =
+                    run_operation_with_shells(&steps, classifier.clone(), idx + 1, Arc::clone(&f))
+                        .await;
                 guard.defuse();
-                let outcome = match &result {
-                    Ok(_) => Outcome::Success,
-                    Err(CallError::Operation(_) | CallError::RetriesExhausted { .. }) => {
-                        Outcome::Failure
-                    }
-                    Err(CallError::Timeout(_)) => Outcome::Timeout,
-                    // Cancelled, rate limit, load shed, bulkhead full — not
-                    // the downstream's fault; don't count as failures.
-                    Err(_) => Outcome::Cancelled,
-                };
+
+                let outcome = classify_cb_outcome(&result, classifier.as_ref());
                 cb.record_outcome(outcome);
                 result
             }
             Step::Bulkhead(bh) => {
                 let _permit = bh.acquire().await?;
-                run_operation_with_shells(&steps, idx + 1, f).await
+                run_operation_with_shells(&steps, classifier, idx + 1, f).await
             }
             Step::RateLimiter(check) => {
                 check().await.map_err(|e| CallError::RateLimited {
                     retry_after: e.retry_after(),
                 })?;
-                run_operation_with_shells(&steps, idx + 1, f).await
+                run_operation_with_shells(&steps, classifier, idx + 1, f).await
             }
             Step::LoadShed(predicate) => {
                 if predicate() {
                     Err(CallError::LoadShed)
                 } else {
-                    run_operation_with_shells(&steps, idx + 1, f).await
+                    run_operation_with_shells(&steps, classifier, idx + 1, f).await
                 }
             }
         }
     })
+}
+
+/// Classify the outcome of an inner pipeline result for the CB step.
+///
+/// When a classifier is available, operation errors are mapped via
+/// [`ErrorClass`] → [`Outcome`]. Without a classifier, falls back to the
+/// previous behavior (all operation errors = `Failure`).
+fn classify_cb_outcome<T, E>(
+    result: &Result<T, CallError<E>>,
+    classifier: Option<&Arc<dyn ErrorClassifier<E>>>,
+) -> Outcome {
+    match result {
+        Ok(_) => Outcome::Success,
+        Err(CallError::Operation(e)) => {
+            classifier.map_or(Outcome::Failure, |c| c.classify(e).into())
+        }
+        Err(CallError::RetriesExhausted { last, .. }) => {
+            classifier.map_or(Outcome::Failure, |c| c.classify(last).into())
+        }
+        Err(CallError::Timeout(_)) => Outcome::Timeout,
+        Err(_) => Outcome::Cancelled,
+    }
 }
 
 /// Execute the Retry step of the pipeline.
@@ -347,6 +410,7 @@ where
 async fn run_retry_step<T, E, F>(
     config: &RetryConfig<E>,
     steps: Arc<Vec<Step<E>>>,
+    classifier: Option<Arc<dyn ErrorClassifier<E>>>,
     idx: usize,
     f: Arc<F>,
 ) -> Result<T, CallError<E>>
@@ -363,6 +427,9 @@ where
     let bail: Arc<Mutex<Option<CallError<E>>>> = Arc::new(Mutex::new(None));
     let bail_check = Arc::clone(&bail);
 
+    // Inherit the pipeline's classifier into the retry config if the config
+    // doesn't already have one. The bail_check wrapper ensures structural
+    // errors (CircuitOpen, BulkheadFull) still stop retries immediately.
     let mut inner_config = RetryConfig::<Option<E>>::new_unchecked(config.max_attempts)
         .backoff(config.backoff.clone())
         .jitter(config.jitter.clone())
@@ -373,12 +440,17 @@ where
         let steps = Arc::clone(&steps);
         let f = Arc::clone(&f);
         let bail = Arc::clone(&bail);
+        let classifier = classifier.clone();
         move || {
             let steps = Arc::clone(&steps);
             let f = Arc::clone(&f);
             let bail = Arc::clone(&bail);
+            let classifier = classifier.clone();
             Box::pin(async move {
-                classify_inner(run_operation_with_shells(&steps, idx + 1, f).await, &bail)
+                classify_inner(
+                    run_operation_with_shells(&steps, classifier, idx + 1, f).await,
+                    &bail,
+                )
             })
         }
     })

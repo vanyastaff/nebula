@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use crate::{
     CallError,
+    classifier::{ErrorClass, ErrorClassifier, FnClassifier},
     sink::{MetricsSink, NoopSink, ResilienceEvent},
 };
 
@@ -131,20 +132,18 @@ pub enum JitterConfig {
 
 // ── RetryConfig ───────────────────────────────────────────────────────────────
 
-/// Type alias for the retry predicate closure.
-type RetryPredicate<E> = Box<dyn Fn(&E) -> bool + Send + Sync>;
-
 /// Type alias for the on-retry notification callback.
 type RetryNotify<E> = Box<dyn Fn(&E, Duration, u32) + Send + Sync>;
 
 /// Configuration for the retry pattern.
 ///
-/// When used with [`retry_with`] (which requires `E: Classify`), errors are
-/// automatically filtered by [`is_retryable()`](nebula_error::Classify::is_retryable)
-/// and [`retry_hint()`](nebula_error::Classify::retry_hint) is respected as a
-/// backoff delay floor.
+/// Error classification is driven by an optional [`ErrorClassifier`]:
+/// 1. If set, [`ErrorClassifier::classify`] → [`ErrorClass::is_retryable`] decides.
+/// 2. Otherwise, [`retry_with`] falls back to
+///    [`Classify::is_retryable()`](nebula_error::Classify::is_retryable).
 ///
-/// Use [`retry_if`](RetryConfig::retry_if) to override the default classification.
+/// Use [`retry_if`](RetryConfig::retry_if) as shorthand for a bool-based classifier,
+/// or [`with_classifier`](RetryConfig::with_classifier) for full [`ErrorClass`] control.
 pub struct RetryConfig<E = ()> {
     /// Maximum number of attempts (including the first).
     pub max_attempts: u32,
@@ -156,7 +155,7 @@ pub struct RetryConfig<E = ()> {
     /// delay would exceed this duration. This bounds the total time spent retrying,
     /// including both operation execution and sleep time.
     pub total_budget: Option<Duration>,
-    predicate: Option<RetryPredicate<E>>,
+    classifier: Option<Arc<dyn ErrorClassifier<E>>>,
     on_retry: Option<RetryNotify<E>>,
     sink: Arc<dyn MetricsSink>,
 }
@@ -190,7 +189,7 @@ impl<E: 'static> RetryConfig<E> {
             backoff: BackoffConfig::Fixed(Duration::ZERO),
             jitter: JitterConfig::None,
             total_budget: None,
-            predicate: None,
+            classifier: None,
             on_retry: None,
             sink: Arc::new(NoopSink),
         })
@@ -218,17 +217,36 @@ impl<E: 'static> RetryConfig<E> {
         self
     }
 
-    /// Override the default retry predicate.
+    /// Set a custom [`ErrorClassifier`] for retry decisions.
     ///
-    /// Without a predicate, [`retry_with`] uses
-    /// [`is_retryable()`](nebula_error::Classify::is_retryable) to decide.
+    /// When set, [`ErrorClassifier::classify`] → [`ErrorClass::is_retryable`]
+    /// determines whether to retry, overriding the default
+    /// [`Classify::is_retryable()`](nebula_error::Classify::is_retryable).
     #[must_use]
-    pub fn retry_if<F>(mut self, f: F) -> Self
+    pub fn with_classifier(mut self, classifier: Arc<dyn ErrorClassifier<E>>) -> Self {
+        self.classifier = Some(classifier);
+        self
+    }
+
+    /// Shorthand: set a bool predicate as the classifier.
+    ///
+    /// `retry_if(|e| true)` → retry all errors.
+    /// `retry_if(|e| false)` → never retry.
+    ///
+    /// Equivalent to `with_classifier(FnClassifier)` that maps
+    /// `true` → [`ErrorClass::Transient`] and `false` → [`ErrorClass::Permanent`].
+    #[must_use]
+    pub fn retry_if<F>(self, f: F) -> Self
     where
         F: Fn(&E) -> bool + Send + Sync + 'static,
     {
-        self.predicate = Some(Box::new(f));
-        self
+        self.with_classifier(Arc::new(FnClassifier::new(move |e: &E| {
+            if f(e) {
+                ErrorClass::Transient
+            } else {
+                ErrorClass::Permanent
+            }
+        })))
     }
 
     /// Register a callback invoked before each retry sleep.
@@ -257,7 +275,7 @@ impl<E: 'static> RetryConfig<E> {
             backoff: BackoffConfig::Fixed(Duration::ZERO),
             jitter: JitterConfig::None,
             total_budget: None,
-            predicate: None,
+            classifier: None,
             on_retry: None,
             sink: Arc::new(NoopSink),
         }
@@ -343,10 +361,10 @@ where
             Err(e) => {
                 let is_last = attempt + 1 >= config.max_attempts;
 
-                let should_retry = config
-                    .predicate
-                    .as_ref()
-                    .map_or_else(|| default_should_retry(&e), |p| p(&e));
+                let should_retry = config.classifier.as_ref().map_or_else(
+                    || default_should_retry(&e),
+                    |c| c.classify(&e).is_retryable(),
+                );
 
                 config.sink.record(ResilienceEvent::RetryAttempt {
                     attempt: attempt + 1,
