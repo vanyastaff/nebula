@@ -102,8 +102,7 @@ pub use crate::any::AnyCredential;
 pub use crate::context::CredentialContext;
 pub use crate::description::CredentialDescription;
 pub use crate::error::{
-    CredentialError, CryptoError, ManagerError, ManagerResult, RefreshErrorKind, ResolutionStage,
-    RetryAdvice, StorageError, ValidationError,
+    CredentialError, CryptoError, RefreshErrorKind, ResolutionStage, RetryAdvice, ValidationError,
 };
 pub use crate::metadata::CredentialMetadata;
 pub use crate::snapshot::CredentialSnapshot;
