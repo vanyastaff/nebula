@@ -13,7 +13,7 @@ use crate::{
 // ── Config ────────────────────────────────────────────────────────────────────
 
 /// Configuration for the bulkhead pattern.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BulkheadConfig {
     /// Maximum number of concurrent operations. Min: 1.
     pub max_concurrency: usize,
@@ -224,7 +224,7 @@ pub struct BulkheadPermit {
 // ── Stats ─────────────────────────────────────────────────────────────────────
 
 /// Snapshot of bulkhead state.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BulkheadStats {
     /// Maximum concurrency limit.
     pub max_concurrency: usize,

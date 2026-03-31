@@ -1,5 +1,6 @@
 //! Timeout pattern — wraps futures with a deadline, returning `CallError::Timeout`.
 
+use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,6 +54,14 @@ where
 pub struct TimeoutExecutor {
     duration: Duration,
     sink: Arc<dyn MetricsSink>,
+}
+
+impl fmt::Debug for TimeoutExecutor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TimeoutExecutor")
+            .field("duration", &self.duration)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TimeoutExecutor {

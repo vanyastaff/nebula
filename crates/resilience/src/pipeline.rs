@@ -5,6 +5,7 @@
 //!
 //! Layers are applied in the order added: first added = outermost.
 
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -56,6 +57,14 @@ enum Step<E: 'static> {
 /// Builder for [`ResiliencePipeline`].
 pub struct PipelineBuilder<E: 'static> {
     steps: Vec<Step<E>>,
+}
+
+impl<E: 'static> fmt::Debug for PipelineBuilder<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PipelineBuilder")
+            .field("steps", &self.steps.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<E: Send + 'static> Default for PipelineBuilder<E> {
@@ -187,6 +196,14 @@ fn validate_order<E>(steps: &[Step<E>]) {
 /// Build via [`ResiliencePipeline::builder()`].
 pub struct ResiliencePipeline<E: 'static> {
     steps: Arc<Vec<Step<E>>>,
+}
+
+impl<E: 'static> fmt::Debug for ResiliencePipeline<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResiliencePipeline")
+            .field("steps", &self.steps.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<E: Send + 'static> ResiliencePipeline<E> {

@@ -10,6 +10,7 @@
 //! speculative work is cheap to abandon at the infrastructure level.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::fmt;
 use std::future::Future;
 
 use std::sync::Arc;
@@ -25,7 +26,7 @@ use crate::{
 // ── Config ────────────────────────────────────────────────────────────────────
 
 /// Configuration for the hedge pattern.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HedgeConfig {
     /// Delay before sending each hedge request.
     pub hedge_delay: Duration,
@@ -81,6 +82,14 @@ impl HedgeConfig {
 pub struct HedgeExecutor {
     config: HedgeConfig,
     sink: Arc<dyn MetricsSink>,
+}
+
+impl fmt::Debug for HedgeExecutor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HedgeExecutor")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 impl HedgeExecutor {
@@ -185,6 +194,15 @@ pub struct AdaptiveHedgeExecutor {
     latency_tracker: Arc<tokio::sync::RwLock<LatencyTracker>>,
     target_percentile: f64,
     sink: Arc<dyn MetricsSink>,
+}
+
+impl fmt::Debug for AdaptiveHedgeExecutor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AdaptiveHedgeExecutor")
+            .field("base_config", &self.base_config)
+            .field("target_percentile", &self.target_percentile)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AdaptiveHedgeExecutor {

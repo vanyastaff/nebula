@@ -41,6 +41,7 @@ pub trait LoadSignal: Send + Sync {
 }
 
 /// A constant load signal for testing adaptive policies.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConstantLoad {
     /// Load factor: 0.0 = idle, 1.0 = saturated.
     pub factor: f64,

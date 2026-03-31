@@ -33,6 +33,7 @@ use loom::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(loom))]
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use std::fmt;
 use std::sync::Arc;
 
 use tokio::sync::Semaphore;
@@ -82,6 +83,12 @@ struct GateInner {
 /// [`Gate::close`].
 pub struct GateGuard {
     inner: Arc<GateInner>,
+}
+
+impl fmt::Debug for GateGuard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GateGuard").finish_non_exhaustive()
+    }
 }
 
 impl Drop for GateGuard {

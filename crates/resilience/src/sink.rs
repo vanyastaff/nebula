@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use std::time::Duration;
 
 /// A state in the circuit breaker state machine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CircuitState {
     /// Normal operation — requests pass through.
     Closed,
@@ -20,7 +20,7 @@ pub enum CircuitState {
 }
 
 /// Events emitted by resilience patterns to the [`MetricsSink`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResilienceEvent {
     /// Circuit breaker transitioned between states.
     CircuitStateChanged {
@@ -61,6 +61,7 @@ pub trait MetricsSink: Send + Sync {
 }
 
 /// Default sink — discards all events. Zero cost.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct NoopSink;
 
 impl MetricsSink for NoopSink {
@@ -68,7 +69,7 @@ impl MetricsSink for NoopSink {
 }
 
 /// Test sink — records all events for assertion.
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct RecordingSink {
     events: Arc<Mutex<Vec<ResilienceEvent>>>,
 }

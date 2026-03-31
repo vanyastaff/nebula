@@ -13,6 +13,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -84,6 +85,16 @@ where
     _phantom: std::marker::PhantomData<T>,
 }
 
+impl<T, F, Fut> fmt::Debug for FunctionFallback<T, F, Fut>
+where
+    F: Fn(CallError<()>) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<T, CallError<()>>> + Send,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FunctionFallback").finish_non_exhaustive()
+    }
+}
+
 impl<T, F, Fut> FunctionFallback<T, F, Fut>
 where
     F: Fn(CallError<()>) -> Fut + Send + Sync,
@@ -153,6 +164,15 @@ pub struct CacheFallback<T: Clone + Send + Sync> {
     cache: Arc<RwLock<Option<CacheEntry<T>>>>,
     ttl: Option<std::time::Duration>,
     stale_if_error: bool,
+}
+
+impl<T: Clone + Send + Sync> fmt::Debug for CacheFallback<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CacheFallback")
+            .field("ttl", &self.ttl)
+            .field("stale_if_error", &self.stale_if_error)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<T: Clone + Send + Sync> Default for CacheFallback<T> {
@@ -235,6 +255,14 @@ pub struct ChainFallback<T, E> {
     fallbacks: Vec<Arc<dyn FallbackStrategy<T, E>>>,
 }
 
+impl<T, E> fmt::Debug for ChainFallback<T, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChainFallback")
+            .field("count", &self.fallbacks.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<T, E> Default for ChainFallback<T, E> {
     fn default() -> Self {
         Self::new()
@@ -286,6 +314,15 @@ impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E> for Cha
 pub struct PriorityFallback<T, E> {
     fallbacks: HashMap<CallErrorKind, Arc<dyn FallbackStrategy<T, E>>>,
     default: Option<Arc<dyn FallbackStrategy<T, E>>>,
+}
+
+impl<T, E> fmt::Debug for PriorityFallback<T, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PriorityFallback")
+            .field("registered_kinds", &self.fallbacks.len())
+            .field("has_default", &self.default.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<T, E> Default for PriorityFallback<T, E> {
@@ -349,6 +386,12 @@ impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
 /// Fallback with operation — combines primary and fallback operations.
 pub struct FallbackOperation<T, E> {
     fallback_strategy: Arc<dyn FallbackStrategy<T, E>>,
+}
+
+impl<T, E> fmt::Debug for FallbackOperation<T, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FallbackOperation").finish_non_exhaustive()
+    }
 }
 
 impl<T, E> FallbackOperation<T, E> {

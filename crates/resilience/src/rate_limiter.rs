@@ -235,6 +235,15 @@ pub struct LeakyBucket {
     leak_rate: f64,
 }
 
+impl fmt::Debug for LeakyBucket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LeakyBucket")
+            .field("capacity", &self.capacity)
+            .field("leak_rate", &self.leak_rate)
+            .finish_non_exhaustive()
+    }
+}
+
 impl LeakyBucket {
     /// Create new leaky bucket.
     ///
@@ -325,6 +334,15 @@ pub struct SlidingWindow {
     max_requests: usize,
     /// Request timestamps
     requests: Arc<Mutex<VecDeque<Instant>>>,
+}
+
+impl fmt::Debug for SlidingWindow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SlidingWindow")
+            .field("window_duration", &self.window_duration)
+            .field("max_requests", &self.max_requests)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SlidingWindow {
@@ -464,6 +482,19 @@ pub struct AdaptiveRateLimiter {
     stats_window: Duration,
     min_rate: f64,
     max_rate: f64,
+}
+
+impl fmt::Debug for AdaptiveRateLimiter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AdaptiveRateLimiter")
+            .field("min_rate", &self.min_rate)
+            .field("max_rate", &self.max_rate)
+            .field(
+                "current_rate",
+                &f64::from_bits(self.atomic_rate.load(std::sync::atomic::Ordering::Relaxed)),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl AdaptiveRateLimiter {
@@ -652,6 +683,7 @@ impl RateLimiter for AdaptiveRateLimiter {
 mod governor_impl {
     use governor::clock::Clock;
     use governor::{DefaultDirectRateLimiter, Quota, RateLimiter as GovernorLimiter};
+    use std::fmt;
     use std::future::Future;
     use std::num::NonZeroU32;
     use std::time::Duration;
@@ -666,6 +698,15 @@ mod governor_impl {
         limiter: DefaultDirectRateLimiter,
         rate_per_second: f64,
         burst_capacity: u32,
+    }
+
+    impl fmt::Debug for GovernorRateLimiter {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("GovernorRateLimiter")
+                .field("rate_per_second", &self.rate_per_second)
+                .field("burst_capacity", &self.burst_capacity)
+                .finish()
+        }
     }
 
     impl GovernorRateLimiter {

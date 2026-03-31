@@ -105,7 +105,7 @@ impl CircuitBreakerConfig {
 // ── Outcome (internal) ────────────────────────────────────────────────────────
 
 /// The outcome of an operation, used to update circuit breaker state.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Outcome {
     /// Operation succeeded.
     Success,
@@ -133,7 +133,7 @@ enum State {
 // ── CircuitBreaker ────────────────────────────────────────────────────────────
 
 /// Snapshot of circuit breaker state for health reporting.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CircuitBreakerStats {
     /// Current circuit state.
     pub state: CircuitState,

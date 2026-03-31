@@ -4,6 +4,7 @@
 //! non-retryable errors (authentication, validation, etc.) and respects
 //! [`retry_hint()`](nebula_error::Classify::retry_hint) as a backoff delay floor.
 
+use std::fmt;
 use std::future::Future;
 
 use std::sync::Arc;
@@ -17,7 +18,7 @@ use crate::{
 // ── Backoff ───────────────────────────────────────────────────────────────────
 
 /// Backoff strategy for retry delays.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum BackoffConfig {
     /// Same delay between every attempt.
     Fixed(Duration),
@@ -112,7 +113,7 @@ impl BackoffConfig {
 // ── JitterConfig ─────────────────────────────────────────────────────────────
 
 /// Optional jitter to add to backoff delays.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub enum JitterConfig {
     /// No jitter.
     #[default]
@@ -156,6 +157,17 @@ pub struct RetryConfig<E = ()> {
     predicate: Option<RetryPredicate<E>>,
     on_retry: Option<RetryNotify<E>>,
     sink: Arc<dyn MetricsSink>,
+}
+
+impl<E> fmt::Debug for RetryConfig<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RetryConfig")
+            .field("max_attempts", &self.max_attempts)
+            .field("backoff", &self.backoff)
+            .field("jitter", &self.jitter)
+            .field("total_budget", &self.total_budget)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<E: 'static> RetryConfig<E> {

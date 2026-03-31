@@ -3,6 +3,7 @@
 //! Provides structured cancellation handling that integrates
 //! with tokio's cancellation tokens for graceful shutdown and operation cancellation.
 
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -160,6 +161,12 @@ pub struct CancellableFuture<F> {
     future: Pin<Box<F>>,
     /// We use `tokio::select!` internally via a helper that owns the token.
     cancellation: CancellationToken,
+}
+
+impl<F> fmt::Debug for CancellableFuture<F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CancellableFuture").finish_non_exhaustive()
+    }
 }
 
 impl<F> CancellableFuture<F>
