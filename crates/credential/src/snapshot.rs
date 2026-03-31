@@ -46,7 +46,7 @@ use crate::metadata::CredentialMetadata;
 ///
 /// - [`SchemeMismatch`](SnapshotError::SchemeMismatch) when the requested
 ///   `AuthScheme` type does not match the type stored in the snapshot.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum SnapshotError {
     /// The requested scheme type does not match the projected type.
@@ -71,6 +71,12 @@ pub enum SnapshotError {
 /// Use [`project()`](Self::project) to borrow-downcast or
 /// [`into_project()`](Self::into_project) to consume-downcast.
 ///
+/// # Serialization
+///
+/// `CredentialSnapshot` is intentionally **not** `Serialize`/`Deserialize`.
+/// Snapshots are transient runtime objects — they exist only during action
+/// execution and are never persisted or transmitted over the wire.
+///
 /// # Security
 ///
 /// The [`Debug`] implementation intentionally redacts the projected value
@@ -84,6 +90,8 @@ pub struct CredentialSnapshot {
     metadata: CredentialMetadata,
     /// Type-erased projected `AuthScheme`.
     projected: Box<dyn Any + Send + Sync>,
+    /// Clone function captured at construction time from `S: AuthScheme + Clone`.
+    clone_fn: fn(&(dyn Any + Send + Sync)) -> Box<dyn Any + Send + Sync>,
 }
 
 impl CredentialSnapshot {
@@ -111,11 +119,21 @@ impl CredentialSnapshot {
         metadata: CredentialMetadata,
         scheme: S,
     ) -> Self {
+        fn clone_projected<S: AuthScheme>(
+            boxed: &(dyn Any + Send + Sync),
+        ) -> Box<dyn Any + Send + Sync> {
+            let s = boxed
+                .downcast_ref::<S>()
+                .expect("type invariant: stored type matches S");
+            Box::new(s.clone())
+        }
+
         Self {
             kind: kind.into(),
             scheme_kind: S::KIND.to_owned(),
             metadata,
             projected: Box::new(scheme),
+            clone_fn: clone_projected::<S>,
         }
     }
 
@@ -134,7 +152,23 @@ impl CredentialSnapshot {
             })
     }
 
+    /// Returns `true` if the projected scheme is of type `S`.
+    ///
+    /// Useful for checking the type before calling
+    /// [`into_project()`](Self::into_project), which consumes the snapshot.
+    #[must_use]
+    pub fn is<S: AuthScheme>(&self) -> bool {
+        self.projected.downcast_ref::<S>().is_some()
+    }
+
     /// Consumes the snapshot and returns the projected `AuthScheme`.
+    ///
+    /// # Note
+    ///
+    /// This method consumes the snapshot. If the type doesn't match, both
+    /// the snapshot and the inner value are lost. Use
+    /// [`project()`](Self::project) or [`is()`](Self::is) first to verify
+    /// the type when uncertain.
     ///
     /// # Errors
     ///
@@ -166,6 +200,18 @@ impl CredentialSnapshot {
     #[must_use]
     pub fn metadata(&self) -> &CredentialMetadata {
         &self.metadata
+    }
+}
+
+impl Clone for CredentialSnapshot {
+    fn clone(&self) -> Self {
+        Self {
+            kind: self.kind.clone(),
+            scheme_kind: self.scheme_kind.clone(),
+            metadata: self.metadata.clone(),
+            projected: (self.clone_fn)(&*self.projected),
+            clone_fn: self.clone_fn,
+        }
     }
 }
 
@@ -240,6 +286,40 @@ mod tests {
         assert_eq!(snap.kind(), "api_key");
         assert_eq!(snap.scheme_kind(), "bearer");
         assert_eq!(snap.metadata().version, 1);
+    }
+
+    #[test]
+    fn into_project_wrong_type_returns_error() {
+        let snap = bearer_snapshot();
+        let result = snap.into_project::<DatabaseAuth>();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err,
+            SnapshotError::SchemeMismatch {
+                expected: "database",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn is_returns_true_for_matching_type() {
+        let snap = bearer_snapshot();
+        assert!(snap.is::<BearerToken>());
+        assert!(!snap.is::<DatabaseAuth>());
+    }
+
+    #[test]
+    fn clone_preserves_projected_value() {
+        let snap = bearer_snapshot();
+        let cloned = snap.clone();
+        let token = cloned.project::<BearerToken>().unwrap();
+        token
+            .expose()
+            .expose_secret(|t| assert_eq!(t, "test-token"));
+        assert_eq!(cloned.kind(), "api_key");
+        assert_eq!(cloned.scheme_kind(), "bearer");
     }
 
     #[test]

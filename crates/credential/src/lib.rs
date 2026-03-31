@@ -59,6 +59,7 @@ pub mod registry;
 /// Resolve result types: interaction, refresh, test.
 pub mod resolve;
 /// Credential rotation
+#[cfg(feature = "rotation")]
 pub mod rotation;
 /// Authentication scheme types.
 pub mod scheme;
@@ -112,6 +113,7 @@ pub use nebula_core::CredentialId;
 pub use crate::utils::{EncryptedData, EncryptionKey, SecretString, decrypt, encrypt};
 
 // Rotation
+#[cfg(feature = "rotation")]
 pub use crate::rotation::{
     CredentialRotationEvent, GracePeriodConfig, RotationError, RotationResult,
 };

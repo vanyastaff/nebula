@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[cfg(feature = "rotation")]
 use crate::rotation::policy::RotationPolicy;
 
 /// Credential metadata (non-sensitive)
@@ -29,6 +30,7 @@ pub struct CredentialMetadata {
     pub owner_scope: Option<nebula_core::ScopeLevel>,
 
     /// Optional rotation policy (for automatic credential rotation)
+    #[cfg(feature = "rotation")]
     pub rotation_policy: Option<RotationPolicy>,
 
     /// Version number for rotation tracking (incremented on each rotation)
@@ -66,6 +68,7 @@ impl CredentialMetadata {
             last_accessed: None,
             last_modified: now,
             owner_scope: None,
+            #[cfg(feature = "rotation")]
             rotation_policy: None,
             version: 1, // Initial version
             expires_at: None,
@@ -221,6 +224,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "rotation")]
     fn test_rotation_policy() {
         use crate::rotation::policy::{PeriodicConfig, RotationPolicy};
         use std::time::Duration;

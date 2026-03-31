@@ -38,7 +38,6 @@ pub use nebula_workflow::{
 pub use nebula_parameter::prelude::*;
 
 // Credential types (v2)
-pub use nebula_credential::{CredentialContext, CredentialId};
 pub use nebula_credential::{
     // Auth schemes
     ApiKeyAuth,
@@ -58,6 +57,7 @@ pub use nebula_credential::{
     OAuth2Credential,
     OAuth2Token,
 };
+pub use nebula_credential::{CredentialContext, CredentialId};
 
 // Plugin types
 pub use nebula_plugin::{Plugin, PluginMetadata};
