@@ -79,23 +79,8 @@ pub mod utils;
 pub mod store;
 /// Composable storage layers (encryption, etc.) for stores.
 pub mod layer;
-/// AWS Secrets Manager credential store.
-#[cfg(feature = "storage-aws")]
-pub mod store_aws;
-/// Kubernetes Secrets credential store.
-#[cfg(feature = "storage-k8s")]
-pub mod store_k8s;
-/// Filesystem-based credential store for desktop/single-node use.
-#[cfg(feature = "storage-local")]
-pub mod store_local;
 /// In-memory credential store for testing.
 pub mod store_memory;
-/// Postgres-backed credential store via `nebula-storage` KV layer.
-#[cfg(feature = "storage-postgres")]
-pub mod store_postgres;
-/// HashiCorp Vault credential store using KV v2 engine.
-#[cfg(feature = "storage-vault")]
-pub mod store_vault;
 
 // ── v2 Executor ────────────────────────────────────────────────────────
 
@@ -176,17 +161,7 @@ pub use layer::{
     AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
     CacheStats, EncryptionLayer, ScopeLayer, ScopeResolver,
 };
-#[cfg(feature = "storage-aws")]
-pub use store_aws::{AwsSecretsConfig, AwsSecretsStore};
-#[cfg(feature = "storage-k8s")]
-pub use store_k8s::{K8sSecretsConfig, K8sSecretsStore};
-#[cfg(feature = "storage-local")]
-pub use store_local::LocalFileStore;
 pub use store_memory::InMemoryStore;
-#[cfg(feature = "storage-postgres")]
-pub use store_postgres::PostgresStore;
-#[cfg(feature = "storage-vault")]
-pub use store_vault::{VaultAuthMethod, VaultConfig, VaultConfigError, VaultStore};
 
 // v2: Registry
 pub use registry::{CredentialRegistry, RegistryError};
