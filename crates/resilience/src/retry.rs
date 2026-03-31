@@ -19,6 +19,7 @@ use crate::{
 
 /// Backoff strategy for retry delays.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum BackoffConfig {
     /// Same delay between every attempt.
     Fixed(Duration),
@@ -385,10 +386,15 @@ where
         }
     }
 
-    Err(CallError::RetriesExhausted {
-        attempts: config.max_attempts,
-        last: last_err.expect("at least one attempt was made"),
-    })
+    // Unreachable None case: debug_assert above guarantees max_attempts >= 1,
+    // so at least one iteration ran and set last_err.
+    Err(last_err.map_or_else(
+        || CallError::Cancelled { reason: None },
+        |e| CallError::RetriesExhausted {
+            attempts: config.max_attempts,
+            last: e,
+        },
+    ))
 }
 
 /// Convenience: retry up to `n` times with no backoff.

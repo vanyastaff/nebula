@@ -10,6 +10,7 @@ use std::time::Duration;
 
 /// A state in the circuit breaker state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum CircuitState {
     /// Normal operation — requests pass through.
     Closed,
@@ -21,6 +22,7 @@ pub enum CircuitState {
 
 /// Events emitted by resilience patterns to the [`MetricsSink`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ResilienceEvent {
     /// Circuit breaker transitioned between states.
     CircuitStateChanged {

@@ -8,6 +8,7 @@ use std::time::Duration;
 /// Errors produced by the patterns themselves (circuit open, bulkhead full, etc.)
 /// are separate variants.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CallError<E> {
     /// The operation itself returned an error (possibly after retries exhausted).
     Operation(E),
@@ -120,6 +121,29 @@ impl<E> CallError<E> {
                 attempts,
                 last: f(last),
             },
+            Self::CircuitOpen => CallError::CircuitOpen,
+            Self::BulkheadFull => CallError::BulkheadFull,
+            Self::Timeout(d) => CallError::Timeout(d),
+            Self::Cancelled { reason } => CallError::Cancelled { reason },
+            Self::LoadShed => CallError::LoadShed,
+            Self::RateLimited { retry_after } => CallError::RateLimited { retry_after },
+        }
+    }
+
+    /// Transform the inner error with separate handlers for `Operation` and
+    /// `RetriesExhausted`. All other (fieldless) variants pass through unchanged.
+    ///
+    /// Unlike [`map_operation`](Self::map_operation), the handlers return
+    /// `CallError<E2>` directly, allowing variant changes (e.g., converting
+    /// `Operation(())` into `Cancelled`).
+    pub fn flat_map_inner<E2>(
+        self,
+        on_operation: impl FnOnce(E) -> CallError<E2>,
+        on_retries: impl FnOnce(u32, E) -> CallError<E2>,
+    ) -> CallError<E2> {
+        match self {
+            Self::Operation(e) => on_operation(e),
+            Self::RetriesExhausted { attempts, last } => on_retries(attempts, last),
             Self::CircuitOpen => CallError::CircuitOpen,
             Self::BulkheadFull => CallError::BulkheadFull,
             Self::Timeout(d) => CallError::Timeout(d),

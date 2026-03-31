@@ -106,6 +106,7 @@ impl CircuitBreakerConfig {
 
 /// The outcome of an operation, used to update circuit breaker state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Outcome {
     /// Operation succeeded.
     Success,

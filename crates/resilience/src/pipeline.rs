@@ -403,25 +403,23 @@ fn map_retry_result<T, E: Send>(
     result: Result<T, CallError<Option<E>>>,
     bail: &Arc<Mutex<Option<CallError<E>>>>,
 ) -> Result<T, CallError<E>> {
+    let take_bail = || {
+        bail.lock()
+            .take()
+            .unwrap_or(CallError::Cancelled { reason: None })
+    };
+
     match result {
         Ok(v) => Ok(v),
-        Err(CallError::RetriesExhausted {
-            attempts,
-            last: Some(e),
-        }) => Err(CallError::RetriesExhausted { attempts, last: e }),
-        Err(CallError::RetriesExhausted { last: None, .. } | CallError::Operation(None)) => {
-            Err(bail
-                .lock()
-                .take()
-                .unwrap_or(CallError::Cancelled { reason: None }))
-        }
-        Err(CallError::Operation(Some(e))) => Err(CallError::Operation(e)),
-        Err(CallError::CircuitOpen) => Err(CallError::CircuitOpen),
-        Err(CallError::BulkheadFull) => Err(CallError::BulkheadFull),
-        Err(CallError::Timeout(d)) => Err(CallError::Timeout(d)),
-        Err(CallError::RateLimited { retry_after }) => Err(CallError::RateLimited { retry_after }),
-        Err(CallError::LoadShed) => Err(CallError::LoadShed),
-        Err(CallError::Cancelled { reason }) => Err(CallError::Cancelled { reason }),
+        Err(e) => Err(e.flat_map_inner(
+            |opt| opt.map_or_else(take_bail, CallError::Operation),
+            |attempts, opt| {
+                opt.map_or_else(take_bail, |e| CallError::RetriesExhausted {
+                    attempts,
+                    last: e,
+                })
+            },
+        )),
     }
 }
 

@@ -102,8 +102,8 @@ async fn test_fault_injection_chain_fallback_cascades_to_next_strategy() {
 
     let chain = Arc::new(
         ChainFallback::new()
-            .add(first as Arc<dyn FallbackStrategy<String, &str>>)
-            .add(second as Arc<dyn FallbackStrategy<String, &str>>),
+            .then(first as Arc<dyn FallbackStrategy<String, &str>>)
+            .then(second as Arc<dyn FallbackStrategy<String, &str>>),
     );
 
     let operation = FallbackOperation::new(chain);

@@ -50,7 +50,7 @@ fn fallback_call_overhead(c: &mut Criterion) {
     group.bench_function("chain_error_path", |b| {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let chain = Arc::new(
-            ChainFallback::new().add(Arc::new(ValueFallback::new("chain-fallback".to_string()))
+            ChainFallback::new().then(Arc::new(ValueFallback::new("chain-fallback".to_string()))
                 as Arc<dyn FallbackStrategy<String, &str>>),
         );
         let operation = Arc::new(FallbackOperation::new(chain));

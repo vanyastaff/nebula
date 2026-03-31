@@ -129,25 +129,19 @@ where
         Box::pin(async move {
             match (self.function)(erased).await {
                 Ok(value) => Ok(value),
-                Err(CallError::Operation(())) => Err(CallError::Cancelled {
-                    reason: Some(
-                        "fallback returned Operation(()) — original error was erased".into(),
-                    ),
-                }),
-                Err(CallError::RetriesExhausted { .. }) => Err(CallError::Cancelled {
-                    reason: Some(
-                        "fallback returned RetriesExhausted(()) — original error was erased".into(),
-                    ),
-                }),
-                // All fieldless variants convert directly.
-                Err(CallError::CircuitOpen) => Err(CallError::CircuitOpen),
-                Err(CallError::BulkheadFull) => Err(CallError::BulkheadFull),
-                Err(CallError::Timeout(d)) => Err(CallError::Timeout(d)),
-                Err(CallError::Cancelled { reason }) => Err(CallError::Cancelled { reason }),
-                Err(CallError::LoadShed) => Err(CallError::LoadShed),
-                Err(CallError::RateLimited { retry_after }) => {
-                    Err(CallError::RateLimited { retry_after })
-                }
+                Err(e) => Err(e.flat_map_inner(
+                    |()| CallError::Cancelled {
+                        reason: Some(
+                            "fallback returned Operation(()) — original error was erased".into(),
+                        ),
+                    },
+                    |_, ()| CallError::Cancelled {
+                        reason: Some(
+                            "fallback returned RetriesExhausted(()) — original error was erased"
+                                .into(),
+                        ),
+                    },
+                )),
             }
         })
     }
@@ -278,11 +272,9 @@ impl<T, E> ChainFallback<T, E> {
         }
     }
 
-    /// Add a fallback to the chain.
-    // Reason: `add` is a builder method, not the `Add` trait operator.
-    #[allow(clippy::should_implement_trait)]
+    /// Append a fallback to the chain.
     #[must_use = "builder methods must be chained or built"]
-    pub fn add(mut self, fallback: Arc<dyn FallbackStrategy<T, E>>) -> Self {
+    pub fn then(mut self, fallback: Arc<dyn FallbackStrategy<T, E>>) -> Self {
         self.fallbacks.push(fallback);
         self
     }
@@ -515,7 +507,7 @@ mod tests {
             }));
         let second: Arc<dyn FallbackStrategy<u32, &str>> = Arc::new(ValueFallback::new(99u32));
 
-        let chain = ChainFallback::new().add(first).add(second);
+        let chain = ChainFallback::new().then(first).then(second);
         let result = chain.fallback(timeout_error()).await;
         assert_eq!(result.unwrap(), 99);
     }
@@ -529,8 +521,8 @@ mod tests {
                 })
             }));
         let chain = ChainFallback::new()
-            .add(Arc::clone(&failing))
-            .add(Arc::clone(&failing));
+            .then(Arc::clone(&failing))
+            .then(Arc::clone(&failing));
         let result = chain.fallback(timeout_error()).await;
         assert!(matches!(result, Err(CallError::Cancelled { .. })));
     }

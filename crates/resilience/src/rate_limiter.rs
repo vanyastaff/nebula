@@ -45,6 +45,9 @@ pub trait RateLimiter: Send + Sync {
 
     /// Acquire permission then call `operation`. Returns `Err(CallError::RateLimited)` or
     /// the operation's own error wrapped in `CallError::Operation`.
+    ///
+    /// Default implementation calls [`acquire`](Self::acquire) then the operation.
+    /// Override only if you need custom behavior (e.g., recording success/error).
     fn call<T, E, F, Fut>(
         &self,
         operation: F,
@@ -52,7 +55,15 @@ pub trait RateLimiter: Send + Sync {
     where
         F: FnOnce() -> Fut + Send,
         Fut: Future<Output = Result<T, E>> + Send,
-        T: Send;
+        T: Send,
+    {
+        async {
+            self.acquire()
+                .await
+                .map_err(|_| CallError::RateLimited { retry_after: None })?;
+            operation().await.map_err(CallError::Operation)
+        }
+    }
 
     /// Returns the current rate or available capacity (implementation-dependent).
     fn current_rate(&self) -> impl Future<Output = f64> + Send;
@@ -187,18 +198,6 @@ impl RateLimiter for TokenBucket {
         }
     }
 
-    async fn call<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
-    where
-        F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = Result<T, E>> + Send,
-        T: Send,
-    {
-        self.acquire()
-            .await
-            .map_err(|_| CallError::RateLimited { retry_after: None })?;
-        operation().await.map_err(CallError::Operation)
-    }
-
     async fn current_rate(&self) -> f64 {
         let state = self.state.lock();
         let tokens = state.tokens;
@@ -295,18 +294,6 @@ impl RateLimiter for LeakyBucket {
             drop(state);
             Err(CallError::RateLimited { retry_after: None })
         }
-    }
-
-    async fn call<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
-    where
-        F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = Result<T, E>> + Send,
-        T: Send,
-    {
-        self.acquire()
-            .await
-            .map_err(|_| CallError::RateLimited { retry_after: None })?;
-        operation().await.map_err(CallError::Operation)
     }
 
     // Reason: usize capacity cast to f64 — acceptable for rate reporting.
@@ -422,18 +409,6 @@ impl RateLimiter for SlidingWindow {
             drop(requests);
             Err(CallError::RateLimited { retry_after: None })
         }
-    }
-
-    async fn call<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
-    where
-        F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = Result<T, E>> + Send,
-        T: Send,
-    {
-        self.acquire()
-            .await
-            .map_err(|_| CallError::RateLimited { retry_after: None })?;
-        operation().await.map_err(CallError::Operation)
     }
 
     // Reason: usize request count cast to f64 — acceptable for rate reporting.
@@ -763,18 +738,6 @@ mod governor_impl {
                 Ok(()) => Ok(()),
                 Err(_) => Err(CallError::RateLimited { retry_after: None }),
             }
-        }
-
-        async fn call<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
-        where
-            F: FnOnce() -> Fut + Send,
-            Fut: Future<Output = Result<T, E>> + Send,
-            T: Send,
-        {
-            self.acquire()
-                .await
-                .map_err(|_| CallError::RateLimited { retry_after: None })?;
-            operation().await.map_err(CallError::Operation)
         }
 
         async fn current_rate(&self) -> f64 {
