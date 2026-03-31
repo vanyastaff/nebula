@@ -100,7 +100,7 @@ pub mod resolver;
 pub use crate::any::AnyCredential;
 
 // Core types & errors
-pub use crate::context::CredentialContext;
+pub use crate::context::{CredentialContext, CredentialResolverRef};
 pub use crate::description::CredentialDescription;
 pub use crate::error::{
     CredentialError, CryptoError, RefreshErrorKind, ResolutionStage, RetryAdvice, ValidationError,

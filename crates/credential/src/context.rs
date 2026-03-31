@@ -2,10 +2,42 @@
 //!
 //! Provides request context for observability and audit logging.
 
+use std::any::Any;
+use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use nebula_core::ScopeLevel;
+use nebula_core::{AuthScheme, ScopeLevel};
+
+use crate::error::CredentialError;
+
+/// Boxed future returned by [`CredentialResolverRef::resolve_scheme`].
+type ResolveSchemeResult<'a> =
+    Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, CredentialError>> + Send + 'a>>;
+
+/// Object-safe resolver for credential composition.
+///
+/// Allows a credential to resolve another credential during its own
+/// `resolve()` or `refresh()` call (e.g., AWS Assume Role that depends
+/// on a base credential for initial authentication).
+///
+/// # Implementors
+///
+/// The framework provides the concrete implementation backed by
+/// [`CredentialResolver`](crate::CredentialResolver). Credential authors
+/// interact with this trait indirectly through
+/// [`CredentialContext::resolve_credential`].
+pub trait CredentialResolverRef: Send + Sync {
+    /// Resolves a credential by ID and returns the projected `AuthScheme` as `Box<dyn Any>`.
+    ///
+    /// The `expected_kind` parameter is used for error messages when
+    /// the resolved scheme doesn't match expectations.
+    fn resolve_scheme(&self, credential_id: &str, expected_kind: &str) -> ResolveSchemeResult<'_>;
+}
 
 /// Request context for credential operations
 ///
@@ -32,7 +64,7 @@ use nebula_core::ScopeLevel;
 /// let ctx = CredentialContext::new("user_123")
 ///     .with_trace_id(trace_id);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CredentialContext {
     /// Owner of the credential
     pub owner_id: String,
@@ -55,6 +87,27 @@ pub struct CredentialContext {
 
     /// Session ID for `PendingStateStore` token binding.
     session_id: Option<String>,
+
+    /// Optional resolver for credential composition.
+    ///
+    /// When set, allows this credential's `resolve()` / `refresh()` to
+    /// resolve other credentials it depends on.
+    resolver: Option<Arc<dyn CredentialResolverRef>>,
+}
+
+impl fmt::Debug for CredentialContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CredentialContext")
+            .field("owner_id", &self.owner_id)
+            .field("caller_scope", &self.caller_scope)
+            .field("trace_id", &self.trace_id)
+            .field("timestamp", &self.timestamp)
+            .field("callback_url", &self.callback_url)
+            .field("app_url", &self.app_url)
+            .field("session_id", &self.session_id)
+            .field("resolver", &self.resolver.as_ref().map(|_| ".."))
+            .finish()
+    }
 }
 
 impl CredentialContext {
@@ -68,6 +121,7 @@ impl CredentialContext {
             callback_url: None,
             app_url: None,
             session_id: None,
+            resolver: None,
         }
     }
 
@@ -115,11 +169,52 @@ impl CredentialContext {
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
     }
+
+    /// Set a credential resolver for composition (builder pattern).
+    ///
+    /// When a resolver is present, [`resolve_credential`](Self::resolve_credential)
+    /// can be used to resolve dependent credentials during this credential's
+    /// own `resolve()` or `refresh()` call.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_resolver(mut self, resolver: Arc<dyn CredentialResolverRef>) -> Self {
+        self.resolver = Some(resolver);
+        self
+    }
+
+    /// Resolves another credential during this credential's resolution.
+    ///
+    /// Used for credential composition (e.g., AWS Assume Role that needs
+    /// a base credential's auth material).
+    ///
+    /// # Errors
+    ///
+    /// - [`CredentialError::CompositionNotAvailable`] if no resolver was injected
+    /// - [`CredentialError::CompositionFailed`] if the underlying resolution fails
+    /// - [`CredentialError::SchemeMismatch`] if the resolved scheme doesn't match `S`
+    pub async fn resolve_credential<S: AuthScheme>(
+        &self,
+        credential_id: &str,
+    ) -> Result<S, CredentialError> {
+        let resolver = self
+            .resolver
+            .as_ref()
+            .ok_or(CredentialError::CompositionNotAvailable)?;
+        let boxed = resolver.resolve_scheme(credential_id, S::KIND).await?;
+        boxed
+            .downcast::<S>()
+            .map(|b| *b)
+            .map_err(|_| CredentialError::SchemeMismatch {
+                expected: S::KIND,
+                actual: "unknown".to_string(),
+            })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BearerToken;
+    use crate::utils::SecretString;
     use nebula_core::{ProjectId, ScopeLevel};
 
     #[test]
@@ -221,5 +316,34 @@ mod tests {
 
         assert!(ctx.timestamp >= before);
         assert!(ctx.timestamp <= after);
+    }
+
+    #[tokio::test]
+    async fn resolve_credential_composition() {
+        struct MockResolver;
+        impl CredentialResolverRef for MockResolver {
+            fn resolve_scheme(&self, _id: &str, _kind: &str) -> ResolveSchemeResult<'_> {
+                Box::pin(async {
+                    let token = BearerToken::new(SecretString::new("composed-token"));
+                    Ok(Box::new(token) as Box<dyn Any + Send + Sync>)
+                })
+            }
+        }
+
+        let ctx = CredentialContext::new("test-user").with_resolver(Arc::new(MockResolver));
+        let token: BearerToken = ctx.resolve_credential("base-cred").await.unwrap();
+        token
+            .expose()
+            .expose_secret(|s| assert_eq!(s, "composed-token"));
+    }
+
+    #[tokio::test]
+    async fn resolve_credential_no_resolver_returns_error() {
+        let ctx = CredentialContext::new("test-user");
+        let result = ctx.resolve_credential::<BearerToken>("any").await;
+        assert!(matches!(
+            result,
+            Err(CredentialError::CompositionNotAvailable)
+        ));
     }
 }

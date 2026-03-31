@@ -8,6 +8,7 @@ use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
+use nebula_core::AuthScheme;
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 use tokio_util::sync::CancellationToken;
 
@@ -127,6 +128,31 @@ impl ActionContext {
         self.credentials.get(id).await
     }
 
+    /// Retrieve a credential and project it to the concrete [`AuthScheme`] type.
+    ///
+    /// This is the primary typed credential access method for action authors.
+    /// It fetches the snapshot and consumes it via
+    /// [`CredentialSnapshot::into_project`], returning the concrete scheme type.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`ActionError::Fatal`] if the credential does not exist or the
+    ///   accessor is not configured.
+    /// - Returns [`ActionError::Fatal`] if the stored scheme type does not match
+    ///   `S` (scheme mismatch).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let token: BearerToken = ctx.credential_typed::<BearerToken>("api_key").await?;
+    /// ```
+    pub async fn credential_typed<S: AuthScheme>(&self, id: &str) -> Result<S, ActionError> {
+        let snapshot = self.credentials.get(id).await?;
+        snapshot
+            .into_project::<S>()
+            .map_err(|e| ActionError::fatal(format!("credential `{id}`: {e}")))
+    }
+
     /// Check whether a credential exists.
     pub async fn has_credential(&self, id: &str) -> bool {
         self.credentials.has(id).await
@@ -235,6 +261,23 @@ impl TriggerContext {
         self.credentials.get(id).await
     }
 
+    /// Retrieve a credential and project it to the concrete [`AuthScheme`] type.
+    ///
+    /// Identical to [`ActionContext::credential_typed`] but for trigger contexts.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`ActionError::Fatal`] if the credential does not exist or the
+    ///   accessor is not configured.
+    /// - Returns [`ActionError::Fatal`] if the stored scheme type does not match
+    ///   `S` (scheme mismatch).
+    pub async fn credential_typed<S: AuthScheme>(&self, id: &str) -> Result<S, ActionError> {
+        let snapshot = self.credentials.get(id).await?;
+        snapshot
+            .into_project::<S>()
+            .map_err(|e| ActionError::fatal(format!("credential `{id}`: {e}")))
+    }
+
     /// Check whether a credential exists.
     pub async fn has_credential(&self, id: &str) -> bool {
         self.credentials.has(id).await
@@ -261,7 +304,9 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use nebula_credential::{BearerToken, CredentialMetadata, CredentialSnapshot, SecretString};
+    use nebula_credential::{
+        BearerToken, CredentialMetadata, CredentialSnapshot, DatabaseAuth, SecretString,
+    };
 
     use crate::capability::{ActionLogLevel, ActionLogger, ExecutionEmitter, TriggerScheduler};
 
@@ -368,5 +413,67 @@ mod tests {
         );
         assert!(ctx.has_credential("cred").await);
         assert!(ctx.credential("cred").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn action_context_credential_typed_returns_projected_scheme() {
+        let ctx = ActionContext::new(
+            ExecutionId::new(),
+            NodeId::new(),
+            WorkflowId::new(),
+            CancellationToken::new(),
+        )
+        .with_credentials(Arc::new(TestCredentialAccessor));
+
+        let token: BearerToken = ctx
+            .credential_typed::<BearerToken>("api_key")
+            .await
+            .unwrap();
+        token
+            .expose()
+            .expose_secret(|t| assert_eq!(t, "test-token"));
+    }
+
+    #[tokio::test]
+    async fn action_context_credential_typed_mismatch_returns_fatal() {
+        let ctx = ActionContext::new(
+            ExecutionId::new(),
+            NodeId::new(),
+            WorkflowId::new(),
+            CancellationToken::new(),
+        )
+        .with_credentials(Arc::new(TestCredentialAccessor));
+
+        let result = ctx.credential_typed::<DatabaseAuth>("api_key").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.is_fatal());
+        assert!(err.to_string().contains("scheme mismatch"));
+    }
+
+    #[tokio::test]
+    async fn trigger_context_credential_typed_returns_projected_scheme() {
+        let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new())
+            .with_credentials(Arc::new(TestCredentialAccessor));
+
+        let token: BearerToken = ctx
+            .credential_typed::<BearerToken>("api_key")
+            .await
+            .unwrap();
+        token
+            .expose()
+            .expose_secret(|t| assert_eq!(t, "test-token"));
+    }
+
+    #[tokio::test]
+    async fn trigger_context_credential_typed_mismatch_returns_fatal() {
+        let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new())
+            .with_credentials(Arc::new(TestCredentialAccessor));
+
+        let result = ctx.credential_typed::<DatabaseAuth>("api_key").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.is_fatal());
+        assert!(err.to_string().contains("scheme mismatch"));
     }
 }
