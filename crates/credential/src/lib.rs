@@ -54,8 +54,6 @@ pub mod pending;
 pub mod pending_store;
 /// In-memory pending state store for testing and development.
 pub mod pending_store_memory;
-/// Opaque token for pending interactive flows.
-pub mod pending_token;
 /// Type-erased credential registry for runtime dispatch.
 pub mod registry;
 /// Resolve result types: interaction, refresh, test.
@@ -139,12 +137,11 @@ pub use scheme::{
 };
 
 // v2: Pending state
-pub use pending::{NoPendingState, PendingState};
+pub use pending::{NoPendingState, PendingState, PendingToken};
 
 // v2: Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};
 pub use pending_store_memory::InMemoryPendingStore;
-pub use pending_token::PendingToken;
 
 // v2: Built-in credential implementations
 pub use credentials::{

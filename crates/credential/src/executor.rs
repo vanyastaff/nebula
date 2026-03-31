@@ -12,7 +12,7 @@ use crate::context::CredentialContext;
 use crate::credential::Credential;
 use crate::error::CredentialError;
 use crate::pending_store::{PendingStateStore, PendingStoreError};
-use crate::pending_token::PendingToken;
+use crate::pending::PendingToken;
 use crate::resolve::{InteractionRequest, ResolveResult, UserInput};
 
 /// Default timeout for credential operations.
