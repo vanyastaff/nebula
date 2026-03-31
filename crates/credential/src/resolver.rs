@@ -114,10 +114,19 @@ impl<S: CredentialStore> CredentialResolver<S> {
         let stored = self.load_and_verify::<C>(credential_id).await?;
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
 
-        // Refresh proactively before expiry per REFRESH_POLICY.early_refresh.
+        // Refresh proactively before expiry per REFRESH_POLICY.early_refresh,
+        // with random jitter to prevent thundering herd across credentials
+        // that share the same expiry window.
         let needs_refresh = state.expires_at().is_some_and(|exp| {
             let now = chrono::Utc::now();
-            let early = chrono::Duration::from_std(C::REFRESH_POLICY.early_refresh)
+            let jitter = if C::REFRESH_POLICY.jitter > std::time::Duration::ZERO {
+                let bound = C::REFRESH_POLICY.jitter.as_millis() as u64;
+                std::time::Duration::from_millis(rand::random_range(0..bound))
+            } else {
+                std::time::Duration::ZERO
+            };
+            let early_with_jitter = C::REFRESH_POLICY.early_refresh + jitter;
+            let early = chrono::Duration::from_std(early_with_jitter)
                 .unwrap_or(chrono::Duration::zero());
             exp - now <= early
         });
