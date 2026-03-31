@@ -6,6 +6,28 @@ pub mod secret_string;
 pub mod time;
 pub mod validation;
 
+/// Serde helpers for [`SecretString`] that preserve the actual value.
+///
+/// The default `SecretString` `Serialize` impl writes `[REDACTED]` (safe for
+/// logs) — this module writes the real value so encrypted-at-rest state
+/// round-trips correctly.
+///
+/// Use with `#[serde(with = "crate::utils::serde_secret")]` on `SecretString` fields.
+pub mod serde_secret {
+    use super::SecretString;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    /// Serialize the actual secret value (for encrypted-at-rest storage only).
+    pub fn serialize<S: Serializer>(secret: &SecretString, s: S) -> Result<S::Ok, S::Error> {
+        secret.expose_secret(|v| s.serialize_str(v))
+    }
+
+    /// Deserialize a string into a `SecretString`.
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SecretString, D::Error> {
+        String::deserialize(d).map(SecretString::new)
+    }
+}
+
 /// Serde helpers for base64 encoding of byte vectors.
 ///
 /// Use with `#[serde(with = "crate::utils::serde_base64")]` on `Vec<u8>` fields

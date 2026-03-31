@@ -10,10 +10,9 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
 use serde_json::Value;
 
+use super::oauth2::OAuth2State;
 use super::oauth2_config::{AuthStyle, OAuth2Config};
 use crate::core::CredentialError;
-
-use super::oauth2::OAuth2State;
 
 /// HTTP request timeout for OAuth2 token exchanges.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -101,6 +100,7 @@ pub(crate) async fn exchange_client_credentials(
         client_id,
         client_secret,
         &config.token_url,
+        config.auth_style,
     )
 }
 
@@ -113,23 +113,28 @@ pub(crate) async fn exchange_authorization_code(
 ) -> Result<OAuth2State, CredentialError> {
     let client = http_client();
 
-    let form = vec![
-        ("grant_type", "authorization_code"),
-        ("code", code),
-        ("client_id", client_id),
-        ("client_secret", client_secret),
+    let mut form: Vec<(&str, String)> = vec![
+        ("grant_type", "authorization_code".into()),
+        ("code", code.to_owned()),
     ];
 
     let mut req = client.post(&config.token_url);
+
     match config.auth_style {
         AuthStyle::Header => {
             let credentials = BASE64.encode(format!("{client_id}:{client_secret}"));
-            req = req.header("Authorization", format!("Basic {credentials}"));
+            req = req
+                .header("Authorization", format!("Basic {credentials}"))
+                .form(&form);
         }
-        AuthStyle::PostBody => {}
+        AuthStyle::PostBody => {
+            form.push(("client_id", client_id.to_owned()));
+            form.push(("client_secret", client_secret.to_owned()));
+            req = req.form(&form);
+        }
     }
+
     let resp = req
-        .form(&form)
         .send()
         .await
         .map_err(|e| provider_error(format!("authorization code exchange failed: {e}")))?;
@@ -141,6 +146,7 @@ pub(crate) async fn exchange_authorization_code(
         client_id,
         client_secret,
         &config.token_url,
+        config.auth_style,
     )
 }
 
@@ -212,33 +218,59 @@ pub(crate) async fn request_device_code(
     })
 }
 
+/// Result of polling the token endpoint for a device code grant.
+pub(crate) enum DevicePollStatus {
+    /// Token exchange succeeded.
+    Ready(OAuth2State),
+    /// User has not yet authorized — keep polling.
+    Pending,
+    /// Server requests a longer interval.
+    SlowDown,
+    /// Device code has expired — must restart the flow.
+    Expired,
+}
+
 /// Poll token endpoint for device code grant (RFC 8628).
 ///
-/// Waits `interval_secs` before polling. Returns the completed state on
-/// success, or a `CredentialError::Provider` whose message contains
-/// `"authorization_pending"`, `"slow_down"`, or `"expired_token"` on
-/// expected device-flow errors.
+/// Waits `interval_secs` before polling. Returns a [`DevicePollStatus`]
+/// indicating whether the token is ready, the user is still authorizing,
+/// or the code has expired.
 pub(crate) async fn poll_device_code(
     config: &OAuth2Config,
     client_id: &str,
     client_secret: &str,
     device_code: &str,
     interval_secs: u64,
-) -> Result<OAuth2State, CredentialError> {
+) -> Result<DevicePollStatus, CredentialError> {
     tokio::time::sleep(Duration::from_secs(interval_secs)).await;
 
     let client = http_client();
 
-    let form = vec![
-        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-        ("device_code", device_code),
-        ("client_id", client_id),
-        ("client_secret", client_secret),
+    let mut form: Vec<(&str, String)> = vec![
+        (
+            "grant_type",
+            "urn:ietf:params:oauth:grant-type:device_code".into(),
+        ),
+        ("device_code", device_code.to_owned()),
     ];
 
-    let resp = client
-        .post(&config.token_url)
-        .form(&form)
+    let mut req = client.post(&config.token_url);
+
+    match config.auth_style {
+        AuthStyle::Header => {
+            let credentials = BASE64.encode(format!("{client_id}:{client_secret}"));
+            req = req
+                .header("Authorization", format!("Basic {credentials}"))
+                .form(&form);
+        }
+        AuthStyle::PostBody => {
+            form.push(("client_id", client_id.to_owned()));
+            form.push(("client_secret", client_secret.to_owned()));
+            req = req.form(&form);
+        }
+    }
+
+    let resp = req
         .send()
         .await
         .map_err(|e| provider_error(format!("device code poll failed: {e}")))?;
@@ -256,13 +288,20 @@ pub(crate) async fn poll_device_code(
             client_id,
             client_secret,
             &config.token_url,
+            config.auth_style,
         )
+        .map(DevicePollStatus::Ready)
     } else {
         let error = body
             .get("error")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-        Err(provider_error(format!("device code poll error: {error}")))
+        match error {
+            "authorization_pending" => Ok(DevicePollStatus::Pending),
+            "slow_down" => Ok(DevicePollStatus::SlowDown),
+            "expired_token" => Ok(DevicePollStatus::Expired),
+            _ => Err(provider_error(format!("device code poll error: {error}"))),
+        }
     }
 }
 
@@ -284,20 +323,36 @@ pub(crate) async fn refresh_token(
         .as_deref()
         .ok_or_else(|| provider_error("no refresh_token available for token refresh".into()))?;
 
-    let mut form = vec![
-        ("grant_type".to_owned(), "refresh_token".to_owned()),
-        ("refresh_token".to_owned(), refresh_tok.to_owned()),
+    let client_id = &state.client_id;
+    let client_secret_str = state.client_secret.expose_secret(|s| s.to_owned());
+
+    let mut form: Vec<(&str, String)> = vec![
+        ("grant_type", "refresh_token".into()),
+        ("refresh_token", refresh_tok.to_owned()),
     ];
 
     if !config.scopes.is_empty() {
-        form.push(("scope".to_owned(), config.scopes.join(" ")));
+        form.push(("scope", config.scopes.join(" ")));
     }
 
     let client = http_client();
+    let mut req = client.post(&config.token_url);
 
-    let resp = client
-        .post(&config.token_url)
-        .form(&form)
+    match config.auth_style {
+        AuthStyle::Header => {
+            let credentials = BASE64.encode(format!("{client_id}:{client_secret_str}"));
+            req = req
+                .header("Authorization", format!("Basic {credentials}"))
+                .form(&form);
+        }
+        AuthStyle::PostBody => {
+            form.push(("client_id", client_id.to_owned()));
+            form.push(("client_secret", client_secret_str));
+            req = req.form(&form);
+        }
+    }
+
+    let resp = req
         .send()
         .await
         .map_err(|e| provider_error(format!("refresh token request failed: {e}")))?;
@@ -328,14 +383,18 @@ async fn parse_token_response(resp: reqwest::Response) -> Result<Value, Credenti
 /// Build an [`OAuth2State`] from a token endpoint JSON response.
 ///
 /// Falls back to `default_scopes` when the response does not include `scope`.
-/// Embeds `client_id`, `client_secret`, and `token_url` for later refresh.
+/// Embeds `client_id`, `client_secret`, `token_url`, and `auth_style` for
+/// later refresh.
 fn state_from_token_response(
     body: &Value,
     default_scopes: &[String],
     client_id: &str,
     client_secret: &str,
     token_url: &str,
+    auth_style: AuthStyle,
 ) -> Result<OAuth2State, CredentialError> {
+    use crate::utils::SecretString;
+
     let access_token = body
         .get("access_token")
         .and_then(Value::as_str)
@@ -371,8 +430,9 @@ fn state_from_token_response(
         expires_at,
         scopes,
         client_id: client_id.to_owned(),
-        client_secret: client_secret.to_owned(),
+        client_secret: SecretString::new(client_secret),
         token_url: token_url.to_owned(),
+        auth_style,
     })
 }
 
@@ -454,16 +514,26 @@ mod tests {
             "scope": "read write"
         });
 
-        let state =
-            state_from_token_response(&body, &[], "cid", "csecret", "https://t.com/token").unwrap();
+        let state = state_from_token_response(
+            &body,
+            &[],
+            "cid",
+            "csecret",
+            "https://t.com/token",
+            AuthStyle::default(),
+        )
+        .unwrap();
         assert_eq!(state.access_token, "tok_123");
         assert_eq!(state.token_type, "Bearer");
         assert_eq!(state.refresh_token.as_deref(), Some("ref_456"));
         assert!(state.expires_at.is_some());
         assert_eq!(state.scopes, vec!["read", "write"]);
         assert_eq!(state.client_id, "cid");
-        assert_eq!(state.client_secret, "csecret");
+        state
+            .client_secret
+            .expose_secret(|s| assert_eq!(s, "csecret"));
         assert_eq!(state.token_url, "https://t.com/token");
+        assert_eq!(state.auth_style, AuthStyle::Header);
     }
 
     #[test]
@@ -473,15 +543,23 @@ mod tests {
         });
 
         let defaults = vec!["read".to_owned()];
-        let state =
-            state_from_token_response(&body, &defaults, "cid", "csecret", "https://t.com/token")
-                .unwrap();
+        let state = state_from_token_response(
+            &body,
+            &defaults,
+            "cid",
+            "csecret",
+            "https://t.com/token",
+            AuthStyle::default(),
+        )
+        .unwrap();
         assert_eq!(state.scopes, vec!["read"]);
         assert_eq!(state.token_type, "Bearer");
     }
 
     #[test]
     fn update_state_preserves_existing_refresh_token() {
+        use crate::utils::SecretString;
+
         let mut state = OAuth2State {
             access_token: "old".into(),
             token_type: "Bearer".into(),
@@ -489,8 +567,9 @@ mod tests {
             expires_at: None,
             scopes: vec![],
             client_id: "cid".into(),
-            client_secret: "cs".into(),
+            client_secret: SecretString::new("cs"),
             token_url: "https://t.com/token".into(),
+            auth_style: AuthStyle::default(),
         };
 
         let body = serde_json::json!({
@@ -504,6 +583,8 @@ mod tests {
 
     #[test]
     fn update_state_replaces_all_fields() {
+        use crate::utils::SecretString;
+
         let mut state = OAuth2State {
             access_token: "old".into(),
             token_type: "Bearer".into(),
@@ -511,8 +592,9 @@ mod tests {
             expires_at: None,
             scopes: vec!["read".into()],
             client_id: "cid".into(),
-            client_secret: "cs".into(),
+            client_secret: SecretString::new("cs"),
             token_url: "https://t.com/token".into(),
+            auth_style: AuthStyle::default(),
         };
 
         let body = serde_json::json!({

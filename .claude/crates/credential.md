@@ -22,8 +22,10 @@ Credential storage, rotation, v2 trait-based system. v1 modules fully deleted.
 - `ScopeLayer<S>` outermost layer — multi-tenant isolation via `ScopeResolver` trait.
 - `RefreshCoordinator`: winner refreshes, waiters block on `Notify`. Circuit breaker: 5 failures in 5 min.
 - `CredentialResolver::resolve_with_refresh()` refreshes before expiry using `REFRESH_POLICY.early_refresh`.
-- `SecretString` serializes as `"[REDACTED]"` — tests must construct raw JSON for round-trip.
+- `SecretString` serializes as `"[REDACTED]"` — tests must construct raw JSON for round-trip. Use `#[serde(with = "crate::utils::serde_secret")]` for fields that must round-trip (e.g., `OAuth2State.client_secret`).
 - `PendingStateStore` trait: 4-dimensional token binding (credential_kind, owner_id, session_id, token_id).
+- `OAuth2State.auth_style` preserves the auth style from initial token exchange for correct refresh behavior.
+- `DevicePollStatus` enum replaces string-matching for device code flow polling results.
 
 ## Traps
 - Circular dep: peer with nebula-resource, signal via EventBus only.
@@ -47,4 +49,4 @@ Credential storage, rotation, v2 trait-based system. v1 modules fully deleted.
 - `EncryptionLayer::put()` saves plaintext data before encrypting to avoid redundant decryption on return.
 - `RefreshCoordinator` uses named `FailureRecord` struct instead of `(u32, Instant)` tuple.
 
-<!-- updated: 2026-03-30 — polished v2 code from review findings -->
+<!-- updated: 2026-03-31 — OAuth2 auth_style, SecretString, DevicePollStatus fixes -->

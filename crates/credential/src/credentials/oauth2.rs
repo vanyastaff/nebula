@@ -18,7 +18,7 @@ use zeroize::Zeroize;
 use nebula_parameter::values::ParameterValues;
 use nebula_parameter::{Parameter, ParameterCollection};
 
-use super::oauth2_config::{GrantType, OAuth2Config};
+use super::oauth2_config::{AuthStyle, GrantType, OAuth2Config};
 use crate::core::{CredentialContext, CredentialDescription, CredentialError};
 use crate::credential_state::CredentialState;
 use crate::credential_trait::Credential;
@@ -54,9 +54,13 @@ pub struct OAuth2State {
     /// Stored for refresh operations.
     pub client_id: String,
     /// Stored for refresh operations (encrypted at rest via `EncryptionLayer`).
-    pub client_secret: String,
+    #[serde(with = "crate::utils::serde_secret")]
+    pub client_secret: SecretString,
     /// Token endpoint URL for refresh requests.
     pub token_url: String,
+    /// How client credentials are sent (preserved from initial token exchange).
+    #[serde(default)]
+    pub auth_style: AuthStyle,
 }
 
 impl OAuth2State {
@@ -101,9 +105,13 @@ pub struct OAuth2Pending {
     /// OAuth2 client identifier.
     pub client_id: String,
     /// OAuth2 client secret (zeroized on drop).
-    pub client_secret: String,
+    #[serde(with = "crate::utils::serde_secret")]
+    pub client_secret: SecretString,
     /// Grant type for this pending flow.
     pub grant_type: GrantType,
+    /// How client credentials are sent.
+    #[serde(default)]
+    pub auth_style: AuthStyle,
     /// Device code for device code flow polling.
     pub device_code: Option<String>,
     /// Polling interval in seconds for device code flow.
@@ -112,7 +120,7 @@ pub struct OAuth2Pending {
 
 impl Zeroize for OAuth2Pending {
     fn zeroize(&mut self) {
-        self.client_secret.zeroize();
+        self.client_secret = SecretString::new("");
         if let Some(ref mut dc) = self.device_code {
             dc.zeroize();
         }
@@ -252,12 +260,13 @@ impl Credential for OAuth2Credential {
             GrantType::AuthorizationCode => {
                 let url = oauth2_flow::build_auth_url(&config, client_id)?;
                 let pending = OAuth2Pending {
-                    config,
                     client_id: client_id.to_owned(),
-                    client_secret: client_secret.to_owned(),
+                    client_secret: SecretString::new(client_secret),
                     grant_type: GrantType::AuthorizationCode,
+                    auth_style: config.auth_style,
                     device_code: None,
                     interval: None,
+                    config,
                 };
                 Ok(ResolveResult::Pending {
                     state: pending,
@@ -273,12 +282,13 @@ impl Credential for OAuth2Credential {
             GrantType::DeviceCode => {
                 let device_resp = oauth2_flow::request_device_code(&config, client_id).await?;
                 let pending = OAuth2Pending {
-                    config,
                     client_id: client_id.to_owned(),
-                    client_secret: client_secret.to_owned(),
+                    client_secret: SecretString::new(client_secret),
                     grant_type: GrantType::DeviceCode,
+                    auth_style: config.auth_style,
                     device_code: Some(device_resp.device_code),
                     interval: Some(device_resp.interval),
+                    config,
                 };
                 Ok(ResolveResult::Pending {
                     state: pending,
@@ -320,10 +330,12 @@ impl Credential for OAuth2Credential {
                         ));
                     }
                 };
+                let client_secret =
+                    pending.client_secret.expose_secret(|s| s.to_owned());
                 let state = oauth2_flow::exchange_authorization_code(
                     &pending.config,
                     &pending.client_id,
-                    &pending.client_secret,
+                    &client_secret,
                     &code,
                 )
                 .await?;
@@ -339,28 +351,26 @@ impl Credential for OAuth2Credential {
                     CredentialError::InvalidInput("pending state missing device_code".into())
                 })?;
                 let interval = pending.interval.unwrap_or(5);
+                let client_secret = pending.client_secret.expose_secret(|s| s.to_owned());
 
                 match oauth2_flow::poll_device_code(
                     &pending.config,
                     &pending.client_id,
-                    &pending.client_secret,
+                    &client_secret,
                     device_code,
                     interval,
                 )
-                .await
+                .await?
                 {
-                    Ok(state) => Ok(ResolveResult::Complete(state)),
-                    Err(e) => {
-                        let msg = e.to_string();
-                        if msg.contains("authorization_pending") || msg.contains("slow_down") {
-                            Ok(ResolveResult::Retry {
-                                after: Duration::from_secs(interval),
-                            })
-                        } else if msg.contains("expired_token") {
-                            Err(CredentialError::Provider("device code expired".into()))
-                        } else {
-                            Err(e)
-                        }
+                    oauth2_flow::DevicePollStatus::Ready(state) => {
+                        Ok(ResolveResult::Complete(state))
+                    }
+                    oauth2_flow::DevicePollStatus::Pending
+                    | oauth2_flow::DevicePollStatus::SlowDown => Ok(ResolveResult::Retry {
+                        after: Duration::from_secs(interval),
+                    }),
+                    oauth2_flow::DevicePollStatus::Expired => {
+                        Err(CredentialError::Provider("device code expired".into()))
                     }
                 }
             }
@@ -378,9 +388,10 @@ impl Credential for OAuth2Credential {
             return Ok(RefreshOutcome::ReauthRequired);
         }
 
-        // Reconstruct minimal config for the refresh call.
+        // Reconstruct minimal config for the refresh call, preserving auth style.
         let config = OAuth2Config::client_credentials()
             .token_url(&state.token_url)
+            .auth_style(state.auth_style)
             .scopes(state.scopes.clone())
             .build();
 
@@ -453,8 +464,9 @@ mod tests {
             expires_at: Some(Utc::now() + chrono::Duration::seconds(3600)),
             scopes: vec!["read".into(), "write".into()],
             client_id: "cid".into(),
-            client_secret: "csecret".into(),
+            client_secret: SecretString::new("csecret"),
             token_url: "https://example.com/token".into(),
+            auth_style: AuthStyle::default(),
         }
     }
 
@@ -575,8 +587,9 @@ mod tests {
                 .token_url("https://a.com/token")
                 .build(),
             client_id: "cid".into(),
-            client_secret: "cs".into(),
+            client_secret: SecretString::new("cs"),
             grant_type: GrantType::AuthorizationCode,
+            auth_style: AuthStyle::default(),
             device_code: None,
             interval: None,
         };
@@ -594,8 +607,9 @@ mod tests {
                 .token_url("https://a.com/token")
                 .build(),
             client_id: "cid".into(),
-            client_secret: "cs".into(),
+            client_secret: SecretString::new("cs"),
             grant_type: GrantType::AuthorizationCode,
+            auth_style: AuthStyle::default(),
             device_code: None,
             interval: None,
         };
@@ -616,8 +630,9 @@ mod tests {
                 .token_url("https://a.com/token")
                 .build(),
             client_id: "cid".into(),
-            client_secret: "cs".into(),
+            client_secret: SecretString::new("cs"),
             grant_type: GrantType::DeviceCode,
+            auth_style: AuthStyle::default(),
             device_code: Some("dcode".into()),
             interval: Some(5),
         };
@@ -639,8 +654,9 @@ mod tests {
             expires_at: None,
             scopes: vec![],
             client_id: "cid".into(),
-            client_secret: "cs".into(),
+            client_secret: SecretString::new("cs"),
             token_url: "https://t.com/token".into(),
+            auth_style: AuthStyle::default(),
         };
 
         let ctx = CredentialContext::new("test-user");
@@ -657,8 +673,9 @@ mod tests {
             expires_at: Some(Utc::now() + chrono::Duration::seconds(30)),
             scopes: vec![],
             client_id: "cid".into(),
-            client_secret: "cs".into(),
+            client_secret: SecretString::new("cs"),
             token_url: "https://t.com/token".into(),
+            auth_style: AuthStyle::default(),
         };
         // Expires in 30s, margin is 60s => expired
         assert!(state.is_expired(Duration::from_secs(60)));
@@ -675,8 +692,9 @@ mod tests {
             expires_at: None,
             scopes: vec![],
             client_id: "cid".into(),
-            client_secret: "cs".into(),
+            client_secret: SecretString::new("cs"),
             token_url: "https://t.com/token".into(),
+            auth_style: AuthStyle::default(),
         };
         assert!(!state.is_expired(Duration::from_secs(9999)));
     }
@@ -689,14 +707,17 @@ mod tests {
                 .token_url("https://a.com/token")
                 .build(),
             client_id: "cid".into(),
-            client_secret: "super_secret".into(),
+            client_secret: SecretString::new("super_secret"),
             grant_type: GrantType::AuthorizationCode,
+            auth_style: AuthStyle::default(),
             device_code: Some("dcode_secret".into()),
             interval: None,
         };
 
         pending.zeroize();
-        assert!(pending.client_secret.is_empty());
+        pending
+            .client_secret
+            .expose_secret(|s| assert!(s.is_empty()));
         assert_eq!(pending.device_code.as_deref(), Some(""));
     }
 
@@ -708,8 +729,9 @@ mod tests {
                 .token_url("https://a.com/token")
                 .build(),
             client_id: "cid".into(),
-            client_secret: "cs".into(),
+            client_secret: SecretString::new("cs"),
             grant_type: GrantType::AuthorizationCode,
+            auth_style: AuthStyle::default(),
             device_code: None,
             interval: None,
         };
