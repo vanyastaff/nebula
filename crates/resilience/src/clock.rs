@@ -62,10 +62,17 @@ impl Clock for SystemClock {
 
 /// A manually-controlled clock for deterministic tests.
 ///
-/// Time starts at the moment the `MockClock` is created and only advances
-/// when [`advance`](MockClock::advance) is called explicitly.
-///
 /// `MockClock` is cheap to clone — all clones share the same underlying state.
+///
+/// # Real-time leakage
+///
+/// Because `Instant` cannot be constructed from arbitrary values on stable Rust,
+/// `now()` returns `Instant::now() + offset` — meaning real wall-clock time still
+/// passes between calls. Virtual advances via [`advance`](MockClock::advance) are
+/// added on top. This is sufficient for circuit breaker tests (where offsets are
+/// large), but may cause non-deterministic results in latency-sensitive tests
+/// (e.g., hedge percentile calculations). Always use large advances relative to
+/// test duration.
 #[derive(Debug, Clone)]
 pub struct MockClock {
     inner: Arc<Mutex<MockClockInner>>,

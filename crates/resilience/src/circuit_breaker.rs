@@ -23,7 +23,10 @@ pub struct CircuitBreakerConfig {
     pub max_half_open_operations: u32,
     /// Minimum number of operations required before failures can trip the breaker. Default: 5.
     pub min_operations: u32,
-    /// Whether timeouts count as failures. Default: true.
+    /// Whether timeouts count as failures **and toward `total` operations**.
+    /// When `false`, timeouts are completely ignored by the circuit breaker —
+    /// they do not count as failures, successes, or toward `min_operations`.
+    /// Default: `true`.
     pub count_timeouts_as_failures: bool,
     /// Multiplier for reset timeout on consecutive opens. Default: 1.0 (no increase).
     pub break_duration_multiplier: f64,

@@ -289,7 +289,8 @@ impl AdaptiveHedgeExecutor {
 
 // ── LatencyTracker ────────────────────────────────────────────────────────────
 
-/// Ring-buffer latency tracker with O(log n) insert and O(n) percentile computation.
+/// Ring-buffer latency tracker with O(log n) insert and O(k) percentile computation,
+/// where k is the number of distinct latency values (at most `max_samples`).
 struct LatencyTracker {
     ring: VecDeque<Duration>,
     max_samples: usize,

@@ -373,8 +373,8 @@ impl SlidingWindow {
     }
 
     /// Eagerly drop all entries older than the window — called only when the
-    /// deque is at or above `max_requests` so the amortised cost per request
-    /// stays O(1) during steady-state traffic.
+    /// deque is at or above `max_requests`. Amortised O(1) during bursty
+    /// traffic; O(n) per request at steady-state when traffic equals the limit.
     fn clean_old_requests_if_full(
         requests: &mut VecDeque<Instant>,
         now: Instant,

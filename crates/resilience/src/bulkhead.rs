@@ -139,6 +139,10 @@ impl Bulkhead {
     ///
     /// Returns `Err(CallError::BulkheadFull)` when the queue is full,
     /// or `Err(CallError::Timeout)` if a permit timeout is configured and exceeded.
+    ///
+    /// **Note:** Queue timeout returns `CallError::Timeout`, not `BulkheadFull`.
+    /// When used in a pipeline alongside a `Timeout` step, callers cannot
+    /// distinguish the two by variant alone — check the duration value if needed.
     pub async fn acquire<E>(&self) -> Result<BulkheadPermit, CallError<E>> {
         self.acquire_permit().await
     }

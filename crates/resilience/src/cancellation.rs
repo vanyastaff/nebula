@@ -198,11 +198,12 @@ where
         match self.future.as_mut().poll(cx) {
             Poll::Ready(output) => Poll::Ready(Ok(output)),
             Poll::Pending => {
-                // `is_cancelled()` + waker registration: CancellationToken
-                // internally registers the waker when polled via `cancelled()`.
-                // We create a short-lived future just to register the waker.
-                // This is cheap — `cancelled()` is a thin wrapper that checks
-                // an atomic and registers the waker, no heap allocation.
+                // Register waker for cancellation notification. `cancelled()`
+                // creates a stack-allocated `WaitForCancellationFuture` each
+                // poll — no heap allocation, but not zero-cost either. For a
+                // truly zero-cost approach, store the cancellation future as a
+                // struct field across polls. Current approach is simpler and
+                // sufficient for typical use cases.
                 let waker_future = self.cancellation.cancelled();
                 tokio::pin!(waker_future);
                 if waker_future.as_mut().poll(cx).is_ready() {

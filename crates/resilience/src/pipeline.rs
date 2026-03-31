@@ -30,9 +30,10 @@ use crate::{
 // - Bulkhead: `acquire()` permit held for the inner scope.
 // - Timeout / Retry: wrap the remainder of the pipeline.
 //
-// Only Timeout and Retry produce a Box::pin each (Timeout requires
-// it for `tokio::time::timeout`; Retry needs async recursion for back-off).
-// Every other step is allocation-free.
+// `run_operation_with_shells` wraps every recursive call in `Box::pin`
+// (required because the async fn is recursive). Timeout and Retry add
+// additional overhead: Timeout for `tokio::time::timeout` wrapping,
+// Retry for the back-off loop with `retry_with_inner`.
 
 /// Async predicate for rate limiting — returns `Ok(())` or `Err(CallError::RateLimited)`.
 pub type RateLimitCheck =
@@ -354,6 +355,11 @@ where
     E: Send + 'static,
     F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync + 'static,
 {
+    // `bail` captures the first non-operation error from the inner pipeline.
+    // Once set, the retry predicate returns `false` (via `bail_check.is_none()`),
+    // stopping retries immediately. It is never cleared because non-operation
+    // errors (CircuitOpen, BulkheadFull, etc.) indicate the inner pipeline is
+    // unreachable — retrying would hit the same structural error.
     let bail: Arc<Mutex<Option<CallError<E>>>> = Arc::new(Mutex::new(None));
     let bail_check = Arc::clone(&bail);
 

@@ -6,6 +6,7 @@
 
 use std::fmt;
 use std::future::Future;
+use std::num::NonZeroU32;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -406,18 +407,13 @@ where
 ///
 /// Returns `Err(CallError::RetriesExhausted)` when all `n` attempts are exhausted,
 /// or `Err(CallError::Operation)` if the error is not retryable.
-///
-/// # Panics
-///
-/// Panics if `n` is 0 (use [`retry_with`] with [`RetryConfig::new`] for fallible construction).
-pub async fn retry<T, E, F, Fut>(n: u32, f: F) -> Result<T, CallError<E>>
+pub async fn retry<T, E, F, Fut>(n: NonZeroU32, f: F) -> Result<T, CallError<E>>
 where
     E: nebula_error::Classify + 'static,
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>> + Send,
 {
-    let config = RetryConfig::<E>::new(n)
-        .expect("retry() requires n >= 1; use retry_with() for fallible config");
+    let config = RetryConfig::<E>::new_unchecked(n.get());
     retry_with(config, f).await
 }
 
@@ -704,7 +700,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
 
-        let result = retry(3, || {
+        let result = retry(NonZeroU32::new(3).unwrap(), || {
             let c = c.clone();
             Box::pin(async move {
                 c.fetch_add(1, Ordering::SeqCst);
@@ -726,7 +722,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
 
-        let result = retry(3, || {
+        let result = retry(NonZeroU32::new(3).unwrap(), || {
             let c = c.clone();
             Box::pin(async move {
                 c.fetch_add(1, Ordering::SeqCst);
