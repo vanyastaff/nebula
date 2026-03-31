@@ -44,7 +44,18 @@ pipeline.rs     — ResiliencePipeline, PipelineBuilder
 + infra: cancellation, clock, gate
 ```
 
+## When to use this crate
+Any outgoing call (HTTP, DB, external service, plugin execution) should go through `ResiliencePipeline` or individual patterns. Specifically:
+- **Retry + timeout** — any call that can transiently fail (network, rate limits)
+- **CircuitBreaker** — protect against cascading failures from a degraded downstream
+- **Bulkhead** — limit concurrency to prevent resource exhaustion (e.g., connection pools)
+- **RateLimiter** — enforce throughput limits (API quotas, token budgets)
+- **Fallback** — graceful degradation (cached values, defaults, chain of alternatives)
+- **Gate** — cooperative shutdown barrier for request handlers
+
+Prefer `ResiliencePipeline` for composing multiple patterns — it handles layer ordering warnings, CB probe guards, and retry error classification automatically.
+
 ## Relations
 - Depends on: nebula-error. Used by nebula-resource (pool resilience), nebula-credential (refresh CB).
 
-<!-- reviewed: 2026-03-31 — full audit: bugs, naming, API guidelines, design patterns, 10-dimension code review -->
+<!-- reviewed: 2026-03-31 — deep invariant audit: 8 bug fixes, 14 integration tests, 7 benchmark suites -->
