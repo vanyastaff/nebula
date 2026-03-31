@@ -7,6 +7,7 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - All `AuthScheme` `Debug` impls redact secrets.
 - Error hierarchy: `CredentialError` (author-facing) + `StoreError` (storage) + `SnapshotError` (projection). No `StorageError`, no `ManagerError`.
 - `CredentialSnapshot` carries `Box<dyn Any + Send + Sync>` (projected `AuthScheme`), not `serde_json::Value`. Fields are private — use getters + `project::<S>()`/`into_project::<S>()`.
+- `CredentialContext` has optional `Arc<dyn CredentialResolverRef>` for credential composition. Use `ctx.resolve_credential::<S>(id)` inside `resolve()`/`refresh()` to depend on another credential.
 
 ## Key Decisions
 - **Flat structure**: no `core/` directory. All modules at src/ root. Subfolders only for: `scheme/`, `credentials/`, `layer/`, `rotation/`, `utils/`.
@@ -31,5 +32,5 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - Built-in credentials: `ApiKeyCredential`, `BasicAuthCredential`, `DatabaseCredential`, `HeaderAuthCredential`, `OAuth2Credential`.
 - Rotation module: policy, transaction, blue-green, validation, retry, backup, events, metrics.
 
-<!-- updated: 2026-03-31 — typed CredentialSnapshot with AuthScheme projection (Box<dyn Any>) -->
+<!-- updated: 2026-03-31 — CredentialResolverRef trait + CredentialContext composition support -->
 <!-- reviewed: 2026-03-31 -->
