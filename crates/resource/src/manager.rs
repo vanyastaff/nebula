@@ -1391,89 +1391,32 @@ fn trigger_recovery_on_failure(gate: &Option<Arc<RecoveryGate>>, error: &Error) 
 /// Executes an async operation with optional timeout and retry from
 /// [`AcquireResilience`] configuration.
 ///
-/// When `resilience` is `None`, the operation runs exactly once with no
-/// timeout. When configured, transient failures are retried with
-/// exponential backoff up to `max_attempts`.
-///
-/// The `timeout` in [`AcquireResilience`] is an **overall wall-clock deadline**
-/// shared across all attempts and backoff sleeps. Each attempt receives only
-/// the time remaining before the deadline, and backoff sleeps are capped to
-/// the same remaining budget.
+/// Delegates to [`nebula_resilience::retry_with`] which handles exponential
+/// backoff, wall-clock budget, retry-after hints, and `Classify`-based
+/// error filtering automatically.
 async fn execute_with_resilience<F, Fut, T>(
     resilience: &Option<AcquireResilience>,
     mut operation: F,
 ) -> Result<T, Error>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, Error>>,
+    Fut: std::future::Future<Output = Result<T, Error>> + Send,
 {
     let Some(config) = resilience else {
         return operation().await;
     };
 
-    let max_attempts = config.retry.as_ref().map_or(1, |r| r.max_attempts);
-    let initial_backoff = config
-        .retry
-        .as_ref()
-        .map_or(Duration::from_millis(100), |r| r.initial_backoff);
-    let max_backoff = config
-        .retry
-        .as_ref()
-        .map_or(Duration::from_secs(5), |r| r.max_backoff);
-
-    // Compute the overall deadline once. All attempts and backoff sleeps share
-    // this budget so the timeout is truly wall-clock bounded end-to-end.
-    let deadline = config.timeout.map(|t| std::time::Instant::now() + t);
-
-    let mut last_error = None;
-    for attempt in 0..max_attempts {
-        let result = if let Some(dl) = deadline {
-            let remaining = dl
-                .checked_duration_since(std::time::Instant::now())
-                .unwrap_or(Duration::ZERO);
-            if remaining.is_zero() {
-                Err(Error::transient("acquire timed out"))
-            } else {
-                match tokio::time::timeout(remaining, operation()).await {
-                    Ok(r) => r,
-                    Err(_) => Err(Error::transient("acquire timed out")),
-                }
+    let retry_cfg = config.to_retry_config();
+    nebula_resilience::retry_with(retry_cfg, operation)
+        .await
+        .map_err(|call_err| match call_err {
+            nebula_resilience::CallError::Operation(e)
+            | nebula_resilience::CallError::RetriesExhausted { last: e, .. } => e,
+            nebula_resilience::CallError::Timeout(d) => {
+                Error::transient(format!("acquire timed out after {d:?}"))
             }
-        } else {
-            operation().await
-        };
-
-        match result {
-            Ok(val) => return Ok(val),
-            Err(e) if e.is_retryable() && attempt + 1 < max_attempts => {
-                let exp_backoff = std::cmp::min(
-                    initial_backoff.saturating_mul(2u32.saturating_pow(attempt)),
-                    max_backoff,
-                );
-                // Respect retry_after hint as a minimum delay (e.g., rate limits,
-                // backpressure cooldown). The exponential backoff takes priority
-                // when it already exceeds the hint.
-                let backoff = e
-                    .retry_after()
-                    .map_or(exp_backoff, |hint| exp_backoff.max(hint));
-                // Cap the backoff sleep to the remaining budget so we never
-                // overshoot the overall deadline.
-                let sleep_dur = if let Some(dl) = deadline {
-                    let remaining = dl
-                        .checked_duration_since(std::time::Instant::now())
-                        .unwrap_or(Duration::ZERO);
-                    backoff.min(remaining)
-                } else {
-                    backoff
-                };
-                tokio::time::sleep(sleep_dur).await;
-                last_error = Some(e);
-            }
-            Err(e) => return Err(e),
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| Error::transient("retry exhausted")))
+            other => Error::transient(other.to_string()),
+        })
 }
 
 impl Default for Manager {

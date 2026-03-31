@@ -17,6 +17,7 @@ default = []
 [dependencies]
 # Nebula ecosystem
 nebula-core = { path = "../core" }
+nebula-resilience = { path = "../resilience" }
 nebula-resource-macros = { path = "macros" }
 
 # Async runtime
