@@ -327,6 +327,11 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>> + Send,
 {
+    debug_assert!(
+        config.max_attempts >= 1,
+        "retry_loop called with max_attempts=0; use RetryConfig::new() to prevent this"
+    );
+
     let mut last_err: Option<E> = None;
     let start = std::time::Instant::now();
 

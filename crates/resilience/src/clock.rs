@@ -31,6 +31,9 @@ use std::time::{Duration, Instant};
 ///
 /// Implement this trait (or use one of the provided implementations) to inject
 /// a time source into resilience patterns that need deterministic test control.
+///
+/// This trait is designed to be implemented by downstream crates.
+/// New methods will always have default implementations to avoid breaking changes.
 pub trait Clock: Send + Sync {
     /// Returns the current instant according to this clock.
     fn now(&self) -> Instant;

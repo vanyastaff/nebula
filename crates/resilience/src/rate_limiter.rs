@@ -36,6 +36,9 @@ use crate::CallError;
 /// Returns `Err(CallError::RateLimited)` when the rate limit is exceeded.
 ///
 /// All async methods return `Send` futures, matching the `Send + Sync` bound on the trait.
+///
+/// This trait is designed to be implemented by downstream crates.
+/// New methods will always have default implementations to avoid breaking changes.
 pub trait RateLimiter: Send + Sync {
     /// Try to acquire permission. Returns `Err(CallError::RateLimited)` if limit hit.
     fn acquire(&self) -> impl Future<Output = Result<(), CallError<()>>> + Send;

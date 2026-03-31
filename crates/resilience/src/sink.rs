@@ -55,6 +55,9 @@ pub enum ResilienceEvent {
 }
 
 /// Receives resilience events for observability (metrics, logging, `EventBus`).
+///
+/// This trait is designed to be implemented by downstream crates.
+/// New methods will always have default implementations to avoid breaking changes.
 pub trait MetricsSink: Send + Sync {
     /// Record a resilience event.
     fn record(&self, event: ResilienceEvent);
