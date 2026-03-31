@@ -362,7 +362,8 @@ where
                     break;
                 }
 
-                let mut delay = apply_jitter(config.backoff.delay_for(attempt), &config.jitter);
+                let mut delay =
+                    apply_jitter(config.backoff.delay_for(attempt), &config.jitter, attempt);
                 if let Some(floor) = hint_fn(&e) {
                     delay = delay.max(floor);
                 }
@@ -418,12 +419,18 @@ where
 }
 
 /// Apply jitter to a base delay.
-fn apply_jitter(delay: Duration, jitter: &JitterConfig) -> Duration {
+///
+/// When `seed` is set, the jitter is deterministic but varies per `attempt`
+/// (seed is mixed with the attempt number to avoid identical jitter across retries).
+fn apply_jitter(delay: Duration, jitter: &JitterConfig, attempt: u32) -> Duration {
     match jitter {
         JitterConfig::None => delay,
         JitterConfig::Full { factor, seed } => {
             let base = delay.as_secs_f64();
-            let rand_val = seed.map_or_else(fastrand::f64, |s| fastrand::Rng::with_seed(s).f64());
+            let rand_val = seed.map_or_else(fastrand::f64, |s| {
+                // Mix seed with attempt so each retry gets different jitter
+                fastrand::Rng::with_seed(s.wrapping_add(u64::from(attempt))).f64()
+            });
             let jitter_amount = base * factor * rand_val;
             Duration::from_secs_f64(base + jitter_amount)
         }
@@ -650,25 +657,38 @@ mod tests {
     }
 
     #[test]
-    fn seeded_jitter_is_deterministic() {
+    fn seeded_jitter_is_deterministic_for_same_attempt() {
         let delay = Duration::from_millis(100);
         let jitter = JitterConfig::Full {
             factor: 0.5,
             seed: Some(42),
         };
-        let d1 = apply_jitter(delay, &jitter);
+        let d1 = apply_jitter(delay, &jitter, 0);
+        let d2 = apply_jitter(delay, &jitter, 0);
 
-        let jitter2 = JitterConfig::Full {
-            factor: 0.5,
-            seed: Some(42),
-        };
-        let d2 = apply_jitter(delay, &jitter2);
-
-        assert_eq!(d1, d2, "same seed must produce same jitter");
+        assert_eq!(d1, d2, "same seed + same attempt must produce same jitter");
         assert!(d1 > delay, "jitter should add to delay");
         assert!(
             d1 <= Duration::from_millis(150),
             "factor 0.5 caps at 50% extra"
+        );
+    }
+
+    #[test]
+    fn seeded_jitter_varies_across_attempts() {
+        let delay = Duration::from_millis(100);
+        let jitter = JitterConfig::Full {
+            factor: 0.5,
+            seed: Some(42),
+        };
+        let d0 = apply_jitter(delay, &jitter, 0);
+        let d1 = apply_jitter(delay, &jitter, 1);
+        let d2 = apply_jitter(delay, &jitter, 2);
+
+        // Different attempts should (almost certainly) produce different jitter
+        assert!(
+            d0 != d1 || d1 != d2,
+            "seeded jitter should vary per attempt: d0={d0:?}, d1={d1:?}, d2={d2:?}"
         );
     }
 

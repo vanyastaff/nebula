@@ -391,13 +391,13 @@ impl CircuitBreaker {
         Fut: std::future::Future<Output = Result<T, E>> + Send,
     {
         self.try_acquire()?;
-        let guard = ProbeGuard(self);
+        let mut guard = ProbeGuard::new(self);
         let start = self.clock.now();
         let result = f().await;
         let duration = self.clock.now().duration_since(start);
         let outcome = self.classify_outcome(result.is_ok(), duration);
         // Defuse the guard — we'll record the real outcome instead.
-        std::mem::forget(guard);
+        guard.defuse();
         self.record_outcome(outcome);
         result.map_err(CallError::Operation)
     }
@@ -535,6 +535,9 @@ impl CircuitBreaker {
             }
             Outcome::Failure | Outcome::Timeout => {
                 if matches!(outcome, Outcome::Timeout) && !self.config.count_timeouts_as_failures {
+                    // Don't count as failure, but still release the probe slot
+                    // so half-open probes aren't permanently leaked.
+                    inner.half_open_probes = inner.half_open_probes.saturating_sub(1);
                     return;
                 }
                 inner.failures = inner.failures.saturating_add(1);
@@ -626,12 +629,29 @@ impl CircuitBreaker {
 ///
 /// Used by `call()` and the pipeline's CB step to ensure half-open probe slots
 /// are released when the future is dropped (e.g. by `tokio::select!` or a timeout).
-/// Call `std::mem::forget(guard)` to defuse it before recording the real outcome.
-pub(crate) struct ProbeGuard<'a>(pub(crate) &'a CircuitBreaker);
+/// Call [`defuse()`](ProbeGuard::defuse) before recording the real outcome.
+pub(crate) struct ProbeGuard<'a> {
+    cb: &'a CircuitBreaker,
+    defused: bool,
+}
+
+impl<'a> ProbeGuard<'a> {
+    pub(crate) const fn new(cb: &'a CircuitBreaker) -> Self {
+        Self { cb, defused: false }
+    }
+
+    /// Defuse the guard — prevents `Cancelled` from being recorded on drop.
+    /// Must be called before `record_outcome` with the real outcome.
+    pub(crate) const fn defuse(&mut self) {
+        self.defused = true;
+    }
+}
 
 impl Drop for ProbeGuard<'_> {
     fn drop(&mut self) {
-        self.0.record_outcome(Outcome::Cancelled);
+        if !self.defused {
+            self.cb.record_outcome(Outcome::Cancelled);
+        }
     }
 }
 

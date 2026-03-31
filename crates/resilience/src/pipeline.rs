@@ -304,10 +304,10 @@ where
             Step::Retry(config) => run_retry_step(config, Arc::clone(&steps), idx, f).await,
             Step::CircuitBreaker(cb) => {
                 cb.try_acquire()?;
-                let guard = ProbeGuard(cb);
+                let mut guard = ProbeGuard::new(cb);
                 let result = run_operation_with_shells(&steps, idx + 1, Arc::clone(&f)).await;
                 // Defuse guard — record the real outcome instead.
-                std::mem::forget(guard);
+                guard.defuse();
                 let outcome = match &result {
                     Ok(_) => Outcome::Success,
                     Err(CallError::Operation(_) | CallError::RetriesExhausted { .. }) => {
