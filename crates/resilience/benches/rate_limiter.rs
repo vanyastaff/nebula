@@ -154,9 +154,25 @@ fn rate_limiter_current_rate(c: &mut Criterion) {
             .iter(|| async { black_box(limiter.current_rate().await) });
     });
 
+    group.bench_function("leaky_bucket", |b| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let limiter = LeakyBucket::new(1000, 1000.0).unwrap();
+
+        b.to_async(&rt)
+            .iter(|| async { black_box(limiter.current_rate().await) });
+    });
+
     group.bench_function("sliding_window", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let limiter = SlidingWindow::new(std::time::Duration::from_secs(1), 1000).unwrap();
+
+        b.to_async(&rt)
+            .iter(|| async { black_box(limiter.current_rate().await) });
+    });
+
+    group.bench_function("adaptive", |b| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let limiter = AdaptiveRateLimiter::new(1000.0, 100.0, 10000.0).unwrap();
 
         b.to_async(&rt)
             .iter(|| async { black_box(limiter.current_rate().await) });
