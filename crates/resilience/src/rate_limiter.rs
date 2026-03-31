@@ -388,7 +388,6 @@ impl SlidingWindow {
             }
         }
     }
-
 }
 
 impl RateLimiter for SlidingWindow {

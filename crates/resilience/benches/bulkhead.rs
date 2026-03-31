@@ -88,10 +88,8 @@ fn bulkhead_contention(c: &mut Criterion) {
                         for _ in 0..num_tasks {
                             let bh = Arc::clone(&bh);
                             handles.push(tokio::spawn(async move {
-                                bh.call::<u64, &str, _>(|| {
-                                    Box::pin(async { Ok(black_box(42)) })
-                                })
-                                .await
+                                bh.call::<u64, &str, _>(|| Box::pin(async { Ok(black_box(42)) }))
+                                    .await
                             }));
                         }
                         for handle in handles {
