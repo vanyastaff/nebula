@@ -54,7 +54,7 @@ impl BulkheadConfig {
 
 /// Bulkhead — limits concurrent operations via a semaphore.
 ///
-/// Shared state via `Arc<Bulkhead>`. Add a [`RecordingSink`] for test observability.
+/// Shared state via `Arc<Bulkhead>`. Add a [`RecordingSink`](crate::RecordingSink) for test observability.
 #[derive(Clone)]
 pub struct Bulkhead {
     config: BulkheadConfig,

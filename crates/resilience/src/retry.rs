@@ -459,7 +459,7 @@ mod tests {
             ErrorCategory::External
         }
         fn code(&self) -> ErrorCode {
-            codes::INTERNAL.clone()
+            codes::INTERNAL
         }
     }
 
@@ -484,7 +484,7 @@ mod tests {
             }
         }
         fn code(&self) -> ErrorCode {
-            codes::INTERNAL.clone()
+            codes::INTERNAL
         }
         fn retry_hint(&self) -> Option<RetryHint> {
             match self {
@@ -626,6 +626,7 @@ mod tests {
         assert_eq!(notifs.len(), 2); // 2 retries (3 attempts - 1 initial)
         assert_eq!(notifs[0].0, 1);
         assert_eq!(notifs[1].0, 2);
+        drop(notifs);
     }
 
     #[tokio::test]

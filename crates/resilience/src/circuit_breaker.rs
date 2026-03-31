@@ -153,7 +153,7 @@ type StateChangeCallback = Box<dyn Fn(CircuitState, CircuitState) + Send + Sync>
 
 /// Circuit breaker — protects downstream calls by rejecting requests when failure rate is high.
 ///
-/// Shared state via `Arc<CircuitBreaker>`. Inject [`MockClock`] and [`RecordingSink`] for tests.
+/// Shared state via `Arc<CircuitBreaker>`. Inject [`MockClock`](crate::clock::MockClock) and [`RecordingSink`](crate::RecordingSink) for tests.
 ///
 /// # Cancel safety
 ///
@@ -320,7 +320,7 @@ impl CircuitBreaker {
         }
     }
 
-    /// Manually force the circuit open, rejecting all calls until reset timeout or [`force_close`].
+    /// Manually force the circuit open, rejecting all calls until reset timeout or [`force_close`](Self::force_close).
     pub fn force_open(&self) {
         let mut inner = self.state.lock();
         let prev = to_circuit_state(inner.state);
@@ -829,7 +829,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_secs(10)).await;
                 Ok::<(), &str>(())
             })) => unreachable!(),
-            _ = tokio::time::sleep(Duration::from_millis(5)) => {
+            () = tokio::time::sleep(Duration::from_millis(5)) => {
                 // Future dropped — probe guard should release the slot
             }
         }
@@ -893,6 +893,7 @@ mod tests {
         let t = transitions.lock().unwrap();
         assert_eq!(t.len(), 1);
         assert_eq!(t[0], (CS::Closed, CS::Open));
+        drop(t);
     }
 
     #[tokio::test]

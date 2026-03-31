@@ -64,6 +64,7 @@ fn pipeline_build_overhead(c: &mut Criterion) {
     group.finish();
 }
 
+#[expect(clippy::excessive_nesting)]
 fn pipeline_execute_overhead(c: &mut Criterion) {
     let mut group = c.benchmark_group("pipeline/execute");
 
