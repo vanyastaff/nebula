@@ -25,12 +25,13 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - Circular dep: peer with nebula-resource, signal via EventBus only.
 - v1 prelude deleted — crates using `nebula_credential::prelude::*` must switch to explicit v2 imports.
 - `#[derive(Credential)]` requires `identity_state!` invocation for the scheme type separately.
-- Rotation module is disconnected from v2 Credential trait (separate trait hierarchy, needs redesign).
+- Rotation module is feature-gated behind `rotation` feature flag. Disconnected from v2 Credential trait — uses separate `TestableCredential`/`RotatableCredential` traits. Future v2 integration planned.
+- `CredentialSnapshot` is NOT `Serialize`/`Deserialize` — intentionally transient. It IS `Clone` via stored clone function pointer.
 
 ## Relations
 - Depends on: nebula-core, nebula-eventbus, nebula-resilience. Peer: nebula-resource.
 - Built-in credentials: `ApiKeyCredential`, `BasicAuthCredential`, `DatabaseCredential`, `HeaderAuthCredential`, `OAuth2Credential`.
 - Rotation module: policy, transaction, blue-green, validation, retry, backup, events, metrics.
 
-<!-- updated: 2026-03-31 — CredentialResolverRef trait + CredentialContext composition support -->
+<!-- updated: 2026-03-31 — typed CredentialSnapshot, rotation feature-gate, credential_typed in action, composition, integration tests -->
 <!-- reviewed: 2026-03-31 -->
