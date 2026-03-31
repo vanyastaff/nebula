@@ -7,9 +7,9 @@ use std::time::Duration;
 use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
 
-use nebula_core::CredentialId;
 use crate::rotation::RotationResult;
 use crate::rotation::policy::{BeforeExpiryConfig, PeriodicConfig, ScheduledConfig};
+use nebula_core::CredentialId;
 
 /// Periodic rotation scheduler with jitter support
 ///

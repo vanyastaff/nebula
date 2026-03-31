@@ -22,9 +22,9 @@ use nebula_parameter::values::ParameterValues;
 use crate::context::CredentialContext;
 use crate::description::CredentialDescription;
 use crate::error::CredentialError;
-use crate::state::CredentialState;
 use crate::pending::PendingState;
 use crate::resolve::{RefreshOutcome, RefreshPolicy, ResolveResult, TestResult, UserInput};
+use crate::state::CredentialState;
 
 /// Unified trait for all credential types.
 ///

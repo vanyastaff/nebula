@@ -3319,6 +3319,7 @@ dependencies = [
  "dashmap",
  "nebula-core",
  "nebula-error",
+ "nebula-resilience",
  "nebula-resource-macros",
  "pretty_assertions",
  "serde",

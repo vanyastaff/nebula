@@ -13,10 +13,10 @@ use std::sync::Arc;
 use crate::context::CredentialContext;
 use crate::credential::Credential;
 use crate::handle::CredentialHandle;
-use crate::state::CredentialState;
-use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 use crate::refresh::{RefreshAttempt, RefreshCoordinator};
 use crate::resolve::RefreshOutcome;
+use crate::state::CredentialState;
+use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// Resolves credentials from storage into typed [`CredentialHandle`]s.
 ///
@@ -126,8 +126,8 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 std::time::Duration::ZERO
             };
             let early_with_jitter = C::REFRESH_POLICY.early_refresh + jitter;
-            let early = chrono::Duration::from_std(early_with_jitter)
-                .unwrap_or(chrono::Duration::zero());
+            let early =
+                chrono::Duration::from_std(early_with_jitter).unwrap_or(chrono::Duration::zero());
             exp - now <= early
         });
 
@@ -347,8 +347,8 @@ pub enum ResolveError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{PutMode, StoredCredential};
     use crate::credentials::ApiKeyCredential;
+    use crate::store::{PutMode, StoredCredential};
     use crate::store_memory::InMemoryStore;
 
     // ── Test credential for early refresh ──────────────────────────────

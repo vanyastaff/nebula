@@ -10,8 +10,8 @@ use chrono::Utc;
 use tokio::sync::RwLock;
 
 use crate::pending::PendingState;
-use crate::pending_store::{PendingStateStore, PendingStoreError};
 use crate::pending::PendingToken;
+use crate::pending_store::{PendingStateStore, PendingStoreError};
 
 /// In-memory pending store backed by a `HashMap`.
 ///

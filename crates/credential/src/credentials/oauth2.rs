@@ -23,10 +23,10 @@ use crate::context::CredentialContext;
 use crate::credential::Credential;
 use crate::description::CredentialDescription;
 use crate::error::CredentialError;
-use crate::state::CredentialState;
 use crate::pending::PendingState;
 use crate::resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput};
 use crate::scheme::OAuth2Token;
+use crate::state::CredentialState;
 use crate::utils::SecretString;
 
 use super::oauth2_flow;
@@ -332,8 +332,7 @@ impl Credential for OAuth2Credential {
                         ));
                     }
                 };
-                let client_secret =
-                    pending.client_secret.expose_secret(|s| s.to_owned());
+                let client_secret = pending.client_secret.expose_secret(|s| s.to_owned());
                 let state = oauth2_flow::exchange_authorization_code(
                     &pending.config,
                     &pending.client_id,

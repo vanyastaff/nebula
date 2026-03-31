@@ -73,10 +73,10 @@ pub mod utils;
 
 // ── v2 Storage ──────────────────────────────────────────────────────────────
 
-/// Credential store trait with layered composition.
-pub mod store;
 /// Composable storage layers (encryption, etc.) for stores.
 pub mod layer;
+/// Credential store trait with layered composition.
+pub mod store;
 /// In-memory credential store for testing.
 pub mod store_memory;
 
@@ -152,11 +152,11 @@ pub use credentials::{
 pub use handle::CredentialHandle;
 
 // v2: Storage
-pub use store::{CredentialStore, PutMode, StoreError, StoredCredential};
 pub use layer::{
     AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
     CacheStats, EncryptionLayer, ScopeLayer, ScopeResolver,
 };
+pub use store::{CredentialStore, PutMode, StoreError, StoredCredential};
 pub use store_memory::InMemoryStore;
 
 // v2: Registry

@@ -112,7 +112,6 @@ pub enum CredentialError {
     },
 }
 
-
 /// Cryptographic operation errors
 ///
 /// Errors from encryption, decryption, and key derivation operations.
