@@ -47,8 +47,32 @@ use vaultrs::client::{Client, VaultClient, VaultClientSettingsBuilder};
 use vaultrs::kv2;
 
 use crate::credential_store::{CredentialStore, PutMode, StoreError, StoredCredential};
-use crate::providers::config::{ConfigError, ProviderConfig};
 use crate::utils::RetryPolicy;
+
+// ── Config error ────────────────────────────────────────────────────────────
+
+/// Configuration validation error for Vault store.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum VaultConfigError {
+    /// A required configuration field is missing or empty.
+    #[error("missing required field: {field}")]
+    MissingRequired {
+        /// Name of the missing field.
+        field: String,
+    },
+    /// A configuration field has an invalid value.
+    #[error("invalid value for {field}: {reason}")]
+    InvalidValue {
+        /// Name of the invalid field.
+        field: String,
+        /// Explanation of why the value is invalid.
+        reason: String,
+    },
+    /// General validation failure.
+    #[error("validation failed: {0}")]
+    ValidationFailed(String),
+}
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -59,7 +83,7 @@ use crate::utils::RetryPolicy;
 ///
 /// # Validation
 ///
-/// Call [`ProviderConfig::validate`] before constructing a [`VaultStore`] — the
+/// Call [`VaultConfig::validate`] before constructing a [`VaultStore`] — the
 /// constructor validates automatically, but early validation gives better error
 /// messages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,53 +158,58 @@ impl Default for VaultConfig {
     }
 }
 
-impl ProviderConfig for VaultConfig {
-    fn provider_name(&self) -> &'static str {
-        "VaultStore"
-    }
-
-    fn validate(&self) -> Result<(), ConfigError> {
+impl VaultConfig {
+    /// Validate the configuration, returning an error if any field is invalid.
+    ///
+    /// Called automatically by [`VaultStore::new`], but can be called early for
+    /// better error messages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VaultConfigError`] if any required field is missing or any
+    /// value is out of range.
+    pub fn validate(&self) -> Result<(), VaultConfigError> {
         if self.address.is_empty() {
-            return Err(ConfigError::MissingRequired {
+            return Err(VaultConfigError::MissingRequired {
                 field: "address".into(),
             });
         }
 
         if self.tls_verify && !self.address.starts_with("https://") {
-            return Err(ConfigError::InvalidValue {
+            return Err(VaultConfigError::InvalidValue {
                 field: "address".into(),
                 reason: "Must use HTTPS when TLS verification is enabled".into(),
             });
         }
 
         if !self.address.starts_with("http://") && !self.address.starts_with("https://") {
-            return Err(ConfigError::InvalidValue {
+            return Err(VaultConfigError::InvalidValue {
                 field: "address".into(),
                 reason: "Must start with http:// or https://".into(),
             });
         }
 
         if self.mount_path.is_empty() {
-            return Err(ConfigError::MissingRequired {
+            return Err(VaultConfigError::MissingRequired {
                 field: "mount_path".into(),
             });
         }
 
         if self.mount_path.starts_with('/') || self.mount_path.ends_with('/') {
-            return Err(ConfigError::InvalidValue {
+            return Err(VaultConfigError::InvalidValue {
                 field: "mount_path".into(),
                 reason: "Must not start or end with '/'".into(),
             });
         }
 
         if self.path_prefix.is_empty() {
-            return Err(ConfigError::MissingRequired {
+            return Err(VaultConfigError::MissingRequired {
                 field: "path_prefix".into(),
             });
         }
 
         if self.path_prefix.starts_with('/') {
-            return Err(ConfigError::InvalidValue {
+            return Err(VaultConfigError::InvalidValue {
                 field: "path_prefix".into(),
                 reason: "Must not start with '/' (relative to mount path)".into(),
             });
@@ -188,7 +217,7 @@ impl ProviderConfig for VaultConfig {
 
         let timeout_secs = self.timeout.as_secs();
         if !(1..=60).contains(&timeout_secs) {
-            return Err(ConfigError::InvalidValue {
+            return Err(VaultConfigError::InvalidValue {
                 field: "timeout".into(),
                 reason: format!("must be between 1 and 60 seconds, got {timeout_secs} seconds"),
             });
@@ -196,7 +225,7 @@ impl ProviderConfig for VaultConfig {
 
         let renewal_secs = self.token_renewal_threshold.as_secs();
         if !(60..=86400).contains(&renewal_secs) {
-            return Err(ConfigError::InvalidValue {
+            return Err(VaultConfigError::InvalidValue {
                 field: "token_renewal_threshold".into(),
                 reason: format!(
                     "must be between 60 seconds and 24 hours, got {renewal_secs} seconds"
@@ -207,19 +236,19 @@ impl ProviderConfig for VaultConfig {
         match &self.auth_method {
             VaultAuthMethod::Token { token } => {
                 if token.is_empty() {
-                    return Err(ConfigError::MissingRequired {
+                    return Err(VaultConfigError::MissingRequired {
                         field: "auth_method.token".into(),
                     });
                 }
             }
             VaultAuthMethod::AppRole { role_id, secret_id } => {
                 if role_id.is_empty() {
-                    return Err(ConfigError::MissingRequired {
+                    return Err(VaultConfigError::MissingRequired {
                         field: "auth_method.role_id".into(),
                     });
                 }
                 if secret_id.is_empty() {
-                    return Err(ConfigError::MissingRequired {
+                    return Err(VaultConfigError::MissingRequired {
                         field: "auth_method.secret_id".into(),
                     });
                 }
@@ -227,7 +256,7 @@ impl ProviderConfig for VaultConfig {
         }
 
         self.retry_policy.validate().map_err(|e| {
-            ConfigError::ValidationFailed(format!("Retry policy validation failed: {e}"))
+            VaultConfigError::ValidationFailed(format!("Retry policy validation failed: {e}"))
         })?;
 
         Ok(())

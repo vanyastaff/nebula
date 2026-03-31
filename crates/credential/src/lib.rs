@@ -153,10 +153,9 @@ pub use pending_store_memory::InMemoryPendingStore;
 pub use pending_token::PendingToken;
 
 // v2: Built-in credential implementations
-pub use credentials::OAuth2State as OAuth2StateV2;
 pub use credentials::{
     ApiKeyCredential, BasicAuthCredential, DatabaseCredential, HeaderAuthCredential,
-    OAuth2Credential, OAuth2Pending,
+    OAuth2Credential, OAuth2Pending, OAuth2State,
 };
 
 // v2: Typed handle
@@ -178,7 +177,7 @@ pub use store_memory::InMemoryStore;
 #[cfg(feature = "storage-postgres")]
 pub use store_postgres::PostgresStore;
 #[cfg(feature = "storage-vault")]
-pub use store_vault::{VaultAuthMethod, VaultConfig, VaultStore};
+pub use store_vault::{VaultAuthMethod, VaultConfig, VaultConfigError, VaultStore};
 
 // v2: Registry
 pub use credential_registry::{CredentialRegistry, RegistryError};
