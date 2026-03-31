@@ -40,6 +40,13 @@ struct PendingEntry {
     expires_at: chrono::DateTime<Utc>,
 }
 
+impl std::fmt::Debug for InMemoryPendingStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InMemoryPendingStore")
+            .finish_non_exhaustive()
+    }
+}
+
 impl InMemoryPendingStore {
     /// Creates a new empty in-memory pending store.
     pub fn new() -> Self {

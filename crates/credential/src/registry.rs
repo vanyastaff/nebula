@@ -5,6 +5,7 @@
 //! [`Credential`](crate::credential::Credential) type at compile time.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 
 use crate::credential::Credential;
@@ -114,6 +115,17 @@ impl CredentialRegistry {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.handlers.is_empty()
+    }
+}
+
+impl fmt::Debug for CredentialRegistry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CredentialRegistry")
+            .field(
+                "registered_kinds",
+                &self.handlers.keys().collect::<Vec<_>>(),
+            )
+            .finish_non_exhaustive()
     }
 }
 

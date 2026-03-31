@@ -34,6 +34,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -73,6 +74,15 @@ pub struct RefreshCoordinator {
     in_flight: Mutex<HashMap<String, Arc<Notify>>>,
     /// Per-credential circuit breakers via `nebula-resilience`.
     circuit_breakers: parking_lot::Mutex<HashMap<String, Arc<CircuitBreaker>>>,
+}
+
+impl fmt::Debug for RefreshCoordinator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let breaker_count = self.circuit_breakers.lock().len();
+        f.debug_struct("RefreshCoordinator")
+            .field("circuit_breakers", &breaker_count)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Result of attempting to begin a refresh for a credential.

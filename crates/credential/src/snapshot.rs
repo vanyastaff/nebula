@@ -32,6 +32,21 @@
 //! let token = snapshot.project::<MyToken>().unwrap();
 //! assert_eq!(token.value, "secret");
 //! ```
+//!
+//! ## Runtime construction
+//!
+//! The runtime constructs snapshots after resolving credentials:
+//!
+//! ```ignore
+//! // In the runtime's CredentialAccessor implementation:
+//! let handle = resolver.resolve::<ApiKeyCredential>(id).await?;
+//! let scheme: Arc<BearerToken> = handle.snapshot();
+//! let snapshot = CredentialSnapshot::new(
+//!     ApiKeyCredential::KEY,
+//!     metadata,
+//!     (*scheme).clone(),
+//! );
+//! ```
 
 use std::any::Any;
 use std::fmt;

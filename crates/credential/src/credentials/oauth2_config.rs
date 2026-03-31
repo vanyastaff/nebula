@@ -58,6 +58,7 @@ impl OAuth2Config {
 }
 
 /// Builder for [`OAuth2Config`].
+#[derive(Debug)]
 pub struct OAuth2ConfigBuilder {
     grant_type: GrantType,
     auth_url: String,

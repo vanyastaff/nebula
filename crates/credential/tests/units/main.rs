@@ -7,4 +7,5 @@
 
 mod encryption_tests;
 mod error_tests;
+mod resolve_snapshot_tests;
 mod validation_tests;

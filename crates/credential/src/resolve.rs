@@ -182,7 +182,7 @@ pub enum TestResult {
 ///
 /// All fields are const-compatible (`Duration::from_secs` is `const fn`
 /// since Rust 1.53).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RefreshPolicy {
     /// Refresh this long before `expires_at()`. Default: 5 minutes.
     pub early_refresh: Duration,

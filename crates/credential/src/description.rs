@@ -65,7 +65,7 @@ impl CredentialDescription {
 }
 
 /// Builder for CredentialDescription
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct CredentialDescriptionBuilder {
     key: Option<String>,
     name: Option<String>,
