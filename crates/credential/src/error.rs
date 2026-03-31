@@ -1,36 +1,35 @@
 //! Error types for credential operations
 //!
-//! This module defines a three-tier error hierarchy:
-//! - [`CredentialError`]: Top-level error wrapping Storage/Crypto/Validation
-//! - [`StorageError`]: File I/O, permissions, not found
+//! This module defines a layered error hierarchy:
+//! - [`CredentialError`]: Top-level error wrapping Crypto/Validation
 //! - [`CryptoError`]: Encryption, decryption, key derivation
 //! - [`ValidationError`]: Invalid credential IDs, malformed data
+//! - [`StoreError`](crate::StoreError): Storage-layer errors (not found, conflict)
 //!
 //! # Error Conversion Examples
 //!
-//! Errors automatically convert to [`CredentialError`] via `From` implementations:
+//! [`CryptoError`] and [`ValidationError`] convert to [`CredentialError`] via
+//! `From` implementations:
 //!
 //! ```
-//! use nebula_credential::{StorageError, CredentialError};
+//! use nebula_credential::error::{CredentialError, ValidationError};
 //!
-//! // Storage errors convert automatically
-//! let storage_err = StorageError::NotFound {
-//!     id: "missing_cred".to_string(),
+//! // Validation errors convert automatically
+//! let val_err = ValidationError::InvalidCredentialId {
+//!     id: "bad id".to_string(),
+//!     reason: "contains spaces".to_string(),
 //! };
-//! let cred_err: CredentialError = storage_err.into();
-//! assert!(cred_err.to_string().contains("missing_cred"));
+//! let cred_err: CredentialError = val_err.into();
+//! assert!(cred_err.to_string().contains("bad id"));
 //! ```
 //!
-//! Using `?` operator for automatic conversion:
+//! [`StoreError`](crate::StoreError) is used directly by the storage layer:
 //!
-//! ```no_run
-//! use nebula_credential::error::Result;
-//! use nebula_credential::StorageError;
+//! ```
+//! use nebula_credential::StoreError;
 //!
-//! fn load_credential(id: &str) -> Result<String> {
-//!     // StorageError automatically converts to CredentialError
-//!     Err(StorageError::NotFound { id: id.to_string() })?
-//! }
+//! let err = StoreError::NotFound { id: "missing_cred".to_string() };
+//! assert!(err.to_string().contains("missing_cred"));
 //! ```
 
 use thiserror::Error;
