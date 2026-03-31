@@ -5,6 +5,19 @@
 //! Automatic credential rotation with zero downtime, supporting multiple rotation policies
 //! and advanced safety features for production environments.
 //!
+//! # Future: v2 Credential trait integration
+//!
+//! This module currently defines its own [`TestableCredential`] and
+//! [`RotatableCredential`] traits. The plan is to integrate with the v2
+//! [`Credential`](crate::Credential) trait:
+//!
+//! - `TestableCredential::test()` → use `Credential::test()` (via `TESTABLE` const)
+//! - `RotatableCredential` → new opt-in extension trait requiring `Credential`
+//! - `RotationScheduler` → use `CredentialResolver` for state access
+//! - `RotationTransaction` → use `CredentialStore` for CAS operations
+//!
+//! Until integrated, this module is feature-gated behind `rotation`.
+//!
 //! # Rotation Policies
 //!
 //! The module supports four rotation strategies:
