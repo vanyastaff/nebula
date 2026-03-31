@@ -126,30 +126,35 @@ impl CredentialContext {
     }
 
     /// Set scope for this context (builder pattern)
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_scope(mut self, scope: ScopeLevel) -> Self {
         self.caller_scope = Some(scope);
         self
     }
 
     /// Set trace ID for this context (builder pattern)
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_trace_id(mut self, trace_id: Uuid) -> Self {
         self.trace_id = trace_id;
         self
     }
 
     /// Set OAuth2/SAML callback URL for interactive flows.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_callback_url(mut self, url: impl Into<String>) -> Self {
         self.callback_url = Some(url.into());
         self
     }
 
     /// Set application base URL for redirect targets.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_app_url(mut self, url: impl Into<String>) -> Self {
         self.app_url = Some(url.into());
         self
     }
 
     /// Set session ID for `PendingStateStore` token binding.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_session_id(mut self, id: impl Into<String>) -> Self {
         self.session_id = Some(id.into());
         self

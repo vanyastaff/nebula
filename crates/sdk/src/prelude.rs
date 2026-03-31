@@ -49,6 +49,8 @@ pub use nebula_credential::{
     Credential,
     CredentialDescription,
     CredentialError,
+    // Typed credential access
+    CredentialSnapshot,
     CredentialState,
     DatabaseAuth,
     DatabaseCredential,
@@ -56,6 +58,8 @@ pub use nebula_credential::{
     HeaderAuthCredential,
     OAuth2Credential,
     OAuth2Token,
+    SecretString,
+    SnapshotError,
 };
 pub use nebula_credential::{CredentialContext, CredentialId};
 

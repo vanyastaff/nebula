@@ -137,9 +137,11 @@ impl CredentialSnapshot {
         fn clone_projected<S: AuthScheme>(
             boxed: &(dyn Any + Send + Sync),
         ) -> Box<dyn Any + Send + Sync> {
-            let s = boxed
-                .downcast_ref::<S>()
-                .expect("type invariant: stored type matches S");
+            // This downcast cannot fail: clone_fn is monomorphized at new::<S>()
+            // time with the same S that was stored in projected.
+            let Some(s) = boxed.downcast_ref::<S>() else {
+                unreachable!("clone_fn type parameter matches stored type")
+            };
             Box::new(s.clone())
         }
 
