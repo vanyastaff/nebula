@@ -261,8 +261,7 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use nebula_credential::CredentialMetadata;
-    use nebula_credential::CredentialSnapshot;
+    use nebula_credential::{BearerToken, CredentialMetadata, CredentialSnapshot, SecretString};
 
     use crate::capability::{ActionLogLevel, ActionLogger, ExecutionEmitter, TriggerScheduler};
 
@@ -335,11 +334,11 @@ mod tests {
     #[async_trait]
     impl CredentialAccessor for TestCredentialAccessor {
         async fn get(&self, _id: &str) -> Result<CredentialSnapshot, ActionError> {
-            Ok(CredentialSnapshot {
-                kind: "api_key".to_string(),
-                state: serde_json::json!({"token": "test-token"}),
-                metadata: CredentialMetadata::new(),
-            })
+            Ok(CredentialSnapshot::new(
+                "api_key",
+                CredentialMetadata::new(),
+                BearerToken::new(SecretString::new("test-token")),
+            ))
         }
 
         async fn has(&self, _id: &str) -> bool {

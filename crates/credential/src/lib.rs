@@ -105,7 +105,7 @@ pub use crate::error::{
     CredentialError, CryptoError, RefreshErrorKind, ResolutionStage, RetryAdvice, ValidationError,
 };
 pub use crate::metadata::CredentialMetadata;
-pub use crate::snapshot::CredentialSnapshot;
+pub use crate::snapshot::{CredentialSnapshot, SnapshotError};
 pub use nebula_core::CredentialId;
 
 // Utils - crypto

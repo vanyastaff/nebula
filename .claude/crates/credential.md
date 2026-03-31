@@ -5,7 +5,8 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - Credentials **always encrypted at rest** (AES-256-GCM). `SecretString` zeroizes on drop.
 - No direct import between nebula-credential and nebula-resource — use EventBus.
 - All `AuthScheme` `Debug` impls redact secrets.
-- Error hierarchy: `CredentialError` (author-facing) + `StoreError` (storage). No `StorageError`, no `ManagerError`.
+- Error hierarchy: `CredentialError` (author-facing) + `StoreError` (storage) + `SnapshotError` (projection). No `StorageError`, no `ManagerError`.
+- `CredentialSnapshot` carries `Box<dyn Any + Send + Sync>` (projected `AuthScheme`), not `serde_json::Value`. Fields are private — use getters + `project::<S>()`/`into_project::<S>()`.
 
 ## Key Decisions
 - **Flat structure**: no `core/` directory. All modules at src/ root. Subfolders only for: `scheme/`, `credentials/`, `layer/`, `rotation/`, `utils/`.
@@ -30,5 +31,5 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - Built-in credentials: `ApiKeyCredential`, `BasicAuthCredential`, `DatabaseCredential`, `HeaderAuthCredential`, `OAuth2Credential`.
 - Rotation module: policy, transaction, blue-green, validation, retry, backup, events, metrics.
 
-<!-- updated: 2026-03-31 — beta refactor: flat structure, resilience integration, error consolidation, store backends removed -->
+<!-- updated: 2026-03-31 — typed CredentialSnapshot with AuthScheme projection (Box<dyn Any>) -->
 <!-- reviewed: 2026-03-31 -->
