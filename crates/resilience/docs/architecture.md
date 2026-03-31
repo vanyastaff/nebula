@@ -31,7 +31,8 @@ pub enum CallError<E> {
     RetriesExhausted { attempts: u32, last: E },
     Cancelled { reason: Option<String> },
     LoadShed,
-    RateLimited,
+    RateLimited { retry_after: Option<Duration> },
+    FallbackFailed { reason: Option<String> },
 }
 ```
 
@@ -102,7 +103,7 @@ Note: this differs from the legacy `LayerBuilder` which recommended
 
 Patterns emit `ResilienceEvent` values to a `MetricsSink`. The default is `NoopSink`
 (zero cost). In production, inject a custom sink that forwards to EventBus, Prometheus,
-or a `MetricsCollector`. For tests, use `RecordingSink`:
+or your metrics backend. For tests, use `RecordingSink`:
 
 ```rust
 pub trait MetricsSink: Send + Sync {
@@ -120,9 +121,8 @@ pub enum ResilienceEvent {
 }
 ```
 
-This replaces the `ObservabilityHooks` / `PatternEvent` system. The older `hooks` module
-still exists and provides `Event<C>`, `LoggingHook`, `MetricsHook`, etc. for tracing-based
-observability (not the same as `MetricsSink`).
+`ResilienceEvent::kind()` returns a `ResilienceEventKind` enum for counting/filtering.
+`RecordingSink::count()` takes a `ResilienceEventKind` variant (not a string).
 
 ### 6. Injectable `Clock` for deterministic testing
 
@@ -162,32 +162,20 @@ crates/resilience/src/
 │
 │  ── Core types ────────────────────────────────────────────────────────────
 │
-├── types.rs           CallError<E> — unified error enum generic over caller error.
+├── error.rs           CallError<E> — unified error enum generic over caller error.
+│                      CallErrorKind — discriminant enum for pattern matching.
 │                      ConfigError — returned by pattern constructors on invalid config.
 │                      CallResult<T,E> = Result<T, CallError<E>>.
 │
-├── error.rs           ResilienceError — internal rich error (9 variants, non-exhaustive).
-│                      ErrorClass (Transient/ResourceExhaustion/Permanent/Configuration/Unknown).
-│                      ErrorContext — optional structured metadata.
-│
-├── result.rs          ResilienceResult<T> = Result<T, ResilienceError>.
-│                      ResultExt — convenience methods.
-│
 ├── cancellation.rs    CancellationContext — wraps tokio_util CancellationToken.
 │                      CancellableFuture, CancellationExt.
-│                      ShutdownCoordinator — multi-stage graceful drain.
 │
-├── policy_source.rs   PolicySource<C> trait + blanket impl for Clone types.
-│
-├── signals.rs         LoadSignal trait — load_factor(), error_rate(), p99_latency().
+├── policy.rs          PolicySource<C> trait + blanket impl for Clone types.
+│                      LoadSignal trait — load_factor(), error_rate(), p99_latency().
 │                      ConstantLoad — test/static load signal implementation.
 │
 ├── clock.rs           Clock trait — now() → Instant.
 │                      SystemClock — production impl using std::time::Instant::now().
-│
-├── metrics.rs         MetricsCollector — in-process key/value metric accumulator.
-│                      MetricSnapshot, MetricKind (Counter/Gauge/Histogram).
-│                      Metrics — shorthand for Arc<MetricsCollector>.
 │
 │  ── Observability ──────────────────────────────────────────────────────────
 │
@@ -195,19 +183,8 @@ crates/resilience/src/
 │                      NoopSink — zero-cost default.
 │                      RecordingSink — records events for test assertions.
 │                      ResilienceEvent — typed events emitted by patterns.
+│                      ResilienceEventKind — discriminant enum for counting/filtering.
 │                      CircuitState — Closed | Open | HalfOpen.
-│
-├── hooks.rs           ObservabilityHooks, ObservabilityHook trait, PatternEvent.
-│                      Event<C: EventCategory> — typed event with builder API.
-│                      EventCategory (sealed): RetryEventCategory,
-│                        CircuitBreakerEventCategory, BulkheadEventCategory,
-│                        TimeoutEventCategory, RateLimiterEventCategory.
-│                      LoggingHook, MetricsHook — built-in hook implementations.
-│                      LogLevel enum.
-│
-├── spans.rs           SpanGuard — RAII tracing span with success/error on drop.
-│                      PatternSpanGuard<C: PatternCategory> — typed span.
-│                      create_span(), record_success(), record_error().
 │
 │  ── Patterns ────────────────────────────────────────────────────────────────
 │
@@ -226,27 +203,24 @@ crates/resilience/src/
 │                      Bulkhead — semaphore + optional queue.
 │                      call() returning Result<T, CallError<E>>.
 │
-├── rate_limiter.rs    RateLimiter trait — acquire(), execute(), current_rate(), reset().
+├── rate_limiter.rs    RateLimiter trait — acquire(), call() (default impl).
 │                      TokenBucket — capacity + refill rate.
 │                      LeakyBucket — constant leak rate.
 │                      SlidingWindow — time-window counter.
 │                      AdaptiveRateLimiter — adjusts based on error rates.
-│                      AnyRateLimiter — object-safe boxed wrapper.
 │
-├── timeout.rs         timeout_fn(duration, future) — wraps tokio::time::timeout.
-│                      timeout_with_original_error() — preserves inner error type.
+├── timeout.rs         timeout(duration, future) — wraps tokio::time::timeout.
 │                      TimeoutExecutor — struct-based alternative.
 │
-├── fallback.rs        FallbackStrategy<T> trait — fallback() + should_fallback().
+├── fallback.rs        FallbackStrategy<T, E> trait — fallback() + should_fallback().
 │                      ValueFallback<T> — cloned constant value.
-│                      AnyStringFallbackStrategy — string-typed erased strategy.
+│                      ChainFallback<T, E> — chains multiple fallbacks via then().
 │
 ├── hedge.rs           HedgeConfig — hedge_delay, max_hedges, exponential_backoff.
 │                      HedgeExecutor — FuturesUnordered parallel dispatch.
+│                      AdaptiveHedgeExecutor — adaptive hedge timing.
 │
 ├── load_shed.rs       load_shed(should_shed, f) — free function predicate-based rejection.
-│
-├── retryable.rs       Retryable trait — is_retryable(). Blanket impls for std::io::Error.
 │
 │  ── Infrastructure ─────────────────────────────────────────────────────────
 │
@@ -254,12 +228,9 @@ crates/resilience/src/
 │                      ResiliencePipeline<E> — executes steps recursively.
 │                      Step<E> — Timeout | Retry | CircuitBreaker | Bulkhead.
 │
-├── gate.rs            GateClosed — error when gate is already closing.
+└── gate.rs            GateClosed — error when gate is already closing.
 │                      GateGuard — RAII exit token; returns permit on drop.
 │                      Gate — cooperative shutdown barrier (Semaphore + AtomicBool).
-│
-└── helpers.rs         log_result!(result, op, desc) macro.
-                       print_result!(result, fmt) macro.
 ```
 
 ---

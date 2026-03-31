@@ -87,6 +87,10 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     #[must_use]
     pub fn bulkhead(self, bh: Arc<Bulkhead>) -> Self
 
+    /// Add a rate limiter step from any `Arc<impl RateLimiter>`.
+    #[must_use]
+    pub fn rate_limiter_from<RL: RateLimiter + 'static>(self, rl: Arc<RL>) -> Self
+
     /// Consume the builder and return the pipeline.
     /// Emits tracing::warn! if timeout is inside retry.
     #[must_use]
@@ -229,7 +233,7 @@ for _ in 0..16 {
 ### Observing events with `RecordingSink` (testing)
 
 ```rust
-use nebula_resilience::sink::RecordingSink;
+use nebula_resilience::sink::{RecordingSink, ResilienceEventKind};
 use nebula_resilience::circuit_breaker::CircuitBreaker;
 use std::sync::Arc;
 
@@ -241,5 +245,5 @@ let cb = Arc::new(
 // ... run pipeline ...
 
 assert!(sink.has_state_change(CircuitState::Open));
-assert_eq!(sink.count("retry_attempt"), 3);
+assert_eq!(sink.count(ResilienceEventKind::RetryAttempt), 3);
 ```
