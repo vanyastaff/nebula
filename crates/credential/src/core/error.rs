@@ -208,9 +208,10 @@ pub type ManagerResult<T> = std::result::Result<T, ManagerError>;
 ///
 /// Errors related to credential persistence operations including
 /// file I/O failures, permission issues, and resource not found.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, nebula_error::Classify)]
 pub enum StorageError {
     /// Credential not found
+    #[classify(category = "not_found", code = "CREDENTIAL:STORAGE_NOT_FOUND")]
     #[error("Credential '{id}' not found")]
     NotFound {
         /// Credential ID
@@ -218,6 +219,7 @@ pub enum StorageError {
     },
 
     /// Failed to read credential
+    #[classify(category = "internal", code = "CREDENTIAL:STORAGE_READ")]
     #[error("Failed to read credential '{id}': {source}")]
     ReadFailure {
         /// Credential ID
@@ -228,6 +230,7 @@ pub enum StorageError {
     },
 
     /// Failed to write credential
+    #[classify(category = "internal", code = "CREDENTIAL:STORAGE_WRITE")]
     #[error("Failed to write credential '{id}': {source}")]
     WriteFailure {
         /// Credential ID
@@ -238,6 +241,7 @@ pub enum StorageError {
     },
 
     /// Permission denied for credential operation
+    #[classify(category = "authorization", code = "CREDENTIAL:STORAGE_PERMISSION")]
     #[error("Permission denied for credential '{id}'")]
     PermissionDenied {
         /// Credential ID
@@ -245,6 +249,7 @@ pub enum StorageError {
     },
 
     /// Operation timed out
+    #[classify(category = "timeout", code = "CREDENTIAL:STORAGE_TIMEOUT", retryable = true)]
     #[error("Operation timed out after {duration:?}")]
     Timeout {
         /// Duration attempted
@@ -252,6 +257,7 @@ pub enum StorageError {
     },
 
     /// Operation not supported by this storage provider
+    #[classify(category = "unsupported", code = "CREDENTIAL:STORAGE_UNSUPPORTED")]
     #[error("Operation '{operation}' not supported: {reason}")]
     NotSupported {
         /// Operation name
@@ -264,25 +270,30 @@ pub enum StorageError {
 /// Cryptographic operation errors
 ///
 /// Errors from encryption, decryption, and key derivation operations.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, nebula_error::Classify)]
 pub enum CryptoError {
     /// Decryption failed - invalid key or corrupted data
+    #[classify(category = "internal", code = "CREDENTIAL:CRYPTO_DECRYPT")]
     #[error("Decryption failed - invalid key or corrupted data")]
     DecryptionFailed,
 
     /// Encryption failed
+    #[classify(category = "internal", code = "CREDENTIAL:CRYPTO_ENCRYPT")]
     #[error("Encryption failed: {0}")]
     EncryptionFailed(String),
 
     /// Key derivation failed
+    #[classify(category = "internal", code = "CREDENTIAL:CRYPTO_KEY")]
     #[error("Key derivation failed: {0}")]
     KeyDerivation(String),
 
     /// Nonce generation failed
+    #[classify(category = "internal", code = "CREDENTIAL:CRYPTO_NONCE")]
     #[error("Nonce generation failed")]
     NonceGeneration,
 
     /// Unsupported encryption version
+    #[classify(category = "internal", code = "CREDENTIAL:CRYPTO_VERSION")]
     #[error("Unsupported encryption version: {0}")]
     UnsupportedVersion(u8),
 }
@@ -291,13 +302,15 @@ pub enum CryptoError {
 ///
 /// Errors from input validation including invalid credential IDs
 /// and malformed credential data.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, nebula_error::Classify)]
 pub enum ValidationError {
     /// Credential ID cannot be empty
+    #[classify(category = "validation", code = "CREDENTIAL:EMPTY_ID")]
     #[error("Credential ID cannot be empty")]
     EmptyCredentialId,
 
     /// Invalid credential ID
+    #[classify(category = "validation", code = "CREDENTIAL:INVALID_ID")]
     #[error("Invalid credential ID '{id}': {reason}")]
     InvalidCredentialId {
         /// The invalid ID
@@ -307,6 +320,7 @@ pub enum ValidationError {
     },
 
     /// Invalid credential format
+    #[classify(category = "validation", code = "CREDENTIAL:INVALID_FORMAT")]
     #[error("Invalid credential format: {0}")]
     InvalidFormat(String),
 }
@@ -444,64 +458,7 @@ impl nebula_error::Classify for CredentialError {
     }
 }
 
-impl nebula_error::Classify for StorageError {
-    fn category(&self) -> nebula_error::ErrorCategory {
-        match self {
-            Self::NotFound { .. } => nebula_error::ErrorCategory::NotFound,
-            Self::ReadFailure { .. } | Self::WriteFailure { .. } => {
-                nebula_error::ErrorCategory::Internal
-            }
-            Self::PermissionDenied { .. } => nebula_error::ErrorCategory::Authorization,
-            Self::Timeout { .. } => nebula_error::ErrorCategory::Timeout,
-            Self::NotSupported { .. } => nebula_error::ErrorCategory::Unsupported,
-        }
-    }
-
-    fn code(&self) -> nebula_error::ErrorCode {
-        nebula_error::ErrorCode::new(match self {
-            Self::NotFound { .. } => "CREDENTIAL:STORAGE_NOT_FOUND",
-            Self::ReadFailure { .. } => "CREDENTIAL:STORAGE_READ",
-            Self::WriteFailure { .. } => "CREDENTIAL:STORAGE_WRITE",
-            Self::PermissionDenied { .. } => "CREDENTIAL:STORAGE_PERMISSION",
-            Self::Timeout { .. } => "CREDENTIAL:STORAGE_TIMEOUT",
-            Self::NotSupported { .. } => "CREDENTIAL:STORAGE_UNSUPPORTED",
-        })
-    }
-
-    fn is_retryable(&self) -> bool {
-        matches!(self, Self::Timeout { .. })
-    }
-}
-
-impl nebula_error::Classify for CryptoError {
-    fn category(&self) -> nebula_error::ErrorCategory {
-        nebula_error::ErrorCategory::Internal
-    }
-
-    fn code(&self) -> nebula_error::ErrorCode {
-        nebula_error::ErrorCode::new(match self {
-            Self::DecryptionFailed => "CREDENTIAL:CRYPTO_DECRYPT",
-            Self::EncryptionFailed(_) => "CREDENTIAL:CRYPTO_ENCRYPT",
-            Self::KeyDerivation(_) => "CREDENTIAL:CRYPTO_KEY",
-            Self::NonceGeneration => "CREDENTIAL:CRYPTO_NONCE",
-            Self::UnsupportedVersion(_) => "CREDENTIAL:CRYPTO_VERSION",
-        })
-    }
-}
-
-impl nebula_error::Classify for ValidationError {
-    fn category(&self) -> nebula_error::ErrorCategory {
-        nebula_error::ErrorCategory::Validation
-    }
-
-    fn code(&self) -> nebula_error::ErrorCode {
-        nebula_error::ErrorCode::new(match self {
-            Self::EmptyCredentialId => "CREDENTIAL:EMPTY_ID",
-            Self::InvalidCredentialId { .. } => "CREDENTIAL:INVALID_ID",
-            Self::InvalidFormat(_) => "CREDENTIAL:INVALID_FORMAT",
-        })
-    }
-}
+// CryptoError, ValidationError, StorageError: Classify derived via #[derive(nebula_error::Classify)]
 
 impl nebula_error::Classify for ManagerError {
     fn category(&self) -> nebula_error::ErrorCategory {

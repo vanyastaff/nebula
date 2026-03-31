@@ -3762,6 +3762,7 @@ dependencies = [
  "nebula-eventbus",
  "nebula-log",
  "nebula-parameter",
+ "nebula-resilience",
  "nebula-storage",
  "parking_lot",
  "pretty_assertions",

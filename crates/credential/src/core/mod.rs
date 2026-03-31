@@ -19,4 +19,4 @@ pub use snapshot::CredentialSnapshot;
 pub use nebula_core::CredentialId;
 
 // Re-exports from utils
-pub use crate::utils::{SecretString, from_unix_timestamp, to_unix_timestamp, unix_now};
+pub use crate::utils::SecretString;
