@@ -68,6 +68,11 @@ pub enum ErrorClass {
     /// Upstream backpressure (rate limit, quota) — retry, don't trip CB.
     Overload,
     /// Downstream is down — retry, trip CB.
+    ///
+    /// When used with a pipeline that has both retry and circuit breaker,
+    /// `Unavailable` errors trip the CB. Subsequent retry attempts see
+    /// `CallError::CircuitOpen` (not retryable), stopping the retry loop.
+    /// This is the correct behavior: the CB protects the downstream.
     Unavailable,
     /// Unclassified error — conservative: retry + trip CB.
     Unknown,
@@ -178,6 +183,9 @@ impl<E> ErrorClassifier<E> for AlwaysPermanent {
 /// ```
 pub struct FnClassifier<E, F> {
     f: F,
+    // `fn(&E)` instead of `E` — contravariant over `E`, which is correct for
+    // a classifier that only borrows `&E`. Using plain `PhantomData<E>` would
+    // be invariant and overly restrictive for lifetime inference.
     _phantom: PhantomData<fn(&E)>,
 }
 

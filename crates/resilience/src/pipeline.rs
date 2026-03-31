@@ -427,13 +427,25 @@ where
     let bail: Arc<Mutex<Option<CallError<E>>>> = Arc::new(Mutex::new(None));
     let bail_check = Arc::clone(&bail);
 
-    // Inherit the pipeline's classifier into the retry config if the config
-    // doesn't already have one. The bail_check wrapper ensures structural
-    // errors (CircuitOpen, BulkheadFull) still stop retries immediately.
+    // Combine the bail-check (stops on structural errors like CircuitOpen)
+    // with the pipeline's classifier (if set) for retry decisions.
+    // The inner retry wraps E in Option<E>: Some(e) = real error, None = bail.
+    let pipeline_classifier = classifier.clone();
     let mut inner_config = RetryConfig::<Option<E>>::new_unchecked(config.max_attempts)
         .backoff(config.backoff.clone())
         .jitter(config.jitter.clone())
-        .retry_if(move |e: &Option<E>| e.is_some() && bail_check.lock().is_none());
+        .retry_if(move |e: &Option<E>| {
+            // None = bail signal (structural error) → stop retrying
+            let Some(inner) = e else { return false };
+            // Structural error already captured → stop retrying
+            if bail_check.lock().is_some() {
+                return false;
+            }
+            // Use pipeline classifier if available, otherwise retry all
+            pipeline_classifier
+                .as_ref()
+                .is_none_or(|c| c.classify(inner).is_retryable())
+        });
     inner_config.total_budget = config.total_budget;
 
     let result = retry_with_inner(inner_config, {

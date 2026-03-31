@@ -118,7 +118,9 @@ pub mod pipeline;
 
 // Core types
 pub use cancellation::{CancellableFuture, CancellationContext, CancellationExt};
-pub use classifier::{ErrorClass, ErrorClassifier, FnClassifier, NebulaClassifier};
+pub use classifier::{
+    AlwaysPermanent, AlwaysTransient, ErrorClass, ErrorClassifier, FnClassifier, NebulaClassifier,
+};
 pub use error::{CallError, CallErrorKind, CallResult, ConfigError};
 pub use policy::{ConstantLoad, LoadSignal, PolicySource};
 
