@@ -19,4 +19,4 @@ Re-exports of core crates for plugin/action authors — the single entry point f
 ## Relations
 - Re-exports: nebula-action, nebula-core, nebula-credential, nebula-macros, nebula-parameter, nebula-plugin, nebula-validator, nebula-workflow, anyhow, async-trait, serde, serde_json, thiserror.
 
-<!-- reviewed: 2026-03-30 — v1 credential types removed from prelude, derive(Credential) stubbed -->
+<!-- reviewed: 2026-03-31 — prelude adjusted for credential rotation feature-gate -->
