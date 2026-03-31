@@ -235,6 +235,7 @@ impl nebula_error::Classify for ConfigError {
 
 impl ConfigError {
     /// Create a new configuration error.
+    #[must_use]
     pub fn new(field: &'static str, message: impl Into<String>) -> Self {
         Self {
             field,

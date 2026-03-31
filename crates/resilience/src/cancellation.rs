@@ -174,6 +174,7 @@ where
     F: Future,
 {
     /// Create a new cancellable future.
+    #[must_use]
     pub fn new(future: F, cancellation: CancellationToken) -> Self {
         Self {
             future: Box::pin(future),

@@ -12,7 +12,6 @@
 //! let fallback = ValueFallback::new("default response".to_string());
 //! ```
 
-use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -101,6 +100,7 @@ where
     Fut: Future<Output = Result<T, CallError<()>>> + Send,
 {
     /// Create new function fallback.
+    #[must_use]
     pub const fn new(function: F) -> Self {
         Self {
             function,
@@ -177,6 +177,7 @@ impl<T: Clone + Send + Sync> Default for CacheFallback<T> {
 
 impl<T: Clone + Send + Sync> CacheFallback<T> {
     /// Create new cache fallback.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             cache: Arc::new(RwLock::new(None)),
@@ -303,8 +304,11 @@ impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E> for Cha
 }
 
 /// Priority fallback — selects fallback based on error kind.
+///
+/// Uses a `Vec` internally — `CallErrorKind` has few variants, so linear
+/// scan is faster than `HashMap` and avoids hashing overhead.
 pub struct PriorityFallback<T, E> {
-    fallbacks: HashMap<CallErrorKind, Arc<dyn FallbackStrategy<T, E>>>,
+    fallbacks: Vec<(CallErrorKind, Arc<dyn FallbackStrategy<T, E>>)>,
     default: Option<Arc<dyn FallbackStrategy<T, E>>>,
 }
 
@@ -328,19 +332,25 @@ impl<T, E> PriorityFallback<T, E> {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            fallbacks: HashMap::new(),
+            fallbacks: Vec::new(),
             default: None,
         }
     }
 
     /// Register a fallback for a specific error kind.
+    ///
+    /// If a fallback is already registered for this kind, it is replaced.
     #[must_use = "builder methods must be chained or built"]
     pub fn register(
         mut self,
         kind: CallErrorKind,
         fallback: Arc<dyn FallbackStrategy<T, E>>,
     ) -> Self {
-        self.fallbacks.insert(kind, fallback);
+        if let Some(existing) = self.fallbacks.iter_mut().find(|(k, _)| *k == kind) {
+            existing.1 = fallback;
+        } else {
+            self.fallbacks.push((kind, fallback));
+        }
         self
     }
 
@@ -362,7 +372,7 @@ impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
         Box::pin(async move {
             let kind = error.kind();
 
-            if let Some(fallback) = self.fallbacks.get(&kind) {
+            if let Some((_, fallback)) = self.fallbacks.iter().find(|(k, _)| *k == kind) {
                 return fallback.fallback(error).await;
             }
 
@@ -388,6 +398,7 @@ impl<T, E> fmt::Debug for FallbackOperation<T, E> {
 
 impl<T, E> FallbackOperation<T, E> {
     /// Create new fallback operation.
+    #[must_use]
     pub fn new(fallback_strategy: Arc<dyn FallbackStrategy<T, E>>) -> Self {
         Self { fallback_strategy }
     }

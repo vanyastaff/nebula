@@ -115,7 +115,11 @@ impl RecordingSink {
     /// Count events matching a given kind.
     #[must_use]
     pub fn count(&self, kind: ResilienceEventKind) -> usize {
-        self.events().iter().filter(|e| e.kind() == kind).count()
+        self.events
+            .lock()
+            .iter()
+            .filter(|e| e.kind() == kind)
+            .count()
     }
 
     /// Returns true if a `CircuitStateChanged` event to `to` was recorded.
