@@ -1,5 +1,0 @@
-error: `min_length` must be an integer literal
- --> tests/ui/validator_fail.rs:5:29
-  |
-5 |     #[validate(min_length = "short")]
-  |                             ^^^^^^^

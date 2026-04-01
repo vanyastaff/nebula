@@ -35,6 +35,34 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident, parse_macro_input};
 
+mod resource;
+
+/// Derive macro for the `Resource` trait.
+///
+/// # Attributes
+///
+/// ## Container attributes (`#[resource(...)]` on the struct)
+///
+/// - `id = "..."` - Unique resource identifier (required)
+/// - `config = Type` - Associated config type (required)
+/// - `instance = Type` - Associated instance type (default: Self)
+///
+/// # Example
+///
+/// ```ignore
+/// #[derive(Resource)]
+/// #[resource(
+///     id = "postgres",
+///     config = PgConfig,
+///     instance = PgPool
+/// )]
+/// pub struct PostgresResource;
+/// ```
+#[proc_macro_derive(Resource, attributes(resource))]
+pub fn derive_resource(input: TokenStream) -> TokenStream {
+    resource::derive(input)
+}
+
 /// Derive macro that generates `From<T> for nebula_resource::Error`.
 ///
 /// Place `#[classify(kind)]` on each enum variant to specify how the

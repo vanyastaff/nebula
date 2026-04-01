@@ -85,6 +85,8 @@ pub mod validation;
 
 // ── Public re-exports ───────────────────────────────────────────────────────
 
+pub use nebula_action_macros::Action;
+
 pub use action::Action;
 pub use authoring::{FnStatelessAction, stateless_fn};
 pub use capability::{

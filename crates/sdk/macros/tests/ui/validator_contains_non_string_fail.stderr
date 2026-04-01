@@ -1,5 +1,0 @@
-error: `contains = ...` requires `String` or `Option<String>` fields
- --> tests/ui/validator_contains_non_string_fail.rs:6:12
-  |
-6 |     count: u32,
-  |            ^^^

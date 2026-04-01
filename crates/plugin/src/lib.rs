@@ -37,6 +37,8 @@ mod versions;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
+pub use nebula_plugin_macros::Plugin;
+
 pub use error::PluginError;
 #[cfg(feature = "dynamic-loading")]
 pub use loader::{PluginLoadError, PluginLoader};

@@ -70,6 +70,8 @@ pub mod validate;
 pub mod values;
 
 // ── Top-level re-exports ────────────────────────────────────────────────────
+pub use nebula_parameter_macros::Parameters;
+
 pub use collection::ParameterCollection;
 pub use conditions::Condition;
 pub use display_mode::{ComputedReturn, DisplayMode};

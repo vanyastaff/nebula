@@ -1,5 +1,0 @@
-error: `min_size` requires `Vec<T>` or `Option<Vec<T>>` fields
- --> tests/ui/validator_min_size_non_collection_fail.rs:6:11
-  |
-6 |     name: String,
-  |           ^^^^^^

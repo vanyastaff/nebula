@@ -66,8 +66,12 @@ pub use nebula_credential::{CredentialContext, CredentialId};
 // Plugin types
 pub use nebula_plugin::{Plugin, PluginMetadata};
 
-// Macros
-pub use nebula_macros::{Action, Credential, Parameters, Plugin, Resource, Validator};
+// Derive macros (re-exported from their respective domain crates)
+// Action, Credential, and Plugin derive macros are already in scope from the
+// domain crate imports above (same names, macro namespace).
+pub use nebula_parameter::Parameters;
+pub use nebula_resource::Resource;
+pub use nebula_validator::Validator;
 
 // Validator traits
 pub use nebula_validator::foundation::{Validate, ValidateExt, ValidationError, ValidationErrors};

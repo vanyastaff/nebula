@@ -98,6 +98,9 @@ pub mod resolver;
 // ── Root re-exports ─────────────────────────────────────────────────────────
 // Commonly-used types available directly as `nebula_credential::TypeName`.
 
+// Derive macro
+pub use nebula_credential_macros::Credential;
+
 // Any-credential object-safe supertrait
 pub use crate::any::AnyCredential;
 

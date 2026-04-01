@@ -16,6 +16,7 @@ default = []
 dynamic-loading = ["dep:libloading"]
 
 [dependencies]
+nebula-plugin-macros = { path = "macros" }
 nebula-core = { path = "../core" }
 nebula-error = { workspace = true, features = ["derive"] }
 

@@ -12,6 +12,9 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
+# Derive macros
+nebula-validator-macros = { path = "macros" }
+
 # Error handling
 thiserror = { workspace = true }
 nebula-error = { workspace = true, features = ["derive"] }

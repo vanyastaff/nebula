@@ -80,6 +80,7 @@ pub use nebula_core::{ExecutionId, ResourceKey, WorkflowId, resource_key};
 ///
 /// See [`nebula_resource_macros::ClassifyError`] for full documentation.
 pub use nebula_resource_macros::ClassifyError;
+pub use nebula_resource_macros::Resource;
 
 // Runtime types — needed for `Manager::register()`.
 pub use runtime::TopologyRuntime;

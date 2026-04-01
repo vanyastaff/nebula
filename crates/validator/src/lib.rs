@@ -133,6 +133,8 @@ pub mod validators;
 mod macros;
 
 // ── Re-exports ───────────────────────────────────────────────────────────────
+pub use nebula_validator_macros::Validator;
+
 pub use engine::{ExecutionMode, validate_rules};
 pub use error::ValidatorError;
 pub use proof::Validated;

@@ -23,11 +23,17 @@ members = [
     "crates/api",
     "crates/webhook",
     "crates/workflow",
-    "crates/sdk/macros",
+    "crates/sdk/macros-support",
     "crates/resource/macros",
     "crates/sdk",
     "crates/error",
     "crates/error/macros",
+    "crates/action/macros",
+    "crates/credential/macros",
+    "crates/plugin/macros",
+    "crates/parameter/macros",
+    "crates/validator/macros",
+    "crates/config/macros",
 ]
 exclude = [
     "crates/*/fuzz",

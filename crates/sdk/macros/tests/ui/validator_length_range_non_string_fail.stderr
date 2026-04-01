@@ -1,5 +1,0 @@
-error: `length_range(...)` requires `String` or `Option<String>` fields
- --> tests/ui/validator_length_range_non_string_fail.rs:6:12
-  |
-6 |     count: u32,
-  |            ^^^

@@ -46,6 +46,7 @@ url = { workspace = true }
 dashmap = { workspace = true }
 
 # Internal crates
+nebula-config-macros = { path = "macros" }
 nebula-log = { path = "../log" }
 nebula-validator = { path = "../validator" }
 

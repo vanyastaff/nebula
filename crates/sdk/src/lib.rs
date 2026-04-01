@@ -35,9 +35,9 @@
 pub use nebula_action;
 pub use nebula_core;
 pub use nebula_credential;
-pub use nebula_macros;
 pub use nebula_parameter;
 pub use nebula_plugin;
+pub use nebula_resource;
 pub use nebula_validator;
 pub use nebula_workflow;
 
@@ -210,7 +210,7 @@ macro_rules! simple_action {
         output: $output:ty,
         async fn execute(&$self:tt, $input_param:ident, $ctx_param:ident) $body:block
     ) => {
-        #[derive($crate::nebula_macros::Action)]
+        #[derive($crate::nebula_action::Action)]
         #[action(
             key = $key,
             name = stringify!($name),

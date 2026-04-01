@@ -12,6 +12,7 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
+nebula-parameter-macros = { path = "macros" }
 nebula-error = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

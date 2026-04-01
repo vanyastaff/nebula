@@ -1,11 +1,11 @@
 [package]
-name = "nebula-resource-macros"
+name = "nebula-plugin-macros"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 keywords.workspace = true
 authors.workspace = true
-description = "Proc-macros for nebula-resource error classification"
+description = "Proc-macros for nebula-plugin (Plugin derive)"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true

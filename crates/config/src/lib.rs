@@ -61,6 +61,9 @@ pub mod interpolation;
 pub mod loaders;
 pub mod watchers;
 
+// Derive macros
+pub use nebula_config_macros::Config;
+
 // Re-export main types from core for explicit imports (e.g. `use nebula_config::Config`)
 pub use core::{
     Config, ConfigBuilder, ConfigError, ConfigFormat, ConfigResult, ConfigResultAggregator,
