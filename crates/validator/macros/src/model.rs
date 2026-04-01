@@ -4,8 +4,6 @@
 //! forming the bridge between the parse phase (attribute extraction) and
 //! the emit phase (token stream generation).
 
-#![allow(dead_code)] // Types unused until Task 4 wires the 3-phase pipeline.
-
 #![forbid(unsafe_code)]
 
 use proc_macro2::TokenStream as TokenStream2;
@@ -60,8 +58,6 @@ pub struct FieldDef {
     pub rules: Vec<Rule>,
     /// Element-level rules for `Vec<T>` fields via `each(...)`.
     pub each_rules: Option<EachRules>,
-    /// The span of the field for error reporting.
-    pub span: proc_macro2::Span,
 }
 
 /// A single validation rule extracted from `#[validate(...)]` attributes.
@@ -134,8 +130,6 @@ pub enum Rule {
 /// Element-level validation rules for `Vec<T>` fields via `each(...)`.
 #[derive(Debug)]
 pub struct EachRules {
-    /// The element type extracted from `Vec<T>`.
-    pub element_ty: Type,
     /// Validation rules applied to each element.
     pub rules: Vec<Rule>,
 }

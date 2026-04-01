@@ -3,7 +3,6 @@
 //! The core architectural win: Option-wrapping and message-override are each
 //! handled in ONE function instead of being duplicated across every rule.
 
-#![allow(dead_code)] // Unused until Task 4 wires the 3-phase pipeline.
 #![forbid(unsafe_code)]
 
 use proc_macro2::TokenStream as TokenStream2;

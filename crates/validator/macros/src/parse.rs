@@ -4,8 +4,6 @@
 //! and `#[validate(...)]` attributes and produces a structured IR that the
 //! emit phase can generate code from without touching `syn` types.
 
-#![allow(dead_code)] // Unused until Task 4 wires the 3-phase pipeline.
-
 #![forbid(unsafe_code)]
 
 use proc_macro2::TokenStream as TokenStream2;
@@ -74,7 +72,6 @@ pub fn parse(input: &DeriveInput) -> syn::Result<ValidatorInput> {
         let each_rules = parse_each_rules(&validate_attrs, &field.ty, &inner_ty)?;
 
         field_defs.push(FieldDef {
-            span: ident.span(),
             ident,
             ty: field.ty.clone(),
             is_option,
@@ -304,10 +301,7 @@ fn parse_each_rules(
         rules.push(Rule::Custom(expr));
     }
 
-    Ok(Some(EachRules {
-        element_ty: element_ty.clone(),
-        rules,
-    }))
+    Ok(Some(EachRules { rules }))
 }
 
 // ---------------------------------------------------------------------------
