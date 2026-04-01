@@ -21,10 +21,10 @@
 //!
 //! let coord = RefreshCoordinator::new();
 //!
-//! match coord.try_refresh("cred-1").await {
+//! match coord.try_refresh("cred-1") {
 //!     RefreshAttempt::Winner(_notify) => {
 //!         // Perform refresh...
-//!         coord.complete("cred-1").await;
+//!         coord.complete("cred-1");
 //!     }
 //!     RefreshAttempt::Waiter(notify) => {
 //!         notify.notified().await;
@@ -39,7 +39,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Notify;
 
 /// Coordinates credential refresh to prevent thundering herd.
 ///
@@ -58,20 +58,24 @@ use tokio::sync::{Mutex, Notify};
 ///
 /// // First caller wins
 /// assert!(matches!(
-///     coord.try_refresh("cred-1").await,
+///     coord.try_refresh("cred-1"),
 ///     RefreshAttempt::Winner(_),
 /// ));
 ///
 /// // Second caller waits
 /// assert!(matches!(
-///     coord.try_refresh("cred-1").await,
+///     coord.try_refresh("cred-1"),
 ///     RefreshAttempt::Waiter(_),
 /// ));
 ///
-/// coord.complete("cred-1").await;
+/// coord.complete("cred-1");
 /// ```
 pub struct RefreshCoordinator {
-    in_flight: Mutex<HashMap<String, Arc<Notify>>>,
+    /// In-flight refresh entries. Uses `parking_lot::Mutex` (not `tokio::sync::Mutex`)
+    /// because the lock is held only for brief `HashMap` insert/remove/get operations
+    /// with no `.await` while locked. This allows `complete()` to be sync, which is
+    /// critical for calling it from a `scopeguard` drop (B8 fix).
+    in_flight: parking_lot::Mutex<HashMap<String, Arc<Notify>>>,
     /// Per-credential circuit breakers via `nebula-resilience`.
     circuit_breakers: parking_lot::Mutex<HashMap<String, Arc<CircuitBreaker>>>,
 }
@@ -109,7 +113,7 @@ impl RefreshCoordinator {
     /// Creates a new coordinator with no in-flight refreshes.
     pub fn new() -> Self {
         Self {
-            in_flight: Mutex::new(HashMap::new()),
+            in_flight: parking_lot::Mutex::new(HashMap::new()),
             circuit_breakers: parking_lot::Mutex::new(HashMap::new()),
         }
     }
@@ -136,8 +140,8 @@ impl RefreshCoordinator {
     /// (should perform the refresh), or [`RefreshAttempt::Waiter`] if
     /// another refresh is already in progress (should wait on the
     /// returned [`Notify`]).
-    pub async fn try_refresh(&self, credential_id: &str) -> RefreshAttempt {
-        let mut map = self.in_flight.lock().await;
+    pub fn try_refresh(&self, credential_id: &str) -> RefreshAttempt {
+        let mut map = self.in_flight.lock();
         if let Some(notify) = map.get(credential_id) {
             RefreshAttempt::Waiter(Arc::clone(notify))
         } else {
@@ -147,38 +151,36 @@ impl RefreshCoordinator {
         }
     }
 
-    /// Called by the winner after refresh completes (success or failure).
+    /// Removes the in-flight entry for the given credential.
     ///
-    /// Wakes all waiters and removes the in-flight entry. **Must** be
-    /// called even on error to prevent waiters from hanging indefinitely.
-    pub async fn complete(&self, credential_id: &str) {
-        let mut map = self.in_flight.lock().await;
-        if let Some(notify) = map.remove(credential_id) {
-            notify.notify_waiters();
-        }
+    /// Called by the winner after refresh completes (success or failure).
+    /// Sync so it can be called from a `scopeguard` drop to prevent
+    /// permanent in-flight map poisoning on panic.
+    pub fn complete(&self, credential_id: &str) {
+        self.in_flight.lock().remove(credential_id);
     }
 
     /// Returns the number of credentials currently being refreshed.
     ///
     /// Primarily useful for testing and diagnostics.
-    pub async fn in_flight_count(&self) -> usize {
-        self.in_flight.lock().await.len()
+    pub fn in_flight_count(&self) -> usize {
+        self.in_flight.lock().len()
     }
 
     /// Records a refresh failure for circuit breaker tracking.
-    pub async fn record_failure(&self, credential_id: &str) {
+    pub fn record_failure(&self, credential_id: &str) {
         self.get_or_create_cb(credential_id)
             .record_outcome(Outcome::Failure);
     }
 
     /// Records a successful refresh, resetting the circuit breaker.
-    pub async fn record_success(&self, credential_id: &str) {
+    pub fn record_success(&self, credential_id: &str) {
         // Remove the CB entirely on success — full reset.
         self.circuit_breakers.lock().remove(credential_id);
     }
 
     /// Returns `true` if the circuit breaker is open (too many failures).
-    pub async fn is_circuit_open(&self, credential_id: &str) -> bool {
+    pub fn is_circuit_open(&self, credential_id: &str) -> bool {
         let cbs = self.circuit_breakers.lock();
         cbs.get(credential_id)
             .is_some_and(|cb| cb.try_acquire::<()>().is_err())
@@ -198,42 +200,43 @@ mod tests {
     #[tokio::test]
     async fn first_caller_wins() {
         let coord = RefreshCoordinator::new();
-        let attempt = coord.try_refresh("cred-1").await;
+        let attempt = coord.try_refresh("cred-1");
         assert!(matches!(attempt, RefreshAttempt::Winner(_)));
-        assert_eq!(coord.in_flight_count().await, 1);
+        assert_eq!(coord.in_flight_count(), 1);
     }
 
     #[tokio::test]
     async fn second_caller_waits() {
         let coord = RefreshCoordinator::new();
-        let first = coord.try_refresh("cred-1").await;
+        let first = coord.try_refresh("cred-1");
         assert!(matches!(first, RefreshAttempt::Winner(_)));
 
-        let second = coord.try_refresh("cred-1").await;
+        let second = coord.try_refresh("cred-1");
         assert!(matches!(second, RefreshAttempt::Waiter(_)));
     }
 
     #[tokio::test]
     async fn complete_removes_in_flight_entry() {
         let coord = RefreshCoordinator::new();
-        let _ = coord.try_refresh("cred-1").await;
-        assert_eq!(coord.in_flight_count().await, 1);
+        let _ = coord.try_refresh("cred-1");
+        assert_eq!(coord.in_flight_count(), 1);
 
-        coord.complete("cred-1").await;
-        assert_eq!(coord.in_flight_count().await, 0);
+        coord.complete("cred-1");
+        assert_eq!(coord.in_flight_count(), 0);
     }
 
     #[tokio::test]
-    async fn complete_wakes_waiters() {
+    async fn complete_and_notify_wakes_waiters() {
         let coord = Arc::new(RefreshCoordinator::new());
 
-        // Winner starts refresh
-        let attempt = coord.try_refresh("cred-1").await;
-        assert!(matches!(attempt, RefreshAttempt::Winner(_)));
+        // Winner starts refresh -- extract the Notify handle
+        let winner_notify = match coord.try_refresh("cred-1") {
+            RefreshAttempt::Winner(n) => n,
+            RefreshAttempt::Waiter(_) => panic!("expected Winner"),
+        };
 
         // Waiter gets Notify
-        let waiter_attempt = coord.try_refresh("cred-1").await;
-        let notify = match waiter_attempt {
+        let waiter_notify = match coord.try_refresh("cred-1") {
             RefreshAttempt::Waiter(n) => n,
             RefreshAttempt::Winner(_) => panic!("expected Waiter"),
         };
@@ -242,7 +245,7 @@ mod tests {
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
 
         let waiter = tokio::spawn(async move {
-            let notified = notify.notified();
+            let notified = waiter_notify.notified();
             // Signal that we've registered interest
             let _ = ready_tx.send(());
             notified.await;
@@ -252,8 +255,9 @@ mod tests {
         // Wait for waiter to register
         ready_rx.await.unwrap();
 
-        // Winner completes
-        coord.complete("cred-1").await;
+        // Winner completes: remove entry + notify (as scopeguard does in resolver)
+        coord.complete("cred-1");
+        winner_notify.notify_waiters();
 
         // Waiter should have been woken
         let result = waiter.await.unwrap();
@@ -264,27 +268,27 @@ mod tests {
     async fn independent_credentials_do_not_interfere() {
         let coord = RefreshCoordinator::new();
 
-        let a = coord.try_refresh("cred-a").await;
-        let b = coord.try_refresh("cred-b").await;
+        let a = coord.try_refresh("cred-a");
+        let b = coord.try_refresh("cred-b");
 
         // Both should win -- different credentials
         assert!(matches!(a, RefreshAttempt::Winner(_)));
         assert!(matches!(b, RefreshAttempt::Winner(_)));
-        assert_eq!(coord.in_flight_count().await, 2);
+        assert_eq!(coord.in_flight_count(), 2);
 
-        coord.complete("cred-a").await;
-        assert_eq!(coord.in_flight_count().await, 1);
+        coord.complete("cred-a");
+        assert_eq!(coord.in_flight_count(), 1);
 
-        coord.complete("cred-b").await;
-        assert_eq!(coord.in_flight_count().await, 0);
+        coord.complete("cred-b");
+        assert_eq!(coord.in_flight_count(), 0);
     }
 
     #[tokio::test]
     async fn complete_on_unknown_credential_is_noop() {
         let coord = RefreshCoordinator::new();
         // Should not panic
-        coord.complete("nonexistent").await;
-        assert_eq!(coord.in_flight_count().await, 0);
+        coord.complete("nonexistent");
+        assert_eq!(coord.in_flight_count(), 0);
     }
 
     #[tokio::test]
@@ -292,28 +296,31 @@ mod tests {
         let coord = RefreshCoordinator::new();
 
         // First round
-        let first = coord.try_refresh("cred-1").await;
+        let first = coord.try_refresh("cred-1");
         assert!(matches!(first, RefreshAttempt::Winner(_)));
-        coord.complete("cred-1").await;
+        coord.complete("cred-1");
 
         // Second round -- same credential can be refreshed again
-        let second = coord.try_refresh("cred-1").await;
+        let second = coord.try_refresh("cred-1");
         assert!(matches!(second, RefreshAttempt::Winner(_)));
-        coord.complete("cred-1").await;
+        coord.complete("cred-1");
     }
 
     #[tokio::test]
     async fn multiple_waiters_all_notified() {
         let coord = Arc::new(RefreshCoordinator::new());
 
-        // Winner
-        let _ = coord.try_refresh("cred-1").await;
+        // Winner -- extract Notify handle
+        let winner_notify = match coord.try_refresh("cred-1") {
+            RefreshAttempt::Winner(n) => n,
+            RefreshAttempt::Waiter(_) => panic!("expected Winner"),
+        };
 
         // Create 5 waiters with readiness signals
         let mut handles = Vec::new();
         let mut ready_rxs = Vec::new();
         for _ in 0..5 {
-            let attempt = coord.try_refresh("cred-1").await;
+            let attempt = coord.try_refresh("cred-1");
             let notify = match attempt {
                 RefreshAttempt::Waiter(n) => n,
                 RefreshAttempt::Winner(_) => panic!("expected Waiter"),
@@ -333,8 +340,9 @@ mod tests {
             rx.await.unwrap();
         }
 
-        // Complete -- all waiters should wake
-        coord.complete("cred-1").await;
+        // Complete + notify -- all waiters should wake
+        coord.complete("cred-1");
+        winner_notify.notify_waiters();
 
         for handle in handles {
             assert!(handle.await.unwrap());
@@ -344,41 +352,69 @@ mod tests {
     #[tokio::test]
     async fn default_creates_empty_coordinator() {
         let coord = RefreshCoordinator::default();
-        assert_eq!(coord.in_flight_count().await, 0);
+        assert_eq!(coord.in_flight_count(), 0);
     }
 
     #[tokio::test]
     async fn circuit_breaker_opens_after_max_failures() {
         let coord = RefreshCoordinator::new();
         for _ in 0..5 {
-            coord.record_failure("cred-1").await;
+            coord.record_failure("cred-1");
         }
-        assert!(coord.is_circuit_open("cred-1").await);
+        assert!(coord.is_circuit_open("cred-1"));
     }
 
     #[tokio::test]
     async fn circuit_breaker_closed_initially() {
         let coord = RefreshCoordinator::new();
-        assert!(!coord.is_circuit_open("cred-1").await);
+        assert!(!coord.is_circuit_open("cred-1"));
     }
 
     #[tokio::test]
     async fn circuit_breaker_resets_on_success() {
         let coord = RefreshCoordinator::new();
         for _ in 0..5 {
-            coord.record_failure("cred-1").await;
+            coord.record_failure("cred-1");
         }
-        assert!(coord.is_circuit_open("cred-1").await);
-        coord.record_success("cred-1").await;
-        assert!(!coord.is_circuit_open("cred-1").await);
+        assert!(coord.is_circuit_open("cred-1"));
+        coord.record_success("cred-1");
+        assert!(!coord.is_circuit_open("cred-1"));
     }
 
     #[tokio::test]
     async fn circuit_breaker_below_threshold_stays_closed() {
         let coord = RefreshCoordinator::new();
         for _ in 0..4 {
-            coord.record_failure("cred-1").await;
+            coord.record_failure("cred-1");
         }
-        assert!(!coord.is_circuit_open("cred-1").await);
+        assert!(!coord.is_circuit_open("cred-1"));
+    }
+
+    /// B8: Verifies that dropping a Winner without calling complete()
+    /// leaves the in-flight entry, and that a subsequent sync complete()
+    /// (as scopeguard would call) cleans it up so new callers become Winners.
+    #[tokio::test]
+    async fn inflight_entry_cleaned_after_sync_complete() {
+        let coord = RefreshCoordinator::new();
+
+        // Get Winner
+        let attempt = coord.try_refresh("cred-1");
+        assert!(matches!(attempt, RefreshAttempt::Winner(_)));
+        assert_eq!(coord.in_flight_count(), 1);
+
+        // Drop without calling complete -- simulates panic before scopeguard
+        drop(attempt);
+
+        // Entry is still in-flight (poisoned state without scopeguard)
+        assert_eq!(coord.in_flight_count(), 1);
+
+        // Manually call complete (as scopeguard would on drop)
+        coord.complete("cred-1");
+        assert_eq!(coord.in_flight_count(), 0);
+
+        // Next call should get Winner (entry was cleaned)
+        let attempt2 = coord.try_refresh("cred-1");
+        assert!(matches!(attempt2, RefreshAttempt::Winner(_)));
+        coord.complete("cred-1");
     }
 }

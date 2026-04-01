@@ -137,11 +137,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
         }
 
         // Circuit breaker: skip refresh if too many recent failures
-        if self
-            .refresh_coordinator
-            .is_circuit_open(credential_id)
-            .await
-        {
+        if self.refresh_coordinator.is_circuit_open(credential_id) {
             tracing::warn!(
                 credential_id,
                 "circuit breaker open: too many refresh failures, serving potentially stale credential"
@@ -151,20 +147,27 @@ impl<S: CredentialStore> CredentialResolver<S> {
         }
 
         // Coordinate refresh -- only one caller does the work
-        match self.refresh_coordinator.try_refresh(credential_id).await {
+        match self.refresh_coordinator.try_refresh(credential_id) {
             RefreshAttempt::Winner(notify) => {
-                // scopeguard: always notify waiters, even on panic/timeout
-                let _guard = scopeguard::guard(notify, |n| n.notify_waiters());
+                // scopeguard: always clean up in-flight entry and notify waiters,
+                // even on panic/timeout. Both complete() and notify_waiters() are
+                // sync, so they're safe to call from Drop (B8 fix).
+                let credential_id_for_guard = credential_id.to_string();
+                let coordinator = &self.refresh_coordinator;
+                let _guard = scopeguard::guard(notify, |n| {
+                    coordinator.complete(&credential_id_for_guard);
+                    n.notify_waiters();
+                });
                 let result = self
                     .perform_refresh::<C>(credential_id, state, stored, ctx)
                     .await;
                 // Track success/failure for circuit breaker
                 if result.is_ok() {
-                    self.refresh_coordinator.record_success(credential_id).await;
+                    self.refresh_coordinator.record_success(credential_id);
                 } else {
-                    self.refresh_coordinator.record_failure(credential_id).await;
+                    self.refresh_coordinator.record_failure(credential_id);
                 }
-                self.refresh_coordinator.complete(credential_id).await;
+                // complete() and notify_waiters() called by guard on drop
                 result
             }
             RefreshAttempt::Waiter(notify) => {
