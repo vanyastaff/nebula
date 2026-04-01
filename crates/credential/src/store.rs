@@ -28,6 +28,9 @@ pub enum PutMode {
 pub struct StoredCredential {
     /// The credential ID.
     pub id: String,
+    /// The credential type key (`Credential::KEY`), identifying which
+    /// `Credential` implementation produced this stored state.
+    pub credential_key: String,
     /// Serialized credential state (encrypted at the `EncryptionLayer` boundary).
     pub data: Vec<u8>,
     /// State type identifier (`CredentialState::KIND`).
@@ -86,6 +89,7 @@ pub(crate) mod test_helpers {
     pub fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
         StoredCredential {
             id: id.into(),
+            credential_key: "test_credential".into(),
             data: data.to_vec(),
             state_kind: "test".into(),
             state_version: 1,

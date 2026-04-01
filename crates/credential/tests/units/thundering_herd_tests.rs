@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use nebula_credential::SecretString;
 use nebula_credential::context::CredentialContext;
 use nebula_credential::credential::Credential;
 use nebula_credential::description::CredentialDescription;
@@ -14,7 +15,6 @@ use nebula_credential::pending::NoPendingState;
 use nebula_credential::resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult};
 use nebula_credential::scheme::BearerToken;
 use nebula_credential::store::{PutMode, StoredCredential};
-use nebula_credential::SecretString;
 use nebula_credential::{CredentialResolver, CredentialStore, InMemoryStore};
 use nebula_parameter::ParameterCollection;
 use nebula_parameter::values::ParameterValues;
@@ -114,6 +114,7 @@ async fn only_one_refresh_under_concurrent_access() {
 
     let cred = StoredCredential {
         id: "herd-cred".into(),
+        credential_key: "thundering_herd_test".into(),
         data,
         state_kind: "thundering_herd_test".into(),
         state_version: 1,

@@ -472,6 +472,7 @@ mod tests {
 
         let cred = StoredCredential {
             id: "my-api-key".into(),
+            credential_key: "api_key".into(),
             data,
             state_kind: "bearer".into(),
             state_version: 1,
@@ -513,6 +514,7 @@ mod tests {
 
         let cred = StoredCredential {
             id: "wrong-kind".into(),
+            credential_key: "database".into(),
             data: b"{}".to_vec(),
             state_kind: "database_auth".into(),
             state_version: 1,
@@ -535,6 +537,7 @@ mod tests {
 
         let cred = StoredCredential {
             id: "bad-data".into(),
+            credential_key: "api_key".into(),
             data: b"not-valid-json".to_vec(),
             state_kind: "bearer".into(),
             state_version: 1,
@@ -565,6 +568,7 @@ mod tests {
 
         let cred = StoredCredential {
             id: "expiring-cred".into(),
+            credential_key: "refreshable_test".into(),
             data,
             state_kind: "expiring_test".into(),
             state_version: 1,
@@ -642,10 +646,7 @@ mod tests {
             self.inner.delete(id).await
         }
 
-        async fn list(
-            &self,
-            state_kind: Option<&str>,
-        ) -> Result<Vec<String>, StoreError> {
+        async fn list(&self, state_kind: Option<&str>) -> Result<Vec<String>, StoreError> {
             self.inner.list(state_kind).await
         }
 
@@ -727,6 +728,7 @@ mod tests {
 
         let cred = StoredCredential {
             id: "cas-cred".into(),
+            credential_key: "cas_retry_test".into(),
             data,
             state_kind: "expiring_test".into(),
             state_version: 1,
@@ -775,6 +777,7 @@ mod tests {
 
         let cred = StoredCredential {
             id: "cas-exhausted".into(),
+            credential_key: "cas_retry_test".into(),
             data,
             state_kind: "expiring_test".into(),
             state_version: 1,
@@ -795,7 +798,10 @@ mod tests {
 
         // Should fail with VersionConflict after exhausting retries
         assert!(
-            matches!(result, Err(ResolveError::Store(StoreError::VersionConflict { .. }))),
+            matches!(
+                result,
+                Err(ResolveError::Store(StoreError::VersionConflict { .. }))
+            ),
             "expected VersionConflict after retries exhausted, got: {result:?}"
         );
 
@@ -817,6 +823,7 @@ mod tests {
 
         let cred = StoredCredential {
             id: "valid-cred".into(),
+            credential_key: "refreshable_test".into(),
             data,
             state_kind: "expiring_test".into(),
             state_version: 1,

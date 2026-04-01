@@ -11,8 +11,8 @@
 
 use std::sync::Arc;
 
-use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 use crate::crypto::{self, EncryptionKey};
+use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// Wraps a store with AES-256-GCM encryption on the `data` field.
 ///
@@ -190,6 +190,7 @@ mod tests {
 
         let cred = StoredCredential {
             id: "legacy-1".into(),
+            credential_key: "test_credential".into(),
             data: encrypted_bytes,
             state_kind: "test".into(),
             state_version: 1,

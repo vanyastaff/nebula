@@ -209,6 +209,7 @@ mod tests {
     fn make_credential(id: &str) -> StoredCredential {
         StoredCredential {
             id: id.into(),
+            credential_key: "test_credential".into(),
             data: b"test-data".to_vec(),
             state_kind: "test".into(),
             state_version: 1,

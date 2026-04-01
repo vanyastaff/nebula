@@ -41,11 +41,11 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - **B1 HIGH**: `SecretString::Serialize` redacts → round-trip destroys identity-state credentials
 - **B2 HIGH**: `OAuth2State` stores `access_token`/`refresh_token` as plain `String` (no zeroize)
 - **B5 HIGH**: `ScopeLayer.list()`/`exists()` pass through without scope filtering
-- **B7 HIGH**: `perform_refresh` doesn't retry CAS on `VersionConflict` — new token lost
+- **B7 HIGH**: ~~`perform_refresh` doesn't retry CAS on `VersionConflict` — new token lost~~ FIXED
 - **B8 HIGH**: ~~`complete()` not called if `perform_refresh` panics — in-flight map poisoned~~ FIXED
 - **B9 HIGH**: `CredentialRotationEvent.new_state` leaks credential material
 - **B11 HIGH**: Resolver emits NO events after refresh — resources never learn
-- **B12 HIGH**: `StoredCredential` missing `credential_key` — engine can't dispatch
+- **B12 HIGH**: ~~`StoredCredential` missing `credential_key` — engine can't dispatch~~ FIXED
 - **B3 MEDIUM**: RefreshCoordinator circuit breaker map unbounded
 - **B13 MEDIUM**: `CredentialRegistry::project()` returns `Box<dyn Any>` not `CredentialSnapshot`
 - **B14 HIGH**: No global refresh concurrency limiter — cascading CB opens at 500+ credentials
@@ -71,4 +71,6 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - Target: `CredentialEvent` moves to nebula-core (both emitter/consumer without peer import).
 
 <!-- updated: 2026-04-01 — HLD v1.5, 17 bugs, 33 v1 items, 2 conferences (10 external devs), SOC2 audit grades -->
+<!-- reviewed: 2026-03-31 — B7 fix: CAS retry loop (3 attempts) reuses refreshed token, prevents OAuth2 single-use token loss -->
 <!-- reviewed: 2026-03-31 — B8 fix: in_flight → parking_lot::Mutex, scopeguard calls complete()+notify_waiters() -->
+<!-- reviewed: 2026-03-31 — B12 fix: added credential_key field to StoredCredential for type dispatch -->
