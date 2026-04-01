@@ -10,6 +10,9 @@ extern crate proc_macro;
 
 use proc_macro::TokenStream;
 
+mod emit;
+mod model;
+mod parse;
 mod validator;
 
 /// Derive macro for generating field-based validators.
