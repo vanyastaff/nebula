@@ -4,7 +4,6 @@
 //! handled in ONE function instead of being duplicated across every rule.
 
 #![allow(dead_code)] // Unused until Task 4 wires the 3-phase pipeline.
-
 #![forbid(unsafe_code)]
 
 use proc_macro2::TokenStream as TokenStream2;
@@ -80,8 +79,12 @@ pub fn emit(input: &ValidatorInput) -> TokenStream2 {
 // Central wrappers — the architectural win
 // ---------------------------------------------------------------------------
 
-/// Wrap a check in `if let Some(value) = input.field.as_ref() { ... }`
-/// when the field is `Option<T>`.
+/// Bind `value` to a reference of the field's inner type.
+///
+/// - **Option fields:** `if let Some(value) = input.field.as_ref() { <check> }`
+/// - **Non-option fields:** `let value = &input.field; <check>`
+///
+/// All inner check code uses `value` uniformly — no per-rule duplication.
 fn wrap_option(field: &FieldDef, check: TokenStream2) -> TokenStream2 {
     let field_name = &field.ident;
     if field.is_option {
@@ -91,7 +94,12 @@ fn wrap_option(field: &FieldDef, check: TokenStream2) -> TokenStream2 {
             }
         }
     } else {
-        check
+        quote! {
+            {
+                let value = &input.#field_name;
+                #check
+            }
+        }
     }
 }
 
@@ -137,8 +145,12 @@ fn emit_field_rule(field: &FieldDef, rule: &Rule) -> TokenStream2 {
         Rule::StringFactory { kind, arg } => {
             emit_str_validator(field, string_factory_to_tokens(*kind, arg))
         }
-        Rule::IsTrue => emit_bool_validator(field, quote!(::nebula_validator::validators::is_true())),
-        Rule::IsFalse => emit_bool_validator(field, quote!(::nebula_validator::validators::is_false())),
+        Rule::IsTrue => {
+            emit_bool_validator(field, quote!(::nebula_validator::validators::is_true()))
+        }
+        Rule::IsFalse => {
+            emit_bool_validator(field, quote!(::nebula_validator::validators::is_false()))
+        }
         Rule::Regex(pattern) => emit_regex_validator(field, pattern),
         Rule::Nested => emit_nested_validator(field),
         Rule::Custom(expr) => emit_custom_validator(field, expr),
@@ -155,12 +167,6 @@ fn emit_required(field: &FieldDef) -> TokenStream2 {
     let field_name = &field.ident;
     let field_key = field_name.to_string();
 
-    let check = quote! {
-        if input.#field_name.is_none() {
-            errors.add(::nebula_validator::foundation::ValidationError::required(#field_key));
-        }
-    };
-
     if let Some(message) = &field.message {
         quote! {
             if input.#field_name.is_none() {
@@ -170,7 +176,11 @@ fn emit_required(field: &FieldDef) -> TokenStream2 {
             }
         }
     } else {
-        check
+        quote! {
+            if input.#field_name.is_none() {
+                errors.add(::nebula_validator::foundation::ValidationError::required(#field_key));
+            }
+        }
     }
 }
 
@@ -178,25 +188,22 @@ fn emit_required(field: &FieldDef) -> TokenStream2 {
 // Length checks (min_length, max_length, exact_length)
 // ---------------------------------------------------------------------------
 
-/// Emit min_length or max_length check using `generate_len_check` equivalent.
+/// Emit min_length or max_length check.
+///
+/// Uses `wrap_option` — inner code references `value` uniformly.
 fn emit_len_check(field: &FieldDef, bound: usize, is_min: bool) -> TokenStream2 {
-    let field_name = &field.ident;
-    let field_key = field_name.to_string();
+    let field_key = field.ident.to_string();
 
     let error = if is_min {
         quote! {
             ::nebula_validator::foundation::ValidationError::min_length(
-                #field_key,
-                #bound,
-                value.len(),
+                #field_key, #bound, value.len(),
             )
         }
     } else {
         quote! {
             ::nebula_validator::foundation::ValidationError::max_length(
-                #field_key,
-                #bound,
-                value.len(),
+                #field_key, #bound, value.len(),
             )
         }
     };
@@ -207,57 +214,28 @@ fn emit_len_check(field: &FieldDef, bound: usize, is_min: bool) -> TokenStream2 
         quote!(value.len() > #bound)
     };
 
-    let inner = if field.is_option {
-        quote! {
-            if let Some(value) = input.#field_name.as_ref() {
-                if #cmp {
-                    errors.add(#error);
-                }
-            }
-        }
-    } else {
-        quote! {
-            let value = &input.#field_name;
-            if #cmp {
-                errors.add(#error);
-            }
+    let inner = quote! {
+        if #cmp {
+            errors.add(#error);
         }
     };
 
-    wrap_message(field, inner)
+    wrap_message(field, wrap_option(field, inner))
 }
 
 /// Emit exact_length check.
 fn emit_exact_len_check(field: &FieldDef, expected: usize) -> TokenStream2 {
-    let field_name = &field.ident;
-    let field_key = field_name.to_string();
+    let field_key = field.ident.to_string();
 
-    let error = quote! {
-        ::nebula_validator::foundation::ValidationError::exact_length(
-            #field_key,
-            #expected,
-            value.len(),
-        )
-    };
-
-    let inner = if field.is_option {
-        quote! {
-            if let Some(value) = input.#field_name.as_ref() {
-                if value.len() != #expected {
-                    errors.add(#error);
-                }
-            }
-        }
-    } else {
-        quote! {
-            let value = &input.#field_name;
-            if value.len() != #expected {
-                errors.add(#error);
-            }
+    let inner = quote! {
+        if value.len() != #expected {
+            errors.add(::nebula_validator::foundation::ValidationError::exact_length(
+                #field_key, #expected, value.len(),
+            ));
         }
     };
 
-    wrap_message(field, inner)
+    wrap_message(field, wrap_option(field, inner))
 }
 
 // ---------------------------------------------------------------------------
@@ -266,40 +244,22 @@ fn emit_exact_len_check(field: &FieldDef, expected: usize) -> TokenStream2 {
 
 /// Emit `length_range(min, max)` check.
 fn emit_length_range(field: &FieldDef, min: usize, max: usize) -> TokenStream2 {
-    let field_name = &field.ident;
-    let field_key = field_name.to_string();
+    let field_key = field.ident.to_string();
 
-    let inner = if field.is_option {
-        quote! {
-            if let Some(value) = input.#field_name.as_ref() {
-                match ::nebula_validator::validators::length_range(#min, #max) {
-                    Ok(v) => {
-                        if let Err(e) = ::nebula_validator::foundation::Validate::validate(&v, value.as_str()) {
-                            errors.add(e.with_field(#field_key));
-                        }
-                    }
-                    Err(e) => {
-                        errors.add(e.with_field(#field_key));
-                    }
-                }
-            }
-        }
-    } else {
-        quote! {
-            match ::nebula_validator::validators::length_range(#min, #max) {
-                Ok(v) => {
-                    if let Err(e) = ::nebula_validator::foundation::Validate::validate(&v, input.#field_name.as_str()) {
-                        errors.add(e.with_field(#field_key));
-                    }
-                }
-                Err(e) => {
+    let inner = quote! {
+        match ::nebula_validator::validators::length_range(#min, #max) {
+            Ok(v) => {
+                if let Err(e) = ::nebula_validator::foundation::Validate::validate(&v, value.as_str()) {
                     errors.add(e.with_field(#field_key));
                 }
+            }
+            Err(e) => {
+                errors.add(e.with_field(#field_key));
             }
         }
     };
 
-    wrap_message(field, inner)
+    wrap_message(field, wrap_option(field, inner))
 }
 
 // ---------------------------------------------------------------------------
@@ -308,51 +268,27 @@ fn emit_length_range(field: &FieldDef, min: usize, max: usize) -> TokenStream2 {
 
 /// Emit min or max numeric comparison check.
 fn emit_cmp_check(field: &FieldDef, bound: &TokenStream2, is_min: bool) -> TokenStream2 {
-    let field_name = &field.ident;
-    let field_key = field_name.to_string();
+    let field_key = field.ident.to_string();
 
-    let error = if is_min {
-        quote! {
-            ::nebula_validator::foundation::ValidationError::new(
-                "min",
-                format!("{} must be >= {}", #field_key, #bound),
-            )
-            .with_field(#field_key)
-        }
+    let (code, cmp) = if is_min {
+        ("min", quote!(value < &#bound))
     } else {
-        quote! {
-            ::nebula_validator::foundation::ValidationError::new(
-                "max",
-                format!("{} must be <= {}", #field_key, #bound),
-            )
-            .with_field(#field_key)
+        ("max", quote!(value > &#bound))
+    };
+
+    let op = if is_min { ">=" } else { "<=" };
+
+    let inner = quote! {
+        if #cmp {
+            errors.add(
+                ::nebula_validator::foundation::ValidationError::new(
+                    #code, format!("{} must be {} {}", #field_key, #op, #bound),
+                ).with_field(#field_key)
+            );
         }
     };
 
-    let cmp = if is_min {
-        quote!(value < &#bound)
-    } else {
-        quote!(value > &#bound)
-    };
-
-    let inner = if field.is_option {
-        quote! {
-            if let Some(value) = input.#field_name.as_ref() {
-                if #cmp {
-                    errors.add(#error);
-                }
-            }
-        }
-    } else {
-        quote! {
-            let value = &input.#field_name;
-            if #cmp {
-                errors.add(#error);
-            }
-        }
-    };
-
-    wrap_message(field, inner)
+    wrap_message(field, wrap_option(field, inner))
 }
 
 // ---------------------------------------------------------------------------
@@ -361,96 +297,54 @@ fn emit_cmp_check(field: &FieldDef, bound: &TokenStream2, is_min: bool) -> Token
 
 /// Emit a collection size validator check (min_size, max_size, exact_size).
 fn emit_size_validator(field: &FieldDef, validator_name: &str, size: usize) -> TokenStream2 {
-    let field_name = &field.ident;
-    let field_key = field_name.to_string();
+    let field_key = field.ident.to_string();
     let element_type = vec_inner_type_from_field(field);
     let validator_ident = syn::Ident::new(validator_name, proc_macro2::Span::call_site());
 
-    let inner = if field.is_option {
-        quote! {
-            if let Some(value) = input.#field_name.as_ref() {
-                if let Err(e) = ::nebula_validator::foundation::Validate::validate(
-                    &::nebula_validator::validators::#validator_ident::<#element_type>(#size),
-                    value.as_slice(),
-                ) {
-                    errors.add(e.with_field(#field_key));
-                }
-            }
-        }
-    } else {
-        quote! {
-            if let Err(e) = ::nebula_validator::foundation::Validate::validate(
-                &::nebula_validator::validators::#validator_ident::<#element_type>(#size),
-                input.#field_name.as_slice(),
-            ) {
-                errors.add(e.with_field(#field_key));
-            }
+    let inner = quote! {
+        if let Err(e) = ::nebula_validator::foundation::Validate::validate(
+            &::nebula_validator::validators::#validator_ident::<#element_type>(#size),
+            value.as_slice(),
+        ) {
+            errors.add(e.with_field(#field_key));
         }
     };
 
-    wrap_message(field, inner)
+    wrap_message(field, wrap_option(field, inner))
 }
 
 /// Emit `size_range(min, max)` check.
 fn emit_size_range(field: &FieldDef, min: usize, max: usize) -> TokenStream2 {
-    let field_name = &field.ident;
-    let field_key = field_name.to_string();
+    let field_key = field.ident.to_string();
     let element_type = vec_inner_type_from_field(field);
 
-    let inner = if field.is_option {
-        quote! {
-            if let Some(value) = input.#field_name.as_ref() {
-                if let Err(e) = ::nebula_validator::foundation::Validate::validate(
-                    &::nebula_validator::validators::size_range::<#element_type>(#min, #max),
-                    value.as_slice(),
-                ) {
-                    errors.add(e.with_field(#field_key));
-                }
-            }
-        }
-    } else {
-        quote! {
-            if let Err(e) = ::nebula_validator::foundation::Validate::validate(
-                &::nebula_validator::validators::size_range::<#element_type>(#min, #max),
-                input.#field_name.as_slice(),
-            ) {
-                errors.add(e.with_field(#field_key));
-            }
+    let inner = quote! {
+        if let Err(e) = ::nebula_validator::foundation::Validate::validate(
+            &::nebula_validator::validators::size_range::<#element_type>(#min, #max),
+            value.as_slice(),
+        ) {
+            errors.add(e.with_field(#field_key));
         }
     };
 
-    wrap_message(field, inner)
+    wrap_message(field, wrap_option(field, inner))
 }
 
 /// Emit `not_empty_collection` check.
 fn emit_not_empty_collection(field: &FieldDef) -> TokenStream2 {
-    let field_name = &field.ident;
-    let field_key = field_name.to_string();
+    let field_key = field.ident.to_string();
     let element_type = vec_inner_type_from_field(field);
 
-    let inner = if field.is_option {
-        quote! {
-            if let Some(value) = input.#field_name.as_ref() {
-                if let Err(e) = ::nebula_validator::foundation::Validate::validate(
-                    &::nebula_validator::validators::not_empty_collection::<#element_type>(),
-                    value.as_slice(),
-                ) {
-                    errors.add(e.with_field(#field_key));
-                }
-            }
-        }
-    } else {
-        quote! {
-            if let Err(e) = ::nebula_validator::foundation::Validate::validate(
-                &::nebula_validator::validators::not_empty_collection::<#element_type>(),
-                input.#field_name.as_slice(),
-            ) {
-                errors.add(e.with_field(#field_key));
-            }
+    let inner = quote! {
+        if let Err(e) = ::nebula_validator::foundation::Validate::validate(
+            &::nebula_validator::validators::not_empty_collection::<#element_type>(),
+            value.as_slice(),
+        ) {
+            errors.add(e.with_field(#field_key));
         }
     };
 
-    wrap_message(field, inner)
+    wrap_message(field, wrap_option(field, inner))
 }
 
 // ---------------------------------------------------------------------------
@@ -459,26 +353,15 @@ fn emit_not_empty_collection(field: &FieldDef) -> TokenStream2 {
 
 /// Emit a string validator check using a built-in validator expression.
 fn emit_str_validator(field: &FieldDef, validator_expr: TokenStream2) -> TokenStream2 {
-    let field_name = &field.ident;
-    let field_key = field_name.to_string();
+    let field_key = field.ident.to_string();
 
-    let inner = if field.is_option {
-        quote! {
-            if let Some(ref value) = input.#field_name {
-                if let Err(e) = ::nebula_validator::foundation::Validate::validate(&#validator_expr, value.as_str()) {
-                    errors.add(e.with_field(#field_key));
-                }
-            }
-        }
-    } else {
-        quote! {
-            if let Err(e) = ::nebula_validator::foundation::Validate::validate(&#validator_expr, input.#field_name.as_str()) {
-                errors.add(e.with_field(#field_key));
-            }
+    let inner = quote! {
+        if let Err(e) = ::nebula_validator::foundation::Validate::validate(&#validator_expr, value.as_str()) {
+            errors.add(e.with_field(#field_key));
         }
     };
 
-    wrap_message(field, inner)
+    wrap_message(field, wrap_option(field, inner))
 }
 
 // ---------------------------------------------------------------------------
@@ -487,26 +370,15 @@ fn emit_str_validator(field: &FieldDef, validator_expr: TokenStream2) -> TokenSt
 
 /// Emit a boolean validator check.
 fn emit_bool_validator(field: &FieldDef, validator_expr: TokenStream2) -> TokenStream2 {
-    let field_name = &field.ident;
-    let field_key = field_name.to_string();
+    let field_key = field.ident.to_string();
 
-    let inner = if field.is_option {
-        quote! {
-            if let Some(value) = input.#field_name.as_ref() {
-                if let Err(e) = ::nebula_validator::foundation::Validate::validate(&#validator_expr, value) {
-                    errors.add(e.with_field(#field_key));
-                }
-            }
-        }
-    } else {
-        quote! {
-            if let Err(e) = ::nebula_validator::foundation::Validate::validate(&#validator_expr, &input.#field_name) {
-                errors.add(e.with_field(#field_key));
-            }
+    let inner = quote! {
+        if let Err(e) = ::nebula_validator::foundation::Validate::validate(&#validator_expr, value) {
+            errors.add(e.with_field(#field_key));
         }
     };
 
-    wrap_message(field, inner)
+    wrap_message(field, wrap_option(field, inner))
 }
 
 // ---------------------------------------------------------------------------
@@ -515,52 +387,28 @@ fn emit_bool_validator(field: &FieldDef, validator_expr: TokenStream2) -> TokenS
 
 /// Emit a regex validator check.
 fn emit_regex_validator(field: &FieldDef, pattern: &str) -> TokenStream2 {
-    let field_name = &field.ident;
-    let field_key = field_name.to_string();
+    let field_key = field.ident.to_string();
 
-    let inner = if field.is_option {
-        quote! {
-            if let Some(ref value) = input.#field_name {
-                match ::nebula_validator::validators::matches_regex(#pattern) {
-                    Ok(v) => {
-                        if let Err(e) = ::nebula_validator::foundation::Validate::validate(&v, value.as_str()) {
-                            errors.add(e.with_field(#field_key));
-                        }
-                    }
-                    Err(e) => {
-                        errors.add(
-                            ::nebula_validator::foundation::ValidationError::new(
-                                "invalid_regex_pattern",
-                                format!("invalid regex pattern `{}`: {}", #pattern, e),
-                            )
-                            .with_field(#field_key),
-                        );
-                    }
+    let inner = quote! {
+        match ::nebula_validator::validators::matches_regex(#pattern) {
+            Ok(v) => {
+                if let Err(e) = ::nebula_validator::foundation::Validate::validate(&v, value.as_str()) {
+                    errors.add(e.with_field(#field_key));
                 }
             }
-        }
-    } else {
-        quote! {
-            match ::nebula_validator::validators::matches_regex(#pattern) {
-                Ok(v) => {
-                    if let Err(e) = ::nebula_validator::foundation::Validate::validate(&v, input.#field_name.as_str()) {
-                        errors.add(e.with_field(#field_key));
-                    }
-                }
-                Err(e) => {
-                    errors.add(
-                        ::nebula_validator::foundation::ValidationError::new(
-                            "invalid_regex_pattern",
-                            format!("invalid regex pattern `{}`: {}", #pattern, e),
-                        )
-                        .with_field(#field_key),
-                    );
-                }
+            Err(e) => {
+                errors.add(
+                    ::nebula_validator::foundation::ValidationError::new(
+                        "invalid_regex_pattern",
+                        format!("invalid regex pattern `{}`: {}", #pattern, e),
+                    )
+                    .with_field(#field_key),
+                );
             }
         }
     };
 
-    wrap_message(field, inner)
+    wrap_message(field, wrap_option(field, inner))
 }
 
 // ---------------------------------------------------------------------------
@@ -569,32 +417,11 @@ fn emit_regex_validator(field: &FieldDef, pattern: &str) -> TokenStream2 {
 
 /// Emit a nested validation check via `SelfValidating::check`.
 fn emit_nested_validator(field: &FieldDef) -> TokenStream2 {
-    let field_name = &field.ident;
-    let field_key = field_name.to_string();
+    let field_key = field.ident.to_string();
 
-    if field.is_option {
-        if let Some(message) = &field.message {
-            quote! {
-                if let Some(value) = input.#field_name.as_ref() {
-                    if let Err(mut e) = ::nebula_validator::combinators::SelfValidating::check(value) {
-                        e = e.with_field(#field_key);
-                        e.message = ::std::borrow::Cow::Owned(#message.to_string());
-                        errors.add(e);
-                    }
-                }
-            }
-        } else {
-            quote! {
-                if let Some(value) = input.#field_name.as_ref() {
-                    if let Err(e) = ::nebula_validator::combinators::SelfValidating::check(value) {
-                        errors.add(e.with_field(#field_key));
-                    }
-                }
-            }
-        }
-    } else if let Some(message) = &field.message {
+    let inner = if let Some(message) = &field.message {
         quote! {
-            if let Err(mut e) = ::nebula_validator::combinators::SelfValidating::check(&input.#field_name) {
+            if let Err(mut e) = ::nebula_validator::combinators::SelfValidating::check(value) {
                 e = e.with_field(#field_key);
                 e.message = ::std::borrow::Cow::Owned(#message.to_string());
                 errors.add(e);
@@ -602,11 +429,16 @@ fn emit_nested_validator(field: &FieldDef) -> TokenStream2 {
         }
     } else {
         quote! {
-            if let Err(e) = ::nebula_validator::combinators::SelfValidating::check(&input.#field_name) {
+            if let Err(e) = ::nebula_validator::combinators::SelfValidating::check(value) {
                 errors.add(e.with_field(#field_key));
             }
         }
-    }
+    };
+
+    // NOTE: nested uses its own message pattern (mut e) instead of wrap_message,
+    // because it needs to set both field and message on the error before adding.
+    // wrap_option is still used to centralize Option handling.
+    wrap_option(field, inner)
 }
 
 // ---------------------------------------------------------------------------
@@ -615,32 +447,11 @@ fn emit_nested_validator(field: &FieldDef) -> TokenStream2 {
 
 /// Emit a custom validator expression check.
 fn emit_custom_validator(field: &FieldDef, expr: &TokenStream2) -> TokenStream2 {
-    let field_name = &field.ident;
-    let field_key = field_name.to_string();
+    let field_key = field.ident.to_string();
 
-    if field.is_option {
-        if let Some(message) = &field.message {
-            quote! {
-                if let Some(value) = input.#field_name.as_ref() {
-                    if let Err(mut e) = (#expr)(value) {
-                        e = e.with_field(#field_key);
-                        e.message = ::std::borrow::Cow::Owned(#message.to_string());
-                        errors.add(e);
-                    }
-                }
-            }
-        } else {
-            quote! {
-                if let Some(value) = input.#field_name.as_ref() {
-                    if let Err(e) = (#expr)(value) {
-                        errors.add(e.with_field(#field_key));
-                    }
-                }
-            }
-        }
-    } else if let Some(message) = &field.message {
+    let inner = if let Some(message) = &field.message {
         quote! {
-            if let Err(mut e) = (#expr)(&input.#field_name) {
+            if let Err(mut e) = (#expr)(value) {
                 e = e.with_field(#field_key);
                 e.message = ::std::borrow::Cow::Owned(#message.to_string());
                 errors.add(e);
@@ -648,11 +459,15 @@ fn emit_custom_validator(field: &FieldDef, expr: &TokenStream2) -> TokenStream2 
         }
     } else {
         quote! {
-            if let Err(e) = (#expr)(&input.#field_name) {
+            if let Err(e) = (#expr)(value) {
                 errors.add(e.with_field(#field_key));
             }
         }
-    }
+    };
+
+    // NOTE: custom uses its own message pattern (mut e) instead of wrap_message,
+    // same as nested — needs to modify the error before adding.
+    wrap_option(field, inner)
 }
 
 // ---------------------------------------------------------------------------
@@ -668,7 +483,7 @@ fn emit_each_loop(field: &FieldDef, each: &EachRules) -> TokenStream2 {
     let each_checks: Vec<TokenStream2> = each
         .rules
         .iter()
-        .map(|rule| emit_each_rule(rule, field, &each.element_ty))
+        .map(|rule| emit_each_rule(rule, field))
         .collect();
 
     let each_loop = quote! {
@@ -678,8 +493,7 @@ fn emit_each_loop(field: &FieldDef, each: &EachRules) -> TokenStream2 {
         }
     };
 
-    let each_is_option = option_type_check(&field.ty);
-    if each_is_option {
+    if option_type_check(&field.ty) {
         quote! {
             if let Some(collection) = input.#field_name.as_ref() {
                 #each_loop
@@ -694,7 +508,10 @@ fn emit_each_loop(field: &FieldDef, each: &EachRules) -> TokenStream2 {
 }
 
 /// Generate the check code for a single element-level rule inside the each loop.
-fn emit_each_rule(rule: &Rule, field: &FieldDef, _element_ty: &Type) -> TokenStream2 {
+///
+/// Inside the loop, `value` is the element ref and `each_field` is the indexed
+/// field path string (e.g. `"tags[0]"`).
+fn emit_each_rule(rule: &Rule, field: &FieldDef) -> TokenStream2 {
     let message = &field.message;
 
     match rule {
@@ -736,11 +553,7 @@ fn emit_each_len_check(bound: usize, is_min: bool, message: &Option<String>) -> 
     if let Some(msg) = message {
         quote! {
             if #cmp {
-                let mut err = #error_ctor(
-                    each_field.clone(),
-                    #bound,
-                    value.len(),
-                );
+                let mut err = #error_ctor(each_field.clone(), #bound, value.len());
                 err.message = ::std::borrow::Cow::Owned(#msg.to_string());
                 errors.add(err);
             }
@@ -748,11 +561,7 @@ fn emit_each_len_check(bound: usize, is_min: bool, message: &Option<String>) -> 
     } else {
         quote! {
             if #cmp {
-                errors.add(#error_ctor(
-                    each_field.clone(),
-                    #bound,
-                    value.len(),
-                ));
+                errors.add(#error_ctor(each_field.clone(), #bound, value.len()));
             }
         }
     }
@@ -764,9 +573,7 @@ fn emit_each_exact_len(expected: usize, message: &Option<String>) -> TokenStream
         quote! {
             if value.len() != #expected {
                 let mut err = ::nebula_validator::foundation::ValidationError::exact_length(
-                    each_field.clone(),
-                    #expected,
-                    value.len(),
+                    each_field.clone(), #expected, value.len(),
                 );
                 err.message = ::std::borrow::Cow::Owned(#msg.to_string());
                 errors.add(err);
@@ -776,9 +583,7 @@ fn emit_each_exact_len(expected: usize, message: &Option<String>) -> TokenStream
         quote! {
             if value.len() != #expected {
                 errors.add(::nebula_validator::foundation::ValidationError::exact_length(
-                    each_field.clone(),
-                    #expected,
-                    value.len(),
+                    each_field.clone(), #expected, value.len(),
                 ));
             }
         }
@@ -797,7 +602,6 @@ fn emit_each_cmp_check(
     } else {
         quote!(value > &#bound)
     };
-    // Use the operator symbol in the format string to match old codegen exactly.
     let op_str = if is_min { ">=" } else { "<=" };
 
     if let Some(msg) = message {
@@ -962,7 +766,9 @@ fn string_format_to_tokens(format: StringFormat) -> TokenStream2 {
 fn string_factory_to_tokens(kind: StringFactoryKind, arg: &str) -> TokenStream2 {
     match kind {
         StringFactoryKind::Contains => quote!(::nebula_validator::validators::contains(#arg)),
-        StringFactoryKind::StartsWith => quote!(::nebula_validator::validators::starts_with(#arg)),
+        StringFactoryKind::StartsWith => {
+            quote!(::nebula_validator::validators::starts_with(#arg))
+        }
         StringFactoryKind::EndsWith => quote!(::nebula_validator::validators::ends_with(#arg)),
     }
 }
@@ -973,8 +779,8 @@ fn string_factory_to_tokens(kind: StringFactoryKind, arg: &str) -> TokenStream2 
 
 /// Extract the `Vec<T>` element type from a field's inner type.
 ///
-/// Falls back to `String` if extraction fails (should not happen after
-/// parse-phase validation).
+/// Falls back to the inner type itself if extraction fails (should not happen
+/// after parse-phase validation).
 fn vec_inner_type_from_field(field: &FieldDef) -> &Type {
     vec_inner_type(&field.inner_ty).unwrap_or(&field.inner_ty)
 }
@@ -1006,19 +812,5 @@ fn option_type_check(ty: &Type) -> bool {
         .path
         .segments
         .last()
-        .map(|segment| segment.ident == "Option")
-        .unwrap_or(false)
-}
-
-/// Check if a type is `String`.
-fn is_string_type_check(ty: &Type) -> bool {
-    let Type::Path(type_path) = ty else {
-        return false;
-    };
-    type_path
-        .path
-        .segments
-        .last()
-        .map(|segment| segment.ident == "String")
-        .unwrap_or(false)
+        .is_some_and(|segment| segment.ident == "Option")
 }
