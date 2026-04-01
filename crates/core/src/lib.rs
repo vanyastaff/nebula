@@ -34,8 +34,12 @@ pub mod constants;
 pub mod deps;
 pub mod id;
 pub mod scope;
+/// Secret string type with automatic zeroization.
+pub mod secret_string;
 /// Shared serde helpers (duration serialization, etc.).
 pub mod serde_helpers;
+/// Serde helpers for [`SecretString`] that preserve the actual value.
+pub mod serde_secret;
 pub mod traits;
 pub mod types;
 
@@ -48,6 +52,7 @@ pub use error::*;
 pub use id::*;
 pub use keys::*;
 pub use scope::*;
+pub use secret_string::SecretString;
 pub use traits::*;
 pub use types::*;
 
