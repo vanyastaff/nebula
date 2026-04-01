@@ -191,10 +191,14 @@ impl<S: CredentialStore> CredentialStore for ScopeLayer<S> {
 ///
 /// Returns `Ok(())` if:
 /// - The resolver returns `None` (admin/global scope — bypass), or
-/// - The credential's `metadata["owner_id"]` matches the resolver's owner, or
-/// - The credential has no `owner_id` in metadata (unscoped legacy credential).
+/// - The credential's `metadata["owner_id"]` matches the resolver's owner.
 ///
-/// Returns `StoreError::NotFound` on mismatch to avoid leaking existence.
+/// Returns `StoreError::NotFound` if:
+/// - The owner does not match, or
+/// - The credential has no `owner_id` in metadata (fail-closed: only admin
+///   can access unscoped/legacy credentials).
+///
+/// Returns `StoreError::NotFound` on rejection to avoid leaking existence.
 fn verify_owner(
     resolver: &Arc<dyn ScopeResolver>,
     id: &str,
@@ -205,13 +209,15 @@ fn verify_owner(
         return Ok(());
     };
 
-    if let Some(Value::String(stored_owner)) = credential.metadata.get(OWNER_KEY)
-        && stored_owner != caller_owner
-    {
-        return Err(StoreError::NotFound { id: id.to_owned() });
+    match credential.metadata.get(OWNER_KEY) {
+        Some(Value::String(stored_owner)) if stored_owner == caller_owner => Ok(()),
+        Some(Value::String(_)) => Err(StoreError::NotFound { id: id.to_owned() }),
+        _ => {
+            // No owner_id or wrong type → only admin can access.
+            // Non-admin callers get NotFound (fail-closed).
+            Err(StoreError::NotFound { id: id.to_owned() })
+        }
     }
-    // No owner_id in metadata → unscoped credential, allow access.
-    Ok(())
 }
 
 #[cfg(test)]
@@ -298,15 +304,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_allows_unscoped_credential() {
+    async fn get_rejects_unscoped_credential_for_non_admin() {
         let inner = InMemoryStore::new();
         // Credential without owner_id in metadata
         let cred = make_credential("cred-unscoped");
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
 
+        // Non-admin caller should NOT be able to access ownerless credentials
         let store = ScopeLayer::new(inner, Arc::new(FixedScope(Some("any-tenant".to_owned()))));
-        let fetched = store.get("cred-unscoped").await.unwrap();
-        assert_eq!(fetched.id, "cred-unscoped");
+        let err = store.get("cred-unscoped").await.unwrap_err();
+        assert!(matches!(err, StoreError::NotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn get_allows_unscoped_credential_for_admin() {
+        let inner = InMemoryStore::new();
+        // Credential without owner_id in metadata
+        let cred = make_credential("cred-unscoped-admin");
+        inner.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        // Admin (None) should still access ownerless credentials
+        let store = ScopeLayer::new(inner, Arc::new(FixedScope(None)));
+        let fetched = store.get("cred-unscoped-admin").await.unwrap();
+        assert_eq!(fetched.id, "cred-unscoped-admin");
     }
 
     // ── put ─────────────────────────────────────────────────────────────
