@@ -270,25 +270,51 @@ impl<S: CredentialStore> CredentialResolver<S> {
                     reason: format!("failed to serialize refreshed state: {e}"),
                 })?;
 
-                let updated = StoredCredential {
-                    data,
-                    updated_at: chrono::Utc::now(),
-                    expires_at: state.expires_at(),
-                    ..stored
-                };
-
-                self.store
-                    .put(
-                        updated,
-                        PutMode::CompareAndSwap {
-                            expected_version: stored.version,
-                        },
-                    )
-                    .await
-                    .map_err(ResolveError::Store)?;
-
-                let scheme = C::project(&state);
-                Ok(CredentialHandle::new(scheme, credential_id))
+                // CAS retry loop: if another writer bumped the version, retry
+                // with the actual version. The refreshed `data` is reused —
+                // we must NOT call C::refresh() again because the old refresh
+                // token may already be invalidated (OAuth2 single-use tokens).
+                let mut current_version = stored.version;
+                for _attempt in 0..3 {
+                    let updated = StoredCredential {
+                        data: data.clone(),
+                        updated_at: chrono::Utc::now(),
+                        expires_at: state.expires_at(),
+                        ..stored.clone()
+                    };
+                    match self
+                        .store
+                        .put(
+                            updated,
+                            PutMode::CompareAndSwap {
+                                expected_version: current_version,
+                            },
+                        )
+                        .await
+                    {
+                        Ok(_) => {
+                            let scheme = C::project(&state);
+                            return Ok(CredentialHandle::new(scheme, credential_id));
+                        }
+                        Err(StoreError::VersionConflict { actual, .. }) => {
+                            tracing::warn!(
+                                credential_id,
+                                expected = current_version,
+                                actual,
+                                "CAS conflict on refresh write, retrying with same token"
+                            );
+                            current_version = actual;
+                            continue;
+                        }
+                        Err(e) => return Err(ResolveError::Store(e)),
+                    }
+                }
+                // All retries exhausted
+                Err(ResolveError::Store(StoreError::VersionConflict {
+                    id: credential_id.to_string(),
+                    expected: current_version,
+                    actual: current_version,
+                }))
             }
             RefreshOutcome::NotSupported => {
                 // Not refreshable -- return current state anyway
@@ -561,6 +587,220 @@ mod tests {
         // The refresh should have fired because 4 min < 5 min early_refresh
         let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
         assert_eq!(value, "refreshed-token");
+    }
+
+    // ── CAS retry test infrastructure ───────────────────────────────
+
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// A store wrapper that injects a configurable number of CAS
+    /// `VersionConflict` errors before delegating to the inner store.
+    struct ConflictingStore {
+        inner: InMemoryStore,
+        /// How many CAS puts should fail before succeeding.
+        remaining_conflicts: AtomicU32,
+    }
+
+    impl ConflictingStore {
+        fn new(conflicts: u32) -> Self {
+            Self {
+                inner: InMemoryStore::new(),
+                remaining_conflicts: AtomicU32::new(conflicts),
+            }
+        }
+    }
+
+    impl CredentialStore for ConflictingStore {
+        async fn get(&self, id: &str) -> Result<StoredCredential, StoreError> {
+            self.inner.get(id).await
+        }
+
+        async fn put(
+            &self,
+            credential: StoredCredential,
+            mode: PutMode,
+        ) -> Result<StoredCredential, StoreError> {
+            // Only inject conflicts on CAS puts
+            if let PutMode::CompareAndSwap { expected_version } = &mode {
+                let remaining = self.remaining_conflicts.load(Ordering::SeqCst);
+                if remaining > 0 {
+                    self.remaining_conflicts.fetch_sub(1, Ordering::SeqCst);
+                    // Bump the real version in the inner store via Overwrite
+                    // so the next CAS attempt sees the new version.
+                    let bumped = self.inner.put(credential, PutMode::Overwrite).await?;
+                    return Err(StoreError::VersionConflict {
+                        id: bumped.id,
+                        expected: *expected_version,
+                        actual: bumped.version,
+                    });
+                }
+            }
+            self.inner.put(credential, mode).await
+        }
+
+        async fn delete(&self, id: &str) -> Result<(), StoreError> {
+            self.inner.delete(id).await
+        }
+
+        async fn list(
+            &self,
+            state_kind: Option<&str>,
+        ) -> Result<Vec<String>, StoreError> {
+            self.inner.list(state_kind).await
+        }
+
+        async fn exists(&self, id: &str) -> Result<bool, StoreError> {
+            self.inner.exists(id).await
+        }
+    }
+
+    /// A test credential that counts how many times `refresh()` is called,
+    /// to verify the CAS retry does NOT re-invoke refresh.
+    static CAS_REFRESH_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    struct CasRetryTestCredential;
+
+    impl Credential for CasRetryTestCredential {
+        type Scheme = BearerToken;
+        type State = ExpiringState;
+        type Pending = NoPendingState;
+
+        const KEY: &'static str = "cas_retry_test";
+        const REFRESHABLE: bool = true;
+        const REFRESH_POLICY: RefreshPolicy = RefreshPolicy {
+            early_refresh: std::time::Duration::from_secs(300),
+            jitter: std::time::Duration::ZERO,
+            ..RefreshPolicy::DEFAULT
+        };
+
+        fn description() -> CredentialDescription {
+            CredentialDescription {
+                key: Self::KEY.to_owned(),
+                name: "CAS Retry Test".to_owned(),
+                description: "Test credential for CAS retry".to_owned(),
+                icon: None,
+                icon_url: None,
+                documentation_url: None,
+                properties: Self::parameters(),
+            }
+        }
+
+        fn parameters() -> ParameterCollection {
+            ParameterCollection::new()
+        }
+
+        fn project(state: &ExpiringState) -> BearerToken {
+            BearerToken::new(SecretString::new(state.token.clone()))
+        }
+
+        async fn resolve(
+            _values: &ParameterValues,
+            _ctx: &CredentialContext,
+        ) -> Result<StaticResolveResult<ExpiringState>, CredentialError> {
+            unreachable!("not used in CAS retry tests")
+        }
+
+        async fn refresh(
+            state: &mut ExpiringState,
+            _ctx: &CredentialContext,
+        ) -> Result<RefreshOutcome, CredentialError> {
+            CAS_REFRESH_COUNT.fetch_add(1, Ordering::SeqCst);
+            state.token = "refreshed-token".to_owned();
+            state.expires_at = chrono::Utc::now() + chrono::Duration::hours(1);
+            Ok(RefreshOutcome::Refreshed)
+        }
+    }
+
+    #[tokio::test]
+    async fn cas_retry_succeeds_after_version_conflict() {
+        CAS_REFRESH_COUNT.store(0, Ordering::SeqCst);
+
+        // 1 CAS conflict before success
+        let store = Arc::new(ConflictingStore::new(1));
+
+        let expires_at = chrono::Utc::now() + chrono::Duration::minutes(2);
+        let state = ExpiringState {
+            token: "old-token".to_owned(),
+            expires_at,
+        };
+        let data = serde_json::to_vec(&state).unwrap();
+
+        let cred = StoredCredential {
+            id: "cas-cred".into(),
+            data,
+            state_kind: "expiring_test".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: Some(expires_at),
+            metadata: Default::default(),
+        };
+        store.inner.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        let resolver = CredentialResolver::new(store);
+        let ctx = CredentialContext::new("test-user");
+
+        let handle = resolver
+            .resolve_with_refresh::<CasRetryTestCredential>("cas-cred", &ctx)
+            .await
+            .unwrap();
+
+        // Token should be the refreshed value despite CAS conflict
+        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
+        assert_eq!(value, "refreshed-token");
+
+        // Critical: refresh() must be called exactly once — the retry
+        // reuses the same token, it does NOT re-invoke the provider.
+        assert_eq!(
+            CAS_REFRESH_COUNT.load(Ordering::SeqCst),
+            1,
+            "refresh() should be called exactly once, CAS retry reuses the token"
+        );
+    }
+
+    #[tokio::test]
+    async fn cas_retry_exhausted_returns_version_conflict() {
+        CAS_REFRESH_COUNT.store(0, Ordering::SeqCst);
+
+        // 5 CAS conflicts — more than the 3-attempt limit
+        let store = Arc::new(ConflictingStore::new(5));
+
+        let expires_at = chrono::Utc::now() + chrono::Duration::minutes(2);
+        let state = ExpiringState {
+            token: "old-token".to_owned(),
+            expires_at,
+        };
+        let data = serde_json::to_vec(&state).unwrap();
+
+        let cred = StoredCredential {
+            id: "cas-exhausted".into(),
+            data,
+            state_kind: "expiring_test".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: Some(expires_at),
+            metadata: Default::default(),
+        };
+        store.inner.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        let resolver = CredentialResolver::new(store);
+        let ctx = CredentialContext::new("test-user");
+
+        let result = resolver
+            .resolve_with_refresh::<CasRetryTestCredential>("cas-exhausted", &ctx)
+            .await;
+
+        // Should fail with VersionConflict after exhausting retries
+        assert!(
+            matches!(result, Err(ResolveError::Store(StoreError::VersionConflict { .. }))),
+            "expected VersionConflict after retries exhausted, got: {result:?}"
+        );
+
+        // refresh() still called exactly once
+        assert_eq!(CAS_REFRESH_COUNT.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
