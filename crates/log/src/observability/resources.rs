@@ -5,10 +5,11 @@
 //! and multi-tenancy isolation.
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use tracing::Level;
 
 /// Notification preferences for error reporting
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NotificationPrefs {
     /// Send email notifications on errors
     pub email_enabled: bool,
@@ -20,6 +21,21 @@ pub struct NotificationPrefs {
     pub min_severity: NotificationSeverity,
     /// Rate limit: max notifications per hour (0 = unlimited)
     pub rate_limit_per_hour: u32,
+}
+
+impl fmt::Debug for NotificationPrefs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NotificationPrefs")
+            .field("email_enabled", &self.email_enabled)
+            .field(
+                "email_addresses",
+                &format_args!("[{} addresses]", self.email_addresses.len()),
+            )
+            .field("webhook_enabled", &self.webhook_enabled)
+            .field("min_severity", &self.min_severity)
+            .field("rate_limit_per_hour", &self.rate_limit_per_hour)
+            .finish()
+    }
 }
 
 impl Default for NotificationPrefs {
@@ -76,7 +92,7 @@ pub enum NotificationSeverity {
 /// let ctx = NodeContext::new("my-node", "http.request")
 ///     .with_resource(logger);
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LoggerResource {
     /// Sentry DSN for error reporting (optional)
     pub sentry_dsn: Option<String>,
@@ -137,6 +153,26 @@ impl From<Level> for LogLevel {
             Level::WARN => LogLevel::Warn,
             Level::ERROR => LogLevel::Error,
         }
+    }
+}
+
+impl fmt::Debug for LoggerResource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LoggerResource")
+            .field(
+                "sentry_dsn",
+                &self.sentry_dsn.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "webhook_url",
+                &self.webhook_url.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("log_level", &self.log_level)
+            .field("notification_prefs", &self.notification_prefs)
+            .field("tags", &self.tags)
+            .field("sampling_enabled", &self.sampling_enabled)
+            .field("sampling_rate", &self.sampling_rate)
+            .finish()
     }
 }
 
@@ -268,6 +304,57 @@ mod tests {
         assert!(resource.should_notify(NotificationSeverity::Warning));
         assert!(resource.should_notify(NotificationSeverity::Error));
         assert!(resource.should_notify(NotificationSeverity::Critical));
+    }
+
+    #[test]
+    fn debug_output_redacts_sentry_dsn() {
+        let resource = LoggerResource::new().with_sentry_dsn("https://secret-key@sentry.io/12345");
+
+        let debug_output = format!("{:?}", resource);
+
+        assert!(!debug_output.contains("secret-key"));
+        assert!(!debug_output.contains("sentry.io/12345"));
+        assert!(debug_output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn debug_output_redacts_webhook_url() {
+        let resource = LoggerResource::new()
+            .with_webhook("https://hooks.slack.com/services/T00/B00/SECRET123");
+
+        let debug_output = format!("{:?}", resource);
+
+        assert!(!debug_output.contains("SECRET123"));
+        assert!(!debug_output.contains("hooks.slack.com"));
+        assert!(debug_output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn debug_output_redacts_email_addresses() {
+        let prefs = NotificationPrefs {
+            email_enabled: true,
+            email_addresses: vec![
+                "admin@example.com".to_string(),
+                "security@internal.net".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let debug_output = format!("{:?}", prefs);
+
+        assert!(!debug_output.contains("admin@example.com"));
+        assert!(!debug_output.contains("security@internal.net"));
+        assert!(debug_output.contains("[2 addresses]"));
+    }
+
+    #[test]
+    fn debug_output_shows_none_when_no_secrets() {
+        let resource = LoggerResource::new();
+
+        let debug_output = format!("{:?}", resource);
+
+        assert!(debug_output.contains("sentry_dsn: None"));
+        assert!(debug_output.contains("webhook_url: None"));
     }
 
     #[test]

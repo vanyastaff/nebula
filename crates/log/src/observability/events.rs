@@ -7,6 +7,11 @@ use super::hooks::{ObservabilityEvent, ObservabilityFieldValue, ObservabilityFie
 use super::semantic::{EventKind, field};
 use std::time::Duration;
 
+/// Convert `Duration` milliseconds to `u64` with saturation instead of truncation.
+fn saturating_millis(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Event emitted when an operation starts
 ///
 /// # Example
@@ -84,7 +89,7 @@ impl ObservabilityEvent for OperationCompleted {
         );
         visitor.record(
             field::DURATION_MS,
-            ObservabilityFieldValue::U64(self.duration.as_millis() as u64),
+            ObservabilityFieldValue::U64(saturating_millis(self.duration)),
         );
         visitor.record(
             field::DURATION_SECS,
@@ -135,7 +140,7 @@ impl ObservabilityEvent for OperationFailed {
         visitor.record(field::ERROR, ObservabilityFieldValue::Str(&self.error));
         visitor.record(
             field::DURATION_MS,
-            ObservabilityFieldValue::U64(self.duration.as_millis() as u64),
+            ObservabilityFieldValue::U64(saturating_millis(self.duration)),
         );
         visitor.record(
             field::DURATION_SECS,

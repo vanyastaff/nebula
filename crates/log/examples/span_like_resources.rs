@@ -22,12 +22,22 @@ fn main() {
             if let Some(merged) = get_current_logger_resource() {
                 println!("\n[WEBHOOK HOOK] Event: {}", event.name());
                 println!("  Merged config:");
-                if let Some(sentry) = merged.sentry_dsn() {
-                    println!("    - Sentry: {}", sentry);
-                }
-                if let Some(webhook) = merged.webhook_url() {
-                    println!("    - Webhook: {}", webhook);
-                }
+                println!(
+                    "    - Sentry: {}",
+                    if merged.sentry_dsn().is_some() {
+                        "[CONFIGURED]"
+                    } else {
+                        "[NOT SET]"
+                    }
+                );
+                println!(
+                    "    - Webhook: {}",
+                    if merged.webhook_url().is_some() {
+                        "[CONFIGURED]"
+                    } else {
+                        "[NOT SET]"
+                    }
+                );
                 println!("    - Log level: {:?}", merged.log_level);
                 println!("    - Tags ({}): {:?}", merged.tags.len(), merged.tags);
             }

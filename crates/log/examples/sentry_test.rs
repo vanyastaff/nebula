@@ -9,10 +9,7 @@ use tokio::time::{Duration, sleep};
 async fn main() -> Result<()> {
     // Set Sentry DSN for testing
     unsafe {
-        env::set_var(
-            "SENTRY_DSN",
-            "https://2c82298d59b7fa61a293e1305d5aaaa2@o1200386.ingest.us.sentry.io/4509795981787136",
-        );
+        env::set_var("SENTRY_DSN", "https://examplekey@o0.ingest.sentry.io/0");
         env::set_var("SENTRY_ENV", "test");
         env::set_var("SENTRY_TRACES_SAMPLE_RATE", "1.0"); // 100% sampling for testing
     }

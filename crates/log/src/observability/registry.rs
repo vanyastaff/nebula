@@ -56,7 +56,7 @@ fn emit_to_hooks(hooks: &HookList, event: &dyn ObservabilityEvent, policy: HookP
         }
 
         if let Some(timeout) = timeout_ms {
-            let elapsed = started.elapsed().as_millis() as u64;
+            let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
             if elapsed > timeout {
                 tracing::warn!(
                     event_name = event.name(),
@@ -114,7 +114,7 @@ fn shutdown_hooks_list(hooks: &HookList, policy: HookPolicy) {
         }
 
         if let Some(timeout) = timeout_ms {
-            let elapsed = started.elapsed().as_millis() as u64;
+            let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
             if elapsed > timeout {
                 tracing::warn!(
                     elapsed_ms = elapsed,

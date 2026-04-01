@@ -241,13 +241,15 @@ struct SizeRollingAppender {
 #[cfg(feature = "file")]
 impl SizeRollingAppender {
     fn new(path: PathBuf, max_megabytes: u64, max_files: u32) -> io::Result<Self> {
-        let max_bytes = max_megabytes * 1024 * 1024;
-        if max_bytes == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "size rolling limit must be greater than zero",
-            ));
-        }
+        let max_bytes = max_megabytes
+            .checked_mul(1024 * 1024)
+            .filter(|&b| b > 0)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "size rolling limit must be between 1 and 17592186044415 MB",
+                )
+            })?;
         let max_files = max_files.max(1);
 
         if let Some(parent) = path.parent() {
@@ -306,11 +308,13 @@ impl SizeRollingAppender {
 #[cfg(feature = "file")]
 impl Write for SizeRollingAppender {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.current_size > 0 && self.current_size + buf.len() as u64 > self.max_bytes {
+        if self.current_size > 0
+            && self.current_size.saturating_add(buf.len() as u64) > self.max_bytes
+        {
             self.rotate()?;
         }
         let written = self.file.write(buf)?;
-        self.current_size += written as u64;
+        self.current_size = self.current_size.saturating_add(written as u64);
         Ok(written)
     }
 
@@ -472,5 +476,33 @@ mod tests {
         ];
         let result = write_primary_with_fallback(&mut writers, b"hello");
         assert_eq!(result.expect("fallback should succeed"), 5);
+    }
+
+    #[cfg(feature = "file")]
+    #[test]
+    fn size_rolling_rejects_overflow() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("test.log");
+
+        let result = SizeRollingAppender::new(path, u64::MAX, 1);
+
+        match result {
+            Err(e) if e.kind() == io::ErrorKind::InvalidInput => {
+                assert!(e.to_string().contains("17592186044415"));
+            }
+            Err(e) => panic!("wrong error kind: {e}"),
+            Ok(_) => panic!("should reject overflow"),
+        }
+    }
+
+    #[cfg(feature = "file")]
+    #[test]
+    fn size_rolling_rejects_zero() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("test.log");
+
+        let result = SizeRollingAppender::new(path, 0, 1);
+
+        assert!(matches!(result, Err(e) if e.kind() == io::ErrorKind::InvalidInput));
     }
 }

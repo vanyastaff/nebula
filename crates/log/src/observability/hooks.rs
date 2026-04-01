@@ -333,8 +333,8 @@ impl ObservabilityHook for MetricsHook {
 ///     fn on_event_with_context(&self, event: &dyn ObservabilityEvent, ctx: Option<Arc<NodeContext>>) {
 ///         if let Some(ctx) = ctx {
 ///             if let Some(logger) = ctx.get_resource::<LoggerResource>() {
-///                 if let Some(webhook) = logger.webhook_url() {
-///                     println!("Sending to webhook: {}", webhook);
+///                 if logger.webhook_url().is_some() {
+///                     println!("Sending to webhook: [CONFIGURED]");
 ///                 }
 ///             }
 ///         }

@@ -39,13 +39,12 @@ impl ResourceAwareHook for WebhookNotificationHook {
     fn on_event_with_context(&self, event: &dyn ObservabilityEvent, ctx: Option<Arc<NodeContext>>) {
         if let Some(ctx) = ctx
             && let Some(logger) = ctx.get_resource::<LoggerResource>()
-            && let Some(webhook) = logger.webhook_url()
+            && logger.webhook_url().is_some()
         {
             println!(
-                "[WEBHOOK] Node {} - Event: {} -> {}",
+                "[WEBHOOK] Node {} - Event: {} -> [CONFIGURED]",
                 ctx.node_id,
                 event.name(),
-                webhook
             );
         }
     }
