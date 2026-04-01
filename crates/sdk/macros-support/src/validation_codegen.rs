@@ -106,38 +106,6 @@ pub fn generate_len_check(
     }
 }
 
-/// Generate an exact-length check for a string or collection field.
-pub fn generate_exact_len_check(
-    field_name: &syn::Ident,
-    field_key: &str,
-    is_option: bool,
-    expected: usize,
-) -> TokenStream2 {
-    let error = quote! {
-        ::nebula_validator::foundation::ValidationError::exact_length(
-            #field_key,
-            #expected,
-            value.len(),
-        )
-    };
-
-    if is_option {
-        quote! {
-            if let Some(value) = input.#field_name.as_ref() {
-                if value.len() != #expected {
-                    errors.add(#error);
-                }
-            }
-        }
-    } else {
-        quote! {
-            let value = &input.#field_name;
-            if value.len() != #expected {
-                errors.add(#error);
-            }
-        }
-    }
-}
 
 /// Generate a comparison check (min/max) for a numeric field.
 pub fn generate_cmp_check(
@@ -324,15 +292,6 @@ pub fn built_in_string_validator_flags() -> Vec<(&'static str, TokenStream2)> {
             quote!(::nebula_validator::validators::date_time()),
         ),
         ("time", quote!(::nebula_validator::validators::time())),
-    ]
-}
-
-/// Return the built-in string validator factories (contains, starts_with, ends_with).
-pub fn built_in_string_validator_factories() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("contains", "contains"),
-        ("starts_with", "starts_with"),
-        ("ends_with", "ends_with"),
     ]
 }
 
