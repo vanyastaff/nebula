@@ -76,9 +76,12 @@ impl CredentialStore for InMemoryStore {
                 Ok(credential)
             }
             PutMode::CompareAndSwap { expected_version } => {
-                if let Some(existing) = data.get(&credential.id)
-                    && existing.version != expected_version
-                {
+                let Some(existing) = data.get(&credential.id) else {
+                    return Err(StoreError::NotFound {
+                        id: credential.id.clone(),
+                    });
+                };
+                if existing.version != expected_version {
                     return Err(StoreError::VersionConflict {
                         id: credential.id.clone(),
                         expected: expected_version,
@@ -239,6 +242,22 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, StoreError::VersionConflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn cas_on_missing_credential_returns_not_found() {
+        let store = InMemoryStore::new();
+        let cred = make_credential("nonexistent", b"data");
+        let err = store
+            .put(
+                cred,
+                PutMode::CompareAndSwap {
+                    expected_version: 0,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::NotFound { .. }));
     }
 
     #[tokio::test]
