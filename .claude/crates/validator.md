@@ -22,7 +22,16 @@ Composable, type-safe validation framework — two paradigms: programmatic combi
 - No regex cache — patterns compiled inline each call. Fast enough for schema-validation (not a hot path).
 - Predicate comparisons (`Gt`/`Lt`/`Gte`/`Lte`) use precision-safe `json_number_cmp` (i64→u64→f64 fallback).
 
+## Derive Macro Architecture (nebula-validator-macros)
+- 3-phase pipeline: `parse.rs` (attrs → IR) → `emit.rs` (IR → TokenStream). `validator.rs` is a 28-line entry point.
+- IR types in `model.rs`: `ValidatorInput`, `FieldDef`, `Rule` enum (19 variants), `EachRules`, `StringFormat`, `StringFactoryKind`.
+- Option-wrapping centralized in `emit::wrap_option()` — binds `value` for both Option and non-Option fields.
+- Message override centralized in `emit::wrap_message()` — the before/after/last_mut pattern in one place.
+- `nested` and `custom` validators use inline message override (mut e pattern) — they need to modify the error before adding.
+- `each()` rules reuse the same `Rule` enum as field-level rules.
+- `validation_codegen.rs` helpers in macro-support are still used by `config-macros`; validator-macros uses its own IR.
+
 ## Relations
 - No nebula deps. Used by nebula-parameter, nebula-macros, nebula-action, nebula-parameter.
 
-<!-- reviewed: 2026-03-30 — derive Classify migration -->
+<!-- reviewed: 2026-04-01 — Validator derive macro refactored to 3-phase pipeline (model/parse/emit) -->
