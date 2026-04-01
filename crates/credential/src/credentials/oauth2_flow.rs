@@ -393,7 +393,7 @@ fn state_from_token_response(
     token_url: &str,
     auth_style: AuthStyle,
 ) -> Result<OAuth2State, CredentialError> {
-    use crate::utils::SecretString;
+    use nebula_core::SecretString;
 
     let access_token = body
         .get("access_token")
@@ -558,7 +558,7 @@ mod tests {
 
     #[test]
     fn update_state_preserves_existing_refresh_token() {
-        use crate::utils::SecretString;
+        use nebula_core::SecretString;
 
         let mut state = OAuth2State {
             access_token: "old".into(),
@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn update_state_replaces_all_fields() {
-        use crate::utils::SecretString;
+        use nebula_core::SecretString;
 
         let mut state = OAuth2State {
             access_token: "old".into(),

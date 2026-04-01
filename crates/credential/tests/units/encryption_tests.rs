@@ -3,7 +3,7 @@
 //! Tests for AES-256-GCM encryption/decryption, Argon2id key derivation,
 //! and memory zeroization security features.
 
-use nebula_credential::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
+use nebula_credential::crypto::{EncryptedData, EncryptionKey, decrypt, encrypt};
 use nebula_credential::{CryptoError, SecretString};
 use std::time::Instant;
 

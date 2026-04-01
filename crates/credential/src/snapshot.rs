@@ -248,7 +248,7 @@ mod tests {
     use super::*;
     use crate::metadata::CredentialMetadata;
     use crate::scheme::{BearerToken, DatabaseAuth};
-    use crate::utils::SecretString;
+    use nebula_core::SecretString;
 
     fn bearer_snapshot() -> CredentialSnapshot {
         CredentialSnapshot::new(

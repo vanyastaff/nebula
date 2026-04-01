@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
-use crate::utils::crypto::{self, EncryptionKey};
+use crate::crypto::{self, EncryptionKey};
 
 /// Wraps a store with AES-256-GCM encryption on the `data` field.
 ///
@@ -185,7 +185,7 @@ mod tests {
 
         // Simulate legacy write: encrypt without AAD and store directly
         let plaintext = b"legacy-secret";
-        let encrypted = crate::utils::crypto::encrypt(&key, plaintext).unwrap();
+        let encrypted = crate::crypto::encrypt(&key, plaintext).unwrap();
         let encrypted_bytes = serde_json::to_vec(&encrypted).unwrap();
 
         let cred = StoredCredential {

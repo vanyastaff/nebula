@@ -3,8 +3,8 @@
 //! Validates that spawning 10 concurrent `resolve_with_refresh` calls
 //! on an expiring credential results in exactly 1 actual refresh call.
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use nebula_credential::context::CredentialContext;
 use nebula_credential::credential::Credential;
@@ -14,7 +14,7 @@ use nebula_credential::pending::NoPendingState;
 use nebula_credential::resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult};
 use nebula_credential::scheme::BearerToken;
 use nebula_credential::store::{PutMode, StoredCredential};
-use nebula_credential::utils::SecretString;
+use nebula_credential::SecretString;
 use nebula_credential::{CredentialResolver, CredentialStore, InMemoryStore};
 use nebula_parameter::ParameterCollection;
 use nebula_parameter::values::ParameterValues;

@@ -27,7 +27,7 @@ use crate::pending::PendingState;
 use crate::resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput};
 use crate::scheme::OAuth2Token;
 use crate::state::CredentialState;
-use crate::utils::SecretString;
+use nebula_core::SecretString;
 
 use super::oauth2_flow;
 
@@ -56,7 +56,7 @@ pub struct OAuth2State {
     /// Stored for refresh operations.
     pub client_id: String,
     /// Stored for refresh operations (encrypted at rest via `EncryptionLayer`).
-    #[serde(with = "crate::utils::serde_secret")]
+    #[serde(with = "nebula_core::serde_secret")]
     pub client_secret: SecretString,
     /// Token endpoint URL for refresh requests.
     pub token_url: String,
@@ -107,7 +107,7 @@ pub struct OAuth2Pending {
     /// OAuth2 client identifier.
     pub client_id: String,
     /// OAuth2 client secret (zeroized on drop).
-    #[serde(with = "crate::utils::serde_secret")]
+    #[serde(with = "nebula_core::serde_secret")]
     pub client_secret: SecretString,
     /// Grant type for this pending flow.
     pub grant_type: GrantType,

@@ -69,8 +69,10 @@ pub mod snapshot;
 pub mod state;
 /// Reusable protocol pattern for static credentials.
 pub mod static_protocol;
-/// Utilities for crypto, time, etc.
-pub mod utils;
+/// Cryptographic utilities: AES-256-GCM, key derivation, PKCE, serde_base64.
+pub mod crypto;
+/// Retry logic with exponential backoff.
+pub mod retry;
 
 // ── v2 Storage ──────────────────────────────────────────────────────────────
 
@@ -110,7 +112,8 @@ pub use crate::snapshot::{CredentialSnapshot, SnapshotError};
 pub use nebula_core::CredentialId;
 
 // Utils - crypto
-pub use crate::utils::{EncryptedData, EncryptionKey, SecretString, decrypt, encrypt};
+pub use crate::crypto::{EncryptedData, EncryptionKey, decrypt, encrypt};
+pub use nebula_core::SecretString;
 
 // Rotation
 #[cfg(feature = "rotation")]

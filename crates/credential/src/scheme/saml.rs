@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use nebula_core::AuthScheme;
 use serde::{Deserialize, Serialize};
 
-use crate::utils::SecretString;
+use nebula_core::SecretString;
 
 /// SAML assertion authentication material.
 ///

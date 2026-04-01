@@ -219,7 +219,7 @@ impl CredentialContext {
 mod tests {
     use super::*;
     use crate::BearerToken;
-    use crate::utils::SecretString;
+    use nebula_core::SecretString;
     use nebula_core::{ProjectId, ScopeLevel};
 
     #[test]

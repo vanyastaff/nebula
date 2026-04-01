@@ -17,7 +17,7 @@ use nebula_resilience::retry::{BackoffConfig, JitterConfig, RetryConfig};
 /// # Example
 ///
 /// ```rust
-/// use nebula_credential::utils::RetryPolicy;
+/// use nebula_credential::retry::RetryPolicy;
 /// use std::time::Duration;
 ///
 /// // Default policy: 5 retries, 100ms base delay, 2x multiplier
@@ -167,7 +167,7 @@ impl RetryPolicy {
 /// # Example
 ///
 /// ```rust,ignore
-/// use nebula_credential::utils::{RetryPolicy, retry_with_policy};
+/// use nebula_credential::retry::{RetryPolicy, retry_with_policy};
 ///
 /// let policy = RetryPolicy::default();
 /// let result = retry_with_policy(&policy, || async {

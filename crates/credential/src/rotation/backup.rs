@@ -5,7 +5,7 @@
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::utils::EncryptedData;
+use crate::crypto::EncryptedData;
 use nebula_core::CredentialId;
 
 use super::error::{RotationError, RotationResult};

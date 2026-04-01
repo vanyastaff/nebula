@@ -75,7 +75,7 @@ impl TryFrom<SamlAuth> for BearerToken {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::SecretString;
+    use nebula_core::SecretString;
 
     #[test]
     fn oauth2_to_bearer_succeeds() {

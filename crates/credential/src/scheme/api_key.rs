@@ -3,7 +3,7 @@
 use nebula_core::AuthScheme;
 use serde::{Deserialize, Serialize};
 
-use crate::utils::SecretString;
+use nebula_core::SecretString;
 
 /// Where the API key is placed in the request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -16,7 +16,7 @@ use nebula_credential::resolve::{
     DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput,
 };
 use nebula_credential::scheme::BearerToken;
-use nebula_credential::utils::SecretString;
+use nebula_credential::SecretString;
 use nebula_parameter::ParameterCollection;
 use nebula_parameter::values::ParameterValues;
 
@@ -137,16 +137,12 @@ async fn pending_lifecycle_resolve_then_continue() {
     let values = ParameterValues::new();
 
     // Step 1: initial resolve → should return Pending
-    let response =
-        execute_resolve::<InteractiveTestCredential, _>(&values, &ctx, &pending_store)
-            .await
-            .expect("execute_resolve should succeed");
+    let response = execute_resolve::<InteractiveTestCredential, _>(&values, &ctx, &pending_store)
+        .await
+        .expect("execute_resolve should succeed");
 
     let token = match response {
-        ResolveResponse::Pending {
-            token,
-            interaction,
-        } => {
+        ResolveResponse::Pending { token, interaction } => {
             // Verify the interaction request matches what we returned
             assert!(
                 matches!(interaction, InteractionRequest::DisplayInfo { ref title, .. } if title == "Enter Code"),
@@ -181,10 +177,9 @@ async fn pending_token_is_single_use() {
     let values = ParameterValues::new();
 
     // Resolve → Pending
-    let response =
-        execute_resolve::<InteractiveTestCredential, _>(&values, &ctx, &pending_store)
-            .await
-            .unwrap();
+    let response = execute_resolve::<InteractiveTestCredential, _>(&values, &ctx, &pending_store)
+        .await
+        .unwrap();
     let token = match response {
         ResolveResponse::Pending { token, .. } => token,
         other => panic!("expected Pending, got: {other:?}"),
@@ -213,10 +208,9 @@ async fn continue_with_wrong_code_returns_error() {
     let values = ParameterValues::new();
 
     // Resolve → Pending
-    let response =
-        execute_resolve::<InteractiveTestCredential, _>(&values, &ctx, &pending_store)
-            .await
-            .unwrap();
+    let response = execute_resolve::<InteractiveTestCredential, _>(&values, &ctx, &pending_store)
+        .await
+        .unwrap();
     let token = match response {
         ResolveResponse::Pending { token, .. } => token,
         other => panic!("expected Pending, got: {other:?}"),

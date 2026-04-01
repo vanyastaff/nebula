@@ -363,6 +363,28 @@ fn base64_url_encode(input: &[u8]) -> String {
     base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, input)
 }
 
+/// Serde helpers for base64 encoding of byte vectors.
+///
+/// Use with `#[serde(with = "crate::crypto::serde_base64")]` on `Vec<u8>` fields
+/// to serialize as base64 strings in JSON, ensuring binary data survives
+/// round-trips.
+pub mod serde_base64 {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    /// Serialize bytes as a base64 string.
+    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    /// Deserialize a base64 string back into bytes.
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let encoded = String::deserialize(d)?;
+        STANDARD.decode(encoded).map_err(serde::de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
