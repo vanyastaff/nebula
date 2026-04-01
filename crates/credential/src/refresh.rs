@@ -78,6 +78,11 @@ pub struct RefreshCoordinator {
     in_flight: parking_lot::Mutex<HashMap<String, Arc<Notify>>>,
     /// Per-credential circuit breakers via `nebula-resilience`.
     circuit_breakers: parking_lot::Mutex<HashMap<String, Arc<CircuitBreaker>>>,
+    /// Global concurrency limiter for refresh operations.
+    ///
+    /// Prevents cascading failures when many credentials expire simultaneously
+    /// and the provider rate-limits (429). Default: 32 concurrent refreshes.
+    refresh_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl fmt::Debug for RefreshCoordinator {
@@ -85,6 +90,10 @@ impl fmt::Debug for RefreshCoordinator {
         let breaker_count = self.circuit_breakers.lock().len();
         f.debug_struct("RefreshCoordinator")
             .field("circuit_breakers", &breaker_count)
+            .field(
+                "available_permits",
+                &self.refresh_semaphore.available_permits(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -109,12 +118,37 @@ pub enum RefreshAttempt {
     ),
 }
 
+/// Default maximum number of concurrent refresh operations.
+const DEFAULT_MAX_CONCURRENT_REFRESHES: usize = 32;
+
 impl RefreshCoordinator {
-    /// Creates a new coordinator with no in-flight refreshes.
+    /// Creates a new coordinator with no in-flight refreshes and a default
+    /// concurrency limit of 32.
     pub fn new() -> Self {
+        Self::with_max_concurrent(DEFAULT_MAX_CONCURRENT_REFRESHES)
+    }
+
+    /// Creates a new coordinator with a custom concurrency limit.
+    ///
+    /// The `max` parameter controls how many refresh HTTP calls can run
+    /// in parallel across all credentials. Set this based on the provider's
+    /// rate limit tolerance.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use nebula_credential::refresh::RefreshCoordinator;
+    ///
+    /// // Allow at most 10 concurrent refreshes
+    /// let coord = RefreshCoordinator::with_max_concurrent(10);
+    /// assert_eq!(coord.available_permits(), 10);
+    /// ```
+    #[must_use]
+    pub fn with_max_concurrent(max: usize) -> Self {
         Self {
             in_flight: parking_lot::Mutex::new(HashMap::new()),
             circuit_breakers: parking_lot::Mutex::new(HashMap::new()),
+            refresh_semaphore: Arc::new(tokio::sync::Semaphore::new(max)),
         }
     }
 
@@ -165,6 +199,31 @@ impl RefreshCoordinator {
     /// Primarily useful for testing and diagnostics.
     pub fn in_flight_count(&self) -> usize {
         self.in_flight.lock().len()
+    }
+
+    /// Acquires a permit from the global refresh concurrency limiter.
+    ///
+    /// The returned permit must be held for the entire duration of the
+    /// refresh HTTP call. It is released automatically on drop (including
+    /// when a `scopeguard` fires on panic or timeout).
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel-safe: dropping the future before completion
+    /// does not consume a permit.
+    pub async fn acquire_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.refresh_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("refresh semaphore closed unexpectedly")
+    }
+
+    /// Returns the number of available permits in the concurrency limiter.
+    ///
+    /// Primarily useful for testing and diagnostics.
+    pub fn available_permits(&self) -> usize {
+        self.refresh_semaphore.available_permits()
     }
 
     /// Records a refresh failure for circuit breaker tracking.
@@ -416,5 +475,30 @@ mod tests {
         let attempt2 = coord.try_refresh("cred-1");
         assert!(matches!(attempt2, RefreshAttempt::Winner(_)));
         coord.complete("cred-1");
+    }
+
+    #[tokio::test]
+    async fn semaphore_limits_concurrent_refreshes() {
+        let coord = RefreshCoordinator::with_max_concurrent(2);
+        assert_eq!(coord.available_permits(), 2);
+
+        let _p1 = coord.acquire_permit().await;
+        assert_eq!(coord.available_permits(), 1);
+
+        let _p2 = coord.acquire_permit().await;
+        assert_eq!(coord.available_permits(), 0);
+
+        // Third acquire would block -- just verify count is zero
+        drop(_p1);
+        assert_eq!(coord.available_permits(), 1);
+
+        drop(_p2);
+        assert_eq!(coord.available_permits(), 2);
+    }
+
+    #[tokio::test]
+    async fn default_coordinator_has_default_permits() {
+        let coord = RefreshCoordinator::new();
+        assert_eq!(coord.available_permits(), super::DEFAULT_MAX_CONCURRENT_REFRESHES);
     }
 }

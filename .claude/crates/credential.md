@@ -30,7 +30,8 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - `CredentialSnapshot` is NOT `Serialize`/`Deserialize` — intentionally transient. It IS `Clone` via stored clone function pointer.
 - `CredentialSnapshot::into_project::<S>()` consumes self — if type mismatch, snapshot is lost. Use `project::<S>()` (borrow) or check `is::<S>()` first.
 - `CredentialHandle::Clone` creates independent `ArcSwap` — cloned handles do NOT see rotation updates. Share via `Arc<CredentialHandle<S>>`.
-- `ScopeLayer.list()` and `exists()` currently pass through without scope filtering — cross-tenant enumeration risk. Must fix.
+- `ScopeLayer.list()` filters by owner via N+1 inner `get()` calls — acceptable for in-memory backend, may need backend-level query for large-scale stores.
+- `ScopeLayer.exists()` delegates to scoped `get()` — inherits fail-closed behavior from `verify_owner`.
 - `verify_owner` is fail-closed: credentials without `owner_id` in metadata are admin-only (fixed B6).
 - `CredentialRotationEvent.new_state` leaks credential material via EventBus — must replace with id+generation only.
 - Plugin authors need 3 crate deps (`nebula-credential`, `nebula-parameter`, `nebula-core`) — re-export gap.
@@ -40,7 +41,7 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - **B10 CRITICAL**: `InMemoryStore` CAS on missing row creates instead of NotFound
 - **B1 HIGH**: `SecretString::Serialize` redacts → round-trip destroys identity-state credentials
 - **B2 HIGH**: `OAuth2State` stores `access_token`/`refresh_token` as plain `String` (no zeroize)
-- **B5 HIGH**: `ScopeLayer.list()`/`exists()` pass through without scope filtering
+- **B5 HIGH**: ~~`ScopeLayer.list()`/`exists()` pass through without scope filtering~~ FIXED
 - **B7 HIGH**: ~~`perform_refresh` doesn't retry CAS on `VersionConflict` — new token lost~~ FIXED
 - **B8 HIGH**: ~~`complete()` not called if `perform_refresh` panics — in-flight map poisoned~~ FIXED
 - **B9 HIGH**: `CredentialRotationEvent.new_state` leaks credential material
@@ -48,7 +49,7 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - **B12 HIGH**: ~~`StoredCredential` missing `credential_key` — engine can't dispatch~~ FIXED
 - **B3 MEDIUM**: RefreshCoordinator circuit breaker map unbounded
 - **B13 MEDIUM**: `CredentialRegistry::project()` returns `Box<dyn Any>` not `CredentialSnapshot`
-- **B14 HIGH**: No global refresh concurrency limiter — cascading CB opens at 500+ credentials
+- **B14 HIGH**: ~~No global refresh concurrency limiter — cascading CB opens at 500+ credentials~~ FIXED
 - **B15 HIGH**: `DatabaseAuth` missing `expires_at()` — can't auto-refresh IAM tokens
 - **B16 HIGH**: `ActionDependencies::credential()` singular — can't declare 2+ (jump hosts)
 - **B17 MEDIUM**: `SshAuthMethod` missing `Certificate` variant
@@ -74,3 +75,5 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 <!-- reviewed: 2026-03-31 — B7 fix: CAS retry loop (3 attempts) reuses refreshed token, prevents OAuth2 single-use token loss -->
 <!-- reviewed: 2026-03-31 — B8 fix: in_flight → parking_lot::Mutex, scopeguard calls complete()+notify_waiters() -->
 <!-- reviewed: 2026-03-31 — B12 fix: added credential_key field to StoredCredential for type dispatch -->
+<!-- reviewed: 2026-03-31 — B5 fix: ScopeLayer.list() filters by owner, exists() delegates to scoped get() -->
+<!-- reviewed: 2026-03-31 — B14 fix: global refresh concurrency limiter via tokio::sync::Semaphore (default 32) -->

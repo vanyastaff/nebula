@@ -149,6 +149,12 @@ impl<S: CredentialStore> CredentialResolver<S> {
         // Coordinate refresh -- only one caller does the work
         match self.refresh_coordinator.try_refresh(credential_id) {
             RefreshAttempt::Winner(notify) => {
+                // Acquire a global concurrency permit BEFORE the refresh HTTP
+                // call. This prevents 429 cascades when many credentials expire
+                // simultaneously. The permit drops when this block exits (on
+                // success, error, or panic), freeing a slot for the next caller.
+                let _permit = self.refresh_coordinator.acquire_permit().await;
+
                 // scopeguard: always clean up in-flight entry and notify waiters,
                 // even on panic/timeout. Both complete() and notify_waiters() are
                 // sync, so they're safe to call from Drop (B8 fix).
