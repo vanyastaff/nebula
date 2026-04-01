@@ -12,10 +12,13 @@ use nebula_core::SecretString;
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AwsAuth {
     /// AWS access key ID.
+    #[serde(with = "nebula_core::serde_secret")]
     access_key_id: SecretString,
     /// AWS secret access key.
+    #[serde(with = "nebula_core::serde_secret")]
     secret_access_key: SecretString,
     /// Temporary session token from STS.
+    #[serde(with = "nebula_core::option_serde_secret")]
     session_token: Option<SecretString>,
     /// AWS region (e.g., `"us-east-1"`).
     pub region: String,

@@ -12,6 +12,7 @@ use nebula_core::SecretString;
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HmacSecret {
     /// The signing secret.
+    #[serde(with = "nebula_core::serde_secret")]
     secret: SecretString,
     /// Hash algorithm (e.g., `"sha256"`, `"sha512"`).
     pub algorithm: String,

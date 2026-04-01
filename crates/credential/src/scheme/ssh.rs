@@ -28,13 +28,16 @@ pub enum SshAuthMethod {
     /// Password-based authentication.
     Password {
         /// The password secret.
+        #[serde(with = "nebula_core::serde_secret")]
         password: SecretString,
     },
     /// Public/private key pair authentication.
     KeyPair {
         /// PEM-encoded private key.
+        #[serde(with = "nebula_core::serde_secret")]
         private_key: SecretString,
         /// Optional passphrase for the private key.
+        #[serde(with = "nebula_core::option_serde_secret")]
         passphrase: Option<SecretString>,
     },
     /// SSH agent forwarding (no local secrets).

@@ -14,6 +14,7 @@ pub struct HeaderAuth {
     /// Header name (e.g., `"X-Api-Key"`).
     pub name: String,
     /// Header value (secret).
+    #[serde(with = "nebula_core::serde_secret")]
     value: SecretString,
 }
 

@@ -14,6 +14,7 @@ pub struct BasicAuth {
     /// Username (not secret).
     pub username: String,
     /// Password (secret).
+    #[serde(with = "nebula_core::serde_secret")]
     password: SecretString,
 }
 

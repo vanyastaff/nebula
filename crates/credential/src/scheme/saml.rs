@@ -22,6 +22,7 @@ pub struct SamlAuth {
     /// Assertion expiration time.
     pub not_on_or_after: Option<chrono::DateTime<chrono::Utc>>,
     /// Base64-encoded SAML assertion (secret -- may contain sensitive claims).
+    #[serde(with = "nebula_core::option_serde_secret")]
     assertion_b64: Option<SecretString>,
 }
 

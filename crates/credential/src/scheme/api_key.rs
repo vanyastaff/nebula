@@ -27,6 +27,7 @@ pub enum ApiKeyPlacement {
 /// Consumed by: HTTP APIs that use custom header or query auth.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ApiKeyAuth {
+    #[serde(with = "nebula_core::serde_secret")]
     key: SecretString,
     /// Where to place the key in the request.
     pub placement: ApiKeyPlacement,

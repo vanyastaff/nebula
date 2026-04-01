@@ -40,6 +40,8 @@ pub mod scope;
 pub mod secret_string;
 /// Shared serde helpers (duration serialization, etc.).
 pub mod serde_helpers;
+/// Serde helpers for [`Option<SecretString>`] that preserve the actual value.
+pub mod option_serde_secret;
 /// Serde helpers for [`SecretString`] that preserve the actual value.
 pub mod serde_secret;
 pub mod traits;

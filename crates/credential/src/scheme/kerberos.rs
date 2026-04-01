@@ -16,6 +16,7 @@ pub struct KerberosAuth {
     /// Kerberos realm (e.g., `"REALM.COM"`).
     pub realm: String,
     /// The service ticket (secret).
+    #[serde(with = "nebula_core::serde_secret")]
     service_ticket: SecretString,
     /// When the ticket expires.
     pub expires_at_time: chrono::DateTime<chrono::Utc>,

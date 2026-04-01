@@ -12,8 +12,10 @@ use nebula_core::SecretString;
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CertificateAuth {
     /// PEM-encoded client certificate.
+    #[serde(with = "nebula_core::serde_secret")]
     cert_pem: SecretString,
     /// PEM-encoded private key.
+    #[serde(with = "nebula_core::serde_secret")]
     key_pem: SecretString,
     /// Optional PEM-encoded CA certificate for verification.
     pub ca_pem: Option<String>,

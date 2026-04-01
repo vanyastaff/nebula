@@ -16,6 +16,7 @@ use nebula_core::SecretString;
 /// [`CredentialState`]: crate::state::CredentialState
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OAuth2Token {
+    #[serde(with = "nebula_core::serde_secret")]
     access_token: SecretString,
     /// Token type (typically `"Bearer"`).
     pub token_type: String,

@@ -11,6 +11,7 @@ use nebula_core::SecretString;
 /// Consumed by: HTTP APIs (GitHub, Slack, OpenAI, etc.)
 #[derive(Clone, Serialize, Deserialize)]
 pub struct BearerToken {
+    #[serde(with = "nebula_core::serde_secret")]
     token: SecretString,
 }
 

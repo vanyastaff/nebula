@@ -19,6 +19,7 @@ pub struct DatabaseAuth {
     pub database: String,
     /// Username for authentication.
     pub username: String,
+    #[serde(with = "nebula_core::serde_secret")]
     password: SecretString,
     /// SSL/TLS mode for the connection.
     pub ssl_mode: SslMode,

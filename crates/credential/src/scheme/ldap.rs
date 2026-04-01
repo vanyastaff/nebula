@@ -45,6 +45,7 @@ pub enum LdapBindMethod {
         /// Distinguished name to bind as.
         bind_dn: String,
         /// Bind password.
+        #[serde(with = "nebula_core::serde_secret")]
         password: SecretString,
     },
     /// Anonymous bind (no credentials).
