@@ -10,6 +10,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
 use serde_json::Value;
 
+use nebula_core::SecretString;
+
 use super::oauth2::OAuth2State;
 use super::oauth2_config::{AuthStyle, OAuth2Config};
 use crate::error::CredentialError;
@@ -320,15 +322,16 @@ pub(crate) async fn refresh_token(
 ) -> Result<(), CredentialError> {
     let refresh_tok = state
         .refresh_token
-        .as_deref()
-        .ok_or_else(|| provider_error("no refresh_token available for token refresh".into()))?;
+        .as_ref()
+        .ok_or_else(|| provider_error("no refresh_token available for token refresh".into()))?
+        .expose_secret(|s| s.to_owned());
 
-    let client_id = &state.client_id;
+    let client_id = state.client_id.expose_secret(|s| s.to_owned());
     let client_secret_str = state.client_secret.expose_secret(|s| s.to_owned());
 
     let mut form: Vec<(&str, String)> = vec![
         ("grant_type", "refresh_token".into()),
-        ("refresh_token", refresh_tok.to_owned()),
+        ("refresh_token", refresh_tok),
     ];
 
     if !config.scopes.is_empty() {
@@ -346,7 +349,7 @@ pub(crate) async fn refresh_token(
                 .form(&form);
         }
         AuthStyle::PostBody => {
-            form.push(("client_id", client_id.to_owned()));
+            form.push(("client_id", client_id));
             form.push(("client_secret", client_secret_str));
             req = req.form(&form);
         }
@@ -393,13 +396,10 @@ fn state_from_token_response(
     token_url: &str,
     auth_style: AuthStyle,
 ) -> Result<OAuth2State, CredentialError> {
-    use nebula_core::SecretString;
-
     let access_token = body
         .get("access_token")
         .and_then(Value::as_str)
-        .ok_or_else(|| provider_error("token response missing 'access_token'".into()))?
-        .to_owned();
+        .ok_or_else(|| provider_error("token response missing 'access_token'".into()))?;
 
     let token_type = body
         .get("token_type")
@@ -410,7 +410,7 @@ fn state_from_token_response(
     let refresh_token = body
         .get("refresh_token")
         .and_then(Value::as_str)
-        .map(str::to_owned);
+        .map(SecretString::new);
 
     let expires_at = body
         .get("expires_in")
@@ -424,12 +424,12 @@ fn state_from_token_response(
         .unwrap_or_else(|| default_scopes.to_vec());
 
     Ok(OAuth2State {
-        access_token,
+        access_token: SecretString::new(access_token),
         token_type,
         refresh_token,
         expires_at,
         scopes,
-        client_id: client_id.to_owned(),
+        client_id: SecretString::new(client_id),
         client_secret: SecretString::new(client_secret),
         token_url: token_url.to_owned(),
         auth_style,
@@ -442,13 +442,13 @@ fn state_from_token_response(
 /// preserves the existing one (per RFC 6749 Section 6).
 fn update_state_from_token_response(state: &mut OAuth2State, body: &Value) {
     if let Some(token) = body.get("access_token").and_then(Value::as_str) {
-        state.access_token = token.to_owned();
+        state.access_token = SecretString::new(token);
     }
     if let Some(tt) = body.get("token_type").and_then(Value::as_str) {
         state.token_type = tt.to_owned();
     }
     if let Some(rt) = body.get("refresh_token").and_then(Value::as_str) {
-        state.refresh_token = Some(rt.to_owned());
+        state.refresh_token = Some(SecretString::new(rt));
     }
     if let Some(secs) = body.get("expires_in").and_then(Value::as_u64) {
         state.expires_at = Some(Utc::now() + chrono::Duration::seconds(secs as i64));
@@ -523,12 +523,20 @@ mod tests {
             AuthStyle::default(),
         )
         .unwrap();
-        assert_eq!(state.access_token, "tok_123");
+        state
+            .access_token
+            .expose_secret(|s| assert_eq!(s, "tok_123"));
         assert_eq!(state.token_type, "Bearer");
-        assert_eq!(state.refresh_token.as_deref(), Some("ref_456"));
+        state
+            .refresh_token
+            .as_ref()
+            .unwrap()
+            .expose_secret(|s| assert_eq!(s, "ref_456"));
         assert!(state.expires_at.is_some());
         assert_eq!(state.scopes, vec!["read", "write"]);
-        assert_eq!(state.client_id, "cid");
+        state
+            .client_id
+            .expose_secret(|s| assert_eq!(s, "cid"));
         state
             .client_secret
             .expose_secret(|s| assert_eq!(s, "csecret"));
@@ -558,15 +566,13 @@ mod tests {
 
     #[test]
     fn update_state_preserves_existing_refresh_token() {
-        use nebula_core::SecretString;
-
         let mut state = OAuth2State {
-            access_token: "old".into(),
+            access_token: SecretString::new("old"),
             token_type: "Bearer".into(),
-            refresh_token: Some("keep_me".into()),
+            refresh_token: Some(SecretString::new("keep_me")),
             expires_at: None,
             scopes: vec![],
-            client_id: "cid".into(),
+            client_id: SecretString::new("cid"),
             client_secret: SecretString::new("cs"),
             token_url: "https://t.com/token".into(),
             auth_style: AuthStyle::default(),
@@ -577,21 +583,25 @@ mod tests {
         });
 
         update_state_from_token_response(&mut state, &body);
-        assert_eq!(state.access_token, "new_tok");
-        assert_eq!(state.refresh_token.as_deref(), Some("keep_me"));
+        state
+            .access_token
+            .expose_secret(|s| assert_eq!(s, "new_tok"));
+        state
+            .refresh_token
+            .as_ref()
+            .unwrap()
+            .expose_secret(|s| assert_eq!(s, "keep_me"));
     }
 
     #[test]
     fn update_state_replaces_all_fields() {
-        use nebula_core::SecretString;
-
         let mut state = OAuth2State {
-            access_token: "old".into(),
+            access_token: SecretString::new("old"),
             token_type: "Bearer".into(),
-            refresh_token: Some("old_rt".into()),
+            refresh_token: Some(SecretString::new("old_rt")),
             expires_at: None,
             scopes: vec!["read".into()],
-            client_id: "cid".into(),
+            client_id: SecretString::new("cid"),
             client_secret: SecretString::new("cs"),
             token_url: "https://t.com/token".into(),
             auth_style: AuthStyle::default(),
@@ -606,9 +616,15 @@ mod tests {
         });
 
         update_state_from_token_response(&mut state, &body);
-        assert_eq!(state.access_token, "new_tok");
+        state
+            .access_token
+            .expose_secret(|s| assert_eq!(s, "new_tok"));
         assert_eq!(state.token_type, "mac");
-        assert_eq!(state.refresh_token.as_deref(), Some("new_rt"));
+        state
+            .refresh_token
+            .as_ref()
+            .unwrap()
+            .expose_secret(|s| assert_eq!(s, "new_rt"));
         assert!(state.expires_at.is_some());
         assert_eq!(state.scopes, vec!["write"]);
     }

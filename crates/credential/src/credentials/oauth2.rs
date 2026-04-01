@@ -10,6 +10,7 @@
 //! consumer-facing auth material produced by `project()`.
 
 use std::time::Duration;
+use std::{fmt, fmt::Formatter};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -41,20 +42,23 @@ use super::oauth2_flow;
 /// Contains `client_id`, `client_secret`, and `token_url` so that
 /// [`OAuth2Credential::refresh`] can exchange a refresh token without
 /// requiring the original setup parameters.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OAuth2State {
     /// Current access token.
-    pub access_token: String,
+    #[serde(with = "nebula_core::serde_secret")]
+    pub access_token: SecretString,
     /// Token type (typically `"Bearer"`).
     pub token_type: String,
     /// Refresh token, if granted by the provider.
-    pub refresh_token: Option<String>,
+    #[serde(default, with = "nebula_core::option_serde_secret")]
+    pub refresh_token: Option<SecretString>,
     /// When the access token expires, if known.
     pub expires_at: Option<DateTime<Utc>>,
     /// Granted scopes.
     pub scopes: Vec<String>,
     /// Stored for refresh operations.
-    pub client_id: String,
+    #[serde(with = "nebula_core::serde_secret")]
+    pub client_id: SecretString,
     /// Stored for refresh operations (encrypted at rest via `EncryptionLayer`).
     #[serde(with = "nebula_core::serde_secret")]
     pub client_secret: SecretString,
@@ -63,6 +67,25 @@ pub struct OAuth2State {
     /// How client credentials are sent (preserved from initial token exchange).
     #[serde(default)]
     pub auth_style: AuthStyle,
+}
+
+impl fmt::Debug for OAuth2State {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OAuth2State")
+            .field("access_token", &"[REDACTED]")
+            .field("token_type", &self.token_type)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("expires_at", &self.expires_at)
+            .field("scopes", &self.scopes)
+            .field("client_id", &"[REDACTED]")
+            .field("client_secret", &"[REDACTED]")
+            .field("token_url", &self.token_url)
+            .field("auth_style", &self.auth_style)
+            .finish()
+    }
 }
 
 impl OAuth2State {
@@ -81,7 +104,8 @@ impl OAuth2State {
     /// `Authorization: Bearer <access_token>` header value.
     #[must_use]
     pub fn bearer_header(&self) -> String {
-        format!("Bearer {}", self.access_token)
+        self.access_token
+            .expose_secret(|t| format!("Bearer {t}"))
     }
 }
 
@@ -230,7 +254,7 @@ impl Credential for OAuth2Credential {
     }
 
     fn project(state: &OAuth2State) -> OAuth2Token {
-        let mut token = OAuth2Token::new(SecretString::new(&state.access_token))
+        let mut token = OAuth2Token::new(state.access_token.clone())
             .with_scopes(state.scopes.clone());
 
         if let Some(at) = state.expires_at {
@@ -459,12 +483,12 @@ mod tests {
 
     fn make_state() -> OAuth2State {
         OAuth2State {
-            access_token: "tok_abc".into(),
+            access_token: SecretString::new("tok_abc"),
             token_type: "Bearer".into(),
-            refresh_token: Some("ref_xyz".into()),
+            refresh_token: Some(SecretString::new("ref_xyz")),
             expires_at: Some(Utc::now() + chrono::Duration::seconds(3600)),
             scopes: vec!["read".into(), "write".into()],
-            client_id: "cid".into(),
+            client_id: SecretString::new("cid"),
             client_secret: SecretString::new("csecret"),
             token_url: "https://example.com/token".into(),
             auth_style: AuthStyle::default(),
@@ -649,12 +673,12 @@ mod tests {
     #[tokio::test]
     async fn refresh_returns_reauth_when_no_refresh_token() {
         let mut state = OAuth2State {
-            access_token: "tok".into(),
+            access_token: SecretString::new("tok"),
             token_type: "Bearer".into(),
             refresh_token: None,
             expires_at: None,
             scopes: vec![],
-            client_id: "cid".into(),
+            client_id: SecretString::new("cid"),
             client_secret: SecretString::new("cs"),
             token_url: "https://t.com/token".into(),
             auth_style: AuthStyle::default(),
@@ -668,12 +692,12 @@ mod tests {
     #[test]
     fn state_is_expired_with_margin() {
         let state = OAuth2State {
-            access_token: "tok".into(),
+            access_token: SecretString::new("tok"),
             token_type: "Bearer".into(),
             refresh_token: None,
             expires_at: Some(Utc::now() + chrono::Duration::seconds(30)),
             scopes: vec![],
-            client_id: "cid".into(),
+            client_id: SecretString::new("cid"),
             client_secret: SecretString::new("cs"),
             token_url: "https://t.com/token".into(),
             auth_style: AuthStyle::default(),
@@ -687,12 +711,12 @@ mod tests {
     #[test]
     fn no_expiry_never_expired() {
         let state = OAuth2State {
-            access_token: "tok".into(),
+            access_token: SecretString::new("tok"),
             token_type: "Bearer".into(),
             refresh_token: None,
             expires_at: None,
             scopes: vec![],
-            client_id: "cid".into(),
+            client_id: SecretString::new("cid"),
             client_secret: SecretString::new("cs"),
             token_url: "https://t.com/token".into(),
             auth_style: AuthStyle::default(),
@@ -755,5 +779,39 @@ mod tests {
     fn bearer_header_format() {
         let state = make_state();
         assert_eq!(state.bearer_header(), "Bearer tok_abc");
+    }
+
+    #[test]
+    fn oauth2_state_debug_redacts_secrets() {
+        let state = make_state();
+        let debug = format!("{state:?}");
+        assert!(!debug.contains("tok_abc"), "access_token leaked in Debug");
+        assert!(!debug.contains("ref_xyz"), "refresh_token leaked in Debug");
+        assert!(!debug.contains("csecret"), "client_secret leaked in Debug");
+        assert!(debug.contains("[REDACTED]"));
+        // Non-secret fields should still appear
+        assert!(debug.contains("Bearer"));
+        assert!(debug.contains("https://example.com/token"));
+    }
+
+    #[test]
+    fn oauth2_state_serde_round_trip() {
+        let state = make_state();
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: OAuth2State = serde_json::from_str(&json).unwrap();
+        restored
+            .access_token
+            .expose_secret(|s| assert_eq!(s, "tok_abc"));
+        restored
+            .refresh_token
+            .as_ref()
+            .unwrap()
+            .expose_secret(|s| assert_eq!(s, "ref_xyz"));
+        restored
+            .client_id
+            .expose_secret(|s| assert_eq!(s, "cid"));
+        restored
+            .client_secret
+            .expose_secret(|s| assert_eq!(s, "csecret"));
     }
 }

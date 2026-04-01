@@ -40,7 +40,7 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - **B6 CRITICAL**: ~~`verify_owner` fails open for ownerless credentials~~ FIXED
 - **B10 CRITICAL**: `InMemoryStore` CAS on missing row creates instead of NotFound
 - **B1 HIGH**: `SecretString::Serialize` redacts → round-trip destroys identity-state credentials
-- **B2 HIGH**: `OAuth2State` stores `access_token`/`refresh_token` as plain `String` (no zeroize)
+- **B2 HIGH**: ~~`OAuth2State` stores `access_token`/`refresh_token` as plain `String` (no zeroize)~~ FIXED
 - **B5 HIGH**: ~~`ScopeLayer.list()`/`exists()` pass through without scope filtering~~ FIXED
 - **B7 HIGH**: ~~`perform_refresh` doesn't retry CAS on `VersionConflict` — new token lost~~ FIXED
 - **B8 HIGH**: ~~`complete()` not called if `perform_refresh` panics — in-flight map poisoned~~ FIXED
@@ -78,3 +78,4 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 <!-- reviewed: 2026-03-31 — B5 fix: ScopeLayer.list() filters by owner, exists() delegates to scoped get() -->
 <!-- reviewed: 2026-03-31 — B14 fix: global refresh concurrency limiter via tokio::sync::Semaphore (default 32) -->
 <!-- reviewed: 2026-03-31 — B11 fix: CredentialEvent in nebula-core, resolver emits Refreshed after successful CAS write -->
+<!-- reviewed: 2026-03-31 -- B2 fix: OAuth2State access_token/refresh_token/client_id to SecretString, manual Debug redacts -->
