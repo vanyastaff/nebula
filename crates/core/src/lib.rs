@@ -30,6 +30,8 @@
 
 pub mod auth;
 pub mod constants;
+/// Credential lifecycle events for cross-crate signaling.
+pub mod credential_event;
 /// Dependency graph primitives shared across crates.
 pub mod deps;
 pub mod id;
@@ -46,6 +48,7 @@ pub mod types;
 // Re-export main types for convenience at the crate root. Downstream crates
 // should prefer `nebula_core::prelude::*` for a stable import surface.
 pub use auth::AuthScheme;
+pub use credential_event::CredentialEvent;
 pub use constants::*;
 pub use deps::*;
 pub use error::*;

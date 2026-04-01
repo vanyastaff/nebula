@@ -38,6 +38,8 @@ pub mod context;
 pub mod credential;
 /// Built-in credential type implementations.
 pub mod credentials;
+/// Cryptographic utilities: AES-256-GCM, key derivation, PKCE, serde_base64.
+pub mod crypto;
 /// Credential type description schema.
 pub mod description;
 /// Error types for credential operations.
@@ -58,6 +60,8 @@ pub mod pending_store_memory;
 pub mod registry;
 /// Resolve result types: interaction, refresh, test.
 pub mod resolve;
+/// Retry logic with exponential backoff.
+pub mod retry;
 /// Credential rotation
 #[cfg(feature = "rotation")]
 pub mod rotation;
@@ -69,10 +73,6 @@ pub mod snapshot;
 pub mod state;
 /// Reusable protocol pattern for static credentials.
 pub mod static_protocol;
-/// Cryptographic utilities: AES-256-GCM, key derivation, PKCE, serde_base64.
-pub mod crypto;
-/// Retry logic with exponential backoff.
-pub mod retry;
 
 // ── v2 Storage ──────────────────────────────────────────────────────────────
 
@@ -109,7 +109,7 @@ pub use crate::error::{
 };
 pub use crate::metadata::CredentialMetadata;
 pub use crate::snapshot::{CredentialSnapshot, SnapshotError};
-pub use nebula_core::CredentialId;
+pub use nebula_core::{CredentialEvent, CredentialId};
 
 // Utils - crypto
 pub use crate::crypto::{EncryptedData, EncryptionKey, decrypt, encrypt};

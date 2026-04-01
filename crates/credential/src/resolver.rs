@@ -10,6 +10,9 @@
 
 use std::sync::Arc;
 
+use nebula_core::CredentialEvent;
+use nebula_eventbus::EventBus;
+
 use crate::context::CredentialContext;
 use crate::credential::Credential;
 use crate::handle::CredentialHandle;
@@ -43,15 +46,29 @@ use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 pub struct CredentialResolver<S: CredentialStore> {
     store: Arc<S>,
     refresh_coordinator: RefreshCoordinator,
+    event_bus: Option<Arc<EventBus<CredentialEvent>>>,
 }
 
 impl<S: CredentialStore> CredentialResolver<S> {
     /// Creates a new resolver backed by the given store.
+    #[must_use]
     pub fn new(store: Arc<S>) -> Self {
         Self {
             store,
             refresh_coordinator: RefreshCoordinator::new(),
+            event_bus: None,
         }
+    }
+
+    /// Attaches an event bus for credential lifecycle notifications.
+    ///
+    /// When set, the resolver emits [`CredentialEvent::Refreshed`] after
+    /// a successful token refresh. Emission is best-effort — failures
+    /// are silently ignored per the [`EventBus`] contract.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_event_bus(mut self, bus: Arc<EventBus<CredentialEvent>>) -> Self {
+        self.event_bus = Some(bus);
+        self
     }
 
     /// Resolves a credential by ID into a typed handle.
@@ -202,6 +219,15 @@ impl<S: CredentialStore> CredentialResolver<S> {
         &self.refresh_coordinator
     }
 
+    /// Best-effort emit of a [`CredentialEvent::Refreshed`] event.
+    fn emit_refreshed(&self, credential_id: &str) {
+        if let Some(bus) = &self.event_bus {
+            let _ = bus.emit(CredentialEvent::Refreshed {
+                credential_id: credential_id.to_string(),
+            });
+        }
+    }
+
     /// Loads and verifies a stored credential's `state_kind`.
     async fn load_and_verify<C>(
         &self,
@@ -299,6 +325,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         .await
                     {
                         Ok(_) => {
+                            self.emit_refreshed(credential_id);
                             let scheme = C::project(&state);
                             return Ok(CredentialHandle::new(scheme, credential_id));
                         }
@@ -852,5 +879,113 @@ mod tests {
         // Should NOT have refreshed -- token still valid outside the window
         let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
         assert_eq!(value, "still-valid-token");
+    }
+
+    #[tokio::test]
+    async fn emits_refreshed_event_after_successful_refresh() {
+        let store = Arc::new(InMemoryStore::new());
+
+        // Token expires in 2 minutes -- inside the 5-minute early_refresh window
+        let expires_at = chrono::Utc::now() + chrono::Duration::minutes(2);
+        let state = ExpiringState {
+            token: "old-token".to_owned(),
+            expires_at,
+        };
+        let data = serde_json::to_vec(&state).unwrap();
+
+        let cred = StoredCredential {
+            id: "event-cred".into(),
+            credential_key: "refreshable_test".into(),
+            data,
+            state_kind: "expiring_test".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: Some(expires_at),
+            metadata: Default::default(),
+        };
+        store.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        let bus = Arc::new(EventBus::new(16));
+        let mut subscriber = bus.subscribe();
+
+        let resolver = CredentialResolver::new(store).with_event_bus(Arc::clone(&bus));
+        let ctx = CredentialContext::new("test-user");
+
+        let handle = resolver
+            .resolve_with_refresh::<RefreshableTestCredential>("event-cred", &ctx)
+            .await
+            .unwrap();
+
+        // Refresh should have fired
+        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
+        assert_eq!(value, "refreshed-token");
+
+        // Subscriber should have received a Refreshed event
+        let event = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            subscriber.recv(),
+        )
+        .await
+        .expect("timed out waiting for event")
+        .expect("bus closed unexpectedly");
+
+        assert_eq!(
+            event,
+            CredentialEvent::Refreshed {
+                credential_id: "event-cred".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn no_event_emitted_when_no_refresh_needed() {
+        let store = Arc::new(InMemoryStore::new());
+
+        // Token expires in 10 minutes -- outside the 5-minute early_refresh window
+        let expires_at = chrono::Utc::now() + chrono::Duration::minutes(10);
+        let state = ExpiringState {
+            token: "still-valid".to_owned(),
+            expires_at,
+        };
+        let data = serde_json::to_vec(&state).unwrap();
+
+        let cred = StoredCredential {
+            id: "no-event-cred".into(),
+            credential_key: "refreshable_test".into(),
+            data,
+            state_kind: "expiring_test".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: Some(expires_at),
+            metadata: Default::default(),
+        };
+        store.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        let bus = Arc::new(EventBus::new(16));
+        let mut subscriber = bus.subscribe();
+
+        let resolver = CredentialResolver::new(store).with_event_bus(Arc::clone(&bus));
+        let ctx = CredentialContext::new("test-user");
+
+        let handle = resolver
+            .resolve_with_refresh::<RefreshableTestCredential>("no-event-cred", &ctx)
+            .await
+            .unwrap();
+
+        // Should NOT have refreshed
+        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
+        assert_eq!(value, "still-valid");
+
+        // No event should be pending -- recv should time out
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            subscriber.recv(),
+        )
+        .await;
+        assert!(result.is_err(), "expected no event, but received one");
     }
 }
