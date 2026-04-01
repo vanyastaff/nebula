@@ -33,7 +33,7 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - `ScopeLayer.list()` filters by owner via N+1 inner `get()` calls — acceptable for in-memory backend, may need backend-level query for large-scale stores.
 - `ScopeLayer.exists()` delegates to scoped `get()` — inherits fail-closed behavior from `verify_owner`.
 - `verify_owner` is fail-closed: credentials without `owner_id` in metadata are admin-only (fixed B6).
-- `CredentialRotationEvent.new_state` leaks credential material via EventBus — must replace with id+generation only.
+- `CredentialRotationEvent` carries only `credential_id` + `generation` — never credential state (fixed B9).
 - Plugin authors need 3 crate deps (`nebula-credential`, `nebula-parameter`, `nebula-core`) — re-export gap.
 
 ## Pre-existing Bugs (from HLD v1.2 review + town hall)
@@ -44,8 +44,8 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - **B5 HIGH**: ~~`ScopeLayer.list()`/`exists()` pass through without scope filtering~~ FIXED
 - **B7 HIGH**: ~~`perform_refresh` doesn't retry CAS on `VersionConflict` — new token lost~~ FIXED
 - **B8 HIGH**: ~~`complete()` not called if `perform_refresh` panics — in-flight map poisoned~~ FIXED
-- **B9 HIGH**: `CredentialRotationEvent.new_state` leaks credential material
-- **B11 HIGH**: Resolver emits NO events after refresh — resources never learn
+- **B9 HIGH**: ~~`CredentialRotationEvent.new_state` leaks credential material~~ FIXED
+- **B11 HIGH**: ~~Resolver emits NO events after refresh — resources never learn~~ FIXED
 - **B12 HIGH**: ~~`StoredCredential` missing `credential_key` — engine can't dispatch~~ FIXED
 - **B3 MEDIUM**: RefreshCoordinator circuit breaker map unbounded
 - **B13 MEDIUM**: `CredentialRegistry::project()` returns `Box<dyn Any>` not `CredentialSnapshot`
@@ -62,14 +62,14 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - v1.1 deferred: CredentialStore dyn-compatibility, put_batch()
 - SOC2 audit: CC6.1 CONDITIONAL (B5+B6), CC6.3 PASS, CC7.2 CONDITIONAL, CC8.1 NOT ASSESSED
 - Target: 3-crate family (`nebula-credential`, `nebula-credential-storage`, `nebula-credential-macros`)
-- Target types not yet implemented: `CredentialPhase` (7 states), `OwnerId`, `CredentialEvent`, `StackBuilder`, 5 new error variants
+- Target types not yet implemented: `CredentialPhase` (7 states), `OwnerId`, `StackBuilder`, 5 new error variants
 - Registry target: key on `Credential::KEY` (current: `state_kind`), return `Result` on duplicate
 
 ## Relations
 - Depends on: nebula-core, nebula-eventbus, nebula-resilience, nebula-parameter, nebula-log. Peer: nebula-resource.
 - Built-in credentials: `ApiKeyCredential`, `BasicAuthCredential`, `DatabaseCredential`, `HeaderAuthCredential`, `OAuth2Credential`.
 - Rotation module: feature-gated, disconnected from v2 Credential trait.
-- Target: `CredentialEvent` moves to nebula-core (both emitter/consumer without peer import).
+- `CredentialEvent` lives in nebula-core (both emitter/consumer without peer import). Resolver emits via optional `EventBus<CredentialEvent>`.
 
 <!-- updated: 2026-04-01 — HLD v1.5, 17 bugs, 33 v1 items, 2 conferences (10 external devs), SOC2 audit grades -->
 <!-- reviewed: 2026-03-31 — B7 fix: CAS retry loop (3 attempts) reuses refreshed token, prevents OAuth2 single-use token loss -->
@@ -77,3 +77,4 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 <!-- reviewed: 2026-03-31 — B12 fix: added credential_key field to StoredCredential for type dispatch -->
 <!-- reviewed: 2026-03-31 — B5 fix: ScopeLayer.list() filters by owner, exists() delegates to scoped get() -->
 <!-- reviewed: 2026-03-31 — B14 fix: global refresh concurrency limiter via tokio::sync::Semaphore (default 32) -->
+<!-- reviewed: 2026-03-31 — B11 fix: CredentialEvent in nebula-core, resolver emits Refreshed after successful CAS write -->

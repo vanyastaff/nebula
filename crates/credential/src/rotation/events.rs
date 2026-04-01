@@ -62,13 +62,15 @@ pub struct EmergencyRotationData {
 /// Emitted after every successful credential rotation.
 ///
 /// `ResourceManager` subscribes to this to trigger pool re-authorization.
+/// Carries only `credential_id` + `generation` — never credential state,
+/// which would leak secrets to any EventBus subscriber that logs events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialRotationEvent {
     /// Which credential instance was rotated.
     pub credential_id: CredentialId,
-    /// New credential state, type-erased as JSON.
-    /// Deserialized by the pool's credential handler into the concrete State type.
-    pub new_state: serde_json::Value,
+    /// Monotonically increasing generation counter for this credential.
+    /// Subscribers use this to detect stale re-authorization attempts.
+    pub generation: u64,
 }
 
 /// Notification event for rotation lifecycle
