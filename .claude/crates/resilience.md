@@ -1,6 +1,23 @@
 # nebula-resilience
 Fault-tolerance patterns: circuit breaker, retry, bulkhead, rate limiter, timeout, load shedding.
 
+## Quick mental model
+- `ResiliencePipeline` composes layers in add-order (first added = outermost).
+- Recommended order: `load_shed -> rate_limiter -> timeout -> retry -> circuit_breaker -> bulkhead`.
+- `CallError<E>` is the single cross-pattern error contract; all adapters should preserve this shape.
+- `retry_with()` is Classify-aware; pipeline retry path uses `retry_with_inner()` and classifier plumbing.
+- Circuit breaker probe lifecycle is cancellation-sensitive and guarded by RAII (`ProbeGuard`).
+- Rate limiting has 4 built-in algorithms plus optional `governor` implementation.
+
+## Where to look first
+- Pipeline composition and layer semantics: `src/pipeline.rs`
+- Retry/backoff/jitter and budget handling: `src/retry.rs`
+- Circuit state machine and probe handling: `src/circuit_breaker.rs`
+- Concurrency gating/queueing: `src/bulkhead.rs`, `src/gate.rs`
+- Rate algorithms and adaptive tuning: `src/rate_limiter.rs`
+- Error contract and remapping helpers: `src/error.rs`
+- Metrics/events surface: `src/sink.rs`
+
 ## Invariants
 - `benches/compose.rs` is an API contract for `ResiliencePipeline`. Run `cargo bench --no-run -p nebula-resilience` after signature changes.
 - **`CallError<E>` is the sole error type** — `#[non_exhaustive]`, includes `FallbackFailed` variant.
@@ -28,13 +45,42 @@ Fault-tolerance patterns: circuit breaker, retry, bulkhead, rate limiter, timeou
 - **CB callbacks fire OUTSIDE the lock** — prevents deadlock if callback reads CB state.
 - **`FunctionFallback` erases `Operation(E)` → `FallbackFailed`** (not `Cancelled`). Closure receives `CallError<()>`.
 - **`TokenBucket::burst_size`** is `AtomicUsize` — updated in-place by `update_burst()`. `AdaptiveRateLimiter` keeps burst in sync with rate.
-- **`AdaptiveRateLimiter` counters** are lock-free atomics. Write lock only taken for rate adjustment.
-- **Field name**: `max_half_open_operations` (not `half_open_max_ops`).
-- **`ChainFallback::then()`** (not `add`). **`PriorityFallback`** uses `Vec` (not `HashMap`).
-- **Seeded jitter** mixes seed with attempt number — each retry gets different jitter.
-- **Jitter factor hardening**: non-finite/negative values fall back to base delay; factor is clamped to `<= 1.0` to match docs.
-- **`MockClock::now()`** includes real elapsed time (Instant limitation on stable Rust). Use large advances in tests.
+- **`AdaptiveRateLimiter::reset()` is panic-free**: rebuilds TokenBucket with a safe fallback path (no `expect`).
+- **`GovernorRateLimiter::new()` hardens non-finite rates** by clamping to a safe minimum before `from_secs_f64`.
+- **Bulkhead wait queue guard uses `defused: bool`**, not `mem::forget`, for panic-safe counter handling.
 - **Bulkhead queue timeout** returns `CallError::Timeout`, not `BulkheadFull`.
+
+## Safety-critical hotspots
+- `retry`: budget check must stay overflow-safe (`checked_add`) before comparing durations.
+- `retry`: jitter must guard non-finite/negative float paths before `from_secs_f64`.
+- `bulkhead`: queue wait counter must use defused RAII semantics, never `mem::forget`.
+- `circuit_breaker`: half-open probe slots must be released on cancel/drop paths.
+- `rate_limiter`: `f64 -> Duration` conversions must be capped/sanitized before conversion.
+- `adaptive limiter reset`: keep panic-free reconstruction path (no `expect` in runtime code).
+
+## Feature flags and what they change
+- `governor`: enables `GovernorRateLimiter` (GCRA path in `src/rate_limiter.rs`).
+- `humantime`: human-readable `Duration` serde support.
+- `full`: enables both optional features.
+
+## Fast validation commands
+- Single crate (default features): `rtk cargo check -p nebula-resilience && rtk cargo nextest run -p nebula-resilience`
+- Governor path: `rtk cargo nextest run -p nebula-resilience --features governor`
+- Pre-PR workspace gate: `rtk cargo fmt && rtk cargo clippy --workspace -- -D warnings && rtk cargo nextest run --workspace`
+
+## Common change playbooks
+- Touching `retry`:
+	- Re-check `BackoffConfig` edge values and jitter finite handling.
+	- Validate `total_budget` semantics (elapsed op time + next delay).
+- Touching `circuit_breaker`:
+	- Verify half-open probe accounting on success/error/cancel paths.
+	- Confirm state-change callbacks still run outside locks.
+- Touching `pipeline`:
+	- Re-run `benches/compose.rs` contract compile.
+	- Verify retry + classifier + fallback error mapping still preserves `CallError<E>`.
+- Touching `rate_limiter`:
+	- Validate constructor bounds and conversion safety.
+	- Run tests with and without `governor` feature.
 
 ## Module structure
 ```
@@ -60,4 +106,4 @@ Prefer `ResiliencePipeline` for composing multiple patterns — it handles layer
 ## Relations
 - Depends on: nebula-error. Used by nebula-resource (pool resilience), nebula-credential (refresh CB).
 
-<!-- reviewed: 2026-03-31 — deep invariant audit + retry overflow/jitter hardening -->
+<!-- reviewed: 2026-03-31 — deep invariant audit + retry/rate-limiter/bulkhead safety hardening -->

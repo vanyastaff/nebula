@@ -643,13 +643,26 @@ impl RateLimiter for AdaptiveRateLimiter {
         self.error_count.store(0, Ordering::Relaxed);
         let mut state = self.state.write();
         state.last_stats_reset = Instant::now();
-        state.current_rate = state.initial_rate;
-        state.inner = Arc::new(
-            TokenBucket::new(state.initial_rate.max(1.0) as usize, state.initial_rate)
-                .expect("initial_rate produced valid config at construction"),
-        );
+        let mut reset_rate = state.initial_rate.clamp(0.001, 10_000.0);
+        let reset_capacity = reset_rate.max(1.0) as usize;
+
+        let new_bucket = match TokenBucket::new(reset_capacity, reset_rate) {
+            Ok(bucket) => bucket,
+            Err(_) => {
+                // Safe fallback for release builds if invariants ever drift.
+                debug_assert!(false, "initial_rate should always reconstruct TokenBucket");
+                reset_rate = 1.0;
+                match TokenBucket::new(1, reset_rate) {
+                    Ok(bucket) => bucket,
+                    Err(_) => return,
+                }
+            }
+        };
+
+        state.current_rate = reset_rate;
+        state.inner = Arc::new(new_bucket);
         self.atomic_rate
-            .store(state.initial_rate.to_bits(), Ordering::Release);
+            .store(reset_rate.to_bits(), Ordering::Release);
     }
 }
 
@@ -691,7 +704,11 @@ mod governor_impl {
         /// Create a new governor-based rate limiter.
         #[must_use]
         pub fn new(rate_per_second: f64, burst_capacity: u32) -> Self {
-            let safe_rate = rate_per_second.clamp(0.001, 1_000_000.0);
+            let safe_rate = if rate_per_second.is_finite() {
+                rate_per_second.clamp(0.001, 1_000_000.0)
+            } else {
+                0.001
+            };
             let safe_burst = burst_capacity.min(100_000);
             let burst = NonZeroU32::new(safe_burst.max(1)).unwrap_or(NonZeroU32::MIN);
 
@@ -770,6 +787,15 @@ mod governor_impl {
             let limiter = GovernorRateLimiter::new(100.0, 10);
             let result = limiter.call(|| async { Ok::<i32, &str>(42) }).await;
             assert_eq!(result.unwrap(), 42);
+        }
+
+        #[tokio::test]
+        async fn non_finite_rate_is_safely_clamped() {
+            let limiter = GovernorRateLimiter::new(f64::NAN, 5);
+            let rate = limiter.current_rate().await;
+
+            assert!(rate.is_finite());
+            assert_eq!(rate, 0.001);
         }
     }
 }
