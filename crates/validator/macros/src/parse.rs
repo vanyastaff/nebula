@@ -271,9 +271,7 @@ fn parse_each_rules(
             if !each_element_is_string {
                 return Err(syn::Error::new_spanned(
                     original_ty,
-                    format!(
-                        "`each({key} = ...)` requires `Vec<String>` or `Option<Vec<String>>`"
-                    ),
+                    format!("`each({key} = ...)` requires `Vec<String>` or `Option<Vec<String>>`"),
                 ));
             }
             rules.push(Rule::StringFactory { kind, arg });

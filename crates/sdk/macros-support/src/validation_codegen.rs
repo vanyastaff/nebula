@@ -106,7 +106,6 @@ pub fn generate_len_check(
     }
 }
 
-
 /// Generate a comparison check (min/max) for a numeric field.
 pub fn generate_cmp_check(
     field_name: &syn::Ident,

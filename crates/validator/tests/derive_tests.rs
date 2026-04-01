@@ -475,9 +475,7 @@ struct Outer {
 #[test]
 fn accepts_valid_nested() {
     let v = Outer {
-        inner: Inner {
-            name: "ok".into(),
-        },
+        inner: Inner { name: "ok".into() },
     };
     assert!(v.validate_fields().is_ok());
 }
@@ -575,9 +573,7 @@ struct MessageOverride {
 
 #[test]
 fn message_override_uses_custom_text() {
-    let v = MessageOverride {
-        name: "ab".into(),
-    };
+    let v = MessageOverride { name: "ab".into() };
     let result = v.validate_fields();
     assert!(result.is_err());
     assert_eq!(first_message(&result), "Name is too short, friend");
@@ -637,9 +633,7 @@ struct SelfValidatingCheck {
 
 #[test]
 fn self_validating_check_passes() {
-    let v = SelfValidatingCheck {
-        value: "ok".into(),
-    };
+    let v = SelfValidatingCheck { value: "ok".into() };
     assert!(SelfValidating::check(&v).is_ok());
 }
 
@@ -663,9 +657,7 @@ struct ValidateTraitCheck {
 
 #[test]
 fn validate_trait_passes() {
-    let v = ValidateTraitCheck {
-        short: "ok".into(),
-    };
+    let v = ValidateTraitCheck { short: "ok".into() };
     assert!(Validate::validate(&v, &v).is_ok());
 }
 
@@ -691,9 +683,7 @@ struct ContainerMessage {
 
 #[test]
 fn container_message_appears_in_single_error() {
-    let v = ContainerMessage {
-        name: "ab".into(),
-    };
+    let v = ContainerMessage { name: "ab".into() };
     // SelfValidating::check / Validate::validate produce a single error
     // whose message is the container message.
     let result = SelfValidating::check(&v);
@@ -757,9 +747,7 @@ fn optional_nested_none_passes() {
 #[test]
 fn optional_nested_some_valid_passes() {
     let v = OuterOptionalNested {
-        child: Some(InnerForNested {
-            label: "ok".into(),
-        }),
+        child: Some(InnerForNested { label: "ok".into() }),
     };
     assert!(v.validate_fields().is_ok());
 }

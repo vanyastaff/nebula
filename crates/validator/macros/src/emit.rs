@@ -9,9 +9,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::Type;
 
-use crate::model::{
-    EachRules, FieldDef, Rule, StringFactoryKind, StringFormat, ValidatorInput,
-};
+use crate::model::{EachRules, FieldDef, Rule, StringFactoryKind, StringFormat, ValidatorInput};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -631,10 +629,7 @@ fn emit_each_cmp_check(
 }
 
 /// Emit element-level string validator check.
-fn emit_each_str_validator(
-    validator_expr: TokenStream2,
-    message: &Option<String>,
-) -> TokenStream2 {
+fn emit_each_str_validator(validator_expr: TokenStream2, message: &Option<String>) -> TokenStream2 {
     if let Some(msg) = message {
         quote! {
             if let Err(mut e) = ::nebula_validator::foundation::Validate::validate(&#validator_expr, value.as_str()) {
