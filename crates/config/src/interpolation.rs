@@ -125,9 +125,12 @@ fn resolve_reference(input: &str, start: usize) -> ConfigResult<(String, String,
 
     // Byte scan for `}` — all relevant characters are ASCII so this is safe
     // on valid UTF-8 (multi-byte sequences always have the high bit set).
-    let close_offset = bytes[start..].iter().position(|&b| b == b'}').ok_or_else(|| {
-        ConfigError::interpolation_error("unclosed variable reference — missing '}'", None)
-    })?;
+    let close_offset = bytes[start..]
+        .iter()
+        .position(|&b| b == b'}')
+        .ok_or_else(|| {
+            ConfigError::interpolation_error("unclosed variable reference — missing '}'", None)
+        })?;
 
     let body = &input[start..start + close_offset];
     let new_pos = start + close_offset + 1; // step past '}'
@@ -150,9 +153,7 @@ fn resolve_reference(input: &str, start: usize) -> ConfigResult<(String, String,
         Ok(val) => Ok((val, var_name.to_string(), new_pos)),
         Err(_) => {
             if let Some(default) = default_value {
-                nebula_log::warn!(
-                    "unresolved variable ${{{var_name}}}, using default: {default}"
-                );
+                nebula_log::warn!("unresolved variable ${{{var_name}}}, using default: {default}");
                 Ok((default.to_owned(), var_name.to_string(), new_pos))
             } else {
                 Err(ConfigError::interpolation_error(
