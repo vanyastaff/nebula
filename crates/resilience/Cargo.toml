@@ -38,6 +38,7 @@ humantime-serde = { version = "1.1.1", optional = true }
 governor = { version = "0.10", optional = true }
 tokio-util = { workspace = true, features = ["rt"] }
 fastrand = "2.3"
+loom = { version = "0.7", optional = true }
 smallvec = { version = "1.15", features = ["union", "serde"] }
 tracing = { workspace = true }
 
@@ -48,7 +49,6 @@ criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 futures = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
-loom = "0.7"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

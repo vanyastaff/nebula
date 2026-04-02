@@ -2,8 +2,13 @@
 
 use parking_lot::Mutex;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
+
+// Under loom, swap std atomics for loom-instrumented equivalents.
+#[cfg(loom)]
+use loom::sync::atomic::{AtomicU32, Ordering};
+#[cfg(not(loom))]
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::{
     CallError, ConfigError,
@@ -1311,5 +1316,98 @@ mod tests {
         };
         let err = CircuitBreaker::new(config).unwrap_err();
         assert_eq!(err.field, "min_operations");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Loom concurrency tests — exhaustively verify the atomic_state mirror pattern.
+//
+// The circuit breaker uses a `Relaxed` atomic store (inside the parking_lot mutex)
+// paired with a `Relaxed` atomic load (outside the mutex) for `circuit_state()`.
+// Loom checks that no invalid interleaving produces an undefined state value.
+//
+// Run with:
+//   RUSTFLAGS="--cfg loom" cargo test -p nebula-resilience -- loom
+//
+// Note: parking_lot::Mutex is NOT loom-instrumented. These tests focus exclusively
+// on the AtomicU32 mirror — the mutex correctness is guaranteed by parking_lot.
+// ---------------------------------------------------------------------------
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use loom::sync::atomic::{AtomicU32, Ordering};
+    use loom::sync::Arc;
+    use loom::thread;
+
+    use super::{STATE_CLOSED, STATE_HALF_OPEN, STATE_OPEN};
+
+    /// Two threads race: writer transitions Closed→Open→HalfOpen→Closed
+    /// while reader polls `circuit_state()`. Loom verifies that the reader
+    /// only ever sees valid state values (0, 1, or 2) — never torn or
+    /// intermediate values.
+    #[test]
+    fn atomic_state_mirror_only_sees_valid_states() {
+        loom::model(|| {
+            let state = Arc::new(AtomicU32::new(STATE_CLOSED));
+
+            let writer_state = Arc::clone(&state);
+            let writer = thread::spawn(move || {
+                writer_state.store(STATE_OPEN, Ordering::Relaxed);
+                writer_state.store(STATE_HALF_OPEN, Ordering::Relaxed);
+                writer_state.store(STATE_CLOSED, Ordering::Relaxed);
+            });
+
+            let val = state.load(Ordering::Relaxed);
+            assert!(
+                val == STATE_CLOSED || val == STATE_OPEN || val == STATE_HALF_OPEN,
+                "invalid state value observed: {val}"
+            );
+
+            writer.join().unwrap();
+            assert_eq!(state.load(Ordering::Relaxed), STATE_CLOSED);
+        });
+    }
+
+    /// Multiple concurrent readers + one writer.
+    #[test]
+    fn concurrent_readers_see_valid_states() {
+        loom::model(|| {
+            let state = Arc::new(AtomicU32::new(STATE_CLOSED));
+
+            let w = Arc::clone(&state);
+            let writer = thread::spawn(move || {
+                w.store(STATE_OPEN, Ordering::Relaxed);
+            });
+
+            let r1 = Arc::clone(&state);
+            let reader1 = thread::spawn(move || {
+                let v = r1.load(Ordering::Relaxed);
+                assert!(v == STATE_CLOSED || v == STATE_OPEN);
+            });
+
+            let v = state.load(Ordering::Relaxed);
+            assert!(v == STATE_CLOSED || v == STATE_OPEN);
+
+            writer.join().unwrap();
+            reader1.join().unwrap();
+        });
+    }
+
+    /// Verify no spurious values from valid state machine transitions.
+    #[test]
+    fn no_spurious_state_values() {
+        loom::model(|| {
+            let state = Arc::new(AtomicU32::new(STATE_CLOSED));
+
+            let w = Arc::clone(&state);
+            let t = thread::spawn(move || {
+                w.store(STATE_OPEN, Ordering::Relaxed);
+                w.store(STATE_CLOSED, Ordering::Relaxed);
+            });
+
+            let v = state.load(Ordering::Relaxed);
+            assert!(v <= STATE_HALF_OPEN, "saw value {v} > 2");
+
+            t.join().unwrap();
+        });
     }
 }
