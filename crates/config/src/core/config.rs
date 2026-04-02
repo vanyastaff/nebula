@@ -313,10 +313,17 @@ impl Config {
             // Byte scan for `.` — avoids SplitInternal struct and per-segment call
             // overhead. All path separators are ASCII; multi-byte UTF-8 sequences
             // always have the high bit set and cannot be confused with b'.'.
-            let (part, rest) = match remaining.as_bytes().iter().position(|&b| b == b'.') {
-                Some(pos) => (&remaining[..pos], &remaining[pos + 1..]),
-                None => (remaining, ""),
+            let (part, rest, has_dot) = match remaining.as_bytes().iter().position(|&b| b == b'.') {
+                Some(pos) => (&remaining[..pos], &remaining[pos + 1..], true),
+                None => (remaining, "", false),
             };
+
+            if part.is_empty() {
+                return Err(ConfigError::path_error(
+                    "Path segment must not be empty (check for leading, trailing, or consecutive dots)",
+                    path.to_string(),
+                ));
+            }
 
             match current {
                 serde_json::Value::Object(obj) => {
@@ -350,6 +357,13 @@ impl Config {
             }
 
             if rest.is_empty() {
+                // A trailing dot means `has_dot` is true but nothing follows — reject it.
+                if has_dot {
+                    return Err(ConfigError::path_error(
+                        "Path segment must not be empty (check for leading, trailing, or consecutive dots)",
+                        path.to_string(),
+                    ));
+                }
                 break;
             }
             remaining = rest;
@@ -799,5 +813,19 @@ mod tests {
         assert!(debug.contains("watching"));
         assert!(debug.contains("has_validator"));
         assert!(debug.contains("has_watcher"));
+    }
+
+    #[tokio::test]
+    async fn rejects_trailing_dot_in_path() {
+        let config = test_config(json!({"a": "val"}));
+        let err = config.get::<String>("a.").await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_consecutive_dots_in_path() {
+        let config = test_config(json!({"a": {"b": "val"}}));
+        let err = config.get::<String>("a..b").await;
+        assert!(err.is_err());
     }
 }
