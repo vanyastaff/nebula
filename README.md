@@ -2,6 +2,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.93%2B-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/vanyastaff/nebula?utm_source=badge)
 [![Status](https://img.shields.io/badge/status-Active%20Development-brightgreen.svg)](docs/PROJECT_STATUS.md)
 
 > Modular, type-safe workflow automation for Rust-first teams.
