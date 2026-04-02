@@ -32,7 +32,11 @@ Fault-tolerance patterns: circuit breaker, retry, bulkhead, rate limiter, timeou
 - **`HedgeExecutor::new()` returns `Result`** — validates `HedgeConfig`.
 - **`AdaptiveHedgeExecutor::with_max_samples(n)`** — configures latency tracker capacity (default 1000). Returns `Err` if n=0.
 - **`AdaptiveHedgeExecutor` uses `parking_lot::RwLock`** — not `tokio::sync::RwLock`: both `record()` and `percentile()` are sync, no `.await` under lock.
+- **`LatencyTracker` uses `Vec<(u64, u32)>` histogram** — sorted by nanos, no BTreeMap, no heap allocs after warmup. `ring: VecDeque<u64>` stores nanos (not Duration).
+- **CB `SlidingWindow` uses two `Box<[u8]>` arrays** — `failure_ring` and `slow_ring` separate for SIMD vectorization of sum loops. No `OutcomeEntry` struct.
+- **CB failure/slow rate checks use multiply form** — `failures >= threshold * total` instead of `failures/total >= threshold`, eliminating `divsd`.
 - **`SlidingWindow` pre-allocates `VecDeque::with_capacity(max_requests)`** — no reallocs during warmup.
+- **`SlidingWindow::acquire()` computes cutoff before lock** — `now.checked_sub(window_duration)` happens before `mutex.lock()`, not inside `clean_old_requests_locked`.
 - **All patterns use `.call()` method** — unified verb across all executors.
 - **`CircuitBreaker::try_acquire()`** — returns `Result`, not `bool`.
 - **`Outcome` NOT re-exported at root** — access via `circuit_breaker::Outcome`.
@@ -109,4 +113,4 @@ Prefer `ResiliencePipeline` for composing multiple patterns — it handles layer
 ## Relations
 - Depends on: nebula-error. Used by nebula-resource (pool resilience), nebula-credential (refresh CB).
 
-<!-- reviewed: 2026-04-01 — assembly analysis: SlidingWindow with_capacity, parking_lot RwLock for AdaptiveHedge, with_max_samples API -->
+<!-- reviewed: 2026-04-01 — ASM perf fixes: LatencyTracker BTreeMap→Vec, CB SlidingWindow u8 split, divsd elimination, cutoff-before-lock, trip_open_from_half_open helper -->

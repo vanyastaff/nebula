@@ -213,7 +213,7 @@ struct WaitCountGuard<'a> {
 }
 
 impl WaitCountGuard<'_> {
-    fn defuse(&mut self) {
+    const fn defuse(&mut self) {
         self.defused = true;
     }
 }

@@ -373,13 +373,7 @@ impl SlidingWindow {
         })
     }
 
-    fn clean_old_requests_locked(
-        requests: &mut VecDeque<Instant>,
-        now: Instant,
-        window_duration: Duration,
-    ) {
-        let cutoff = now.checked_sub(window_duration).unwrap_or(now);
-
+    fn clean_old_requests_locked(requests: &mut VecDeque<Instant>, cutoff: Instant) {
         while let Some(&front) = requests.front() {
             if front < cutoff {
                 requests.pop_front();
@@ -393,13 +387,14 @@ impl SlidingWindow {
 impl RateLimiter for SlidingWindow {
     async fn acquire(&self) -> Result<(), CallError<()>> {
         let now = Instant::now();
+        let cutoff = now.checked_sub(self.window_duration).unwrap_or(now);
         let mut requests = self.requests.lock();
 
         // Always evict expired entries before checking capacity.
         // The deque is sorted by insertion time, so we only scan from the
         // front until we hit a non-expired entry — O(k) where k is the
         // number of expired entries (typically 0–1 at steady-state).
-        Self::clean_old_requests_locked(&mut requests, now, self.window_duration);
+        Self::clean_old_requests_locked(&mut requests, cutoff);
 
         if requests.len() < self.max_requests {
             requests.push_back(now);
@@ -417,7 +412,8 @@ impl RateLimiter for SlidingWindow {
         let now = Instant::now();
         let mut requests = self.requests.lock();
         // Always do a full cleanup here so the reported count is accurate.
-        Self::clean_old_requests_locked(&mut requests, now, self.window_duration);
+        let cutoff = now.checked_sub(self.window_duration).unwrap_or(now);
+        Self::clean_old_requests_locked(&mut requests, cutoff);
         let len = requests.len() as f64;
         drop(requests);
         len
@@ -646,16 +642,16 @@ impl RateLimiter for AdaptiveRateLimiter {
         let mut reset_rate = state.initial_rate.clamp(0.001, 10_000.0);
         let reset_capacity = reset_rate.max(1.0) as usize;
 
-        let new_bucket = match TokenBucket::new(reset_capacity, reset_rate) {
-            Ok(bucket) => bucket,
-            Err(_) => {
-                // Safe fallback for release builds if invariants ever drift.
-                debug_assert!(false, "initial_rate should always reconstruct TokenBucket");
-                reset_rate = 1.0;
-                match TokenBucket::new(1, reset_rate) {
-                    Ok(bucket) => bucket,
-                    Err(_) => return,
-                }
+        let new_bucket = if let Ok(bucket) = TokenBucket::new(reset_capacity, reset_rate) {
+            bucket
+        } else {
+            // Safe fallback for release builds if invariants ever drift.
+            debug_assert!(false, "initial_rate should always reconstruct TokenBucket");
+            reset_rate = 1.0;
+            if let Ok(bucket) = TokenBucket::new(1, reset_rate) {
+                bucket
+            } else {
+                return;
             }
         };
 

@@ -9,7 +9,7 @@
 //! complete or are individually aborted. This is intentional: the hedge pattern assumes
 //! speculative work is cheap to abandon at the infrastructure level.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
 
@@ -315,20 +315,24 @@ impl AdaptiveHedgeExecutor {
 
 /// Ring-buffer latency tracker with O(log n) insert and O(k) percentile computation,
 /// where k is the number of distinct latency values (at most `max_samples`).
+///
+/// Uses a sorted `Vec<(u64, u32)>` histogram (nanoseconds → count) instead of
+/// `BTreeMap` to avoid per-record heap allocations in steady-state.
 struct LatencyTracker {
-    ring: VecDeque<Duration>,
+    /// Ring buffer storing nanosecond values of recent samples.
+    ring: VecDeque<u64>,
+    /// Sorted histogram: `(nanos, count)` pairs, ordered by `nanos` ascending.
+    /// No heap allocations after warmup — only `insert`/`remove` within existing capacity.
+    histogram: Vec<(u64, u32)>,
     max_samples: usize,
-    /// Sorted map of nanosecond durations → occurrence count.
-    /// Used to walk from smallest to largest for percentile computation.
-    sorted: BTreeMap<u64, usize>,
 }
 
 impl LatencyTracker {
     fn new(max_samples: usize) -> Self {
         Self {
             ring: VecDeque::with_capacity(max_samples),
+            histogram: Vec::new(),
             max_samples,
-            sorted: BTreeMap::new(),
         }
     }
 
@@ -340,20 +344,24 @@ impl LatencyTracker {
         clippy::cast_precision_loss
     )]
     fn record(&mut self, latency: Duration) {
+        let nanos = latency.as_nanos() as u64;
+
         if self.ring.len() == self.max_samples
             && let Some(oldest) = self.ring.pop_front()
+            && let Ok(idx) = self.histogram.binary_search_by_key(&oldest, |e| e.0)
         {
-            let key = oldest.as_nanos() as u64;
-            if let Some(c) = self.sorted.get_mut(&key) {
-                if *c <= 1 {
-                    self.sorted.remove(&key);
-                } else {
-                    *c -= 1;
-                }
+            if self.histogram[idx].1 <= 1 {
+                self.histogram.remove(idx);
+            } else {
+                self.histogram[idx].1 -= 1;
             }
         }
-        *self.sorted.entry(latency.as_nanos() as u64).or_insert(0) += 1;
-        self.ring.push_back(latency);
+
+        match self.histogram.binary_search_by_key(&nanos, |e| e.0) {
+            Ok(idx) => self.histogram[idx].1 += 1,
+            Err(idx) => self.histogram.insert(idx, (nanos, 1)),
+        }
+        self.ring.push_back(nanos);
     }
 
     // Reason: f64 precision loss and sign loss are acceptable for percentile index calculation.
@@ -368,18 +376,17 @@ impl LatencyTracker {
         }
         let target = ((self.ring.len() as f64 - 1.0) * p.clamp(0.0, 1.0)) as usize;
         let mut accumulated = 0usize;
-        for (&nanos, &cnt) in &self.sorted {
-            accumulated += cnt;
+        for &(nanos, cnt) in &self.histogram {
+            accumulated += cnt as usize;
             if accumulated > target {
                 return Some(Duration::from_nanos(nanos));
             }
         }
         // Unreachable in practice: total accumulated == ring.len() > target for any valid p.
         // Present as a safe fallback for floating-point edge cases.
-        self.sorted
-            .keys()
-            .next_back()
-            .map(|&nanos| Duration::from_nanos(nanos))
+        self.histogram
+            .last()
+            .map(|&(nanos, _)| Duration::from_nanos(nanos))
     }
 }
 

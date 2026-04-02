@@ -185,31 +185,34 @@ pub struct CircuitBreaker {
 }
 
 /// Fixed-size ring buffer of call outcomes for rate-based circuit breaking.
+///
+/// Stores failure and slow-call flags in separate byte arrays so that
+/// `failure_count` and `slow_count` are simple contiguous-byte sums that
+/// LLVM can auto-vectorize with SIMD instructions.
 #[derive(Debug)]
 struct SlidingWindow {
-    buffer: Vec<OutcomeEntry>,
+    /// 1 = failure, 0 = success — one byte per slot, contiguous for SIMD.
+    failure_ring: Box<[u8]>,
+    /// 1 = slow call, 0 = normal — one byte per slot, contiguous for SIMD.
+    slow_ring: Box<[u8]>,
     head: usize,
     len: usize,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct OutcomeEntry {
-    is_failure: bool,
-    is_slow: bool,
 }
 
 impl SlidingWindow {
     fn new(size: usize) -> Self {
         Self {
-            buffer: vec![OutcomeEntry::default(); size],
+            failure_ring: vec![0u8; size].into_boxed_slice(),
+            slow_ring: vec![0u8; size].into_boxed_slice(),
             head: 0,
             len: 0,
         }
     }
 
-    fn record(&mut self, entry: OutcomeEntry) {
-        let cap = self.buffer.len();
-        self.buffer[self.head] = entry;
+    fn record(&mut self, is_failure: bool, is_slow: bool) {
+        let cap = self.failure_ring.len();
+        self.failure_ring[self.head] = u8::from(is_failure);
+        self.slow_ring[self.head] = u8::from(is_slow);
         self.head = (self.head + 1) % cap;
         if self.len < cap {
             self.len += 1;
@@ -222,31 +225,33 @@ impl SlidingWindow {
         self.len as u32
     }
 
-    // Reason: usize to u32 cast is safe for practical window sizes (< 2^32).
-    #[allow(clippy::cast_possible_truncation)]
     fn failure_count(&self) -> u32 {
-        self.active_entries().filter(|e| e.is_failure).count() as u32
+        self.active_slice(&self.failure_ring)
+            .iter()
+            .map(|&b| u32::from(b))
+            .sum()
     }
 
-    #[allow(clippy::cast_possible_truncation)]
     fn slow_count(&self) -> u32 {
-        self.active_entries().filter(|e| e.is_slow).count() as u32
+        self.active_slice(&self.slow_ring)
+            .iter()
+            .map(|&b| u32::from(b))
+            .sum()
     }
 
-    fn active_entries(&self) -> impl Iterator<Item = &OutcomeEntry> {
-        if self.len < self.buffer.len() {
-            self.buffer[..self.len].iter()
+    fn active_slice<'a>(&self, ring: &'a [u8]) -> &'a [u8] {
+        if self.len < ring.len() {
+            &ring[..self.len]
         } else {
-            self.buffer.iter()
+            ring
         }
     }
 
     fn reset(&mut self) {
         self.head = 0;
         self.len = 0;
-        for entry in &mut self.buffer {
-            *entry = OutcomeEntry::default();
-        }
+        self.failure_ring.fill(0);
+        self.slow_ring.fill(0);
     }
 }
 
@@ -518,8 +523,11 @@ impl CircuitBreaker {
         if let (Some(window), Some(rate_threshold)) =
             (&inner.window, self.config.failure_rate_threshold)
         {
+            // Algebraic rewrite: failures/total >= threshold  →  failures >= threshold*total
+            // Eliminates `divsd` instruction (14-16 cycles) in favour of `mulsd` (4-5 cycles).
             window.total() >= self.config.min_operations
-                && f64::from(window.failure_count()) / f64::from(window.total()) >= rate_threshold
+                && f64::from(window.failure_count())
+                    >= rate_threshold * f64::from(window.total())
         } else {
             inner.failures >= self.config.failure_threshold
                 && inner.total >= self.config.min_operations
@@ -537,8 +545,9 @@ impl CircuitBreaker {
             .map_or((inner.total, inner.slow_calls), |window| {
                 (window.total(), window.slow_count())
             });
+        // Algebraic rewrite: slow/total >= threshold  →  slow >= threshold*total
         total >= self.config.min_operations
-            && f64::from(slow) / f64::from(total) >= self.config.slow_call_rate_threshold
+            && f64::from(slow) >= self.config.slow_call_rate_threshold * f64::from(total)
     }
 
     /// Transition to `Open` from the current state, returning the transition pair.
@@ -549,6 +558,13 @@ impl CircuitBreaker {
         };
         inner.consecutive_opens += 1;
         (prev, CircuitState::Open)
+    }
+
+    /// Trip to `Open` from `HalfOpen`, clearing the probe count first.
+    /// Extracted to deduplicate the identical reset+trip pattern in `record_outcome`.
+    fn trip_open_from_half_open(&self, inner: &mut InnerState) -> (CircuitState, CircuitState) {
+        inner.half_open_probes = 0;
+        self.trip_open(inner)
     }
 
     /// Reset all counters and set state to `Closed`.
@@ -592,10 +608,7 @@ impl CircuitBreaker {
                     inner.failures = inner.failures.saturating_sub(1);
                     inner.total = inner.total.saturating_add(1);
                     if let Some(ref mut window) = inner.window {
-                        window.record(OutcomeEntry {
-                            is_failure: false,
-                            is_slow: false,
-                        });
+                        window.record(false, false);
                     }
                 }
             }
@@ -609,15 +622,11 @@ impl CircuitBreaker {
                 inner.failures = inner.failures.saturating_add(1);
                 inner.total = inner.total.saturating_add(1);
                 if let Some(ref mut window) = inner.window {
-                    window.record(OutcomeEntry {
-                        is_failure: true,
-                        is_slow: false,
-                    });
+                    window.record(true, false);
                 }
 
                 if inner.state == State::HalfOpen {
-                    inner.half_open_probes = 0;
-                    transition = Some(self.trip_open(&mut inner));
+                    transition = Some(self.trip_open_from_half_open(&mut inner));
                 } else if self.should_trip_on_failure(&inner) {
                     transition = Some(self.trip_open(&mut inner));
                 }
@@ -626,10 +635,7 @@ impl CircuitBreaker {
                 inner.slow_calls = inner.slow_calls.saturating_add(1);
                 inner.total = inner.total.saturating_add(1);
                 if let Some(ref mut window) = inner.window {
-                    window.record(OutcomeEntry {
-                        is_failure: false,
-                        is_slow: true,
-                    });
+                    window.record(false, true);
                 }
                 if inner.state == State::HalfOpen {
                     transition = Some(Self::close_from_half_open(&mut inner));
@@ -645,14 +651,10 @@ impl CircuitBreaker {
                 inner.failures = inner.failures.saturating_add(1);
                 inner.total = inner.total.saturating_add(1);
                 if let Some(ref mut window) = inner.window {
-                    window.record(OutcomeEntry {
-                        is_failure: true,
-                        is_slow: true,
-                    });
+                    window.record(true, true);
                 }
                 if inner.state == State::HalfOpen {
-                    inner.half_open_probes = 0;
-                    transition = Some(self.trip_open(&mut inner));
+                    transition = Some(self.trip_open_from_half_open(&mut inner));
                 } else if self.should_trip_on_failure(&inner) || self.slow_rate_trips(&inner) {
                     transition = Some(self.trip_open(&mut inner));
                 }
