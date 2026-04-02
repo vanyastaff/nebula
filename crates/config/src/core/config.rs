@@ -307,8 +307,17 @@ impl Config {
         }
 
         let mut current = value;
+        let mut remaining = path;
 
-        for part in path.split('.') {
+        loop {
+            // Byte scan for `.` — avoids SplitInternal struct and per-segment call
+            // overhead. All path separators are ASCII; multi-byte UTF-8 sequences
+            // always have the high bit set and cannot be confused with b'.'.
+            let (part, rest) = match remaining.as_bytes().iter().position(|&b| b == b'.') {
+                Some(pos) => (&remaining[..pos], &remaining[pos + 1..]),
+                None => (remaining, ""),
+            };
+
             match current {
                 serde_json::Value::Object(obj) => {
                     current = obj.get(part).ok_or_else(|| {
@@ -339,6 +348,11 @@ impl Config {
                     ));
                 }
             }
+
+            if rest.is_empty() {
+                break;
+            }
+            remaining = rest;
         }
 
         Ok(current)
