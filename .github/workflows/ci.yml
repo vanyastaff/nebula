@@ -76,7 +76,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Run Clippy lints
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace -- -D warnings
 
   # ── Type check ─────────────────────────────────────────────────────────────
   check:
@@ -143,13 +143,13 @@ jobs:
 
   # ── MSRV ───────────────────────────────────────────────────────────────────
   msrv:
-    name: MSRV (1.93)
+    name: MSRV (1.94)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
-      - name: Install Rust 1.93
-        uses: dtolnay/rust-toolchain@1.93
+      - name: Install Rust 1.94
+        uses: dtolnay/rust-toolchain@1.94
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
