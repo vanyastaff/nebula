@@ -149,7 +149,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
       - name: Install Rust 1.94
-        uses: dtolnay/rust-toolchain@1.100
+        uses: dtolnay/rust-toolchain@1.94
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
