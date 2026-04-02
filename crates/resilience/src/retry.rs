@@ -443,31 +443,41 @@ where
 ///
 /// When `seed` is set, the jitter is deterministic but varies per `attempt`
 /// (seed is mixed with the attempt number to avoid identical jitter across retries).
-// Reason: mul_add compiles to `call fma` (~30 cycles) on default target-cpu=x86-64
-// which lacks hardware FMA. Explicit multiply+add uses mulsd+addsd (~8 cycles).
-#[allow(clippy::suboptimal_flops)]
+///
+/// Split into leaf dispatcher + outlined `Full` path so that `JitterConfig::None`
+/// (the common case) compiles to a 2-instruction function with no register saves.
 fn apply_jitter(delay: Duration, jitter: &JitterConfig, attempt: u32) -> Duration {
     match jitter {
         JitterConfig::None => delay,
-        JitterConfig::Full { factor, seed } => {
-            let factor = *factor;
-            if !factor.is_finite() || factor <= 0.0 {
-                return delay;
-            }
-
-            let base = delay.as_secs_f64();
-            let clamped_factor = factor.min(1.0);
-            let rand_val = seed.map_or_else(fastrand::f64, |s| {
-                // Mix seed with attempt so each retry gets different jitter
-                fastrand::Rng::with_seed(s.wrapping_add(u64::from(attempt))).f64()
-            });
-            let total = base + clamped_factor * base * rand_val;
-            if !total.is_finite() || total < 0.0 {
-                return delay;
-            }
-            Duration::from_secs_f64(total.min(Duration::MAX.as_secs_f64()))
-        }
+        JitterConfig::Full { factor, seed } => apply_jitter_full(delay, *factor, *seed, attempt),
     }
+}
+
+// Reason: mul_add compiles to `call fma` (~30 cycles) on default target-cpu=x86-64
+// which lacks hardware FMA. Explicit multiply+add uses mulsd+addsd (~8 cycles).
+#[allow(clippy::suboptimal_flops)]
+#[inline(never)]
+// Reason: `!(factor > 0.0)` is intentional — it rejects NaN, -0.0, negatives, +0.0,
+// and -inf in a single `ucomisd + ja` (2 insns) vs 35-instruction bit decomposition
+// that `!is_finite() || <= 0.0` produces. The negated partial-ord is the whole point.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn apply_jitter_full(delay: Duration, factor: f64, seed: Option<u64>, attempt: u32) -> Duration {
+    if !(factor > 0.0) {
+        return delay;
+    }
+
+    let base = delay.as_secs_f64();
+    let clamped_factor = factor.min(1.0);
+    let rand_val = seed.map_or_else(fastrand::f64, |s| {
+        fastrand::Rng::with_seed(s.wrapping_add(u64::from(attempt))).f64()
+    });
+    let total = base + clamped_factor * base * rand_val;
+    // total >= 0.0 is guaranteed when base >= 0, factor > 0, rand_val >= 0.
+    // Guard against infinity from very large base values.
+    if !total.is_finite() {
+        return delay;
+    }
+    Duration::from_secs_f64(total.min(Duration::MAX.as_secs_f64()))
 }
 
 #[cfg(test)]
@@ -727,14 +737,37 @@ mod tests {
     }
 
     #[test]
-    fn jitter_with_non_finite_factor_falls_back_to_base_delay() {
+    fn jitter_with_nan_factor_falls_back_to_base_delay() {
+        let delay = Duration::from_millis(100);
+        let nan_jitter = JitterConfig::Full {
+            factor: f64::NAN,
+            seed: Some(42),
+        };
+        assert_eq!(apply_jitter(delay, &nan_jitter, 0), delay);
+
+        let neg_jitter = JitterConfig::Full {
+            factor: -1.0,
+            seed: Some(42),
+        };
+        assert_eq!(apply_jitter(delay, &neg_jitter, 0), delay);
+
+        let zero_jitter = JitterConfig::Full {
+            factor: 0.0,
+            seed: Some(42),
+        };
+        assert_eq!(apply_jitter(delay, &zero_jitter, 0), delay);
+    }
+
+    #[test]
+    fn jitter_with_infinite_factor_clamps_to_one() {
         let delay = Duration::from_millis(100);
         let jitter = JitterConfig::Full {
             factor: f64::INFINITY,
             seed: Some(42),
         };
-
-        assert_eq!(apply_jitter(delay, &jitter, 0), delay);
+        // Infinity is clamped to 1.0 by factor.min(1.0), so jitter is applied
+        let result = apply_jitter(delay, &jitter, 0);
+        assert!(result >= delay, "clamped infinity factor should add jitter");
     }
 
     #[tokio::test]
