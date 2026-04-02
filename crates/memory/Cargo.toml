@@ -96,6 +96,22 @@ tokio = { workspace = true, features = ["full"] }
 anyhow = { workspace = true }
 
 
+[[bench]]
+name = "allocator_benchmarks"
+harness = false
+
+[[bench]]
+name = "real_world_scenarios"
+harness = false
+
+[[bench]]
+name = "metrics_extension_benchmarks"
+harness = false
+
+[[bench]]
+name = "allocations_bench"
+harness = false
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

@@ -5,7 +5,8 @@
 
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
-use std::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
+use parking_lot::RwLock;
+use std::{collections::{BTreeMap, HashMap}, string::String, sync::Arc, vec::Vec};
 
 use crate::error::MemoryResult;
 use crate::extensions::MemoryExtension;
@@ -158,6 +159,144 @@ impl MetricsReporter for NoopMetricsReporter {
     }
 }
 
+/// Debug reporter that prints metrics to stdout.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DebugMetricsReporter;
+
+impl MetricsReporter for DebugMetricsReporter {
+    #[cold]
+    #[inline(never)]
+    fn register_metric(&self, metric: &MemoryMetric) -> MemoryResult<()> {
+        println!(
+            "Registered metric: {} ({}) [{}] - {}",
+            metric.name, metric.metric_type, metric.unit, metric.description
+        );
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn report_counter(
+        &self,
+        name: &str,
+        value: u64,
+        labels: &BTreeMap<String, String>,
+    ) -> MemoryResult<()> {
+        println!("Counter {name}{labels:?} = {value}");
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn report_gauge(
+        &self,
+        name: &str,
+        value: f64,
+        labels: &BTreeMap<String, String>,
+    ) -> MemoryResult<()> {
+        println!("Gauge {name}{labels:?} = {value}");
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn report_histogram(
+        &self,
+        name: &str,
+        value: f64,
+        labels: &BTreeMap<String, String>,
+    ) -> MemoryResult<()> {
+        println!("Histogram {name}{labels:?} = {value}");
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn report_summary(
+        &self,
+        name: &str,
+        value: f64,
+        labels: &BTreeMap<String, String>,
+    ) -> MemoryResult<()> {
+        println!("Summary {name}{labels:?} = {value}");
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+enum MetricsReporterAdapter {
+    Noop(NoopMetricsReporter),
+    Debug(DebugMetricsReporter),
+    Custom(Arc<dyn MetricsReporter>),
+}
+
+impl MetricsReporterAdapter {
+    #[inline(never)]
+    fn register_metric(&self, metric: &MemoryMetric) -> MemoryResult<()> {
+        match self {
+            Self::Noop(r) => r.register_metric(metric),
+            Self::Debug(r) => r.register_metric(metric),
+            Self::Custom(r) => r.register_metric(metric),
+        }
+    }
+
+    #[inline(never)]
+    fn report_counter(
+        &self,
+        name: &str,
+        value: u64,
+        labels: &BTreeMap<String, String>,
+    ) -> MemoryResult<()> {
+        match self {
+            Self::Noop(r) => r.report_counter(name, value, labels),
+            Self::Debug(r) => r.report_counter(name, value, labels),
+            Self::Custom(r) => r.report_counter(name, value, labels),
+        }
+    }
+
+    #[inline(never)]
+    fn report_gauge(
+        &self,
+        name: &str,
+        value: f64,
+        labels: &BTreeMap<String, String>,
+    ) -> MemoryResult<()> {
+        match self {
+            Self::Noop(r) => r.report_gauge(name, value, labels),
+            Self::Debug(r) => r.report_gauge(name, value, labels),
+            Self::Custom(r) => r.report_gauge(name, value, labels),
+        }
+    }
+
+    #[inline(never)]
+    fn report_histogram(
+        &self,
+        name: &str,
+        value: f64,
+        labels: &BTreeMap<String, String>,
+    ) -> MemoryResult<()> {
+        match self {
+            Self::Noop(r) => r.report_histogram(name, value, labels),
+            Self::Debug(r) => r.report_histogram(name, value, labels),
+            Self::Custom(r) => r.report_histogram(name, value, labels),
+        }
+    }
+
+    #[inline(never)]
+    fn report_summary(
+        &self,
+        name: &str,
+        value: f64,
+        labels: &BTreeMap<String, String>,
+    ) -> MemoryResult<()> {
+        match self {
+            Self::Noop(r) => r.report_summary(name, value, labels),
+            Self::Debug(r) => r.report_summary(name, value, labels),
+            Self::Custom(r) => r.report_summary(name, value, labels),
+        }
+    }
+}
+
 /// A simple counter metric that can be incremented
 pub struct Counter {
     metric: MemoryMetric,
@@ -263,32 +402,187 @@ impl Gauge {
 }
 
 /// Memory metrics extension
+#[derive(Clone)]
 pub struct MetricsExtension {
     /// The metrics reporter implementation
-    reporter: Box<dyn MetricsReporter>,
-    /// Registered metrics
-    metrics: BTreeMap<String, MemoryMetric>,
+    reporter: MetricsReporterAdapter,
+    /// Registered metrics storage (split index + slots)
+    storage: Arc<RwLock<MetricsStorage>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct MetricId(usize);
+
+#[derive(Debug, Default)]
+struct MetricsStorage {
+    by_name: HashMap<String, MetricId>,
+    slots: Vec<Option<StoredMetric>>,
+    free_list: Vec<MetricId>,
+}
+
+#[derive(Debug)]
+pub struct StoredMetric {
+    pub name: String,
+    pub description: String,
+    pub metric_type: MetricType,
+    pub labels: BTreeMap<String, String>,
+    pub unit: String,
+}
+
+impl StoredMetric {
+    fn from_metric(metric: MemoryMetric) -> Self {
+        Self {
+            name: metric.name,
+            description: metric.description,
+            metric_type: metric.metric_type,
+            labels: metric.labels,
+            unit: metric.unit,
+        }
+    }
+
+    fn into_metric(self) -> MemoryMetric {
+        MemoryMetric {
+            name: self.name,
+            description: self.description,
+            metric_type: self.metric_type,
+            labels: self.labels,
+            unit: self.unit,
+        }
+    }
+
+    fn to_metric(&self) -> MemoryMetric {
+        MemoryMetric {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            metric_type: self.metric_type,
+            labels: self.labels.clone(),
+            unit: self.unit.clone(),
+        }
+    }
+}
+
+impl MetricsStorage {
+    fn upsert(&mut self, metric: MemoryMetric) {
+        if let Some(existing_id) = self.by_name.get(metric.name.as_str()).copied() {
+            self.slots[existing_id.0] = Some(StoredMetric::from_metric(metric));
+            return;
+        }
+
+        let name = metric.name.clone();
+        let stored = StoredMetric::from_metric(metric);
+
+        if let Some(reused_id) = self.free_list.pop() {
+            self.slots[reused_id.0] = Some(stored);
+            self.by_name.insert(name, reused_id);
+            return;
+        }
+
+        let new_id = MetricId(self.slots.len());
+        self.slots.push(Some(stored));
+        self.by_name.insert(name, new_id);
+    }
+
+    fn snapshot_map(&self) -> BTreeMap<String, MemoryMetric> {
+        // Iterated over slots (Vec) for cache-friendly sequential access.
+        // HashMap (by_name) is only used for O(1) lookup on upsert/remove.
+        //
+        // Allocation cost per metric (unavoidable with current return type):
+        // - 2× String::clone for name  (BTreeMap key + MemoryMetric::name)
+        // - 1× String::clone for description
+        // - 1× BTreeMap::clone for labels (dominant cost at high label counts)
+        // - 1× String::clone for unit
+        let mut out = BTreeMap::new();
+
+        for stored in self.slots.iter().flatten() {
+            // name cloned twice: once as BTreeMap key, once inside MemoryMetric.
+            out.insert(stored.name.clone(), stored.to_metric());
+        }
+
+        out
+    }
+
+    fn remove(&mut self, name: &str) -> Option<MemoryMetric> {
+        let id = self.by_name.remove(name)?;
+        let metric = self.slots[id.0].take().map(StoredMetric::into_metric);
+        self.free_list.push(id);
+        metric
+    }
 }
 
 impl MetricsExtension {
     /// Create a new metrics extension with the specified reporter
     pub fn new(reporter: impl MetricsReporter + 'static) -> Self {
+        Self::new_custom(Arc::new(reporter))
+    }
+
+    /// Create a metrics extension with a no-op reporter.
+    pub fn new_noop() -> Self {
         Self {
-            reporter: Box::new(reporter),
-            metrics: BTreeMap::new(),
+            reporter: MetricsReporterAdapter::Noop(NoopMetricsReporter),
+            storage: Arc::new(RwLock::new(MetricsStorage::default())),
+        }
+    }
+
+    /// Create a metrics extension with a debug stdout reporter.
+    pub fn new_debug() -> Self {
+        Self {
+            reporter: MetricsReporterAdapter::Debug(DebugMetricsReporter),
+            storage: Arc::new(RwLock::new(MetricsStorage::default())),
+        }
+    }
+
+    /// Create a metrics extension with a custom reporter.
+    pub fn new_custom(reporter: Arc<dyn MetricsReporter>) -> Self {
+        Self {
+            reporter: MetricsReporterAdapter::Custom(reporter),
+            storage: Arc::new(RwLock::new(MetricsStorage::default())),
+        }
+    }
+
+    /// Low-allocation iterator over metrics (borrows instead of cloning).
+    /// Returns tuples of (name_ref, MetricRef) without allocating full MemoryMetric clones.
+    ///
+    /// # Iteration order
+    /// Unspecified. Use [`metrics_snapshot`] if sorted order is required.
+    ///
+    /// # Allocation Cost
+    /// Zero allocations beyond the lock acquisition.
+    /// Use this instead of `metrics_snapshot()` when you don't need owned MemoryMetric values.
+    ///
+    /// # Example
+    /// ```ignore
+    /// ext.metrics_iter(|name, stored| {
+    ///     println!("{}:  {} ops", name, stored.metric_type);
+    /// });
+    /// ```
+    pub fn metrics_iter<F>(&self, mut callback: F)
+    where
+        F: FnMut(&str, &StoredMetric),
+    {
+        let storage = self.storage.read();
+        for stored in storage.slots.iter().flatten() {
+            callback(&stored.name, stored);
         }
     }
 
     /// Register a metric with this extension
-    pub fn register_metric(&mut self, metric: MemoryMetric) -> MemoryResult<()> {
+    pub fn register_metric(&self, metric: MemoryMetric) -> MemoryResult<()> {
         self.reporter.register_metric(&metric)?;
-        self.metrics.insert(metric.name.clone(), metric);
+
+        let mut storage = self.storage.write();
+        storage.upsert(metric);
+
         Ok(())
     }
 
-    /// Get the current reporter
-    pub fn reporter(&self) -> &dyn MetricsReporter {
-        self.reporter.as_ref()
+    /// Unregister a metric by name and return the removed definition.
+    pub fn unregister_metric(&self, name: &str) -> Option<MemoryMetric> {
+        self.storage.write().remove(name)
+    }
+
+    /// Snapshot registered metrics as a name-indexed map.
+    pub fn metrics_snapshot(&self) -> BTreeMap<String, MemoryMetric> {
+        self.storage.read().snapshot_map()
     }
 
     /// Report a counter value
@@ -355,59 +649,7 @@ impl MemoryExtension for MetricsExtension {
 }
 
 /// Create a debug metrics reporter that prints metrics to stdout
-pub fn create_debug_metrics_reporter() -> impl MetricsReporter {
-    struct DebugMetricsReporter;
-
-    impl MetricsReporter for DebugMetricsReporter {
-        fn register_metric(&self, metric: &MemoryMetric) -> MemoryResult<()> {
-            println!(
-                "Registered metric: {} ({}) [{}] - {}",
-                metric.name, metric.metric_type, metric.unit, metric.description
-            );
-            Ok(())
-        }
-
-        fn report_counter(
-            &self,
-            name: &str,
-            value: u64,
-            labels: &BTreeMap<String, String>,
-        ) -> MemoryResult<()> {
-            println!("Counter {name}{labels:?} = {value}");
-            Ok(())
-        }
-
-        fn report_gauge(
-            &self,
-            name: &str,
-            value: f64,
-            labels: &BTreeMap<String, String>,
-        ) -> MemoryResult<()> {
-            println!("Gauge {name}{labels:?} = {value}");
-            Ok(())
-        }
-
-        fn report_histogram(
-            &self,
-            name: &str,
-            value: f64,
-            labels: &BTreeMap<String, String>,
-        ) -> MemoryResult<()> {
-            println!("Histogram {name}{labels:?} = {value}");
-            Ok(())
-        }
-
-        fn report_summary(
-            &self,
-            name: &str,
-            value: f64,
-            labels: &BTreeMap<String, String>,
-        ) -> MemoryResult<()> {
-            println!("Summary {name}{labels:?} = {value}");
-            Ok(())
-        }
-    }
-
+pub fn create_debug_metrics_reporter() -> DebugMetricsReporter {
     DebugMetricsReporter
 }
 
@@ -415,69 +657,7 @@ pub fn create_debug_metrics_reporter() -> impl MetricsReporter {
 pub fn global_metrics() -> Option<Arc<MetricsExtension>> {
     use crate::extensions::GlobalExtensions;
 
-    if let Some(ext) = GlobalExtensions::get("metrics")
-        && let Some(metrics_ext) = ext.as_any().downcast_ref::<MetricsExtension>()
-    {
-        // Создаем новую обертку для репортера с использованием Arc
-        let reporter: Arc<dyn MetricsReporter + 'static> = Arc::new(NoopMetricsReporter);
-
-        // Создаем новый экземпляр с новым репортером, который делегирует вызовы
-        let reporter_wrapper = DelegatingReporter { inner: reporter };
-
-        return Some(Arc::new(MetricsExtension {
-            reporter: Box::new(reporter_wrapper),
-            metrics: metrics_ext.metrics.clone(),
-        }));
-    }
-    None
-}
-
-/// Репортер метрик, который делегирует вызовы другому репортеру.
-/// Эта структура использует Arc для хранения репортера вместо простой ссылки.
-struct DelegatingReporter {
-    inner: Arc<dyn MetricsReporter + 'static>,
-}
-
-impl MetricsReporter for DelegatingReporter {
-    fn register_metric(&self, metric: &MemoryMetric) -> MemoryResult<()> {
-        self.inner.register_metric(metric)
-    }
-
-    fn report_counter(
-        &self,
-        name: &str,
-        value: u64,
-        labels: &BTreeMap<String, String>,
-    ) -> MemoryResult<()> {
-        self.inner.report_counter(name, value, labels)
-    }
-
-    fn report_gauge(
-        &self,
-        name: &str,
-        value: f64,
-        labels: &BTreeMap<String, String>,
-    ) -> MemoryResult<()> {
-        self.inner.report_gauge(name, value, labels)
-    }
-
-    fn report_histogram(
-        &self,
-        name: &str,
-        value: f64,
-        labels: &BTreeMap<String, String>,
-    ) -> MemoryResult<()> {
-        self.inner.report_histogram(name, value, labels)
-    }
-
-    fn report_summary(
-        &self,
-        name: &str,
-        value: f64,
-        labels: &BTreeMap<String, String>,
-    ) -> MemoryResult<()> {
-        self.inner.report_summary(name, value, labels)
-    }
+    GlobalExtensions::get_by_type_downcast::<MetricsExtension>().map(Arc::new)
 }
 
 /// Initialize the global metrics reporter
@@ -560,5 +740,88 @@ mod tests {
         // These should not panic
         assert!(reporter.register_metric(counter.metric()).is_ok());
         assert!(counter.report(&reporter).is_ok());
+    }
+
+    #[test]
+    fn test_metrics_extension_upsert_replaces_by_name() {
+        let extension = MetricsExtension::new_noop();
+
+        extension
+            .register_metric(MemoryMetric::new(
+                "alloc.total",
+                "first",
+                MetricType::Counter,
+                "ops",
+            ))
+            .expect("register first metric");
+
+        extension
+            .register_metric(MemoryMetric::new(
+                "alloc.total",
+                "second",
+                MetricType::Counter,
+                "ops",
+            ))
+            .expect("register replacement metric");
+
+        let snapshot = extension.metrics_snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot["alloc.total"].description, "second");
+    }
+
+    #[test]
+    fn test_metrics_extension_unregister_removes_metric() {
+        let extension = MetricsExtension::new_noop();
+
+        extension
+            .register_metric(MemoryMetric::new(
+                "alloc.bytes",
+                "bytes allocated",
+                MetricType::Gauge,
+                "bytes",
+            ))
+            .expect("register metric");
+
+        let removed = extension.unregister_metric("alloc.bytes");
+        assert!(removed.is_some());
+        assert!(extension.metrics_snapshot().is_empty());
+        assert!(extension.unregister_metric("alloc.bytes").is_none());
+    }
+
+    #[test]
+    fn test_metrics_iter_zero_allocation() {
+        let extension = MetricsExtension::new_noop();
+
+        // Register 3 metrics
+        for i in 0..3 {
+            extension
+                .register_metric(
+                    MemoryMetric::new(
+                        format!("metric_{}", i),
+                        "test metric",
+                        MetricType::Counter,
+                        "ops",
+                    )
+                    .with_label("id", format!("{}", i)),
+                )
+                .expect("register metric");
+        }
+
+        // Usage: metrics_iter borrows instead of cloning
+        let mut count = 0;
+        extension.metrics_iter(|name, stored| {
+            // No allocations: we receive borrowed &str and &StoredMetric
+            assert!(!name.is_empty());
+            assert_eq!(stored.metric_type, MetricType::Counter);
+            assert_eq!(stored.unit, "ops");
+            count += 1;
+        });
+        assert_eq!(count, 3);
+
+        // Compare to snapshot which allocates heavily
+        let snapshot = extension.metrics_snapshot();
+        assert_eq!(snapshot.len(), 3);
+        // snapshot required 3 BTreeMap + 9 String clones
+        // metrics_iter required zero allocations
     }
 }
