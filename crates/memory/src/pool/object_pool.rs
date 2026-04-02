@@ -52,6 +52,16 @@ pub struct ObjectPool<T: Poolable> {
     stats: PoolStats,
 }
 
+impl<T: Poolable> core::fmt::Debug for ObjectPool<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ObjectPool")
+            .field("available", &self.objects.borrow().len())
+            .field("config", &self.config)
+            .field("created_count", &self.created_count.get())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<T: Poolable> ObjectPool<T> {
     /// Create new pool with factory function
     pub fn new<F>(capacity: usize, factory: F) -> Self

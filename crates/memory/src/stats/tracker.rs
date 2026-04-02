@@ -212,7 +212,12 @@ impl MemoryTracker {
             sum_xx += x * x;
         }
 
-        let slope = (n * sum_xy - sum_x * sum_y) / (n * sum_xx - sum_x * sum_x);
+        let denominator = n * sum_xx - sum_x * sum_x;
+        if denominator.abs() < f64::EPSILON {
+            // Degenerate data (all x values identical) — no trend computable
+            return None;
+        }
+        let slope = (n * sum_xy - sum_x * sum_y) / denominator;
         let intercept = (sum_y - slope * sum_x) / n;
 
         // Calculate R-squared

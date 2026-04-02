@@ -186,6 +186,14 @@ impl BumpAllocator {
     }
 
     /// Restores allocator to previous checkpoint
+    ///
+    /// # Thread safety
+    ///
+    /// This method takes `&self` for API ergonomics (used inside `BumpScope::drop`),
+    /// but **concurrent calls to `restore` and `allocate` are unsound**: a restore
+    /// may roll back the cursor into a range that another thread just allocated.
+    /// The caller must ensure exclusive access (e.g., no outstanding `BumpScope`
+    /// or concurrent allocations) when calling this method.
     pub fn restore(&self, checkpoint: BumpCheckpoint) -> MemoryResult<()> {
         let current_gen = self.generation.load(Ordering::Acquire);
         if checkpoint.generation != current_gen {

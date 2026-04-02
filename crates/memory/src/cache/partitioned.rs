@@ -211,7 +211,7 @@ impl PartitionedStats {
     pub fn most_loaded_partition(&self) -> Option<usize> {
         self.partition_stats
             .iter()
-            .max_by(|a, b| a.load_factor.partial_cmp(&b.load_factor).unwrap())
+            .max_by(|a, b| a.load_factor.partial_cmp(&b.load_factor).unwrap_or(std::cmp::Ordering::Equal))
             .map(|p| p.index)
     }
 
@@ -220,7 +220,7 @@ impl PartitionedStats {
     pub fn least_loaded_partition(&self) -> Option<usize> {
         self.partition_stats
             .iter()
-            .min_by(|a, b| a.load_factor.partial_cmp(&b.load_factor).unwrap())
+            .min_by(|a, b| a.load_factor.partial_cmp(&b.load_factor).unwrap_or(std::cmp::Ordering::Equal))
             .map(|p| p.index)
     }
 }
@@ -253,11 +253,15 @@ where
     }
 
     /// Create a new partitioned cache with configuration
+    /// # Panics
+    ///
+    /// Panics if `config` is invalid (zero partition count, zero max entries).
+    /// Use [`PartitionedConfig::validate`] first for fallible construction.
     #[must_use]
     pub fn with_config(config: PartitionedConfig) -> Self {
         config
             .validate()
-            .expect("Invalid partitioned cache configuration");
+            .expect("PartitionedCache::with_config: invalid configuration");
 
         let partition_count = config.partition_count;
         let entries_per_partition = config.cache_config.max_entries.div_ceil(partition_count);

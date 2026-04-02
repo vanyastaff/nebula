@@ -28,6 +28,9 @@ High-performance memory management — arenas, pools, LRU/TTL caching, memory pr
 - Arena `alloc_bytes_aligned` uses a loop instead of recursion to prevent stack overflow.
 - Zero-size allocations return a dangling pointer (prevents aliasing with next real allocation).
 - Stack allocator `try_pop` uses CAS instead of store to prevent concurrent corruption.
+- `HierarchicalPooledValue` uses `Arc<Mutex<HierarchicalPool>>` (not raw pointer) for thread-safe Drop. **Breaking**: `HierarchicalPool::get()` is now an associated fn taking `&Arc<Mutex<Self>>`.
+- `TypedArena::alloc_slice` guarantees contiguous allocation — allocates new chunk if needed to fit all elements.
+- `AllocatorManager::with_allocator` uses RAII guard for panic-safe allocator restore.
 
 ## Traps
 - Uses `unsafe` internally (allocator, pool pointer alignment, syscalls) despite looking like a safe API. Don't add unsafe-free guarantees to documentation.
@@ -38,9 +41,17 @@ High-performance memory management — arenas, pools, LRU/TTL caching, memory pr
 - `get_or_compute` on `ConcurrentComputeCache` may call `compute_fn` more than once for the same key under concurrent access — use only with idempotent functions.
 - `ConcurrentComputeCache::max_entries` is a soft cap — under heavy concurrent contention, len may temporarily exceed capacity.
 - `ThreadSafePool::clear()` inlines stats update to avoid self-deadlock (do NOT call `update_memory_stats()` while holding `inner` lock).
+- `ThreadSafePool` uses `std::sync::Mutex` (not `parking_lot`) because it needs `Condvar::wait_timeout` for blocking `get_timeout`.
+- `BumpAllocator::restore(&self)` is not thread-safe despite taking `&self` — caller must ensure no concurrent allocations during restore.
+- `BumpConfig::thread_safe` only controls CAS backoff spin, NOT actual thread-safety (AtomicCursor is always used).
+- `MemoryBudget::can_allocate` is advisory — TOCTOU race under concurrency. Use `request_memory` directly for correctness.
+- `BudgetState` and `PressureAction` are `#[non_exhaustive]` — match with wildcard arm.
+- `TypedArena::chunk_capacity` doubles via `saturating_mul` — cannot overflow.
+- `set_active_allocator!` macro panics on unregistered ID — use `set_active_allocator()` method directly in production.
+- All arena `allocate_chunk` growth-factor f64 casts are capped with `.min(max_chunk_size as f64)` before `as usize`.
 
 ## Relations
 - Optional dep on nebula-log (feature: `logging`), nebula-system for pressure detection.
 - Only consumer: nebula-expression (uses `ConcurrentComputeCache`, `CacheConfig`, `CacheStats`, `MemoryError`).
 
-<!-- reviewed: 2026-03-30 (derive Classify migration) -->
+<!-- reviewed: 2026-04-01 (deep audit: TypedArena UB fix, HierarchicalPool data-race fix, panic-safety, f64 caps, expect removal, non_exhaustive) -->

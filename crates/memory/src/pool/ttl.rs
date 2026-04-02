@@ -233,7 +233,10 @@ impl<T: Poolable> TtlPool<T> {
 
     /// Force cleanup of expired objects
     pub fn force_cleanup(&mut self) {
-        self.last_cleanup = Instant::now().checked_sub(self.cleanup_interval).unwrap();
+        // Saturate to epoch if cleanup_interval exceeds elapsed time (e.g., clock skew in tests)
+        self.last_cleanup = Instant::now()
+            .checked_sub(self.cleanup_interval)
+            .unwrap_or_else(Instant::now);
         self.cleanup_expired();
     }
 

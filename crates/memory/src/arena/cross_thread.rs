@@ -206,10 +206,18 @@ unsafe impl<T: Send> Send for CrossThreadArenaRef<T> {}
 unsafe impl<T: Send> Sync for CrossThreadArenaRef<T> {}
 
 impl<T: Clone> Clone for CrossThreadArenaRef<T> {
+    /// Clones the referenced value and allocates a new slot in the arena.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the arena is exhausted and cannot allocate space for the clone.
+    /// Use [`CrossThreadArena::alloc`] directly for fallible allocation.
     fn clone(&self) -> Self {
         let value = self.with(std::clone::Clone::clone);
         let guard = self.arena.lock();
-        let ptr = guard.alloc(value).unwrap();
+        let ptr = guard
+            .alloc(value)
+            .expect("CrossThreadArenaRef::clone: arena allocation failed");
 
         CrossThreadArenaRef {
             ptr: UnsafeCell::new(std::ptr::from_mut::<T>(ptr)),

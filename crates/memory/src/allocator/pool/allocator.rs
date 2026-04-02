@@ -293,7 +293,7 @@ impl PoolAllocator {
 
     /// Returns the number of allocated blocks
     pub fn allocated_blocks(&self) -> usize {
-        self.block_count - self.free_blocks()
+        self.block_count.saturating_sub(self.free_blocks())
     }
 
     /// Returns the number of free blocks (atomic estimate, exact in absence of races)

@@ -1,4 +1,9 @@
 //! Thread-safe object pool implementation
+//!
+//! Uses `std::sync::Mutex` + `Condvar` instead of `parking_lot::Mutex` because
+//! `parking_lot` does not provide a `Condvar::wait_timeout` equivalent with the
+//! same API. The pool needs `Condvar` for blocking `get_timeout` when the pool
+//! is exhausted.
 
 #![allow(clippy::excessive_nesting)]
 

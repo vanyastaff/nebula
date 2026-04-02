@@ -220,7 +220,10 @@ impl ThreadSafeArena {
             self.config.initial_size.max(min_size)
         } else {
             let last_size = chunks.last().unwrap().capacity;
-            let new_size = (last_size as f64 * self.config.growth_factor) as usize;
+            // Cap the f64 product before casting to prevent overflow
+            let product =
+                (last_size as f64 * self.config.growth_factor).min(self.config.max_chunk_size as f64);
+            let new_size = product as usize;
             new_size.max(min_size).min(self.config.max_chunk_size)
         };
         drop(chunks);

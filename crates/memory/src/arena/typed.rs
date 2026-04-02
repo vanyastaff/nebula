@@ -189,8 +189,8 @@ impl<T> TypedArena<T> {
     fn allocate_chunk(&self) -> Result<(), MemoryError> {
         let capacity = self.chunk_capacity.get();
 
-        // Double capacity for next chunk
-        self.chunk_capacity.set(capacity * 2);
+        // Double capacity for next chunk (capped to prevent overflow)
+        self.chunk_capacity.set(capacity.saturating_mul(2));
 
         let mut new_chunk = Box::new(TypedChunk::new(capacity));
         let chunk_ptr = NonNull::from(&mut *new_chunk);
@@ -226,11 +226,11 @@ impl<T> TypedArena<T> {
             self.allocate_chunk()?;
         }
 
-        // Get current chunk
+        // Get current chunk — always present after allocate_chunk
         let chunk_ptr = self
             .current_chunk
             .borrow()
-            .expect("Should have chunk after allocation");
+            .ok_or_else(|| MemoryError::arena_exhausted("typed_arena", 1, 0))?;
 
         // Get pointer to element using helper
         // SAFETY: chunk_ptr valid, index within bounds (chunk allocated with sufficient capacity)
@@ -267,11 +267,11 @@ impl<T> TypedArena<T> {
             self.allocate_chunk()?;
         }
 
-        // Get current chunk
+        // Get current chunk — always present after allocate_chunk
         let chunk_ptr = self
             .current_chunk
             .borrow()
-            .expect("Should have chunk after allocation");
+            .ok_or_else(|| MemoryError::arena_exhausted("typed_arena", 1, 0))?;
 
         // Get mutable reference to MaybeUninit element
         // SAFETY: Accessing chunk storage at current index.
@@ -292,6 +292,10 @@ impl<T> TypedArena<T> {
     }
 
     /// Allocate multiple values at once
+    ///
+    /// All values are guaranteed to be contiguous in memory, so the returned
+    /// slice is valid. If the current chunk doesn't have enough room, a new
+    /// chunk is allocated that fits all values.
     #[must_use = "allocated memory must be used"]
     pub fn alloc_slice(&self, values: &[T]) -> Result<&mut [T], MemoryError>
     where
@@ -301,26 +305,51 @@ impl<T> TypedArena<T> {
             return Ok(&mut []);
         }
 
-        // For simplicity, allocate one by one
-        // A more efficient implementation would allocate contiguously
-        let mut result = Vec::with_capacity(values.len());
+        let count = values.len();
 
-        for value in values {
-            let ptr = self.alloc(*value)?;
-            result.push(std::ptr::from_mut::<T>(ptr));
+        // Ensure we have a chunk with enough contiguous space.
+        // We may need to allocate a new chunk that fits all elements.
+        let index = self.current_index.get();
+        let needs_chunk = self.current_chunk.borrow().is_none_or(|chunk| {
+            // SAFETY: chunk_ptr valid — owned by arena
+            unsafe { index + count > (*chunk.as_ptr()).capacity() }
+        });
+
+        if needs_chunk {
+            // Ensure the new chunk can hold all elements
+            let old_capacity = self.chunk_capacity.get();
+            let needed = old_capacity.max(count);
+            self.chunk_capacity.set(needed);
+            self.allocate_chunk()?;
+            // Restore doubling behavior for future chunks
+            self.chunk_capacity.set(needed.saturating_mul(2));
         }
 
-        // Convert to slice
-        let slice_ptr = result[0];
-        let len = result.len();
+        let chunk_ptr = self
+            .current_chunk
+            .borrow()
+            .ok_or_else(|| MemoryError::arena_exhausted("typed_arena", count, 0))?;
 
-        // SAFETY: Creating slice from arena-allocated pointers.
-        // - All pointers in result valid (from alloc calls above)
-        // - Pointers allocated sequentially (contiguous in memory)
-        // - len matches number of allocated elements
-        // - All elements initialized via alloc
-        // - Lifetime tied to arena
-        Ok(unsafe { std::slice::from_raw_parts_mut(slice_ptr, len) })
+        let start_index = self.current_index.get();
+
+        // SAFETY: Writing values contiguously into chunk storage.
+        // - chunk_ptr valid (owned by arena's RefCell)
+        // - [start_index .. start_index+count) within capacity (ensured above)
+        // - MaybeUninit storage allows writing via as_mut_ptr
+        unsafe {
+            let chunk = &mut *chunk_ptr.as_ptr();
+            let base_ptr = chunk.storage[start_index].as_mut_ptr();
+            for (i, value) in values.iter().enumerate() {
+                chunk.storage[start_index + i].as_mut_ptr().write(*value);
+            }
+
+            self.current_index.set(start_index + count);
+            self.stats
+                .record_allocation(std::mem::size_of_val(values), 0);
+
+            // Create contiguous slice from the base pointer
+            Ok(std::slice::from_raw_parts_mut(base_ptr, count))
+        }
     }
 
     /// Allocate an iterator of values

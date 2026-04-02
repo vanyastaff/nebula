@@ -688,7 +688,13 @@ pub trait TypedAllocator: Allocator {
             return;
         }
 
-        let layout = Layout::array::<T>(count).expect("layout must be valid for deallocation");
+        // SAFETY: Layout::array::<T>(count) cannot fail here because the same
+        // layout was successfully constructed during the matching alloc_array call.
+        // If it does fail (broken caller contract), we leak rather than panic.
+        let Ok(layout) = Layout::array::<T>(count) else {
+            debug_assert!(false, "dealloc_array: layout reconstruction failed");
+            return;
+        };
         // SAFETY: Deallocating array memory.
         // - ptr was allocated by alloc_array with same count (caller contract)
         // - layout matches original allocation (derived from T and count)

@@ -143,8 +143,11 @@ impl BudgetConfig {
     pub fn effective_limit(&self) -> usize {
         match self.overcommit_policy {
             OvercommitPolicy::None => self.limit,
-            OvercommitPolicy::Percentage(pct) => self.limit + (self.limit * pct as usize / 100),
-            OvercommitPolicy::Fixed(amount) => self.limit + amount,
+            OvercommitPolicy::Percentage(pct) => {
+                // Use saturating arithmetic to prevent overflow on large limits
+                self.limit.saturating_add(self.limit / 100 * pct as usize)
+            }
+            OvercommitPolicy::Fixed(amount) => self.limit.saturating_add(amount),
             OvercommitPolicy::Unlimited => usize::MAX,
         }
     }

@@ -255,8 +255,12 @@ impl Arena {
 
         let chunk_size = match &*chunks {
             Some(chunk) => {
-                // Calculate next chunk size using growth factor
-                let new_size = (chunk.capacity as f64 * self.config.growth_factor) as usize;
+                // Calculate next chunk size using growth factor.
+                // Cap the f64 product before casting to usize to prevent
+                // overflow (f64 > usize::MAX wraps to 0 or usize::MAX).
+                let product = (chunk.capacity as f64 * self.config.growth_factor)
+                    .min(self.config.max_chunk_size as f64);
+                let new_size = product as usize;
                 new_size.max(min_size).min(self.config.max_chunk_size)
             }
             None => self.config.initial_size.max(min_size),
@@ -425,7 +429,7 @@ impl Arena {
     pub fn reset(&mut self) {
         let start_time = self.config.track_stats.then(Instant::now);
 
-        self.generation.set(self.generation.get() + 1);
+        self.generation.set(self.generation.get().wrapping_add(1));
 
         if let Some(chunk) = &*self.chunks.borrow() {
             self.current_ptr.set(chunk.start());

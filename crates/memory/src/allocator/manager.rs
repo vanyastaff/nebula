@@ -227,16 +227,31 @@ impl AllocatorManager {
     }
 
     /// Executes a function with a specific allocator temporarily active
+    ///
+    /// The previous allocator is restored even if `f` panics (RAII guard).
     pub fn with_allocator<F, R>(&self, allocator_id: AllocatorId, f: F) -> R
     where
         F: FnOnce() -> R,
     {
+        // RAII guard to restore the previous allocator on drop (including panics)
+        struct RestoreGuard<'a> {
+            active: &'a AtomicUsize,
+            previous: usize,
+        }
+        impl Drop for RestoreGuard<'_> {
+            fn drop(&mut self) {
+                self.active.store(self.previous, Ordering::SeqCst);
+            }
+        }
+
         let previous = self
             .active_allocator
             .swap(allocator_id.as_usize(), Ordering::SeqCst);
-        let result = f();
-        self.active_allocator.store(previous, Ordering::SeqCst);
-        result
+        let _guard = RestoreGuard {
+            active: &self.active_allocator,
+            previous,
+        };
+        f()
     }
 
     /// List all registered allocators
@@ -323,12 +338,19 @@ macro_rules! with_allocator {
     };
 }
 
+/// Sets the active allocator on the global manager.
+///
+/// # Panics
+///
+/// Panics if the allocator ID is not registered. Prefer calling
+/// `GlobalAllocatorManager::get().set_active_allocator(id)` directly
+/// and handling the error for production code.
 #[macro_export]
 macro_rules! set_active_allocator {
     ($allocator_id:expr) => {
         $crate::allocator::manager::GlobalAllocatorManager::get()
             .set_active_allocator($allocator_id)
-            .expect("Failed to set active allocator")
+            .expect("set_active_allocator: allocator ID not registered")
     };
 }
 

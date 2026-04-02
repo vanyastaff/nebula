@@ -43,6 +43,7 @@ impl Default for MonitoringConfig {
 }
 
 /// Memory pressure action to take
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PressureAction {
     /// No action needed

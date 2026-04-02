@@ -37,6 +37,8 @@ pub struct PriorityPool<T: Poolable> {
     factory: Box<dyn Fn() -> T>,
     config: PoolConfig,
     callbacks: Box<dyn PoolCallbacks<T>>,
+    /// Total number of objects ever created (for `max_capacity` enforcement without stats feature)
+    created_count: core::cell::Cell<usize>,
     #[cfg(feature = "stats")]
     stats: PoolStats,
 }
@@ -105,11 +107,18 @@ impl<T: Poolable> PriorityPool<T> {
             }
         }
 
+        let created_count = if config.pre_warm {
+            config.initial_capacity
+        } else {
+            0
+        };
+
         Self {
             objects,
             factory: Box::new(factory),
             config,
             callbacks: Box::new(NoOpCallbacks),
+            created_count: core::cell::Cell::new(created_count),
             #[cfg(feature = "stats")]
             stats,
         }
@@ -139,19 +148,15 @@ impl<T: Poolable> PriorityPool<T> {
             #[cfg(feature = "stats")]
             self.stats.record_miss();
 
-            // Check capacity
-            if let Some(max) = self.config.max_capacity {
-                #[cfg(feature = "stats")]
-                let created = self.stats.total_created();
-                #[cfg(not(feature = "stats"))]
-                let created = 0;
-
-                if created >= max {
-                    return Err(MemoryError::pool_exhausted("pool", 0));
-                }
+            // Check capacity using created_count (works with or without stats feature)
+            if let Some(max) = self.config.max_capacity
+                && self.created_count.get() >= max
+            {
+                return Err(MemoryError::pool_exhausted("pool", 0));
             }
 
             let obj = (self.factory)();
+            self.created_count.set(self.created_count.get() + 1);
             self.callbacks.on_create(&obj);
 
             #[cfg(feature = "stats")]
@@ -205,18 +210,14 @@ impl<T: Poolable> PriorityPool<T> {
             #[cfg(feature = "stats")]
             self.stats.record_miss();
 
-            if let Some(max) = self.config.max_capacity {
-                #[cfg(feature = "stats")]
-                let created = self.stats.total_created();
-                #[cfg(not(feature = "stats"))]
-                let created = 0;
-
-                if created >= max {
-                    return Err(MemoryError::pool_exhausted("pool", 0));
-                }
+            if let Some(max) = self.config.max_capacity
+                && self.created_count.get() >= max
+            {
+                return Err(MemoryError::pool_exhausted("pool", 0));
             }
 
             let obj = (self.factory)();
+            self.created_count.set(self.created_count.get() + 1);
             self.callbacks.on_create(&obj);
 
             #[cfg(feature = "stats")]

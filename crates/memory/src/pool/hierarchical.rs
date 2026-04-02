@@ -116,10 +116,16 @@ impl<T: Poolable> HierarchicalPool<T> {
     }
 
     /// Get object from pool hierarchy
-    pub fn get(&mut self) -> MemoryResult<HierarchicalPooledValue<T>> {
-        // Try local pool first — extract and detach before taking &mut self
-        // to avoid overlapping borrows (the Result temporary holds a borrow)
-        let local_value = self
+    ///
+    /// Requires `Arc<Mutex<Self>>` so the returned `HierarchicalPooledValue`
+    /// can safely return the object on drop from any thread.
+    pub fn get(
+        this: &Arc<Mutex<Self>>,
+    ) -> MemoryResult<HierarchicalPooledValue<T>> {
+        let mut guard = this.lock();
+
+        // Try local pool first
+        let local_value = guard
             .local
             .get()
             .ok()
@@ -127,21 +133,20 @@ impl<T: Poolable> HierarchicalPool<T> {
         if let Some(detached) = local_value {
             return Ok(HierarchicalPooledValue {
                 value: ManuallyDrop::new(detached),
-                pool: std::ptr::from_mut(self),
+                pool: Arc::clone(this),
                 borrowed: false,
             });
         }
 
         // Try to borrow from parent
-        let borrowed_result = if let Some(parent) = &self.parent {
-            if self.borrowed_count < self.max_borrow {
-                let mut parent_guard = parent.lock();
-                if let Ok(value) = parent_guard.get() {
-                    // Сохраняем значение, которое вернём из функции
-                    Some(value.detach())
-                } else {
-                    None
-                }
+        let borrowed_result = if let Some(parent) = &guard.parent {
+            if guard.borrowed_count < guard.max_borrow {
+                let parent_guard = parent.lock();
+                parent_guard
+                    .local
+                    .get()
+                    .ok()
+                    .map(super::object_pool::PooledValue::detach)
             } else {
                 None
             }
@@ -149,13 +154,11 @@ impl<T: Poolable> HierarchicalPool<T> {
             None
         };
 
-        // Теперь, когда родительский блок завершен, можно безопасно использовать self
-        // мутабельно
         if let Some(value) = borrowed_result {
-            self.borrowed_count += 1;
+            guard.borrowed_count += 1;
             return Ok(HierarchicalPooledValue {
                 value: ManuallyDrop::new(value),
-                pool: std::ptr::from_mut(self),
+                pool: Arc::clone(this),
                 borrowed: true,
             });
         }
@@ -248,14 +251,18 @@ impl From<PoolStats> for PoolStatsSnapshot {
 }
 
 /// RAII wrapper for hierarchical pooled values
+///
+/// Uses `Arc<Mutex<HierarchicalPool<T>>>` instead of a raw pointer to ensure
+/// thread-safe return on drop. The Mutex is acquired in `Drop::drop` to
+/// safely return the object to the pool.
 pub struct HierarchicalPooledValue<T: Poolable> {
     value: ManuallyDrop<T>,
-    pool: *mut HierarchicalPool<T>,
+    pool: Arc<Mutex<HierarchicalPool<T>>>,
     borrowed: bool,
 }
 
 impl<T: Poolable> HierarchicalPooledValue<T> {
-    /// Detach value from pool
+    /// Detach value from pool (won't be returned on drop)
     pub fn detach(mut self) -> T {
         // SAFETY: Extracting value from ManuallyDrop.
         // - value is initialized (created in HierarchicalPool::get)
@@ -288,25 +295,13 @@ impl<T: Poolable> DerefMut for HierarchicalPooledValue<T> {
 
 impl<T: Poolable> Drop for HierarchicalPooledValue<T> {
     fn drop(&mut self) {
-        // SAFETY: Returning object to hierarchical pool.
-        // - ManuallyDrop::take extracts value (initialized in HierarchicalPool::get)
-        // - pool pointer is valid (created from &mut in get, Arc keeps pool alive)
-        // - return_object routes to local or parent pool based on borrowed flag
-        // - No double-drop (ManuallyDrop prevents automatic drop)
-        unsafe {
-            let obj = ManuallyDrop::take(&mut self.value);
-            (*self.pool).return_object(obj, self.borrowed);
-        }
+        // SAFETY: Extracting value from ManuallyDrop — value is initialized,
+        // this is the only take (Drop runs once).
+        let obj = unsafe { ManuallyDrop::take(&mut self.value) };
+        // Acquire the mutex to safely return the object
+        self.pool.lock().return_object(obj, self.borrowed);
     }
 }
-
-// SAFETY: HierarchicalPooledValue can be sent between threads if T: Send.
-// - value: ManuallyDrop<T> is Send if T: Send
-// - pool: Raw pointer not shared (exclusive ownership of value)
-// - T: Send ensures value can be safely sent
-// - Pool pointer used only for returning (no concurrent access)
-// - Drop on destination thread safely returns object to pool (via Arc<Mutex>)
-unsafe impl<T: Poolable + Send> Send for HierarchicalPooledValue<T> {}
 
 /// Extension trait for `Arc<Mutex<HierarchicalPool<T>>>`
 ///
@@ -331,7 +326,7 @@ impl<T: Poolable + 'static> HierarchicalPoolExt<T> for Arc<Mutex<HierarchicalPoo
     }
 
     fn get(&self) -> MemoryResult<HierarchicalPooledValue<T>> {
-        self.lock().get()
+        HierarchicalPool::get(self)
     }
 
     #[cfg(feature = "stats")]
@@ -366,13 +361,9 @@ mod tests {
         // Create parent pool
         let parent = HierarchicalPool::new(10, TestObject::default);
 
-        // Note: In a real implementation, we'd need to properly share
-        // the factory function. This test demonstrates the concept.
-
-        // Get from parent
+        // Get from parent via associated function
         {
-            let mut parent_guard = parent.lock();
-            let obj = parent_guard.get().unwrap();
+            let obj = HierarchicalPool::get(&parent).unwrap();
             assert_eq!((*obj).value, 0); // Reset
             assert!(!obj.is_borrowed());
         }

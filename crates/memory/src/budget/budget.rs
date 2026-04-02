@@ -11,6 +11,7 @@ use super::config::BudgetConfig;
 use crate::error::{MemoryError, MemoryResult};
 
 /// Current state of a memory budget
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BudgetState {
     /// Normal operation, plenty of memory available
@@ -198,12 +199,25 @@ impl MemoryBudget {
     /// Create a new memory budget with a parent
     #[allow(clippy::needless_pass_by_value)] // Arc is cheap to clone, taking by value is idiomatic
     pub fn with_parent(config: BudgetConfig, parent: Arc<MemoryBudget>) -> Arc<Self> {
-        let mut budget = Self::new(config);
+        let history = if config.tracking_window.is_some() && config.collect_stats {
+            Some(UsageHistory::new(
+                100,
+                Duration::from_millis(100),
+            ))
+        } else {
+            None
+        };
 
-        // Set parent and add self to parent's children
-        let budget_mut = Arc::get_mut(&mut budget)
-            .expect("budget Arc has no other references immediately after creation");
-        budget_mut.parent = Some(parent.clone());
+        let budget = Arc::new(Self {
+            config: RwLock::new(config),
+            used: Mutex::new(0),
+            peak: Mutex::new(0),
+            stats: Mutex::new(AllocationStats::default()),
+            parent: Some(parent.clone()),
+            children: Mutex::new(Vec::new()),
+            history: Mutex::new(history),
+        });
+
         parent.children.lock().push(Arc::downgrade(&budget));
 
         budget
@@ -363,6 +377,14 @@ impl MemoryBudget {
     }
 
     /// Check if the budget can allocate the given amount
+    ///
+    /// # Advisory only
+    ///
+    /// This method is **not atomic** with respect to [`request_memory`](Self::request_memory).
+    /// Under concurrent access, another thread may allocate between this check and
+    /// a subsequent `request_memory` call, causing it to fail even though `can_allocate`
+    /// returned `true`. Use `request_memory` directly and handle the error for
+    /// correctness-critical paths.
     pub fn can_allocate(&self, size: usize) -> bool {
         if size == 0 {
             return true;

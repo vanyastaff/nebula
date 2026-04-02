@@ -18,7 +18,15 @@ pub struct BumpConfig {
     /// Minimum allocation size (helps avoid false sharing)
     pub min_alloc_size: usize,
 
-    /// Thread-safe mode (use atomics vs Cell)
+    /// Controls backoff spin in the CAS retry loop.
+    ///
+    /// When `true`, failed CAS attempts use exponential backoff (`Backoff::spin`)
+    /// which improves throughput under contention. When `false`, the loop retries
+    /// immediately — better for single-threaded use where contention is impossible.
+    ///
+    /// **Note:** The allocator always uses atomic operations (`AtomicCursor`)
+    /// regardless of this flag. This field does *not* toggle thread-safety — it
+    /// only tunes the contention strategy.
     pub thread_safe: bool,
 }
 

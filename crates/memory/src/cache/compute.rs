@@ -252,9 +252,12 @@ where
         self.config.max_entries
     }
 
-    /// Get current load factor
+    /// Get current load factor (0.0 if `max_entries` is 0)
     #[must_use]
     pub fn load_factor(&self) -> f32 {
+        if self.config.max_entries == 0 {
+            return 0.0;
+        }
         self.entries.len() as f32 / self.config.max_entries as f32
     }
 
