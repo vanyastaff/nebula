@@ -2,6 +2,7 @@
 
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use crate::{
@@ -150,6 +151,10 @@ enum State {
     HalfOpen,
 }
 
+const STATE_CLOSED: u32 = 0;
+const STATE_OPEN: u32 = 1;
+const STATE_HALF_OPEN: u32 = 2;
+
 // ── CircuitBreaker ────────────────────────────────────────────────────────────
 
 /// Snapshot of circuit breaker state for health reporting.
@@ -178,17 +183,36 @@ type StateChangeCallback = Box<dyn Fn(CircuitState, CircuitState) + Send + Sync>
 /// the probe slot is automatically released via `record_outcome(Cancelled)`.
 pub struct CircuitBreaker {
     config: CircuitBreakerConfig,
+    /// Atomic mirror of the current state for lock-free observability reads.
+    /// Updated inside the mutex by all state transitions, read without lock by `circuit_state()`.
+    atomic_state: AtomicU32,
     state: Mutex<InnerState>,
     clock: Arc<dyn Clock>,
     sink: Arc<dyn MetricsSink>,
     on_state_change: Option<StateChangeCallback>,
 }
 
+/// Sum a slice of 0/1 bytes into a u32.
+///
+/// Chunked iteration helps LLVM auto-vectorize via `psadbw`/`vpsadbw`.
+/// Each chunk accumulates in `u8` (max 255 iterations before overflow),
+/// then widens to `u32`. For slices <= 255 this is a single pass.
+#[inline]
+fn byte_sum(slice: &[u8]) -> u32 {
+    slice
+        .chunks(255)
+        .map(|chunk| u32::from(chunk.iter().copied().sum::<u8>()))
+        .sum()
+}
+
 /// Fixed-size ring buffer of call outcomes for rate-based circuit breaking.
 ///
-/// Stores failure and slow-call flags in separate byte arrays so that
-/// `failure_count` and `slow_count` are simple contiguous-byte sums that
-/// LLVM can auto-vectorize with SIMD instructions.
+/// Stores failure and slow-call flags in separate byte arrays. The
+/// `byte_sum` helper uses chunked iteration that LLVM auto-vectorizes
+/// with `psadbw`/`vpsadbw` SIMD instructions at window sizes >= 32.
+///
+/// Capacity is rounded up to the next power of two so that the ring
+/// pointer wraps via bitmask (`& mask`) instead of integer division.
 ///
 /// Made `pub` so it can be benchmarked directly from `benches/sliding_window_cb.rs`.
 #[doc(hidden)]
@@ -198,26 +222,30 @@ pub struct OutcomeWindow {
     failure_ring: Box<[u8]>,
     /// 1 = slow call, 0 = normal — one byte per slot, contiguous for SIMD.
     slow_ring: Box<[u8]>,
+    /// Bitmask for wrapping: always `capacity - 1` where capacity is a power of two.
+    mask: usize,
     head: usize,
     len: usize,
 }
 
 impl OutcomeWindow {
     #[must_use]
-    pub fn new(size: usize) -> Self {
+    pub fn new(requested: usize) -> Self {
+        let cap = requested.next_power_of_two().max(1);
         Self {
-            failure_ring: vec![0u8; size].into_boxed_slice(),
-            slow_ring: vec![0u8; size].into_boxed_slice(),
+            failure_ring: vec![0u8; cap].into_boxed_slice(),
+            slow_ring: vec![0u8; cap].into_boxed_slice(),
+            mask: cap - 1,
             head: 0,
             len: 0,
         }
     }
 
     pub fn record(&mut self, is_failure: bool, is_slow: bool) {
-        let cap = self.failure_ring.len();
+        let cap = self.mask + 1;
         self.failure_ring[self.head] = u8::from(is_failure);
         self.slow_ring[self.head] = u8::from(is_slow);
-        self.head = (self.head + 1) % cap;
+        self.head = (self.head + 1) & self.mask;
         if self.len < cap {
             self.len += 1;
         }
@@ -232,22 +260,17 @@ impl OutcomeWindow {
 
     #[must_use]
     pub fn failure_count(&self) -> u32 {
-        self.active_slice(&self.failure_ring)
-            .iter()
-            .map(|&b| u32::from(b))
-            .sum()
+        byte_sum(self.active_slice(&self.failure_ring))
     }
 
     #[must_use]
     pub fn slow_count(&self) -> u32 {
-        self.active_slice(&self.slow_ring)
-            .iter()
-            .map(|&b| u32::from(b))
-            .sum()
+        byte_sum(self.active_slice(&self.slow_ring))
     }
 
     fn active_slice<'a>(&self, ring: &'a [u8]) -> &'a [u8] {
-        if self.len < ring.len() {
+        let cap = self.mask + 1;
+        if self.len < cap {
             &ring[..self.len]
         } else {
             ring
@@ -287,6 +310,7 @@ impl CircuitBreaker {
         let window_size = config.sliding_window_size;
         Ok(Self {
             config,
+            atomic_state: AtomicU32::new(STATE_CLOSED),
             state: Mutex::new(InnerState {
                 state: State::Closed,
                 failures: 0,
@@ -356,6 +380,7 @@ impl CircuitBreaker {
             opened_at: self.clock.now(),
         };
         inner.half_open_probes = 0;
+        self.atomic_state.store(STATE_OPEN, Ordering::Relaxed);
         drop(inner);
         if prev != CircuitState::Open {
             self.sink.record(ResilienceEvent::CircuitStateChanged {
@@ -373,6 +398,7 @@ impl CircuitBreaker {
         let mut inner = self.state.lock();
         let prev = to_circuit_state(inner.state);
         Self::reset_counters(&mut inner);
+        self.atomic_state.store(STATE_CLOSED, Ordering::Relaxed);
         drop(inner);
         if prev != CircuitState::Closed {
             self.sink.record(ResilienceEvent::CircuitStateChanged {
@@ -507,6 +533,7 @@ impl CircuitBreaker {
                     if let Some(ref mut window) = inner.window {
                         window.reset();
                     }
+                    self.atomic_state.store(STATE_HALF_OPEN, Ordering::Relaxed);
                     transition = Some((prev, CircuitState::HalfOpen));
                     Ok(())
                 } else {
@@ -563,6 +590,7 @@ impl CircuitBreaker {
             opened_at: self.clock.now(),
         };
         inner.consecutive_opens += 1;
+        self.atomic_state.store(STATE_OPEN, Ordering::Relaxed);
         (prev, CircuitState::Open)
     }
 
@@ -587,9 +615,10 @@ impl CircuitBreaker {
     }
 
     /// Reset all counters and transition to `Closed` from the current state.
-    fn close_from_half_open(inner: &mut InnerState) -> (CircuitState, CircuitState) {
+    fn close_from_half_open(&self, inner: &mut InnerState) -> (CircuitState, CircuitState) {
         let prev = to_circuit_state(inner.state);
         Self::reset_counters(inner);
+        self.atomic_state.store(STATE_CLOSED, Ordering::Relaxed);
         (prev, CircuitState::Closed)
     }
 
@@ -609,7 +638,7 @@ impl CircuitBreaker {
             }
             Outcome::Success => {
                 if inner.state == State::HalfOpen {
-                    transition = Some(Self::close_from_half_open(&mut inner));
+                    transition = Some(self.close_from_half_open(&mut inner));
                 } else {
                     inner.failures = inner.failures.saturating_sub(1);
                     inner.total = inner.total.saturating_add(1);
@@ -644,7 +673,7 @@ impl CircuitBreaker {
                     window.record(false, true);
                 }
                 if inner.state == State::HalfOpen {
-                    transition = Some(Self::close_from_half_open(&mut inner));
+                    transition = Some(self.close_from_half_open(&mut inner));
                 } else {
                     inner.failures = inner.failures.saturating_sub(1);
                     if self.slow_rate_trips(&inner) {
@@ -676,9 +705,13 @@ impl CircuitBreaker {
         }
     }
 
-    /// Returns the current circuit state.
+    /// Returns the current circuit state (lock-free atomic read).
     pub fn circuit_state(&self) -> CircuitState {
-        to_circuit_state(self.state.lock().state)
+        match self.atomic_state.load(Ordering::Relaxed) {
+            STATE_OPEN => CircuitState::Open,
+            STATE_HALF_OPEN => CircuitState::HalfOpen,
+            _ => CircuitState::Closed,
+        }
     }
 
     /// Returns a stats snapshot.
@@ -1084,7 +1117,7 @@ mod tests {
     async fn sliding_window_forgets_old_outcomes() {
         let cb = CircuitBreaker::new(CircuitBreakerConfig {
             failure_threshold: 3,
-            sliding_window_size: 5,
+            sliding_window_size: 4,
             failure_rate_threshold: Some(0.6),
             min_operations: 3,
             ..default_config()
@@ -1099,16 +1132,20 @@ mod tests {
 
         cb.force_close();
 
-        // 5 calls: 2 failures, 3 successes -> 2/5 = 40% < 60% -> stays closed
+        // 4 calls: 1 failure, 3 successes -> 1/4 = 25% < 60% -> stays closed
         cb.record_outcome(Outcome::Success);
         cb.record_outcome(Outcome::Success);
         cb.record_outcome(Outcome::Failure);
         cb.record_outcome(Outcome::Success);
-        cb.record_outcome(Outcome::Failure);
         assert_eq!(cb.circuit_state(), CS::Closed);
 
         // One more failure pushes oldest (success) out:
-        // window = [S, F, S, F, F] -> 3/5 = 60% >= 60% -> trips
+        // window = [S, F, S, F] -> 2/4 = 50% < 60% -> stays closed
+        cb.record_outcome(Outcome::Failure);
+        assert_eq!(cb.circuit_state(), CS::Closed);
+
+        // Another failure pushes a success out:
+        // window = [F, S, F, F] -> 3/4 = 75% >= 60% -> trips
         cb.record_outcome(Outcome::Failure);
         assert_eq!(cb.circuit_state(), CS::Open);
     }
@@ -1145,7 +1182,7 @@ mod tests {
     fn sliding_window_stats_reflect_window() {
         let cb = CircuitBreaker::new(CircuitBreakerConfig {
             failure_threshold: 100,
-            sliding_window_size: 3,
+            sliding_window_size: 4,
             failure_rate_threshold: Some(0.9),
             min_operations: 1,
             ..default_config()
@@ -1155,15 +1192,16 @@ mod tests {
         cb.record_outcome(Outcome::Failure);
         cb.record_outcome(Outcome::Failure);
         cb.record_outcome(Outcome::Success);
+        cb.record_outcome(Outcome::Success);
 
         let stats = cb.stats();
-        assert_eq!(stats.total, 3);
+        assert_eq!(stats.total, 4);
         assert_eq!(stats.failures, 2);
 
         // Push oldest failure out of window
         cb.record_outcome(Outcome::Success);
         let stats = cb.stats();
-        assert_eq!(stats.total, 3);
+        assert_eq!(stats.total, 4);
         assert_eq!(stats.failures, 1);
     }
 

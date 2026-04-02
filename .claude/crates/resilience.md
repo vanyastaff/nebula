@@ -33,8 +33,10 @@ Fault-tolerance patterns: circuit breaker, retry, bulkhead, rate limiter, timeou
 - **`AdaptiveHedgeExecutor::with_max_samples(n)`** — configures latency tracker capacity (default 1000). Returns `Err` if n=0.
 - **`AdaptiveHedgeExecutor` uses `parking_lot::RwLock`** — not `tokio::sync::RwLock`: both `record()` and `percentile()` are sync, no `.await` under lock.
 - **`LatencyTracker` uses `Vec<(u64, u32)>` histogram** — sorted by nanos, no BTreeMap, no heap allocs after warmup. `ring: VecDeque<u64>` stores nanos (not Duration).
-- **CB `SlidingWindow` uses two `Box<[u8]>` arrays** — `failure_ring` and `slow_ring` separate for SIMD vectorization of sum loops. No `OutcomeEntry` struct.
+- **CB `OutcomeWindow` uses power-of-two capacity** — `new(n)` rounds up to `next_power_of_two`, stores `mask = cap - 1`. Ring wraps via `& mask` (1 cycle) not `% cap` (35 cycles). Effective window may be larger than requested.
+- **CB `OutcomeWindow` uses two `Box<[u8]>` arrays** — `failure_ring` and `slow_ring` separate; `byte_sum` helper uses `chunks(255)` for LLVM `psadbw` auto-vectorization.
 - **CB failure/slow rate checks use multiply form** — `failures >= threshold * total` instead of `failures/total >= threshold`, eliminating `divsd`.
+- **`circuit_state()` is lock-free** — reads `AtomicU32` mirror with `Relaxed` ordering. All state transitions sync the atomic inside the mutex. Slightly stale reads acceptable for observability.
 - **`SlidingWindow` pre-allocates `VecDeque::with_capacity(max_requests)`** — no reallocs during warmup.
 - **`SlidingWindow::acquire()` computes cutoff before lock** — `now.checked_sub(window_duration)` happens before `mutex.lock()`, not inside `clean_old_requests_locked`.
 - **All patterns use `.call()` method** — unified verb across all executors.
@@ -117,4 +119,5 @@ Prefer `ResiliencePipeline` for composing multiple patterns — it handles layer
 <!-- reviewed: 2026-04-02 — retry_with_inner promoted to #[doc(hidden)] pub (was pub(crate)) and re-exported from lib.rs so bench files can access it without the Classify bound; criterion dev-dep replaced by codspeed-criterion-compat workspace alias; new bench targets: retry (backoff strategies, loop, jitter), gate (enter contention, is_closed), load_shed (pass-through, reject, atomic predicate), hedge (no-hedge fast path, adaptive overhead cold/warmed, sample-scaling, write-lock contention) -->
 <!-- reviewed: 2026-04-02 — clippy cleanup in pipeline: Step::Retry now Box<RetryConfig<E>> to satisfy large_enum_variant without semantic changes -->
 
-<!-- reviewed: 2026-04-02 -->
+<!-- reviewed: 2026-04-02 — removed stale design/ folder (PLAN.md, TASKS.md, MIGRATION.md); Phase 9 backlog was referencing non-existent Task.md, all active context lives in this file -->
+<!-- reviewed: 2026-04-02 — ASM-guided optimizations: OutcomeWindow power-of-two capacity + bitmask wrapping (eliminates div), byte_sum chunked helper (enables SIMD auto-vectorization), AtomicU32 lock-free circuit_state(), apply_jitter mul_add + simplified NaN guard -->

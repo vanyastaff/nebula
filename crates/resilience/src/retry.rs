@@ -447,7 +447,8 @@ fn apply_jitter(delay: Duration, jitter: &JitterConfig, attempt: u32) -> Duratio
     match jitter {
         JitterConfig::None => delay,
         JitterConfig::Full { factor, seed } => {
-            if !factor.is_finite() || *factor <= 0.0 {
+            let factor = *factor;
+            if !factor.is_finite() || factor <= 0.0 {
                 return delay;
             }
 
@@ -457,9 +458,8 @@ fn apply_jitter(delay: Duration, jitter: &JitterConfig, attempt: u32) -> Duratio
                 // Mix seed with attempt so each retry gets different jitter
                 fastrand::Rng::with_seed(s.wrapping_add(u64::from(attempt))).f64()
             });
-            let jitter_amount = base * clamped_factor * rand_val;
-            let total = base + jitter_amount;
-            if !total.is_finite() || total.is_sign_negative() {
+            let total = clamped_factor.mul_add(base * rand_val, base);
+            if !total.is_finite() || total < 0.0 {
                 return delay;
             }
             Duration::from_secs_f64(total.min(Duration::MAX.as_secs_f64()))
