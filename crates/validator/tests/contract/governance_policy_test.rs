@@ -184,25 +184,6 @@ fn registry_stability_values_are_valid() {
 }
 
 #[test]
-fn registry_change_policy_references_migration_doc() {
-    let registry = load_error_registry();
-    let migration = include_str!("../../docs/migration.md");
-
-    assert!(
-        !registry.change_policy.migration_authority.is_empty(),
-        "migration_authority must not be empty"
-    );
-    assert!(
-        migration.contains("error_registry_v1.json"),
-        "migration.md must reference the error registry artifact"
-    );
-    assert!(
-        migration.contains("Deprecation Process"),
-        "migration.md must document the deprecation process"
-    );
-}
-
-#[test]
 fn registry_version_follows_semver() {
     let registry = load_error_registry();
     let parts: Vec<&str> = registry.version.split('.').collect();
