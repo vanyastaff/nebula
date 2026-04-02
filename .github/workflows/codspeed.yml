@@ -1,0 +1,87 @@
+name: CodSpeed
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "vision/**"
+      - "LICENSE"
+      - "CHANGELOG.md"
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "vision/**"
+      - "LICENSE"
+      - "CHANGELOG.md"
+  # `workflow_dispatch` allows CodSpeed to trigger backtest
+  # performance analysis in order to generate initial data.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codspeed:
+    name: Run benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+
+      - name: Install cargo-codspeed
+        run: cargo install cargo-codspeed --locked
+
+      - name: Build the benchmark targets
+        run: |
+          cargo codspeed build \
+            -p nebula-core \
+            -p nebula-log \
+            -p nebula-eventbus \
+            -p nebula-resilience \
+            -p nebula-expression \
+            -p nebula-validator \
+            --bench id_parse_serialize \
+            --bench log_hot_path \
+            --bench emit \
+            --bench throughput \
+            --bench compose \
+            --bench rate_limiter \
+            --bench timeout \
+            --bench fallback \
+            --bench circuit_breaker \
+            --bench bulkhead \
+            --bench latency_tracker \
+            --bench sliding_window_cb \
+            --bench baseline \
+            --bench string_validators \
+            --bench combinators \
+            --bench error_construction
+
+      - name: Run the benchmarks
+        uses: CodSpeedHQ/action@v4
+        with:
+          mode: simulation
+          run: cargo codspeed run
