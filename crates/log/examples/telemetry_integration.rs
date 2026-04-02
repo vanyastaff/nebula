@@ -104,11 +104,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracker.success();
 
     // Simulate a failure path.
-    emit_event(&OperationFailed {
-        operation: "workflow.schedule".to_string(),
-        error: "queue is full".into(),
-        duration: Duration::from_millis(1),
-    });
+    emit_event(&OperationFailed::new(
+        "workflow.schedule",
+        "queue is full",
+        Duration::from_millis(1),
+    ));
 
     // ── Step 6: Assert delivery (in tests; omit in production) ───────────────
 

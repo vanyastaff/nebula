@@ -25,3 +25,4 @@ Structured logging foundation for Nebula, built on `tracing` — single pipeline
 
 <!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
 <!-- reviewed: 2026-04-02 — ASM audit: FanoutWriter switched from Vec to SmallVec<[Box<dyn Write>; 4]> (eliminates heap alloc per log event for <=4 writers); OperationFailed.error changed from String to Cow<'static, str> (eliminates alloc on drop path) -->
+<!-- reviewed: 2026-04-02 — DX: added ::new() constructors for OperationStarted, OperationCompleted, OperationFailed; all internal call sites and examples migrated from struct syntax -->

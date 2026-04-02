@@ -120,28 +120,22 @@ fn demo_basic_events() {
     println!("\n=== Demo 1: Basic Events ===");
 
     // Emit operation lifecycle events
-    let started = OperationStarted {
-        operation: "fetch_user".to_string(),
-        context: "api_handler".to_string(),
-    };
-    emit_event(&started);
+    emit_event(&OperationStarted::new("fetch_user", "api_handler"));
 
     // Simulate work
     std::thread::sleep(Duration::from_millis(50));
 
-    let completed = OperationCompleted {
-        operation: "fetch_user".to_string(),
-        duration: Duration::from_millis(50),
-    };
-    emit_event(&completed);
+    emit_event(&OperationCompleted::new(
+        "fetch_user",
+        Duration::from_millis(50),
+    ));
 
     // Emit a failed operation
-    let failed = OperationFailed {
-        operation: "update_user".to_string(),
-        error: "database connection lost".into(),
-        duration: Duration::from_millis(100),
-    };
-    emit_event(&failed);
+    emit_event(&OperationFailed::new(
+        "update_user",
+        "database connection lost",
+        Duration::from_millis(100),
+    ));
 }
 
 fn demo_custom_events() {

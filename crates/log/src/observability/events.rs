@@ -20,11 +20,7 @@ fn saturating_millis(d: Duration) -> u64 {
 /// ```rust
 /// use nebula_log::observability::{OperationStarted, emit_event};
 ///
-/// let event = OperationStarted {
-///     operation: "database_query".to_string(),
-///     context: "user_fetch".to_string(),
-/// };
-/// emit_event(&event);
+/// emit_event(&OperationStarted::new("database_query", "user_fetch"));
 /// ```
 #[derive(Debug, Clone)]
 pub struct OperationStarted {
@@ -32,6 +28,16 @@ pub struct OperationStarted {
     pub operation: String,
     /// Additional context about the operation
     pub context: String,
+}
+
+impl OperationStarted {
+    /// Create a new operation-started event.
+    pub fn new(operation: impl Into<String>, context: impl Into<String>) -> Self {
+        Self {
+            operation: operation.into(),
+            context: context.into(),
+        }
+    }
 }
 
 impl ObservabilityEvent for OperationStarted {
@@ -60,11 +66,7 @@ impl ObservabilityEvent for OperationStarted {
 /// use nebula_log::observability::{OperationCompleted, emit_event};
 /// use std::time::Duration;
 ///
-/// let event = OperationCompleted {
-///     operation: "database_query".to_string(),
-///     duration: Duration::from_millis(42),
-/// };
-/// emit_event(&event);
+/// emit_event(&OperationCompleted::new("database_query", Duration::from_millis(42)));
 /// ```
 #[derive(Debug, Clone)]
 pub struct OperationCompleted {
@@ -72,6 +74,16 @@ pub struct OperationCompleted {
     pub operation: String,
     /// How long the operation took
     pub duration: Duration,
+}
+
+impl OperationCompleted {
+    /// Create a new operation-completed event.
+    pub fn new(operation: impl Into<String>, duration: Duration) -> Self {
+        Self {
+            operation: operation.into(),
+            duration,
+        }
+    }
 }
 
 impl ObservabilityEvent for OperationCompleted {
@@ -107,12 +119,11 @@ impl ObservabilityEvent for OperationCompleted {
 /// use nebula_log::observability::{OperationFailed, emit_event};
 /// use std::time::Duration;
 ///
-/// let event = OperationFailed {
-///     operation: "database_query".to_string(),
-///     error: "connection timeout".into(),
-///     duration: Duration::from_millis(5000),
-/// };
-/// emit_event(&event);
+/// emit_event(&OperationFailed::new(
+///     "database_query",
+///     "connection timeout",
+///     Duration::from_millis(5000),
+/// ));
 /// ```
 #[derive(Debug, Clone)]
 pub struct OperationFailed {
@@ -123,6 +134,21 @@ pub struct OperationFailed {
     pub error: Cow<'static, str>,
     /// How long the operation ran before failing
     pub duration: Duration,
+}
+
+impl OperationFailed {
+    /// Create a new operation-failed event.
+    pub fn new(
+        operation: impl Into<String>,
+        error: impl Into<Cow<'static, str>>,
+        duration: Duration,
+    ) -> Self {
+        Self {
+            operation: operation.into(),
+            error: error.into(),
+            duration,
+        }
+    }
 }
 
 impl ObservabilityEvent for OperationFailed {
@@ -182,11 +208,10 @@ impl OperationTracker {
         let operation = operation.into();
         let context = context.into();
 
-        let event = OperationStarted {
+        super::emit_event(&OperationStarted {
             operation: operation.clone(),
             context,
-        };
-        super::emit_event(&event);
+        });
 
         Self {
             operation,
@@ -200,12 +225,10 @@ impl OperationTracker {
     /// Emits `OperationCompleted` event.
     pub fn success(mut self) {
         self.completed = true;
-        let duration = self.start.elapsed();
-        let event = OperationCompleted {
-            operation: std::mem::take(&mut self.operation),
-            duration,
-        };
-        super::emit_event(&event);
+        super::emit_event(&OperationCompleted::new(
+            std::mem::take(&mut self.operation),
+            self.start.elapsed(),
+        ));
     }
 
     /// Mark the operation as failed with an error message
@@ -213,26 +236,22 @@ impl OperationTracker {
     /// Emits `OperationFailed` event.
     pub fn fail(mut self, error: impl Into<Cow<'static, str>>) {
         self.completed = true;
-        let duration = self.start.elapsed();
-        let event = OperationFailed {
-            operation: std::mem::take(&mut self.operation),
-            error: error.into(),
-            duration,
-        };
-        super::emit_event(&event);
+        super::emit_event(&OperationFailed::new(
+            std::mem::take(&mut self.operation),
+            error,
+            self.start.elapsed(),
+        ));
     }
 }
 
 impl Drop for OperationTracker {
     fn drop(&mut self) {
         if !self.completed {
-            let duration = self.start.elapsed();
-            let event = OperationFailed {
-                operation: std::mem::take(&mut self.operation),
-                error: Cow::Borrowed("operation dropped without completion"),
-                duration,
-            };
-            super::emit_event(&event);
+            super::emit_event(&OperationFailed::new(
+                std::mem::take(&mut self.operation),
+                "operation dropped without completion",
+                self.start.elapsed(),
+            ));
         }
     }
 }
@@ -244,20 +263,14 @@ mod tests {
 
     #[test]
     fn test_operation_started() {
-        let event = OperationStarted {
-            operation: "test".to_string(),
-            context: "unit_test".to_string(),
-        };
+        let event = OperationStarted::new("test", "unit_test");
         assert_eq!(event.name(), "operation_started");
         assert!(event_data_json(&event).is_some());
     }
 
     #[test]
     fn test_operation_completed() {
-        let event = OperationCompleted {
-            operation: "test".to_string(),
-            duration: Duration::from_millis(100),
-        };
+        let event = OperationCompleted::new("test", Duration::from_millis(100));
         assert_eq!(event.name(), "operation_completed");
         let data = event_data_json(&event).unwrap();
         assert_eq!(data["operation"], "test");
@@ -266,11 +279,7 @@ mod tests {
 
     #[test]
     fn test_operation_failed() {
-        let event = OperationFailed {
-            operation: "test".to_string(),
-            error: "test error".into(),
-            duration: Duration::from_millis(50),
-        };
+        let event = OperationFailed::new("test", "test error", Duration::from_millis(50));
         assert_eq!(event.name(), "operation_failed");
         let data = event_data_json(&event).unwrap();
         assert_eq!(data["operation"], "test");
