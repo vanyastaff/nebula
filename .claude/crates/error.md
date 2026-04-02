@@ -69,3 +69,4 @@ NotFound, Validation, Authentication, Authorization, Conflict, RateLimit, Timeou
 <!-- reviewed: 2026-04-02 — pre-existing modifications, no architectural changes this session -->
 
 <!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
+<!-- reviewed: 2026-04-02 — ASM+cache audit: no changes needed. All const fn classification functions fully inlined by LLVM (bt bitmask trick for matches!). NebulaError<E> layout optimal for real domain errors (inner at offset 0 when align 8). No diagnostic code left in tree. -->

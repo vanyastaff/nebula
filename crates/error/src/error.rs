@@ -481,4 +481,5 @@ mod tests {
         let err = NebulaError::new(warning_err);
         assert_eq!(err.severity(), ErrorSeverity::Warning);
     }
+
 }
