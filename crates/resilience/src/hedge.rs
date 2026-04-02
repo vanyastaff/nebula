@@ -15,9 +15,9 @@ use std::future::Future;
 
 use smallvec::SmallVec;
 
+use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Duration;
-use parking_lot::RwLock;
 use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep};
 

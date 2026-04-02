@@ -32,3 +32,4 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 
 <!-- reviewed: 2026-03-30 (backpressure retryable, retry_hint floor, bounded release queue, new events) -->
 <!-- reviewed: 2026-03-31 -->
+<!-- reviewed: 2026-04-02 — no architectural changes this session; pre-existing modifications in git status unrelated to resilience work -->

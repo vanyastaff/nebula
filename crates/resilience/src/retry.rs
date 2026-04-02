@@ -324,10 +324,7 @@ where
 /// Used by the pipeline and benchmarks. Retries all errors when no predicate
 /// is set on the config.
 #[doc(hidden)]
-pub async fn retry_with_inner<T, E, F, Fut>(
-    config: RetryConfig<E>,
-    f: F,
-) -> Result<T, CallError<E>>
+pub async fn retry_with_inner<T, E, F, Fut>(config: RetryConfig<E>, f: F) -> Result<T, CallError<E>>
 where
     E: 'static,
     F: FnMut() -> Fut,
@@ -741,7 +738,9 @@ mod tests {
     async fn total_budget_check_handles_large_backoff_without_panic() {
         let config = RetryConfig::new(3)
             .unwrap()
-            .backoff(BackoffConfig::Custom(SmallVec::from_slice(&[Duration::MAX])))
+            .backoff(BackoffConfig::Custom(SmallVec::from_slice(&[
+                Duration::MAX,
+            ])))
             .total_budget(Duration::from_secs(1));
 
         let result: Result<(), CallError<TransientErr>> =

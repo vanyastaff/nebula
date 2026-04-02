@@ -21,8 +21,8 @@
 //! ```
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use nebula_resilience::{HedgeConfig, HedgeExecutor};
 use nebula_resilience::hedge::AdaptiveHedgeExecutor;
+use nebula_resilience::{HedgeConfig, HedgeExecutor};
 use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
@@ -142,9 +142,7 @@ fn bench_adaptive_overhead(c: &mut Criterion) {
         );
         rt.block_on(async {
             for _ in 0..1000 {
-                let _ = executor
-                    .call(|| async { Ok::<u64, &str>(42) })
-                    .await;
+                let _ = executor.call(|| async { Ok::<u64, &str>(42) }).await;
             }
         });
 
@@ -171,6 +169,10 @@ fn bench_adaptive_overhead(c: &mut Criterion) {
 /// In steady-state all values come from `Instant::elapsed()` which clusters tightly,
 /// so k << max_samples; this bench reflects that by letting the natural distribution
 /// form from repeated fast calls.
+#[expect(
+    clippy::excessive_nesting,
+    reason = "criterion async benchmark setup requires nested closure structure"
+)]
 fn bench_adaptive_sample_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("hedge/adaptive/sample_scaling");
     group.warm_up_time(Duration::from_millis(500));
@@ -193,9 +195,7 @@ fn bench_adaptive_sample_scaling(c: &mut Criterion) {
                 // Pre-warm: fill the ring so every measured call is steady-state.
                 rt.block_on(async {
                     for _ in 0..n {
-                        let _ = executor
-                            .call(|| async { Ok::<u64, &str>(42) })
-                            .await;
+                        let _ = executor.call(|| async { Ok::<u64, &str>(42) }).await;
                     }
                 });
 
@@ -222,7 +222,10 @@ fn bench_adaptive_sample_scaling(c: &mut Criterion) {
 /// `call()` takes a write lock at the end to `record()` the observed call latency.
 /// Under high concurrency this write lock serialises all callers.
 /// Throughput is reported per-element (per individual call) to show the per-task cost.
-#[expect(clippy::excessive_nesting, reason = "task fanout uses nested async closures by design")]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "task fanout uses nested async closures by design"
+)]
 fn bench_adaptive_contention(c: &mut Criterion) {
     let mut group = c.benchmark_group("hedge/adaptive/contention");
     group.warm_up_time(Duration::from_millis(500));
@@ -245,9 +248,7 @@ fn bench_adaptive_contention(c: &mut Criterion) {
                 // Pre-warm so histogram updates are part of every measured record().
                 rt.block_on(async {
                     for _ in 0..1000 {
-                        let _ = executor
-                            .call(|| async { Ok::<u64, &str>(42) })
-                            .await;
+                        let _ = executor.call(|| async { Ok::<u64, &str>(42) }).await;
                     }
                 });
 
