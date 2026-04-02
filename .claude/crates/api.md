@@ -21,3 +21,5 @@ Thin axum REST + WebSocket server — entry point for external clients.
 - Depends on nebula-engine, nebula-storage, nebula-credential, nebula-execution. Highest layer — nothing depends on it.
 
 <!-- reviewed: 2026-03-30 — derive Classify migration -->
+
+<!-- reviewed: 2026-04-02 -->

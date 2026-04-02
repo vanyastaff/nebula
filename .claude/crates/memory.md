@@ -115,3 +115,5 @@ High-performance memory management — arenas, pools, LRU/TTL caching, memory pr
 
 <!-- reviewed: 2026-04-01 (perf: BumpAllocator vtable -> concrete AtomicCursor -21%; PoolAllocator div -> bitmask in deallocate -14%; MetricsExtension split-storage breaking redesign + benchmark suite) -->
 <!-- reviewed: 2026-04-02 — clippy cleanup in metrics docs: MemoryMetric references wrapped in backticks -->
+
+<!-- reviewed: 2026-04-02 -->

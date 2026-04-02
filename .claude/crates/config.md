@@ -21,3 +21,5 @@ Multi-source configuration with env interpolation, hot-reload, and typed access.
 - Depends on nebula-log (re-exports `info!`, `debug!` etc. in prelude). Used by nebula-api, nebula-runtime, and any crate needing runtime configuration.
 
 <!-- reviewed: 2026-04-01 — Config derive moved to nebula-config-macros, re-exported from crate root -->
+
+<!-- reviewed: 2026-04-02 -->

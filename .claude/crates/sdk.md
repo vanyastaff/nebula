@@ -22,3 +22,5 @@ Re-exports of core crates for plugin/action authors — the single entry point f
 <!-- reviewed: 2026-03-31 — prelude adjusted for credential rotation feature-gate -->
 
 <!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 -->

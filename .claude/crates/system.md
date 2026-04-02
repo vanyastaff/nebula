@@ -21,3 +21,5 @@ Cross-platform system information — CPU, memory, OS, process, network, disk.
 - No nebula deps. Used by nebula-memory (pressure detection), optionally by nebula-log (metrics feature).
 
 <!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 -->

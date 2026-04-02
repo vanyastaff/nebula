@@ -116,3 +116,5 @@ Prefer `ResiliencePipeline` for composing multiple patterns — it handles layer
 
 <!-- reviewed: 2026-04-02 — retry_with_inner promoted to #[doc(hidden)] pub (was pub(crate)) and re-exported from lib.rs so bench files can access it without the Classify bound; criterion dev-dep replaced by codspeed-criterion-compat workspace alias; new bench targets: retry (backoff strategies, loop, jitter), gate (enter contention, is_closed), load_shed (pass-through, reject, atomic predicate), hedge (no-hedge fast path, adaptive overhead cold/warmed, sample-scaling, write-lock contention) -->
 <!-- reviewed: 2026-04-02 — clippy cleanup in pipeline: Step::Retry now Box<RetryConfig<E>> to satisfy large_enum_variant without semantic changes -->
+
+<!-- reviewed: 2026-04-02 -->

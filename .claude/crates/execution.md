@@ -19,3 +19,5 @@ Execution state machine types — persistent state, journals, idempotency, plans
 - Depends on nebula-core (IDs). Used by nebula-engine, nebula-storage, nebula-api.
 
 <!-- reviewed: 2026-03-30 — derive Classify migration -->
+
+<!-- reviewed: 2026-04-02 -->
