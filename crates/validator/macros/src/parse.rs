@@ -663,7 +663,10 @@ fn parse_validator_expr_list(
     };
 
     let array = syn::parse2::<syn::ExprArray>(tokens.clone()).map_err(|e| {
-        diag::error_spanned(tokens, format!("`{key}` expects array syntax, e.g. `{key} = [v1, v2]`: {e}"))
+        diag::error_spanned(
+            tokens,
+            format!("`{key}` expects array syntax, e.g. `{key} = [v1, v2]`: {e}"),
+        )
     })?;
 
     if array.elems.is_empty() {
@@ -686,7 +689,8 @@ fn parse_validator_expr_values(
         attrs::AttrValue::Tokens(tokens) => {
             let parser = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
             if let Ok(list) = parser.parse2(tokens.clone()) {
-                let parsed: Vec<TokenStream2> = list.into_iter().map(|expr| quote!(#expr)).collect();
+                let parsed: Vec<TokenStream2> =
+                    list.into_iter().map(|expr| quote!(#expr)).collect();
                 if !parsed.is_empty() {
                     return Ok(parsed);
                 }
@@ -725,7 +729,13 @@ fn parse_call_style_rules(
         };
 
         match key.to_string().as_str() {
-            "length" => rules.extend(parse_length_call(values, original_ty, value_ty, is_string, is_vec)?),
+            "length" => rules.extend(parse_length_call(
+                values,
+                original_ty,
+                value_ty,
+                is_string,
+                is_vec,
+            )?),
             "range" => rules.extend(parse_range_call(values)?),
             "min" => rules.push(Rule::Min(parse_single_expr_call(values, "min")?)),
             "max" => rules.push(Rule::Max(parse_single_expr_call(values, "max")?)),
@@ -832,17 +842,17 @@ fn parse_length_call(
     let mut max = None;
     let mut equal = None;
 
-    if values.len() == 1 {
-        if let attrs::AttrValue::Lit(syn::Lit::Int(int)) = &values[0] {
-            let exact = int.base10_parse::<usize>().map_err(|_| {
-                diag::error_spanned(int, "`length(...)` requires a positive integer")
-            })?;
-            return Ok(vec![if is_string {
-                Rule::ExactLength(exact)
-            } else {
-                Rule::ExactSize(exact)
-            }]);
-        }
+    if values.len() == 1
+        && let attrs::AttrValue::Lit(syn::Lit::Int(int)) = &values[0]
+    {
+        let exact = int
+            .base10_parse::<usize>()
+            .map_err(|_| diag::error_spanned(int, "`length(...)` requires a positive integer"))?;
+        return Ok(vec![if is_string {
+            Rule::ExactLength(exact)
+        } else {
+            Rule::ExactSize(exact)
+        }]);
     }
 
     for value in values {
@@ -855,9 +865,11 @@ fn parse_length_call(
         };
 
         let parsed = match value {
-            attrs::AttrValue::Lit(syn::Lit::Int(int)) => int.base10_parse::<usize>().map_err(|_| {
-                diag::error_spanned(&int, "`length(...)` bounds must be positive integers")
-            })?,
+            attrs::AttrValue::Lit(syn::Lit::Int(int)) => {
+                int.base10_parse::<usize>().map_err(|_| {
+                    diag::error_spanned(&int, "`length(...)` bounds must be positive integers")
+                })?
+            }
             other => {
                 return Err(diag::error_spanned(
                     &value_token(&other),
@@ -1007,15 +1019,11 @@ fn parse_single_string_call(values: &[attrs::AttrValue], key: &str) -> syn::Resu
     }
 }
 
-fn parse_expr_from_attr_value(value: &attrs::AttrValue, key: &str) -> syn::Result<TokenStream2> {
+fn parse_expr_from_attr_value(value: &attrs::AttrValue, _key: &str) -> syn::Result<TokenStream2> {
     match value {
         attrs::AttrValue::Ident(ident) => Ok(quote!(#ident)),
         attrs::AttrValue::Tokens(tokens) => Ok(tokens.clone()),
         attrs::AttrValue::Lit(lit) => Ok(quote!(#lit)),
-        _ => Err(syn::Error::new(
-            proc_macro2::Span::call_site(),
-            format!("invalid `{key}` expression"),
-        )),
     }
 }
 
@@ -1028,7 +1036,10 @@ fn parse_rule_call_value(
     match item {
         attrs::AttrItem::Flag(flag) => parse_call_style_rules(
             &attrs::AttrArgs {
-                items: vec![attrs::AttrItem::List { key: flag, values: vec![] }],
+                items: vec![attrs::AttrItem::List {
+                    key: flag,
+                    values: vec![],
+                }],
             },
             original_ty,
             value_ty,
@@ -1063,11 +1074,16 @@ fn parse_rule_validator_expr(
     let item = parse_list_item_to_attr_item(value)?;
     match item {
         attrs::AttrItem::Flag(flag) => dsl_item_to_validator_expr(
-            &attrs::AttrItem::List { key: flag, values: vec![] },
+            &attrs::AttrItem::List {
+                key: flag,
+                values: vec![],
+            },
             original_ty,
             value_ty,
         ),
-        item @ attrs::AttrItem::List { .. } => dsl_item_to_validator_expr(&item, original_ty, value_ty),
+        item @ attrs::AttrItem::List { .. } => {
+            dsl_item_to_validator_expr(&item, original_ty, value_ty)
+        }
         attrs::AttrItem::KeyValue { .. } => Err(syn::Error::new(
             proc_macro2::Span::call_site(),
             "`or(...)` only accepts rule calls like `length(6)` or `max(10)`",
@@ -1120,15 +1136,27 @@ fn dsl_item_to_validator_expr(
         }
         "regex" => {
             let arg = parse_single_string_call(values, "regex")?;
-            Ok(quote!(::nebula_validator::validators::matches_regex(#arg).expect("regex validated by derive parser")))
+            Ok(
+                quote!(::nebula_validator::validators::matches_regex(#arg).expect("regex validated by derive parser")),
+            )
         }
         "email" if values.is_empty() => Ok(quote!(::nebula_validator::validators::email())),
         "url" if values.is_empty() => Ok(quote!(::nebula_validator::validators::url())),
-        "not_empty" if values.is_empty() && is_string => Ok(quote!(::nebula_validator::validators::not_empty())),
-        "not_empty" if values.is_empty() && is_vec => Ok(quote!(::nebula_validator::validators::not_empty_collection::<#element_ty>())),
-        "is_true" if values.is_empty() && is_bool => Ok(quote!(::nebula_validator::validators::is_true())),
-        "is_false" if values.is_empty() && is_bool => Ok(quote!(::nebula_validator::validators::is_false())),
-        "nested" if values.is_empty() => Ok(quote!(::nebula_validator::combinators::nested_validator::<#value_ty>())),
+        "not_empty" if values.is_empty() && is_string => {
+            Ok(quote!(::nebula_validator::validators::not_empty()))
+        }
+        "not_empty" if values.is_empty() && is_vec => {
+            Ok(quote!(::nebula_validator::validators::not_empty_collection::<#element_ty>()))
+        }
+        "is_true" if values.is_empty() && is_bool => {
+            Ok(quote!(::nebula_validator::validators::is_true()))
+        }
+        "is_false" if values.is_empty() && is_bool => {
+            Ok(quote!(::nebula_validator::validators::is_false()))
+        }
+        "nested" if values.is_empty() => {
+            Ok(quote!(::nebula_validator::combinators::nested_validator::<#value_ty>()))
+        }
         "using" => {
             let expr = parse_single_expr_call(values, "using")?;
             Ok(quote!((#expr)))
@@ -1620,7 +1648,10 @@ mod tests {
         };
 
         let ir = parse(&input).expect("length call must parse");
-        assert!(matches!(ir.fields[0].rules.as_slice(), [Rule::ExactLength(6)]));
+        assert!(matches!(
+            ir.fields[0].rules.as_slice(),
+            [Rule::ExactLength(6)]
+        ));
     }
 
     #[test]
@@ -1667,7 +1698,10 @@ mod tests {
         };
 
         let err = parse(&input).expect_err("required() on String must fail");
-        assert!(err.to_string().contains("`required()` requires `Option<T>` values"));
+        assert!(
+            err.to_string()
+                .contains("`required()` requires `Option<T>` values")
+        );
     }
 
     #[test]
@@ -1680,6 +1714,9 @@ mod tests {
         };
 
         let err = parse(&input).expect_err("email() on u32 must fail");
-        assert!(err.to_string().contains("`email()` requires `String` or `Option<String>` fields"));
+        assert!(
+            err.to_string()
+                .contains("`email()` requires `String` or `Option<String>` fields")
+        );
     }
 }
