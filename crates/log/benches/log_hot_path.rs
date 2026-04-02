@@ -8,8 +8,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use nebula_log::observability::{
     EventFields, ExecutionContext, HookPolicy, LoggerResource, NodeContext, ObservabilityEvent,
     ObservabilityFieldValue, ObservabilityFieldVisitor, ObservabilityHook, emit_event,
-    event_data_json, get_current_logger_resource, register_hook, set_hook_policy,
-    shutdown_hooks,
+    event_data_json, get_current_logger_resource, register_hook, set_hook_policy, shutdown_hooks,
 };
 use std::hint::black_box;
 use std::sync::Arc;
@@ -164,11 +163,15 @@ fn bench_emit_dispatch(c: &mut Criterion) {
     for &hook_count in &EMIT_HOOK_COUNTS {
         group.throughput(Throughput::Elements(1));
         install_hooks(HookPolicy::Inline, hook_count, HookWorkload::Noop);
-        group.bench_with_input(BenchmarkId::new("inline_noop", hook_count), &hook_count, |b, _| {
-            b.iter(|| {
-                emit_event(black_box(event_ref));
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("inline_noop", hook_count),
+            &hook_count,
+            |b, _| {
+                b.iter(|| {
+                    emit_event(black_box(event_ref));
+                });
+            },
+        );
         shutdown_hooks();
     }
 
@@ -224,23 +227,35 @@ fn bench_payload_projection(c: &mut Criterion) {
         let event_ref: &dyn ObservabilityEvent = &event;
 
         group.throughput(throughput_for(field_count));
-        group.bench_with_input(BenchmarkId::new("display", field_count), &field_count, |b, _| {
-            b.iter(|| {
-                black_box(EventFields::new(black_box(event_ref)).to_string());
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("display", field_count),
+            &field_count,
+            |b, _| {
+                b.iter(|| {
+                    black_box(EventFields::new(black_box(event_ref)).to_string());
+                });
+            },
+        );
 
         group.throughput(throughput_for(field_count));
-        group.bench_with_input(BenchmarkId::new("json", field_count), &field_count, |b, _| {
-            b.iter(|| {
-                black_box(event_data_json(black_box(event_ref)));
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("json", field_count),
+            &field_count,
+            |b, _| {
+                b.iter(|| {
+                    black_box(event_data_json(black_box(event_ref)));
+                });
+            },
+        );
     }
 
     group.finish();
 }
 
+#[expect(
+    clippy::excessive_nesting,
+    reason = "bench uses nested context scopes and Criterion closure layers"
+)]
 fn bench_logger_resource_lookup(c: &mut Criterion) {
     let mut group = c.benchmark_group("log/observability/logger_resource_lookup");
     group.warm_up_time(WARM_UP_TIME);

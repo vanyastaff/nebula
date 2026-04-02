@@ -1,6 +1,6 @@
 //! Retry logic with exponential backoff — delegates to [`nebula_resilience`].
 //!
-//! [`RetryPolicy`] is a config facade that builds
+//! [`RetryPolicy`](crate::retry::RetryPolicy) is a config facade that builds
 //! [`nebula_resilience::RetryConfig`] internally.
 
 use serde::{Deserialize, Serialize};

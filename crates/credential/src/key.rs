@@ -7,14 +7,14 @@ use std::fmt;
 
 /// Stable identifier for a credential type (e.g., `"github_oauth2"`).
 ///
-/// Wraps `&'static str`. Use the [`credential_key!`] macro for construction.
+/// Wraps `&'static str`. Use the `credential_key!` macro for construction.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CredentialKey(&'static str);
 
 impl CredentialKey {
     /// Creates a new credential key.
     ///
-    /// Prefer [`credential_key!`] for compile-time construction.
+    /// Prefer `credential_key!` for compile-time construction.
     pub const fn new(key: &'static str) -> Self {
         Self(key)
     }

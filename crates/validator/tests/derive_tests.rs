@@ -271,7 +271,9 @@ fn canonical_string_calls_reject_invalid_values() {
     let result = v.validate_fields();
     assert!(result.is_err());
     let codes = error_codes(&result);
-    assert!(codes.contains(&"email") || codes.contains(&"prefix") || codes.contains(&"starts_with"));
+    assert!(
+        codes.contains(&"email") || codes.contains(&"prefix") || codes.contains(&"starts_with")
+    );
 }
 
 #[test]
@@ -662,7 +664,9 @@ fn any_sugar_accepts_when_any_passes() {
 
 #[test]
 fn any_sugar_rejects_when_all_fail() {
-    let v = AnySugarCheck { code: "abcd".into() };
+    let v = AnySugarCheck {
+        code: "abcd".into(),
+    };
     let result = v.validate_fields();
     assert!(result.is_err());
     assert!(error_codes(&result).contains(&"any_failed"));
@@ -851,7 +855,9 @@ fn canonical_or_accepts_when_one_branch_matches() {
 
 #[test]
 fn canonical_or_rejects_when_all_branches_fail() {
-    let v = CanonicalOrCheck { code: "abcd".into() };
+    let v = CanonicalOrCheck {
+        code: "abcd".into(),
+    };
     let result = v.validate_fields();
     assert!(result.is_err());
     assert!(error_codes(&result).contains(&"any_failed"));

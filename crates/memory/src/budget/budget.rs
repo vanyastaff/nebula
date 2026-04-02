@@ -200,10 +200,7 @@ impl MemoryBudget {
     #[allow(clippy::needless_pass_by_value)] // Arc is cheap to clone, taking by value is idiomatic
     pub fn with_parent(config: BudgetConfig, parent: Arc<MemoryBudget>) -> Arc<Self> {
         let history = if config.tracking_window.is_some() && config.collect_stats {
-            Some(UsageHistory::new(
-                100,
-                Duration::from_millis(100),
-            ))
+            Some(UsageHistory::new(100, Duration::from_millis(100)))
         } else {
             None
         };

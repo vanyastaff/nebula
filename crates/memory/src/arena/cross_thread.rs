@@ -211,7 +211,7 @@ impl<T: Clone> Clone for CrossThreadArenaRef<T> {
     /// # Panics
     ///
     /// Panics if the arena is exhausted and cannot allocate space for the clone.
-    /// Use [`CrossThreadArena::alloc`] directly for fallible allocation.
+    /// Use direct allocation for fallible allocation.
     fn clone(&self) -> Self {
         let value = self.with(std::clone::Clone::clone);
         let guard = self.arena.lock();

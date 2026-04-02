@@ -82,26 +82,22 @@ fn bench_repeated_replacement_then_snapshot(c: &mut Criterion) {
     group.sample_size(50);
 
     for &count in &[128, 1024, 4096] {
-        group.bench_with_input(
-            BenchmarkId::new("replacements", count),
-            &count,
-            |b, &n| {
-                b.iter_batched(
-                    || MetricsExtension::new_noop(),
-                    |ext| {
-                        // Replace same metric name n times
-                        for i in 0..n {
-                            let metric = make_metric("mem.allocation.total")
-                                .with_label("iteration", format!("{:05}", i));
-                            ext.register_metric(metric).expect("register");
-                        }
-                        let map = ext.metrics_snapshot();
-                        black_box(map)
-                    },
-                    BatchSize::SmallInput,
-                );
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("replacements", count), &count, |b, &n| {
+            b.iter_batched(
+                || MetricsExtension::new_noop(),
+                |ext| {
+                    // Replace same metric name n times
+                    for i in 0..n {
+                        let metric = make_metric("mem.allocation.total")
+                            .with_label("iteration", format!("{:05}", i));
+                        ext.register_metric(metric).expect("register");
+                    }
+                    let map = ext.metrics_snapshot();
+                    black_box(map)
+                },
+                BatchSize::SmallInput,
+            );
+        });
     }
 
     group.finish();

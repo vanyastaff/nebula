@@ -80,5 +80,10 @@ fn bench_atomic_predicate(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_pass_through, bench_reject, bench_atomic_predicate);
+criterion_group!(
+    benches,
+    bench_pass_through,
+    bench_reject,
+    bench_atomic_predicate
+);
 criterion_main!(benches);

@@ -20,7 +20,7 @@
 //! | [`Manager`] | Central registry with acquire dispatch and shutdown |
 //! | [`Registry`] | Type-erased storage for managed resources |
 //! | [`ResourceEvent`] | Lifecycle events for observability |
-//! | [`ResourceMetrics`](metrics::ResourceMetrics) | Atomic operation counters |
+//! | [`ResourceMetrics`] | Atomic operation counters |
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]

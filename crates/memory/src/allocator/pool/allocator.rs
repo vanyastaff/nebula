@@ -431,7 +431,7 @@ impl PoolAllocator {
         let offset = addr - self.start_addr;
         let aligned = match self.block_pow2_mask {
             Some(mask) => offset & mask == 0,
-            None => offset % self.block_size == 0,
+            None => offset.is_multiple_of(self.block_size),
         };
         if !aligned {
             return false; // Not aligned to block boundary

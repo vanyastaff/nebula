@@ -1,13 +1,12 @@
 //! OAuth2 credential -- interactive, refreshable, multi-grant-type.
 //!
-//! Supports three OAuth2 grant types via the unified [`Credential`] trait:
+//! Supports three OAuth2 grant types via the unified Credential trait:
 //! - **Authorization Code** -- user browser redirect (interactive)
 //! - **Client Credentials** -- server-to-server, resolves in one step
 //! - **Device Code** -- CLI/TV apps, polling flow (interactive)
 //!
-//! State/scheme separation: [`OAuth2State`] is stored (contains refresh
-//! internals), while [`OAuth2Token`](crate::scheme::OAuth2Token) is the
-//! consumer-facing auth material produced by `project()`.
+//! State/scheme separation: OAuth2State is stored (contains refresh
+//! internals), while OAuth2Token is the consumer-facing auth material produced by `project()`.
 
 use std::time::Duration;
 use std::{fmt, fmt::Formatter};

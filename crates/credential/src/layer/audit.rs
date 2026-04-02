@@ -1,12 +1,12 @@
 //! Audit logging layer for credential operations.
 //!
 //! Logs access patterns (who accessed what, when, result) without
-//! ever seeing plaintext credential data. Sits above [`EncryptionLayer`]
+//! ever seeing plaintext credential data. Sits above EncryptionLayer
 //! in the layer stack.
 //!
 //! # Design
 //!
-//! `AuditLayer` wraps any [`CredentialStore`] and delegates every operation
+//! `AuditLayer` wraps any CredentialStore and delegates every operation
 //! unchanged, emitting an [`AuditEvent`] to the pluggable [`AuditSink`]
 //! after each call completes. Only metadata is logged — credential data
 //! never passes through the sink.

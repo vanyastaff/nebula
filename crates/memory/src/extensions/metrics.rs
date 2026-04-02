@@ -6,7 +6,12 @@
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 use parking_lot::RwLock;
-use std::{collections::{BTreeMap, HashMap}, string::String, sync::Arc, vec::Vec};
+use std::{
+    collections::{BTreeMap, HashMap},
+    string::String,
+    sync::Arc,
+    vec::Vec,
+};
 
 use crate::error::MemoryResult;
 use crate::extensions::MemoryExtension;
@@ -540,14 +545,14 @@ impl MetricsExtension {
     }
 
     /// Low-allocation iterator over metrics (borrows instead of cloning).
-    /// Returns tuples of (name_ref, MetricRef) without allocating full MemoryMetric clones.
+    /// Returns `(name_ref, metric_ref)` tuples without allocating full `MemoryMetric` clones.
     ///
     /// # Iteration order
-    /// Unspecified. Use [`metrics_snapshot`] if sorted order is required.
+    /// Unspecified. Use `metrics_snapshot()` if sorted order is required.
     ///
     /// # Allocation Cost
     /// Zero allocations beyond the lock acquisition.
-    /// Use this instead of `metrics_snapshot()` when you don't need owned MemoryMetric values.
+    /// Use this instead of `metrics_snapshot()` when you don't need owned `MemoryMetric` values.
     ///
     /// # Example
     /// ```ignore
@@ -797,12 +802,12 @@ mod tests {
             extension
                 .register_metric(
                     MemoryMetric::new(
-                        format!("metric_{}", i),
+                        format!("metric_{i}"),
                         "test metric",
                         MetricType::Counter,
                         "ops",
                     )
-                    .with_label("id", format!("{}", i)),
+                    .with_label("id", i.to_string()),
                 )
                 .expect("register metric");
         }

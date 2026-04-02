@@ -19,11 +19,9 @@ use nebula_resilience::retry::{BackoffConfig, RetryConfig};
 /// Resilience configuration applied when acquiring a resource.
 ///
 /// Combines optional timeout and retry settings.
-/// Use one of the preset constructors ([`standard`](Self::standard),
-/// [`fast`](Self::fast), [`slow`](Self::slow)) or build manually.
+/// Use one of the preset constructors or build manually.
 ///
-/// Internally converts to [`nebula_resilience::RetryConfig`] via
-/// [`to_retry_config`](Self::to_retry_config).
+/// Internally converts to [`nebula_resilience::RetryConfig`].
 #[derive(Debug, Clone)]
 pub struct AcquireResilience {
     /// Overall acquire timeout (wall-clock, including retries).

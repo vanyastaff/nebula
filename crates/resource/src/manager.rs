@@ -175,7 +175,7 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// Returns an error if [`ResourceConfig::validate()`] fails on the
+    /// Returns an error if config validation fails on the
     /// provided config.
     pub fn register<R: Resource>(
         &self,
@@ -224,8 +224,7 @@ impl Manager {
     /// Shorthand for [`register`](Self::register) with
     /// `scope = Global`, no resilience, no recovery gate.
     ///
-    /// The pool fingerprint is initialized from
-    /// [`ResourceConfig::fingerprint()`] on the provided config.
+    /// The pool fingerprint is initialized from the provided config.
     ///
     /// # Errors
     ///

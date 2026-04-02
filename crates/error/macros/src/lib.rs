@@ -1,6 +1,6 @@
 //! # nebula-error-macros
 //!
-//! Proc-macros for the [`nebula-error`] crate.
+//! Proc-macros for the nebula-error crate.
 //!
 //! Provides the [`Classify`] derive macro that auto-generates the
 //! `nebula_error::Classify` trait implementation from `#[classify(...)]`

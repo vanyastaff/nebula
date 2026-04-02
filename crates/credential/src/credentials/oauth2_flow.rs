@@ -1,8 +1,7 @@
 //! OAuth2 HTTP helpers for token exchange, device code polling, and refresh.
 //!
 //! Extracted from the v1 `FlowProtocol` implementation. All functions use
-//! v2 error types ([`CredentialError::Provider`] / [`CredentialError::InvalidInput`])
-//! and operate on the v2 [`OAuth2State`](super::oauth2::OAuth2State).
+//! v2 error types and operate on the v2 OAuth2State.
 
 use std::time::Duration;
 

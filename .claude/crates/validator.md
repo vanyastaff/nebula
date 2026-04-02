@@ -42,3 +42,4 @@ Composable, type-safe validation framework — two paradigms: programmatic combi
 - No nebula deps. Used by nebula-parameter, nebula-macros, nebula-action, nebula-parameter.
 
 <!-- reviewed: 2026-04-01 — Added strict canonical min/max/length/range/inner derive DSL, using/all/any composition paths, standard each(any/all(...)) syntax, try_size_range + strict required enforcement -->
+<!-- reviewed: 2026-04-02 — clippy cleanup in derive parser: removed unreachable match arm and collapsed length(...) single-arg parsing if-chain -->

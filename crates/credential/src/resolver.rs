@@ -1,11 +1,10 @@
 //! Runtime credential resolution.
 //!
 //! Loads stored credentials, deserializes state, and projects to
-//! [`AuthScheme`](nebula_core::AuthScheme) via the
-//! [`Credential::project()`](crate::credential::Credential::project) pipeline.
+//! AuthScheme via the credential projection pipeline.
 //!
-//! For refreshable credentials, use [`CredentialResolver::resolve_with_refresh()`]
-//! which coordinates refresh via [`RefreshCoordinator`] to prevent
+//! For refreshable credentials, use resolve_with_refresh()
+//! which coordinates refresh via RefreshCoordinator to prevent
 //! thundering herd.
 
 use std::sync::Arc;
@@ -21,15 +20,15 @@ use crate::resolve::RefreshOutcome;
 use crate::state::CredentialState;
 use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
-/// Resolves credentials from storage into typed [`CredentialHandle`]s.
+/// Resolves credentials from storage into typed CredentialHandles.
 ///
-/// The resolver loads a [`StoredCredential`](crate::store::StoredCredential),
+/// The resolver loads a StoredCredential,
 /// verifies the `state_kind` matches the expected credential type,
-/// deserializes the state, and projects it to the [`AuthScheme`](nebula_core::AuthScheme).
+/// deserializes the state, and projects it to the AuthScheme.
 ///
-/// For refreshable credentials, [`resolve_with_refresh()`](Self::resolve_with_refresh)
+/// For refreshable credentials, resolve_with_refresh()
 /// coordinates concurrent refresh attempts through the embedded
-/// [`RefreshCoordinator`].
+/// RefreshCoordinator.
 ///
 /// # Examples
 ///

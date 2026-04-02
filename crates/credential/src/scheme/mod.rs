@@ -1,6 +1,6 @@
 //! Built-in authentication scheme types.
 //!
-//! Each type implements [`AuthScheme`] and represents consumer-facing
+//! Each type implements [`AuthScheme`](nebula_core::AuthScheme) and represents consumer-facing
 //! auth material that resources receive. All secret fields use
 //! [`SecretString`] and all `Debug` impls redact secrets.
 

@@ -45,11 +45,7 @@ fn emit_to_hooks_inline(hooks: &HookList, event: &dyn ObservabilityEvent) {
 /// Batch timeout measurement instead of per-hook, reducing Instant::now() calls.
 /// If batch exceeds timeout, remaining hooks are skipped.
 #[inline]
-fn emit_to_hooks_bounded(
-    hooks: &HookList,
-    event: &dyn ObservabilityEvent,
-    timeout_ms: u64,
-) {
+fn emit_to_hooks_bounded(hooks: &HookList, event: &dyn ObservabilityEvent, timeout_ms: u64) {
     let started = Instant::now();
 
     for hook in hooks.iter() {
@@ -266,7 +262,10 @@ pub fn emit_event(event: &dyn ObservabilityEvent) {
     // Inline dispatch to reduce function call overhead in hot path
     match policy {
         HookPolicy::Inline => emit_to_hooks_inline(&hooks, event),
-        HookPolicy::Bounded { timeout_ms, queue_capacity: _ } => {
+        HookPolicy::Bounded {
+            timeout_ms,
+            queue_capacity: _,
+        } => {
             emit_to_hooks_bounded(&hooks, event, timeout_ms);
         }
     }

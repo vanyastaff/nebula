@@ -43,8 +43,7 @@ fn bench_single_allocation(c: &mut Criterion) {
 
     // Stack: allocate → LIFO deallocate
     group.bench_function("stack_64b", |b| {
-        let allocator =
-            StackAllocator::with_config(1024 * 1024, StackConfig::default()).unwrap();
+        let allocator = StackAllocator::with_config(1024 * 1024, StackConfig::default()).unwrap();
         let layout = Layout::from_size_align(64, 8).unwrap();
         b.iter(|| unsafe {
             let ptr = allocator.allocate(layout).unwrap();
@@ -90,8 +89,7 @@ fn bench_batch_allocations(c: &mut Criterion) {
 
     // Pool: allocate 100, then return all — tests free-list recycling
     group.bench_function("pool_100x64b", |b| {
-        let allocator =
-            PoolAllocator::with_config(64, 8, 1024, PoolConfig::default()).unwrap();
+        let allocator = PoolAllocator::with_config(64, 8, 1024, PoolConfig::default()).unwrap();
         let layout = Layout::from_size_align(64, 8).unwrap();
         b.iter(|| unsafe {
             let mut ptrs = Vec::with_capacity(100);
@@ -106,8 +104,7 @@ fn bench_batch_allocations(c: &mut Criterion) {
 
     // Stack: allocate 100 (LIFO), then deallocate in reverse
     group.bench_function("stack_100x64b", |b| {
-        let allocator =
-            StackAllocator::with_config(1024 * 1024, StackConfig::default()).unwrap();
+        let allocator = StackAllocator::with_config(1024 * 1024, StackConfig::default()).unwrap();
         let layout = Layout::from_size_align(64, 8).unwrap();
         b.iter(|| unsafe {
             let mut ptrs = Vec::with_capacity(100);
@@ -188,8 +185,7 @@ fn bench_memory_reuse(c: &mut Criterion) {
 
     // Pool should reuse the same block without hitting the allocator internals
     group.bench_function("pool_reuse_128b", |b| {
-        let allocator =
-            PoolAllocator::with_config(128, 8, 256, PoolConfig::default()).unwrap();
+        let allocator = PoolAllocator::with_config(128, 8, 256, PoolConfig::default()).unwrap();
         let layout = Layout::from_size_align(128, 8).unwrap();
         b.iter(|| unsafe {
             let ptr1 = allocator.allocate(layout).unwrap();

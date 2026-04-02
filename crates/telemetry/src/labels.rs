@@ -216,9 +216,9 @@ impl Default for LabelInterner {
 
 // ── A composite registry key: metric name + sorted labels ────────────────────
 
-/// Composite key used internally by [`MetricsRegistry`] for labeled metrics.
+/// Composite key used internally for labeled metrics.
 ///
-/// Combines the interned metric name with a [`LabelSet`] for efficient
+/// Combines the interned metric name with a LabelSet for efficient
 /// per-series lookup.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MetricKey {

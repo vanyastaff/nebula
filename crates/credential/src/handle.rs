@@ -1,17 +1,16 @@
 //! Typed credential handle returned by the resolver.
 //!
-//! Wraps a resolved [`AuthScheme`] in an [`ArcSwap`] so the
-//! [`RefreshCoordinator`](crate::refresh::RefreshCoordinator) can
-//! hot-swap refreshed auth material without creating a new handle.
+//! Wraps a resolved AuthScheme in an ArcSwap so the
+//! RefreshCoordinator can hot-swap refreshed auth material without creating a new handle.
 
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use nebula_core::AuthScheme;
 
-/// Handle to a resolved credential with a specific [`AuthScheme`].
+/// Handle to a resolved credential with a specific AuthScheme.
 ///
-/// Uses [`ArcSwap`] internally so the [`RefreshCoordinator`] can
+/// Uses ArcSwap internally so the RefreshCoordinator can
 /// hot-swap refreshed auth material. Callers use [`snapshot()`](Self::snapshot)
 /// to get an immutable `Arc<S>` that remains valid even during concurrent refresh.
 ///

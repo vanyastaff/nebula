@@ -66,3 +66,4 @@ NotFound, Validation, Authentication, Authorization, Conflict, RateLimit, Timeou
 - 14 crates use `#[derive(Classify)]`. Remaining manual impls: core (cascade risk), credential (active dev), action/engine (dynamic delegation), resilience (generic `CallError<E>`)
 
 <!-- reviewed: 2026-03-30 (PartialEq<&str>, Classify re-export rename) -->
+<!-- reviewed: 2026-04-02 — pre-existing modifications, no architectural changes this session -->

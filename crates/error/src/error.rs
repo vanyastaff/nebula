@@ -95,7 +95,7 @@ impl<E: Classify> NebulaError<E> {
 
     /// Overrides the display message.
     ///
-    /// When set, [`Display`] uses this message instead of the inner
+    /// When set, the Display impl uses this message instead of the inner
     /// error's display.
     #[must_use]
     pub fn with_message(mut self, msg: impl Into<Cow<'static, str>>) -> Self {

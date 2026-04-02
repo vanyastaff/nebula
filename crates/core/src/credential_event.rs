@@ -1,6 +1,6 @@
 //! Credential lifecycle events for cross-crate signaling.
 //!
-//! Emitted via [`EventBus<CredentialEvent>`](nebula_eventbus::EventBus) by the
+//! Emitted via `EventBus<CredentialEvent>` by the
 //! credential resolver. Consumed by `nebula-resource` for pool invalidation
 //! and by monitoring tools.
 //!

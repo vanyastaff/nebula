@@ -23,7 +23,6 @@ The resource crate manages lifecycle, pooling, and health of external resources 
 | Phase 3: Scale and Performance | ✅ Complete | Criterion benchmarks, backpressure policies, metrics hygiene |
 | Phase 4: Ecosystem and DX | 🔄 In Progress | Adapter guides, typed key migration, cookbook; RSC-T020 pending |
 | Phase 5: Pool Safety Hardening | ✅ Complete | `Poison<T>` guard, Gate/GateGuard, CounterGuard, dedicated CB metrics counters |
-| Phase 6: Adapter-Grade Safety & Instance-Aware Lifecycle | ✅ Complete | `is_broken`, `prepare`, `Guard::detach`/`leak`, `PoolSharingMode`, `warm_up`, `acquire_shared`, 4 new `HookEvent` variants, `InstanceMetadata`, dynamic dep enricher |
 
 ## Phase Details
 
@@ -99,30 +98,6 @@ The resource crate manages lifecycle, pooling, and health of external resources 
 
 **Exit Criteria**:
 - All six `gate` unit tests + doctest pass
-
-### Phase 6: Adapter-Grade Safety and Instance-Aware Lifecycle
-
-**Goal**: Extend the public API with safety hooks, instance-aware lifecycle methods,
-controlled guard escape hatches, sharing semantics, and a dynamic Manager enricher.
-
-**Deliverables**:
-- `Resource::is_broken` synchronous fast-path check — wired as first gate on the release path (before recycle or taint handling)
-- `Resource::prepare` per-acquire async hook for token refresh, lease renewal, and pre-flight checks
-- `Guard::detach()` — transfers ownership, fires `on_detach` (permit returned), skips recycle
-- `Guard::leak()` — transfers ownership without any callback; permit forfeited
-- `PoolSharingMode { Exclusive, Shared }` enum; `PoolConfig::sharing_mode` field
-- `PoolConfig::warm_up` — background pre-fill on pool construction
-- `Pool::acquire_shared` (where `R::Instance: Clone`) — shared clone without consuming a permit
-- `HookEvent` extended: `PostCreate`, `PreAcquire`, `PostRecycle`, `PostRelease` (8 variants total)
-- `InstanceMetadata { created_at, idle_since, acquire_count }` threaded through acquire/return hotpath
-- `is_reusable_with_meta` / `recycle_with_meta` called throughout acquire and release paths
-- `Pool::retain(predicate)` — conditional idle eviction
-- `Pool::set_max_size(n)` — live pool resizing
-- Dynamic `context_enricher` in `Manager` — dep handles resolved from live pool snapshot at acquire time
-
-**Exit Criteria**:
-- 355 tests pass; `cargo check -p nebula-resource` clean (0 warnings)
-- All new API surface documented in `crates/resource/docs/`
 - `cargo check --workspace --all-targets` clean
 - Hardening checklist rows in ARCHITECTURE.md show Implemented
 

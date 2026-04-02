@@ -93,12 +93,16 @@ impl AtomicCacheStats {
         self.deletions.fetch_add(1, Ordering::Relaxed);
         // Use saturating subtraction to match `StatsCollector::record_deletion` and
         // prevent wrapping to `u64::MAX` if called more times than `record_insertion`.
-        let _ = self.entry_count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
-            Some(x.saturating_sub(1))
-        });
-        let _ = self.size_bytes.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
-            Some(x.saturating_sub(size_bytes as u64))
-        });
+        let _ = self
+            .entry_count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
+                Some(x.saturating_sub(1))
+            });
+        let _ = self
+            .size_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
+                Some(x.saturating_sub(size_bytes as u64))
+            });
     }
 
     /// Get current hit count

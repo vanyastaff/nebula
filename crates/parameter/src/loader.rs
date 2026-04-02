@@ -5,7 +5,7 @@
 //! calls the loader to populate options, filter fields, or field specs at runtime.
 //!
 //! Loaders are **not serialized** — they live only on the in-process
-//! [`crate::field::Field`] value returned by `action.metadata()`.
+//! [`Parameter`](crate::parameter::Parameter) value returned by `action.metadata()`.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -108,13 +108,13 @@ pub type LoaderCtx = LoaderContext;
 
 // ── OptionLoader ─────────────────────────────────────────────────────────────
 
-/// Async inline loader that resolves [`SelectOption`]s for a
-/// [`crate::field::Field::Select`] or [`FieldSpec::Select`] field with a
-/// [`crate::option::OptionSource::Dynamic`] source.
+/// Async inline loader that resolves SelectOptions for a
+/// Select field or Select field with a
+/// Dynamic source.
 ///
-/// Returns a [`LoaderResult`] supporting cursor-based pagination.
+/// Returns a LoaderResult supporting cursor-based pagination.
 ///
-/// Two [`OptionLoader`]s always compare equal (`PartialEq` returns `true`),
+/// Two OptionLoaders always compare equal (`PartialEq` returns `true`),
 /// so adding a loader does not affect schema equality checks.
 pub struct OptionLoader(
     Arc<dyn Fn(LoaderContext) -> LoaderFuture<LoaderResult<SelectOption>> + Send + Sync>,
@@ -165,12 +165,12 @@ impl std::fmt::Debug for OptionLoader {
 // ── RecordLoader ─────────────────────────────────────────────────────────────
 
 /// Async inline loader that resolves field specs for a
-/// [`crate::field::Field::DynamicFields`] field.
+/// DynamicFields field.
 ///
-/// Returns a [`LoaderResult`] of JSON values (placeholder; will use typed
-/// `Parameter` once the migration completes).
+/// Returns a LoaderResult of JSON values (placeholder; will use typed
+/// Parameter once the migration completes).
 ///
-/// Like [`OptionLoader`], two [`RecordLoader`]s always compare equal.
+/// Like OptionLoader, two RecordLoaders always compare equal.
 pub struct RecordLoader(
     Arc<dyn Fn(LoaderContext) -> LoaderFuture<LoaderResult<serde_json::Value>> + Send + Sync>,
 );

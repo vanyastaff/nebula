@@ -1,5 +1,5 @@
-//! Core parameter definition — the v3 replacement for [`crate::field::Field`] +
-//! [`crate::metadata::FieldMetadata`].
+//! Core parameter definition — the v3 replacement for the v2 `Field` +
+//! `FieldMetadata` types.
 //!
 //! A [`Parameter`] combines shared metadata (label, description, conditions,
 //! validation rules, transformers) with a type-specific [`ParameterType`] variant.

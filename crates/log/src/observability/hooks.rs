@@ -112,7 +112,7 @@ pub fn event_data_json(event: &dyn ObservabilityEvent) -> Option<serde_json::Val
     }
 
     let mut collector = JsonCollector {
-        fields: serde_json::Map::with_capacity(12),  // Pre-allocate for typical event
+        fields: serde_json::Map::with_capacity(12), // Pre-allocate for typical event
     };
     event.visit_fields(&mut collector);
     if collector.fields.is_empty() {

@@ -3,7 +3,9 @@
 //! Focused on register/update/remove paths for MetricsExtension.
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use nebula_memory::extensions::metrics::{MemoryMetric, MetricType, MetricsExtension, MetricsReporter};
+use nebula_memory::extensions::metrics::{
+    MemoryMetric, MetricType, MetricsExtension, MetricsReporter,
+};
 use std::{collections::BTreeMap, hint::black_box, sync::Arc};
 
 struct DynNoopReporter;
@@ -115,8 +117,8 @@ fn bench_register_replace(c: &mut Criterion) {
                 || MetricsExtension::new_noop(),
                 |ext| {
                     for i in 0..n {
-                        let metric = make_metric("mem.alloc.total")
-                            .with_label("iteration", i.to_string());
+                        let metric =
+                            make_metric("mem.alloc.total").with_label("iteration", i.to_string());
                         ext.register_metric(metric).expect("replace metric");
                     }
                     black_box(ext.metrics_snapshot());
@@ -139,11 +141,10 @@ fn bench_unregister_cycle(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let ext = MetricsExtension::new_noop();
-                    let names = (0..n)
-                        .map(|i| format!("mem.alloc.{i}"))
-                        .collect::<Vec<_>>();
+                    let names = (0..n).map(|i| format!("mem.alloc.{i}")).collect::<Vec<_>>();
                     for name in &names {
-                        ext.register_metric(make_metric(name)).expect("register metric");
+                        ext.register_metric(make_metric(name))
+                            .expect("register metric");
                     }
                     (ext, names)
                 },

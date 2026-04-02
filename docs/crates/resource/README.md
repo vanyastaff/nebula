@@ -42,19 +42,9 @@ Lifecycle and pooling runtime for external and internal resources used by workfl
 
 ## Document Map
 
-- planning and migration docs (this directory):
-  - [ROADMAP.md](./ROADMAP.md)
-  - [MIGRATION.md](./MIGRATION.md)
-  - [PLAN.md](./PLAN.md)
-  - [TASKS.md](./TASKS.md)
-  - [VISION.md](./VISION.md)
-- implementation and API docs (in crate):
-  - [README.md](../../../crates/resource/docs/README.md) — overview, concepts, feature matrix
-  - [architecture.md](../../../crates/resource/docs/architecture.md) — module map, data flow, design invariants
-  - [api-reference.md](../../../crates/resource/docs/api-reference.md) — complete typed API reference
-  - [pooling.md](../../../crates/resource/docs/pooling.md) — pool config, strategies, backpressure, auto-scaling
-  - [health-and-quarantine.md](../../../crates/resource/docs/health-and-quarantine.md) — health checks, quarantine, recovery
-  - [events-and-hooks.md](../../../crates/resource/docs/events-and-hooks.md) — EventBus catalog, subscriptions, hook system
-  - [adapters.md](../../../crates/resource/docs/adapters.md) — writing Resource adapter / driver crates
+- [ARCHITECTURE.md](./ARCHITECTURE.md)
+- [API.md](./API.md)
+- [ROADMAP.md](./ROADMAP.md)
+- [MIGRATION.md](./MIGRATION.md)
 
 

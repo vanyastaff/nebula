@@ -171,13 +171,13 @@ impl<S: CredentialStore> CredentialStore for ScopeLayer<S> {
         };
         let mut owned = Vec::with_capacity(ids.len());
         for id in &ids {
-            if let Ok(cred) = self.inner.get(id).await {
-                if matches!(
+            if let Ok(cred) = self.inner.get(id).await
+                && matches!(
                     cred.metadata.get(OWNER_KEY),
                     Some(Value::String(owner)) if owner == caller_owner
-                ) {
-                    owned.push(id.clone());
-                }
+                )
+            {
+                owned.push(id.clone());
             }
         }
         Ok(owned)

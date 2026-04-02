@@ -78,7 +78,7 @@ impl<T> TypedArena<T> {
     /// Helper: Check if current chunk has capacity for allocation
     ///
     /// # Safety
-    /// - `chunk_ptr` must be valid `NonNull` pointing to `TypedChunk`<T>
+    /// - `chunk_ptr` must be valid `NonNull` pointing to `` `TypedChunk<T>` ``
     /// - chunk must be owned by arena's `RefCell`
     #[inline]
     unsafe fn chunk_has_capacity(chunk_ptr: NonNull<TypedChunk<T>>, index: usize) -> bool {
@@ -92,7 +92,7 @@ impl<T> TypedArena<T> {
     /// Helper: Get pointer to element in chunk storage
     ///
     /// # Safety
-    /// - `chunk_ptr` must be valid `NonNull` pointing to `TypedChunk`<T>
+    /// - `chunk_ptr` must be valid `NonNull` pointing to `` `TypedChunk<T>` ``
     /// - index must be within chunk capacity bounds
     /// - Caller must ensure chunk is owned by arena's `RefCell`
     #[inline]

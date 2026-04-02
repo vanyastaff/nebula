@@ -119,9 +119,7 @@ impl<T: Poolable> HierarchicalPool<T> {
     ///
     /// Requires `Arc<Mutex<Self>>` so the returned `HierarchicalPooledValue`
     /// can safely return the object on drop from any thread.
-    pub fn get(
-        this: &Arc<Mutex<Self>>,
-    ) -> MemoryResult<HierarchicalPooledValue<T>> {
+    pub fn get(this: &Arc<Mutex<Self>>) -> MemoryResult<HierarchicalPooledValue<T>> {
         let mut guard = this.lock();
 
         // Try local pool first

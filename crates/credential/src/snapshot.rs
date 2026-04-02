@@ -1,6 +1,6 @@
 //! Point-in-time credential snapshot with typed projection.
 //!
-//! [`CredentialSnapshot`] carries a type-erased [`AuthScheme`] projection
+//! [`CredentialSnapshot`] carries a type-erased [`AuthScheme`](nebula_core::AuthScheme) projection
 //! that consumers downcast via [`project()`](CredentialSnapshot::project) or
 //! [`into_project()`](CredentialSnapshot::into_project).  This replaces the
 //! previous `serde_json::Value` design, giving actions type-safe credential

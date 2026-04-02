@@ -1,4 +1,4 @@
-//! [`Stream`](futures_core::Stream) adapters for event bus subscribers.
+//! Stream adapters for event bus subscribers.
 
 use std::pin::Pin;
 use std::task::{Context, Poll};

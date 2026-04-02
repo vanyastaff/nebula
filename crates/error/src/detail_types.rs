@@ -1,8 +1,8 @@
 //! Typed error detail structs inspired by the Google `google.rpc` error model.
 //!
 //! Each struct carries structured metadata about a specific failure aspect
-//! and can be stored in [`ErrorDetails`](crate::ErrorDetails) via the
-//! [`ErrorDetail`](crate::ErrorDetail) marker trait.
+//! and can be stored in ErrorDetails via the
+//! ErrorDetail marker trait.
 
 use std::borrow::Cow;
 

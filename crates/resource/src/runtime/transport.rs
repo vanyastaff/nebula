@@ -66,13 +66,12 @@ where
     /// 1. Acquires a semaphore permit (limiting concurrency to `max_sessions`).
     /// 2. Calls `resource.open_session(runtime, ctx)`.
     /// 3. Returns a guarded handle whose drop submits `close_session()` +
-    ///    permit release to the [`ReleaseQueue`].
+    ///    permit release to the ReleaseQueue.
     ///
     /// # Errors
     ///
-    /// - [`ErrorKind::Permanent`] if the semaphore is closed.
-    /// - [`ErrorKind::Backpressure`] if the acquire times out waiting for a
-    ///   permit.
+    /// - Permanent if the semaphore is closed.
+    /// - Backpressure if the acquire times out waiting for a permit.
     /// - Propagates errors from `open_session`.
     pub async fn acquire(
         &self,

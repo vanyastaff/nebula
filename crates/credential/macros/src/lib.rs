@@ -1,7 +1,7 @@
 //! Proc-macro crate for the `Credential` derive macro.
 //!
-//! Generates a [`Credential`] impl for static (non-interactive) credentials
-//! backed by a [`StaticProtocol`].
+//! Generates a Credential impl for static (non-interactive) credentials
+//! backed by a StaticProtocol.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -14,8 +14,8 @@ mod credential;
 
 /// Derive macro for the v2 `Credential` trait.
 ///
-/// Generates a full [`Credential`] impl for static (non-interactive)
-/// credentials backed by a [`StaticProtocol`]. The generated impl uses
+/// Generates a full Credential impl for static (non-interactive)
+/// credentials backed by a StaticProtocol. The generated impl uses
 /// `State = Scheme` (identity path), `Pending = NoPendingState`, and
 /// all capability flags default to `false`.
 ///

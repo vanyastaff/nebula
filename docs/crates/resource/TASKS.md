@@ -88,31 +88,10 @@
 
 **Checkpoint**: All 6 gate unit tests + 1 doctest pass; `cargo check --workspace --all-targets` clean; hardening checklist rows show Implemented.
 
-## Phase 6: Adapter-Grade Safety and Instance-Aware Lifecycle ✅
-
-**Goal**: Extend the public API with safety hooks for broken detection, per-acquire
-preparation, controlled guard escape hatches, sharing semantics, instance-aware
-lifecycle methods, and a dynamic context enricher in Manager.
-
-- [x] RSC-T029 [P] Add `Resource::is_broken` synchronous fast-path check; wire as first gate in `try_return_sync` and `return_instance` before taint/recycle
-- [x] RSC-T030 [P] Add `Resource::prepare` per-acquire async hook; call after semaphore permit in `acquire_inner`
-- [x] RSC-T031 [P] Add `Guard::detach()` — transfers ownership, fires `on_detach` (permit returned), skips `on_drop`/recycle
-- [x] RSC-T032 [P] Add `Guard::leak()` — transfers ownership without firing any callback (permit forfeited)
-- [x] RSC-T033 [P] Add `PoolSharingMode { Exclusive, Shared }` enum; add `sharing_mode` field to `PoolConfig` (default `Exclusive`)
-- [x] RSC-T034 [P] Add `PoolConfig::warm_up` field (default `false`); spawn background warm-up on pool construction when `true`
-- [x] RSC-T035 [P] Add `Pool::acquire_shared` (where `R::Instance: Clone`); returns cloned instance without consuming a semaphore permit
-- [x] RSC-T036 [P] Extend `HookEvent` with `PostCreate`, `PreAcquire`, `PostRecycle`, `PostRelease` variants; update `Display` impl
-- [x] RSC-T037 Add `InstanceMetadata { created_at, idle_since, acquire_count }`; thread through acquire/return hotpath; update `is_reusable_with_meta` and `recycle_with_meta` calls throughout
-- [x] RSC-T038 Dynamic `context_enricher` in `Manager` — wrap `pools` field in `Arc<ArcSwap<...>>`; enricher resolves dep handles from live snapshot at acquire time instead of eagerly snapshotting
-
-**Checkpoint**: 355 tests pass; `cargo check -p nebula-resource` clean (0 warnings); all new API surface documented.
-
----
-
 ## Verification (after all phases)
 
 - [x] `cargo check -p nebula-resource`
 - [x] `cargo test -p nebula-resource`
 - [x] `cargo clippy -p nebula-resource -- -D warnings`
-- [x] `cargo doc --no-deps -p nebula-resource`
-- [x] `cargo bench -p nebula-resource`
+- [ ] `cargo doc --no-deps -p nebula-resource`
+- [ ] `cargo bench -p nebula-resource`

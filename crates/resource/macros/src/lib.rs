@@ -1,6 +1,6 @@
 //! # nebula-resource-macros
 //!
-//! Proc-macros for the [`nebula-resource`] crate.
+//! Proc-macros for the nebula-resource crate.
 //!
 //! Provides the [`ClassifyError`] derive macro that auto-generates
 //! `From<UserError> for nebula_resource::Error` based on `#[classify(...)]`

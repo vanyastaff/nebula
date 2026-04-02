@@ -66,7 +66,7 @@ pub mod config {
         ///
         /// When all sessions are in use, acquire calls will wait at most this
         /// long before returning a backpressure error. Callers may override
-        /// this per-request via [`AcquireOptions::deadline`].
+        /// this per-request via acquire options.
         pub acquire_timeout: Duration,
     }
 

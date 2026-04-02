@@ -114,3 +114,4 @@ High-performance memory management — arenas, pools, LRU/TTL caching, memory pr
 - `pool_get!($pool)` returns `Result` (no longer `.expect("Pool exhausted")`) — use `?` at callsite. Two-arg form `pool_get!(pool, default)` unchanged.
 
 <!-- reviewed: 2026-04-01 (perf: BumpAllocator vtable -> concrete AtomicCursor -21%; PoolAllocator div -> bitmask in deallocate -14%; MetricsExtension split-storage breaking redesign + benchmark suite) -->
+<!-- reviewed: 2026-04-02 — clippy cleanup in metrics docs: MemoryMetric references wrapped in backticks -->

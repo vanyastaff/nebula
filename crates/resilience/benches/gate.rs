@@ -67,5 +67,10 @@ fn bench_enter_contended(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_enter_uncontended, bench_is_closed, bench_enter_contended);
+criterion_group!(
+    benches,
+    bench_enter_uncontended,
+    bench_is_closed,
+    bench_enter_contended
+);
 criterion_main!(benches);

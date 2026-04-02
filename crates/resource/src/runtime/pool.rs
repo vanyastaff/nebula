@@ -214,8 +214,8 @@ where
     ///
     /// # Errors
     ///
-    /// - [`ErrorKind::Backpressure`] if the pool is full and the timeout expires.
-    /// - [`ErrorKind::Transient`] if creation or preparation fails.
+    /// - Backpressure if the pool is full and the timeout expires.
+    /// - Transient if creation or preparation fails.
     // Reason: `options` is a separate concern from the existing resource/config/ctx
     // tuple and will be reduced when we bundle resource+config into a single arg.
     #[allow(clippy::too_many_arguments)]
@@ -494,16 +494,15 @@ where
     }
 
     /// Attempts a non-blocking acquire: returns immediately with
-    /// [`ErrorKind::Backpressure`](crate::ErrorKind::Backpressure) if the pool
-    /// is at capacity (all `max_size` slots hold active [`ResourceHandle`](crate::ResourceHandle)s).
+    /// Backpressure if the pool is at capacity (all `max_size` slots hold active ResourceHandles).
     ///
-    /// Unlike [`acquire`](Self::acquire), this method never queues — use it
+    /// Unlike acquire, this method never queues — use it
     /// when you want to shed load rather than queue callers.
     ///
     /// # Errors
     ///
-    /// - [`ErrorKind::Backpressure`](crate::ErrorKind::Backpressure) if all `max_size` slots are occupied.
-    /// - [`ErrorKind::Transient`](crate::ErrorKind::Transient) if creation or preparation fails.
+    /// - Backpressure if all `max_size` slots are occupied.
+    /// - Transient if creation or preparation fails.
     // Reason: same as acquire — options is a distinct concern from resource/config/ctx.
     #[allow(clippy::too_many_arguments)]
     pub async fn try_acquire(
@@ -593,8 +592,7 @@ where
     /// | `Staggered { interval }` | Creates one instance, sleeps `interval`, repeats. |
     ///
     /// Instances are pushed directly into the idle queue without consuming
-    /// semaphore permits — permits are only held by active
-    /// [`ResourceHandle`](crate::ResourceHandle)s.
+    /// semaphore permits — permits are only held by active ResourceHandles.
     ///
     /// If a creation fails, warmup stops early and returns the count created
     /// so far (partial warmup is acceptable; on-demand creation handles the rest).

@@ -2,7 +2,7 @@
 //!
 //! [`ParameterType`] is a 19-variant enum carrying **only** type-specific data.
 //! Shared metadata (label, description, rules, conditions, etc.) lives on
-//! [`super::parameter::Parameter`], which wraps this enum via `#[serde(flatten)]`.
+//! [`Parameter`](crate::parameter::Parameter), which wraps this enum via `#[serde(flatten)]`.
 
 use serde::{Deserialize, Serialize};
 

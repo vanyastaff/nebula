@@ -1,6 +1,6 @@
 //! Parameter collection — top-level container for parameter definitions.
 //!
-//! [`ParameterCollection`] is the v3 replacement for [`crate::schema::Schema`].
+//! [`ParameterCollection`] is the v3 replacement for the v2 `Schema` type.
 //! It holds an ordered list of [`Parameter`] definitions and provides
 //! validation/normalization entry points (delegated to the validation and
 //! normalization engines implemented in later tasks).
@@ -17,8 +17,8 @@ use crate::values::ParameterValues;
 
 /// Complete parameter collection for v3 authoring.
 ///
-/// Replaces [`Schema`](crate::schema::Schema) from v2. Contains an ordered
-/// list of [`Parameter`] definitions. UI elements and groups are now expressed
+/// Replaces Schema from v2. Contains an ordered
+/// list of Parameter definitions. UI elements and groups are now expressed
 /// through `ParameterType::Notice` and `DisplayMode::Sections`.
 ///
 /// # Examples

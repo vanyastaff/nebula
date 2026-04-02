@@ -2,9 +2,9 @@
 //!
 //! # Available Macros
 //!
-//! - [`validator!`] — Create a complete validator (struct + Validate impl + factory fn)
-//! - [`compose!`] — AND-chain multiple validators
-//! - [`any_of!`] — OR-chain multiple validators
+//! - `validator!` — Create a complete validator (struct + Validate impl + factory fn)
+//! - `compose!` — AND-chain multiple validators
+//! - `any_of!` — OR-chain multiple validators
 //!
 //! # Examples
 //!

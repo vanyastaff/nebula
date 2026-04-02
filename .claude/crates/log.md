@@ -21,3 +21,4 @@ Structured logging foundation for Nebula, built on `tracing` — single pipeline
 - No nebula deps. Used by almost every crate. Wraps `tracing` macros — importing crates use `nebula_log::{info, debug, ...}` macros, not `tracing::` directly.
 
 <!-- reviewed: 2026-04-02 -->
+<!-- reviewed: 2026-04-02 — benchmark file has explicit clippy excessive_nesting expectation for nested Criterion + context-scope closures -->
