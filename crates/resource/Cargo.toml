@@ -26,9 +26,6 @@ tokio-util = { workspace = true }
 
 # Core
 nebula-error = { workspace = true }
-thiserror = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
 arc-swap = { workspace = true }
 dashmap = { workspace = true }
 smallvec = { workspace = true }
@@ -36,4 +33,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
-pretty_assertions = { workspace = true }
+thiserror = { workspace = true }

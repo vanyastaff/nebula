@@ -214,6 +214,7 @@ pub struct ValidationTest {
     pub expected_criteria: SuccessCriteria,
 
     /// Validation timeout
+    #[serde(with = "humantime_serde")]
     pub timeout: Duration,
 }
 

@@ -24,3 +24,5 @@ Re-exports of core crates for plugin/action authors — the single entry point f
 <!-- reviewed: 2026-04-02 -->
 
 <!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->

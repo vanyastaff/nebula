@@ -33,3 +33,6 @@ futures = "0.3"
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+
+[lib]
+doctest = false

@@ -23,9 +23,6 @@ zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 
 [dev-dependencies]
 criterion = { workspace = true }
-pretty_assertions = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
-tokio-test = { workspace = true }
 
 [[bench]]
 name = "id_parse_serialize"

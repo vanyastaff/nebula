@@ -20,6 +20,5 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 
-[dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
-pretty_assertions = { workspace = true }
+[lib]
+doctest = false

@@ -19,12 +19,14 @@ pub struct RotationRetryPolicy {
     pub max_attempts: u32,
 
     /// Initial backoff duration
+    #[serde(with = "humantime_serde")]
     pub initial_backoff: Duration,
 
     /// Backoff multiplier (typically 2.0 for exponential)
     pub backoff_multiplier: f32,
 
     /// Maximum backoff duration
+    #[serde(with = "humantime_serde")]
     pub max_backoff: Duration,
 }
 

@@ -29,6 +29,7 @@ use nebula_core::CredentialId;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GracePeriodConfig {
     /// Duration of the grace period
+    #[serde(with = "humantime_serde")]
     pub duration: Duration,
 
     /// Allow old and new credentials to work simultaneously

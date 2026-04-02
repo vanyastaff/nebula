@@ -77,9 +77,6 @@ pin-project = "1.1"
 # Errors
 thiserror = { workspace = true }
 nebula-error = { workspace = true, features = ["derive"] }
-
-# Internal crates
-nebula-core = { path = "../core" }
 nebula-log = { path = "../log", optional = true }
 nebula-system = { path = "../system" }
 
@@ -90,10 +87,8 @@ winapi = { version = "0.3", features = ["memoryapi", "sysinfoapi", "libloaderapi
 
 [dev-dependencies]
 criterion = { workspace = true }
-proptest = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-anyhow = { workspace = true }
 
 
 [[bench]]

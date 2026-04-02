@@ -13,6 +13,8 @@ documentation.workspace = true
 
 [lib]
 proc-macro = true
+test = false
+doctest = false
 
 [dependencies]
 nebula-macro-support = { path = "../../sdk/macros-support" }

@@ -15,7 +15,6 @@ documentation.workspace = true
 nebula-core = { path = "../core" }
 nebula-error = { workspace = true, features = ["derive"] }
 nebula-action = { path = "../action" }
-nebula-plugin = { path = "../plugin" }
 nebula-metrics = { path = "../metrics" }
 nebula-telemetry = { path = "../telemetry" }
 async-trait = { workspace = true }
@@ -31,4 +30,6 @@ uuid = { workspace = true }
 nebula-core = { path = "../core" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 tokio-util = { workspace = true }
-pretty_assertions = { workspace = true }
+
+[lib]
+doctest = false

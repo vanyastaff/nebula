@@ -22,3 +22,5 @@ Structured logging foundation for Nebula, built on `tracing` — single pipeline
 
 <!-- reviewed: 2026-04-02 -->
 <!-- reviewed: 2026-04-02 — benchmark file has explicit clippy excessive_nesting expectation for nested Criterion + context-scope closures -->
+
+<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->

@@ -35,3 +35,5 @@ Execution event bus, TelemetryService trait, W3C trace context, and buffered cal
 <!-- reviewed: 2026-04-02 — pre-existing modifications, no architectural changes this session -->
 
 <!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->

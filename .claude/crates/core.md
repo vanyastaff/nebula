@@ -26,3 +26,5 @@ Foundation shared by every other crate — IDs, domain keys, scope system, and s
 <!-- reviewed: 2026-04-01 — SecretString moved here from nebula-credential -->
 
 <!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->

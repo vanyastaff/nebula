@@ -23,3 +23,5 @@ Cross-platform system information — CPU, memory, OS, process, network, disk.
 <!-- reviewed: 2026-04-02 -->
 
 <!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->

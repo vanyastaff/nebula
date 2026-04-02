@@ -67,3 +67,5 @@ NotFound, Validation, Authentication, Authorization, Conflict, RateLimit, Timeou
 
 <!-- reviewed: 2026-03-30 (PartialEq<&str>, Classify re-export rename) -->
 <!-- reviewed: 2026-04-02 — pre-existing modifications, no architectural changes this session -->
+
+<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->

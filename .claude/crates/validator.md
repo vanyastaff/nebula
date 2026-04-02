@@ -45,3 +45,5 @@ Composable, type-safe validation framework — two paradigms: programmatic combi
 <!-- reviewed: 2026-04-02 — clippy cleanup in derive parser: removed unreachable match arm and collapsed length(...) single-arg parsing if-chain -->
 
 <!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->

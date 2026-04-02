@@ -98,9 +98,11 @@ pub enum RotationPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PeriodicConfig {
     /// Rotation interval (minimum 1 hour)
+    #[serde(with = "humantime_serde")]
     interval: Duration,
 
     /// Grace period where both old and new credentials are valid
+    #[serde(with = "humantime_serde")]
     grace_period: Duration,
 
     /// Enable jitter (±10% randomization) to prevent rotation storms
@@ -114,9 +116,11 @@ pub struct BeforeExpiryConfig {
     threshold_percentage: f32,
 
     /// Minimum time before expiry to trigger rotation (safety buffer)
+    #[serde(with = "humantime_serde")]
     minimum_time_before_expiry: Duration,
 
     /// Grace period where both old and new credentials are valid
+    #[serde(with = "humantime_serde")]
     grace_period: Duration,
 }
 
@@ -127,6 +131,7 @@ pub struct ScheduledConfig {
     scheduled_at: DateTime<Utc>,
 
     /// Grace period where both old and new credentials are valid
+    #[serde(with = "humantime_serde")]
     grace_period: Duration,
 
     /// Send notification this long before rotation (e.g., 24 hours)

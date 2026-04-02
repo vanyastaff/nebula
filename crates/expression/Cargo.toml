@@ -13,8 +13,6 @@ keywords = ["expression", "template", "workflow", "n8n", "automation"]
 categories = ["template-engine", "parser-implementations"]
 
 [dependencies]
-# Nebula internal crates
-nebula-core = { path = "../core" }
 nebula-log = { path = "../log" }
 nebula-memory = { path = "../memory", default-features = true, features = ["cache"] }
 
@@ -32,7 +30,6 @@ parking_lot = { workspace = true }
 once_cell = { workspace = true }
 
 [dev-dependencies]
-pretty_assertions = { workspace = true }
 criterion = { workspace = true }
 
 [[bench]]

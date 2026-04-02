@@ -43,8 +43,6 @@ nebula-error = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
-pretty_assertions = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 

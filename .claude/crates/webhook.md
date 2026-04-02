@@ -23,3 +23,5 @@ Inbound webhook server — UUID-isolated endpoints per trigger, single server pe
 
 <!-- reviewed: 2026-03-30 -->
 <!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->

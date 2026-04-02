@@ -43,7 +43,6 @@ once_cell = { workspace = true }
 parking_lot = { workspace = true }
 nebula-error = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-winapi = "0.3.9"
 
 # Memory management
 libc = { workspace = true, optional = true }
@@ -58,10 +57,6 @@ tokio = { workspace = true, optional = true, features = ["time", "sync"] }
 sysinfo = { version = "0.38.4", optional = true, default-features = false, features = ["system", "multithread"] }
 
 [dev-dependencies]
-criterion = { workspace = true }
-proptest = { workspace = true }
-pretty_assertions = { workspace = true }
-tempfile = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 

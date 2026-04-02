@@ -30,10 +30,6 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-# Testing
-pretty_assertions = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
-tokio-test = "0.4"
 proptest = "1"
 
 # Benchmarking

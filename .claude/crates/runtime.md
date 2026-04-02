@@ -21,3 +21,5 @@ Action execution layer — ActionRegistry, InProcessSandbox, data policies, and 
 <!-- reviewed: 2026-03-30 — derive Classify migration -->
 
 <!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->

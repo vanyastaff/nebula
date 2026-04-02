@@ -117,3 +117,5 @@ High-performance memory management — arenas, pools, LRU/TTL caching, memory pr
 <!-- reviewed: 2026-04-02 — clippy cleanup in metrics docs: MemoryMetric references wrapped in backticks -->
 
 <!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->

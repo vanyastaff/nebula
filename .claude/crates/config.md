@@ -23,3 +23,5 @@ Multi-source configuration with env interpolation, hot-reload, and typed access.
 <!-- reviewed: 2026-04-01 — Config derive moved to nebula-config-macros, re-exported from crate root -->
 
 <!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
