@@ -119,7 +119,7 @@ axum = { version = "0.8", features = ["json"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip"] }
 
 # JSON Web Tokens
-jsonwebtoken = "10"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 
 # Random number generation
 rand = "0.10"

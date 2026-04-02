@@ -32,3 +32,5 @@ Generic typed pub/sub event bus — transport infrastructure only, no domain eve
 <!-- reviewed: 2026-03-19 -->
 
 <!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 -->

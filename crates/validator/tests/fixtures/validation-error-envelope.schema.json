@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "validation-error-envelope",
+  "type": "object",
+  "required": ["code", "message"],
+  "properties": {
+    "code": {
+      "type": "string",
+      "description": "Machine-readable error code"
+    },
+    "message": {
+      "type": "string",
+      "description": "Human-readable error message"
+    },
+    "field": {
+      "type": ["string", "null"],
+      "description": "Dot-notation field path that failed validation"
+    },
+    "pointer": {
+      "type": ["string", "null"],
+      "description": "JSON Pointer (RFC 6901) equivalent of field"
+    },
+    "params": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Validation rule parameters (e.g. min, max)"
+    },
+    "severity": {
+      "type": "string",
+      "description": "Error severity level (Error, Warning, Info)"
+    },
+    "help": {
+      "type": ["string", "null"],
+      "description": "Optional hint for resolving the error"
+    },
+    "nested": {
+      "type": "array",
+      "items": { "$ref": "#" },
+      "description": "Child validation errors (for composite rules)"
+    }
+  },
+  "additionalProperties": false
+}

@@ -72,6 +72,10 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 ignore = [
     # Temporary ignores for known issues
     { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill is pulled transitively; tracked for upstream replacement/removal" },
+    # rsa v0.9.10 Marvin Attack (timing side-channel in RSA). No patch available upstream.
+    # Risk is acceptable: nebula-api uses HS256 only — RSA JWT algorithms (RS256/PS256/etc.)
+    # are never configured or called. Revisit when jsonwebtoken ships a patched rsa dep.
+    { id = "RUSTSEC-2023-0071", reason = "rsa pulled by jsonwebtoken rust_crypto feature; project uses HS256 only, RSA code path never reached" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.

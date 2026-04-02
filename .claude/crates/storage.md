@@ -23,3 +23,5 @@ Storage trait abstraction — MemoryStorage for tests, PostgresStorage for produ
 - Depends on nebula-core (IDs). Used by nebula-engine, nebula-api.
 
 <!-- reviewed: 2026-03-30 — derive Classify migration -->
+
+<!-- reviewed: 2026-04-02 -->

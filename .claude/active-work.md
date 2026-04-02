@@ -16,8 +16,18 @@ Updated: 2026-03-31
 - **nebula-parameter v3** (03-25)
 
 ## Blocked
-- **nebula-engine**: needs credential DI (CredentialResolver into ActionContext)
+- **nebula-engine**: needs credential DI (CredentialResolver into ActionContext) + storage Postgres backend
 - **nebula-webhook**: uses deprecated v1 compat types
+- **nebula-auth**: RFC phase — blocked on RFC convergence, no stable API yet
+- **Desktop Phase 2+**: blocked on engine working end-to-end (Group 2 acceptance criteria)
+
+## Cross-Crate Priority Order (from TASKS.md)
+1. `nebula-storage` Phase 1 (Postgres) — unblocks engine
+2. `nebula-action` Phase 2 — finish context model (unblocks runtime + credential integration)
+3. `nebula-resource` Phase 1 — contract docs + scope invariants
+4. `nebula-runtime` Phase 1 — isolation routing + SpillToBlob
+5. Desktop Phase 1 — typed IPC (independent of backend)
+6. `nebula-engine` Phase 1 — wire to Postgres (needs items 1–3 done)
 
 ## Next Up
 - **Fix pre-existing bugs B1-B9** from credential HLD review (B6 CRITICAL: verify_owner fails open)

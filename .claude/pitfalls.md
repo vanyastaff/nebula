@@ -21,3 +21,15 @@
 - **MemoryStorage is test-only**: Data is lost on restart. Never use in production.
 
 - **LoggerGuard must live**: Drop only on shutdown. Early drop silences all logging.
+
+- **nebula-app (egui) is gone**: The old egui desktop app is superseded. Desktop surface is `apps/desktop` (Tauri). Any reference to `nebula-app` is stale.
+
+- **nebula-value is gone**: No separate value crate. Use `serde_json::Value` directly everywhere.
+
+- **PostgresStorage not yet implemented**: `nebula-storage` Phase 1 (Postgres backend) is still in progress. Do not assume a working Postgres storage layer exists — `MemoryStorage` is the only complete backend.
+
+- **nebula-auth is RFC phase**: Auth crate API is not stable. Do not add upstream dependencies on it until RFCs converge to implementation milestones.
+
+- **API JWT not fully wired**: `API_JWT_SECRET` env var exists but JWT validation is a placeholder middleware — not a complete auth flow. Protected routes check `Authorization` header presence only.
+
+- **EventBus Phase 1 not started**: `nebula-eventbus` planned (Group 6 in TASKS). Currently the in-memory bus exists but scoped subscriptions and full pub/sub are incomplete.

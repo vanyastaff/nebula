@@ -34,3 +34,5 @@ Parameter schema system (RFC 0005) — defines what inputs a workflow node accep
 
 <!-- reviewed: 2026-04-01 — Parameters derive moved to nebula-parameter-macros, re-exported from crate root -->
 <!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 -->

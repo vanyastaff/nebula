@@ -34,3 +34,5 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 <!-- reviewed: 2026-03-31 -->
 <!-- reviewed: 2026-04-02 — no architectural changes this session; pre-existing modifications in git status unrelated to resilience work -->
 <!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 -->

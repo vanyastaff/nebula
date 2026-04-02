@@ -82,3 +82,5 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 
 <!-- reviewed: 2026-04-02 -->
 <!-- reviewed: 2026-04-02 — clippy cleanup in scope layer: collapsed nested if in ScopeLayer::list; no behavior change -->
+
+<!-- reviewed: 2026-04-02 -->

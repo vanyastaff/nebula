@@ -7,16 +7,16 @@ DAG-based workflow automation engine in Rust (n8n/Zapier).
 core · validator · parameter · expression · memory · workflow · execution
 
 **Cross-cutting** (importable at any layer)
-log · system · eventbus · telemetry · metrics · config · resilience · error
-
-**Derive macros**
-macros · error-macros · resource-macros
+log · system · eventbus · telemetry · metrics · config · resilience
 
 **Business logic**
-credential · resource · action · plugin
+credential · resource · action · plugin · auth
 
 **Exec / API / Infra**
-engine · runtime · storage · api · webhook · macros · sdk · auth
+engine · runtime · storage · api · webhook · macros · sdk
+
+**Desktop app**
+apps/desktop (Tauri — React + TypeScript; replaces former nebula-app/egui)
 
 ## Cross-cutting Docs
 → decisions.md — architecture decisions
@@ -25,7 +25,8 @@ engine · runtime · storage · api · webhook · macros · sdk · auth
 
 ## Conventions
 - Edition 2024, rust-version 1.93
-- `serde_json::Value` as universal data type
+- `serde_json::Value` as universal data type (no nebula-value crate — was removed)
 - Errors: `thiserror` in libs, `anyhow` in binaries
 - Layers enforced by `cargo deny`: Infra → Core → Business → Exec → API
 - Cross-cutting crates are exempt from layer restrictions
+- `auth` crate is in RFC phase — API not stable, do not depend on it
