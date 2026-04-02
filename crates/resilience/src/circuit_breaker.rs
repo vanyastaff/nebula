@@ -742,6 +742,38 @@ const fn to_circuit_state(s: State) -> CircuitState {
     }
 }
 
+// ── Bench support ─────────────────────────────────────────────────────────────
+
+/// Public wrappers around the private CB `SlidingWindow` for targeted micro-benchmarks.
+/// Enabled only under the `bench` feature — not part of the public API.
+#[cfg(feature = "bench")]
+#[allow(missing_docs)]
+pub mod _bench_support {
+    use super::SlidingWindow;
+
+    /// Thin public wrapper around the circuit breaker's internal [`SlidingWindow`]
+    /// for micro-benchmarking `failure_count`, `slow_count`, and `record`.
+    pub struct BenchSlidingWindow(SlidingWindow);
+
+    impl BenchSlidingWindow {
+        pub fn new(size: usize) -> Self {
+            Self(SlidingWindow::new(size))
+        }
+        pub fn record(&mut self, is_failure: bool, is_slow: bool) {
+            self.0.record(is_failure, is_slow);
+        }
+        pub fn failure_count(&self) -> u32 {
+            self.0.failure_count()
+        }
+        pub fn slow_count(&self) -> u32 {
+            self.0.slow_count()
+        }
+        pub fn total(&self) -> u32 {
+            self.0.total()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

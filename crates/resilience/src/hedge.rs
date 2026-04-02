@@ -390,6 +390,32 @@ impl LatencyTracker {
     }
 }
 
+// ── Bench support ─────────────────────────────────────────────────────────────
+
+/// Public wrappers around private `LatencyTracker` for targeted micro-benchmarks.
+/// Enabled only under the `bench` feature — not part of the public API.
+#[cfg(feature = "bench")]
+#[allow(missing_docs)]
+pub mod _bench_support {
+    use super::LatencyTracker;
+    use std::time::Duration;
+
+    /// Thin public wrapper around [`LatencyTracker`] for micro-benchmarking.
+    pub struct BenchLatencyTracker(LatencyTracker);
+
+    impl BenchLatencyTracker {
+        pub fn new(max_samples: usize) -> Self {
+            Self(LatencyTracker::new(max_samples))
+        }
+        pub fn record(&mut self, latency: Duration) {
+            self.0.record(latency);
+        }
+        pub fn percentile(&self, p: f64) -> Option<Duration> {
+            self.0.percentile(p)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

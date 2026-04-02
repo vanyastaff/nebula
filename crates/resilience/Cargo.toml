@@ -23,6 +23,10 @@ humantime = ["dep:humantime-serde"]
 ## Convenience bundle: enables all optional features.
 full = ["governor", "humantime"]
 
+## Exposes internal types (`LatencyTracker`, CB `SlidingWindow`) as public via
+## thin wrapper structs for targeted micro-benchmarking.  Not for production use.
+bench = []
+
 [dependencies]
 # Async and concurrency
 tokio = { workspace = true, features = ["sync", "time"] }
@@ -44,6 +48,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
+divan = "0.1"
 futures = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
@@ -75,4 +80,14 @@ harness = false
 [[bench]]
 name = "bulkhead"
 harness = false
+
+[[bench]]
+name = "latency_tracker"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "sliding_window_cb"
+harness = false
+required-features = ["bench"]
 

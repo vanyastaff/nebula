@@ -74,6 +74,7 @@ Fault-tolerance patterns: circuit breaker, retry, bulkhead, rate limiter, timeou
 - Single crate (default features): `rtk cargo check -p nebula-resilience && rtk cargo nextest run -p nebula-resilience`
 - Governor path: `rtk cargo nextest run -p nebula-resilience --features governor`
 - Pre-PR workspace gate: `rtk cargo fmt && rtk cargo clippy --workspace -- -D warnings && rtk cargo nextest run --workspace`
+- Targeted micro-benches: `cargo bench -p nebula-resilience --bench latency_tracker --features bench` and `--bench sliding_window_cb`
 
 ## Common change playbooks
 - Touching `retry`:
