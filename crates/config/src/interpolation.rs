@@ -17,8 +17,8 @@ use crate::core::result::ConfigResult;
 /// - `${VAR:-default}` — resolves from the environment; uses *default* if unset
 /// - `$$` — escaped literal `$` (not interpolated)
 ///
-/// Takes ownership of the value and returns it unchanged (without any heap
-/// allocation) when no `$` references are found anywhere in the tree.
+/// Takes ownership of the value and returns it with no new heap allocations
+/// when no `$` references are found anywhere in the tree.
 ///
 /// # Errors
 ///
@@ -28,6 +28,8 @@ pub fn interpolate(value: Value) -> ConfigResult<Value> {
     match value {
         Value::String(s) => interpolate_string(s),
         Value::Object(mut map) => {
+            // On error, the partially-mutated map/arr is dropped along with the Err —
+            // the Value::Null placeholder is never observable to callers.
             for v in map.values_mut() {
                 let owned = std::mem::replace(v, Value::Null);
                 *v = interpolate(owned)?;
@@ -35,6 +37,8 @@ pub fn interpolate(value: Value) -> ConfigResult<Value> {
             Ok(Value::Object(map))
         }
         Value::Array(mut arr) => {
+            // On error, the partially-mutated map/arr is dropped along with the Err —
+            // the Value::Null placeholder is never observable to callers.
             for v in arr.iter_mut() {
                 let owned = std::mem::replace(v, Value::Null);
                 *v = interpolate(owned)?;
