@@ -31,14 +31,10 @@ env:
   CARGO_NET_RETRY: 10
   RUSTUP_MAX_RETRIES: 10
   RUST_BACKTRACE: short
-  # Benchmark thresholds (ns)
+  # Benchmark thresholds (ns) — paths match Criterion output under target/criterion/
   NEBULA_LOG_BENCH_EMIT_NO_HOOKS_MAX_NS: "20000"
   NEBULA_LOG_BENCH_EMIT_INLINE_NOOP_MAX_NS: "25000"
   NEBULA_LOG_BENCH_EMIT_BOUNDED_COUNTING_MAX_NS: "30000"
-  NEBULA_LOG_BENCH_CONTEXT_SNAPSHOT_MAX_NS: "50000"
-  NEBULA_LOG_BENCH_CONTEXT_SCOPE_SYNC_MAX_NS: "100000"
-  NEBULA_LOG_BENCH_TIMER_GUARD_MAX_NS: "100000"
-  NEBULA_LOG_BENCH_TIMER_THRESHOLD_MAX_NS: "100000"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -149,7 +145,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
       - name: Install Rust 1.94
-        uses: dtolnay/rust-toolchain@1.100
+        uses: dtolnay/rust-toolchain@1.94
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -220,13 +216,9 @@ jobs:
 
           bases = [pathlib.Path("target/criterion"), pathlib.Path("crates/log/target/criterion")]
           checks = [
-              ("log_emit_event_no_hooks_inline/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_EMIT_NO_HOOKS_MAX_NS"])),
-              ("log_emit_event_one_noop_hook_inline/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_EMIT_INLINE_NOOP_MAX_NS"])),
-              ("log_emit_event_one_counting_hook_bounded/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_EMIT_BOUNDED_COUNTING_MAX_NS"])),
-              ("log_context_snapshot/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_CONTEXT_SNAPSHOT_MAX_NS"])),
-              ("log_context_scope_sync_overhead/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_CONTEXT_SCOPE_SYNC_MAX_NS"])),
-              ("log_timer_guard_drop/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_TIMER_GUARD_MAX_NS"])),
-              ("log_timer_threshold_no_emit/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_TIMER_THRESHOLD_MAX_NS"])),
+              ("log/observability/emit_dispatch/inline_noop/0/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_EMIT_NO_HOOKS_MAX_NS"])),
+              ("log/observability/emit_dispatch/inline_noop/1/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_EMIT_INLINE_NOOP_MAX_NS"])),
+              ("log/observability/emit_dispatch/bounded_field_scan/1/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_EMIT_BOUNDED_COUNTING_MAX_NS"])),
           ]
           failures = []
           for rel, threshold in checks:

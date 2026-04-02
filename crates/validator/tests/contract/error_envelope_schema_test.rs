@@ -22,9 +22,7 @@ fn error_envelope_contains_required_contract_fields() {
 
 #[test]
 fn contract_schema_declares_recursive_nested_structure() {
-    let schema_raw = include_str!(
-        "../../../../specs/001-validator-crate-spec/contracts/validation-error-envelope.schema.json"
-    );
+    let schema_raw = include_str!("../fixtures/validation-error-envelope.schema.json");
     let schema: Value = serde_json::from_str(schema_raw).expect("schema JSON must parse");
 
     assert_eq!(
