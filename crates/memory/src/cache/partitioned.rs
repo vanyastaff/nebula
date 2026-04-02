@@ -143,9 +143,7 @@ impl PartitionedConfig {
 
 /// Get number of CPUs
 fn num_cpus() -> usize {
-    thread::available_parallelism()
-        .map(std::num::NonZero::get)
-        .unwrap_or(4)
+    thread::available_parallelism().map_or(4, std::num::NonZero::get)
 }
 
 /// Partition information for monitoring
@@ -211,7 +209,11 @@ impl PartitionedStats {
     pub fn most_loaded_partition(&self) -> Option<usize> {
         self.partition_stats
             .iter()
-            .max_by(|a, b| a.load_factor.partial_cmp(&b.load_factor).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|a, b| {
+                a.load_factor
+                    .partial_cmp(&b.load_factor)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .map(|p| p.index)
     }
 
@@ -220,7 +222,11 @@ impl PartitionedStats {
     pub fn least_loaded_partition(&self) -> Option<usize> {
         self.partition_stats
             .iter()
-            .min_by(|a, b| a.load_factor.partial_cmp(&b.load_factor).unwrap_or(std::cmp::Ordering::Equal))
+            .min_by(|a, b| {
+                a.load_factor
+                    .partial_cmp(&b.load_factor)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .map(|p| p.index)
     }
 }

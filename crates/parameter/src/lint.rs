@@ -165,28 +165,26 @@ fn lint_parameters(
 
         // 11-12. group checks for Object sub-parameters
         match ctx {
-            ObjectContext::ObjectSections => {
-                // 11. Sections Object sub-param missing group
+            // 11. Sections Object sub-param missing group
+            ObjectContext::ObjectSections
                 if param.group.is_none()
-                    && !matches!(param.param_type, ParameterType::Notice { .. })
-                {
-                    diags.push(LintDiagnostic {
-                        path: path.clone(),
-                        level: LintLevel::Warning,
-                        message: "sub-parameter inside Sections Object is missing `group`"
-                            .to_owned(),
-                    });
-                }
+                    && !matches!(param.param_type, ParameterType::Notice { .. }) =>
+            {
+                diags.push(LintDiagnostic {
+                    path: path.clone(),
+                    level: LintLevel::Warning,
+                    message: "sub-parameter inside Sections Object is missing `group`".to_owned(),
+                });
             }
-            ObjectContext::ObjectInline | ObjectContext::ObjectCollapsed => {
-                // 12. group on parameter inside non-Sections Object
-                if param.group.is_some() {
-                    diags.push(LintDiagnostic {
-                        path: path.clone(),
-                        level: LintLevel::Warning,
-                        message: "`group` is set but parent Object is not Sections mode".to_owned(),
-                    });
-                }
+            // 12. group on parameter inside non-Sections Object
+            ObjectContext::ObjectInline | ObjectContext::ObjectCollapsed
+                if param.group.is_some() =>
+            {
+                diags.push(LintDiagnostic {
+                    path: path.clone(),
+                    level: LintLevel::Warning,
+                    message: "`group` is set but parent Object is not Sections mode".to_owned(),
+                });
             }
             _ => {}
         }
@@ -624,17 +622,15 @@ fn check_single_transformer(
 ) {
     match transformer {
         // 16. String-only transformers on non-string parameters
-        Transformer::Trim | Transformer::Lowercase | Transformer::Uppercase => {
-            if !is_string_type {
-                diags.push(LintDiagnostic {
-                    path: format!("{path}.transformers[{index}]"),
-                    level: LintLevel::Warning,
-                    message: format!(
-                        "{:?} transformer on non-string parameter",
-                        transformer_name(transformer),
-                    ),
-                });
-            }
+        Transformer::Trim | Transformer::Lowercase | Transformer::Uppercase if !is_string_type => {
+            diags.push(LintDiagnostic {
+                path: format!("{path}.transformers[{index}]"),
+                level: LintLevel::Warning,
+                message: format!(
+                    "{:?} transformer on non-string parameter",
+                    transformer_name(transformer),
+                ),
+            });
         }
 
         // 17, 18. Regex checks

@@ -82,7 +82,7 @@ impl BudgetConfig {
             overcommit_policy: OvercommitPolicy::default(),
             reservation_mode: ReservationMode::default(),
             min_guaranteed: 0,
-            tracking_window: Some(Duration::from_secs(60)),
+            tracking_window: Some(Duration::from_mins(1)),
             adaptive: true,
             priority: 50,
             collect_stats: true,

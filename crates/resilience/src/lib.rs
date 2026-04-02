@@ -20,9 +20,9 @@
 //!     .retry(RetryConfig::new(3)?.backoff(BackoffConfig::exponential_default()))
 //!     .build();
 //!
-//! let value = pipeline.call(|| Box::pin(async {
+//! let _value: Result<String, _> = pipeline.call(|| Box::pin(async {
 //!     Ok::<_, String>("success".into())
-//! })).await?;
+//! })).await;
 //! # Ok(())
 //! # }
 //! ```
@@ -37,6 +37,16 @@
 //! use nebula_resilience::CallError;
 //! use std::time::Duration;
 //!
+//! # #[derive(Debug)]
+//! # struct MyError;
+//! # impl std::fmt::Display for MyError {
+//! #     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "error") }
+//! # }
+//! # impl std::error::Error for MyError {}
+//! # impl nebula_error::Classify for MyError {
+//! #     fn category(&self) -> nebula_error::ErrorCategory { nebula_error::ErrorCategory::Internal }
+//! #     fn code(&self) -> nebula_error::ErrorCode { nebula_error::ErrorCode::new("DOC:EXAMPLE") }
+//! # }
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Circuit breaker
@@ -47,15 +57,15 @@
 //! })?;
 //!
 //! let result = cb.call(|| Box::pin(async {
-//!     Ok::<_, &str>("ok")
+//!     Ok::<_, MyError>("ok")
 //! })).await;
 //!
 //! // Retry with Classify-aware error filtering
-//! let config = RetryConfig::<&str>::new(3)?
+//! let config = RetryConfig::<MyError>::new(3)?
 //!     .backoff(BackoffConfig::Fixed(Duration::from_millis(50)));
 //!
 //! let result = retry_with(config, || Box::pin(async {
-//!     Ok::<_, &str>("ok")
+//!     Ok::<_, MyError>("ok")
 //! })).await;
 //! # Ok(())
 //! # }
@@ -131,9 +141,9 @@ pub use fallback::{FallbackStrategy, ValueFallback};
 pub use hedge::{HedgeConfig, HedgeExecutor};
 pub use load_shed::load_shed;
 pub use rate_limiter::{AdaptiveRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket};
-pub use retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
 #[doc(hidden)]
 pub use retry::retry_with_inner;
+pub use retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
 pub use timeout::{TimeoutExecutor, timeout};
 
 // Observability

@@ -79,7 +79,7 @@ impl<T: Poolable> TtlPool<T> {
     where
         F: Fn() -> T + 'static,
     {
-        let ttl = config.ttl.unwrap_or(Duration::from_secs(300)); // 5 min default
+        let ttl = config.ttl.unwrap_or(Duration::from_mins(5));
         config.ttl = Some(ttl);
 
         let mut objects = VecDeque::with_capacity(config.initial_capacity);
@@ -102,7 +102,11 @@ impl<T: Poolable> TtlPool<T> {
             }
         }
 
-        let created_count = if config.pre_warm { config.initial_capacity } else { 0 };
+        let created_count = if config.pre_warm {
+            config.initial_capacity
+        } else {
+            0
+        };
 
         Self {
             objects,

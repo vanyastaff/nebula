@@ -51,7 +51,7 @@ impl Default for CircuitBreakerConfig {
             min_operations: 5,
             count_timeouts_as_failures: true,
             break_duration_multiplier: 1.0,
-            max_break_duration: Duration::from_secs(300),
+            max_break_duration: Duration::from_mins(5),
             slow_call_threshold: None,
             slow_call_rate_threshold: 1.0,
             sliding_window_size: 0,
@@ -430,10 +430,10 @@ impl CircuitBreaker {
 
     /// Execute a closure under the circuit breaker with error classification.
     ///
-    /// Uses the provided [`ErrorClassifier`] to determine how each error
+    /// Uses the provided `ErrorClassifier` to determine how each error
     /// affects the circuit state:
     ///
-    /// | [`ErrorClass`] | CB outcome |
+    /// | `ErrorClass` | CB outcome |
     /// |------------------------------|--------------------------------------|
     /// | `Cancelled`, `Overload` | `Cancelled` — doesn't trip breaker |
     /// | `Permanent` | `Cancelled` — downstream is healthy |
@@ -533,8 +533,7 @@ impl CircuitBreaker {
             // Algebraic rewrite: failures/total >= threshold  →  failures >= threshold*total
             // Eliminates `divsd` instruction (14-16 cycles) in favour of `mulsd` (4-5 cycles).
             window.total() >= self.config.min_operations
-                && f64::from(window.failure_count())
-                    >= rate_threshold * f64::from(window.total())
+                && f64::from(window.failure_count()) >= rate_threshold * f64::from(window.total())
         } else {
             inner.failures >= self.config.failure_threshold
                 && inner.total >= self.config.min_operations
@@ -764,7 +763,7 @@ mod tests {
             min_operations: 1,
             count_timeouts_as_failures: true,
             break_duration_multiplier: 1.0,
-            max_break_duration: Duration::from_secs(300),
+            max_break_duration: Duration::from_mins(5),
             slow_call_threshold: None,
             slow_call_rate_threshold: 1.0,
             sliding_window_size: 0,

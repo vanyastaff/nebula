@@ -261,7 +261,7 @@ pub fn topology() -> CpuTopology {
     // Simplified topology detection
     let threads = info.cpu.threads;
     let cores = info.cpu.cores;
-    let threads_per_core = if cores > 0 { threads / cores } else { 1 };
+    let threads_per_core = threads.checked_div(cores).unwrap_or(1);
 
     // Detect NUMA nodes
     let numa_nodes = detect_numa_nodes();

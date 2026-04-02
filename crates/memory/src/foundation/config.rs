@@ -346,7 +346,7 @@ impl Default for PoolSettings {
             enable_stats: cfg!(feature = "stats"),
             growth_strategy: PoolGrowthStrategy::Double,
             shrink_strategy: PoolShrinkStrategy::Lazy,
-            cleanup_interval: Some(Duration::from_secs(60)),
+            cleanup_interval: Some(Duration::from_mins(1)),
         }
     }
 }
@@ -607,7 +607,7 @@ impl CacheSettings {
             max_capacity: 1024,
             eviction_policy: EvictionPolicy::Lru,
             enable_stats: true,
-            default_ttl: Some(Duration::from_secs(60)), // 1 minute
+            default_ttl: Some(Duration::from_mins(1)),
         }
     }
 
@@ -625,7 +625,7 @@ impl CacheSettings {
             max_capacity: 512,
             eviction_policy: EvictionPolicy::Fifo,
             enable_stats: true,
-            default_ttl: Some(Duration::from_secs(300)), // 5 minutes
+            default_ttl: Some(Duration::from_mins(5)),
         }
     }
 

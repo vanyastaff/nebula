@@ -47,7 +47,7 @@ pub type LoadShedPredicate = Arc<dyn Fn() -> bool + Send + Sync>;
 
 enum Step<E: 'static> {
     Timeout(Duration),
-    Retry(RetryConfig<E>),
+    Retry(Box<RetryConfig<E>>),
     CircuitBreaker(Arc<CircuitBreaker>),
     Bulkhead(Arc<Bulkhead>),
     RateLimiter(RateLimitCheck),
@@ -115,7 +115,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     /// directly if retry-after hints are needed.
     #[must_use]
     pub fn retry(mut self, config: RetryConfig<E>) -> Self {
-        self.steps.push(Step::Retry(config));
+        self.steps.push(Step::Retry(Box::new(config)));
         self
     }
 
@@ -391,7 +391,7 @@ where
 /// Classify the outcome of an inner pipeline result for the CB step.
 ///
 /// When a classifier is available, operation errors are mapped via
-/// [`ErrorClass`] → [`Outcome`]. Without a classifier, falls back to the
+/// `ErrorClass` → Outcome. Without a classifier, falls back to the
 /// previous behavior (all operation errors = `Failure`).
 fn classify_cb_outcome<T, E>(
     result: &Result<T, CallError<E>>,

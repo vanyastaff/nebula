@@ -129,21 +129,19 @@ impl ArenaStats {
     /// Calculates average allocation time
     pub fn average_allocation_time(&self) -> Duration {
         let allocations = self.allocations();
-        if allocations == 0 {
-            Duration::ZERO
-        } else {
-            Duration::from_nanos(self.allocation_time_ns.load(Ordering::Relaxed) / allocations)
-        }
+        self.allocation_time_ns
+            .load(Ordering::Relaxed)
+            .checked_div(allocations)
+            .map_or(Duration::ZERO, Duration::from_nanos)
     }
 
     /// Calculates average reset time
     pub fn average_reset_time(&self) -> Duration {
         let resets = self.resets();
-        if resets == 0 {
-            Duration::ZERO
-        } else {
-            Duration::from_nanos(self.reset_time_ns.load(Ordering::Relaxed) / resets)
-        }
+        self.reset_time_ns
+            .load(Ordering::Relaxed)
+            .checked_div(resets)
+            .map_or(Duration::ZERO, Duration::from_nanos)
     }
 
     /// Returns uptime since creation

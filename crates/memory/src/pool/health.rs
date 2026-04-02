@@ -43,7 +43,7 @@ impl Default for HealthConfig {
             max_leak_rate: 0.05,   // 5% leaks
             min_utilization: 0.2,  // 20% minimum
             max_utilization: 0.9,  // 90% maximum
-            rate_window: Duration::from_secs(60),
+            rate_window: Duration::from_mins(1),
         }
     }
 }

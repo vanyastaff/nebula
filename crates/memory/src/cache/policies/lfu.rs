@@ -58,11 +58,11 @@ impl Default for LfuConfig {
         Self {
             frequency_mode: FrequencyMode::default(),
             decay_factor: 0.9,
-            time_window: Duration::from_secs(3600), // 1 hour
+            time_window: Duration::from_hours(1),
             max_frequency: 1_000_000,
             min_frequency_threshold: 1,
             enable_aging: true,
-            aging_interval: Duration::from_secs(300), // 5 minutes
+            aging_interval: Duration::from_mins(5),
             enable_histogram: false,
             tie_breaking: TieBreakingStrategy::LeastRecentlyUsed,
         }
@@ -206,7 +206,7 @@ where
             decay_factor: 0.95,
             max_frequency: 10_000_000,
             enable_aging: true,
-            aging_interval: Duration::from_secs(60),
+            aging_interval: Duration::from_mins(1),
             tie_breaking: TieBreakingStrategy::LeastRecentlyUsed,
             ..Default::default()
         })
@@ -217,7 +217,7 @@ where
     pub fn for_temporal_patterns() -> Self {
         Self::with_config(LfuConfig {
             frequency_mode: FrequencyMode::SlidingWindow,
-            time_window: Duration::from_secs(1800), // 30 minutes
+            time_window: Duration::from_mins(30),
             enable_aging: false,
             tie_breaking: TieBreakingStrategy::LeastRecentlyUsed,
             enable_histogram: true,

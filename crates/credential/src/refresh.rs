@@ -9,7 +9,7 @@
 //! Per-credential refresh state is tracked in a `HashMap` behind a `Mutex`.
 //! The first caller to request a refresh for a given credential ID becomes
 //! the "winner" and performs the refresh. Subsequent callers receive a
-//! [`Notify`] handle and wait until the winner completes.
+//! [`Notify`](tokio::sync::Notify) handle and wait until the winner completes.
 //!
 //! The winner **must** call [`RefreshCoordinator::complete()`] when done
 //! (success or failure) to wake waiters and remove the in-flight entry.
