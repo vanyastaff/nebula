@@ -121,3 +121,4 @@ Prefer `ResiliencePipeline` for composing multiple patterns — it handles layer
 
 <!-- reviewed: 2026-04-02 — removed stale design/ folder (PLAN.md, TASKS.md, MIGRATION.md); Phase 9 backlog was referencing non-existent Task.md, all active context lives in this file -->
 <!-- reviewed: 2026-04-02 — ASM-guided optimizations: OutcomeWindow power-of-two capacity + bitmask wrapping (eliminates div), byte_sum chunked helper (enables SIMD auto-vectorization), AtomicU32 lock-free circuit_state(), apply_jitter mul_add + simplified NaN guard -->
+<!-- reviewed: 2026-04-02 — ASM audit round 2: byte_sum outlined (#[inline(never)]) with 4-accumulator unroll (record_outcome 980→502 insns), unsafe get_unchecked in record/active_slice (eliminates all bounds-check panics), revert mul_add→explicit mul+add (eliminates call fma on generic target), #[cold] on reset() -->

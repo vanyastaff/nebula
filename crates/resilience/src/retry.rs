@@ -443,6 +443,9 @@ where
 ///
 /// When `seed` is set, the jitter is deterministic but varies per `attempt`
 /// (seed is mixed with the attempt number to avoid identical jitter across retries).
+// Reason: mul_add compiles to `call fma` (~30 cycles) on default target-cpu=x86-64
+// which lacks hardware FMA. Explicit multiply+add uses mulsd+addsd (~8 cycles).
+#[allow(clippy::suboptimal_flops)]
 fn apply_jitter(delay: Duration, jitter: &JitterConfig, attempt: u32) -> Duration {
     match jitter {
         JitterConfig::None => delay,
@@ -458,7 +461,7 @@ fn apply_jitter(delay: Duration, jitter: &JitterConfig, attempt: u32) -> Duratio
                 // Mix seed with attempt so each retry gets different jitter
                 fastrand::Rng::with_seed(s.wrapping_add(u64::from(attempt))).f64()
             });
-            let total = clamped_factor.mul_add(base * rand_val, base);
+            let total = base + clamped_factor * base * rand_val;
             if !total.is_finite() || total < 0.0 {
                 return delay;
             }

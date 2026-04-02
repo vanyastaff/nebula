@@ -194,15 +194,22 @@ pub struct CircuitBreaker {
 
 /// Sum a slice of 0/1 bytes into a u32.
 ///
-/// Chunked iteration helps LLVM auto-vectorize via `psadbw`/`vpsadbw`.
-/// Each chunk accumulates in `u8` (max 255 iterations before overflow),
-/// then widens to `u32`. For slices <= 255 this is a single pass.
-#[inline]
+/// Uses 4 independent accumulators to break the loop-carried dependency
+/// chain, enabling superscalar execution (~4 adds/cycle instead of 1).
+/// Outlined (`inline(never)`) to prevent LLVM from duplicating the loop
+/// body at every inlined `failure_count`/`slow_count` call site.
+#[inline(never)]
 fn byte_sum(slice: &[u8]) -> u32 {
-    slice
-        .chunks(255)
-        .map(|chunk| u32::from(chunk.iter().copied().sum::<u8>()))
-        .sum()
+    let (mut a, mut b, mut c, mut d) = (0u32, 0u32, 0u32, 0u32);
+    let mut chunks = slice.chunks_exact(4);
+    for chunk in &mut chunks {
+        a += u32::from(chunk[0]);
+        b += u32::from(chunk[1]);
+        c += u32::from(chunk[2]);
+        d += u32::from(chunk[3]);
+    }
+    let sum = a + b + c + d;
+    sum + chunks.remainder().iter().copied().map(u32::from).sum::<u32>()
 }
 
 /// Fixed-size ring buffer of call outcomes for rate-based circuit breaking.
@@ -241,11 +248,19 @@ impl OutcomeWindow {
         }
     }
 
+    #[allow(unsafe_code)]
     pub fn record(&mut self, is_failure: bool, is_slow: bool) {
+        let h = self.head;
+        debug_assert!(h <= self.mask, "head exceeds mask");
+        // SAFETY: `head` is always `< capacity` because it is maintained via
+        // `(head + 1) & mask` where `mask = capacity - 1` and `capacity` equals
+        // both `failure_ring.len()` and `slow_ring.len()`.
+        unsafe {
+            *self.failure_ring.get_unchecked_mut(h) = u8::from(is_failure);
+            *self.slow_ring.get_unchecked_mut(h) = u8::from(is_slow);
+        }
+        self.head = (h + 1) & self.mask;
         let cap = self.mask + 1;
-        self.failure_ring[self.head] = u8::from(is_failure);
-        self.slow_ring[self.head] = u8::from(is_slow);
-        self.head = (self.head + 1) & self.mask;
         if self.len < cap {
             self.len += 1;
         }
@@ -268,15 +283,20 @@ impl OutcomeWindow {
         byte_sum(self.active_slice(&self.slow_ring))
     }
 
+    #[allow(unsafe_code)]
     fn active_slice<'a>(&self, ring: &'a [u8]) -> &'a [u8] {
         let cap = self.mask + 1;
         if self.len < cap {
-            &ring[..self.len]
+            debug_assert!(self.len <= ring.len(), "len exceeds ring capacity");
+            // SAFETY: `len` is always `<= capacity` which equals `ring.len()`.
+            // The `len < cap` guard above ensures `len < ring.len()`.
+            unsafe { ring.get_unchecked(..self.len) }
         } else {
             ring
         }
     }
 
+    #[cold]
     fn reset(&mut self) {
         self.head = 0;
         self.len = 0;
