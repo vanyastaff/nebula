@@ -175,8 +175,9 @@ fn test_key_derivation_timing() {
         .expect("key derivation should succeed");
     let duration = start.elapsed();
 
-    // Verify derivation takes between 50ms and 500ms
-    // (wider range to account for CPU variations, but should be ~100-200ms)
+    // Debug builds run unoptimized Argon2 — allow up to 2s.
+    // Release builds should complete in ~100-200ms on modern hardware.
+    let upper_ms: u128 = if cfg!(debug_assertions) { 2000 } else { 500 };
     let millis = duration.as_millis();
     println!("Key derivation took {}ms", millis);
 
@@ -186,9 +187,10 @@ fn test_key_derivation_timing() {
         millis
     );
     assert!(
-        millis <= 500,
-        "Key derivation too slow ({}ms), may impact usability",
-        millis
+        millis <= upper_ms,
+        "Key derivation too slow ({}ms > {}ms), may impact usability",
+        millis,
+        upper_ms
     );
 }
 
