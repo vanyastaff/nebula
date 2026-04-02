@@ -3,6 +3,7 @@
 //! Provides structured cancellation handling that integrates
 //! with tokio's cancellation tokens for graceful shutdown and operation cancellation.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -18,8 +19,9 @@ use crate::CallError;
 pub struct CancellationContext {
     /// Primary cancellation token
     token: CancellationToken,
-    /// Optional reason for cancellation
-    reason: Option<String>,
+    /// Optional reason for cancellation.
+    /// `Cow` avoids cloning when creating child contexts with static reasons.
+    reason: Option<Cow<'static, str>>,
 }
 
 impl CancellationContext {
@@ -33,7 +35,7 @@ impl CancellationContext {
     }
 
     /// Create a cancellation context with a reason.
-    pub fn with_reason(reason: impl Into<String>) -> Self {
+    pub fn with_reason(reason: impl Into<Cow<'static, str>>) -> Self {
         Self {
             token: CancellationToken::new(),
             reason: Some(reason.into()),
@@ -209,7 +211,7 @@ where
                 tokio::pin!(waker_future);
                 if waker_future.as_mut().poll(cx).is_ready() {
                     Poll::Ready(Err(CallError::Cancelled {
-                        reason: Some("Future was cancelled while pending".to_string()),
+                        reason: Some(Cow::Borrowed("Future was cancelled while pending")),
                     }))
                 } else {
                     Poll::Pending

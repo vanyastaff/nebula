@@ -128,4 +128,4 @@ Prefer `ResiliencePipeline` for composing multiple patterns — it handles layer
 <!-- reviewed: 2026-04-02 — ASM audit round 3: apply_jitter split into leaf dispatcher (42 insns, no callee-saves on None path) + #[inline(never)] apply_jitter_full; NaN guard simplified from 35 insns to 3 (ucomisd+jbe); total check simplified; infinity factor now clamped to 1.0 instead of rejected -->
 <!-- reviewed: 2026-04-02 — ASM audit round 4: byte_sum rewritten with SSE2 _mm_sad_epu8 intrinsics (16 bytes/cycle vs 4 bytes/cycle scalar); rate_exceeds() integer fixed-point comparison replaces f64 cvtsi2sd (eliminates false-dependency stalls); ThinLTO already enabled -->
 
-<!-- reviewed: 2026-04-02 — fmt only -->
+<!-- reviewed: 2026-04-02 — memory audit: CallError Cancelled/FallbackFailed reason String→Cow<'static, str>, ConfigError message String→Cow<'static, str>, CancellationContext reason String→Cow<'static, str> — eliminates heap alloc for static error messages -->

@@ -95,7 +95,7 @@ async fn test_fault_injection_cache_fallback_stale_if_error_returns_expired_valu
 async fn test_fault_injection_chain_fallback_cascades_to_next_strategy() {
     let first = Arc::new(FunctionFallback::new(|_error: CallError<()>| async move {
         Err::<String, _>(CallError::Cancelled {
-            reason: Some("first fallback failed".to_string()),
+            reason: Some("first fallback failed".into()),
         })
     }));
     let second = Arc::new(ValueFallback::new("chain-success".to_string()));

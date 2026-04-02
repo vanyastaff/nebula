@@ -1,5 +1,6 @@
 //! Core error and result types for nebula-resilience.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 /// Returned by all resilience operations.
@@ -28,7 +29,8 @@ pub enum CallError<E> {
     /// Operation was cancelled via `CancellationContext`.
     Cancelled {
         /// Optional human-readable reason for cancellation.
-        reason: Option<String>,
+        /// `Cow` avoids heap allocation for static reasons (the common case).
+        reason: Option<Cow<'static, str>>,
     },
     /// Load shed — system is overloaded, request rejected without queuing.
     LoadShed,
@@ -40,7 +42,8 @@ pub enum CallError<E> {
     /// The fallback strategy itself failed after the primary operation failed.
     FallbackFailed {
         /// Human-readable reason for the fallback failure.
-        reason: Option<String>,
+        /// `Cow` avoids heap allocation for static reasons (the common case).
+        reason: Option<Cow<'static, str>>,
     },
 }
 
@@ -220,7 +223,8 @@ pub struct ConfigError {
     /// Name of the invalid configuration field.
     pub field: &'static str,
     /// Human-readable description of the validation error.
-    pub message: String,
+    /// `Cow` avoids heap allocation for static messages (95%+ of call sites).
+    pub message: std::borrow::Cow<'static, str>,
 }
 
 impl nebula_error::Classify for ConfigError {
@@ -236,7 +240,7 @@ impl nebula_error::Classify for ConfigError {
 impl ConfigError {
     /// Create a new configuration error.
     #[must_use]
-    pub fn new(field: &'static str, message: impl Into<String>) -> Self {
+    pub fn new(field: &'static str, message: impl Into<std::borrow::Cow<'static, str>>) -> Self {
         Self {
             field,
             message: message.into(),
