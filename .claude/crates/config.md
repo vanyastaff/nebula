@@ -13,15 +13,16 @@ Multi-source configuration with env interpolation, hot-reload, and typed access.
 
 ## Traps
 - Invalid array index (`arr.x`) and out-of-bounds (`arr.5.name`) return descriptive errors — they don't panic.
+- Empty path segments are rejected: leading dot (`.a`), trailing dot (`a.`), and consecutive dots (`a..b`) all return `PathError`. Don't silently accept malformed paths.
 - `ConfigResultAggregator` collects multiple errors before returning — use for batch validation.
 - `EnvLoader` requires the `env` feature flag. Not default.
 - `PollingWatcher` is the fallback when native file watching isn't available — it polls on an interval.
+- **`interpolate` takes `Value` by value** (not `&Value`) — callers must pass ownership. In `builder.rs` this means `merged_data` is moved into `interpolate(merged_data)`.
+- **`reload()` does NOT re-interpolate** — env var references (`${VAR}`) in config sources are NOT re-resolved on hot-reload. Interpolation runs once at initial build time only. Pre-existing bug, tracked separately.
 
 ## Relations
 - Depends on nebula-log (re-exports `info!`, `debug!` etc. in prelude). Used by nebula-api, nebula-runtime, and any crate needing runtime configuration.
 
 <!-- reviewed: 2026-04-01 — Config derive moved to nebula-config-macros, re-exported from crate root -->
 
-<!-- reviewed: 2026-04-02 -->
-
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
+<!-- reviewed: 2026-04-02 — perf: interpolate now takes Value by value; get_nested_value uses byte-scan loop; empty path segments explicitly rejected -->
