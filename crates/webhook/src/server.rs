@@ -376,6 +376,7 @@ async fn webhook_handler(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use nebula_resource::{Context, Scope};

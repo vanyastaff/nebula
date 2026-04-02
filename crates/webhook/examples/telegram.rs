@@ -3,6 +3,9 @@
 //! This example demonstrates how to create a Telegram bot webhook trigger
 //! that receives messages and commands from Telegram.
 
+// Reason: webhook crate still uses v1 compat types (Context/Scope); migration tracked separately.
+#![allow(deprecated)]
+
 use async_trait::async_trait;
 use nebula_core::{ExecutionId, WorkflowId};
 use nebula_resource::{Context, Scope};
