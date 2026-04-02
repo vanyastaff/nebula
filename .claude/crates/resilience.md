@@ -78,6 +78,8 @@ Fault-tolerance patterns: circuit breaker, retry, bulkhead, rate limiter, timeou
 - Governor path: `rtk cargo nextest run -p nebula-resilience --features governor`
 - Pre-PR workspace gate: `rtk cargo fmt && rtk cargo clippy --workspace -- -D warnings && rtk cargo nextest run --workspace`
 - Targeted micro-benches: `cargo bench -p nebula-resilience --bench latency_tracker --features bench` and `--bench sliding_window_cb`
+- Loom (concurrency): `RUSTFLAGS="--cfg loom" cargo test -p nebula-resilience --features loom --lib -- loom`
+- Miri (UB detection): `cargo +nightly miri test -p nebula-resilience --lib` (139 tests, all pass)
 
 ## Common change playbooks
 - Touching `retry`:
