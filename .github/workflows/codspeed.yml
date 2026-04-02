@@ -63,6 +63,7 @@ jobs:
             -p nebula-resilience \
             -p nebula-expression \
             -p nebula-validator \
+            -p nebula-memory \
             --bench id_parse_serialize \
             --bench log_hot_path \
             --bench emit \
@@ -75,10 +76,18 @@ jobs:
             --bench bulkhead \
             --bench latency_tracker \
             --bench sliding_window_cb \
+            --bench retry \
+            --bench gate \
+            --bench load_shed \
+            --bench hedge \
             --bench baseline \
             --bench string_validators \
             --bench combinators \
-            --bench error_construction
+            --bench error_construction \
+            --bench allocator_benchmarks \
+            --bench real_world_scenarios \
+            --bench metrics_extension_benchmarks \
+            --bench allocations_bench
 
       - name: Run the benchmarks
         uses: CodSpeedHQ/action@v4
