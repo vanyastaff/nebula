@@ -8,13 +8,13 @@
 //!
 //! Run with:
 //! ```text
-//! cargo bench -p nebula-resilience --bench latency_tracker --features bench
+//! cargo bench -p nebula-resilience --bench latency_tracker
 //! ```
 
 use std::hint::black_box;
 use std::time::Duration;
 
-use nebula_resilience::BenchLatencyTracker;
+use nebula_resilience::LatencyTracker;
 
 fn main() {
     divan::main();
@@ -38,7 +38,7 @@ fn main() {
 fn record_steady_state(bencher: divan::Bencher, max_samples: usize) {
     // Build a tracker with a few distinct latency buckets so the histogram
     // has O(10) entries — realistic for a service with tight latency distribution.
-    let mut tracker = BenchLatencyTracker::new(max_samples);
+    let mut tracker = LatencyTracker::new(max_samples);
     for i in 0..max_samples {
         // 10 distinct values → histogram stays small regardless of ring size
         tracker.record(Duration::from_nanos((i % 10) as u64 * 100 + 50));
@@ -59,7 +59,7 @@ fn record_steady_state(bencher: divan::Bencher, max_samples: usize) {
     sample_count = 500,
 )]
 fn record_all_distinct(bencher: divan::Bencher, max_samples: usize) {
-    let mut tracker = BenchLatencyTracker::new(max_samples);
+    let mut tracker = LatencyTracker::new(max_samples);
     for i in 0..max_samples {
         tracker.record(Duration::from_nanos(i as u64 * 100));
     }
@@ -81,7 +81,7 @@ fn record_all_distinct(bencher: divan::Bencher, max_samples: usize) {
     sample_count = 500,
 )]
 fn percentile_p99(bencher: divan::Bencher, max_samples: usize) {
-    let mut tracker = BenchLatencyTracker::new(max_samples);
+    let mut tracker = LatencyTracker::new(max_samples);
     for i in 0..max_samples {
         tracker.record(Duration::from_nanos((i % 50) as u64 * 100));
     }
@@ -96,7 +96,7 @@ fn percentile_p99(bencher: divan::Bencher, max_samples: usize) {
 )]
 fn percentile_multi<const P: u32>(bencher: divan::Bencher) {
     const MAX_SAMPLES: usize = 1_000;
-    let mut tracker = BenchLatencyTracker::new(MAX_SAMPLES);
+    let mut tracker = LatencyTracker::new(MAX_SAMPLES);
     for i in 0..MAX_SAMPLES {
         tracker.record(Duration::from_nanos((i % 100) as u64 * 100));
     }

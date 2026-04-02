@@ -143,11 +143,9 @@ pub use sink::{
 pub use gate::{Gate, GateClosed, GateGuard};
 pub use pipeline::{LoadShedPredicate, PipelineBuilder, RateLimitCheck, ResiliencePipeline};
 
-// ── Bench support (feature = "bench" only) ────────────────────────────────────
+// ── Internals exposed for benchmarking ───────────────────────────────────────
 
-#[cfg(feature = "bench")]
 #[doc(hidden)]
-pub use circuit_breaker::_bench_support::BenchSlidingWindow;
-#[cfg(feature = "bench")]
+pub use circuit_breaker::OutcomeWindow;
 #[doc(hidden)]
-pub use hedge::_bench_support::BenchLatencyTracker;
+pub use hedge::LatencyTracker;

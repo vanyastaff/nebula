@@ -189,8 +189,11 @@ pub struct CircuitBreaker {
 /// Stores failure and slow-call flags in separate byte arrays so that
 /// `failure_count` and `slow_count` are simple contiguous-byte sums that
 /// LLVM can auto-vectorize with SIMD instructions.
+///
+/// Made `pub` so it can be benchmarked directly from `benches/sliding_window_cb.rs`.
+#[doc(hidden)]
 #[derive(Debug)]
-struct SlidingWindow {
+pub struct OutcomeWindow {
     /// 1 = failure, 0 = success — one byte per slot, contiguous for SIMD.
     failure_ring: Box<[u8]>,
     /// 1 = slow call, 0 = normal — one byte per slot, contiguous for SIMD.
@@ -199,8 +202,9 @@ struct SlidingWindow {
     len: usize,
 }
 
-impl SlidingWindow {
-    fn new(size: usize) -> Self {
+impl OutcomeWindow {
+    #[must_use]
+    pub fn new(size: usize) -> Self {
         Self {
             failure_ring: vec![0u8; size].into_boxed_slice(),
             slow_ring: vec![0u8; size].into_boxed_slice(),
@@ -209,7 +213,7 @@ impl SlidingWindow {
         }
     }
 
-    fn record(&mut self, is_failure: bool, is_slow: bool) {
+    pub fn record(&mut self, is_failure: bool, is_slow: bool) {
         let cap = self.failure_ring.len();
         self.failure_ring[self.head] = u8::from(is_failure);
         self.slow_ring[self.head] = u8::from(is_slow);
@@ -220,19 +224,22 @@ impl SlidingWindow {
     }
 
     // Reason: usize to u32 cast is safe for practical window sizes (< 2^32).
+    #[must_use]
     #[allow(clippy::cast_possible_truncation)]
-    const fn total(&self) -> u32 {
+    pub const fn total(&self) -> u32 {
         self.len as u32
     }
 
-    fn failure_count(&self) -> u32 {
+    #[must_use]
+    pub fn failure_count(&self) -> u32 {
         self.active_slice(&self.failure_ring)
             .iter()
             .map(|&b| u32::from(b))
             .sum()
     }
 
-    fn slow_count(&self) -> u32 {
+    #[must_use]
+    pub fn slow_count(&self) -> u32 {
         self.active_slice(&self.slow_ring)
             .iter()
             .map(|&b| u32::from(b))
@@ -266,7 +273,7 @@ struct InnerState {
     /// Number of slow calls in the current window.
     slow_calls: u32,
     /// Sliding window (used when `config.sliding_window_size > 0`).
-    window: Option<SlidingWindow>,
+    window: Option<OutcomeWindow>,
 }
 
 impl CircuitBreaker {
@@ -288,7 +295,7 @@ impl CircuitBreaker {
                 consecutive_opens: 0,
                 slow_calls: 0,
                 window: if window_size > 0 {
-                    Some(SlidingWindow::new(window_size as usize))
+                    Some(OutcomeWindow::new(window_size as usize))
                 } else {
                     None
                 },
@@ -739,38 +746,6 @@ const fn to_circuit_state(s: State) -> CircuitState {
         State::Closed => CircuitState::Closed,
         State::Open { .. } => CircuitState::Open,
         State::HalfOpen => CircuitState::HalfOpen,
-    }
-}
-
-// ── Bench support ─────────────────────────────────────────────────────────────
-
-/// Public wrappers around the private CB `SlidingWindow` for targeted micro-benchmarks.
-/// Enabled only under the `bench` feature — not part of the public API.
-#[cfg(feature = "bench")]
-#[allow(missing_docs)]
-pub mod _bench_support {
-    use super::SlidingWindow;
-
-    /// Thin public wrapper around the circuit breaker's internal [`SlidingWindow`]
-    /// for micro-benchmarking `failure_count`, `slow_count`, and `record`.
-    pub struct BenchSlidingWindow(SlidingWindow);
-
-    impl BenchSlidingWindow {
-        pub fn new(size: usize) -> Self {
-            Self(SlidingWindow::new(size))
-        }
-        pub fn record(&mut self, is_failure: bool, is_slow: bool) {
-            self.0.record(is_failure, is_slow);
-        }
-        pub fn failure_count(&self) -> u32 {
-            self.0.failure_count()
-        }
-        pub fn slow_count(&self) -> u32 {
-            self.0.slow_count()
-        }
-        pub fn total(&self) -> u32 {
-            self.0.total()
-        }
     }
 }
 

@@ -1,4 +1,4 @@
-//! Micro-benchmarks for the circuit breaker's internal `SlidingWindow`.
+//! Micro-benchmarks for the circuit breaker's internal `OutcomeWindow`.
 //!
 //! Measures the two core operations:
 //! - **`failure_count` / `slow_count`** — contiguous-byte sum over the active slice.
@@ -11,13 +11,13 @@
 //!
 //! Run with:
 //! ```text
-//! cargo bench -p nebula-resilience --bench sliding_window_cb --features bench
+//! cargo bench -p nebula-resilience --bench sliding_window_cb
 //! ```
 
 use std::hint::black_box;
 use std::time::Duration;
 
-use nebula_resilience::BenchSlidingWindow;
+use nebula_resilience::OutcomeWindow;
 use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
 
 fn main() {
@@ -37,7 +37,7 @@ fn main() {
     sample_count = 2_000,
 )]
 fn failure_count(bencher: divan::Bencher, window_size: usize) {
-    let mut w = BenchSlidingWindow::new(window_size);
+    let mut w = OutcomeWindow::new(window_size);
     // Fill with ~50% failures, ~30% slow — realistic CB workload
     for i in 0..window_size {
         w.record(i % 2 == 0, i % 3 == 0);
@@ -52,7 +52,7 @@ fn failure_count(bencher: divan::Bencher, window_size: usize) {
     sample_count = 2_000,
 )]
 fn slow_count(bencher: divan::Bencher, window_size: usize) {
-    let mut w = BenchSlidingWindow::new(window_size);
+    let mut w = OutcomeWindow::new(window_size);
     for i in 0..window_size {
         w.record(i % 2 == 0, i % 3 == 0);
     }
@@ -66,7 +66,7 @@ fn slow_count(bencher: divan::Bencher, window_size: usize) {
     sample_count = 2_000,
 )]
 fn failure_and_slow_count(bencher: divan::Bencher, window_size: usize) {
-    let mut w = BenchSlidingWindow::new(window_size);
+    let mut w = OutcomeWindow::new(window_size);
     for i in 0..window_size {
         w.record(i % 2 == 0, i % 3 == 0);
     }
@@ -86,7 +86,7 @@ fn failure_and_slow_count(bencher: divan::Bencher, window_size: usize) {
     sample_count = 2_000,
 )]
 fn record(bencher: divan::Bencher, window_size: usize) {
-    let mut w = BenchSlidingWindow::new(window_size);
+    let mut w = OutcomeWindow::new(window_size);
     // Warm up so we're always overwriting (ring full)
     for i in 0..window_size {
         w.record(i % 2 == 0, i % 3 == 0);
