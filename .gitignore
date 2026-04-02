@@ -332,6 +332,9 @@ init.sh
 # Auto Claude data directory
 .auto-claude/
 
+# Code review knowledge graph (local, auto-generated)
+.code-review-graph/
+
 # Auto Claude generated files
 .auto-claude-security.json
 .auto-claude-status
