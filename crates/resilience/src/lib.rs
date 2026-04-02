@@ -132,6 +132,8 @@ pub use hedge::{HedgeConfig, HedgeExecutor};
 pub use load_shed::load_shed;
 pub use rate_limiter::{AdaptiveRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket};
 pub use retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
+#[doc(hidden)]
+pub use retry::retry_with_inner;
 pub use timeout::{TimeoutExecutor, timeout};
 
 // Observability

@@ -5,6 +5,7 @@
 
 use std::time::Duration;
 
+use nebula_credential::SecretString;
 use nebula_credential::context::CredentialContext;
 use nebula_credential::credential::Credential;
 use nebula_credential::description::CredentialDescription;
@@ -16,7 +17,6 @@ use nebula_credential::resolve::{
     DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput,
 };
 use nebula_credential::scheme::BearerToken;
-use nebula_credential::SecretString;
 use nebula_parameter::ParameterCollection;
 use nebula_parameter::values::ParameterValues;
 

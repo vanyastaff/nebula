@@ -463,7 +463,12 @@ impl MemorySnapshot {
         SnapshotDiff {
             from_id: self.id,
             to_id: other.id,
-            time_delta: other.timestamp.duration_since(self.timestamp),
+            // checked_duration_since returns None if other < self (inverted order)
+            // rather than panicking in debug builds or producing wrong results
+            time_delta: other
+                .timestamp
+                .checked_duration_since(self.timestamp)
+                .unwrap_or(std::time::Duration::ZERO),
             metrics_diff,
             component_diffs,
             system_diff: self.compare_system_info(other),

@@ -156,7 +156,11 @@ impl<'a> ArenaGuard<'a> {
 impl Drop for ArenaGuard<'_> {
     fn drop(&mut self) {
         if self.active {
-            let _ = self.arena.reset_to_position(self.position);
+            let result = self.arena.reset_to_position(self.position);
+            debug_assert!(
+                result.is_ok(),
+                "ArenaGuard: reset_to_position failed on drop — position may be from a different arena"
+            );
         }
     }
 }

@@ -16,7 +16,9 @@ pub trait MemoryUsage {
     /// Get total memory capacity in bytes (if known)
     fn total_memory(&self) -> Option<usize> {
         match (self.used_memory(), self.available_memory()) {
-            (used, Some(available)) => Some(used + available),
+            // checked_add prevents silent overflow — returns None if the sum
+            // would wrap, which is the correct semantic (total unknown).
+            (used, Some(available)) => used.checked_add(available),
             _ => None,
         }
     }

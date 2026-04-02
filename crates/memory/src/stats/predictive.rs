@@ -202,13 +202,11 @@ impl PredictiveAnalytics {
 
         let predicted_value = trend.slope * x_predict + trend.intercept;
 
-        // Calculate confidence based on R-squared and data points
-        // R-squared alone isn't a full confidence interval. A proper confidence
-        // interval would involve the standard error of the estimate and
-        // t-distribution. For simplicity, this is an heuristic "confidence
-        // score".
+        // Calculate confidence based on R-squared and data points.
+        // R-squared can be negative for noisy data (ss_res > ss_tot).
+        // Clamp to [0, 1] so `confidence` is always a valid probability-like score.
         let confidence_score =
-            trend.r_squared * (self.history.len() as f64 / self.max_history as f64).min(1.0);
+            trend.r_squared.max(0.0) * (self.history.len() as f64 / self.max_history as f64).min(1.0);
 
         // Simple confidence interval approximation:
         // Use a simple error margin based on standard deviation of historical data.

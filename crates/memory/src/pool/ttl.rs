@@ -47,6 +47,8 @@ pub struct TtlPool<T: Poolable> {
     callbacks: Box<dyn PoolCallbacks<T>>,
     last_cleanup: Instant,
     cleanup_interval: Duration,
+    /// Total objects ever created — for `max_capacity` enforcement regardless of `stats` feature.
+    created_count: usize,
     #[cfg(feature = "stats")]
     stats: PoolStats,
 }
@@ -100,6 +102,8 @@ impl<T: Poolable> TtlPool<T> {
             }
         }
 
+        let created_count = if config.pre_warm { config.initial_capacity } else { 0 };
+
         Self {
             objects,
             factory: Box::new(factory),
@@ -108,6 +112,7 @@ impl<T: Poolable> TtlPool<T> {
             callbacks: Box::new(NoOpCallbacks),
             last_cleanup: now,
             cleanup_interval: ttl / 10, // Cleanup every 10% of TTL
+            created_count,
             #[cfg(feature = "stats")]
             stats,
         }
@@ -172,19 +177,15 @@ impl<T: Poolable> TtlPool<T> {
             #[cfg(feature = "stats")]
             self.stats.record_miss();
 
-            // Check capacity
-            if let Some(max) = self.config.max_capacity {
-                #[cfg(feature = "stats")]
-                let created = self.stats.total_created();
-                #[cfg(not(feature = "stats"))]
-                let created = 0;
-
-                if created >= max {
-                    return Err(MemoryError::pool_exhausted("pool", 0));
-                }
+            // Check capacity using created_count (works with or without stats feature)
+            if let Some(max) = self.config.max_capacity
+                && self.created_count >= max
+            {
+                return Err(MemoryError::pool_exhausted("pool", 0));
             }
 
             let obj = (self.factory)();
+            self.created_count += 1;
             self.callbacks.on_create(&obj);
 
             #[cfg(feature = "stats")]
@@ -316,13 +317,20 @@ impl<T: Poolable> Drop for TtlPooledValue<T> {
     }
 }
 
-// SAFETY: TtlPooledValue can be sent between threads if T: Send.
-// - value: ManuallyDrop<T> is Send if T: Send
-// - pool: Raw pointer not shared (exclusive ownership of value)
-// - T: Send ensures value can be safely sent
-// - Pool pointer used only for returning (no concurrent access)
-// - Drop on destination thread safely returns object to pool
-unsafe impl<T: Poolable + Send> Send for TtlPooledValue<T> {}
+// TtlPooledValue is intentionally !Send.
+//
+// The `pool` field is a raw `*mut TtlPool<T>`. If a TtlPooledValue were sent
+// to another thread and dropped there, `Drop::drop` would call
+// `(*self.pool).return_object(obj)` on a TtlPool that may concurrently be
+// accessed from the original thread — a data race, because TtlPool has no
+// internal synchronization.
+//
+// This mirrors the same reasoning that makes `Batch<T>` intentionally !Send.
+//
+// To process the contained object on a worker thread, call `detach()` first
+// to take ownership of the `T` (which is `Send` when `T: Send`), transfer
+// that value across the thread boundary, and return a fresh object to the pool
+// from the pool-owning thread when done.
 
 #[cfg(test)]
 mod tests {

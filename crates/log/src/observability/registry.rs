@@ -18,7 +18,66 @@ use std::time::Instant;
 /// individually `Arc`-wrapped so hooks can be shared across registry snapshots.
 type HookList = Vec<Arc<dyn ObservabilityHook>>;
 
-/// Emit an event to a hook list.
+/// Emit an event to hooks with inline (panic-safe) dispatch.
+///
+/// Each hook's on_event() is wrapped in catch_unwind to ensure
+/// one panicked hook doesn't poison others.
+#[inline]
+fn emit_to_hooks_inline(hooks: &HookList, event: &dyn ObservabilityEvent) {
+    for hook in hooks.iter() {
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            hook.on_event(event);
+        }));
+
+        if let Err(panic_info) = result {
+            tracing::error!(
+                event_name = event.name(),
+                hook_type = std::any::type_name::<dyn ObservabilityHook>(),
+                panic = ?panic_info,
+                "Hook panicked while processing event"
+            );
+        }
+    }
+}
+
+/// Emit an event to hooks with bounded (timeout-aware) dispatch.
+///
+/// Batch timeout measurement instead of per-hook, reducing Instant::now() calls.
+/// If batch exceeds timeout, remaining hooks are skipped.
+#[inline]
+fn emit_to_hooks_bounded(
+    hooks: &HookList,
+    event: &dyn ObservabilityEvent,
+    timeout_ms: u64,
+) {
+    let started = Instant::now();
+
+    for hook in hooks.iter() {
+        if started.elapsed().as_millis() as u64 > timeout_ms {
+            tracing::warn!(
+                event_name = event.name(),
+                timeout_ms = timeout_ms,
+                "Hook dispatch exceeded configured execution budget"
+            );
+            break;
+        }
+
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            hook.on_event(event);
+        }));
+
+        if let Err(panic_info) = result {
+            tracing::error!(
+                event_name = event.name(),
+                hook_type = std::any::type_name::<dyn ObservabilityHook>(),
+                panic = ?panic_info,
+                "Hook panicked while processing event"
+            );
+        }
+    }
+}
+
+/// Emit an event to a hook list (legacy, kept for compatibility).
 ///
 /// Calls `on_event()` on each registered hook with the provided event.
 /// If a hook panics, the panic is caught and logged, and other hooks
@@ -31,47 +90,20 @@ type HookList = Vec<Arc<dyn ObservabilityHook>>;
 /// registry catches the panic and continues dispatching to remaining hooks,
 /// but the panicked hook's internal state may be corrupted. Consider wrapping
 /// fallible hook internals in `catch_unwind` or using lock-free data structures.
+#[deprecated(note = "use emit_to_hooks_inline or emit_to_hooks_bounded directly")]
+#[allow(dead_code)]
 fn emit_to_hooks(hooks: &HookList, event: &dyn ObservabilityEvent, policy: HookPolicy) {
-    let timeout_ms = match policy {
-        HookPolicy::Inline => None,
-        HookPolicy::Bounded { timeout_ms, .. } => Some(timeout_ms),
-    };
-
-    for hook in hooks.iter() {
-        let started = Instant::now();
-        // No Arc::clone needed — we borrow through the slice reference,
-        // which is kept alive by the ArcSwap guard for the duration of emit.
-        let result = panic::catch_unwind(AssertUnwindSafe(|| {
-            hook.on_event(event);
-        }));
-
-        if let Err(panic_info) = result {
-            tracing::error!(
-                event_name = event.name(),
-                hook_type = std::any::type_name::<dyn ObservabilityHook>(),
-                panic = ?panic_info,
-                "Hook panicked while processing event"
-            );
-            continue;
-        }
-
-        if let Some(timeout) = timeout_ms {
-            let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-            if elapsed > timeout {
-                tracing::warn!(
-                    event_name = event.name(),
-                    elapsed_ms = elapsed,
-                    timeout_ms = timeout,
-                    "Hook exceeded configured execution budget"
-                );
-            }
-        }
+    match policy {
+        HookPolicy::Inline => emit_to_hooks_inline(hooks, event),
+        HookPolicy::Bounded { timeout_ms, .. } => emit_to_hooks_bounded(hooks, event, timeout_ms),
     }
 }
 
 /// Initialize a hook, catching panics.
 ///
 /// Returns `true` if initialization succeeded, `false` if the hook panicked.
+/// Marked cold: hook registration is not in hot path.
+#[cold]
 fn try_initialize_hook(hook: &dyn ObservabilityHook) -> bool {
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         hook.initialize();
@@ -90,6 +122,8 @@ fn try_initialize_hook(hook: &dyn ObservabilityHook) -> bool {
 }
 
 /// Shutdown all hooks in a list, catching panics.
+/// Marked cold: shutdown is not in hot path.
+#[cold]
 fn shutdown_hooks_list(hooks: &HookList, policy: HookPolicy) {
     let timeout_ms = match policy {
         HookPolicy::Inline => None,
@@ -220,14 +254,22 @@ pub fn register_hook(hook: Arc<dyn ObservabilityHook>) {
 ///
 /// emit_event(&MyEvent);
 /// ```
-#[inline]
+#[inline(always)]
 pub fn emit_event(event: &dyn ObservabilityEvent) {
-    if SHUTTING_DOWN.load(Ordering::Acquire) {
+    // Relaxed ordering is safe: SHUTTING_DOWN is only written during shutdown,
+    // and we're already in a fire-and-forget path. No acquire needed.
+    if SHUTTING_DOWN.load(Ordering::Relaxed) {
         return;
     }
     let hooks = HOOKS.load();
     let policy = *policy_read_guard();
-    emit_to_hooks(&hooks, event, policy);
+    // Inline dispatch to reduce function call overhead in hot path
+    match policy {
+        HookPolicy::Inline => emit_to_hooks_inline(&hooks, event),
+        HookPolicy::Bounded { timeout_ms, queue_capacity: _ } => {
+            emit_to_hooks_bounded(&hooks, event, timeout_ms);
+        }
+    }
 }
 
 /// Set hook execution policy for subsequent emissions.

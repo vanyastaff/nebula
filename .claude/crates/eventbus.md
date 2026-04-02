@@ -30,3 +30,5 @@ Generic typed pub/sub event bus — transport infrastructure only, no domain eve
 - No nebula deps. Used by nebula-telemetry, nebula-resource, nebula-credential.
 
 <!-- reviewed: 2026-03-19 -->
+
+<!-- reviewed: 2026-04-02 -->

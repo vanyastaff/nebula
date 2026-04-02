@@ -1,6 +1,7 @@
 //! Smart pointer for pool-allocated objects
 
 use core::alloc::Layout;
+use core::marker::PhantomData;
 use core::ptr::{self, NonNull};
 
 use super::PoolAllocator;
@@ -10,15 +11,20 @@ use crate::allocator::{Allocator, MemoryError};
 ///
 /// Automatically returns memory to the pool when dropped.
 /// Similar to `Box` but backed by a pool allocator.
-pub struct PoolBox<T> {
+///
+/// The lifetime `'a` ties this value to the allocator that owns the backing
+/// memory.  The allocator cannot be dropped while any `PoolBox<'a, T>` that
+/// was allocated from it is still alive.
+pub struct PoolBox<'a, T> {
     ptr: NonNull<T>,
     allocator: NonNull<PoolAllocator>,
+    _lifetime: PhantomData<&'a PoolAllocator>,
 }
 
-impl<T> PoolBox<T> {
+impl<'a, T> PoolBox<'a, T> {
     /// Creates a new `PoolBox` by allocating from the given pool
     #[must_use = "allocated value must be used"]
-    pub fn new_in(value: T, allocator: &PoolAllocator) -> Result<Self, MemoryError> {
+    pub fn new_in(value: T, allocator: &'a PoolAllocator) -> Result<Self, MemoryError> {
         let layout = Layout::new::<T>();
 
         // SAFETY: Pool allocation and initialization sequence.
@@ -43,6 +49,7 @@ impl<T> PoolBox<T> {
             Ok(Self {
                 ptr: ptr_non_null,
                 allocator: allocator_non_null.cast(),
+                _lifetime: PhantomData,
             })
         }
     }
@@ -100,7 +107,7 @@ impl<T> PoolBox<T> {
     }
 }
 
-impl<T> core::ops::Deref for PoolBox<T> {
+impl<T> core::ops::Deref for PoolBox<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -108,13 +115,13 @@ impl<T> core::ops::Deref for PoolBox<T> {
     }
 }
 
-impl<T> core::ops::DerefMut for PoolBox<T> {
+impl<T> core::ops::DerefMut for PoolBox<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut()
     }
 }
 
-impl<T> Drop for PoolBox<T> {
+impl<T> Drop for PoolBox<'_, T> {
     fn drop(&mut self) {
         // SAFETY: Dropping value and returning memory to pool.
         // 1. drop_in_place runs T's destructor:

@@ -54,6 +54,7 @@ time = { version = "0.3", features = ["macros", "formatting"] }
 pin-project = "1.1"
 arc-swap = { workspace = true }
 parking_lot = { workspace = true }
+smallvec = { workspace = true }
 
 # Metrics (optional)
 metrics = { workspace = true, optional = true }

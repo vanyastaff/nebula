@@ -923,13 +923,10 @@ mod tests {
         assert_eq!(value, "refreshed-token");
 
         // Subscriber should have received a Refreshed event
-        let event = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            subscriber.recv(),
-        )
-        .await
-        .expect("timed out waiting for event")
-        .expect("bus closed unexpectedly");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), subscriber.recv())
+            .await
+            .expect("timed out waiting for event")
+            .expect("bus closed unexpectedly");
 
         assert_eq!(
             event,
@@ -981,11 +978,8 @@ mod tests {
         assert_eq!(value, "still-valid");
 
         // No event should be pending -- recv should time out
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            subscriber.recv(),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(50), subscriber.recv()).await;
         assert!(result.is_err(), "expected no event, but received one");
     }
 }

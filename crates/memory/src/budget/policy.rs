@@ -325,10 +325,17 @@ impl AllocationPolicy for FairSharePolicy {
                 };
                 
                 if reclaim_amount > 0 {
+                    // Guard against limit == 0 to avoid division-by-zero (produces Inf,
+                    // which truncates to 0 on x86 but is implementation-defined).
+                    let usage_pct = if limit == 0 {
+                        255_u8
+                    } else {
+                        ((used as f64 / limit as f64) * 100.0).min(255.0) as u8
+                    };
                     suggestions.push(ReclaimSuggestion {
                         budget: budget.clone(),
                         amount: reclaim_amount,
-                        priority: ((used as f64 / limit as f64) * 100.0) as u8, // Higher usage % = higher priority
+                        priority: usage_pct, // Higher usage % = higher priority
                     });
                     
                     total_suggested += reclaim_amount;

@@ -151,6 +151,9 @@ fn emit_field_rule(field: &FieldDef, rule: &Rule) -> TokenStream2 {
         Rule::Regex(pattern) => emit_regex_validator(field, pattern),
         Rule::Nested => emit_nested_validator(field),
         Rule::Custom(expr) => emit_custom_validator(field, expr),
+        Rule::Using(expr) => emit_using_validator(field, expr),
+        Rule::All(exprs) => emit_all_validators(field, exprs),
+        Rule::Any(exprs) => emit_any_validators(field, exprs),
     }
 }
 
@@ -316,11 +319,18 @@ fn emit_size_range(field: &FieldDef, min: usize, max: usize) -> TokenStream2 {
     let element_type = vec_inner_type_from_field(field);
 
     let inner = quote! {
-        if let Err(e) = ::nebula_validator::foundation::Validate::validate(
-            &::nebula_validator::validators::size_range::<#element_type>(#min, #max),
-            value.as_slice(),
-        ) {
-            errors.add(e.with_field(#field_key));
+        match ::nebula_validator::validators::try_size_range::<#element_type>(#min, #max) {
+            Ok(v) => {
+                if let Err(e) = ::nebula_validator::foundation::Validate::validate(
+                    &v,
+                    value.as_slice(),
+                ) {
+                    errors.add(e.with_field(#field_key));
+                }
+            }
+            Err(e) => {
+                errors.add(e.with_field(#field_key));
+            }
         }
     };
 
@@ -467,6 +477,94 @@ fn emit_custom_validator(field: &FieldDef, expr: &TokenStream2) -> TokenStream2 
     wrap_option(field, inner)
 }
 
+/// Emit a validator-expression check via `Validate::validate`.
+fn emit_using_validator(field: &FieldDef, expr: &TokenStream2) -> TokenStream2 {
+    let field_key = field.ident.to_string();
+
+    let inner = if let Some(message) = &field.message {
+        quote! {
+            if let Err(mut e) = ::nebula_validator::foundation::Validate::validate(&(#expr), value) {
+                e = e.with_field(#field_key);
+                e.message = ::std::borrow::Cow::Owned(#message.to_string());
+                errors.add(e);
+            }
+        }
+    } else {
+        quote! {
+            if let Err(e) = ::nebula_validator::foundation::Validate::validate(&(#expr), value) {
+                errors.add(e.with_field(#field_key));
+            }
+        }
+    };
+
+    wrap_option(field, inner)
+}
+
+/// Emit `all(v1, v2, ...)` by applying validators sequentially.
+fn emit_all_validators(field: &FieldDef, exprs: &[TokenStream2]) -> TokenStream2 {
+    let field_key = field.ident.to_string();
+
+    let checks: Vec<TokenStream2> = exprs
+        .iter()
+        .map(|expr| {
+            quote! {
+                if let Err(e) = ::nebula_validator::foundation::Validate::validate(&(#expr), value) {
+                    errors.add(e.with_field(#field_key));
+                }
+            }
+        })
+        .collect();
+
+    let inner = quote! {
+        #(#checks)*
+    };
+
+    wrap_message(field, wrap_option(field, inner))
+}
+
+/// Emit `any(v1, v2, ...)` by accepting the first passing validator.
+fn emit_any_validators(field: &FieldDef, exprs: &[TokenStream2]) -> TokenStream2 {
+    let field_key = field.ident.to_string();
+
+    let attempts: Vec<TokenStream2> = exprs
+        .iter()
+        .map(|expr| {
+            quote! {
+                if !__nebula_any_passed {
+                    match ::nebula_validator::foundation::Validate::validate(&(#expr), value) {
+                        Ok(()) => {
+                            __nebula_any_passed = true;
+                        }
+                        Err(e) => {
+                            __nebula_any_errors.add(e.with_field(#field_key));
+                        }
+                    }
+                }
+            }
+        })
+        .collect();
+
+    let inner = quote! {
+        let mut __nebula_any_passed = false;
+        let mut __nebula_any_errors = ::nebula_validator::foundation::ValidationErrors::new();
+        #(#attempts)*
+
+        if !__nebula_any_passed {
+            let count = __nebula_any_errors.len();
+            errors.add(
+                ::nebula_validator::foundation::ValidationError::new(
+                    "any_failed",
+                    format!("all {} validators in any(...) failed", count),
+                )
+                .with_field(#field_key)
+                .with_nested(__nebula_any_errors.into_iter().collect()),
+            );
+        }
+    };
+
+    wrap_message(field, wrap_option(field, inner))
+}
+
 // ---------------------------------------------------------------------------
 // Each-loop codegen
 // ---------------------------------------------------------------------------
@@ -480,7 +578,7 @@ fn emit_each_loop(field: &FieldDef, each: &EachRules) -> TokenStream2 {
     let each_checks: Vec<TokenStream2> = each
         .rules
         .iter()
-        .map(|rule| emit_each_rule(rule, field))
+        .map(|rule| emit_each_rule(rule, field, each))
         .collect();
 
     let each_loop = quote! {
@@ -508,22 +606,33 @@ fn emit_each_loop(field: &FieldDef, each: &EachRules) -> TokenStream2 {
 ///
 /// Inside the loop, `value` is the element ref and `each_field` is the indexed
 /// field path string (e.g. `"tags[0]"`).
-fn emit_each_rule(rule: &Rule, field: &FieldDef) -> TokenStream2 {
+fn emit_each_rule(rule: &Rule, field: &FieldDef, each: &EachRules) -> TokenStream2 {
     let message = &field.message;
+    let element_is_option = option_type_check(&each.element_ty);
 
     match rule {
-        Rule::MinLength(n) => emit_each_len_check(*n, true, message),
-        Rule::MaxLength(n) => emit_each_len_check(*n, false, message),
-        Rule::ExactLength(n) => emit_each_exact_len(*n, message),
-        Rule::Min(bound) => emit_each_cmp_check(bound, true, message),
-        Rule::Max(bound) => emit_each_cmp_check(bound, false, message),
-        Rule::StringFormat(fmt) => emit_each_str_validator(string_format_to_tokens(*fmt), message),
-        Rule::StringFactory { kind, arg } => {
-            emit_each_str_validator(string_factory_to_tokens(*kind, arg), message)
+        Rule::Required => emit_each_required(message, element_is_option),
+        Rule::MinLength(n) => emit_each_len_check(*n, true, message, element_is_option),
+        Rule::MaxLength(n) => emit_each_len_check(*n, false, message, element_is_option),
+        Rule::ExactLength(n) => emit_each_exact_len(*n, message, element_is_option),
+        Rule::Min(bound) => emit_each_cmp_check(bound, true, message, element_is_option),
+        Rule::Max(bound) => emit_each_cmp_check(bound, false, message, element_is_option),
+        Rule::StringFormat(fmt) => {
+            emit_each_str_validator(string_format_to_tokens(*fmt), message, element_is_option)
         }
-        Rule::Regex(pattern) => emit_each_regex(pattern, message),
-        Rule::Nested => emit_each_nested(message),
-        Rule::Custom(expr) => emit_each_custom(expr, message),
+        Rule::StringFactory { kind, arg } => emit_each_str_validator(
+            string_factory_to_tokens(*kind, arg),
+            message,
+            element_is_option,
+        ),
+        Rule::IsTrue => emit_each_bool_check(true, message, element_is_option),
+        Rule::IsFalse => emit_each_bool_check(false, message, element_is_option),
+        Rule::Regex(pattern) => emit_each_regex(pattern, message, element_is_option),
+        Rule::Nested => emit_each_nested(message, element_is_option),
+        Rule::Custom(expr) => emit_each_custom(expr, message, element_is_option),
+        Rule::Using(expr) => emit_each_using(expr, message, element_is_option),
+        Rule::All(exprs) => emit_each_all(exprs, message, element_is_option),
+        Rule::Any(exprs) => emit_each_any(exprs, message, element_is_option),
         // Other rules are not valid inside each(...) but parse phase would
         // not produce them; this arm is for completeness.
         _ => quote!(),
@@ -535,7 +644,12 @@ fn emit_each_rule(rule: &Rule, field: &FieldDef) -> TokenStream2 {
 // ---------------------------------------------------------------------------
 
 /// Emit element-level min_length or max_length check.
-fn emit_each_len_check(bound: usize, is_min: bool, message: &Option<String>) -> TokenStream2 {
+fn emit_each_len_check(
+    bound: usize,
+    is_min: bool,
+    message: &Option<String>,
+    element_is_option: bool,
+) -> TokenStream2 {
     let error_ctor = if is_min {
         quote!(::nebula_validator::foundation::ValidationError::min_length)
     } else {
@@ -547,7 +661,7 @@ fn emit_each_len_check(bound: usize, is_min: bool, message: &Option<String>) -> 
         quote!(value.len() > #bound)
     };
 
-    if let Some(msg) = message {
+    let check = if let Some(msg) = message {
         quote! {
             if #cmp {
                 let mut err = #error_ctor(each_field.clone(), #bound, value.len());
@@ -561,12 +675,18 @@ fn emit_each_len_check(bound: usize, is_min: bool, message: &Option<String>) -> 
                 errors.add(#error_ctor(each_field.clone(), #bound, value.len()));
             }
         }
-    }
+    };
+
+    wrap_each_option(element_is_option, check)
 }
 
 /// Emit element-level exact_length check.
-fn emit_each_exact_len(expected: usize, message: &Option<String>) -> TokenStream2 {
-    if let Some(msg) = message {
+fn emit_each_exact_len(
+    expected: usize,
+    message: &Option<String>,
+    element_is_option: bool,
+) -> TokenStream2 {
+    let check = if let Some(msg) = message {
         quote! {
             if value.len() != #expected {
                 let mut err = ::nebula_validator::foundation::ValidationError::exact_length(
@@ -584,7 +704,9 @@ fn emit_each_exact_len(expected: usize, message: &Option<String>) -> TokenStream
                 ));
             }
         }
-    }
+    };
+
+    wrap_each_option(element_is_option, check)
 }
 
 /// Emit element-level min or max numeric comparison check.
@@ -592,6 +714,7 @@ fn emit_each_cmp_check(
     bound: &TokenStream2,
     is_min: bool,
     message: &Option<String>,
+    element_is_option: bool,
 ) -> TokenStream2 {
     let code = if is_min { "min" } else { "max" };
     let cmp = if is_min {
@@ -601,7 +724,7 @@ fn emit_each_cmp_check(
     };
     let op_str = if is_min { ">=" } else { "<=" };
 
-    if let Some(msg) = message {
+    let check = if let Some(msg) = message {
         quote! {
             if #cmp {
                 let mut err = ::nebula_validator::foundation::ValidationError::new(
@@ -625,12 +748,18 @@ fn emit_each_cmp_check(
                 );
             }
         }
-    }
+    };
+
+    wrap_each_option(element_is_option, check)
 }
 
 /// Emit element-level string validator check.
-fn emit_each_str_validator(validator_expr: TokenStream2, message: &Option<String>) -> TokenStream2 {
-    if let Some(msg) = message {
+fn emit_each_str_validator(
+    validator_expr: TokenStream2,
+    message: &Option<String>,
+    element_is_option: bool,
+) -> TokenStream2 {
+    let check = if let Some(msg) = message {
         quote! {
             if let Err(mut e) = ::nebula_validator::foundation::Validate::validate(&#validator_expr, value.as_str()) {
                 e = e.with_field(each_field.clone());
@@ -644,12 +773,18 @@ fn emit_each_str_validator(validator_expr: TokenStream2, message: &Option<String
                 errors.add(e.with_field(each_field.clone()));
             }
         }
-    }
+    };
+
+    wrap_each_option(element_is_option, check)
 }
 
 /// Emit element-level regex validator check.
-fn emit_each_regex(pattern: &str, message: &Option<String>) -> TokenStream2 {
-    if let Some(msg) = message {
+fn emit_each_regex(
+    pattern: &str,
+    message: &Option<String>,
+    element_is_option: bool,
+) -> TokenStream2 {
+    let check = if let Some(msg) = message {
         quote! {
             match ::nebula_validator::validators::matches_regex(#pattern) {
                 Ok(v) => {
@@ -689,12 +824,14 @@ fn emit_each_regex(pattern: &str, message: &Option<String>) -> TokenStream2 {
                 }
             }
         }
-    }
+    };
+
+    wrap_each_option(element_is_option, check)
 }
 
 /// Emit element-level nested validation check.
-fn emit_each_nested(message: &Option<String>) -> TokenStream2 {
-    if let Some(msg) = message {
+fn emit_each_nested(message: &Option<String>, element_is_option: bool) -> TokenStream2 {
+    let check = if let Some(msg) = message {
         quote! {
             if let Err(mut e) = ::nebula_validator::combinators::SelfValidating::check(value) {
                 e = e.with_field(each_field.clone());
@@ -708,12 +845,18 @@ fn emit_each_nested(message: &Option<String>) -> TokenStream2 {
                 errors.add(e.with_field(each_field.clone()));
             }
         }
-    }
+    };
+
+    wrap_each_option(element_is_option, check)
 }
 
 /// Emit element-level custom validator check.
-fn emit_each_custom(expr: &TokenStream2, message: &Option<String>) -> TokenStream2 {
-    if let Some(msg) = message {
+fn emit_each_custom(
+    expr: &TokenStream2,
+    message: &Option<String>,
+    element_is_option: bool,
+) -> TokenStream2 {
+    let check = if let Some(msg) = message {
         quote! {
             if let Err(mut e) = (#expr)(value) {
                 e = e.with_field(each_field.clone());
@@ -727,6 +870,203 @@ fn emit_each_custom(expr: &TokenStream2, message: &Option<String>) -> TokenStrea
                 errors.add(e.with_field(each_field.clone()));
             }
         }
+    };
+
+    wrap_each_option(element_is_option, check)
+}
+
+/// Emit element-level validator-expression check.
+fn emit_each_using(
+    expr: &TokenStream2,
+    message: &Option<String>,
+    element_is_option: bool,
+) -> TokenStream2 {
+    let check = if let Some(msg) = message {
+        quote! {
+            if let Err(mut e) = ::nebula_validator::foundation::Validate::validate(&(#expr), value) {
+                e = e.with_field(each_field.clone());
+                e.message = ::std::borrow::Cow::Owned(#msg.to_string());
+                errors.add(e);
+            }
+        }
+    } else {
+        quote! {
+            if let Err(e) = ::nebula_validator::foundation::Validate::validate(&(#expr), value) {
+                errors.add(e.with_field(each_field.clone()));
+            }
+        }
+    };
+
+    wrap_each_option(element_is_option, check)
+}
+
+/// Emit `each(all(...))` by applying all validators to every element.
+fn emit_each_all(
+    exprs: &[TokenStream2],
+    message: &Option<String>,
+    element_is_option: bool,
+) -> TokenStream2 {
+    let checks: Vec<TokenStream2> = exprs
+        .iter()
+        .map(|expr| {
+            if let Some(msg) = message {
+                quote! {
+                    if let Err(mut e) = ::nebula_validator::foundation::Validate::validate(&(#expr), value) {
+                        e = e.with_field(each_field.clone());
+                        e.message = ::std::borrow::Cow::Owned(#msg.to_string());
+                        errors.add(e);
+                    }
+                }
+            } else {
+                quote! {
+                    if let Err(e) = ::nebula_validator::foundation::Validate::validate(&(#expr), value) {
+                        errors.add(e.with_field(each_field.clone()));
+                    }
+                }
+            }
+        })
+        .collect();
+
+    let check = quote! {
+        #(#checks)*
+    };
+
+    wrap_each_option(element_is_option, check)
+}
+
+/// Emit `each(any(...))` by accepting the first passing validator per element.
+fn emit_each_any(
+    exprs: &[TokenStream2],
+    message: &Option<String>,
+    element_is_option: bool,
+) -> TokenStream2 {
+    let attempts: Vec<TokenStream2> = exprs
+        .iter()
+        .map(|expr| {
+            quote! {
+                if !__nebula_each_any_passed {
+                    match ::nebula_validator::foundation::Validate::validate(&(#expr), value) {
+                        Ok(()) => {
+                            __nebula_each_any_passed = true;
+                        }
+                        Err(e) => {
+                            __nebula_each_any_errors.add(e.with_field(each_field.clone()));
+                        }
+                    }
+                }
+            }
+        })
+        .collect();
+
+    let check = if let Some(msg) = message {
+        quote! {
+            let mut __nebula_each_any_passed = false;
+            let mut __nebula_each_any_errors = ::nebula_validator::foundation::ValidationErrors::new();
+            #(#attempts)*
+
+            if !__nebula_each_any_passed {
+                let count = __nebula_each_any_errors.len();
+                let mut err = ::nebula_validator::foundation::ValidationError::new(
+                    "any_failed",
+                    format!("all {} validators in any(...) failed", count),
+                )
+                .with_field(each_field.clone())
+                .with_nested(__nebula_each_any_errors.into_iter().collect());
+                err.message = ::std::borrow::Cow::Owned(#msg.to_string());
+                errors.add(err);
+            }
+        }
+    } else {
+        quote! {
+            let mut __nebula_each_any_passed = false;
+            let mut __nebula_each_any_errors = ::nebula_validator::foundation::ValidationErrors::new();
+            #(#attempts)*
+
+            if !__nebula_each_any_passed {
+                let count = __nebula_each_any_errors.len();
+                errors.add(
+                    ::nebula_validator::foundation::ValidationError::new(
+                        "any_failed",
+                        format!("all {} validators in any(...) failed", count),
+                    )
+                    .with_field(each_field.clone())
+                    .with_nested(__nebula_each_any_errors.into_iter().collect()),
+                );
+            }
+        }
+    };
+
+    wrap_each_option(element_is_option, check)
+}
+
+/// Emit `required` for each element (`Vec<Option<T>>` only).
+fn emit_each_required(message: &Option<String>, element_is_option: bool) -> TokenStream2 {
+    if !element_is_option {
+        return quote!();
+    }
+
+    if let Some(msg) = message {
+        quote! {
+            if value.is_none() {
+                let mut err = ::nebula_validator::foundation::ValidationError::required(each_field.clone());
+                err.message = ::std::borrow::Cow::Owned(#msg.to_string());
+                errors.add(err);
+            }
+        }
+    } else {
+        quote! {
+            if value.is_none() {
+                errors.add(::nebula_validator::foundation::ValidationError::required(each_field.clone()));
+            }
+        }
+    }
+}
+
+/// Emit bool checks for each element.
+fn emit_each_bool_check(
+    expect_true: bool,
+    message: &Option<String>,
+    element_is_option: bool,
+) -> TokenStream2 {
+    let (code, default_msg, condition) = if expect_true {
+        ("is_true", "Value must be true", quote!(!*value))
+    } else {
+        ("is_false", "Value must be false", quote!(*value))
+    };
+
+    let check = if let Some(msg) = message {
+        quote! {
+            if #condition {
+                let mut err = ::nebula_validator::foundation::ValidationError::new(#code, #default_msg)
+                    .with_field(each_field.clone());
+                err.message = ::std::borrow::Cow::Owned(#msg.to_string());
+                errors.add(err);
+            }
+        }
+    } else {
+        quote! {
+            if #condition {
+                errors.add(
+                    ::nebula_validator::foundation::ValidationError::new(#code, #default_msg)
+                        .with_field(each_field.clone()),
+                );
+            }
+        }
+    };
+
+    wrap_each_option(element_is_option, check)
+}
+
+/// Wrap each-rule checks so `Option` elements are validated only when `Some(...)`.
+fn wrap_each_option(element_is_option: bool, check: TokenStream2) -> TokenStream2 {
+    if element_is_option {
+        quote! {
+            if let Some(value) = value.as_ref() {
+                #check
+            }
+        }
+    } else {
+        check
     }
 }
 

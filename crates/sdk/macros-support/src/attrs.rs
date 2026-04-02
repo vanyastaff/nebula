@@ -323,6 +323,14 @@ impl Parse for AttrValueParser {
                 let assign: syn::ExprAssign = input.parse()?;
                 return Ok(Self(AttrValue::Tokens(quote::quote!(#assign))));
             }
+
+            // Support call-like values inside lists, e.g. each(any(v1, v2)).
+            // Without this, `any` would be parsed as a bare identifier and the
+            // following parentheses would fail outer list parsing.
+            if fork.peek(syn::token::Paren) {
+                let call: syn::ExprCall = input.parse()?;
+                return Ok(Self(AttrValue::Tokens(quote::quote!(#call))));
+            }
         }
 
         if input.peek(Lit) {
@@ -379,5 +387,16 @@ mod tests {
 
         assert!(parsed.0.get_type("config").unwrap().is_some());
         assert!(parsed.0.get_type("instance").unwrap().is_some());
+    }
+
+    #[test]
+    fn test_parse_call_value_in_list() {
+        let tokens = quote!(each(any(v1, v2), required));
+        let parsed: AttrArgsParser = syn::parse2(tokens).unwrap();
+
+        let each_values = parsed.0.get_list_values("each").unwrap();
+        assert_eq!(each_values.len(), 2);
+        assert!(matches!(each_values[0], AttrValue::Tokens(_)));
+        assert!(matches!(each_values[1], AttrValue::Ident(_)));
     }
 }

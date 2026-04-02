@@ -12,12 +12,11 @@
 //! - A `None` return from [`ScopeResolver::current_owner`] represents
 //!   admin / global access and bypasses all scope checks.
 //!
-//! # Limitations
+//! # Scope enforcement
 //!
-//! [`list`](CredentialStore::list) and [`exists`](CredentialStore::exists)
-//! pass through to the inner store without scope filtering. Full tenant
-//! isolation for these operations requires backend-level support
-//! (e.g. a per-tenant namespace or query filter).
+//! All [`CredentialStore`] operations — including [`list`](CredentialStore::list)
+//! and [`exists`](CredentialStore::exists) — are filtered by owner. Tenant
+//! callers only see their own credentials; admin callers see all.
 
 use std::sync::Arc;
 
@@ -156,34 +155,52 @@ impl<S: CredentialStore> CredentialStore for ScopeLayer<S> {
         self.inner.delete(id).await
     }
 
-    /// List credential IDs (pass-through — no scope filtering).
+    /// List credential IDs visible to the current scope.
     ///
-    /// # Limitations
-    ///
-    /// This method does **not** filter by owner. Full tenant isolation
-    /// on `list` requires backend-level query support. Callers should
-    /// treat returned IDs as candidates and use [`get`](Self::get) for
-    /// access-checked retrieval.
+    /// For tenant callers, filters results to only credentials owned by
+    /// the caller (matching `metadata["owner_id"]`). Admin callers
+    /// (`current_owner() == None`) see all credentials.
     ///
     /// # Errors
     ///
     /// Returns [`StoreError::Backend`] on underlying storage failures.
     async fn list(&self, state_kind: Option<&str>) -> Result<Vec<String>, StoreError> {
-        self.inner.list(state_kind).await
+        let ids = self.inner.list(state_kind).await?;
+        let Some(caller_owner) = self.resolver.current_owner() else {
+            return Ok(ids); // Admin bypass
+        };
+        let mut owned = Vec::with_capacity(ids.len());
+        for id in &ids {
+            if let Ok(cred) = self.inner.get(id).await {
+                if matches!(
+                    cred.metadata.get(OWNER_KEY),
+                    Some(Value::String(owner)) if owner == caller_owner
+                ) {
+                    owned.push(id.clone());
+                }
+            }
+        }
+        Ok(owned)
     }
 
-    /// Check if a credential exists (pass-through — no scope filtering).
+    /// Check if a credential exists and is visible to the current scope.
     ///
-    /// # Limitations
-    ///
-    /// This method does **not** check ownership. Use [`get`](Self::get)
-    /// for scope-checked access.
+    /// For tenant callers, delegates to [`get`](Self::get) so that scope
+    /// enforcement applies — a credential owned by another tenant returns
+    /// `false`, not leaking its existence. Admin callers bypass scope checks.
     ///
     /// # Errors
     ///
     /// Returns [`StoreError::Backend`] on underlying storage failures.
     async fn exists(&self, id: &str) -> Result<bool, StoreError> {
-        self.inner.exists(id).await
+        let Some(_) = self.resolver.current_owner() else {
+            return self.inner.exists(id).await; // Admin bypass
+        };
+        match self.get(id).await {
+            Ok(_) => Ok(true),
+            Err(StoreError::NotFound { .. }) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -411,5 +428,73 @@ mod tests {
 
         let store = ScopeLayer::new(inner, Arc::new(FixedScope(None)));
         store.delete("cred-9").await.unwrap();
+    }
+
+    // ── list ────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_filters_by_owner() {
+        let inner = InMemoryStore::new();
+        let cred_a = make_credential_with_owner("cred-a", "tenant-a");
+        let cred_b = make_credential_with_owner("cred-b", "tenant-b");
+        inner.put(cred_a, PutMode::CreateOnly).await.unwrap();
+        inner.put(cred_b, PutMode::CreateOnly).await.unwrap();
+
+        let store = ScopeLayer::new(inner, Arc::new(FixedScope(Some("tenant-a".to_owned()))));
+        let ids = store.list(None).await.unwrap();
+        assert_eq!(ids, vec!["cred-a".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn list_admin_sees_all() {
+        let inner = InMemoryStore::new();
+        let cred_a = make_credential_with_owner("cred-a2", "tenant-a");
+        let cred_b = make_credential_with_owner("cred-b2", "tenant-b");
+        inner.put(cred_a, PutMode::CreateOnly).await.unwrap();
+        inner.put(cred_b, PutMode::CreateOnly).await.unwrap();
+
+        let store = ScopeLayer::new(inner, Arc::new(FixedScope(None)));
+        let mut ids = store.list(None).await.unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["cred-a2".to_owned(), "cred-b2".to_owned()]);
+    }
+
+    // ── exists ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn exists_respects_scope() {
+        let inner = InMemoryStore::new();
+        let cred = make_credential_with_owner("cred-other", "tenant-b");
+        inner.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        let store = ScopeLayer::new(inner, Arc::new(FixedScope(Some("tenant-a".to_owned()))));
+        // tenant-a should not see tenant-b's credential
+        assert!(!store.exists("cred-other").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn exists_true_for_own_credential() {
+        let inner = InMemoryStore::new();
+        let cred = make_credential_with_owner("cred-mine", "tenant-a");
+        inner.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        let store = ScopeLayer::new(inner, Arc::new(FixedScope(Some("tenant-a".to_owned()))));
+        assert!(store.exists("cred-mine").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn exists_admin_sees_all() {
+        let inner = InMemoryStore::new();
+        let cred = make_credential_with_owner("cred-any", "tenant-x");
+        inner.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        let store = ScopeLayer::new(inner, Arc::new(FixedScope(None)));
+        assert!(store.exists("cred-any").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn exists_returns_false_for_nonexistent() {
+        let store = scoped_store(Some("tenant-a"));
+        assert!(!store.exists("no-such-cred").await.unwrap());
     }
 }

@@ -439,17 +439,14 @@ unsafe impl Allocator for StackAllocator {
         {
             // This is the most recent allocation, try to extend in-place
             let additional_size = new_layout.size() - old_layout.size();
-            let new_top = current_top + additional_size;
-
-            if new_top <= self.end_addr {
-                // We have space to extend
-                if self
+            if let Some(new_top) = current_top.checked_add(additional_size)
+                && new_top <= self.end_addr
+                && self
                     .top
                     .compare_exchange(current_top, new_top, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
-                {
-                    return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
-                }
+            {
+                return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
             }
         }
 

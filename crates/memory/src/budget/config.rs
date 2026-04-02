@@ -144,8 +144,11 @@ impl BudgetConfig {
         match self.overcommit_policy {
             OvercommitPolicy::None => self.limit,
             OvercommitPolicy::Percentage(pct) => {
-                // Use saturating arithmetic to prevent overflow on large limits
-                self.limit.saturating_add(self.limit / 100 * pct as usize)
+                // Multiply before dividing to preserve precision for small limits.
+                // (e.g. limit=50, pct=10: old 50/100*10=0, new 50*10/100=5).
+                // Use saturating_mul to prevent overflow for very large limits.
+                self.limit
+                    .saturating_add(self.limit.saturating_mul(pct as usize) / 100)
             }
             OvercommitPolicy::Fixed(amount) => self.limit.saturating_add(amount),
             OvercommitPolicy::Unlimited => usize::MAX,

@@ -127,6 +127,12 @@ struct NumericBounds {
     percent: u32,
 }
 
+#[derive(Validator)]
+struct NumericBoundsCallStyle {
+    #[validate(max(100))]
+    percent: u32,
+}
+
 #[test]
 fn accepts_valid_numeric_bounds() {
     let v = NumericBounds {
@@ -153,6 +159,14 @@ fn rejects_above_max() {
         score: 0,
         percent: 101,
     };
+    let result = v.validate_fields();
+    assert!(result.is_err());
+    assert!(error_codes(&result).contains(&"max"));
+}
+
+#[test]
+fn rejects_above_max_with_call_style() {
+    let v = NumericBoundsCallStyle { percent: 101 };
     let result = v.validate_fields();
     assert!(result.is_err());
     assert!(error_codes(&result).contains(&"max"));
@@ -231,6 +245,35 @@ fn rejects_invalid_email() {
     assert!(v.validate_fields().is_err());
 }
 
+#[derive(Validator)]
+struct CanonicalStringFormats {
+    #[validate(email())]
+    email: String,
+    #[validate(prefix("https://"))]
+    website: String,
+}
+
+#[test]
+fn canonical_string_calls_accept_valid_values() {
+    let v = CanonicalStringFormats {
+        email: "user@example.com".into(),
+        website: "https://example.com".into(),
+    };
+    assert!(v.validate_fields().is_ok());
+}
+
+#[test]
+fn canonical_string_calls_reject_invalid_values() {
+    let v = CanonicalStringFormats {
+        email: "not-an-email".into(),
+        website: "http://example.com".into(),
+    };
+    let result = v.validate_fields();
+    assert!(result.is_err());
+    let codes = error_codes(&result);
+    assert!(codes.contains(&"email") || codes.contains(&"prefix") || codes.contains(&"starts_with"));
+}
+
 #[test]
 fn rejects_invalid_url() {
     let v = StringFormats {
@@ -287,6 +330,12 @@ struct LengthRangeCheck {
     username: String,
 }
 
+#[derive(Validator)]
+struct CanonicalRangeCheck {
+    #[validate(range(min = 3, max = 10))]
+    username_len_like: usize,
+}
+
 #[test]
 fn accepts_length_within_range() {
     let v = LengthRangeCheck {
@@ -309,6 +358,16 @@ fn rejects_length_above_range() {
         username: "this-is-way-too-long".into(),
     };
     assert!(v.validate_fields().is_err());
+}
+
+#[test]
+fn canonical_range_rejects_out_of_bounds() {
+    let v = CanonicalRangeCheck {
+        username_len_like: 20,
+    };
+    let result = v.validate_fields();
+    assert!(result.is_err());
+    assert!(error_codes(&result).contains(&"max"));
 }
 
 // ============================================================================
@@ -472,6 +531,12 @@ struct Outer {
     inner: Inner,
 }
 
+#[derive(Validator)]
+struct OuterCollection {
+    #[validate(inner(nested()))]
+    inner: Vec<Inner>,
+}
+
 #[test]
 fn accepts_valid_nested() {
     let v = Outer {
@@ -486,6 +551,17 @@ fn rejects_invalid_nested() {
         inner: Inner {
             name: String::new(),
         },
+    };
+    let result = v.validate_fields();
+    assert!(result.is_err());
+}
+
+#[test]
+fn canonical_inner_nested_rejects_invalid_nested_element() {
+    let v = OuterCollection {
+        inner: vec![Inner {
+            name: String::new(),
+        }],
     };
     let result = v.validate_fields();
     assert!(result.is_err());
@@ -521,6 +597,75 @@ fn rejects_custom_validator_failing() {
     let result = v.validate_fields();
     assert!(result.is_err());
     assert!(error_codes(&result).contains(&"even"));
+}
+
+#[derive(Validator)]
+struct UsingCombinatorCheck {
+    #[validate(using = ::nebula_validator::combinators::and(
+        ::nebula_validator::validators::min_length(3),
+        ::nebula_validator::validators::max_length(5)
+    ))]
+    name: String,
+}
+
+#[test]
+fn using_combinator_accepts_value_inside_and_bounds() {
+    let v = UsingCombinatorCheck {
+        name: "alice".into(),
+    };
+    assert!(v.validate_fields().is_ok());
+}
+
+#[test]
+fn using_combinator_rejects_value_outside_and_bounds() {
+    let v = UsingCombinatorCheck { name: "ab".into() };
+    assert!(v.validate_fields().is_err());
+}
+
+#[derive(Validator)]
+struct AllSugarCheck {
+    #[validate(all(
+        ::nebula_validator::validators::min_length(3),
+        ::nebula_validator::validators::max_length(5)
+    ))]
+    name: String,
+}
+
+#[test]
+fn all_sugar_accepts_when_all_pass() {
+    let v = AllSugarCheck {
+        name: "alice".into(),
+    };
+    assert!(v.validate_fields().is_ok());
+}
+
+#[test]
+fn all_sugar_rejects_when_one_fails() {
+    let v = AllSugarCheck { name: "ab".into() };
+    assert!(v.validate_fields().is_err());
+}
+
+#[derive(Validator)]
+struct AnySugarCheck {
+    #[validate(any(
+        ::nebula_validator::validators::exact_length(3),
+        ::nebula_validator::validators::exact_length(5)
+    ))]
+    code: String,
+}
+
+#[test]
+fn any_sugar_accepts_when_any_passes() {
+    let v = AnySugarCheck { code: "abc".into() };
+    assert!(v.validate_fields().is_ok());
+}
+
+#[test]
+fn any_sugar_rejects_when_all_fail() {
+    let v = AnySugarCheck { code: "abcd".into() };
+    let result = v.validate_fields();
+    assert!(result.is_err());
+    assert!(error_codes(&result).contains(&"any_failed"));
 }
 
 // ============================================================================
@@ -559,6 +704,157 @@ fn each_rejects_invalid_elements() {
         .collect();
     assert!(fields.iter().any(|f| f.contains("1")));
     assert!(fields.iter().any(|f| f.contains("2")));
+}
+
+#[derive(Validator)]
+struct EachOptionStringCheck {
+    #[validate(each(not_empty, min_length = 2))]
+    tags: Vec<Option<String>>,
+}
+
+#[test]
+fn each_option_string_none_is_skipped_without_required() {
+    let v = EachOptionStringCheck {
+        tags: vec![None, Some("ok".into())],
+    };
+    assert!(v.validate_fields().is_ok());
+}
+
+#[test]
+fn each_option_string_some_invalid_fails() {
+    let v = EachOptionStringCheck {
+        tags: vec![Some(String::new())],
+    };
+    assert!(v.validate_fields().is_err());
+}
+
+#[derive(Validator)]
+struct EachOptionBoolCheck {
+    #[validate(each(required, is_true))]
+    flags: Vec<Option<bool>>,
+}
+
+#[test]
+fn each_option_bool_required_rejects_none() {
+    let v = EachOptionBoolCheck {
+        flags: vec![Some(true), None],
+    };
+    let result = v.validate_fields();
+    assert!(result.is_err());
+    assert!(error_codes(&result).contains(&"required"));
+}
+
+#[test]
+fn each_option_bool_is_true_rejects_false() {
+    let v = EachOptionBoolCheck {
+        flags: vec![Some(false)],
+    };
+    let result = v.validate_fields();
+    assert!(result.is_err());
+    assert!(error_codes(&result).contains(&"is_true"));
+}
+
+#[derive(Validator)]
+struct EachUsingCombinatorCheck {
+    #[validate(each(using = ::nebula_validator::combinators::and(
+        ::nebula_validator::validators::not_empty(),
+        ::nebula_validator::validators::min_length(2)
+    )))]
+    tags: Vec<String>,
+}
+
+#[test]
+fn each_using_combinator_accepts_all_elements() {
+    let v = EachUsingCombinatorCheck {
+        tags: vec!["ab".into(), "rust".into()],
+    };
+    assert!(v.validate_fields().is_ok());
+}
+
+#[test]
+fn each_using_combinator_rejects_invalid_element() {
+    let v = EachUsingCombinatorCheck {
+        tags: vec!["ab".into(), String::new()],
+    };
+    let result = v.validate_fields();
+    assert!(result.is_err());
+}
+
+#[derive(Validator)]
+struct EachAnySugarCheck {
+    #[validate(each(any(
+        ::nebula_validator::validators::exact_length(2),
+        ::nebula_validator::validators::exact_length(4)
+    )))]
+    tags: Vec<String>,
+}
+
+#[test]
+fn each_any_sugar_accepts_when_any_passes_per_element() {
+    let v = EachAnySugarCheck {
+        tags: vec!["ab".into(), "rust".into()],
+    };
+    assert!(v.validate_fields().is_ok());
+}
+
+#[test]
+fn each_any_sugar_rejects_element_when_all_fail() {
+    let v = EachAnySugarCheck {
+        tags: vec!["ab".into(), "abc".into()],
+    };
+    let result = v.validate_fields();
+    assert!(result.is_err());
+    assert!(error_codes(&result).contains(&"any_failed"));
+}
+
+#[derive(Validator)]
+struct CanonicalLengthCheck {
+    #[validate(length(6))]
+    code: String,
+}
+
+#[test]
+fn canonical_length_call_rejects_wrong_exact_length() {
+    let v = CanonicalLengthCheck { code: "abc".into() };
+    let result = v.validate_fields();
+    assert!(result.is_err());
+    assert!(error_codes(&result).contains(&"exact_length"));
+}
+
+#[derive(Validator)]
+struct CanonicalInnerCheck {
+    #[validate(length(min = 1), inner(length(min = 2)))]
+    tags: Vec<String>,
+}
+
+#[test]
+fn canonical_inner_applies_rules_to_elements() {
+    let v = CanonicalInnerCheck {
+        tags: vec!["ok".into(), "x".into()],
+    };
+    let result = v.validate_fields();
+    assert!(result.is_err());
+    assert!(error_codes(&result).contains(&"min_length"));
+}
+
+#[derive(Validator)]
+struct CanonicalOrCheck {
+    #[validate(or(length(3), length(5)))]
+    code: String,
+}
+
+#[test]
+fn canonical_or_accepts_when_one_branch_matches() {
+    let v = CanonicalOrCheck { code: "abc".into() };
+    assert!(v.validate_fields().is_ok());
+}
+
+#[test]
+fn canonical_or_rejects_when_all_branches_fail() {
+    let v = CanonicalOrCheck { code: "abcd".into() };
+    let result = v.validate_fields();
+    assert!(result.is_err());
+    assert!(error_codes(&result).contains(&"any_failed"));
 }
 
 // ============================================================================

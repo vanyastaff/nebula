@@ -412,14 +412,12 @@ impl<A: ArenaAllocate> ArenaString<A> {
     }
 
     /// Get the string as a str
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        // SAFETY: Creating &str from bytes.
-        // - ArenaString constructed from valid UTF-8 in from_str
-        // - as_slice() returns valid byte slice
-        // - UTF-8 validity preserved (no mutation outside from_str)
-        // - from_utf8_unchecked safe with guaranteed UTF-8 bytes
-        unsafe { std::str::from_utf8_unchecked(self.as_slice()) }
+    ///
+    /// Returns `Err` if the bytes are not valid UTF-8.  This can happen when
+    /// `push` has been used to append arbitrary bytes after construction via
+    /// `from_str`.
+    pub fn as_str(&self) -> Result<&str, std::str::Utf8Error> {
+        std::str::from_utf8(self.as_slice())
     }
 }
 
@@ -478,7 +476,7 @@ mod tests {
         let arena = Arc::new(Arena::new(ArenaConfig::default()));
         let string = ArenaString::from_str("Hello, Arena!", arena).unwrap();
 
-        assert_eq!(string.as_str(), "Hello, Arena!");
+        assert_eq!(string.as_str().unwrap(), "Hello, Arena!");
         assert_eq!(string.len(), 13);
     }
 

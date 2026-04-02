@@ -287,6 +287,16 @@ where
 
     /// Record insertion of a new key
     pub fn record_insertion(&mut self, key: &K, _entry: &CacheEntry<V>, size_hint: Option<usize>) {
+        // If the key already exists, remove it from its current frequency bucket and
+        // access_order before reinserting — otherwise the old bucket entry becomes an
+        // orphan (bucket Vec grows unboundedly) and access_order accumulates duplicates.
+        if let Some(&old_freq) = self.frequencies.get(key) {
+            self.remove_from_bucket(key, old_freq);
+            if let Some(pos) = self.access_order.iter().position(|k| k == key) {
+                self.access_order.remove(pos);
+            }
+        }
+
         // Initialize frequency
         self.frequencies.insert(key.clone(), 1);
 
@@ -478,7 +488,10 @@ where
     /// Record windowed access (sliding window mode)
     fn record_windowed_access(&mut self, key: &K) {
         let now = Instant::now();
-        let cutoff = now.checked_sub(self.config.time_window).unwrap();
+        // `checked_sub` returns `None` when `time_window` exceeds the monotonic clock
+        // reading (e.g. on startup or in tests). Fall back to `now` so the entire
+        // history is outside the window, which is the correct degenerate behavior.
+        let cutoff = now.checked_sub(self.config.time_window).unwrap_or(now);
 
         // Get or create access history for this key
         let history = self.access_history.entry(key.clone()).or_default();
@@ -542,16 +555,23 @@ where
         }
     }
 
-    /// Simple hash function for probabilistic operations
+    /// Simple hash function for probabilistic operations.
+    ///
+    /// Uses `DefaultHasher` with a fixed (zero) seed so that the same key
+    /// always produces the same hash value across calls.  The previous
+    /// implementation used `RandomState::new()` which creates a fresh random
+    /// seed on every call, making the hash completely key-independent and
+    /// defeating the purpose of probabilistic counting.
     #[allow(clippy::unused_self)]
     fn simple_hash(&self, key: &K) -> u64
     where
         K: std::hash::Hash,
     {
-        use std::collections::hash_map::RandomState;
-        use std::hash::BuildHasher;
+        use std::hash::{DefaultHasher, Hasher};
 
-        RandomState::new().hash_one(key)
+        let mut hasher = DefaultHasher::default();
+        key.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Add key to frequency bucket

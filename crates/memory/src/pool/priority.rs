@@ -251,23 +251,34 @@ impl<T: Poolable> PriorityPool<T> {
         if let Some(max) = self.config.max_capacity
             && self.objects.len() >= max
         {
-            // Check if new object has higher priority than lowest
-            if let Some(lowest) = self.objects.peek()
-                && priority <= lowest.priority
-            {
-                // Don't keep the new object
-                self.callbacks.on_destroy(&obj);
+            // BinaryHeap is a max-heap: peek() returns the HIGHEST priority.
+            // We need the minimum to apply the correct eviction policy.
+            // Drain into a Vec so we can find and remove the minimum by index.
+            let mut all: Vec<PriorityWrapper<T>> = self.objects.drain().collect();
+            let min_pos = all
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, w)| w.priority)
+                .map(|(i, _)| i);
+
+            if let Some(pos) = min_pos {
+                if priority <= all[pos].priority {
+                    // New object is not better than the worst in pool — discard it.
+                    self.objects.extend(all);
+                    self.callbacks.on_destroy(&obj);
+                    #[cfg(feature = "stats")]
+                    self.stats.record_destruction();
+                    return;
+                }
+
+                // Evict the lowest-priority object to make room.
+                let evicted = all.remove(pos);
+                self.callbacks.on_destroy(&evicted.value);
                 #[cfg(feature = "stats")]
                 self.stats.record_destruction();
-                return;
             }
 
-            // Evict lowest priority object
-            if let Some(wrapper) = self.objects.pop() {
-                self.callbacks.on_destroy(&wrapper.value);
-                #[cfg(feature = "stats")]
-                self.stats.record_destruction();
-            }
+            self.objects.extend(all);
         }
 
         obj.reset();
@@ -355,8 +366,17 @@ impl<T: Poolable> Drop for PriorityPooledValue<T> {
     }
 }
 
-// Safety: PriorityPooledValue can be sent if T can
-unsafe impl<T: Poolable + Send> Send for PriorityPooledValue<T> {}
+// PriorityPooledValue is intentionally !Send.
+//
+// The `pool` field is a raw `*mut PriorityPool<T>`. If a PriorityPooledValue
+// were sent to another thread and dropped there, `Drop::drop` would call
+// `(*self.pool).return_object(obj)` on a PriorityPool that may be concurrently
+// accessed from the original thread — a data race, because PriorityPool has no
+// internal synchronization.
+//
+// This mirrors the same reasoning that makes `Batch<T>` and `TtlPooledValue<T>`
+// intentionally !Send.  To process the contained object on a worker thread,
+// call `detach()` first.
 
 #[cfg(test)]
 mod tests {

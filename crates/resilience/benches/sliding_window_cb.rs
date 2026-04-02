@@ -31,7 +31,7 @@ fn bench_failure_count(c: &mut Criterion) {
             |b, &n| {
                 let mut w = OutcomeWindow::new(n);
                 for i in 0..n {
-                    w.record(i % 2 == 0, i % 3 == 0);
+                    w.record(i.is_multiple_of(2), i.is_multiple_of(3));
                 }
                 b.iter(|| black_box(w.failure_count()));
             },
@@ -49,7 +49,7 @@ fn bench_slow_count(c: &mut Criterion) {
             |b, &n| {
                 let mut w = OutcomeWindow::new(n);
                 for i in 0..n {
-                    w.record(i % 2 == 0, i % 3 == 0);
+                    w.record(i.is_multiple_of(2), i.is_multiple_of(3));
                 }
                 b.iter(|| black_box(w.slow_count()));
             },
@@ -67,11 +67,11 @@ fn bench_record(c: &mut Criterion) {
             |b, &n| {
                 let mut w = OutcomeWindow::new(n);
                 for i in 0..n {
-                    w.record(i % 2 == 0, i % 3 == 0);
+                    w.record(i.is_multiple_of(2), i.is_multiple_of(3));
                 }
                 let mut i = 0usize;
                 b.iter(|| {
-                    w.record(i % 2 == 0, i % 3 == 0);
+                    w.record(i.is_multiple_of(2), i.is_multiple_of(3));
                     i = i.wrapping_add(1);
                 });
             },

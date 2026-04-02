@@ -104,8 +104,7 @@ impl OAuth2State {
     /// `Authorization: Bearer <access_token>` header value.
     #[must_use]
     pub fn bearer_header(&self) -> String {
-        self.access_token
-            .expose_secret(|t| format!("Bearer {t}"))
+        self.access_token.expose_secret(|t| format!("Bearer {t}"))
     }
 }
 
@@ -254,8 +253,8 @@ impl Credential for OAuth2Credential {
     }
 
     fn project(state: &OAuth2State) -> OAuth2Token {
-        let mut token = OAuth2Token::new(state.access_token.clone())
-            .with_scopes(state.scopes.clone());
+        let mut token =
+            OAuth2Token::new(state.access_token.clone()).with_scopes(state.scopes.clone());
 
         if let Some(at) = state.expires_at {
             token = token.with_expires_at(at);
@@ -807,9 +806,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .expose_secret(|s| assert_eq!(s, "ref_xyz"));
-        restored
-            .client_id
-            .expose_secret(|s| assert_eq!(s, "cid"));
+        restored.client_id.expose_secret(|s| assert_eq!(s, "cid"));
         restored
             .client_secret
             .expose_secret(|s| assert_eq!(s, "csecret"));

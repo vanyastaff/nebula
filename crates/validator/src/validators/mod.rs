@@ -70,7 +70,7 @@ pub use range::{
 
 pub use size::{
     ExactSize, MaxSize, MinSize, NotEmptyCollection, SizeRange, exact_size, max_size, min_size,
-    not_empty_collection, size_range,
+    not_empty_collection, size_range, try_size_range,
 };
 
 pub use boolean::{IsFalse, IsTrue, is_false, is_true};

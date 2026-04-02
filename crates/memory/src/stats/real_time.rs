@@ -339,9 +339,9 @@ impl RealTimeMonitor {
                 last_snapshot_time = now;
                 last_allocations_count = monitored_stats.allocations();
             }
-            // Clear data on shutdown or reset
+            // Clear live data on shutdown; histogram data is preserved so callers
+            // can still read it after stop() via get_histogram()
             *live_data_arc.write() = None;
-            *histogram_arc.write() = None;
         });
 
         self.monitor_handle = Some(handle);

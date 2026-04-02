@@ -499,6 +499,9 @@ mod tests {
     #[tokio::test]
     async fn default_coordinator_has_default_permits() {
         let coord = RefreshCoordinator::new();
-        assert_eq!(coord.available_permits(), super::DEFAULT_MAX_CONCURRENT_REFRESHES);
+        assert_eq!(
+            coord.available_permits(),
+            super::DEFAULT_MAX_CONCURRENT_REFRESHES
+        );
     }
 }

@@ -35,7 +35,8 @@ impl<'a> StackFrame<'a> {
 impl Drop for StackFrame<'_> {
     fn drop(&mut self) {
         unsafe {
-            let _ = self.allocator.restore_to_marker(self.marker);
+            let result = self.allocator.restore_to_marker(self.marker);
+            debug_assert!(result.is_ok(), "StackFrame: restore_to_marker failed on drop — stack state is corrupt");
         }
     }
 }

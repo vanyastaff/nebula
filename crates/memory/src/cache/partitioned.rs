@@ -357,7 +357,8 @@ where
 
         let _start_time = Instant::now();
 
-        // Try read lock first for cache hit
+        // First check: `ComputeCache::get` requires `&mut self` (updates LRU metadata),
+        // so a write lock is mandatory even for reads.
         {
             let mut cache = partition.write();
             if let Some(value) = cache.get(&key) {

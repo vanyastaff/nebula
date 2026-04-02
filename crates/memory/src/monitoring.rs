@@ -120,7 +120,11 @@ impl MemoryMonitor {
         match memory_info.pressure {
             MemoryPressure::Low => PressureAction::None,
             MemoryPressure::Medium => {
-                if memory_info.pressure >= self.config.warning_threshold {
+                // Check emergency_threshold first — if someone sets emergency_threshold
+                // to Medium, Medium pressure must escalate to Emergency.
+                if memory_info.pressure >= self.config.emergency_threshold {
+                    PressureAction::Emergency
+                } else if memory_info.pressure >= self.config.warning_threshold {
                     PressureAction::Warn
                 } else {
                     PressureAction::None

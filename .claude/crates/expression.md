@@ -23,3 +23,5 @@ n8n-compatible expression language evaluating `serde_json::Value` — used in wo
 - Used by nebula-workflow and nebula-engine for dynamic parameter resolution.
 
 <!-- reviewed: 2026-03-30 — derive Classify migration -->
+
+<!-- reviewed: 2026-04-02 -->

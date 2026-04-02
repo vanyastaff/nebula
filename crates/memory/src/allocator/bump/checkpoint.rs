@@ -28,8 +28,15 @@ impl<'a> BumpScope<'a> {
 
 impl Drop for BumpScope<'_> {
     fn drop(&mut self) {
-        // Ignore errors during drop - we can't propagate them
-        // The restore() method validates the checkpoint internally
-        let _ = self.allocator.restore(self.checkpoint);
+        // SAFETY: restore() is not thread-safe; BumpScope holds &'a BumpAllocator
+        // so the borrow checker prevents concurrent use of the allocator while this
+        // scope is alive.  Errors here mean the allocator's generation was bumped
+        // (via reset()) while allocations were in flight, leaving the allocator in
+        // an unrecoverable state — surface this in debug builds.
+        let result = self.allocator.restore(self.checkpoint);
+        debug_assert!(
+            result.is_ok(),
+            "BumpScope: checkpoint restore failed on drop — allocator state is corrupt"
+        );
     }
 }

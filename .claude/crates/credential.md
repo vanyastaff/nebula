@@ -79,3 +79,5 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 <!-- reviewed: 2026-03-31 — B14 fix: global refresh concurrency limiter via tokio::sync::Semaphore (default 32) -->
 <!-- reviewed: 2026-03-31 — B11 fix: CredentialEvent in nebula-core, resolver emits Refreshed after successful CAS write -->
 <!-- reviewed: 2026-03-31 -- B2 fix: OAuth2State access_token/refresh_token/client_id to SecretString, manual Debug redacts -->
+
+<!-- reviewed: 2026-04-02 -->

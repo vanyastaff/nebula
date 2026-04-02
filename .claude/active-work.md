@@ -5,6 +5,7 @@ Updated: 2026-03-31
 - **Desktop app** (Tauri): `apps/desktop/`
 
 ## Recently Completed
+- **nebula-credential HLD v1.5** (04-01): Full architecture review: 10 adversarial rounds, 2 dev challenges, 2 town halls, 2 open conferences (10 external devs total incl. gaming, Airflow migration, SOC2 auditor, dev tooling, Vault skeptic). 33 v1 ship items. 17 bugs. SOC2 grades: CC6.1/CC7.2 CONDITIONAL, CC6.3 PASS. New in v1.5: DecryptedCacheLayer, DatabaseAuth.extensions, registry introspection. v1.1 deferred: CredentialStore dyn-compat, put_batch. HLD at `docs/plans/nebula-credential-hld-v1.md`.
 - **nebula-credential DX excellence** (03-31): Typed `CredentialSnapshot` (`Box<dyn Any>` + `project::<S>()`), `credential_typed::<S>()` on ActionContext/TriggerContext, rotation feature-gated, `CredentialResolverRef` for composition, 285 tests + 19 doctests, missing Debug impls added, broken doctests fixed.
 - **nebula-resilience deep invariant audit** (03-31): 9 bug fixes (Duration overflow panic, pipeline total_budget drop, SlidingWindow stale entries, hedge delay overflow, TokenBucket burst/reset/current_rate, LeakyBucket current_rate, AdaptiveHedge zero delay), CB counter dedup, 4 doc link fixes, all clippy --all-targets clean. 153 tests, 7 benchmark suites, 14 integration tests.
 - **nebula-resilience full audit** (03-31): Bug fixes (burst sync, probe slot leak, jitter, retry budget), naming audit (8 renames per API Guidelines), interoperability (Debug/serde/non_exhaustive on all types), design patterns audit, 10-dimension code review. 139 tests.
@@ -19,6 +20,12 @@ Updated: 2026-03-31
 - **nebula-webhook**: uses deprecated v1 compat types
 
 ## Next Up
+- **Fix pre-existing bugs B1-B9** from credential HLD review (B6 CRITICAL: verify_owner fails open)
+- **Implement CredentialPhase + OwnerId** (unblocks state machine, scoping, 5 new error variants)
+- **Implement StackBuilder** (encryption-mandatory composition)
+- **Replace Provider(String) with ProviderError** (retryability signaling)
+- **Add test-support feature** (FakeCredentialBackend, CredentialScenario)
+- **Re-export ParameterValues/AuthScheme** from nebula-credential (single-crate plugin DX)
 - Wire CredentialResolver into ActionContext (unblocks nebula-engine)
+- nebula-credential-storage crate (SQLite backend)
 - nebula-webhook migration to v2 types
-- nebula-credential Phase 5-6 storage backends: adapt production providers (Postgres, Vault, AWS, K8s) to real cloud SDKs (current impls have type-safe interfaces, some with SDK stubs)

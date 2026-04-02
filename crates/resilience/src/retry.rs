@@ -8,6 +8,7 @@ use std::fmt;
 use std::future::Future;
 use std::num::NonZeroU32;
 
+use smallvec::SmallVec;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,7 +50,9 @@ pub enum BackoffConfig {
         max: Duration,
     },
     /// A user-provided sequence of delays. If attempt exceeds the list, the last delay repeats.
-    Custom(Vec<Duration>),
+    ///
+    /// Up to 8 delays are stored inline (no heap allocation). Larger sequences spill to the heap.
+    Custom(SmallVec<[Duration; 8]>),
 }
 
 impl BackoffConfig {
@@ -316,11 +319,12 @@ where
     .await
 }
 
-/// Internal retry without [`Classify`](nebula_error::Classify) bound.
+/// Retry without a [`Classify`](nebula_error::Classify) bound.
 ///
-/// Used by the pipeline, which wraps errors in `Option<E>`.
-/// Retries all errors when no predicate is set (old behavior).
-pub(crate) async fn retry_with_inner<T, E, F, Fut>(
+/// Used by the pipeline and benchmarks. Retries all errors when no predicate
+/// is set on the config.
+#[doc(hidden)]
+pub async fn retry_with_inner<T, E, F, Fut>(
     config: RetryConfig<E>,
     f: F,
 ) -> Result<T, CallError<E>>
@@ -737,7 +741,7 @@ mod tests {
     async fn total_budget_check_handles_large_backoff_without_panic() {
         let config = RetryConfig::new(3)
             .unwrap()
-            .backoff(BackoffConfig::Custom(vec![Duration::MAX]))
+            .backoff(BackoffConfig::Custom(SmallVec::from_slice(&[Duration::MAX])))
             .total_budget(Duration::from_secs(1));
 
         let result: Result<(), CallError<TransientErr>> =
@@ -748,12 +752,11 @@ mod tests {
 
     #[test]
     fn custom_backoff_uses_provided_delays() {
-        let delays = vec![
+        let cfg = BackoffConfig::Custom(SmallVec::from_slice(&[
             Duration::from_millis(10),
             Duration::from_millis(50),
             Duration::from_millis(200),
-        ];
-        let cfg = BackoffConfig::Custom(delays);
+        ]));
         assert_eq!(cfg.delay_for(0), Duration::from_millis(10));
         assert_eq!(cfg.delay_for(1), Duration::from_millis(50));
         assert_eq!(cfg.delay_for(2), Duration::from_millis(200));
@@ -763,7 +766,7 @@ mod tests {
 
     #[test]
     fn custom_backoff_empty_returns_zero() {
-        let cfg = BackoffConfig::Custom(vec![]);
+        let cfg = BackoffConfig::Custom(SmallVec::new());
         assert_eq!(cfg.delay_for(0), Duration::ZERO);
     }
 

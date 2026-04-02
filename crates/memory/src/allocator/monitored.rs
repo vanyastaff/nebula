@@ -122,26 +122,19 @@ where
                 reason: format!("Monitor lock failed: {e}").into(),
             })?;
 
-        // Check if large allocation should be allowed
-        if !monitor.should_allow_large_allocation(layout.size())? {
-            #[cfg(feature = "logging")]
-            if self.config.detailed_logging {
-                warn!(
-                    "Allocation denied by monitor: size={}, align={}",
-                    layout.size(),
-                    layout.align()
-                );
-            }
-            return Ok(false);
-        }
-
-        // Check pressure-specific limits
+        // Single check_pressure call: previously this method called
+        // should_allow_large_allocation (which internally calls check_pressure)
+        // and then check_pressure again — mutating pressure_change_count twice
+        // and querying the OS twice per allocation.
         let (memory_info, action) = monitor.check_pressure()?;
 
         let allowed = match action {
             PressureAction::None | PressureAction::Warn => true,
-            PressureAction::ReduceAllocations | PressureAction::ForceCleanup => {
+            PressureAction::ReduceAllocations => {
                 layout.size() <= self.config.max_high_pressure_alloc
+            }
+            PressureAction::ForceCleanup => {
+                layout.size() <= self.config.max_high_pressure_alloc / 2
             }
             PressureAction::DenyLargeAllocations => {
                 layout.size() <= self.config.max_critical_pressure_alloc

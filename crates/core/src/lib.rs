@@ -35,13 +35,13 @@ pub mod credential_event;
 /// Dependency graph primitives shared across crates.
 pub mod deps;
 pub mod id;
+/// Serde helpers for [`Option<SecretString>`] that preserve the actual value.
+pub mod option_serde_secret;
 pub mod scope;
 /// Secret string type with automatic zeroization.
 pub mod secret_string;
 /// Shared serde helpers (duration serialization, etc.).
 pub mod serde_helpers;
-/// Serde helpers for [`Option<SecretString>`] that preserve the actual value.
-pub mod option_serde_secret;
 /// Serde helpers for [`SecretString`] that preserve the actual value.
 pub mod serde_secret;
 pub mod traits;
@@ -50,8 +50,8 @@ pub mod types;
 // Re-export main types for convenience at the crate root. Downstream crates
 // should prefer `nebula_core::prelude::*` for a stable import surface.
 pub use auth::AuthScheme;
-pub use credential_event::CredentialEvent;
 pub use constants::*;
+pub use credential_event::CredentialEvent;
 pub use deps::*;
 pub use error::*;
 pub use id::*;

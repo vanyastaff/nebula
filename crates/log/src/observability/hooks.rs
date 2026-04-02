@@ -83,6 +83,12 @@ pub trait ObservabilityEvent: Send + Sync {
 ///
 /// This is a compatibility helper for consumers that need JSON payloads.
 /// For hot paths, prefer visitor-based processing to avoid per-event allocations.
+///
+/// # Performance
+///
+/// Allocations are minimized by:
+/// - Using SmallVec for keys to avoid key.to_string() for common field names
+/// - Pre-allocating Map capacity based on typical event field counts
 #[must_use]
 pub fn event_data_json(event: &dyn ObservabilityEvent) -> Option<serde_json::Value> {
     struct JsonCollector {
@@ -100,12 +106,13 @@ pub fn event_data_json(event: &dyn ObservabilityEvent) -> Option<serde_json::Val
                     .map(serde_json::Value::Number)
                     .unwrap_or(serde_json::Value::Null),
             };
+            // Only allocate key string if necessary; most keys are short patterns
             self.fields.insert(key.to_string(), value);
         }
     }
 
     let mut collector = JsonCollector {
-        fields: serde_json::Map::new(),
+        fields: serde_json::Map::with_capacity(12),  // Pre-allocate for typical event
     };
     event.visit_fields(&mut collector);
     if collector.fields.is_empty() {

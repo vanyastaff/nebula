@@ -114,4 +114,4 @@ Prefer `ResiliencePipeline` for composing multiple patterns — it handles layer
 ## Relations
 - Depends on: nebula-error. Used by nebula-resource (pool resilience), nebula-credential (refresh CB).
 
-<!-- reviewed: 2026-04-01 — ASM perf fixes: LatencyTracker BTreeMap→Vec, CB SlidingWindow u8 split, divsd elimination, cutoff-before-lock, trip_open_from_half_open helper -->
+<!-- reviewed: 2026-04-02 — retry_with_inner promoted to #[doc(hidden)] pub (was pub(crate)) and re-exported from lib.rs so bench files can access it without the Classify bound; criterion dev-dep replaced by codspeed-criterion-compat workspace alias; new bench targets: retry (backoff strategies, loop, jitter), gate (enter contention, is_closed), load_shed (pass-through, reject, atomic predicate), hedge (no-hedge fast path, adaptive overhead cold/warmed, sample-scaling, write-lock contention) -->

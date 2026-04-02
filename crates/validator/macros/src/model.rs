@@ -125,11 +125,19 @@ pub enum Rule {
 
     /// Custom validator expression: `custom = path_or_closure`.
     Custom(TokenStream2),
+    /// Validator expression implementing `Validate<T>`: `using = expr`.
+    Using(TokenStream2),
+    /// All validator expressions must pass: `all(v1, v2, ...)`.
+    All(Vec<TokenStream2>),
+    /// At least one validator expression must pass: `any(v1, v2, ...)`.
+    Any(Vec<TokenStream2>),
 }
 
 /// Element-level validation rules for `Vec<T>` fields via `each(...)`.
 #[derive(Debug)]
 pub struct EachRules {
+    /// Element type for `Vec<T>` (or inner element for `Vec<Option<T>>`).
+    pub element_ty: Type,
     /// Validation rules applied to each element.
     pub rules: Vec<Rule>,
 }

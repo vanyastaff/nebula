@@ -38,6 +38,7 @@ humantime-serde = { version = "1.1.1", optional = true }
 governor = { version = "0.10", optional = true }
 tokio-util = { workspace = true, features = ["rt"] }
 fastrand = "2.3"
+smallvec = { version = "1.15", features = ["union", "serde"] }
 tracing = { workspace = true }
 
 # Only nebula-error — no other internal deps
@@ -82,5 +83,21 @@ harness = false
 
 [[bench]]
 name = "sliding_window_cb"
+harness = false
+
+[[bench]]
+name = "retry"
+harness = false
+
+[[bench]]
+name = "gate"
+harness = false
+
+[[bench]]
+name = "load_shed"
+harness = false
+
+[[bench]]
+name = "hedge"
 harness = false
 

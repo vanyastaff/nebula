@@ -5,7 +5,7 @@
 //! memory allocation and usage.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Once};
+use std::sync::{Arc, OnceLock};
 use parking_lot::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -76,60 +76,49 @@ pub struct GlobalBudgetManager {
     last_update: Mutex<Instant>,
 }
 
-// Singleton implementation
-static mut INSTANCE: Option<Arc<GlobalBudgetManager>> = None;
-static INIT: Once = Once::new();
+// Singleton backed by OnceLock — no unsafe required.
+static INSTANCE: OnceLock<Arc<GlobalBudgetManager>> = OnceLock::new();
 
 impl GlobalBudgetManager {
-    /// Initialize the global budget manager
+    /// Initialize the global budget manager.
+    ///
+    /// If already initialized (e.g., by a previous call or by `instance()`),
+    /// this is a no-op and `Ok(())` is returned.
     pub fn initialize(config: BudgetConfig) -> MemoryResult<()> {
         if config.name != "global" {
             return Err(MemoryError::InvalidConfig {
                 reason: "Global budget manager must have name 'global'".into(),
             });
         }
-        
-        INIT.call_once(|| {
-            let manager = Arc::new(Self {
+
+        INSTANCE.get_or_init(|| {
+            Arc::new(Self {
                 root_budgets: RwLock::new(HashMap::new()),
                 all_budgets: RwLock::new(HashMap::new()),
                 config: RwLock::new(config),
                 last_metrics: Mutex::new(None),
                 metrics_interval: Duration::from_secs(1),
                 last_update: Mutex::new(Instant::now()),
-            });
-
-            // SAFETY: Writing to static INSTANCE inside Once::call_once.
-            // - call_once guarantees this code runs exactly once
-            // - No other thread can access INSTANCE until call_once completes
-            // - Arc provides thread-safe reference counting
-            // - After initialization, INSTANCE is only read (never written again)
-            unsafe {
-                INSTANCE = Some(manager);
-            }
+            })
         });
-        
+
         Ok(())
     }
-    
-    /// Get the global budget manager instance
+
+    /// Get the global budget manager instance, auto-initializing if needed.
     pub fn instance() -> Arc<GlobalBudgetManager> {
-        // SAFETY: Reading from static INSTANCE.
-        // - Once::call_once in initialize() ensures INSTANCE is fully initialized before read
-        // - Auto-initialization path calls initialize() which uses Once guard
-        // - After initialization, INSTANCE is never mutated (only read)
-        // - Arc::clone is thread-safe
-        // - unwrap() is safe after initialize() succeeds (enforced by expect)
-        unsafe {
-            if let Some(instance) = &INSTANCE {
-                instance.clone()
-            } else {
-                // Auto-initialize with default config if not already initialized
-                let config = BudgetConfig::new("global", usize::MAX / 2);
-                Self::initialize(config).expect("Failed to initialize global budget manager");
-                INSTANCE.as_ref().unwrap().clone()
-            }
-        }
+        INSTANCE
+            .get_or_init(|| {
+                Arc::new(Self {
+                    root_budgets: RwLock::new(HashMap::new()),
+                    all_budgets: RwLock::new(HashMap::new()),
+                    config: RwLock::new(BudgetConfig::new("global", usize::MAX / 2)),
+                    last_metrics: Mutex::new(None),
+                    metrics_interval: Duration::from_secs(1),
+                    last_update: Mutex::new(Instant::now()),
+                })
+            })
+            .clone()
     }
     
     /// Register a budget with the manager
@@ -222,12 +211,7 @@ impl BudgetManager for GlobalBudgetManager {
     }
     
     fn get_all_budgets(&self) -> Vec<Arc<MemoryBudget>> {
-        self.all_budgets
-            .read()
-            .unwrap()
-            .values()
-            .cloned()
-            .collect()
+        self.all_budgets.read().values().cloned().collect()
     }
     
     fn system_metrics(&self) -> SystemMemoryMetrics {

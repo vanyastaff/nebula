@@ -372,15 +372,31 @@ impl<T> TypedArena<T> {
     /// Note: This doesn't call destructors on allocated values!
     /// Only use this if T doesn't need dropping or you've already
     /// cleaned up the values.
+    ///
+    /// Chunks are prepended on allocation, so `self.chunks` always points to the
+    /// newest (largest) chunk.  Without pruning, repeated reset+fill cycles would
+    /// accumulate chunks that are never reused, leaking memory.  This method
+    /// retains only the oldest (first-allocated) chunk and frees all newer ones.
     pub fn reset(&mut self) {
-        // Reset to first chunk
+        // Walk the prepended linked list to the tail (oldest chunk), dropping
+        // all newer chunks along the way to prevent memory leaks.
+        {
+            let mut chunks = self.chunks.borrow_mut();
+            if let Some(head) = chunks.take() {
+                let mut current = head;
+                while let Some(next_chunk) = current.next.take() {
+                    current = next_chunk;
+                }
+                *chunks = Some(current);
+            }
+        }
+
         if let Some(ref chunk) = *self.chunks.borrow() {
             *self.current_chunk.borrow_mut() = Some(NonNull::from(&**chunk));
-            self.current_index.set(0);
         } else {
             *self.current_chunk.borrow_mut() = None;
-            self.current_index.set(0);
         }
+        self.current_index.set(0);
 
         // Reset chunk capacity
         self.chunk_capacity.set(DEFAULT_CHUNK_CAPACITY);

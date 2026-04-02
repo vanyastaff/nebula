@@ -534,9 +534,7 @@ mod tests {
             .expose_secret(|s| assert_eq!(s, "ref_456"));
         assert!(state.expires_at.is_some());
         assert_eq!(state.scopes, vec!["read", "write"]);
-        state
-            .client_id
-            .expose_secret(|s| assert_eq!(s, "cid"));
+        state.client_id.expose_secret(|s| assert_eq!(s, "cid"));
         state
             .client_secret
             .expose_secret(|s| assert_eq!(s, "csecret"));

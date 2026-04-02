@@ -117,13 +117,16 @@ impl MemoryHistogram {
             }
         }
 
-        // If value is exactly the max of the last bucket, or outside all but the last
-        if !found
-            && let Some(last) = self.buckets.last_mut()
-            && value >= last.max
-        {
-            // Equal to max is still within last bucket
-            last.count += 1;
+        if !found {
+            if let Some(last) = self.buckets.last_mut()
+                && value >= last.max
+            {
+                // Value at or above the last bucket's upper bound — overflow into last
+                last.count += 1;
+            } else if let Some(first) = self.buckets.first_mut() {
+                // Value below the first bucket's lower bound — underflow into first
+                first.count += 1;
+            }
         }
     }
 

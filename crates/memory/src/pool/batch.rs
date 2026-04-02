@@ -337,13 +337,18 @@ impl<T: Poolable> IntoIterator for Batch<T> {
     }
 }
 
-// SAFETY: Batch can be sent between threads if T: Send.
-// - objects: Vec<T> is Send if T: Send
-// - allocator: Raw pointer not shared (exclusive ownership of batch)
-// - T: Send ensures objects can be safely sent
-// - Allocator pointer used only for returning (no concurrent access)
-// - Drop on destination thread safely returns objects to pool
-unsafe impl<T: Poolable + Send> Send for Batch<T> {}
+// Batch<T> is intentionally !Send.
+//
+// The `allocator` field is a raw `*mut BatchAllocator<T>`.  If a Batch were
+// sent to another thread and dropped there, `Drop::drop` would dereference
+// that pointer without holding any mutex, creating a data race with the
+// owning thread's `BatchAllocator`.  `BatchAllocator::get_batch` already
+// requires `&mut self`, so the allocator is inherently single-threaded; the
+// Batch it produces must stay on the same thread.
+//
+// To process objects on a worker thread, call `into_vec()` to take ownership
+// of the `Vec<T>` (which is `Send` when `T: Send`) and return it to the
+// allocator from the original thread after the work is done.
 
 #[cfg(test)]
 mod tests {

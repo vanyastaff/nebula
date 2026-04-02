@@ -232,6 +232,26 @@ pub fn size_range<T>(min: usize, max: usize) -> SizeRange<T> {
     }
 }
 
+/// Creates a validator that checks if a collection size is within a range.
+///
+/// Returns an error when `min > max`.
+pub fn try_size_range<T>(min: usize, max: usize) -> Result<SizeRange<T>, ValidationError> {
+    if min > max {
+        return Err(ValidationError::new(
+            "invalid_range",
+            format!("size_range requires min <= max (got {min} > {max})"),
+        )
+        .with_param("min", min.to_string())
+        .with_param("max", max.to_string()));
+    }
+
+    Ok(SizeRange {
+        min,
+        max,
+        _phantom: PhantomData,
+    })
+}
+
 // ============================================================================
 // TESTS
 // ============================================================================
@@ -306,5 +326,19 @@ mod tests {
         let validator = not_empty_collection::<i32>();
         let err = validator.validate(&[]).unwrap_err();
         assert_eq!(err.code.as_ref(), "not_empty_collection");
+    }
+
+    #[test]
+    fn test_try_size_range_accepts_valid_bounds() {
+        let validator = try_size_range::<i32>(1, 3).expect("valid bounds");
+        assert!(validator.validate(&[1, 2]).is_ok());
+    }
+
+    #[test]
+    fn test_try_size_range_rejects_inverted_bounds() {
+        let err = try_size_range::<i32>(10, 2).expect_err("min > max must fail");
+        assert_eq!(err.code.as_ref(), "invalid_range");
+        assert_eq!(err.param("min"), Some("10"));
+        assert_eq!(err.param("max"), Some("2"));
     }
 }

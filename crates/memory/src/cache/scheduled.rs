@@ -84,10 +84,11 @@ where
                     break;
                 }
 
-                // Clean up expired entries
+                // Clean up expired entries.
+                // Lock order must match all other methods: cache → ttls.
                 let now = Instant::now();
-                let mut ttls_guard = ttls_clone.lock();
                 let mut cache_guard = cache_clone.lock();
+                let mut ttls_guard = ttls_clone.lock();
 
                 // Collect expired keys
                 let expired_keys: Vec<K> = ttls_guard
@@ -137,9 +138,10 @@ where
                     break;
                 }
 
+                // Lock order must match all other methods: cache → ttls.
                 let now = Instant::now();
-                let mut ttls_guard = ttls_clone.lock();
                 let mut cache_guard = cache_clone.lock();
+                let mut ttls_guard = ttls_clone.lock();
 
                 let expired_keys: Vec<K> = ttls_guard
                     .iter()
@@ -248,8 +250,10 @@ where
     /// Manually trigger cleanup of expired entries
     pub fn cleanup_expired(&self) {
         let now = Instant::now();
-        let mut ttls = self.ttls.lock();
+        // Lock order: cache → ttls (consistent with insert_with_ttl/remove/clear
+        // and the background cleanup thread).
         let mut cache = self.cache.lock();
+        let mut ttls = self.ttls.lock();
 
         let expired_keys: Vec<K> = ttls
             .iter()

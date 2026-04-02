@@ -56,20 +56,25 @@ macro_rules! pool_config {
 
 /// Get or create a value from a pool
 ///
+/// The single-argument form returns `Result` — use `?` to propagate exhaustion.
+/// The two-argument form returns the value directly, falling back to `$default`
+/// if the pool is exhausted.
+///
 /// # Examples
 /// ```
 /// use nebula_memory::pool::ObjectPool;
 /// use nebula_memory::pool_get;
 ///
 /// let pool = ObjectPool::new(10, 100, || Vec::<u8>::new());
-/// let mut vec = pool_get!(pool);
+/// let mut vec = pool_get!(pool)?;
 /// vec.push(42);
+/// # Ok::<(), nebula_memory::MemoryError>(())
 /// ```
 #[macro_export]
 macro_rules! pool_get {
-    ($pool:expr) => {{
-        $pool.get().expect("Pool exhausted")
-    }};
+    ($pool:expr) => {
+        $pool.get()
+    };
 
     ($pool:expr, $default:expr) => {{
         $pool.get().unwrap_or_else(|_| $default)

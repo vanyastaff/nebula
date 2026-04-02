@@ -76,6 +76,15 @@ High-performance memory management — arenas, pools, LRU/TTL caching, memory pr
 
 - `foundation::config` subsystem-level wrapper types are named `*Settings` (`PoolSettings`, `CacheSettings`, `BudgetSettings`, `ArenaSettings`, `StatsSettings`) — distinct from the operational configs (`pool::PoolConfig`, `cache::config::CacheConfig`, `budget::config::BudgetConfig`) to prevent naming collision.
 - `MemoryUsage::total_memory()` uses `checked_add` — returns `None` on overflow, consistent with "total unknown" semantics.
+- `MetricsExtension` uses split storage (`by_name` index + slot vector + free list), not a single `BTreeMap<String, MemoryMetric>`. Registration is slot upsert/reuse to avoid payload movement.
+- `MetricsExtension` slot storage keeps metric payload without duplicating `name`; `name` lives in the index key. This reduces register-path cloning/allocation pressure.
+- `MetricsStorage::remove` uses `BTreeMap::remove_entry` so unregister can move the owned key into the returned `MemoryMetric` without extra string clone.
+- `MetricsExtension::register_metric` now takes `&self` and mutates interior `RwLock` state. Callers no longer need mutable extension access.
+- `global_metrics()` now returns a cloned `MetricsExtension` handle sharing the same reporter/storage (`Arc` + interior lock), and no longer reconstructs state through a noop delegating reporter.
+- `MetricsExtension` has explicit `unregister_metric(&self, name)` that tombstones slot storage and reuses slot ids via free-list.
+- Metrics reporter dispatch is now an enum adapter (`Noop`, `Debug`, `Custom`) so built-in reporters avoid trait-object dispatch.
+- Metrics storage synchronization remains `RwLock` after phase-2.5 experiments: `HashMap`/`Mutex` variant increased `register_metric` assembly complexity with no measured win.
+- Added dedicated benchmark target `metrics_extension_benchmarks` for register/update/unregister throughput and adapter-mode comparison (`noop_adapter` vs `custom_dyn`).
 
 - `PriorityPool::return_object` uses `iter().min_by_key()` + `Vec::remove` to find and evict the MINIMUM-priority element — `BinaryHeap::peek()` returns the max, the old code was backwards.
 - `TtlPool` has its own `created_count: usize` field for `max_capacity` enforcement — same pattern as `PriorityPool`. The old code read `stats.total_created()` which returned 0 when the `stats` feature was disabled, making bounded pools unbounded.
@@ -104,4 +113,4 @@ High-performance memory management — arenas, pools, LRU/TTL caching, memory pr
 - `MonitoredAllocator::should_allow_allocation` calls `check_pressure` once — old code called `should_allow_large_allocation` (which internally calls `check_pressure`) then `check_pressure` again, doubling OS queries and double-incrementing `pressure_change_count`.
 - `pool_get!($pool)` returns `Result` (no longer `.expect("Pool exhausted")`) — use `?` at callsite. Two-arg form `pool_get!(pool, default)` unchanged.
 
-<!-- reviewed: 2026-04-01 (perf: BumpAllocator vtable → concrete AtomicCursor −21%; PoolAllocator div → bitmask in deallocate −14%) -->
+<!-- reviewed: 2026-04-01 (perf: BumpAllocator vtable -> concrete AtomicCursor -21%; PoolAllocator div -> bitmask in deallocate -14%; MetricsExtension split-storage breaking redesign + benchmark suite) -->

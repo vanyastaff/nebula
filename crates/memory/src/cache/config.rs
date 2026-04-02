@@ -150,7 +150,7 @@ impl CacheConfig {
             .with_ttl(ttl)
             .with_metrics()
             .with_auto_cleanup()
-            .with_cleanup_interval(Duration::from_secs(ttl.as_secs() / 4))
+            .with_cleanup_interval(ttl / 4)
     }
 
     /// Validate the configuration

@@ -171,9 +171,15 @@ where
         Ok(())
     }
 
-    /// Check if a key exists in the cache (does not check TTL)
+    /// Check if a key exists in the cache
+    ///
+    /// Returns `false` for entries that are present but TTL-expired, consistent
+    /// with the behaviour of [`get`](Self::get).
     pub fn contains_key(&self, key: &K) -> bool {
-        self.entries.contains_key(key)
+        match self.entries.get(key) {
+            Some(entry) => !self.is_expired(&entry),
+            None => false,
+        }
     }
 
     /// Remove a specific key and return its value

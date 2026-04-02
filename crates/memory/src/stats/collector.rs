@@ -90,8 +90,10 @@ impl GlobalStats {
             active_allocations: metrics.allocations.saturating_sub(metrics.deallocations),
             fragmentation_ratio: 0.0, // MemoryMetrics doesn't have fragmentation field
             allocation_failures: metrics.allocation_failures,
+            // Use total_allocated_bytes (cumulative) as numerator — current_allocated
+            // shrinks after deallocations, making it a wrong average numerator.
             avg_allocation_size: if metrics.allocations > 0 {
-                metrics.current_allocated as f64 / metrics.allocations as f64
+                metrics.total_allocated_bytes as f64 / metrics.allocations as f64
             } else {
                 0.0
             },
@@ -142,7 +144,8 @@ pub struct HistogramStats {
 impl HistogramStats {
     /// Create new histogram stats with default configuration
     pub fn new(size_histogram: MemoryHistogram) -> Self {
-        let percentiles = size_histogram.percentiles(&[0.5, 0.90, 0.95, 0.99]);
+        // `MemoryHistogram::percentiles` expects values in the [0, 100] range
+        let percentiles = size_histogram.percentiles(&[50.0, 90.0, 95.0, 99.0]);
 
         Self {
             size_histogram,
@@ -153,14 +156,14 @@ impl HistogramStats {
 
     /// Update percentiles from current histogram data
     pub fn update_percentiles(&mut self) {
-        self.percentiles = self.size_histogram.percentiles(&[0.5, 0.90, 0.95, 0.99]);
+        self.percentiles = self.size_histogram.percentiles(&[50.0, 90.0, 95.0, 99.0]);
     }
 
     /// Get p50 (median)
     pub fn p50(&self) -> Option<u64> {
         self.percentiles
             .iter()
-            .find(|p| (p.percentile - 0.5).abs() < 0.01)
+            .find(|p| (p.percentile - 50.0).abs() < 0.01)
             .map(|p| p.value)
     }
 
@@ -168,7 +171,7 @@ impl HistogramStats {
     pub fn p90(&self) -> Option<u64> {
         self.percentiles
             .iter()
-            .find(|p| (p.percentile - 0.90).abs() < 0.01)
+            .find(|p| (p.percentile - 90.0).abs() < 0.01)
             .map(|p| p.value)
     }
 
@@ -176,7 +179,7 @@ impl HistogramStats {
     pub fn p95(&self) -> Option<u64> {
         self.percentiles
             .iter()
-            .find(|p| (p.percentile - 0.95).abs() < 0.01)
+            .find(|p| (p.percentile - 95.0).abs() < 0.01)
             .map(|p| p.value)
     }
 
@@ -184,11 +187,11 @@ impl HistogramStats {
     pub fn p99(&self) -> Option<u64> {
         self.percentiles
             .iter()
-            .find(|p| (p.percentile - 0.99).abs() < 0.01)
+            .find(|p| (p.percentile - 99.0).abs() < 0.01)
             .map(|p| p.value)
     }
 
-    /// Get custom percentile
+    /// Get custom percentile (value must be in the [0, 100] range)
     pub fn percentile(&self, p: f64) -> Option<u64> {
         self.percentiles
             .iter()

@@ -13,6 +13,8 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
 
+use smallvec::SmallVec;
+
 use std::sync::Arc;
 use std::time::Duration;
 use parking_lot::RwLock;
@@ -325,8 +327,10 @@ pub struct LatencyTracker {
     /// Ring buffer storing nanosecond values of recent samples.
     ring: VecDeque<u64>,
     /// Sorted histogram: `(nanos, count)` pairs, ordered by `nanos` ascending.
-    /// No heap allocations after warmup — only `insert`/`remove` within existing capacity.
-    histogram: Vec<(u64, u32)>,
+    ///
+    /// Up to 64 distinct latency buckets are stored inline (no heap allocation).
+    /// Real workloads cluster tightly, so inline capacity covers 99%+ of cases.
+    histogram: SmallVec<[(u64, u32); 64]>,
     max_samples: usize,
 }
 
@@ -335,7 +339,7 @@ impl LatencyTracker {
     pub fn new(max_samples: usize) -> Self {
         Self {
             ring: VecDeque::with_capacity(max_samples),
-            histogram: Vec::new(),
+            histogram: SmallVec::new(),
             max_samples,
         }
     }

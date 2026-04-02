@@ -275,15 +275,19 @@ impl MemoryBudget {
         let used = self.used();
         let limit = self.limit();
         let peak = self.peak();
-        let stats = self.stats.lock();
+        // Compute state BEFORE acquiring `stats` to maintain lock ordering:
+        // `used` → `config` → `peak` → `stats`.  Calling `state()` while
+        // `stats` is held would violate the order (state() re-acquires `used`).
+        let state = self.state();
+        let alloc_stats = self.stats.lock();
 
         BudgetMetrics {
             used,
             limit,
             peak,
-            allocations: stats.successful,
-            failures: stats.failed,
-            state: self.state(),
+            allocations: alloc_stats.successful,
+            failures: alloc_stats.failed,
+            state,
             timestamp: Instant::now(),
         }
     }
@@ -394,8 +398,9 @@ impl MemoryBudget {
         let config = self.config.read();
         let effective_limit = config.effective_limit();
 
-        // Check if we have enough memory
-        if used + size > effective_limit {
+        // Check if we have enough memory; saturating_add prevents silent overflow
+        // that would make a full budget appear to have free space.
+        if used.saturating_add(size) > effective_limit {
             return false;
         }
 

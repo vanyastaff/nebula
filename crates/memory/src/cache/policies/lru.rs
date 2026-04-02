@@ -238,7 +238,12 @@ where
     }
 
     fn record_insertion(&mut self, key: &K, _entry: &CacheEntry<V>) {
-        // Add to front (most recently used) - O(1)
+        // If key already exists, remove its old node from the list before
+        // pushing a new one — otherwise the old node becomes orphaned in the
+        // Vec, corrupting LRU order and growing `nodes` without bound.
+        if let Some(&old_index) = self.key_to_index.get(key) {
+            self.remove_node(old_index);
+        }
         let index = self.push_front(key.clone());
         self.key_to_index.insert(key.clone(), index);
     }
@@ -407,6 +412,30 @@ mod tests {
         // Now 'a' is least recent
         let victim = policy.as_victim_selector().select_victim(&[]);
         assert_eq!(victim, Some("a".to_string()));
+    }
+
+    #[test]
+    fn test_lru_duplicate_insertion_no_orphaned_nodes() {
+        // Re-inserting an existing key must not leave a stale orphaned node in
+        // the linked list. Before the fix, nodes.len() would grow by 1 on every
+        // re-insertion and the old node would corrupt LRU ordering.
+        let mut policy = LruPolicy::<String, i32>::new();
+        let entry = CacheEntry::new(42);
+
+        policy.record_insertion(&"key1".to_string(), &entry);
+        policy.record_insertion(&"key2".to_string(), &entry);
+        policy.record_insertion(&"key3".to_string(), &entry);
+
+        // Re-insert key1 — should move it to most-recently-used without
+        // creating an orphaned node.
+        policy.record_insertion(&"key1".to_string(), &entry);
+
+        // key_to_index must still have exactly 3 entries.
+        assert_eq!(policy.len(), 3);
+
+        // key1 is now most recent; key2 is least recent → selected as victim.
+        let victim = policy.as_victim_selector().select_victim(&[]);
+        assert_eq!(victim, Some("key2".to_string()));
     }
 
     #[test]

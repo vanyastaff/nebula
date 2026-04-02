@@ -93,7 +93,13 @@ impl MemoryStats {
         self.deallocations.fetch_add(1, Ordering::Relaxed);
         self.total_deallocated_bytes
             .fetch_add(size, Ordering::Relaxed);
-        self.allocated_bytes.fetch_sub(size, Ordering::Relaxed);
+        // saturating_sub prevents wrapping to usize::MAX if a deallocation
+        // races with a reset or is incorrectly sized
+        let _ = self
+            .allocated_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
+                Some(x.saturating_sub(size))
+            });
     }
 
     /// Record a cache hit

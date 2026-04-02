@@ -56,7 +56,7 @@ impl MemoryReservation {
         if !budget.can_allocate(amount) {
             return Err(MemoryError::OutOfMemory {
                 requested: amount,
-                available: budget.limit() - budget.used(),
+                available: budget.limit().saturating_sub(budget.used()),
                 context: format!("Cannot reserve {} bytes in budget '{}'", amount, budget.name()),
             });
         }
@@ -149,8 +149,10 @@ impl MemoryReservation {
     
     /// Cancel the reservation
     pub fn cancel(&self) -> MemoryResult<()> {
-        let mut canceled = self.canceled.lock();
+        // Acquire locks in the same order as claim() — claimed first, then
+        // canceled — to prevent a deadlock when both methods run concurrently.
         let claimed = self.claimed.lock();
+        let mut canceled = self.canceled.lock();
         
         if *claimed {
             return Err(MemoryError::InvalidOperation {

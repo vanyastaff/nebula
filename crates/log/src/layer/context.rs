@@ -8,7 +8,7 @@
 //! When the `async` feature is disabled, the context uses `thread_local!`
 //! (suitable for synchronous code or single-thread runtimes).
 
-use std::collections::HashMap;
+use smallvec::SmallVec;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -74,6 +74,12 @@ mod storage {
 ///
 /// Contains request-scoped fields like request ID, user ID, etc.
 /// Activate via `scope()` (async) or `scope_sync()` (sync).
+///
+/// # Performance Note
+///
+/// Fields are stored in a SmallVec that inlines up to 4 entries, avoiding
+/// heap allocation for typical use cases (0-3 fields). Larger contexts
+/// spill to heap with automatic capacity growth.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Context {
     /// Request ID
@@ -82,9 +88,9 @@ pub struct Context {
     pub user_id: Option<String>,
     /// Session ID
     pub session_id: Option<String>,
-    /// Additional fields
+    /// Additional fields: inlined up to 4 entries, then heap-backed
     #[serde(flatten)]
-    pub fields: HashMap<String, serde_json::Value>,
+    pub fields: SmallVec<[(String, serde_json::Value); 4]>,
 }
 
 impl Context {
@@ -109,15 +115,22 @@ impl Context {
     }
 
     /// Add a field
+    ///
+    /// Efficiently appends to the SmallVec; allocation is deferred until
+    /// the 5th field is added.
     #[must_use]
     pub fn with_field(mut self, key: impl Into<String>, value: impl Serialize) -> Self {
         if let Ok(v) = serde_json::to_value(value) {
-            self.fields.insert(key.into(), v);
+            self.fields.push((key.into(), v));
         }
         self
     }
 
-    /// Get current context (cheap `Arc::clone`, no deep copy)
+    /// Get current context (cheap `Arc::clone`, no deep copy).
+    ///
+    /// The Arc refcount increment is atomic but inexpensive (~1 cycle).
+    /// No allocation occurs on cache hits; allocation only on first call from
+    /// a thread with no active context (fallback to default).
     #[inline]
     #[must_use]
     pub fn current() -> Arc<Self> {

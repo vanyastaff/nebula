@@ -26,19 +26,19 @@ pub struct MemoryConfig {
     pub allocator: AllocatorConfig,
     /// Pool configuration
     #[cfg(feature = "pool")]
-    pub pool: PoolConfig,
+    pub pool: PoolSettings,
     /// Arena configuration
     #[cfg(feature = "arena")]
-    pub arena: ArenaConfig,
+    pub arena: ArenaSettings,
     /// Cache configuration
     #[cfg(feature = "cache")]
-    pub cache: CacheConfig,
+    pub cache: CacheSettings,
     /// Budget configuration
     #[cfg(feature = "budget")]
-    pub budget: BudgetConfig,
+    pub budget: BudgetSettings,
     /// Statistics configuration
     #[cfg(feature = "stats")]
-    pub stats: StatsConfig,
+    pub stats: StatsSettings,
 }
 
 impl MemoryConfig {
@@ -56,17 +56,17 @@ impl MemoryConfig {
 
         #[cfg(feature = "pool")]
         {
-            config.pool = PoolConfig::production();
+            config.pool = PoolSettings::production();
         }
 
         #[cfg(feature = "arena")]
         {
-            config.arena = ArenaConfig::production();
+            config.arena = ArenaSettings::production();
         }
 
         #[cfg(feature = "cache")]
         {
-            config.cache = CacheConfig::production();
+            config.cache = CacheSettings::production();
         }
 
         config
@@ -80,17 +80,17 @@ impl MemoryConfig {
 
         #[cfg(feature = "pool")]
         {
-            config.pool = PoolConfig::debug();
+            config.pool = PoolSettings::debug();
         }
 
         #[cfg(feature = "arena")]
         {
-            config.arena = ArenaConfig::debug();
+            config.arena = ArenaSettings::debug();
         }
 
         #[cfg(feature = "cache")]
         {
-            config.cache = CacheConfig::debug();
+            config.cache = CacheSettings::debug();
         }
 
         config
@@ -110,17 +110,17 @@ impl MemoryConfig {
 
         #[cfg(feature = "pool")]
         {
-            config.pool = PoolConfig::low_memory();
+            config.pool = PoolSettings::low_memory();
         }
 
         #[cfg(feature = "arena")]
         {
-            config.arena = ArenaConfig::low_memory();
+            config.arena = ArenaSettings::low_memory();
         }
 
         #[cfg(feature = "cache")]
         {
-            config.cache = CacheConfig::low_memory();
+            config.cache = CacheSettings::low_memory();
         }
 
         config
@@ -322,7 +322,7 @@ pub enum AlignmentPreference {
 #[cfg(feature = "pool")]
 /// Configuration for object pools
 #[derive(Debug, Clone)]
-pub struct PoolConfig {
+pub struct PoolSettings {
     /// Default pool capacity
     pub default_capacity: usize,
     /// Maximum pool capacity
@@ -338,7 +338,7 @@ pub struct PoolConfig {
 }
 
 #[cfg(feature = "pool")]
-impl Default for PoolConfig {
+impl Default for PoolSettings {
     fn default() -> Self {
         Self {
             default_capacity: 32,
@@ -352,7 +352,7 @@ impl Default for PoolConfig {
 }
 
 #[cfg(feature = "pool")]
-impl PoolConfig {
+impl PoolSettings {
     /// Production configuration - optimized for maximum performance
     #[must_use]
     pub fn production() -> Self {
@@ -447,7 +447,7 @@ pub enum PoolShrinkStrategy {
 #[cfg(feature = "arena")]
 /// Configuration for memory arenas
 #[derive(Debug, Clone)]
-pub struct ArenaConfig {
+pub struct ArenaSettings {
     /// Default arena size
     pub default_size: usize,
     /// Maximum arena size
@@ -461,7 +461,7 @@ pub struct ArenaConfig {
 }
 
 #[cfg(feature = "arena")]
-impl Default for ArenaConfig {
+impl Default for ArenaSettings {
     fn default() -> Self {
         Self {
             default_size: 64 * 1024,    // 64KB
@@ -474,7 +474,7 @@ impl Default for ArenaConfig {
 }
 
 #[cfg(feature = "arena")]
-impl ArenaConfig {
+impl ArenaSettings {
     /// Production configuration - optimized for maximum performance
     #[must_use]
     pub fn production() -> Self {
@@ -559,7 +559,7 @@ pub enum ArenaGrowthStrategy {
 #[cfg(feature = "cache")]
 /// Configuration for caches
 #[derive(Debug, Clone)]
-pub struct CacheConfig {
+pub struct CacheSettings {
     /// Default cache capacity
     pub default_capacity: usize,
     /// Maximum cache capacity
@@ -573,7 +573,7 @@ pub struct CacheConfig {
 }
 
 #[cfg(feature = "cache")]
-impl Default for CacheConfig {
+impl Default for CacheSettings {
     fn default() -> Self {
         Self {
             default_capacity: 256,
@@ -586,7 +586,7 @@ impl Default for CacheConfig {
 }
 
 #[cfg(feature = "cache")]
-impl CacheConfig {
+impl CacheSettings {
     /// Production configuration - optimized for maximum performance
     #[must_use]
     pub fn production() -> Self {
@@ -668,7 +668,7 @@ pub enum EvictionPolicy {
 #[cfg(feature = "budget")]
 /// Configuration for memory budgets
 #[derive(Debug, Clone)]
-pub struct BudgetConfig {
+pub struct BudgetSettings {
     /// Global memory budget in bytes
     pub global_budget: Option<usize>,
     /// Per-operation budget in bytes
@@ -680,7 +680,7 @@ pub struct BudgetConfig {
 }
 
 #[cfg(feature = "budget")]
-impl Default for BudgetConfig {
+impl Default for BudgetSettings {
     fn default() -> Self {
         Self {
             global_budget: None,
@@ -692,7 +692,7 @@ impl Default for BudgetConfig {
 }
 
 #[cfg(feature = "budget")]
-impl BudgetConfig {
+impl BudgetSettings {
     /// Validate budget configuration
     pub fn validate(&self) -> MemoryResult<()> {
         if let (Some(global), Some(operation)) = (self.global_budget, self.operation_budget)
@@ -714,7 +714,7 @@ impl BudgetConfig {
 #[cfg(feature = "stats")]
 /// Configuration for statistics collection
 #[derive(Debug, Clone)]
-pub struct StatsConfig {
+pub struct StatsSettings {
     /// Enable detailed statistics
     pub enable_detailed: bool,
     /// Statistics collection interval
@@ -726,7 +726,7 @@ pub struct StatsConfig {
 }
 
 #[cfg(feature = "stats")]
-impl Default for StatsConfig {
+impl Default for StatsSettings {
     fn default() -> Self {
         Self {
             enable_detailed: false,
@@ -822,7 +822,7 @@ impl MemoryConfigBuilder {
     #[cfg(feature = "pool")]
     /// Set pool configuration
     #[must_use = "builder methods must be chained or built"]
-    pub fn pool(mut self, pool: PoolConfig) -> Self {
+    pub fn pool(mut self, pool: PoolSettings) -> Self {
         self.config.pool = pool;
         self
     }
@@ -830,7 +830,7 @@ impl MemoryConfigBuilder {
     #[cfg(feature = "arena")]
     /// Set arena configuration
     #[must_use = "builder methods must be chained or built"]
-    pub fn arena(mut self, arena: ArenaConfig) -> Self {
+    pub fn arena(mut self, arena: ArenaSettings) -> Self {
         self.config.arena = arena;
         self
     }
@@ -838,7 +838,7 @@ impl MemoryConfigBuilder {
     #[cfg(feature = "cache")]
     /// Set cache configuration
     #[must_use = "builder methods must be chained or built"]
-    pub fn cache(mut self, cache: CacheConfig) -> Self {
+    pub fn cache(mut self, cache: CacheSettings) -> Self {
         self.config.cache = cache;
         self
     }
@@ -902,7 +902,7 @@ mod tests {
     #[cfg(feature = "pool")]
     #[test]
     fn test_pool_config_validation() {
-        let mut config = PoolConfig::default();
+        let mut config = PoolSettings::default();
         config.max_capacity = config.default_capacity - 1;
         assert!(config.validate().is_err());
     }
@@ -910,7 +910,7 @@ mod tests {
     #[cfg(feature = "arena")]
     #[test]
     fn test_arena_config_validation() {
-        let mut config = ArenaConfig::default();
+        let mut config = ArenaSettings::default();
         config.max_size = config.default_size - 1;
         assert!(config.validate().is_err());
     }
