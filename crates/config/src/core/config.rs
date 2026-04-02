@@ -816,6 +816,13 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_leading_dot_in_path() {
+        let config = test_config(json!({"a": "val"}));
+        let err = config.get::<String>(".a").await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
     async fn rejects_trailing_dot_in_path() {
         let config = test_config(json!({"a": "val"}));
         let err = config.get::<String>("a.").await;
