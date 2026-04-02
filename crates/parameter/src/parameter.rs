@@ -1194,7 +1194,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "multiline()")]
     fn multiline_on_wrong_type_panics_in_debug() {
-        Parameter::number("num").multiline();
+        let _ = Parameter::number("num").multiline();
     }
 
     #[test]
@@ -1376,48 +1376,48 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "searchable()")]
     fn searchable_on_wrong_type_panics_in_debug() {
-        Parameter::string("x").searchable();
+        let _ = Parameter::string("x").searchable();
     }
 
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "option()")]
     fn option_on_wrong_type_panics_in_debug() {
-        Parameter::boolean("x").option("v", "label");
+        let _ = Parameter::boolean("x").option("v", "label");
     }
 
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "min()")]
     fn min_on_wrong_type_panics_in_debug() {
-        Parameter::string("x").min(0.0);
+        let _ = Parameter::string("x").min(0.0);
     }
 
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "collapsed()")]
     fn collapsed_on_wrong_type_panics_in_debug() {
-        Parameter::string("x").collapsed();
+        let _ = Parameter::string("x").collapsed();
     }
 
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "variant()")]
     fn variant_on_wrong_type_panics_in_debug() {
-        Parameter::string("x").variant(Parameter::string("y"));
+        let _ = Parameter::string("x").variant(Parameter::string("y"));
     }
 
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "min_items()")]
     fn min_items_on_wrong_type_panics_in_debug() {
-        Parameter::string("x").min_items(1);
+        let _ = Parameter::string("x").min_items(1);
     }
 
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "accept()")]
     fn accept_on_wrong_type_panics_in_debug() {
-        Parameter::string("x").accept("image/*");
+        let _ = Parameter::string("x").accept("image/*");
     }
 }

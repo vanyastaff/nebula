@@ -12,11 +12,11 @@ use std::sync::Arc;
 use nebula_core::{ExecutionId, ResourceKey};
 use nebula_resource::ctx::ScopeLevel;
 use nebula_resource::error::{Error, ErrorKind};
-use nebula_resource::topology::pooled::{BrokenCheck, Pooled, RecycleDecision};
+use nebula_resource::topology::pooled::{BrokenCheck, Pooled};
 use nebula_resource::topology::resident::Resident;
 use nebula_resource::{
     AcquireOptions, BasicCtx, Manager, PoolConfig, ResidentConfig, Resource, ResourceConfig,
-    ResourceMetadata, ShutdownConfig, resource_key,
+    ShutdownConfig, resource_key,
 };
 
 // [FRICTION #1] ResourceConfig has no blanket impl for "accept everything".
@@ -296,6 +296,7 @@ async fn use_case_2_resident_config_store() {
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 struct DbConfig {
     dsn: String,
     pool_size: u32,

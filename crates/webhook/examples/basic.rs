@@ -3,6 +3,9 @@
 //! This example demonstrates how to create a simple webhook trigger
 //! that accepts POST requests and emits events.
 
+// Reason: webhook crate still uses v1 compat types (Context/Scope); migration tracked separately.
+#![allow(deprecated)]
+
 use async_trait::async_trait;
 use nebula_resource::{Context, ExecutionId, Scope, WorkflowId};
 use nebula_webhook::prelude::*;

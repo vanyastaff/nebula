@@ -1257,6 +1257,7 @@ struct ServiceInner {
 
 /// Token handed out by the service.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 struct ServiceToken {
     data: String,
 }
@@ -1334,12 +1335,14 @@ impl Service for ServiceTestResource {
 
 /// Inner state for the transport runtime.
 #[derive(Debug)]
+#[allow(dead_code)]
 struct TransportInner {
     name: String,
 }
 
 /// Session handle returned by the transport.
 #[derive(Debug)]
+#[allow(dead_code)]
 struct SessionHandle {
     id: u64,
 }
