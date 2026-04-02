@@ -35,3 +35,15 @@
 ## REST + WebSocket
 **Choice**: REST for CRUD, WebSocket for real-time, versioned at `/v1/`
 **Why**: Simpler than GraphQL; WebSocket handles live execution updates.
+
+## Credential–Resource Integration via Typed Refs + Events
+**Choice**: `CredentialRef<C>` (typed) / `ErasedCredentialRef` in `ResourceComponents`; `Pool<R>` stores credential state + `CredentialHandler<R::Instance>`; rotation via `CredentialRotationEvent` on `EventBus`
+**Why**: Avoids circular dep between credential↔resource; `TypeId`-based refs were broken — typed refs enforce protocol at compile time. Resources subscribe via `rotation_subscriber()` and dispatch to affected pools by `CredentialId`.
+
+## Channel Conventions
+**Choice**: `mpsc` (bounded) for work queues; `broadcast` for status; `oneshot` for request/response; `RwLock` for shared mutable state
+**Why**: Back-pressure via bounded mpsc prevents unbounded queue growth; broadcast decouples status consumers.
+
+## Default Timeouts
+**Choice**: HTTP 10 s · Database 5 s · General 30 s
+**Why**: Explicit defaults prevent unbounded blocking; overridable via `ApiConfig`.
