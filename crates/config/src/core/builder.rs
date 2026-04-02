@@ -264,7 +264,7 @@ impl ConfigBuilder {
 
         // Interpolate environment variable references
         if self.interpolation {
-            merged_data = crate::interpolation::interpolate(&merged_data)?;
+            merged_data = crate::interpolation::interpolate(merged_data)?;
             nebula_log::debug!("interpolation pass complete for merged config");
         }
 

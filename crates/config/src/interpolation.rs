@@ -17,61 +17,86 @@ use crate::core::result::ConfigResult;
 /// - `${VAR:-default}` — resolves from the environment; uses *default* if unset
 /// - `$$` — escaped literal `$` (not interpolated)
 ///
+/// Takes ownership of the value and returns it unchanged (without any heap
+/// allocation) when no `$` references are found anywhere in the tree.
+///
 /// # Errors
 ///
 /// Returns [`ConfigError::InterpolationError`] when a required variable is
 /// missing or the syntax is invalid (e.g. empty `${}`).
-pub fn interpolate(value: &Value) -> ConfigResult<Value> {
+pub fn interpolate(value: Value) -> ConfigResult<Value> {
     match value {
         Value::String(s) => interpolate_string(s),
-        Value::Object(map) => {
-            let mut result = serde_json::Map::with_capacity(map.len());
-            for (k, v) in map {
-                result.insert(k.clone(), interpolate(v)?);
+        Value::Object(mut map) => {
+            for v in map.values_mut() {
+                let owned = std::mem::replace(v, Value::Null);
+                *v = interpolate(owned)?;
             }
-            Ok(Value::Object(result))
+            Ok(Value::Object(map))
         }
-        Value::Array(arr) => {
-            let result: ConfigResult<Vec<Value>> = arr.iter().map(interpolate).collect();
-            Ok(Value::Array(result?))
+        Value::Array(mut arr) => {
+            for v in arr.iter_mut() {
+                let owned = std::mem::replace(v, Value::Null);
+                *v = interpolate(owned)?;
+            }
+            Ok(Value::Array(arr))
         }
-        other => Ok(other.clone()),
+        other => Ok(other),
     }
 }
 
 /// Interpolate a single string, resolving all `${…}` references.
-fn interpolate_string(input: &str) -> ConfigResult<Value> {
-    // Fast path: no `$` at all → return unchanged.
-    if !input.contains('$') {
-        return Ok(Value::String(input.to_string()));
-    }
+///
+/// Takes ownership of the `String`. Returns it unchanged (reusing its heap
+/// allocation) when no `$` is present — zero extra allocations on the fast path.
+fn interpolate_string(input: String) -> ConfigResult<Value> {
+    // Fast path: no `$` at all → return the original String without any allocation.
+    let bytes = input.as_bytes();
+    let Some(first_dollar) = bytes.iter().position(|&b| b == b'$') else {
+        return Ok(Value::String(input));
+    };
 
+    // Slow path: found at least one `$`. Build the result string.
+    // Copy everything before the first `$` upfront to avoid repeated checks.
     let mut result = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
+    result.push_str(&input[..first_dollar]);
+
+    let mut pos = first_dollar;
     let mut ref_count: u32 = 0;
 
-    while let Some(ch) = chars.next() {
-        if ch == '$' {
-            match chars.peek() {
-                Some('$') => {
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b'$' => match bytes.get(pos + 1) {
+                Some(b'$') => {
                     // Escaped `$$` → literal `$`
-                    chars.next();
                     result.push('$');
+                    pos += 2;
                 }
-                Some('{') => {
-                    chars.next(); // consume '{'
-                    let (resolved, key) = resolve_reference(&mut chars)?;
+                Some(b'{') => {
+                    pos += 2; // consume '${'
+                    let (resolved, key, new_pos) = resolve_reference(&input, pos)?;
                     result.push_str(&resolved);
                     ref_count += 1;
                     nebula_log::trace!("resolved ${{{key}}} from environment");
+                    pos = new_pos;
                 }
                 _ => {
                     // Bare `$` — pass through literally
                     result.push('$');
+                    pos += 1;
                 }
+            },
+            _ => {
+                // Bulk-copy everything up to the next `$` in one slice operation,
+                // avoiding per-character processing for literal text segments.
+                let next_dollar = bytes[pos..]
+                    .iter()
+                    .position(|&b| b == b'$')
+                    .map(|p| pos + p)
+                    .unwrap_or(bytes.len());
+                result.push_str(&input[pos..next_dollar]);
+                pos = next_dollar;
             }
-        } else {
-            result.push(ch);
         }
     }
 
@@ -85,30 +110,23 @@ fn interpolate_string(input: &str) -> ConfigResult<Value> {
     Ok(Value::String(result))
 }
 
-/// Parse a `${…}` reference body from a char iterator and resolve it.
+/// Parse a `${…}` reference body from the input string and resolve it.
 ///
-/// Expects the iterator is positioned right after `${`.
-/// Returns `(resolved_value, var_name)`.
-fn resolve_reference(
-    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
-) -> ConfigResult<(String, String)> {
-    let mut body = String::new();
-    let mut found_close = false;
+/// `start` is the byte offset just after `${`.
+///
+/// Returns `(resolved_value, var_name, new_pos)` where `new_pos` is the byte
+/// offset immediately after the closing `}`.
+fn resolve_reference(input: &str, start: usize) -> ConfigResult<(String, String, usize)> {
+    let bytes = input.as_bytes();
 
-    for ch in chars.by_ref() {
-        if ch == '}' {
-            found_close = true;
-            break;
-        }
-        body.push(ch);
-    }
+    // Byte scan for `}` — all relevant characters are ASCII so this is safe
+    // on valid UTF-8 (multi-byte sequences always have the high bit set).
+    let close_offset = bytes[start..].iter().position(|&b| b == b'}').ok_or_else(|| {
+        ConfigError::interpolation_error("unclosed variable reference — missing '}'", None)
+    })?;
 
-    if !found_close {
-        return Err(ConfigError::interpolation_error(
-            "unclosed variable reference — missing '}'",
-            None,
-        ));
-    }
+    let body = &input[start..start + close_offset];
+    let new_pos = start + close_offset + 1; // step past '}'
 
     if body.is_empty() {
         return Err(ConfigError::interpolation_error(
@@ -119,23 +137,23 @@ fn resolve_reference(
 
     // Split on `:-` for default syntax: ${VAR:-default}
     let (var_name, default_value) = if let Some(pos) = body.find(":-") {
-        let name = &body[..pos];
-        let fallback = &body[pos + 2..];
-        (name.to_string(), Some(fallback.to_string()))
+        (&body[..pos], Some(&body[pos + 2..]))
     } else {
         (body, None)
     };
 
-    match std::env::var(&var_name) {
-        Ok(val) => Ok((val, var_name)),
+    match std::env::var(var_name) {
+        Ok(val) => Ok((val, var_name.to_string(), new_pos)),
         Err(_) => {
             if let Some(default) = default_value {
-                nebula_log::warn!("unresolved variable ${{{var_name}}}, using default: {default}");
-                Ok((default, var_name))
+                nebula_log::warn!(
+                    "unresolved variable ${{{var_name}}}, using default: {default}"
+                );
+                Ok((default.to_owned(), var_name.to_string(), new_pos))
             } else {
                 Err(ConfigError::interpolation_error(
                     format!("unresolved environment variable: {var_name}"),
-                    Some(var_name),
+                    Some(var_name.to_string()),
                 ))
             }
         }
@@ -151,7 +169,7 @@ mod tests {
     fn resolves_env_variable() {
         unsafe { std::env::set_var("NEBULA_TEST_INTERP_A", "hello") };
         let input = json!({"greeting": "${NEBULA_TEST_INTERP_A}"});
-        let result = interpolate(&input).unwrap();
+        let result = interpolate(input).unwrap();
         assert_eq!(result["greeting"], "hello");
         unsafe { std::env::remove_var("NEBULA_TEST_INTERP_A") };
     }
@@ -160,7 +178,7 @@ mod tests {
     fn fallback_when_var_unset() {
         unsafe { std::env::remove_var("NEBULA_TEST_INTERP_UNSET") };
         let input = json!({"val": "${NEBULA_TEST_INTERP_UNSET:-fallback_value}"});
-        let result = interpolate(&input).unwrap();
+        let result = interpolate(input).unwrap();
         assert_eq!(result["val"], "fallback_value");
     }
 
@@ -168,7 +186,7 @@ mod tests {
     fn fallback_ignored_when_var_set() {
         unsafe { std::env::set_var("NEBULA_TEST_INTERP_B", "real") };
         let input = json!({"val": "${NEBULA_TEST_INTERP_B:-ignored}"});
-        let result = interpolate(&input).unwrap();
+        let result = interpolate(input).unwrap();
         assert_eq!(result["val"], "real");
         unsafe { std::env::remove_var("NEBULA_TEST_INTERP_B") };
     }
@@ -180,7 +198,7 @@ mod tests {
             std::env::set_var("NEBULA_TEST_INTERP_Y", "bar");
         }
         let input = json!({"val": "${NEBULA_TEST_INTERP_X}_${NEBULA_TEST_INTERP_Y}"});
-        let result = interpolate(&input).unwrap();
+        let result = interpolate(input).unwrap();
         assert_eq!(result["val"], "foo_bar");
         unsafe {
             std::env::remove_var("NEBULA_TEST_INTERP_X");
@@ -191,7 +209,7 @@ mod tests {
     #[test]
     fn non_string_values_pass_through() {
         let input = json!({"num": 42, "bool": true, "null": null});
-        let result = interpolate(&input).unwrap();
+        let result = interpolate(input.clone()).unwrap();
         assert_eq!(result, input);
     }
 
@@ -205,7 +223,7 @@ mod tests {
                 }
             }
         });
-        let result = interpolate(&input).unwrap();
+        let result = interpolate(input).unwrap();
         assert_eq!(result["level1"]["level2"]["items"][0], "found");
         assert_eq!(result["level1"]["level2"]["items"][1], "static");
         unsafe { std::env::remove_var("NEBULA_TEST_INTERP_DEEP") };
@@ -215,21 +233,21 @@ mod tests {
     fn missing_required_var_returns_error() {
         unsafe { std::env::remove_var("NEBULA_TEST_INTERP_MISSING") };
         let input = json!({"val": "${NEBULA_TEST_INTERP_MISSING}"});
-        let err = interpolate(&input).unwrap_err();
+        let err = interpolate(input).unwrap_err();
         assert!(matches!(err, ConfigError::InterpolationError { .. }));
     }
 
     #[test]
     fn empty_reference_returns_error() {
         let input = json!({"val": "${}"});
-        let err = interpolate(&input).unwrap_err();
+        let err = interpolate(input).unwrap_err();
         assert!(matches!(err, ConfigError::InterpolationError { .. }));
     }
 
     #[test]
     fn escaped_dollar_not_interpolated() {
         let input = json!({"val": "price is $$10"});
-        let result = interpolate(&input).unwrap();
+        let result = interpolate(input).unwrap();
         assert_eq!(result["val"], "price is $10");
     }
 }
