@@ -162,7 +162,7 @@ impl HedgeExecutor {
                     }
                     if set.is_empty() && hedges_sent >= self.config.max_hedges {
                         return Err(
-                            last_err.map_or(CallError::Cancelled { reason: None }, CallError::Operation)
+                            last_err.map_or(CallError::cancelled(), CallError::Operation)
                         );
                     }
                 }

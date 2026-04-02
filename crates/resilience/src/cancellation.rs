@@ -194,7 +194,7 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Fast path: check if already cancelled (no allocation)
         if self.cancellation.is_cancelled() {
-            return Poll::Ready(Err(CallError::Cancelled { reason: None }));
+            return Poll::Ready(Err(CallError::cancelled()));
         }
 
         // Poll the underlying future
@@ -210,9 +210,9 @@ where
                 let waker_future = self.cancellation.cancelled();
                 tokio::pin!(waker_future);
                 if waker_future.as_mut().poll(cx).is_ready() {
-                    Poll::Ready(Err(CallError::Cancelled {
-                        reason: Some(Cow::Borrowed("Future was cancelled while pending")),
-                    }))
+                    Poll::Ready(Err(CallError::cancelled_with(
+                        "Future was cancelled while pending",
+                    )))
                 } else {
                     Poll::Pending
                 }

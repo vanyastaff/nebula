@@ -412,7 +412,7 @@ where
     // Unreachable None case: debug_assert above guarantees max_attempts >= 1,
     // so at least one iteration ran and set last_err.
     Err(last_err.map_or_else(
-        || CallError::Cancelled { reason: None },
+        || CallError::cancelled(),
         |e| CallError::RetriesExhausted {
             attempts: config.max_attempts,
             last: e,

@@ -60,7 +60,7 @@ pub trait RateLimiter: Send + Sync {
         async {
             self.acquire()
                 .await
-                .map_err(|_| CallError::RateLimited { retry_after: None })?;
+                .map_err(|_| CallError::rate_limited())?;
             operation().await.map_err(CallError::Operation)
         }
     }
@@ -195,7 +195,7 @@ impl RateLimiter for TokenBucket {
             Ok(())
         } else {
             drop(state);
-            Err(CallError::RateLimited { retry_after: None })
+            Err(CallError::rate_limited())
         }
     }
 
@@ -299,7 +299,7 @@ impl RateLimiter for LeakyBucket {
             Ok(())
         } else {
             drop(state);
-            Err(CallError::RateLimited { retry_after: None })
+            Err(CallError::rate_limited())
         }
     }
 
@@ -402,7 +402,7 @@ impl RateLimiter for SlidingWindow {
             Ok(())
         } else {
             drop(requests);
-            Err(CallError::RateLimited { retry_after: None })
+            Err(CallError::rate_limited())
         }
     }
 
@@ -617,7 +617,7 @@ impl RateLimiter for AdaptiveRateLimiter {
     {
         self.acquire()
             .await
-            .map_err(|_| CallError::RateLimited { retry_after: None })?;
+            .map_err(|_| CallError::rate_limited())?;
         let result = operation().await;
 
         match &result {
@@ -750,7 +750,7 @@ mod governor_impl {
         async fn acquire(&self) -> Result<(), CallError<()>> {
             match self.limiter.check() {
                 Ok(()) => Ok(()),
-                Err(_) => Err(CallError::RateLimited { retry_after: None }),
+                Err(_) => Err(CallError::rate_limited()),
             }
         }
 

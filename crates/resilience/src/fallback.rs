@@ -130,16 +130,15 @@ where
             match (self.function)(erased).await {
                 Ok(value) => Ok(value),
                 Err(e) => Err(e.flat_map_inner(
-                    |()| CallError::FallbackFailed {
-                        reason: Some(
-                            "fallback returned Operation(()) — original error was erased".into(),
-                        ),
+                    |()| {
+                        CallError::fallback_failed_with(
+                            "fallback returned Operation(()) — original error was erased",
+                        )
                     },
-                    |_, ()| CallError::FallbackFailed {
-                        reason: Some(
-                            "fallback returned RetriesExhausted(()) — original error was erased"
-                                .into(),
-                        ),
+                    |_, ()| {
+                        CallError::fallback_failed_with(
+                            "fallback returned RetriesExhausted(()) — original error was erased",
+                        )
                     },
                 )),
             }
@@ -445,7 +444,7 @@ mod tests {
     }
 
     fn cancelled_error() -> CallError<&'static str> {
-        CallError::Cancelled { reason: None }
+        CallError::cancelled()
     }
 
     // -----------------------------------------------------------------------
@@ -514,7 +513,7 @@ mod tests {
     async fn chain_fallback_tries_in_order_and_returns_first_success() {
         let first: Arc<dyn FallbackStrategy<u32, &str>> =
             Arc::new(FunctionFallback::new(|_err| async {
-                Err(CallError::Cancelled { reason: None })
+                Err(CallError::cancelled())
             }));
         let second: Arc<dyn FallbackStrategy<u32, &str>> = Arc::new(ValueFallback::new(99u32));
 
@@ -527,9 +526,7 @@ mod tests {
     async fn chain_fallback_returns_last_error_when_all_fail() {
         let failing: Arc<dyn FallbackStrategy<u32, &str>> =
             Arc::new(FunctionFallback::new(|_err| async {
-                Err(CallError::Cancelled {
-                    reason: Some("fail".into()),
-                })
+                Err(CallError::cancelled_with("fail"))
             }));
         let chain = ChainFallback::new()
             .then(Arc::clone(&failing))

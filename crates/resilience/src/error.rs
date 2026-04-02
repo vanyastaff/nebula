@@ -81,6 +81,52 @@ impl<E: std::error::Error + 'static> std::error::Error for CallError<E> {
 }
 
 impl<E> CallError<E> {
+    // ── Constructors ─────────────────────────────────────────────────────
+
+    /// Cancelled without a reason.
+    #[must_use]
+    pub const fn cancelled() -> Self {
+        Self::Cancelled { reason: None }
+    }
+
+    /// Cancelled with a static reason (zero heap allocation).
+    #[must_use]
+    pub const fn cancelled_with(reason: &'static str) -> Self {
+        Self::Cancelled {
+            reason: Some(Cow::Borrowed(reason)),
+        }
+    }
+
+    /// Fallback failed without a reason.
+    #[must_use]
+    pub const fn fallback_failed() -> Self {
+        Self::FallbackFailed { reason: None }
+    }
+
+    /// Fallback failed with a static reason (zero heap allocation).
+    #[must_use]
+    pub const fn fallback_failed_with(reason: &'static str) -> Self {
+        Self::FallbackFailed {
+            reason: Some(Cow::Borrowed(reason)),
+        }
+    }
+
+    /// Rate limited without a retry-after hint.
+    #[must_use]
+    pub const fn rate_limited() -> Self {
+        Self::RateLimited { retry_after: None }
+    }
+
+    /// Rate limited with a retry-after hint.
+    #[must_use]
+    pub const fn rate_limited_after(retry_after: Duration) -> Self {
+        Self::RateLimited {
+            retry_after: Some(retry_after),
+        }
+    }
+
+    // ── Predicates ───────────────────────────────────────────────────────
+
     /// Returns true if the error class suggests a retry might succeed.
     ///
     /// `Timeout`, `RateLimited`, and `BulkheadFull` are considered retryable because
@@ -322,19 +368,17 @@ mod tests {
 
     #[test]
     fn rate_limited_is_retryable() {
-        let e: CallError<MyErr> = CallError::RateLimited { retry_after: None };
+        let e: CallError<MyErr> = CallError::rate_limited();
         assert!(e.is_retryable());
     }
 
     #[test]
     fn rate_limited_retry_after_accessor() {
-        let e: CallError<MyErr> = CallError::RateLimited {
-            retry_after: Some(Duration::from_secs(5)),
-        };
+        let e: CallError<MyErr> = CallError::rate_limited_after(Duration::from_secs(5));
         assert_eq!(e.retry_after(), Some(Duration::from_secs(5)));
         assert!(e.is_retryable());
 
-        let e2: CallError<MyErr> = CallError::RateLimited { retry_after: None };
+        let e2: CallError<MyErr> = CallError::rate_limited();
         assert_eq!(e2.retry_after(), None);
     }
 
@@ -346,9 +390,7 @@ mod tests {
 
     #[test]
     fn cancelled_is_not_retryable() {
-        let e: CallError<MyErr> = CallError::Cancelled {
-            reason: Some("shutdown".into()),
-        };
+        let e: CallError<MyErr> = CallError::cancelled_with("shutdown");
         assert!(!e.is_retryable());
     }
 

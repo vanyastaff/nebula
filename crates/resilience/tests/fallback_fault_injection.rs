@@ -94,9 +94,7 @@ async fn test_fault_injection_cache_fallback_stale_if_error_returns_expired_valu
 #[tokio::test]
 async fn test_fault_injection_chain_fallback_cascades_to_next_strategy() {
     let first = Arc::new(FunctionFallback::new(|_error: CallError<()>| async move {
-        Err::<String, _>(CallError::Cancelled {
-            reason: Some("first fallback failed".into()),
-        })
+        Err::<String, _>(CallError::cancelled_with("first fallback failed"))
     }));
     let second = Arc::new(ValueFallback::new("chain-success".to_string()));
 

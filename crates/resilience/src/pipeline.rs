@@ -499,11 +499,7 @@ fn map_retry_result<T, E: Send>(
     result: Result<T, CallError<Option<E>>>,
     bail: &Arc<Mutex<Option<CallError<E>>>>,
 ) -> Result<T, CallError<E>> {
-    let take_bail = || {
-        bail.lock()
-            .take()
-            .unwrap_or(CallError::Cancelled { reason: None })
-    };
+    let take_bail = || bail.lock().take().unwrap_or(CallError::cancelled());
 
     match result {
         Ok(v) => Ok(v),
@@ -611,8 +607,7 @@ mod tests {
         let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default()).unwrap());
 
         // Rate limiter that always rejects
-        let rl: RateLimitCheck =
-            Arc::new(|| Box::pin(async { Err(CallError::RateLimited { retry_after: None }) }));
+        let rl: RateLimitCheck = Arc::new(|| Box::pin(async { Err(CallError::rate_limited()) }));
 
         let pipeline = ResiliencePipeline::<&str>::builder()
             .circuit_breaker(cb)
