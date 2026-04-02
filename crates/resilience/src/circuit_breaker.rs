@@ -186,14 +186,18 @@ type StateChangeCallback = Box<dyn Fn(CircuitState, CircuitState) + Send + Sync>
 /// [`call()`](CircuitBreaker::call) is cancel-safe with respect to the half-open probe count.
 /// If the future returned by `call()` is dropped before completion (e.g. via `tokio::select!`),
 /// the probe slot is automatically released via `record_outcome(Cancelled)`.
+/// Layout: `atomic_state` first so `circuit_state()` shares cache line 0
+/// with the start of `config`, instead of sitting alone on a 5th line.
+/// `repr(C)` locks field order — without it, rustc pushes `AtomicU32`
+/// (align 4) to the end after all 8-byte-aligned fields.
+#[repr(C)]
 pub struct CircuitBreaker {
-    config: CircuitBreakerConfig,
-    /// Atomic mirror of the current state for lock-free observability reads.
-    /// Updated inside the mutex by all state transitions, read without lock by `circuit_state()`.
+    /// Lock-free state mirror for observability. Offset 0 = cache line 0.
     atomic_state: AtomicU32,
-    state: Mutex<InnerState>,
+    config: CircuitBreakerConfig,
     clock: Arc<dyn Clock>,
     sink: Arc<dyn MetricsSink>,
+    state: Mutex<InnerState>,
     on_state_change: Option<StateChangeCallback>,
 }
 
