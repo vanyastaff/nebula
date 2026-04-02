@@ -34,8 +34,8 @@ Fault-tolerance patterns: circuit breaker, retry, bulkhead, rate limiter, timeou
 - **`AdaptiveHedgeExecutor` uses `parking_lot::RwLock`** — not `tokio::sync::RwLock`: both `record()` and `percentile()` are sync, no `.await` under lock.
 - **`LatencyTracker` uses `Vec<(u64, u32)>` histogram** — sorted by nanos, no BTreeMap, no heap allocs after warmup. `ring: VecDeque<u64>` stores nanos (not Duration).
 - **CB `OutcomeWindow` uses power-of-two capacity** — `new(n)` rounds up to `next_power_of_two`, stores `mask = cap - 1`. Ring wraps via `& mask` (1 cycle) not `% cap` (35 cycles). Effective window may be larger than requested.
-- **CB `OutcomeWindow` uses two `Box<[u8]>` arrays** — `failure_ring` and `slow_ring` separate; `byte_sum` helper uses `chunks(255)` for LLVM `psadbw` auto-vectorization.
-- **CB failure/slow rate checks use multiply form** — `failures >= threshold * total` instead of `failures/total >= threshold`, eliminating `divsd`.
+- **CB `OutcomeWindow` uses two `Box<[u8]>` arrays** — `failure_ring` and `slow_ring` separate; `byte_sum` uses SSE2 `psadbw` SIMD (16 bytes/cycle) on x86-64, 4-accumulator scalar fallback on other targets.
+- **CB rate checks use integer fixed-point math** — `rate_exceeds(count, total, threshold)` uses `count * 1_000_000 >= threshold_scaled * total` (no `cvtsi2sd`, no f64).
 - **`circuit_state()` is lock-free** — reads `AtomicU32` mirror with `Relaxed` ordering. All state transitions sync the atomic inside the mutex. Slightly stale reads acceptable for observability.
 - **`SlidingWindow` pre-allocates `VecDeque::with_capacity(max_requests)`** — no reallocs during warmup.
 - **`SlidingWindow::acquire()` computes cutoff before lock** — `now.checked_sub(window_duration)` happens before `mutex.lock()`, not inside `clean_old_requests_locked`.
@@ -123,3 +123,4 @@ Prefer `ResiliencePipeline` for composing multiple patterns — it handles layer
 <!-- reviewed: 2026-04-02 — ASM-guided optimizations: OutcomeWindow power-of-two capacity + bitmask wrapping (eliminates div), byte_sum chunked helper (enables SIMD auto-vectorization), AtomicU32 lock-free circuit_state(), apply_jitter mul_add + simplified NaN guard -->
 <!-- reviewed: 2026-04-02 — ASM audit round 2: byte_sum outlined (#[inline(never)]) with 4-accumulator unroll (record_outcome 980→502 insns), unsafe get_unchecked in record/active_slice (eliminates all bounds-check panics), revert mul_add→explicit mul+add (eliminates call fma on generic target), #[cold] on reset() -->
 <!-- reviewed: 2026-04-02 — ASM audit round 3: apply_jitter split into leaf dispatcher (42 insns, no callee-saves on None path) + #[inline(never)] apply_jitter_full; NaN guard simplified from 35 insns to 3 (ucomisd+jbe); total check simplified; infinity factor now clamped to 1.0 instead of rejected -->
+<!-- reviewed: 2026-04-02 — ASM audit round 4: byte_sum rewritten with SSE2 _mm_sad_epu8 intrinsics (16 bytes/cycle vs 4 bytes/cycle scalar); rate_exceeds() integer fixed-point comparison replaces f64 cvtsi2sd (eliminates false-dependency stalls); ThinLTO already enabled -->
