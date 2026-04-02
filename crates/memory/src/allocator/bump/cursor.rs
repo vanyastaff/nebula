@@ -1,47 +1,34 @@
-//! Cursor implementations for bump allocator
+//! Cursor for bump allocator
 //!
-//! Provides atomic cursor for thread-safe bump pointer tracking.
+//! Atomic cursor for thread-safe bump pointer tracking.
+//! On x86, `Relaxed` atomic ops compile to plain load/store (zero overhead).
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// Trait for cursor abstraction
-pub(super) trait Cursor: Send + Sync {
-    fn load(&self, ordering: Ordering) -> usize;
-    fn store(&self, val: usize, ordering: Ordering);
-    fn compare_exchange_weak(
-        &self,
-        current: usize,
-        new: usize,
-        success: Ordering,
-        failure: Ordering,
-    ) -> Result<usize, usize>;
-}
-
-/// Atomic cursor for thread-safe access
+/// Atomic cursor for thread-safe bump pointer tracking.
 ///
-/// On x86, `Relaxed` atomic operations compile to plain load/store instructions,
-/// so there is zero overhead compared to a non-atomic Cell-based approach.
+/// Used directly as a concrete field — no trait object overhead.
+/// On x86, `Relaxed` atomics compile to plain `mov`, so there is no performance
+/// difference vs a raw `usize` in single-threaded use.
 pub(super) struct AtomicCursor(AtomicUsize);
 
 impl AtomicCursor {
     pub fn new(val: usize) -> Self {
         Self(AtomicUsize::new(val))
     }
-}
 
-impl Cursor for AtomicCursor {
     #[inline]
-    fn load(&self, ordering: Ordering) -> usize {
+    pub fn load(&self, ordering: Ordering) -> usize {
         self.0.load(ordering)
     }
 
     #[inline]
-    fn store(&self, val: usize, ordering: Ordering) {
+    pub fn store(&self, val: usize, ordering: Ordering) {
         self.0.store(val, ordering);
     }
 
     #[inline]
-    fn compare_exchange_weak(
+    pub fn compare_exchange_weak(
         &self,
         current: usize,
         new: usize,

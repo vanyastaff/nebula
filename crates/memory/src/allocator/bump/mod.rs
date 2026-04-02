@@ -29,7 +29,7 @@ mod cursor;
 
 pub use checkpoint::{BumpCheckpoint, BumpScope};
 pub use config::BumpConfig;
-use cursor::{AtomicCursor, Cursor};
+use cursor::AtomicCursor;
 
 use crate::allocator::{
     Allocator, BulkAllocator, MemoryError, MemoryResult, MemoryUsage, OptionalStats, Resettable,
@@ -48,7 +48,7 @@ pub struct BumpAllocator {
     start_addr: usize,
     end_addr: usize,
     capacity: usize,
-    cursor: Box<dyn Cursor>,
+    cursor: AtomicCursor,
     stats: OptionalStats,
     peak_usage: AtomicUsize,
     generation: AtomicU32,
@@ -98,7 +98,7 @@ impl BumpAllocator {
         // Always use AtomicCursor — on x86, Relaxed atomic ops compile to plain
         // load/store with zero overhead. This eliminates the unsound CellCursor
         // which required `unsafe impl Sync` on a `Cell<usize>`.
-        let cursor: Box<dyn Cursor> = Box::new(AtomicCursor::new(start_addr));
+        let cursor = AtomicCursor::new(start_addr);
 
         let track_stats = config.track_stats;
 

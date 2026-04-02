@@ -76,6 +76,11 @@ pub struct PoolAllocator {
     /// Configuration
     config: PoolConfig,
 
+    /// Precomputed mask for O(1) alignment validation in deallocate.
+    /// `Some(block_size - 1)` when `block_size` is a power of two (common case),
+    /// `None` otherwise — falls back to modulo.
+    block_pow2_mask: Option<usize>,
+
     /// Statistics (optional, only tracked if enabled)
     total_allocs: AtomicU32,
     total_deallocs: AtomicU32,
@@ -159,6 +164,12 @@ impl PoolAllocator {
         let start_addr = unsafe { (*memory.get()).as_ptr() as usize };
         let end_addr = start_addr + total_size;
 
+        let block_pow2_mask = if aligned_block_size.is_power_of_two() {
+            Some(aligned_block_size - 1)
+        } else {
+            None
+        };
+
         let mut allocator = Self {
             memory,
             block_size: aligned_block_size,
@@ -169,6 +180,7 @@ impl PoolAllocator {
             start_addr,
             end_addr,
             config,
+            block_pow2_mask,
             total_allocs: AtomicU32::new(0),
             total_deallocs: AtomicU32::new(0),
             peak_usage: AtomicUsize::new(0),
@@ -413,9 +425,15 @@ impl PoolAllocator {
             return false;
         }
 
-        // Validate alignment and bounds
+        // Validate alignment and bounds.
+        // Fast path: bitmask for power-of-two block sizes (avoids integer division).
         let addr = ptr.as_ptr() as usize;
-        if !(addr - self.start_addr).is_multiple_of(self.block_size) {
+        let offset = addr - self.start_addr;
+        let aligned = match self.block_pow2_mask {
+            Some(mask) => offset & mask == 0,
+            None => offset % self.block_size == 0,
+        };
+        if !aligned {
             return false; // Not aligned to block boundary
         }
 
