@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 #[cfg(feature = "file")]
 use parking_lot::{Mutex, MutexGuard};
+use smallvec::SmallVec;
 use tracing_subscriber::fmt::writer::{BoxMakeWriter, MakeWriter};
 
 #[cfg(feature = "file")]
@@ -66,20 +67,21 @@ struct FanoutMakeWriter {
     writers: Vec<BoxMakeWriter>,
 }
 
+/// Inline capacity for fanout writers — avoids heap allocation when
+/// the number of destinations is <= 4 (covers stderr + file + extras).
+/// `make_writer()` is called per log event by tracing-subscriber.
+type FanoutVec<'a> = SmallVec<[Box<dyn Write + 'a>; 4]>;
+
 struct FanoutWriter<'a> {
     policy: DestinationFailurePolicy,
-    writers: Vec<Box<dyn Write + 'a>>,
+    writers: FanoutVec<'a>,
 }
 
 impl<'a> MakeWriter<'a> for FanoutMakeWriter {
     type Writer = FanoutWriter<'a>;
 
     fn make_writer(&'a self) -> Self::Writer {
-        let writers = self
-            .writers
-            .iter()
-            .map(|w| w.make_writer())
-            .collect::<Vec<_>>();
+        let writers: FanoutVec<'a> = self.writers.iter().map(|w| w.make_writer()).collect();
         FanoutWriter {
             policy: self.policy,
             writers,
@@ -109,7 +111,7 @@ impl Write for FanoutWriter<'_> {
     }
 }
 
-fn write_fail_fast(writers: &mut [Box<dyn Write + '_>], buf: &[u8]) -> io::Result<usize> {
+fn write_fail_fast(writers: &mut FanoutVec<'_>, buf: &[u8]) -> io::Result<usize> {
     if writers.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -122,7 +124,7 @@ fn write_fail_fast(writers: &mut [Box<dyn Write + '_>], buf: &[u8]) -> io::Resul
     Ok(buf.len())
 }
 
-fn write_best_effort(writers: &mut [Box<dyn Write + '_>], buf: &[u8]) -> io::Result<usize> {
+fn write_best_effort(writers: &mut FanoutVec<'_>, buf: &[u8]) -> io::Result<usize> {
     let mut first_err = None;
     let mut success = false;
     for writer in writers.iter_mut() {
@@ -145,10 +147,7 @@ fn write_best_effort(writers: &mut [Box<dyn Write + '_>], buf: &[u8]) -> io::Res
     }
 }
 
-fn write_primary_with_fallback(
-    writers: &mut [Box<dyn Write + '_>],
-    buf: &[u8],
-) -> io::Result<usize> {
+fn write_primary_with_fallback(writers: &mut FanoutVec<'_>, buf: &[u8]) -> io::Result<usize> {
     let Some((primary, fallback)) = writers.split_first_mut() else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -171,7 +170,7 @@ fn write_primary_with_fallback(
     ))
 }
 
-fn flush_fail_fast(writers: &mut [Box<dyn Write + '_>]) -> io::Result<()> {
+fn flush_fail_fast(writers: &mut FanoutVec<'_>) -> io::Result<()> {
     if writers.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -184,7 +183,7 @@ fn flush_fail_fast(writers: &mut [Box<dyn Write + '_>]) -> io::Result<()> {
     Ok(())
 }
 
-fn flush_best_effort(writers: &mut [Box<dyn Write + '_>]) -> io::Result<()> {
+fn flush_best_effort(writers: &mut FanoutVec<'_>) -> io::Result<()> {
     let mut first_err = None;
     let mut success = false;
     for writer in writers.iter_mut() {
@@ -206,7 +205,7 @@ fn flush_best_effort(writers: &mut [Box<dyn Write + '_>]) -> io::Result<()> {
     }
 }
 
-fn flush_primary_with_fallback(writers: &mut [Box<dyn Write + '_>]) -> io::Result<()> {
+fn flush_primary_with_fallback(writers: &mut FanoutVec<'_>) -> io::Result<()> {
     let Some((primary, fallback)) = writers.split_first_mut() else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -441,39 +440,39 @@ mod tests {
 
     #[test]
     fn fail_fast_stops_on_first_error() {
-        let mut writers: Vec<Box<dyn Write>> = vec![
+        let mut writers: FanoutVec<'_> = SmallVec::from_vec(vec![
             Box::new(MockWriter {
                 fail: true,
                 ..Default::default()
-            }),
-            Box::new(MockWriter::default()),
-        ];
+            }) as Box<dyn Write>,
+            Box::new(MockWriter::default()) as Box<dyn Write>,
+        ]);
         let result = write_fail_fast(&mut writers, b"hello");
         assert!(result.is_err());
     }
 
     #[test]
     fn best_effort_succeeds_when_any_writer_succeeds() {
-        let mut writers: Vec<Box<dyn Write>> = vec![
+        let mut writers: FanoutVec<'_> = SmallVec::from_vec(vec![
             Box::new(MockWriter {
                 fail: true,
                 ..Default::default()
-            }),
-            Box::new(MockWriter::default()),
-        ];
+            }) as Box<dyn Write>,
+            Box::new(MockWriter::default()) as Box<dyn Write>,
+        ]);
         let result = write_best_effort(&mut writers, b"hello");
         assert!(result.is_ok());
     }
 
     #[test]
     fn primary_with_fallback_uses_secondary_when_primary_fails() {
-        let mut writers: Vec<Box<dyn Write>> = vec![
+        let mut writers: FanoutVec<'_> = SmallVec::from_vec(vec![
             Box::new(MockWriter {
                 fail: true,
                 ..Default::default()
-            }),
-            Box::new(MockWriter::default()),
-        ];
+            }) as Box<dyn Write>,
+            Box::new(MockWriter::default()) as Box<dyn Write>,
+        ]);
         let result = write_primary_with_fallback(&mut writers, b"hello");
         assert_eq!(result.expect("fallback should succeed"), 5);
     }

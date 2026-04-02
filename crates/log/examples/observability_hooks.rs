@@ -138,7 +138,7 @@ fn demo_basic_events() {
     // Emit a failed operation
     let failed = OperationFailed {
         operation: "update_user".to_string(),
-        error: "database connection lost".to_string(),
+        error: "database connection lost".into(),
         duration: Duration::from_millis(100),
     };
     emit_event(&failed);

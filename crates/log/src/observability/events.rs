@@ -5,6 +5,7 @@
 
 use super::hooks::{ObservabilityEvent, ObservabilityFieldValue, ObservabilityFieldVisitor};
 use super::semantic::{EventKind, field};
+use std::borrow::Cow;
 use std::time::Duration;
 
 /// Convert `Duration` milliseconds to `u64` with saturation instead of truncation.
@@ -108,7 +109,7 @@ impl ObservabilityEvent for OperationCompleted {
 ///
 /// let event = OperationFailed {
 ///     operation: "database_query".to_string(),
-///     error: "connection timeout".to_string(),
+///     error: "connection timeout".into(),
 ///     duration: Duration::from_millis(5000),
 /// };
 /// emit_event(&event);
@@ -117,8 +118,9 @@ impl ObservabilityEvent for OperationCompleted {
 pub struct OperationFailed {
     /// Name of the operation
     pub operation: String,
-    /// Error message or description
-    pub error: String,
+    /// Error message or description.
+    /// `Cow` avoids heap allocation for static messages (e.g. drop path).
+    pub error: Cow<'static, str>,
     /// How long the operation ran before failing
     pub duration: Duration,
 }
@@ -209,7 +211,7 @@ impl OperationTracker {
     /// Mark the operation as failed with an error message
     ///
     /// Emits `OperationFailed` event.
-    pub fn fail(mut self, error: impl Into<String>) {
+    pub fn fail(mut self, error: impl Into<Cow<'static, str>>) {
         self.completed = true;
         let duration = self.start.elapsed();
         let event = OperationFailed {
@@ -227,7 +229,7 @@ impl Drop for OperationTracker {
             let duration = self.start.elapsed();
             let event = OperationFailed {
                 operation: std::mem::take(&mut self.operation),
-                error: "operation dropped without completion".to_string(),
+                error: Cow::Borrowed("operation dropped without completion"),
                 duration,
             };
             super::emit_event(&event);
@@ -266,7 +268,7 @@ mod tests {
     fn test_operation_failed() {
         let event = OperationFailed {
             operation: "test".to_string(),
-            error: "test error".to_string(),
+            error: "test error".into(),
             duration: Duration::from_millis(50),
         };
         assert_eq!(event.name(), "operation_failed");

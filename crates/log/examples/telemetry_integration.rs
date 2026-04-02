@@ -106,7 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Simulate a failure path.
     emit_event(&OperationFailed {
         operation: "workflow.schedule".to_string(),
-        error: "queue is full".to_string(),
+        error: "queue is full".into(),
         duration: Duration::from_millis(1),
     });
 

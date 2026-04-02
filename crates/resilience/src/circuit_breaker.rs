@@ -1338,8 +1338,8 @@ mod tests {
 // ---------------------------------------------------------------------------
 #[cfg(all(test, loom))]
 mod loom_tests {
-    use loom::sync::atomic::{AtomicU32, Ordering};
     use loom::sync::Arc;
+    use loom::sync::atomic::{AtomicU32, Ordering};
     use loom::thread;
 
     use super::{STATE_CLOSED, STATE_HALF_OPEN, STATE_OPEN};
