@@ -37,6 +37,7 @@ Fault-tolerance patterns: circuit breaker, retry, bulkhead, rate limiter, timeou
 - **CB `OutcomeWindow` uses two `Box<[u8]>` arrays** — `failure_ring` and `slow_ring` separate; `byte_sum` uses SSE2 `psadbw` SIMD (16 bytes/cycle) on x86-64, 4-accumulator scalar fallback on other targets.
 - **CB rate checks use integer fixed-point math** — `rate_exceeds(count, total, threshold)` uses `count * 1_000_000 >= threshold_scaled * total` (no `cvtsi2sd`, no f64).
 - **`circuit_state()` is lock-free** — reads `AtomicU32` mirror with `Relaxed` ordering. All state transitions sync the atomic inside the mutex. Slightly stale reads acceptable for observability.
+- **CB struct layout is 264 bytes / 5 cache lines** — `config` (+0, 104 B), `clock` (+104), `sink` (+120), `Mutex<InnerState>` (+136, 104 B), `on_state_change` (+240), `atomic_state` (+256). The `atomic_state` sits on a separate 5th cache line. Future: hot/cold config split would reduce to 2-3 cache lines.
 - **`SlidingWindow` pre-allocates `VecDeque::with_capacity(max_requests)`** — no reallocs during warmup.
 - **`SlidingWindow::acquire()` computes cutoff before lock** — `now.checked_sub(window_duration)` happens before `mutex.lock()`, not inside `clean_old_requests_locked`.
 - **All patterns use `.call()` method** — unified verb across all executors.
