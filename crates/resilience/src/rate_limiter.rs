@@ -369,7 +369,7 @@ impl SlidingWindow {
         Ok(Self {
             window_duration,
             max_requests,
-            requests: Arc::new(Mutex::new(VecDeque::new())),
+            requests: Arc::new(Mutex::new(VecDeque::with_capacity(max_requests))),
         })
     }
 
@@ -661,6 +661,7 @@ impl RateLimiter for AdaptiveRateLimiter {
 
         state.current_rate = reset_rate;
         state.inner = Arc::new(new_bucket);
+        drop(state);
         self.atomic_rate
             .store(reset_rate.to_bits(), Ordering::Release);
     }

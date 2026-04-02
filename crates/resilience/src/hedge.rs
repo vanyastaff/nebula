@@ -15,6 +15,7 @@ use std::future::Future;
 
 use std::sync::Arc;
 use std::time::Duration;
+use parking_lot::RwLock;
 use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep};
 
@@ -193,7 +194,8 @@ impl HedgeExecutor {
 pub struct AdaptiveHedgeExecutor {
     base_config: HedgeConfig,
     // RwLock: percentile() only needs a shared ref; write lock taken only for record().
-    latency_tracker: Arc<tokio::sync::RwLock<LatencyTracker>>,
+    // parking_lot::RwLock is used because neither record() nor percentile() cross .await points.
+    latency_tracker: Arc<RwLock<LatencyTracker>>,
     target_percentile: f64,
     sink: Arc<dyn MetricsSink>,
 }
@@ -217,7 +219,7 @@ impl AdaptiveHedgeExecutor {
         config.validate()?;
         Ok(Self {
             base_config: config,
-            latency_tracker: Arc::new(tokio::sync::RwLock::new(LatencyTracker::new(1000))),
+            latency_tracker: Arc::new(RwLock::new(LatencyTracker::new(1000))),
             target_percentile: 0.95,
             sink: Arc::new(NoopSink),
         })
@@ -246,6 +248,22 @@ impl AdaptiveHedgeExecutor {
         self
     }
 
+    /// Set the maximum number of latency samples retained for percentile calculation.
+    ///
+    /// Larger values improve percentile accuracy but consume more memory.
+    /// Default: 1000.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ConfigError)` if `max_samples` is 0.
+    pub fn with_max_samples(mut self, max_samples: usize) -> Result<Self, crate::ConfigError> {
+        if max_samples == 0 {
+            return Err(crate::ConfigError::new("max_samples", "must be >= 1"));
+        }
+        self.latency_tracker = Arc::new(RwLock::new(LatencyTracker::new(max_samples)));
+        Ok(self)
+    }
+
     /// Call with adaptive hedging.
     ///
     /// # Errors
@@ -266,7 +284,7 @@ impl AdaptiveHedgeExecutor {
         let start = std::time::Instant::now();
 
         let hedge_delay = {
-            let tracker = self.latency_tracker.read().await;
+            let tracker = self.latency_tracker.read();
             let delay = tracker
                 .percentile(self.target_percentile)
                 .unwrap_or(self.base_config.hedge_delay);
@@ -288,7 +306,7 @@ impl AdaptiveHedgeExecutor {
         // only hedge_delay differs (computed from percentile), which is always > 0.
         let result = executor.call(operation).await;
 
-        self.latency_tracker.write().await.record(start.elapsed());
+        self.latency_tracker.write().record(start.elapsed());
         result
     }
 }
@@ -451,5 +469,20 @@ mod tests {
     #[test]
     fn accepts_valid_config() {
         assert!(HedgeExecutor::new(HedgeConfig::default()).is_ok());
+    }
+
+    #[test]
+    fn with_max_samples_rejects_zero() {
+        let executor = AdaptiveHedgeExecutor::new(HedgeConfig::default()).unwrap();
+        assert_eq!(
+            executor.with_max_samples(0).unwrap_err().field,
+            "max_samples"
+        );
+    }
+
+    #[test]
+    fn with_max_samples_accepts_valid() {
+        let executor = AdaptiveHedgeExecutor::new(HedgeConfig::default()).unwrap();
+        assert!(executor.with_max_samples(100).is_ok());
     }
 }

@@ -30,6 +30,9 @@ Fault-tolerance patterns: circuit breaker, retry, bulkhead, rate limiter, timeou
 - **`total_budget`** is wall-clock based — tracks elapsed time including operation execution.
 - **Retry budget check uses `checked_add`** — huge backoff durations cannot panic on `Duration` overflow.
 - **`HedgeExecutor::new()` returns `Result`** — validates `HedgeConfig`.
+- **`AdaptiveHedgeExecutor::with_max_samples(n)`** — configures latency tracker capacity (default 1000). Returns `Err` if n=0.
+- **`AdaptiveHedgeExecutor` uses `parking_lot::RwLock`** — not `tokio::sync::RwLock`: both `record()` and `percentile()` are sync, no `.await` under lock.
+- **`SlidingWindow` pre-allocates `VecDeque::with_capacity(max_requests)`** — no reallocs during warmup.
 - **All patterns use `.call()` method** — unified verb across all executors.
 - **`CircuitBreaker::try_acquire()`** — returns `Result`, not `bool`.
 - **`Outcome` NOT re-exported at root** — access via `circuit_breaker::Outcome`.
@@ -106,4 +109,4 @@ Prefer `ResiliencePipeline` for composing multiple patterns — it handles layer
 ## Relations
 - Depends on: nebula-error. Used by nebula-resource (pool resilience), nebula-credential (refresh CB).
 
-<!-- reviewed: 2026-03-31 — deep invariant audit + retry/rate-limiter/bulkhead safety hardening -->
+<!-- reviewed: 2026-04-01 — assembly analysis: SlidingWindow with_capacity, parking_lot RwLock for AdaptiveHedge, with_max_samples API -->
