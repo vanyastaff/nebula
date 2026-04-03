@@ -54,6 +54,22 @@ Tauri-based desktop surface in `apps/desktop/` — currently in development.
 
 ---
 
+## MCP Servers
+
+### Serena (LSP-backed code intelligence)
+
+Project config: `.serena/project.yml`. **Must activate at session start:**
+```
+activate_project("nebula")
+```
+Provides: `find_symbol`, `find_referencing_symbols`, `get_symbols_overview`, `rename_symbol`, `replace_symbol_body`, `insert_before/after_symbol`. Macro-generated symbols (e.g. `NodeId` from `define_id!`) may not be indexed.
+
+### crates.io MCP
+
+Search crates, check dependencies, audit vulnerabilities, compare alternatives — no setup needed.
+
+---
+
 ## Key Commands
 
 ```bash
