@@ -1,8 +1,10 @@
 //! System information gathering
 
 use crate::core::SystemResult;
-use parking_lot::RwLock;
 use std::sync::Arc;
+
+#[cfg(feature = "sysinfo")]
+use parking_lot::RwLock;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -114,15 +116,6 @@ impl SystemInfo {
         Arc::clone(&SYSTEM_INFO)
     }
 
-    /// Refresh and get current information
-    ///
-    /// Updates the cache with fresh system information and returns it.
-    pub fn refresh() -> Arc<SystemInfo> {
-        let mut cache = SYSTEM_INFO_CACHE.write();
-        *cache = Arc::new(detect_system_info());
-        Arc::clone(&cache)
-    }
-
     /// Get current memory information (always fresh)
     pub fn current_memory() -> MemoryInfo {
         #[cfg(feature = "sysinfo")]
@@ -150,9 +143,6 @@ impl SystemInfo {
 // Global cached instances
 static SYSTEM_INFO: std::sync::LazyLock<Arc<SystemInfo>> =
     std::sync::LazyLock::new(|| Arc::new(detect_system_info()));
-
-static SYSTEM_INFO_CACHE: std::sync::LazyLock<RwLock<Arc<SystemInfo>>> =
-    std::sync::LazyLock::new(|| RwLock::new(Arc::clone(&SYSTEM_INFO)));
 
 #[cfg(feature = "sysinfo")]
 pub(crate) static SYSINFO_SYSTEM: std::sync::LazyLock<RwLock<sysinfo::System>> =
@@ -268,11 +258,8 @@ fn detect_os_family() -> OsFamily {
 }
 
 fn page_size() -> usize {
-    #[cfg(feature = "memory")]
-    return region::page::size();
-
-    #[cfg(not(feature = "memory"))]
-    return 4096; // Default
+    // Default page size for most architectures
+    4096
 }
 
 fn detect_cache_line_size() -> usize {
@@ -289,7 +276,27 @@ fn detect_allocation_granularity() -> usize {
 }
 
 fn detect_numa_nodes() -> usize {
-    // Simplified - would need platform-specific code for accurate detection
+    #[cfg(target_os = "linux")]
+    {
+        use std::fs;
+
+        let node_path = "/sys/devices/system/node/";
+        if let Ok(entries) = fs::read_dir(node_path) {
+            let count = entries
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .strip_prefix("node")
+                        .is_some_and(|n| n.parse::<usize>().is_ok())
+                })
+                .count();
+            if count > 0 {
+                return count;
+            }
+        }
+    }
+
     1
 }
 

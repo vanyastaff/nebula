@@ -38,7 +38,6 @@ fn main() -> nebula_system::SystemResult<()> {
 
         let total = sys::network::total_stats();
         println!("\nTotal rx={} tx={}", total.rx_bytes, total.tx_bytes);
-        println!("Online: {}", sys::network::is_online());
     }
 
     #[cfg(not(feature = "network"))]

@@ -1,25 +1,20 @@
-//! Process information and management
+//! Process information
+//!
+//! Provides process listing, lookup, and statistics. Designed for
+//! monitoring sandbox workers and system-level process awareness.
+//!
+//! # Known Limitations
+//!
+//! - **`thread_count`**: always `1` — sysinfo does not expose thread count portably.
+//! - **`uid` / `gid`**: always `None` — not populated even on Unix.
 
 use crate::core::{SystemError, SystemResult};
-use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 /// Process information
-///
-/// # Known Limitations
-///
-/// Several fields in `ProcessInfo` are not populated due to performance or portability
-/// constraints:
-///
-/// - **`cmd: Vec::new()`** — not populated; `sysinfo` argument parsing is per-process and
-///   expensive. Enable explicitly if needed with a targeted `refresh_processes` call.
-/// - **`environ: HashMap::new()`** — skipped for security: environment variables can be
-///   large and may contain sensitive values. Add an opt-in feature flag if needed.
-/// - **`thread_count: 1`** — hardcoded; `sysinfo` 0.37 does not expose thread count
-///   portably across all platforms.
-/// - **`uid: None, gid: None`** — Unix-only fields; always `None` on Windows.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ProcessInfo {
@@ -31,12 +26,8 @@ pub struct ProcessInfo {
     pub name: String,
     /// Executable path
     pub exe_path: Option<String>,
-    /// Command line arguments
-    pub cmd: Vec<String>,
     /// Working directory
     pub cwd: Option<String>,
-    /// Environment variables
-    pub environ: HashMap<String, String>,
     /// Process status
     pub status: ProcessStatus,
     /// Memory usage in bytes
@@ -47,9 +38,9 @@ pub struct ProcessInfo {
     pub cpu_usage: f32,
     /// Number of threads
     pub thread_count: usize,
-    /// User ID (Unix)
+    /// User ID (Unix only, always None currently)
     pub uid: Option<u32>,
-    /// Group ID (Unix)
+    /// Group ID (Unix only, always None currently)
     pub gid: Option<u32>,
 }
 
@@ -89,13 +80,51 @@ pub struct ProcessStats {
     pub total_cpu: f32,
 }
 
+/// Process tree node
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ProcessTree {
+    /// Process information
+    pub process: ProcessInfo,
+    /// Child processes
+    pub children: Vec<ProcessTree>,
+}
+
+#[cfg(feature = "process")]
+fn map_status(status: sysinfo::ProcessStatus) -> ProcessStatus {
+    match status {
+        sysinfo::ProcessStatus::Run => ProcessStatus::Running,
+        sysinfo::ProcessStatus::Sleep => ProcessStatus::Sleeping,
+        sysinfo::ProcessStatus::Stop => ProcessStatus::Stopped,
+        sysinfo::ProcessStatus::Zombie => ProcessStatus::Zombie,
+        sysinfo::ProcessStatus::Dead => ProcessStatus::Dead,
+        _ => ProcessStatus::Unknown,
+    }
+}
+
+#[cfg(feature = "process")]
+fn process_from_sysinfo(pid: u32, process: &sysinfo::Process) -> ProcessInfo {
+    ProcessInfo {
+        pid,
+        parent_pid: process.parent().map(|p| p.as_u32()),
+        name: process.name().to_string_lossy().to_string(),
+        exe_path: process.exe().map(|p| p.to_string_lossy().to_string()),
+        cwd: process.cwd().map(|p| p.to_string_lossy().to_string()),
+        status: map_status(process.status()),
+        memory: process.memory() as usize,
+        virtual_memory: process.virtual_memory() as usize,
+        cpu_usage: process.cpu_usage(),
+        thread_count: 1,
+        uid: None,
+        gid: None,
+    }
+}
+
 /// Get information about current process
-#[must_use = "process info must be handled"]
 pub fn current() -> SystemResult<ProcessInfo> {
     #[cfg(feature = "process")]
     {
-        let pid = std::process::id();
-        get_process(pid)
+        get_process(std::process::id())
     }
 
     #[cfg(not(feature = "process"))]
@@ -107,7 +136,6 @@ pub fn current() -> SystemResult<ProcessInfo> {
 }
 
 /// Get information about a specific process
-#[must_use = "process info must be handled"]
 pub fn get_process(pid: u32) -> SystemResult<ProcessInfo> {
     #[cfg(feature = "process")]
     {
@@ -115,41 +143,11 @@ pub fn get_process(pid: u32) -> SystemResult<ProcessInfo> {
         use sysinfo::{Pid, ProcessesToUpdate};
 
         let mut sys = SYSINFO_SYSTEM.write();
-        // sysinfo 0.37 removed refresh_process; use refresh_processes with a specific pid
         let _ = sys.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), false);
 
-        if let Some(process) = sys.process(Pid::from_u32(pid)) {
-            let status = match process.status() {
-                sysinfo::ProcessStatus::Run => ProcessStatus::Running,
-                sysinfo::ProcessStatus::Sleep => ProcessStatus::Sleeping,
-                sysinfo::ProcessStatus::Stop => ProcessStatus::Stopped,
-                sysinfo::ProcessStatus::Zombie => ProcessStatus::Zombie,
-                sysinfo::ProcessStatus::Dead => ProcessStatus::Dead,
-                _ => ProcessStatus::Unknown,
-            };
-
-            Ok(ProcessInfo {
-                pid,
-                parent_pid: process.parent().map(|p| p.as_u32()),
-                name: process.name().to_string_lossy().to_string(),
-                exe_path: process.exe().map(|p| p.to_string_lossy().to_string()),
-                cmd: Vec::new(),
-                cwd: process.cwd().map(|p| p.to_string_lossy().to_string()),
-                environ: HashMap::new(),
-                status,
-                memory: process.memory() as usize,
-                virtual_memory: process.virtual_memory() as usize,
-                cpu_usage: process.cpu_usage(),
-                thread_count: 1, // sysinfo doesn't provide thread count directly
-                uid: None,
-                gid: None,
-            })
-        } else {
-            Err(SystemError::resource_not_found(format!(
-                "Process {} not found",
-                pid
-            )))
-        }
+        sys.process(Pid::from_u32(pid))
+            .map(|p| process_from_sysinfo(pid, p))
+            .ok_or_else(|| SystemError::resource_not_found(format!("Process {pid} not found")))
     }
 
     #[cfg(not(feature = "process"))]
@@ -167,38 +165,11 @@ pub fn list() -> Vec<ProcessInfo> {
         use crate::info::SYSINFO_SYSTEM;
 
         let mut sys = SYSINFO_SYSTEM.write();
-        // sysinfo 0.37: refresh_processes requires params
         let _ = sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
         sys.processes()
             .iter()
-            .map(|(pid, process)| {
-                let status = match process.status() {
-                    sysinfo::ProcessStatus::Run => ProcessStatus::Running,
-                    sysinfo::ProcessStatus::Sleep => ProcessStatus::Sleeping,
-                    sysinfo::ProcessStatus::Stop => ProcessStatus::Stopped,
-                    sysinfo::ProcessStatus::Zombie => ProcessStatus::Zombie,
-                    sysinfo::ProcessStatus::Dead => ProcessStatus::Dead,
-                    _ => ProcessStatus::Unknown,
-                };
-
-                ProcessInfo {
-                    pid: pid.as_u32(),
-                    parent_pid: process.parent().map(|p| p.as_u32()),
-                    name: process.name().to_string_lossy().to_string(),
-                    exe_path: process.exe().map(|p| p.to_string_lossy().to_string()),
-                    cmd: Vec::new(),
-                    cwd: process.cwd().map(|p| p.to_string_lossy().to_string()),
-                    environ: HashMap::new(), // Skip for performance
-                    status,
-                    memory: process.memory() as usize,
-                    virtual_memory: process.virtual_memory() as usize,
-                    cpu_usage: process.cpu_usage(),
-                    thread_count: 1,
-                    uid: None,
-                    gid: None,
-                }
-            })
+            .map(|(pid, process)| process_from_sysinfo(pid.as_u32(), process))
             .collect()
     }
 
@@ -209,12 +180,15 @@ pub fn list() -> Vec<ProcessInfo> {
 }
 
 /// Get process statistics
+///
+/// Refreshes process data before reading to avoid stale snapshots.
 pub fn stats() -> ProcessStats {
     #[cfg(feature = "process")]
     {
         use crate::info::SYSINFO_SYSTEM;
 
-        let sys = SYSINFO_SYSTEM.read();
+        let mut sys = SYSINFO_SYSTEM.write();
+        let _ = sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
         let mut total = 0;
         let mut running = 0;
@@ -224,13 +198,11 @@ pub fn stats() -> ProcessStats {
 
         for process in sys.processes().values() {
             total += 1;
-
             match process.status() {
                 sysinfo::ProcessStatus::Run => running += 1,
                 sysinfo::ProcessStatus::Sleep => sleeping += 1,
                 _ => {}
             }
-
             total_memory += process.memory() as usize;
             total_cpu += process.cpu_usage();
         }
@@ -256,104 +228,12 @@ pub fn stats() -> ProcessStats {
     }
 }
 
-/// Find processes by name
+/// Find processes by name (substring match)
 pub fn find_by_name(name: &str) -> Vec<ProcessInfo> {
     list()
         .into_iter()
         .filter(|p| p.name.contains(name))
         .collect()
-}
-
-/// Kill a process
-#[must_use = "operation result must be checked"]
-pub fn kill(pid: u32) -> SystemResult<()> {
-    #[cfg(feature = "process")]
-    {
-        use crate::info::SYSINFO_SYSTEM;
-        use sysinfo::Pid;
-
-        let mut sys = SYSINFO_SYSTEM.write();
-        let pid = Pid::from_u32(pid);
-
-        if let Some(process) = sys.process(pid) {
-            if process.kill() {
-                Ok(())
-            } else {
-                Err(SystemError::platform_error("Failed to kill process"))
-            }
-        } else {
-            Err(SystemError::resource_not_found(format!(
-                "Process {} not found",
-                pid.as_u32()
-            )))
-        }
-    }
-
-    #[cfg(not(feature = "process"))]
-    {
-        Err(SystemError::feature_not_supported(
-            "Process feature not enabled",
-        ))
-    }
-}
-
-/// Process priority levels
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum Priority {
-    /// Lowest priority
-    Idle,
-    /// Below normal priority
-    BelowNormal,
-    /// Normal priority (default)
-    Normal,
-    /// Above normal priority
-    AboveNormal,
-    /// High priority
-    High,
-    /// Realtime priority (requires privileges)
-    Realtime,
-}
-
-/// Set process priority
-#[must_use = "operation result must be checked"]
-pub fn set_priority(pid: u32, priority: Priority) -> SystemResult<()> {
-    #[cfg(all(feature = "process", unix))]
-    {
-        use libc::{PRIO_PROCESS, setpriority};
-
-        let nice_value = match priority {
-            Priority::Idle => 19,
-            Priority::BelowNormal => 10,
-            Priority::Normal => 0,
-            Priority::AboveNormal => -5,
-            Priority::High => -10,
-            Priority::Realtime => -20,
-        };
-
-        // SAFETY: `setpriority` is a POSIX syscall that modifies process scheduling priority.
-        // - PRIO_PROCESS targets a specific process by PID
-        // - `pid` is validated to be a valid u32
-        // - `nice_value` is within valid range (-20 to 19)
-        // The syscall returns 0 on success or -1 on failure (sets errno).
-        unsafe {
-            if setpriority(PRIO_PROCESS, pid as u32, nice_value) != 0 {
-                return Err(SystemError::platform_error(format!(
-                    "Failed to set process priority: {}",
-                    std::io::Error::last_os_error()
-                )));
-            }
-        }
-
-        Ok(())
-    }
-
-    #[cfg(not(all(feature = "process", unix)))]
-    {
-        Err(SystemError::feature_not_supported(
-            "Process priority not supported on this platform",
-        ))
-    }
 }
 
 /// Get child processes of a parent
@@ -364,36 +244,22 @@ pub fn children(parent_pid: u32) -> Vec<ProcessInfo> {
         .collect()
 }
 
-/// Process tree node
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct ProcessTree {
-    /// Process information
-    pub process: ProcessInfo,
-    /// Child processes
-    pub children: Vec<ProcessTree>,
-}
-
 /// Build process tree
 pub fn tree() -> Vec<ProcessTree> {
+    use std::collections::HashMap;
+
     let processes = list();
     let mut roots = Vec::new();
     let mut children_map: HashMap<u32, Vec<ProcessInfo>> = HashMap::new();
 
-    // Group processes by parent
     for process in processes {
         if let Some(parent_pid) = process.parent_pid {
-            children_map
-                .entry(parent_pid)
-                .or_insert_with(Vec::new)
-                .push(process);
+            children_map.entry(parent_pid).or_default().push(process);
         } else {
-            // Root process (no parent)
             roots.push(process);
         }
     }
 
-    // Build tree recursively
     fn build_tree(
         process: &ProcessInfo,
         children_map: &HashMap<u32, Vec<ProcessInfo>>,
@@ -409,7 +275,7 @@ pub fn tree() -> Vec<ProcessTree> {
             .unwrap_or_default();
 
         ProcessTree {
-            process: process.clone(), // Clone only once at the leaf
+            process: process.clone(),
             children,
         }
     }
@@ -418,4 +284,106 @@ pub fn tree() -> Vec<ProcessTree> {
         .iter()
         .map(|root| build_tree(root, &children_map))
         .collect()
+}
+
+// ── Per-process monitoring ───────────────────────────────────────────────
+
+/// A snapshot of process resource usage from [`ProcessMonitor::sample`].
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ProcessSample {
+    /// Process ID
+    pub pid: u32,
+    /// CPU usage percentage (0–100+ for multi-core)
+    pub cpu_usage: f32,
+    /// Resident memory in bytes
+    pub memory: usize,
+    /// Virtual memory in bytes
+    pub virtual_memory: usize,
+    /// Current process status
+    pub status: ProcessStatus,
+}
+
+/// Tracks resource usage of a specific OS process over time.
+///
+/// Designed for sandbox monitoring: create when spawning a worker,
+/// poll periodically via [`sample`](Self::sample), drop when the worker exits.
+///
+/// # Example
+///
+/// ```no_run
+/// use nebula_system::process::ProcessMonitor;
+///
+/// let mut monitor = ProcessMonitor::new(std::process::id()).unwrap();
+/// if let Some(sample) = monitor.sample() {
+///     println!("memory: {} bytes, cpu: {:.1}%", sample.memory, sample.cpu_usage);
+/// }
+/// println!("peak memory: {} bytes", monitor.peak_memory());
+/// println!("tracked for: {:?}", monitor.elapsed());
+/// ```
+#[derive(Debug)]
+pub struct ProcessMonitor {
+    pid: u32,
+    peak_memory: usize,
+    created_at: Instant,
+}
+
+impl ProcessMonitor {
+    /// Create a monitor for the given PID.
+    ///
+    /// Verifies that the process exists at creation time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SystemError::ResourceNotFound`] if the PID does not exist.
+    /// Returns [`SystemError::FeatureNotSupported`] if the `process` feature is disabled.
+    pub fn new(pid: u32) -> SystemResult<Self> {
+        // Verify the process exists
+        let info = get_process(pid)?;
+
+        Ok(Self {
+            pid,
+            peak_memory: info.memory,
+            created_at: Instant::now(),
+        })
+    }
+
+    /// Sample current process metrics.
+    ///
+    /// Returns `None` if the process has exited since the last sample.
+    /// Updates the internal peak memory high-water mark.
+    #[must_use]
+    pub fn sample(&mut self) -> Option<ProcessSample> {
+        let info = get_process(self.pid).ok()?;
+
+        if info.memory > self.peak_memory {
+            self.peak_memory = info.memory;
+        }
+
+        Some(ProcessSample {
+            pid: self.pid,
+            cpu_usage: info.cpu_usage,
+            memory: info.memory,
+            virtual_memory: info.virtual_memory,
+            status: info.status,
+        })
+    }
+
+    /// Peak resident memory observed across all samples (bytes).
+    #[must_use]
+    pub fn peak_memory(&self) -> usize {
+        self.peak_memory
+    }
+
+    /// How long this monitor has been tracking the process.
+    #[must_use]
+    pub fn elapsed(&self) -> Duration {
+        self.created_at.elapsed()
+    }
+
+    /// The monitored PID.
+    #[must_use]
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
 }

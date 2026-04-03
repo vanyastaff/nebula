@@ -84,9 +84,11 @@ pub fn format_duration(duration: std::time::Duration) -> String {
     if nanos < 1_000 {
         format!("{nanos}ns")
     } else if nanos < 1_000_000 {
-        format!("{:.2}µs", nanos as f64 / 1_000.0)
+        // Cast through u64 first — nanos < 1_000_000 fits in u64,
+        // avoids __floattidf call for u128→f64 conversion.
+        format!("{:.2}µs", nanos as u64 as f64 / 1_000.0)
     } else if nanos < 1_000_000_000 {
-        format!("{:.2}ms", nanos as f64 / 1_000_000.0)
+        format!("{:.2}ms", nanos as u64 as f64 / 1_000_000.0)
     } else {
         let secs = duration.as_secs();
         if secs < 60 {

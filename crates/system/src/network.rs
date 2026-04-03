@@ -1,10 +1,7 @@
-//! Network information and monitoring
+//! Network interface information and monitoring
 //!
 //! # Known Limitations
 //!
-//! - **`connections()`** is defined in the type system but always returns an empty `Vec` —
-//!   full implementation requires the `netstat2` crate (planned for Tier 4). There is no
-//!   current workaround in safe Rust without a platform-specific dependency.
 //! - **Rate tracking** via the `NETWORK_STATS` lazy global may not reflect accurate rates
 //!   on the first tick (before any previous snapshot exists), returning `rx_rate = 0.0`
 //!   and `tx_rate = 0.0` for newly seen interfaces.
@@ -13,9 +10,9 @@
 //! - **`is_loopback`** detection is name-based (`"lo"` / `"lo0"`) and may miss renamed
 //!   loopback interfaces on non-standard configurations.
 
-use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -92,55 +89,9 @@ pub struct NetworkUsage {
     pub total_tx: u64,
 }
 
-/// Connection information
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct Connection {
-    /// Local address
-    pub local_addr: String,
-    /// Local port
-    pub local_port: u16,
-    /// Remote address
-    pub remote_addr: String,
-    /// Remote port
-    pub remote_port: u16,
-    /// Connection state
-    pub state: ConnectionState,
-    /// Protocol (TCP/UDP)
-    pub protocol: Protocol,
-    /// Process ID using this connection
-    pub pid: Option<u32>,
-}
-
-/// Connection state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum ConnectionState {
-    Established,
-    Listen,
-    TimeWait,
-    CloseWait,
-    SynSent,
-    SynReceived,
-    Closing,
-    Closed,
-    Unknown,
-}
-
-/// Network protocol
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum Protocol {
-    Tcp,
-    Udp,
-    Tcp6,
-    Udp6,
-    Other,
-}
-
 // Static storage for network statistics tracking
-static NETWORK_STATS: Lazy<RwLock<HashMap<String, NetworkStats>>> =
-    Lazy::new(|| RwLock::new(HashMap::new()));
+static NETWORK_STATS: LazyLock<RwLock<HashMap<String, NetworkStats>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// List all network interfaces
 pub fn interfaces() -> Vec<NetworkInterface> {
@@ -148,7 +99,6 @@ pub fn interfaces() -> Vec<NetworkInterface> {
     {
         use sysinfo::Networks;
 
-        // sysinfo 0.37: use Networks helper instead of System::networks()
         let networks = Networks::new_with_refreshed_list();
 
         networks
@@ -161,15 +111,15 @@ pub fn interfaces() -> Vec<NetworkInterface> {
                     tx_packets: network.total_packets_transmitted(),
                     rx_errors: network.total_errors_on_received(),
                     tx_errors: network.total_errors_on_transmitted(),
-                    rx_dropped: 0, // Not available in sysinfo
-                    tx_dropped: 0, // Not available in sysinfo
+                    rx_dropped: 0,
+                    tx_dropped: 0,
                 };
 
                 NetworkInterface {
                     name: name.to_string(),
                     mac_address: Some(network.mac_address().to_string()),
-                    ip_addresses: vec![], // Would need additional platform-specific code
-                    is_up: true,          // Assume up if in the list
+                    ip_addresses: vec![],
+                    is_up: true,
                     is_loopback: name == "lo" || name == "lo0",
                     mtu: None,
                     speed: None,
@@ -185,18 +135,20 @@ pub fn interfaces() -> Vec<NetworkInterface> {
     }
 }
 
-/// Get specific network interface
+/// Get a specific network interface by name
 pub fn get_interface(name: &str) -> Option<NetworkInterface> {
     interfaces().into_iter().find(|iface| iface.name == name)
 }
 
-/// Get network usage statistics
+/// Get network usage statistics with rate tracking
+///
+/// On the first call for a given interface, rates will be `0.0` because
+/// there is no previous snapshot to compute a delta from.
 pub fn usage() -> Vec<NetworkUsage> {
     #[cfg(feature = "network")]
     {
         use sysinfo::Networks;
 
-        // sysinfo 0.37: use Networks helper and refresh it
         let mut networks = Networks::new_with_refreshed_list();
         networks.refresh(false);
 
@@ -215,29 +167,23 @@ pub fn usage() -> Vec<NetworkUsage> {
                 tx_dropped: 0,
             };
 
-            // Calculate rates if we have previous stats
-            if let Some(prev_stats) = stats.get(name) {
-                let rx_diff = current_stats.rx_bytes.saturating_sub(prev_stats.rx_bytes);
-                let tx_diff = current_stats.tx_bytes.saturating_sub(prev_stats.tx_bytes);
-
-                usage_list.push(NetworkUsage {
-                    interface: name.to_string(),
-                    rx_rate: rx_diff as f64,
-                    tx_rate: tx_diff as f64,
-                    total_rx: current_stats.rx_bytes,
-                    total_tx: current_stats.tx_bytes,
-                });
+            let (rx_rate, tx_rate) = if let Some(prev) = stats.get(name) {
+                (
+                    current_stats.rx_bytes.saturating_sub(prev.rx_bytes) as f64,
+                    current_stats.tx_bytes.saturating_sub(prev.tx_bytes) as f64,
+                )
             } else {
-                usage_list.push(NetworkUsage {
-                    interface: name.to_string(),
-                    rx_rate: 0.0,
-                    tx_rate: 0.0,
-                    total_rx: current_stats.rx_bytes,
-                    total_tx: current_stats.tx_bytes,
-                });
-            }
+                (0.0, 0.0)
+            };
 
-            // Update stats cache
+            usage_list.push(NetworkUsage {
+                interface: name.to_string(),
+                rx_rate,
+                tx_rate,
+                total_rx: current_stats.rx_bytes,
+                total_tx: current_stats.tx_bytes,
+            });
+
             stats.insert(name.to_string(), current_stats);
         }
 
@@ -250,117 +196,11 @@ pub fn usage() -> Vec<NetworkUsage> {
     }
 }
 
-/// Get active network connections
-pub fn connections() -> Vec<Connection> {
-    // This would require platform-specific implementation
-    // or additional dependencies like netstat2
-    Vec::new()
-}
-
-/// Get connections for a specific process
-pub fn connections_for_process(pid: u32) -> Vec<Connection> {
-    connections()
-        .into_iter()
-        .filter(|conn| conn.pid == Some(pid))
-        .collect()
-}
-
-/// Network configuration
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct NetworkConfig {
-    /// Hostname
-    pub hostname: String,
-    /// DNS servers
-    pub dns_servers: Vec<String>,
-    /// Default gateway
-    pub gateway: Option<String>,
-    /// Domain name
-    pub domain: Option<String>,
-}
-
-/// Get network configuration
-pub fn config() -> NetworkConfig {
-    use crate::info::SystemInfo;
-
-    let info = SystemInfo::get();
-
-    NetworkConfig {
-        hostname: info.os.hostname.as_str().to_string(),
-        dns_servers: detect_dns_servers(),
-        gateway: detect_gateway(),
-        domain: None,
-    }
-}
-
-fn detect_dns_servers() -> Vec<String> {
-    #[cfg(unix)]
-    {
-        use std::fs;
-
-        if let Ok(content) = fs::read_to_string("/etc/resolv.conf") {
-            return content
-                .lines()
-                .filter_map(|line| {
-                    let line = line.trim();
-                    if line.starts_with("nameserver") {
-                        line.split_whitespace().nth(1).map(String::from)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        // Would need Windows-specific implementation
-    }
-
-    Vec::new()
-}
-
-fn detect_gateway() -> Option<String> {
-    #[cfg(unix)]
-    {
-        use std::process::Command;
-
-        // Try to get default gateway using ip command
-        if let Ok(output) = Command::new("ip")
-            .args(&["route", "show", "default"])
-            .output()
-        {
-            if let Ok(stdout) = String::from_utf8(output.stdout) {
-                // Parse: "default via 192.168.1.1 dev eth0"
-                for line in stdout.lines() {
-                    if line.starts_with("default") {
-                        let parts: Vec<&str> = line.split_whitespace().collect();
-                        if parts.len() >= 3 && parts[1] == "via" {
-                            return Some(parts[2].to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    None
-}
-
-/// Check network connectivity
-pub fn is_online() -> bool {
-    // Simple check: see if we have any non-loopback interfaces with IP addresses
-    interfaces()
-        .iter()
-        .any(|iface| !iface.is_loopback && iface.is_up)
-}
-
 /// Get total network statistics across all interfaces
 pub fn total_stats() -> NetworkStats {
-    let interfaces = interfaces();
+    let ifaces = interfaces();
 
-    interfaces
+    ifaces
         .iter()
         .fold(NetworkStats::default(), |mut acc, iface| {
             acc.rx_bytes += iface.stats.rx_bytes;

@@ -1,53 +1,47 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
-#![allow(unsafe_code)] // System-level memory management requires unsafe
+#![allow(unsafe_code)] // CPU affinity on Linux requires unsafe
 //! # Nebula System
 //!
 //! Cross-platform system information and utilities for Nebula ecosystem.
 //!
-//! This crate provides a unified interface for:
-//! - System information (CPU, memory, OS)
-//! - Hardware detection
-//! - Memory management utilities
-//! - Performance monitoring
-//! - Process information
+//! Provides a unified interface for:
+//! - System information (CPU, memory, OS, hardware)
+//! - Memory and CPU pressure detection
+//! - Process information and monitoring
+//! - Network interface statistics
+//! - Disk usage and pressure
 //!
 //! ## Features
 //!
-//! - `memory` (default): Memory management utilities
-//! - `sysinfo` (default): System information gathering
-//! - `process`: Process information and management
-//! - `network`: Network interface information
+//! - `sysinfo` (default): System information gathering via sysinfo crate
+//! - `process`: Process information and monitoring
+//! - `network`: Network interface statistics
 //! - `disk`: Disk and filesystem information
-//! - `component`: Hardware component monitoring (temperatures, etc.)
-//! - `metrics`: Performance metrics collection
-//! - `serde`: Serialization support
+//! - `serde`: Serialization support for all data types
 //!
 //! ## Platform Support Matrix
 //!
-//! | Module    | Linux | macOS | Windows | Notes                                                              |
-//! |-----------|-------|-------|---------|--------------------------------------------------------------------|
-//! | `memory`  | ✓     | ✓     | ✓       | Via `sysinfo`; `management` submodule stubs only                   |
-//! | `cpu`     | ✓     | ✓     | ✓       | Via `sysinfo`; SSE/AVX feature flags x86 only                     |
-//! | `disk`    | ✓     | ✓     | ✓       | `DiskStats` I/O counters always zero (not populated by sysinfo path) |
-//! | `network` | ✓     | ✓     | ✓       | `connections()` always returns `[]` (not yet implemented)          |
-//! | `process` | ✓     | ✓     | ✓       | `cmd`, `environ`, `thread_count`, `uid`, `gid` are always default/zeroed |
+//! | Module    | Linux | macOS | Windows | Notes                                          |
+//! |-----------|-------|-------|---------|-------------------------------------------------|
+//! | `memory`  | ✓     | ✓     | ✓       | Via `sysinfo`                                   |
+//! | `cpu`     | ✓     | ✓     | ✓       | SSE/AVX feature detection x86 only              |
+//! | `disk`    | ✓     | ✓     | ✓       | I/O counters Linux-only (`io_stats()`)          |
+//! | `network` | ✓     | ✓     | ✓       | `ip_addresses` always empty                     |
+//! | `process` | ✓     | ✓     | ✓       | `thread_count` hardcoded, `uid`/`gid` always None |
 //!
 //! ## Example
 //!
 //! ```no_run
-//! use nebula_system::{SystemInfo, MemoryPressure};
+//! use nebula_system::SystemInfo;
 //!
 //! fn main() -> nebula_system::SystemResult<()> {
-//!     // Initialize the system
 //!     nebula_system::init()?;
 //!
-//!     // Get system information
 //!     let info = SystemInfo::get();
 //!     println!("CPU: {} cores", info.cpu.cores);
 //!     println!("Memory: {} GB", info.memory.total / (1024 * 1024 * 1024));
 //!
-//!     // Check memory pressure
 //!     let pressure = nebula_system::memory::pressure();
 //!     if pressure.is_concerning() {
 //!         println!("Warning: Memory pressure is high!");
@@ -61,13 +55,17 @@ pub mod info;
 pub mod prelude;
 pub mod utils;
 
-#[cfg(feature = "memory")]
-#[cfg_attr(docsrs, doc(cfg(feature = "memory")))]
+#[cfg(feature = "sysinfo")]
+#[cfg_attr(docsrs, doc(cfg(feature = "sysinfo")))]
 pub mod memory;
 
 #[cfg(feature = "sysinfo")]
 #[cfg_attr(docsrs, doc(cfg(feature = "sysinfo")))]
 pub mod cpu;
+
+#[cfg(feature = "sysinfo")]
+#[cfg_attr(docsrs, doc(cfg(feature = "sysinfo")))]
+pub mod load;
 
 #[cfg(feature = "process")]
 #[cfg_attr(docsrs, doc(cfg(feature = "process")))]
@@ -85,7 +83,7 @@ pub mod disk;
 pub use core::{SystemError, SystemResult, SystemResultExt};
 pub use info::SystemInfo;
 
-#[cfg(feature = "memory")]
+#[cfg(feature = "sysinfo")]
 pub use memory::{MemoryInfo, MemoryPressure};
 
 /// Library version

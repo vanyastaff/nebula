@@ -208,7 +208,8 @@ pub fn is_ssd(mount_point: Option<&str>) -> bool {
     }
 }
 
-/// Get disk I/O statistics
+/// Get disk I/O statistics (Linux only — reads `/sys/block/<device>/stat`)
+#[allow(unused_variables)]
 pub fn io_stats(device: &str) -> Option<DiskStats> {
     #[cfg(target_os = "linux")]
     {
@@ -333,7 +334,8 @@ pub fn has_enough_space(path: &str, required_bytes: u64) -> bool {
         .unwrap_or(false)
 }
 
-/// Get filesystem information for a path
+/// Get filesystem information for a path (Unix only — uses `statvfs`)
+#[allow(unused_variables)]
 pub fn filesystem_info(path: &str) -> Option<FileSystemInfo> {
     #[cfg(unix)]
     {
@@ -365,6 +367,7 @@ pub fn filesystem_info(path: &str) -> Option<FileSystemInfo> {
     None
 }
 
+#[cfg(unix)]
 fn detect_fs_type(path: &str) -> String {
     // Find disk for this path
     for disk in list() {

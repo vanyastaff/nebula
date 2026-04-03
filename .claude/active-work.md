@@ -1,10 +1,11 @@
 # Active Work
-Updated: 2026-03-31
+Updated: 2026-04-03
 
 ## In Progress
 - **Desktop app** (Tauri): `apps/desktop/`
 
 ## Recently Completed
+- **nebula-system overhaul** (04-03): Phase 1 cleanup (removed broken management API, dead features, stubs), Phase 2 test hardening (38 tests + 5 doctests), Phase 3 ProcessMonitor (per-PID sandbox tracking), Phase 4 SystemLoad (adaptive worker scaling). Deleted old `crates/system/design/`. Plan at `docs/plans/2026-04-03-nebula-system-overhaul.md`.
 - **nebula-credential HLD v1.5** (04-01): Full architecture review: 10 adversarial rounds, 2 dev challenges, 2 town halls, 2 open conferences (10 external devs total incl. gaming, Airflow migration, SOC2 auditor, dev tooling, Vault skeptic). 33 v1 ship items. 17 bugs. SOC2 grades: CC6.1/CC7.2 CONDITIONAL, CC6.3 PASS. New in v1.5: DecryptedCacheLayer, DatabaseAuth.extensions, registry introspection. v1.1 deferred: CredentialStore dyn-compat, put_batch. HLD at `docs/plans/nebula-credential-hld-v1.md`.
 - **nebula-credential DX excellence** (03-31): Typed `CredentialSnapshot` (`Box<dyn Any>` + `project::<S>()`), `credential_typed::<S>()` on ActionContext/TriggerContext, rotation feature-gated, `CredentialResolverRef` for composition, 285 tests + 19 doctests, missing Debug impls added, broken doctests fixed.
 - **nebula-resilience deep invariant audit** (03-31): 9 bug fixes (Duration overflow panic, pipeline total_budget drop, SlidingWindow stale entries, hedge delay overflow, TokenBucket burst/reset/current_rate, LeakyBucket current_rate, AdaptiveHedge zero delay), CB counter dedup, 4 doc link fixes, all clippy --all-targets clean. 153 tests, 7 benchmark suites, 14 integration tests.

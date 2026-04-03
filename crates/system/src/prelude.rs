@@ -1,8 +1,5 @@
 //! Prelude module for convenient imports
 //!
-//! This module re-exports the most commonly used types and functions
-//! from the nebula-system crate for easy importing.
-//!
 //! # Example
 //!
 //! ```rust
@@ -19,27 +16,33 @@
 pub use crate::core::{SystemError, SystemResult, SystemResultExt};
 pub use crate::info::{CpuInfo, HardwareInfo, OsInfo, SystemInfo};
 
-// Memory types (if feature enabled)
-#[cfg(feature = "memory")]
+// Memory types
+#[cfg(feature = "sysinfo")]
 pub use crate::memory::{MemoryInfo, MemoryPressure};
 
-// CPU types (if feature enabled)
+// CPU types
 #[cfg(feature = "sysinfo")]
 pub use crate::cpu::{CacheInfo, CpuFeatures, CpuPressure, CpuTopology, CpuUsage};
 
-// Process types (if feature enabled)
+// Load types
+#[cfg(feature = "sysinfo")]
+pub use crate::load::SystemLoad;
+
+// Process types
 #[cfg(feature = "process")]
-pub use crate::process::{ProcessInfo, ProcessStats, ProcessStatus, ProcessTree};
+pub use crate::process::{
+    ProcessInfo, ProcessMonitor, ProcessSample, ProcessStats, ProcessStatus, ProcessTree,
+};
 
-// Network types (if feature enabled)
+// Network types
 #[cfg(feature = "network")]
-pub use crate::network::{NetworkConfig, NetworkInterface, NetworkUsage};
+pub use crate::network::{NetworkInterface, NetworkUsage};
 
-// Disk types (if feature enabled)
+// Disk types
 #[cfg(feature = "disk")]
 pub use crate::disk::{DiskInfo, DiskUsage};
 
-// Re-export common utility functions
+// Top-level functions
 pub use crate::{init, summary};
 
 // Utility functions

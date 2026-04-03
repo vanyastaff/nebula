@@ -21,7 +21,7 @@ pub struct CpuUsage {
 }
 
 /// CPU features detection
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct CpuFeatures {
     /// SSE support
@@ -137,17 +137,31 @@ pub fn usage() -> CpuUsage {
         let mut sys = SYSINFO_SYSTEM.write();
         sys.refresh_cpu_usage();
 
-        let per_core: Vec<f32> = sys.cpus().iter().map(sysinfo::Cpu::cpu_usage).collect();
+        // Single pass: collect per-core values while computing sum, peak, and
+        // pressure count. Avoids 3 extra iterations over the same data.
+        let cpus = sys.cpus();
+        let mut per_core = Vec::with_capacity(cpus.len());
+        let mut sum = 0.0f32;
+        let mut peak = 0.0f32;
+        let mut cores_under_pressure = 0usize;
+
+        for cpu in cpus {
+            let u = cpu.cpu_usage();
+            per_core.push(u);
+            sum += u;
+            if u > peak {
+                peak = u;
+            }
+            if u > 80.0 {
+                cores_under_pressure += 1;
+            }
+        }
 
         let average = if per_core.is_empty() {
             0.0
         } else {
-            per_core.iter().sum::<f32>() / per_core.len() as f32
+            sum / per_core.len() as f32
         };
-
-        let peak = per_core.iter().copied().fold(0.0, f32::max);
-
-        let cores_under_pressure = per_core.iter().filter(|&&usage| usage > 80.0).count();
 
         CpuUsage {
             per_core,
@@ -169,15 +183,43 @@ pub fn usage() -> CpuUsage {
 }
 
 /// Get CPU pressure level
+///
+/// Computes average CPU usage directly without allocating a `Vec<f32>`.
+/// Use [`usage()`] if you also need per-core breakdown.
 #[must_use]
 pub fn pressure() -> CpuPressure {
-    let usage = usage();
-    CpuPressure::from_usage(usage.average)
+    #[cfg(feature = "sysinfo")]
+    {
+        use crate::info::SYSINFO_SYSTEM;
+
+        let mut sys = SYSINFO_SYSTEM.write();
+        sys.refresh_cpu_usage();
+
+        let cpus = sys.cpus();
+        if cpus.is_empty() {
+            return CpuPressure::Low;
+        }
+
+        let sum: f32 = cpus.iter().map(sysinfo::Cpu::cpu_usage).sum();
+        CpuPressure::from_usage(sum / cpus.len() as f32)
+    }
+
+    #[cfg(not(feature = "sysinfo"))]
+    {
+        CpuPressure::Low
+    }
 }
 
 /// Get CPU features
+///
+/// Results are cached on first call — CPU features don't change at runtime.
 #[must_use]
 pub fn features() -> CpuFeatures {
+    static FEATURES: std::sync::LazyLock<CpuFeatures> = std::sync::LazyLock::new(detect_features);
+    *FEATURES
+}
+
+fn detect_features() -> CpuFeatures {
     #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "sysinfo"))]
     {
         CpuFeatures {
