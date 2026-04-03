@@ -58,16 +58,16 @@ Tauri-based desktop surface in `apps/desktop/` — currently in development.
 
 ```bash
 # Fast local check (use this by default)
-rtk cargo fmt && rtk cargo clippy --workspace -- -D warnings && rtk cargo nextest run --workspace
+cargo fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace
 
 # Single crate (fastest iteration)
-rtk cargo check -p nebula-<crate> && rtk cargo nextest run -p nebula-<crate>
+cargo check -p nebula-<crate> && cargo nextest run -p nebula-<crate>
 
 # Full validation (before PR)
-rtk cargo fmt && rtk cargo clippy --workspace -- -D warnings && rtk cargo nextest run --workspace && rtk cargo test --workspace --doc && rtk cargo deny check
+cargo fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace && cargo test --workspace --doc && cargo deny check
 
 # Compose API contract
-rtk cargo bench --no-run -p nebula-resilience
+cargo bench --no-run -p nebula-resilience
 
 # Context file budgets
 bash .claude/validate.sh

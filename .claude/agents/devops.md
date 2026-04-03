@@ -98,10 +98,9 @@ cargo tree -i {crate}            # who depends on this?
 cargo check -p nebula-{crate}    # single-crate check
 cargo bench --no-run -p nebula-resilience  # compose API contract
 
-# Always use rtk prefix for token efficiency
-rtk cargo check
-rtk cargo clippy --workspace -- -D warnings
-rtk cargo nextest run --workspace
+cargo check
+cargo clippy --workspace -- -D warnings
+cargo nextest run --workspace
 ```
 
 ## How you communicate

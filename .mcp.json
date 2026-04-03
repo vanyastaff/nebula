@@ -1,11 +1,7 @@
 {
   "mcpServers": {
-    "cratesio": {
-      "type": "http",
-      "url": "https://cratesio-mcp.fly.dev/"
-    },
-    "rust-docs": {
-      "command": "rust-docs-mcp"
+   "cratesio-mcp": {
+      "command": "cratesio-mcp"
     }
   }
 }
