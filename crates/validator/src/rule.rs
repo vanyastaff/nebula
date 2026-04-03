@@ -96,6 +96,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::foundation::{Validate, ValidationError};
+use crate::validators::content::{EMAIL_PATTERN, URL_PATTERN};
 use crate::validators::{max_length, max_size, min_length, min_size};
 
 /// Compiles a regex pattern, returning a validation error if invalid.
@@ -380,12 +381,39 @@ impl Rule {
     // ── Shorthand constructors ──────────────────────────────────────────
 
     /// Creates a [`Pattern`](Self::Pattern) rule.
+    ///
+    /// The regex is **not** validated at construction time. If the pattern is
+    /// invalid, [`validate_value`](Self::validate_value) will return an error
+    /// with code `"invalid_pattern"`. Use [`try_pattern`](Self::try_pattern)
+    /// when the pattern comes from user input.
     #[must_use]
     pub fn pattern(pattern: impl Into<String>) -> Self {
         Self::Pattern {
             pattern: pattern.into(),
             message: None,
         }
+    }
+
+    /// Creates a [`Pattern`](Self::Pattern) rule, validating the regex upfront.
+    ///
+    /// Returns `None` if the pattern is not a valid regular expression.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_validator::Rule;
+    ///
+    /// assert!(Rule::try_pattern(r"^\d+$").is_some());
+    /// assert!(Rule::try_pattern(r"[invalid").is_none());
+    /// ```
+    #[must_use]
+    pub fn try_pattern(pattern: impl Into<String>) -> Option<Self> {
+        let pattern = pattern.into();
+        regex::Regex::new(&pattern).ok()?;
+        Some(Self::Pattern {
+            pattern,
+            message: None,
+        })
     }
 
     /// Creates a [`MinLength`](Self::MinLength) rule.
@@ -492,6 +520,10 @@ impl Rule {
     }
 
     /// Attaches a custom error message to this rule.
+    ///
+    /// Applies to value-validation rules and deferred rules. **No-op** for
+    /// context predicates (`Eq`, `Ne`, etc.) and logical combinators (`All`,
+    /// `Any`, `Not`) — these variants do not carry a `message` field.
     #[must_use]
     pub fn with_message(self, msg: impl Into<String>) -> Self {
         let msg = Some(msg.into());
@@ -763,14 +795,10 @@ impl Rule {
 
             Self::Email { message } => {
                 if let Some(s) = value.as_str() {
-                    static EMAIL_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(
-                        || {
-                            regex::Regex::new(
-                                r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$",
-                            )
-                            .expect("email regex is valid")
-                        },
-                    );
+                    static EMAIL_RE: std::sync::LazyLock<regex::Regex> =
+                        std::sync::LazyLock::new(|| {
+                            regex::Regex::new(EMAIL_PATTERN).expect("email regex is valid")
+                        });
                     if !EMAIL_RE.is_match(s) {
                         let err = ValidationError::invalid_format("", "email");
                         return Err(override_message(err, message));
@@ -782,8 +810,7 @@ impl Rule {
                 if let Some(s) = value.as_str() {
                     static URL_RE: std::sync::LazyLock<regex::Regex> =
                         std::sync::LazyLock::new(|| {
-                            regex::Regex::new(r"^https?://[^\s/$.?#]+\.[^\s]+$")
-                                .expect("url regex is valid")
+                            regex::Regex::new(URL_PATTERN).expect("url regex is valid")
                         });
                     if !URL_RE.is_match(s) {
                         let err = ValidationError::invalid_format("", "url");
@@ -917,10 +944,18 @@ impl Rule {
                 serde_json::Value::Array(items) => items.contains(value),
                 _ => false,
             }),
-            Self::Matches { field, pattern } => values
-                .get(field)
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|string| compile_regex(pattern).is_ok_and(|re| re.is_match(string))),
+            Self::Matches { field, pattern } => {
+                debug_assert!(
+                    regex::Regex::new(pattern).is_ok(),
+                    "Rule::Matches: invalid regex pattern '{pattern}' — evaluate() will always return false"
+                );
+                values
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|string| {
+                        compile_regex(pattern).is_ok_and(|re| re.is_match(string))
+                    })
+            }
             Self::In {
                 field,
                 values: candidates,
@@ -1623,11 +1658,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "invalid regex pattern"))]
     fn matches_invalid_regex_is_false() {
         let rule = Rule::Matches {
             field: "x".into(),
             pattern: "[invalid".into(),
         };
+        // In release mode: silently returns false (degenerate but non-panicking).
+        // In debug mode: debug_assert fires to alert the developer.
         assert!(!rule.evaluate(&values(&[("x", json!("anything"))])));
     }
 
@@ -1699,6 +1737,21 @@ mod tests {
         };
         let err = rule.validate_value(&json!("test")).unwrap_err();
         assert_eq!(err.code.as_ref(), "invalid_pattern");
+    }
+
+    #[test]
+    fn try_pattern_validates_regex_upfront() {
+        assert!(Rule::try_pattern(r"^\d+$").is_some());
+        assert!(Rule::try_pattern(r"[invalid").is_none());
+    }
+
+    #[test]
+    fn try_pattern_with_message() {
+        let rule = Rule::try_pattern(r"^\d+$")
+            .unwrap()
+            .with_message("digits only");
+        let err = rule.validate_value(&json!("abc")).unwrap_err();
+        assert_eq!(err.message.as_ref(), "digits only");
     }
 
     #[expect(

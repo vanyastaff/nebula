@@ -208,7 +208,9 @@ impl<T> Validate<[T]> for SizeRange<T> {
 ///
 /// # Panics
 ///
-/// Panics if `min > max`.
+/// Panics in debug builds if `min > max`. In release builds, creates a
+/// degenerate validator that rejects all input. Prefer [`try_size_range`]
+/// when bounds come from user input or config.
 ///
 /// # Examples
 ///
@@ -224,7 +226,7 @@ impl<T> Validate<[T]> for SizeRange<T> {
 /// ```
 #[must_use]
 pub fn size_range<T>(min: usize, max: usize) -> SizeRange<T> {
-    assert!(min <= max, "size_range: min ({min}) must be <= max ({max})");
+    debug_assert!(min <= max, "size_range: min ({min}) must be <= max ({max})");
     SizeRange {
         min,
         max,
@@ -316,9 +318,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "min (10) must be <= max (2)")]
-    fn test_size_range_inverted_bounds_panics() {
-        let _ = size_range::<i32>(10, 2);
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "min (10) must be <= max (2)")
+    )]
+    fn test_size_range_inverted_bounds_panics_in_debug() {
+        let v = size_range::<i32>(10, 2);
+        // In release mode the validator is degenerate — rejects everything
+        assert!(v.validate(&[1, 2, 3]).is_err());
     }
 
     #[test]

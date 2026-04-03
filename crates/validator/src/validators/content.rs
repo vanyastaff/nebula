@@ -31,14 +31,17 @@ use std::sync::LazyLock;
 
 use crate::foundation::ValidationError;
 
-static EMAIL_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(
-        r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
-    ).unwrap()
-});
+/// Email regex pattern (shared with `Rule::Email` in `rule.rs`).
+pub(crate) const EMAIL_PATTERN: &str = r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$";
+
+/// URL regex pattern (shared with `Rule::Url` in `rule.rs`).
+pub(crate) const URL_PATTERN: &str = r"^https?://[^\s/$.?#]+\.[^\s]+$";
+
+static EMAIL_REGEX: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(EMAIL_PATTERN).unwrap());
 
 static URL_REGEX: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"^https?://[^\s/$.?#]+\.[^\s]+$").unwrap());
+    LazyLock::new(|| regex::Regex::new(URL_PATTERN).unwrap());
 
 crate::validator! {
     /// Validates that a string matches a regular expression.

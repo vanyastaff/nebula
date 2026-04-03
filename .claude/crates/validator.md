@@ -11,7 +11,9 @@ Composable, type-safe validation framework — two paradigms: programmatic combi
 - `Rule` has shorthand constructors (`Rule::min_length(5)`, `Rule::pattern(...)`, `Rule::email()`, `Rule::url()`, `Rule::all/any/not(...)`, etc.) and `.with_message()` fluent builder. Struct literals still work.
 - `collect_json_fields` combinator — validates multiple JSON fields, collects ALL errors (non-short-circuiting).
 - `Rule::min_value_f64`/`max_value_f64` return `Option<Self>` — `None` for NaN/Infinity. No panics.
-- `validators::try_size_range(min, max)` is the non-panicking constructor for collection size ranges and returns `ValidationError { code: "invalid_range" }` when bounds are inverted.
+- `validators::try_size_range(min, max)` is the non-panicking constructor for collection size ranges and returns `ValidationError { code: "invalid_range" }` when bounds are inverted. `size_range()` uses `debug_assert!` (not `assert!`).
+- `validators::try_in_range(min, max)` / `try_exclusive_range(min, max)` — fallible constructors for numeric ranges. The infallible `in_range()`/`exclusive_range()` silently create degenerate validators on inverted bounds.
+- `Rule::try_pattern(regex)` validates the regex at construction time (returns `Option<Self>`). `Rule::pattern()` defers validation to `validate_value()` time.
 - `validate_rules()` returns `Result<(), ValidationErrors>` (not `Vec<ValidationError>`).
 - `min_i64/max_i64/in_range_i64` + `f64` variants — turbofish-free convenience for JSON numbers.
 - `ExecutionMode` controls which rule categories run (`StaticOnly` skips deferred/async rules for fast paths).
@@ -21,6 +23,9 @@ Composable, type-safe validation framework — two paradigms: programmatic combi
 - `AnyValidator<T>` is type-erased (dyn-compatible). Combinators are concrete types. They are not interchangeable.
 - `validate_rules()` takes a `serde_json::Value` — not a typed struct. Returns `ValidationErrors`, not `Vec`.
 - No regex cache — patterns compiled inline each call. Fast enough for schema-validation (not a hot path).
+- Email/URL regex patterns are shared constants (`EMAIL_PATTERN`, `URL_PATTERN` in `content.rs`) — used by both programmatic validators and `Rule::Email`/`Rule::Url`.
+- `Rule::Matches` with an invalid regex pattern `debug_assert!`s in debug builds and silently returns `false` in release. `Rule::with_message()` is a no-op on predicates and combinators (documented).
+- f64 convenience functions (`min_f64`, `max_f64`, `in_range_f64`) `debug_assert!` against NaN bounds.
 - Predicate comparisons (`Gt`/`Lt`/`Gte`/`Lte`) use precision-safe `json_number_cmp` (i64→u64→f64 fallback).
 
 ## Derive Macro Architecture (nebula-validator-macros)
@@ -46,4 +51,5 @@ Composable, type-safe validation framework — two paradigms: programmatic combi
 
 <!-- reviewed: 2026-04-02 -->
 
+<!-- reviewed: 2026-04-03 — deep invariant audit fixes: size_range assert→debug_assert, try_in_range/try_exclusive_range fallible constructors, NaN guards on f64 helpers, shared email/URL regex constants, Rule::try_pattern, Rule::Matches debug_assert, with_message doc -->
 <!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->

@@ -130,6 +130,73 @@ crate::validator! {
 }
 
 // ============================================================================
+// FALLIBLE CONSTRUCTORS
+// ============================================================================
+
+/// Creates an [`InRange`] validator, returning an error if `min > max`.
+///
+/// Prefer this over [`in_range`] when bounds come from user input or config.
+///
+/// # Errors
+///
+/// Returns [`ValidationError`] with code `"invalid_range"` if `min > max`.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_validator::validators::try_in_range;
+///
+/// assert!(try_in_range(1, 10).is_ok());
+/// assert!(try_in_range(10, 1).is_err());
+/// ```
+pub fn try_in_range<T: PartialOrd + Display + Copy>(
+    min: T,
+    max: T,
+) -> Result<InRange<T>, ValidationError> {
+    if min.partial_cmp(&max).is_none_or(|o| o.is_gt()) {
+        return Err(ValidationError::new(
+            "invalid_range",
+            format!("in_range requires min <= max (got min={min}, max={max})"),
+        )
+        .with_param("min", min.to_string())
+        .with_param("max", max.to_string()));
+    }
+    Ok(InRange { min, max })
+}
+
+/// Creates an [`ExclusiveRange`] validator, returning an error if `min >= max`.
+///
+/// Prefer this over [`exclusive_range`] when bounds come from user input or config.
+///
+/// # Errors
+///
+/// Returns [`ValidationError`] with code `"invalid_range"` if `min >= max`.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_validator::validators::try_exclusive_range;
+///
+/// assert!(try_exclusive_range(0, 10).is_ok());
+/// assert!(try_exclusive_range(10, 10).is_err()); // min must be < max for exclusive
+/// assert!(try_exclusive_range(10, 1).is_err());
+/// ```
+pub fn try_exclusive_range<T: PartialOrd + Display + Copy>(
+    min: T,
+    max: T,
+) -> Result<ExclusiveRange<T>, ValidationError> {
+    if !min.partial_cmp(&max).is_some_and(|o| o.is_lt()) {
+        return Err(ValidationError::new(
+            "invalid_range",
+            format!("exclusive_range requires min < max (got min={min}, max={max})"),
+        )
+        .with_param("min", min.to_string())
+        .with_param("max", max.to_string()));
+    }
+    Ok(ExclusiveRange { min, max })
+}
+
+// ============================================================================
 // CONVENIENCE ALIASES (turbofish-free)
 // ============================================================================
 
@@ -186,6 +253,10 @@ pub fn in_range_i64(min_val: i64, max_val: i64) -> InRange<i64> {
 
 /// Creates a [`Min`] validator for `f64` values (no turbofish needed).
 ///
+/// # Panics
+///
+/// Debug-panics if `value` is NaN (a NaN bound creates an always-failing validator).
+///
 /// # Examples
 ///
 /// ```
@@ -197,10 +268,18 @@ pub fn in_range_i64(min_val: i64, max_val: i64) -> InRange<i64> {
 /// ```
 #[must_use]
 pub fn min_f64(value: f64) -> Min<f64> {
+    debug_assert!(
+        !value.is_nan(),
+        "min_f64: NaN bound creates an always-failing validator"
+    );
     min(value)
 }
 
 /// Creates a [`Max`] validator for `f64` values (no turbofish needed).
+///
+/// # Panics
+///
+/// Debug-panics if `value` is NaN (a NaN bound creates an always-failing validator).
 ///
 /// # Examples
 ///
@@ -213,10 +292,18 @@ pub fn min_f64(value: f64) -> Min<f64> {
 /// ```
 #[must_use]
 pub fn max_f64(value: f64) -> Max<f64> {
+    debug_assert!(
+        !value.is_nan(),
+        "max_f64: NaN bound creates an always-failing validator"
+    );
     max(value)
 }
 
 /// Creates an [`InRange`] validator for `f64` values (no turbofish needed).
+///
+/// # Panics
+///
+/// Debug-panics if either bound is NaN.
 ///
 /// # Examples
 ///
@@ -229,6 +316,10 @@ pub fn max_f64(value: f64) -> Max<f64> {
 /// ```
 #[must_use]
 pub fn in_range_f64(min_val: f64, max_val: f64) -> InRange<f64> {
+    debug_assert!(
+        !min_val.is_nan() && !max_val.is_nan(),
+        "in_range_f64: NaN bounds create an always-failing validator"
+    );
     in_range(min_val, max_val)
 }
 
@@ -295,6 +386,36 @@ mod tests {
         assert!(validator.validate(&10).is_err());
         assert!(validator.validate(&-1).is_err());
         assert!(validator.validate(&11).is_err());
+    }
+
+    #[test]
+    fn try_in_range_accepts_valid_bounds() {
+        let v = try_in_range(1, 10).expect("valid bounds");
+        assert!(v.validate(&5).is_ok());
+    }
+
+    #[test]
+    fn try_in_range_rejects_inverted_bounds() {
+        let err = try_in_range(10, 1).expect_err("min > max must fail");
+        assert_eq!(err.code.as_ref(), "invalid_range");
+    }
+
+    #[test]
+    fn try_exclusive_range_accepts_valid_bounds() {
+        let v = try_exclusive_range(0, 10).expect("valid bounds");
+        assert!(v.validate(&5).is_ok());
+    }
+
+    #[test]
+    fn try_exclusive_range_rejects_equal_bounds() {
+        let err = try_exclusive_range(5, 5).expect_err("min == max must fail for exclusive");
+        assert_eq!(err.code.as_ref(), "invalid_range");
+    }
+
+    #[test]
+    fn try_exclusive_range_rejects_inverted_bounds() {
+        let err = try_exclusive_range(10, 1).expect_err("min > max must fail");
+        assert_eq!(err.code.as_ref(), "invalid_range");
     }
 
     #[test]
