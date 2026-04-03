@@ -18,8 +18,9 @@
 //! }
 //! ```
 
-use crate::cpu::{self, CpuPressure};
-use crate::memory::{self, MemoryPressure};
+use crate::cpu::CpuPressure;
+use crate::info::SYSINFO_SYSTEM;
+use crate::memory::MemoryPressure;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -66,17 +67,56 @@ impl SystemLoad {
 
 /// Get current system load (CPU + memory combined).
 ///
-/// This acquires write locks on the sysinfo backend for both CPU and memory
-/// refresh. Avoid calling more often than every 100ms in production.
+/// Acquires the sysinfo write lock once and refreshes both CPU and memory
+/// in a single critical section. Avoid calling more often than every 100ms
+/// in production.
 #[must_use]
 pub fn system_load() -> SystemLoad {
-    let cpu_usage = cpu::usage();
-    let mem_info = memory::current();
+    let mut sys = SYSINFO_SYSTEM.write();
+    sys.refresh_cpu_usage();
+    sys.refresh_memory();
+
+    // CPU average — single pass over cpus slice
+    let cpus = sys.cpus();
+    let cpu_avg = if cpus.is_empty() {
+        0.0f32
+    } else {
+        cpus.iter().map(sysinfo::Cpu::cpu_usage).sum::<f32>() / cpus.len() as f32
+    };
+
+    // Memory stats
+    let total = sys.total_memory() as usize;
+    let available = sys.available_memory() as usize;
+    let used = total.saturating_sub(available);
+
+    // Drop the lock before computing derived values
+    drop(sys);
+
+    let memory_usage_percent = if total > 0 {
+        used.checked_mul(10000)
+            .and_then(|v| v.checked_div(total))
+            .map_or_else(
+                || (used as f64 / total as f64) * 100.0,
+                |v| v as f64 / 100.0,
+            )
+    } else {
+        0.0
+    };
+
+    let memory_pressure = if memory_usage_percent > 85.0 {
+        MemoryPressure::Critical
+    } else if memory_usage_percent > 70.0 {
+        MemoryPressure::High
+    } else if memory_usage_percent > 50.0 {
+        MemoryPressure::Medium
+    } else {
+        MemoryPressure::Low
+    };
 
     SystemLoad {
-        cpu: CpuPressure::from_usage(cpu_usage.average),
-        memory: mem_info.pressure,
-        cpu_usage_percent: cpu_usage.average,
-        memory_usage_percent: mem_info.usage_percent,
+        cpu: CpuPressure::from_usage(cpu_avg),
+        memory: memory_pressure,
+        cpu_usage_percent: cpu_avg,
+        memory_usage_percent,
     }
 }

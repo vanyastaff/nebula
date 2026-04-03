@@ -3591,6 +3591,7 @@ dependencies = [
 name = "nebula-system"
 version = "0.1.0"
 dependencies = [
+ "codspeed-criterion-compat",
  "libc",
  "nebula-error",
  "parking_lot",

@@ -47,8 +47,14 @@ sysinfo = { version = "0.38.4", optional = true, default-features = false, featu
 libc = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
+
+[[bench]]
+name = "system_load"
+harness = false
+required-features = ["sysinfo"]
 
 [package.metadata.docs.rs]
 all-features = true
