@@ -629,7 +629,7 @@ impl Manager {
         if let Err(e) = &result {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
-        self.record_acquire_result(&managed, &result, started);
+        self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
@@ -697,7 +697,7 @@ impl Manager {
         if let Err(e) = &result {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
-        self.record_acquire_result(&managed, &result, started);
+        self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
@@ -771,7 +771,7 @@ impl Manager {
         if let Err(e) = &result {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
-        self.record_acquire_result(&managed, &result, started);
+        self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
@@ -844,7 +844,7 @@ impl Manager {
         if let Err(e) = &result {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
-        self.record_acquire_result(&managed, &result, started);
+        self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
@@ -916,7 +916,7 @@ impl Manager {
         if let Err(e) = &result {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
-        self.record_acquire_result(&managed, &result, started);
+        self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
@@ -990,7 +990,7 @@ impl Manager {
         if let Err(e) = &result {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
-        self.record_acquire_result(&managed, &result, started);
+        self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
@@ -1321,7 +1321,6 @@ impl Manager {
     /// the corresponding [`ResourceEvent`].
     fn record_acquire_result<R: Resource>(
         &self,
-        _managed: &ManagedResource<R>,
         result: &Result<crate::handle::ResourceHandle<R>, Error>,
         started: Instant,
     ) {
