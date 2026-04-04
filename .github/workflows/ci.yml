@@ -140,6 +140,8 @@ jobs:
       - name: Test summary
         if: always()
         uses: test-summary/action@v2
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
           paths: target/nextest/ci/junit.xml
       - name: Upload test results
@@ -149,7 +151,7 @@ jobs:
           name: test-results
           path: target/nextest/ci/junit.xml
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 3
 
   # ── MSRV ───────────────────────────────────────────────────────────────────
   msrv:

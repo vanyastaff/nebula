@@ -116,6 +116,8 @@ jobs:
       - name: Test summary
         if: always()
         uses: test-summary/action@v2
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
           paths: target/nextest/ci/junit.xml
 
@@ -126,5 +128,5 @@ jobs:
           name: test-results-${{ matrix.package }}
           path: target/nextest/ci/junit.xml
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 3
 
