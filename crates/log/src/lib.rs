@@ -126,9 +126,6 @@ mod writer;
 #[cfg(any(feature = "telemetry", feature = "sentry"))]
 mod telemetry;
 
-// Metrics module (retained as empty placeholder — see nebula-telemetry/nebula-metrics)
-pub mod metrics;
-
 // Observability module
 pub mod observability;
 
