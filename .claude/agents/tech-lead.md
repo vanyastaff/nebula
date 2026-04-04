@@ -55,7 +55,7 @@ Can a new contributor understand this code in 30 minutes? If no, it's too clever
 
 ## What you know about Nebula
 
-- 26 crates, strict layer boundaries (Core → Business → Exec/API)
+- 25 crates, strict layer boundaries (Core → Business → Exec/API)
 - `nebula-core` changes cascade everywhere — always think twice
 - credential↔resource talk through EventBus, never direct imports
 - Parameter crate is migrating v1→v2 — be aware of stale docs

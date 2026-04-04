@@ -22,7 +22,7 @@ Updated: 2026-04-03
 - **nebula-auth**: RFC phase — blocked on RFC convergence, no stable API yet
 - **Desktop Phase 2+**: blocked on engine working end-to-end (Group 2 acceptance criteria)
 
-## Cross-Crate Priority Order (from TASKS.md)
+## Cross-Crate Priority Order
 1. `nebula-storage` Phase 1 (Postgres) — unblocks engine
 2. `nebula-action` Phase 2 — finish context model (unblocks runtime + credential integration)
 3. `nebula-resource` Phase 1 — contract docs + scope invariants

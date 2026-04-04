@@ -1,8 +1,8 @@
 # Pitfalls — Read Before Changing Anything
 
-- **parameter stale docs**: `docs/crates/parameter/*.md` is old API — use `src/schema.rs` and `src/providers.rs`.
+- **parameter stale docs**: Old parameter docs were removed. Canonical API is in `crates/parameter/src/schema.rs` and `src/providers.rs`.
 
-- **core cascade**: Trait changes in nebula-core cascade to all 25 dependents. New ID types = safe; trait changes require approval.
+- **core cascade**: Trait changes in nebula-core cascade to 13 direct dependents. New ID types = safe; trait changes require approval.
 
 - **credential↔resource circular dep**: Never import directly between these crates. Use `EventBus<CredentialRotatedEvent>`.
 
