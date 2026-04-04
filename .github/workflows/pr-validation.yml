@@ -23,6 +23,7 @@ jobs:
           fetch-depth: 0
 
       - name: Check commit messages
+        if: github.actor != 'dependabot[bot]'
         uses: wagoid/commitlint-github-action@v5
 
       - name: Check PR title
