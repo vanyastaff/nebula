@@ -3,7 +3,7 @@
 //! This example shows how to:
 //! 1. Create custom events
 //! 2. Create custom hooks
-//! 3. Use built-in hooks (logging, metrics)
+//! 3. Use built-in hooks (logging)
 //! 4. Track operation lifecycle
 
 use nebula_log::observability::{
@@ -182,35 +182,6 @@ fn demo_operation_tracker() {
     }
 }
 
-fn demo_metrics_integration() {
-    println!("\n=== Demo 4: Metrics Integration ===");
-
-    #[cfg(feature = "observability")]
-    {
-        use nebula_log::observability::MetricsHook;
-
-        // Register metrics hook
-        register_hook(Arc::new(MetricsHook::new()));
-        println!("  Registered MetricsHook (events will be recorded as metrics)");
-    }
-
-    #[cfg(not(feature = "observability"))]
-    {
-        println!("  MetricsHook requires 'observability' feature");
-    }
-
-    // Emit events that will be recorded as metrics
-    emit_event(&OperationStarted {
-        operation: "api_request".to_string(),
-        context: "handler".to_string(),
-    });
-
-    emit_event(&OperationCompleted {
-        operation: "api_request".to_string(),
-        duration: Duration::from_millis(42),
-    });
-}
-
 // =============================================================================
 // Main
 // =============================================================================
@@ -244,7 +215,6 @@ fn main() {
     demo_basic_events();
     demo_custom_events();
     demo_operation_tracker();
-    demo_metrics_integration();
 
     // Show final stats
     println!("\n=== Final Stats ===");
