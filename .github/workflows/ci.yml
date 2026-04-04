@@ -220,13 +220,23 @@ jobs:
               ("log/observability/emit_dispatch/inline_noop/1/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_EMIT_INLINE_NOOP_MAX_NS"])),
               ("log/observability/emit_dispatch/bounded_field_scan/1/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_EMIT_BOUNDED_COUNTING_MAX_NS"])),
           ]
+          # Criterion group "log/observability/emit_dispatch" may produce
+          # a directory named with slashes or underscores depending on the
+          # Criterion version (codspeed-criterion-compat v4 uses underscores).
+          GROUP = "log/observability/emit_dispatch"
+          GROUP_ALT = GROUP.replace("/", "_")
+
           failures = []
           for rel, threshold in checks:
+              alt_rel = rel.replace(GROUP, GROUP_ALT, 1)
               path = None
               for base in bases:
-                  candidate = base / rel
-                  if candidate.exists():
-                      path = candidate
+                  for variant in (rel, alt_rel):
+                      candidate = base / variant
+                      if candidate.exists():
+                          path = candidate
+                          break
+                  if path:
                       break
               if path is None:
                   failures.append(f"missing benchmark output: {rel}")
