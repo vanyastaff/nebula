@@ -4,6 +4,7 @@
 
 pub mod execution;
 pub mod health;
+pub mod metrics;
 pub mod workflow;
 
 use crate::{config::ApiConfig, middleware::auth::auth_middleware, state::AppState};
@@ -14,6 +15,8 @@ pub fn create_routes(state: AppState, _config: &ApiConfig) -> Router {
     Router::new()
         // Health checks (no auth required)
         .merge(health::router())
+        // Prometheus metrics (no auth required — scraper access)
+        .merge(metrics::router())
         // API v1 (JWT auth required)
         .nest("/api/v1", api_v1_routes(state.clone()))
         .with_state(state)

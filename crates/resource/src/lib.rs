@@ -20,7 +20,7 @@
 //! | [`Manager`] | Central registry with acquire dispatch and shutdown |
 //! | [`Registry`] | Type-erased storage for managed resources |
 //! | [`ResourceEvent`] | Lifecycle events for observability |
-//! | [`ResourceMetrics`] | Atomic operation counters |
+//! | [`ResourceOpsMetrics`] | Registry-backed operation counters |
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
@@ -53,7 +53,7 @@ pub use handle::ResourceHandle;
 pub use manager::{
     Manager, ManagerConfig, RegisterOptions, ResourceHealthSnapshot, ShutdownConfig,
 };
-pub use metrics::{MetricsSnapshot, ResourceMetrics};
+pub use metrics::{ResourceOpsMetrics, ResourceOpsSnapshot};
 pub use options::{AcquireIntent, AcquireOptions};
 pub use registry::{AnyManagedResource, Registry};
 pub use release_queue::ReleaseQueue;

@@ -28,7 +28,7 @@ use crate::ctx::{Ctx, ScopeLevel};
 use crate::error::Error;
 use crate::events::ResourceEvent;
 use crate::integration::AcquireResilience;
-use crate::metrics::ResourceMetrics;
+use crate::metrics::{ResourceOpsMetrics, ResourceOpsSnapshot};
 use crate::options::AcquireOptions;
 use crate::recovery::gate::{GateState, RecoveryGate};
 use crate::recovery::group::RecoveryGroupRegistry;
@@ -47,8 +47,8 @@ pub struct ResourceHealthSnapshot {
     pub phase: crate::state::ResourcePhase,
     /// Recovery gate state (if a gate is attached).
     pub gate_state: Option<crate::recovery::gate::GateState>,
-    /// Aggregate operation counters.
-    pub metrics: crate::metrics::MetricsSnapshot,
+    /// Aggregate operation counters (present when a metrics registry is configured).
+    pub metrics: Option<ResourceOpsSnapshot>,
     /// Config generation counter.
     pub generation: u64,
 }
@@ -75,12 +75,19 @@ pub struct ManagerConfig {
     ///
     /// Defaults to 2.
     pub release_queue_workers: usize,
+    /// Optional shared metrics registry for telemetry counters.
+    ///
+    /// When `Some`, the manager records resource operation counters
+    /// (`acquire_total`, `release_total`, etc.) into the registry.
+    /// When `None`, metrics are silently skipped (zero overhead).
+    pub metrics_registry: Option<Arc<nebula_telemetry::metrics::MetricsRegistry>>,
 }
 
 impl Default for ManagerConfig {
     fn default() -> Self {
         Self {
             release_queue_workers: 2,
+            metrics_registry: None,
         }
     }
 }
@@ -111,7 +118,7 @@ pub struct Manager {
     registry: Registry,
     recovery_groups: RecoveryGroupRegistry,
     cancel: CancellationToken,
-    metrics: Arc<ResourceMetrics>,
+    metrics: Option<ResourceOpsMetrics>,
     event_tx: broadcast::Sender<ResourceEvent>,
     release_queue: Arc<ReleaseQueue>,
     release_queue_handle: tokio::sync::Mutex<Option<ReleaseQueueHandle>>,
@@ -131,11 +138,15 @@ impl Manager {
         let cancel = CancellationToken::new();
         let (release_queue, release_queue_handle) =
             ReleaseQueue::with_cancel(config.release_queue_workers, cancel.clone());
+        let metrics = config
+            .metrics_registry
+            .as_ref()
+            .map(|reg| ResourceOpsMetrics::new(reg));
         Self {
             registry: Registry::new(),
             recovery_groups: RecoveryGroupRegistry::new(),
             cancel,
-            metrics: Arc::new(ResourceMetrics::new()),
+            metrics,
             event_tx,
             release_queue: Arc::new(release_queue),
             release_queue_handle: tokio::sync::Mutex::new(Some(release_queue_handle)),
@@ -191,8 +202,6 @@ impl Manager {
 
         let key = R::key();
 
-        let per_resource_metrics = Arc::new(ResourceMetrics::new());
-
         let managed = Arc::new(ManagedResource {
             resource,
             config: arc_swap::ArcSwap::from_pointee(config),
@@ -200,7 +209,6 @@ impl Manager {
             release_queue: Arc::clone(&self.release_queue),
             generation: std::sync::atomic::AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
-            metrics: per_resource_metrics,
             resilience,
             recovery_gate,
         });
@@ -209,8 +217,9 @@ impl Manager {
         self.registry
             .register(key.clone(), type_id, scope, managed.clone());
 
-        self.metrics.record_create();
-        managed.metrics.record_create();
+        if let Some(m) = &self.metrics {
+            m.record_create();
+        }
         let _ = self
             .event_tx
             .send(ResourceEvent::Registered { key: key.clone() });
@@ -603,7 +612,7 @@ impl Manager {
                             &managed.release_queue,
                             generation,
                             options,
-                            Arc::clone(&managed.metrics),
+                            self.metrics.clone(),
                         )
                         .await
                     }
@@ -620,7 +629,7 @@ impl Manager {
         if let Err(e) = &result {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
-        self.record_acquire_result(&managed, &result, started);
+        self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
@@ -688,7 +697,7 @@ impl Manager {
         if let Err(e) = &result {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
-        self.record_acquire_result(&managed, &result, started);
+        self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
@@ -745,7 +754,7 @@ impl Manager {
                             &managed.release_queue,
                             generation,
                             options,
-                            Arc::clone(&managed.metrics),
+                            self.metrics.clone(),
                         )
                         .await
                     }
@@ -762,7 +771,7 @@ impl Manager {
         if let Err(e) = &result {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
-        self.record_acquire_result(&managed, &result, started);
+        self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
@@ -818,7 +827,7 @@ impl Manager {
                             &managed.release_queue,
                             generation,
                             options,
-                            Arc::clone(&managed.metrics),
+                            self.metrics.clone(),
                         )
                         .await
                     }
@@ -835,7 +844,7 @@ impl Manager {
         if let Err(e) = &result {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
-        self.record_acquire_result(&managed, &result, started);
+        self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
@@ -890,7 +899,7 @@ impl Manager {
                             &managed.release_queue,
                             generation,
                             options,
-                            Arc::clone(&managed.metrics),
+                            self.metrics.clone(),
                         )
                         .await
                     }
@@ -907,7 +916,7 @@ impl Manager {
         if let Err(e) = &result {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
-        self.record_acquire_result(&managed, &result, started);
+        self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
@@ -967,7 +976,7 @@ impl Manager {
                     &managed.release_queue,
                     generation,
                     options,
-                    Arc::clone(&managed.metrics),
+                    self.metrics.clone(),
                 )
                 .await
             }
@@ -981,7 +990,7 @@ impl Manager {
         if let Err(e) = &result {
             trigger_recovery_on_failure(&managed.recovery_gate, e);
         }
-        self.record_acquire_result(&managed, &result, started);
+        self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
@@ -1136,7 +1145,9 @@ impl Manager {
         if !self.registry.remove(key) {
             return Err(Error::not_found(key));
         }
-        self.metrics.record_destroy();
+        if let Some(m) = &self.metrics {
+            m.record_destroy();
+        }
         let _ = self
             .event_tx
             .send(ResourceEvent::Removed { key: key.clone() });
@@ -1256,22 +1267,10 @@ impl Manager {
         &self.recovery_groups
     }
 
-    /// Returns a reference to the aggregate metrics counters.
-    pub fn metrics(&self) -> &ResourceMetrics {
-        &self.metrics
-    }
-
-    /// Returns per-resource metrics for the given key and scope.
-    ///
-    /// Returns `None` if no resource is registered under the given key
-    /// and scope combination.
-    pub fn resource_metrics(
-        &self,
-        key: &ResourceKey,
-        scope: &ScopeLevel,
-    ) -> Option<Arc<ResourceMetrics>> {
-        let managed = self.registry.get(key, scope)?;
-        Some(Arc::clone(managed.metrics()))
+    /// Returns a reference to the aggregate metrics counters, if a
+    /// metrics registry was configured.
+    pub fn metrics(&self) -> Option<&ResourceOpsMetrics> {
+        self.metrics.as_ref()
     }
 
     /// Returns the manager's cancellation token.
@@ -1301,7 +1300,7 @@ impl Manager {
             key: R::key(),
             phase: managed.status().phase,
             gate_state: managed.recovery_gate.as_ref().map(|g| g.state()),
-            metrics: managed.metrics.snapshot(),
+            metrics: self.metrics.as_ref().map(|m| m.snapshot()),
             generation: managed.generation(),
         })
     }
@@ -1318,26 +1317,27 @@ impl Manager {
         self.registry.get(key, scope)
     }
 
-    /// Records acquire success/failure in both per-resource and aggregate
-    /// metrics, and emits the corresponding [`ResourceEvent`].
+    /// Records acquire success/failure in aggregate metrics and emits
+    /// the corresponding [`ResourceEvent`].
     fn record_acquire_result<R: Resource>(
         &self,
-        managed: &ManagedResource<R>,
         result: &Result<crate::handle::ResourceHandle<R>, Error>,
         started: Instant,
     ) {
         match result {
             Ok(_) => {
-                self.metrics.record_acquire();
-                managed.metrics.record_acquire();
+                if let Some(m) = &self.metrics {
+                    m.record_acquire();
+                }
                 let _ = self.event_tx.send(ResourceEvent::AcquireSuccess {
                     key: R::key(),
                     duration: started.elapsed(),
                 });
             }
             Err(e) => {
-                self.metrics.record_acquire_error();
-                managed.metrics.record_acquire_error();
+                if let Some(m) = &self.metrics {
+                    m.record_acquire_error();
+                }
                 let _ = self.event_tx.send(ResourceEvent::AcquireFailed {
                     key: R::key(),
                     error: e.to_string(),

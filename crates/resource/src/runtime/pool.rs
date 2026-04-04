@@ -17,7 +17,7 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use crate::ctx::Ctx;
 use crate::error::Error;
 use crate::handle::ResourceHandle;
-use crate::metrics::ResourceMetrics;
+use crate::metrics::ResourceOpsMetrics;
 use crate::options::AcquireOptions;
 use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
@@ -228,7 +228,7 @@ where
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
         options: &AcquireOptions,
-        metrics: Arc<ResourceMetrics>,
+        metrics: Option<ResourceOpsMetrics>,
     ) -> Result<ResourceHandle<R>, Error> {
         // Acquire a semaphore permit first — this is the concurrency gate.
         // If idle instances exist their permits were already returned on
@@ -243,7 +243,7 @@ where
                 release_queue,
                 generation,
                 permit,
-                Arc::clone(&metrics),
+                metrics.clone(),
             )
             .await?
         {
@@ -299,7 +299,7 @@ where
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
         permit: OwnedSemaphorePermit,
-        metrics: Arc<ResourceMetrics>,
+        metrics: Option<ResourceOpsMetrics>,
     ) -> Result<IdleResult<R>, Error> {
         loop {
             let entry = {
@@ -446,7 +446,7 @@ where
         resource: R,
         release_queue: Arc<ReleaseQueue>,
         generation: u64,
-        metrics: Arc<ResourceMetrics>,
+        metrics: Option<ResourceOpsMetrics>,
     ) -> ResourceHandle<R> {
         let idle = self.idle.clone();
         let current_fp_ref = self.current_fingerprint.clone();
@@ -458,7 +458,9 @@ where
             TopologyTag::Pool,
             generation,
             move |returned_lease: R::Lease, tainted| {
-                metrics.record_release();
+                if let Some(m) = &metrics {
+                    m.record_release();
+                }
 
                 let runtime: R::Runtime = returned_lease.into();
                 // Track tainted returns in error_count so `Pooled::recycle`
@@ -514,7 +516,7 @@ where
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
         _options: &AcquireOptions,
-        metrics: Arc<ResourceMetrics>,
+        metrics: Option<ResourceOpsMetrics>,
     ) -> Result<ResourceHandle<R>, Error> {
         // Non-blocking semaphore attempt — fail immediately if pool is full.
         let permit = match self.semaphore.clone().try_acquire_owned() {
@@ -536,7 +538,7 @@ where
                 release_queue,
                 generation,
                 permit,
-                Arc::clone(&metrics),
+                metrics.clone(),
             )
             .await?
         {
@@ -978,7 +980,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
-                Arc::new(ResourceMetrics::new()),
+                None,
             )
             .await;
         assert!(handle.is_ok());
@@ -1019,7 +1021,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
-                Arc::new(ResourceMetrics::new()),
+                None,
             )
             .await
             .unwrap();
@@ -1037,7 +1039,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
-                Arc::new(ResourceMetrics::new()),
+                None,
             )
             .await;
         assert!(handle2.is_ok());
@@ -1073,7 +1075,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
-                Arc::new(ResourceMetrics::new()),
+                None,
             )
             .await
             .unwrap();
@@ -1094,7 +1096,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
-                Arc::new(ResourceMetrics::new()),
+                None,
             )
             .await;
         assert!(handle2.is_ok());
@@ -1130,7 +1132,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
-                Arc::new(ResourceMetrics::new()),
+                None,
             )
             .await
             .unwrap();
@@ -1168,7 +1170,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
-                Arc::new(ResourceMetrics::new()),
+                None,
             )
             .await;
         assert!(result.is_err());
@@ -1216,7 +1218,7 @@ mod tests {
                 &rq,
                 0,
                 &AcquireOptions::default(),
-                Arc::new(ResourceMetrics::new()),
+                None,
             )
             .await;
         let err = match result {

@@ -342,9 +342,7 @@ impl Manager {
 
     // Observability:
     pub fn subscribe_events(&self) -> broadcast::Receiver<ResourceEvent>;
-    pub fn metrics(&self) -> &ResourceMetrics;
-    pub fn resource_metrics(&self, key: &ResourceKey, scope: &ScopeLevel)
-        -> Option<Arc<ResourceMetrics>>;
+    pub fn metrics(&self) -> Option<&ResourceOpsMetrics>;
     pub fn recovery_groups(&self) -> &RecoveryGroupRegistry;
     pub fn cancel_token(&self) -> &CancellationToken;
     pub fn is_shutdown(&self) -> bool;
@@ -365,7 +363,8 @@ impl Manager {
 
 ```rust
 pub struct ManagerConfig {
-    pub release_queue_workers: usize,  // default: 2
+    pub release_queue_workers: usize,           // default: 2
+    pub metrics_registry: Option<Arc<MetricsRegistry>>,  // default: None
 }
 ```
 
@@ -725,22 +724,22 @@ Subscribe via `Manager::subscribe_events() -> broadcast::Receiver<ResourceEvent>
 
 ## Metrics
 
-### `ResourceMetrics` and `MetricsSnapshot`
+### `ResourceOpsMetrics` and `ResourceOpsSnapshot`
 
-Lock-free atomic counters. `Manager::metrics()` returns aggregate counters; `Manager::resource_metrics(key, scope)` returns per-resource counters.
+Lock-free atomic counters backed by a `MetricsRegistry`. `Manager::metrics()` returns aggregate counters if a `MetricsRegistry` was provided via `ManagerConfig`.
 
 ```rust
-impl ResourceMetrics {
-    pub fn new() -> Self;
+impl ResourceOpsMetrics {
+    pub fn new(registry: &MetricsRegistry) -> Self;
     pub fn record_acquire(&self);
     pub fn record_acquire_error(&self);
     pub fn record_release(&self);
     pub fn record_create(&self);
     pub fn record_destroy(&self);
-    pub fn snapshot(&self) -> MetricsSnapshot;
+    pub fn snapshot(&self) -> ResourceOpsSnapshot;
 }
 
-pub struct MetricsSnapshot {
+pub struct ResourceOpsSnapshot {
     pub acquire_total: u64,
     pub acquire_errors: u64,
     pub release_total: u64,
@@ -806,7 +805,7 @@ impl<R: Resource> ManagedResource<R> {
     pub fn generation(&self) -> u64;
     pub fn status(&self) -> Arc<ResourceStatus>;
     pub fn config(&self) -> Arc<R::Config>;
-    pub fn metrics(&self) -> &Arc<ResourceMetrics>;
+    pub fn metrics(&self) -> &Arc<ResourceOpsMetrics>;
 }
 ```
 

@@ -13,7 +13,7 @@ use tokio::time;
 use crate::ctx::Ctx;
 use crate::error::Error;
 use crate::handle::ResourceHandle;
-use crate::metrics::ResourceMetrics;
+use crate::metrics::ResourceOpsMetrics;
 use crate::options::AcquireOptions;
 use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
@@ -80,7 +80,7 @@ where
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
         options: &AcquireOptions,
-        metrics: Arc<ResourceMetrics>,
+        metrics: Option<ResourceOpsMetrics>,
     ) -> Result<ResourceHandle<R>, Error> {
         let timeout = options.remaining().unwrap_or(self.config.acquire_timeout);
         let permit =
@@ -114,7 +114,9 @@ where
             TopologyTag::Transport,
             generation,
             move |lease, tainted| {
-                metrics.record_release();
+                if let Some(m) = &metrics {
+                    m.record_release();
+                }
                 rq.submit(move || {
                     Box::pin(release_transport_session(
                         resource_clone,

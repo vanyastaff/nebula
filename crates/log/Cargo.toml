@@ -56,19 +56,15 @@ arc-swap = { workspace = true }
 parking_lot = { workspace = true }
 smallvec = { workspace = true }
 
-# Metrics (optional)
-metrics = { workspace = true, optional = true }
-
 [features]
 default = ["ansi", "async"]
 ansi = []
 async = ["tokio"]
 file = ["tracing-appender", "flate2"]
 log-compat = ["tracing-log"]
-observability = ["metrics"]
-telemetry = ["opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp", "tracing-opentelemetry", "observability"]
+telemetry = ["opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp", "tracing-opentelemetry"]
 sentry = ["dep:sentry", "sentry-tracing"]
-full = ["ansi", "async", "file", "log-compat", "telemetry", "sentry", "observability"]
+full = ["ansi", "async", "file", "log-compat", "telemetry", "sentry"]
 
 [dev-dependencies]
 anyhow = { workspace = true }
@@ -76,8 +72,6 @@ criterion = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 uuid = { workspace = true }
-# Temporarily disabled due to aws-lc-sys requiring cmake/NASM on Windows
-# metrics-exporter-prometheus = "0.15"
 
 [[example]]
 name = "sentry_test"

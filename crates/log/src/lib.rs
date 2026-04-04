@@ -69,7 +69,6 @@
 //! - `default`: `ansi`, `async`
 //! - `file`: file writer + rolling support
 //! - `log-compat`: bridge `log` crate events into `tracing`
-//! - `observability`: metrics helpers + hook APIs
 //! - `telemetry`: OpenTelemetry OTLP tracing
 //! - `sentry`: Sentry integration
 //! - `full`: enables all major capabilities
@@ -127,8 +126,7 @@ mod writer;
 #[cfg(any(feature = "telemetry", feature = "sentry"))]
 mod telemetry;
 
-// Metrics module (optional)
-#[cfg(feature = "observability")]
+// Metrics module (retained as empty placeholder — see nebula-telemetry/nebula-metrics)
 pub mod metrics;
 
 // Observability module
@@ -161,18 +159,11 @@ pub mod prelude {
 
     pub use tracing::{Span, field};
 
-    // Metrics (when observability feature is enabled)
-    #[cfg(feature = "observability")]
-    pub use crate::metrics::{counter, gauge, histogram, timed_block, timed_block_async};
-
     // Observability hooks and events
     pub use crate::observability::{
         LoggingHook, ObservabilityEvent, ObservabilityHook, OperationCompleted, OperationFailed,
         OperationStarted, OperationTracker, emit_event, register_hook,
     };
-
-    #[cfg(feature = "observability")]
-    pub use crate::observability::MetricsHook;
 }
 
 // Re-export tracing macros

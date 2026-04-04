@@ -1,26 +1,30 @@
-//! Atomic counters for resource operation tracking.
+//! Registry-backed counters for resource operation tracking.
 //!
-//! [`ResourceMetrics`] provides lock-free counters for acquire, release,
-//! create, and destroy operations. Use [`snapshot()`](ResourceMetrics::snapshot)
-//! to capture a consistent point-in-time view.
+//! [`ResourceOpsMetrics`] wraps five [`Counter`]s from a shared
+//! [`MetricsRegistry`], replacing the previous hand-rolled atomic
+//! counters. Use [`snapshot()`](ResourceOpsMetrics::snapshot) to
+//! capture a point-in-time view as [`ResourceOpsSnapshot`].
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use nebula_metrics::naming::{
+    NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL, NEBULA_RESOURCE_ACQUIRE_TOTAL,
+    NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL,
+};
+use nebula_telemetry::metrics::{Counter, MetricsRegistry};
 
-/// Atomic counters for resource operations.
+/// Registry-backed counters for resource operations.
 ///
-/// All counters use [`Relaxed`](std::sync::atomic::Ordering::Relaxed) ordering.
-/// These are advisory monotonic counters — there is no ordering guarantee
-/// between individual fields in a [`snapshot`](Self::snapshot), and reads may
-/// observe slightly stale values on weakly-ordered architectures. This is
-/// intentional: the overhead of stronger ordering is not justified for
-/// fire-and-forget telemetry counters.
+/// Each counter is a [`Clone`]-cheap handle into the shared
+/// [`MetricsRegistry`]. Multiple clones of the same
+/// `ResourceOpsMetrics` increment the same underlying atomic.
 ///
 /// # Examples
 ///
 /// ```
-/// use nebula_resource::metrics::ResourceMetrics;
+/// use nebula_telemetry::metrics::MetricsRegistry;
+/// use nebula_resource::metrics::ResourceOpsMetrics;
 ///
-/// let metrics = ResourceMetrics::new();
+/// let registry = MetricsRegistry::new();
+/// let metrics = ResourceOpsMetrics::new(&registry);
 /// metrics.record_acquire();
 /// metrics.record_acquire();
 /// metrics.record_acquire_error();
@@ -29,49 +33,54 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// assert_eq!(snap.acquire_total, 2);
 /// assert_eq!(snap.acquire_errors, 1);
 /// ```
-pub struct ResourceMetrics {
-    acquire_total: AtomicU64,
-    acquire_errors: AtomicU64,
-    release_total: AtomicU64,
-    create_total: AtomicU64,
-    destroy_total: AtomicU64,
+#[derive(Debug, Clone)]
+pub struct ResourceOpsMetrics {
+    acquire_total: Counter,
+    acquire_errors: Counter,
+    release_total: Counter,
+    create_total: Counter,
+    destroy_total: Counter,
 }
 
-impl ResourceMetrics {
-    /// Creates a new metrics instance with all counters at zero.
-    pub fn new() -> Self {
+impl ResourceOpsMetrics {
+    /// Creates a new metrics instance backed by the given registry.
+    ///
+    /// Counters are registered (or retrieved if already present) using the
+    /// standard naming constants from `nebula-metrics`.
+    #[must_use]
+    pub fn new(registry: &MetricsRegistry) -> Self {
         Self {
-            acquire_total: AtomicU64::new(0),
-            acquire_errors: AtomicU64::new(0),
-            release_total: AtomicU64::new(0),
-            create_total: AtomicU64::new(0),
-            destroy_total: AtomicU64::new(0),
+            acquire_total: registry.counter(NEBULA_RESOURCE_ACQUIRE_TOTAL),
+            acquire_errors: registry.counter(NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL),
+            release_total: registry.counter(NEBULA_RESOURCE_RELEASE_TOTAL),
+            create_total: registry.counter(NEBULA_RESOURCE_CREATE_TOTAL),
+            destroy_total: registry.counter(NEBULA_RESOURCE_DESTROY_TOTAL),
         }
     }
 
     /// Records a successful acquire.
     pub fn record_acquire(&self) {
-        self.acquire_total.fetch_add(1, Ordering::Relaxed);
+        self.acquire_total.inc();
     }
 
     /// Records a failed acquire attempt.
     pub fn record_acquire_error(&self) {
-        self.acquire_errors.fetch_add(1, Ordering::Relaxed);
+        self.acquire_errors.inc();
     }
 
     /// Records a release (handle drop).
     pub fn record_release(&self) {
-        self.release_total.fetch_add(1, Ordering::Relaxed);
+        self.release_total.inc();
     }
 
     /// Records a new resource instance creation.
     pub fn record_create(&self) {
-        self.create_total.fetch_add(1, Ordering::Relaxed);
+        self.create_total.inc();
     }
 
     /// Records a resource instance destruction.
     pub fn record_destroy(&self) {
-        self.destroy_total.fetch_add(1, Ordering::Relaxed);
+        self.destroy_total.inc();
     }
 
     /// Captures a point-in-time snapshot of all counters.
@@ -80,39 +89,21 @@ impl ResourceMetrics {
     /// ordering. The snapshot is not atomic across all five fields — concurrent
     /// increments may be observed in any combination. This is acceptable for
     /// best-effort telemetry.
-    pub fn snapshot(&self) -> MetricsSnapshot {
-        MetricsSnapshot {
-            acquire_total: self.acquire_total.load(Ordering::Relaxed),
-            acquire_errors: self.acquire_errors.load(Ordering::Relaxed),
-            release_total: self.release_total.load(Ordering::Relaxed),
-            create_total: self.create_total.load(Ordering::Relaxed),
-            destroy_total: self.destroy_total.load(Ordering::Relaxed),
+    #[must_use]
+    pub fn snapshot(&self) -> ResourceOpsSnapshot {
+        ResourceOpsSnapshot {
+            acquire_total: self.acquire_total.get(),
+            acquire_errors: self.acquire_errors.get(),
+            release_total: self.release_total.get(),
+            create_total: self.create_total.get(),
+            destroy_total: self.destroy_total.get(),
         }
     }
 }
 
-impl Default for ResourceMetrics {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Debug for ResourceMetrics {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let snap = self.snapshot();
-        f.debug_struct("ResourceMetrics")
-            .field("acquire_total", &snap.acquire_total)
-            .field("acquire_errors", &snap.acquire_errors)
-            .field("release_total", &snap.release_total)
-            .field("create_total", &snap.create_total)
-            .field("destroy_total", &snap.destroy_total)
-            .finish()
-    }
-}
-
-/// Point-in-time snapshot of resource metrics counters.
+/// Point-in-time snapshot of resource operation counters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MetricsSnapshot {
+pub struct ResourceOpsSnapshot {
     /// Total successful acquires.
     pub acquire_total: u64,
     /// Total failed acquire attempts.
@@ -123,4 +114,67 @@ pub struct MetricsSnapshot {
     pub create_total: u64,
     /// Total resource instances destroyed.
     pub destroy_total: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counters_start_at_zero() {
+        let registry = MetricsRegistry::new();
+        let metrics = ResourceOpsMetrics::new(&registry);
+        let snap = metrics.snapshot();
+        assert_eq!(snap.acquire_total, 0);
+        assert_eq!(snap.acquire_errors, 0);
+        assert_eq!(snap.release_total, 0);
+        assert_eq!(snap.create_total, 0);
+        assert_eq!(snap.destroy_total, 0);
+    }
+
+    #[test]
+    fn record_and_snapshot() {
+        let registry = MetricsRegistry::new();
+        let metrics = ResourceOpsMetrics::new(&registry);
+        metrics.record_acquire();
+        metrics.record_acquire();
+        metrics.record_acquire_error();
+        metrics.record_release();
+        metrics.record_create();
+        metrics.record_create();
+        metrics.record_create();
+        metrics.record_destroy();
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.acquire_total, 2);
+        assert_eq!(snap.acquire_errors, 1);
+        assert_eq!(snap.release_total, 1);
+        assert_eq!(snap.create_total, 3);
+        assert_eq!(snap.destroy_total, 1);
+    }
+
+    #[test]
+    fn clones_share_counters() {
+        let registry = MetricsRegistry::new();
+        let m1 = ResourceOpsMetrics::new(&registry);
+        let m2 = m1.clone();
+
+        m1.record_acquire();
+        m2.record_acquire();
+
+        assert_eq!(m1.snapshot().acquire_total, 2);
+        assert_eq!(m2.snapshot().acquire_total, 2);
+    }
+
+    #[test]
+    fn backed_by_registry() {
+        let registry = MetricsRegistry::new();
+        let metrics = ResourceOpsMetrics::new(&registry);
+        metrics.record_create();
+        metrics.record_create();
+
+        // Read directly from registry to verify shared backing.
+        let counter = registry.counter(NEBULA_RESOURCE_CREATE_TOTAL);
+        assert_eq!(counter.get(), 2);
+    }
 }

@@ -262,59 +262,6 @@ impl ObservabilityHook for LoggingHook {
     }
 }
 
-/// Built-in hook that records events as metrics
-///
-/// This hook increments a counter for each event type.
-/// Requires the `observability` feature flag.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use nebula_log::observability::{MetricsHook, register_hook};
-/// use std::sync::Arc;
-///
-/// let hook = MetricsHook::new();
-/// register_hook(Arc::new(hook));
-/// ```
-#[cfg(feature = "observability")]
-#[derive(Debug, Default)]
-pub struct MetricsHook;
-
-#[cfg(feature = "observability")]
-impl MetricsHook {
-    /// Create a new metrics hook
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[cfg(feature = "observability")]
-impl ObservabilityHook for MetricsHook {
-    fn on_event(&self, event: &dyn ObservabilityEvent) {
-        use super::semantic::EventKind;
-
-        // Prefer typed matching via kind(), fall back to string name for custom events
-        match event.kind() {
-            Some(EventKind::OperationStarted) => {
-                crate::metrics::counter!("nebula.events.operation_started").increment(1);
-            }
-            Some(EventKind::OperationCompleted) => {
-                crate::metrics::counter!("nebula.events.operation_completed").increment(1);
-            }
-            Some(EventKind::OperationFailed) => {
-                crate::metrics::counter!("nebula.events.operation_failed").increment(1);
-            }
-            None => {
-                let event_name = event.name();
-                let mut metric_name = String::with_capacity(15 + event_name.len());
-                metric_name.push_str("nebula.events.");
-                metric_name.push_str(event_name);
-                crate::metrics::counter!(metric_name).increment(1);
-            }
-        }
-    }
-}
-
 /// Resource-aware hook that can access node-scoped resources
 ///
 /// This trait extends [`ObservabilityHook`] to provide access to the current
@@ -422,17 +369,6 @@ mod tests {
     #[test]
     fn test_logging_hook() {
         let hook = LoggingHook::new(tracing::Level::INFO);
-        let event = TestEvent {
-            name: "test".to_string(),
-        };
-        // Should not panic
-        hook.on_event(&event);
-    }
-
-    #[cfg(feature = "observability")]
-    #[test]
-    fn test_metrics_hook() {
-        let hook = MetricsHook::new();
         let event = TestEvent {
             name: "test".to_string(),
         };
