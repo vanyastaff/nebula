@@ -124,31 +124,6 @@ pub const NEBULA_CACHE_EVICTIONS_TOTAL: &str = "nebula_cache_evictions_total";
 /// Gauge: current cache size (number of entries).
 pub const NEBULA_CACHE_SIZE: &str = "nebula_cache_size";
 
-// ---------------------------------------------------------------------------
-// Legacy names (for backward compatibility during migration)
-// ---------------------------------------------------------------------------
-
-/// Legacy: use [`NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL`].
-pub const LEGACY_EXECUTIONS_STARTED_TOTAL: &str = "executions_started_total";
-
-/// Legacy: use [`NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL`].
-pub const LEGACY_EXECUTIONS_COMPLETED_TOTAL: &str = "executions_completed_total";
-
-/// Legacy: use [`NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL`].
-pub const LEGACY_EXECUTIONS_FAILED_TOTAL: &str = "executions_failed_total";
-
-/// Legacy: use [`NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS`].
-pub const LEGACY_EXECUTION_DURATION_SECONDS: &str = "execution_duration_seconds";
-
-/// Legacy: use [`NEBULA_ACTION_EXECUTIONS_TOTAL`].
-pub const LEGACY_ACTIONS_EXECUTED_TOTAL: &str = "actions_executed_total";
-
-/// Legacy: use [`NEBULA_ACTION_FAILURES_TOTAL`].
-pub const LEGACY_ACTIONS_FAILED_TOTAL: &str = "actions_failed_total";
-
-/// Legacy: use [`NEBULA_ACTION_DURATION_SECONDS`].
-pub const LEGACY_ACTION_DURATION_SECONDS: &str = "action_duration_seconds";
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
