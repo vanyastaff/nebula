@@ -25,7 +25,6 @@ use nebula_resource::Manager;
 use nebula_runtime::registry::ActionRegistry;
 use nebula_runtime::{ActionExecutor, InProcessSandbox};
 use nebula_runtime::{ActionRuntime, DataPassingPolicy};
-use nebula_telemetry::event::EventBus;
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{NodeDefinition, WorkflowConfig, WorkflowDefinition};
 
@@ -108,17 +107,15 @@ async fn action_acquires_resource_through_engine() {
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
-    let event_bus = EventBus::new(128);
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(ActionRuntime::new(
         registry,
         sandbox,
         DataPassingPolicy::default(),
-        event_bus.clone(),
         metrics.clone(),
     ));
 
-    let engine = WorkflowEngine::new(runtime, event_bus, metrics).with_resource_manager(manager);
+    let engine = WorkflowEngine::new(runtime, metrics).with_resource_manager(manager);
 
     // 4. Build and execute a single-node workflow
     let node = NodeId::new();
@@ -155,18 +152,15 @@ async fn full_resource_lifecycle_with_shutdown() {
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
-    let event_bus = EventBus::new(128);
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(ActionRuntime::new(
         registry,
         sandbox,
         DataPassingPolicy::default(),
-        event_bus.clone(),
         metrics.clone(),
     ));
 
-    let engine =
-        WorkflowEngine::new(runtime, event_bus, metrics).with_resource_manager(manager.clone());
+    let engine = WorkflowEngine::new(runtime, metrics).with_resource_manager(manager.clone());
 
     // 4. Execute a single-node workflow
     let node = NodeId::new();
@@ -207,17 +201,15 @@ async fn action_resource_fails_without_manager() {
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
-    let event_bus = EventBus::new(128);
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(ActionRuntime::new(
         registry,
         sandbox,
         DataPassingPolicy::default(),
-        event_bus.clone(),
         metrics.clone(),
     ));
 
-    let engine = WorkflowEngine::new(runtime, event_bus, metrics);
+    let engine = WorkflowEngine::new(runtime, metrics);
     // No .with_resource_manager() — intentionally omitted
 
     let node = NodeId::new();

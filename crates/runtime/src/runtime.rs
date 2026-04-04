@@ -1,7 +1,7 @@
 //! Action runtime -- the main execution orchestrator.
 //!
 //! Resolves actions from the registry, executes them through the sandbox,
-//! enforces data limits, and emits telemetry events.
+//! enforces data limits, and records metrics.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -12,8 +12,6 @@ use nebula_action::result::ActionResult;
 use nebula_metrics::naming::{
     NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,
 };
-use nebula_telemetry::TelemetryService;
-use nebula_telemetry::event::{EventBus, ExecutionEvent};
 use nebula_telemetry::metrics::MetricsRegistry;
 
 use crate::data_policy::{DataPassingPolicy, LargeDataStrategy};
@@ -36,7 +34,6 @@ pub struct ActionRuntime {
     #[allow(dead_code)] // reserved for sandboxed execution
     sandbox: Arc<dyn SandboxRunner>,
     data_policy: DataPassingPolicy,
-    event_bus: EventBus,
     metrics: MetricsRegistry,
 }
 
@@ -46,36 +43,14 @@ impl ActionRuntime {
         registry: Arc<ActionRegistry>,
         sandbox: Arc<dyn SandboxRunner>,
         data_policy: DataPassingPolicy,
-        event_bus: EventBus,
         metrics: MetricsRegistry,
     ) -> Self {
         Self {
             registry,
             sandbox,
             data_policy,
-            event_bus,
             metrics,
         }
-    }
-
-    /// Create a new runtime from a telemetry service.
-    ///
-    /// Uses the same event bus and metrics registry as the service for
-    /// consistent observability with the engine.
-    #[must_use]
-    pub fn with_telemetry(
-        registry: Arc<ActionRegistry>,
-        sandbox: Arc<dyn SandboxRunner>,
-        data_policy: DataPassingPolicy,
-        telemetry: Arc<dyn TelemetryService>,
-    ) -> Self {
-        Self::new(
-            registry,
-            sandbox,
-            data_policy,
-            telemetry.event_bus().clone(),
-            telemetry.metrics().clone(),
-        )
     }
 
     /// Access the action registry.
@@ -106,14 +81,6 @@ impl ActionRuntime {
         context: ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let handler = self.registry.get(action_key)?;
-        let node_id = context.node_id.to_string();
-        let execution_id = context.execution_id.to_string();
-
-        self.event_bus.emit(ExecutionEvent::NodeStarted {
-            execution_id: execution_id.clone(),
-            node_id: node_id.clone(),
-            trace_context: None,
-        });
 
         let started = Instant::now();
         let action_counter = self.metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL);
@@ -130,31 +97,12 @@ impl ActionRuntime {
         match result {
             Ok(action_result) => {
                 // Enforce data limits on the primary output value.
-                self.enforce_data_limit(
-                    action_key,
-                    &action_result,
-                    &error_counter,
-                    &execution_id,
-                    &node_id,
-                )?;
-
-                self.event_bus.emit(ExecutionEvent::NodeCompleted {
-                    execution_id,
-                    node_id,
-                    duration: elapsed,
-                    trace_context: None,
-                });
+                self.enforce_data_limit(action_key, &action_result, &error_counter)?;
 
                 Ok(action_result)
             }
             Err(action_err) => {
                 error_counter.inc();
-                self.event_bus.emit(ExecutionEvent::NodeFailed {
-                    execution_id,
-                    node_id,
-                    error: action_err.to_string(),
-                    trace_context: None,
-                });
                 Err(RuntimeError::ActionError(action_err))
             }
         }
@@ -169,8 +117,6 @@ impl ActionRuntime {
         action_key: &str,
         action_result: &ActionResult<serde_json::Value>,
         error_counter: &nebula_telemetry::metrics::Counter,
-        execution_id: &str,
-        node_id: &str,
     ) -> Result<(), RuntimeError> {
         let output = match primary_output(action_result) {
             Some(o) => o,
@@ -183,12 +129,6 @@ impl ActionRuntime {
         };
 
         error_counter.inc();
-        self.event_bus.emit(ExecutionEvent::NodeFailed {
-            execution_id: execution_id.to_owned(),
-            node_id: node_id.to_owned(),
-            error: format!("data limit exceeded: {actual} > {limit}"),
-            trace_context: None,
-        });
 
         match self.data_policy.large_data_strategy {
             LargeDataStrategy::Reject => Err(RuntimeError::DataLimitExceeded {
@@ -298,16 +238,9 @@ mod tests {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
-        let event_bus = EventBus::new(64);
         let metrics = MetricsRegistry::new();
 
-        ActionRuntime::new(
-            registry,
-            sandbox,
-            DataPassingPolicy::default(),
-            event_bus,
-            metrics,
-        )
+        ActionRuntime::new(registry, sandbox, DataPassingPolicy::default(), metrics)
     }
 
     #[tokio::test]
@@ -367,7 +300,6 @@ mod tests {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
-        let event_bus = EventBus::new(64);
         let metrics = MetricsRegistry::new();
 
         let rt = ActionRuntime::new(
@@ -377,7 +309,6 @@ mod tests {
                 max_node_output_bytes: 5, // very small
                 ..Default::default()
             },
-            event_bus,
             metrics,
         );
 
@@ -390,7 +321,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn telemetry_events_emitted() {
+    async fn metrics_recorded_on_execution() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
             meta: ActionMetadata::new(action_key!("test.tele"), "Tele", "test"),
@@ -400,28 +331,18 @@ mod tests {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
-        let event_bus = EventBus::new(64);
         let metrics = MetricsRegistry::new();
-        let mut sub = event_bus.subscribe();
 
         let rt = ActionRuntime::new(
             registry,
             sandbox,
             DataPassingPolicy::default(),
-            event_bus,
             metrics.clone(),
         );
 
         rt.execute_action("test.tele", serde_json::json!("ok"), test_context())
             .await
             .unwrap();
-
-        // Should have emitted NodeStarted and NodeCompleted.
-        let event1 = sub.try_recv().expect("should get NodeStarted");
-        assert!(matches!(event1, ExecutionEvent::NodeStarted { .. }));
-
-        let event2 = sub.try_recv().expect("should get NodeCompleted");
-        assert!(matches!(event2, ExecutionEvent::NodeCompleted { .. }));
 
         // Metrics should be recorded.
         assert_eq!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get(), 1);

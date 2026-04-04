@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 keywords.workspace = true
 authors.workspace = true
-description = "Event bus, metrics, and telemetry for the Nebula workflow engine"
+description = "In-memory metrics primitives for the Nebula workflow engine"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -13,15 +13,7 @@ documentation.workspace = true
 
 [dependencies]
 nebula-error = { workspace = true, features = ["derive"] }
-nebula-eventbus = { path = "../eventbus" }
-rand = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 tracing = { workspace = true }
 dashmap = { workspace = true }
 lasso = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

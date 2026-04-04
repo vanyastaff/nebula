@@ -1,33 +1,27 @@
 # nebula-telemetry
-Execution event bus, TelemetryService trait, W3C trace context, and metrics primitives.
+In-memory metrics primitives for the Nebula workflow engine.
 
 ## Module Structure
-- `trace` — W3C TraceContext, TraceId, SpanId (distributed tracing identity)
-- `event` — EventBus wrapper, ExecutionEvent, eventbus re-exports (EventFilter, SubscriptionScope, etc.)
-- `metrics` — Counter, Gauge, Histogram, MetricsRegistry (in-memory primitives)
+- `metrics` — Counter, Gauge, Histogram, MetricsRegistry (in-memory, lock-free via atomics)
 - `labels` — LabelInterner, LabelSet, MetricKey (lasso-backed string interning)
-- `service` — TelemetryService trait, NoopTelemetry, ProductionTelemetry
 - `error` — TelemetryError (Io)
 
 ## Invariants
-- Events are **projections**, not the source of truth. The execution store (nebula-storage) is the source of truth.
-- `NoopTelemetry` must be used in unit tests. `ProductionTelemetry` requires a running Tokio runtime and event bus.
-- `EventBus` and `MetricsRegistry` are cheaply cloneable (Arc-backed internally). Callers should `.clone()` from the TelemetryService reference — no `_arc` methods.
+- Pure metrics crate — no events, no tracing, no service traits.
+- `MetricsRegistry` is cheaply cloneable (Arc-backed internally).
+- Metric names must use `nebula_` prefix — enforced by convention, not by code.
 
 ## Key Decisions
-- `TelemetryService` trait has 2 methods: `event_bus()`, `metrics()`. Inject via DI.
-- `ExecutionEvent` = typed execution lifecycle events (started, completed, failed, node transitions).
-- `TraceContext` = W3C trace context (trace ID + span ID + sampling flag) for distributed tracing.
 - `LabelInterner` / `LabelSet` = `lasso`-backed string interning for metric label keys/values (zero-copy dimensions).
 - In-memory primitives (`Counter`, `Gauge`, `Histogram`, `MetricsRegistry`) live here; nebula-metrics adds naming + export.
-- Recorder module removed (2026-04-04): had zero external consumers. If resource call recording is needed later, design it at the resource layer.
+- Stripped to pure metrics (2026-04-04): removed ExecutionEvent, EventBus wrapper, TelemetryService trait, TraceContext, prelude. These were premature — engine/runtime are blocked and will redefine events when stabilized.
+- Dependencies reduced from 11 to 5: nebula-error, thiserror, tracing, dashmap, lasso.
 
 ## Traps
-- `nebula_telemetry::EventBus` is a wrapper around `nebula_eventbus::EventBus<ExecutionEvent>`. Don't create a raw `nebula_eventbus::EventBus<ExecutionEvent>` directly — use `nebula_telemetry::EventBus`.
-- Metric names must use `nebula_` prefix — enforced by convention, not by code.
-- Eventbus types (EventFilter, SubscriptionScope, etc.) are re-exported from `nebula_telemetry::event`, not the crate root.
+- `tracing` dep is kept because `Histogram::with_buckets` logs a debug message on creation.
+- Engine and runtime no longer have EventBus fields — they only record metrics. Execution events will be redesigned when engine stabilizes.
 
 ## Relations
-- Wraps nebula-eventbus. Used by nebula-metrics (re-exports Counter/Gauge/Histogram).
+- Used by nebula-metrics (naming conventions + adapter). Used by nebula-runtime and nebula-engine for recording metrics.
 
-<!-- reviewed: 2026-04-04 — removed recorder module, async-trait dep, nebula-core dep -->
+<!-- reviewed: 2026-04-04 — stripped to pure metrics primitives crate -->

@@ -10,6 +10,7 @@ Action execution layer — ActionRegistry, InProcessSandbox, data policies, and 
 - `DataPassingPolicy` / `LargeDataStrategy` enforce output size limits — oversized outputs can be redirected to blob storage.
 - `MemoryQueue` / `TaskQueue` for async task dispatch. `BoundedStreamBuffer` / `PushOutcome` for streaming backpressure.
 - `SandboxedContext` wraps `ActionContext` with the sandbox boundary — implements the `Context` trait.
+- `ActionRuntime::new(registry, sandbox, data_policy, metrics)` — no EventBus. Execution events removed (2026-04-04); runtime records metrics only.
 
 ## Traps
 - Phase 3 will add OS-process sandbox. When that happens, `InProcessSandbox` → `SandboxRunner` trait split is planned. Don't tightly couple to `InProcessSandbox` concrete type.

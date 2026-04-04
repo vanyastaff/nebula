@@ -26,9 +26,7 @@ use nebula_metrics::naming::{
 use nebula_runtime::registry::ActionRegistry;
 use nebula_runtime::{ActionExecutor, InProcessSandbox};
 use nebula_runtime::{ActionRuntime, DataPassingPolicy};
-use nebula_telemetry::event::EventBus;
 use nebula_telemetry::metrics::MetricsRegistry;
-use nebula_telemetry::{NoopTelemetry, TelemetryService};
 use nebula_workflow::{Connection, NodeDefinition, WorkflowConfig, WorkflowDefinition};
 
 // ---------------------------------------------------------------------------
@@ -184,31 +182,27 @@ fn make_workflow(nodes: Vec<NodeDefinition>, connections: Vec<Connection>) -> Wo
     }
 }
 
-fn make_engine(registry: Arc<ActionRegistry>) -> (WorkflowEngine, EventBus, MetricsRegistry) {
+fn make_engine(registry: Arc<ActionRegistry>) -> (WorkflowEngine, MetricsRegistry) {
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
-    let event_bus = EventBus::new(128);
     let metrics = MetricsRegistry::new();
 
     let runtime = Arc::new(ActionRuntime::new(
         registry,
         sandbox,
         DataPassingPolicy::default(),
-        event_bus.clone(),
         metrics.clone(),
     ));
 
-    let engine = WorkflowEngine::new(runtime, event_bus.clone(), metrics.clone());
-    (engine, event_bus, metrics)
+    let engine = WorkflowEngine::new(runtime, metrics.clone());
+    (engine, metrics)
 }
 
-/// Engine and runtime built from a single TelemetryService share the same bus and metrics.
+/// Engine and runtime share the same metrics registry.
 #[tokio::test]
-async fn engine_with_telemetry_service_wires_bus_and_metrics() {
-    let telemetry: Arc<dyn TelemetryService> = NoopTelemetry::arc();
-    let _event_bus = telemetry.event_bus().clone();
-    let metrics = telemetry.metrics().clone();
+async fn engine_and_runtime_share_metrics_registry() {
+    let metrics = MetricsRegistry::new();
 
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(EchoHandler {
@@ -219,13 +213,13 @@ async fn engine_with_telemetry_service_wires_bus_and_metrics() {
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
 
-    let runtime = Arc::new(ActionRuntime::with_telemetry(
+    let runtime = Arc::new(ActionRuntime::new(
         registry,
         sandbox,
         DataPassingPolicy::default(),
-        telemetry.clone(),
+        metrics.clone(),
     ));
-    let engine = WorkflowEngine::with_telemetry(runtime, telemetry);
+    let engine = WorkflowEngine::new(runtime, metrics.clone());
 
     let n = NodeId::new();
     let wf = make_workflow(vec![NodeDefinition::new(n, "echo", "echo")], vec![]);
@@ -235,7 +229,6 @@ async fn engine_with_telemetry_service_wires_bus_and_metrics() {
         .await
         .unwrap();
 
-    // Metrics are updated regardless of subscribers; bus only counts delivered events.
     assert!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get() >= 1);
 }
 
@@ -260,7 +253,7 @@ async fn linear_pipeline_data_flows_through() {
         meta: meta(action_key!("double")),
     }));
 
-    let (engine, _, _) = make_engine(registry);
+    let (engine, _) = make_engine(registry);
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -297,7 +290,7 @@ async fn fan_out_parallel_execution() {
         meta: meta(action_key!("add10")),
     }));
 
-    let (engine, _, _) = make_engine(registry);
+    let (engine, _) = make_engine(registry);
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -337,7 +330,7 @@ async fn diamond_merge_receives_combined_outputs() {
         meta: meta(action_key!("add10")),
     }));
 
-    let (engine, _, _) = make_engine(registry);
+    let (engine, _) = make_engine(registry);
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -389,7 +382,7 @@ async fn error_propagation_stops_downstream() {
         meta: meta(action_key!("fail")),
     }));
 
-    let (engine, _, _) = make_engine(registry);
+    let (engine, _) = make_engine(registry);
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -435,7 +428,7 @@ async fn cancellation_via_sibling_failure() {
         meta: meta(action_key!("echo")),
     }));
 
-    let (engine, _, _) = make_engine(registry);
+    let (engine, _) = make_engine(registry);
 
     // Entry → [Slow, Fail] → Downstream
     // Entry runs first, then Slow and Fail run in parallel,
@@ -476,17 +469,15 @@ async fn cancellation_via_sibling_failure() {
     assert!(result.node_output(downstream).is_none());
 }
 
-/// Verify telemetry events cover the full lifecycle.
+/// Verify metrics cover the full lifecycle.
 #[tokio::test]
-async fn telemetry_covers_full_lifecycle() {
+async fn metrics_cover_full_lifecycle() {
     let registry = Arc::new(ActionRegistry::new());
     registry.register(Arc::new(EchoHandler {
         meta: meta(action_key!("echo")),
     }));
 
-    let (engine, event_bus, metrics) = make_engine(registry);
-
-    let mut sub = event_bus.subscribe();
+    let (engine, metrics) = make_engine(registry);
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -504,21 +495,6 @@ async fn telemetry_covers_full_lifecycle() {
         .unwrap();
 
     assert!(result.is_success());
-
-    // Collect all events
-    let mut events = Vec::new();
-    while let Some(event) = sub.try_recv() {
-        events.push(event);
-    }
-
-    // Should have: execution started, node_a started, node_a completed,
-    // node_b started, node_b completed, execution completed
-    // (runtime emits node events, engine emits execution events)
-    assert!(
-        events.len() >= 6,
-        "expected >= 6 events, got {}",
-        events.len()
-    );
 
     // Metrics should reflect the execution
     assert!(
@@ -547,7 +523,7 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
         count: counter.clone(),
     }));
 
-    let (engine, _, _) = make_engine(registry);
+    let (engine, _) = make_engine(registry);
 
     // Create 8 independent nodes (all entry nodes, no connections)
     let nodes: Vec<NodeDefinition> = (0..8)
@@ -582,7 +558,7 @@ async fn deep_chain_propagates_outputs() {
         meta: meta(action_key!("double")),
     }));
 
-    let (engine, _, _) = make_engine(registry);
+    let (engine, _) = make_engine(registry);
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -622,7 +598,7 @@ async fn metrics_accurate_on_failure() {
         meta: meta(action_key!("fail")),
     }));
 
-    let (engine, _, metrics) = make_engine(registry);
+    let (engine, metrics) = make_engine(registry);
 
     let a = NodeId::new();
     let wf = make_workflow(vec![NodeDefinition::new(a, "fail-node", "fail")], vec![]);

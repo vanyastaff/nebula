@@ -24,8 +24,6 @@ use nebula_metrics::naming::{
     NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
 };
 use nebula_runtime::ActionRuntime;
-use nebula_telemetry::TelemetryService;
-use nebula_telemetry::event::{EventBus, ExecutionEvent};
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{
     Connection, DependencyGraph, EdgeCondition, ErrorMatcher, NodeState, ResultMatcher,
@@ -51,10 +49,9 @@ use crate::result::ExecutionResult;
 /// 3. Evaluating edge conditions to determine which successors to activate
 /// 4. Resolving each node's input from activated predecessor outputs
 /// 5. Delegating action execution to the [`ActionRuntime`]
-/// 6. Tracking execution state and emitting telemetry
+/// 6. Tracking execution state and recording metrics
 pub struct WorkflowEngine {
     runtime: Arc<ActionRuntime>,
-    event_bus: EventBus,
     metrics: MetricsRegistry,
     /// Node registry for node-level metadata and versioning.
     plugin_registry: PluginRegistry,
@@ -69,33 +66,16 @@ pub struct WorkflowEngine {
 
 impl WorkflowEngine {
     /// Create a new engine with the given components.
-    pub fn new(runtime: Arc<ActionRuntime>, event_bus: EventBus, metrics: MetricsRegistry) -> Self {
+    pub fn new(runtime: Arc<ActionRuntime>, metrics: MetricsRegistry) -> Self {
         let expression_engine = Arc::new(ExpressionEngine::with_cache_size(1024));
         Self {
             runtime,
-            event_bus,
             metrics,
             plugin_registry: PluginRegistry::new(),
             resolver: ParamResolver::new(expression_engine.clone()),
             expression_engine,
             resource_manager: None,
         }
-    }
-
-    /// Create a new engine from a telemetry service.
-    ///
-    /// Uses the same event bus and metrics registry as the service so that
-    /// engine and runtime share one telemetry backend.
-    #[must_use]
-    pub fn with_telemetry(
-        runtime: Arc<ActionRuntime>,
-        telemetry: Arc<dyn TelemetryService>,
-    ) -> Self {
-        Self::new(
-            runtime,
-            telemetry.event_bus().clone(),
-            telemetry.metrics().clone(),
-        )
     }
 
     /// Access the node registry.
@@ -149,12 +129,7 @@ impl WorkflowEngine {
         // 5. Create cancellation token
         let cancel_token = CancellationToken::new();
 
-        // 6. Emit start event
-        self.event_bus.emit(ExecutionEvent::Started {
-            execution_id: execution_id.to_string(),
-            workflow_id: workflow.id.to_string(),
-            trace_context: None,
-        });
+        // 6. Record start metric
         self.metrics
             .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
             .inc();
@@ -455,44 +430,24 @@ impl WorkflowEngine {
         true
     }
 
-    /// Emit the final execution event and record metrics.
+    /// Record final execution metrics.
     fn emit_final_event(
         &self,
-        execution_id: ExecutionId,
+        _execution_id: ExecutionId,
         status: ExecutionStatus,
         elapsed: std::time::Duration,
-        failed_node: &Option<(NodeId, String)>,
+        _failed_node: &Option<(NodeId, String)>,
     ) {
         match status {
             ExecutionStatus::Completed => {
-                self.event_bus.emit(ExecutionEvent::Completed {
-                    execution_id: execution_id.to_string(),
-                    duration: elapsed,
-                    trace_context: None,
-                });
                 self.metrics
                     .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
                     .inc();
             }
             ExecutionStatus::Failed => {
-                let error_msg = failed_node
-                    .as_ref()
-                    .map(|(_, e)| e.clone())
-                    .unwrap_or_default();
-                self.event_bus.emit(ExecutionEvent::Failed {
-                    execution_id: execution_id.to_string(),
-                    error: error_msg,
-                    trace_context: None,
-                });
                 self.metrics
                     .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
                     .inc();
-            }
-            ExecutionStatus::Cancelled => {
-                self.event_bus.emit(ExecutionEvent::Cancelled {
-                    execution_id: execution_id.to_string(),
-                    trace_context: None,
-                });
             }
             _ => {}
         }
@@ -981,24 +936,22 @@ mod tests {
         }
     }
 
-    fn make_engine(registry: Arc<ActionRegistry>) -> (WorkflowEngine, EventBus, MetricsRegistry) {
+    fn make_engine(registry: Arc<ActionRegistry>) -> (WorkflowEngine, MetricsRegistry) {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
-        let event_bus = EventBus::new(64);
         let metrics = MetricsRegistry::new();
 
         let runtime = Arc::new(ActionRuntime::new(
             registry,
             sandbox,
             DataPassingPolicy::default(),
-            event_bus.clone(),
             metrics.clone(),
         ));
 
-        let engine = WorkflowEngine::new(runtime, event_bus.clone(), metrics.clone());
-        (engine, event_bus, metrics)
+        let engine = WorkflowEngine::new(runtime, metrics.clone());
+        (engine, metrics)
     }
 
     // -- Tests --
@@ -1010,7 +963,7 @@ mod tests {
             meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
 
-        let (engine, _, _) = make_engine(registry);
+        let (engine, _) = make_engine(registry);
 
         let n = NodeId::new();
         let wf = make_workflow(vec![NodeDefinition::new(n, "echo", "echo")], vec![]);
@@ -1031,7 +984,7 @@ mod tests {
             meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
 
-        let (engine, _, _) = make_engine(registry);
+        let (engine, _) = make_engine(registry);
 
         let n1 = NodeId::new();
         let n2 = NodeId::new();
@@ -1061,7 +1014,7 @@ mod tests {
             meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
 
-        let (engine, _, _) = make_engine(registry);
+        let (engine, _) = make_engine(registry);
 
         let a = NodeId::new();
         let b = NodeId::new();
@@ -1107,7 +1060,7 @@ mod tests {
             meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
         }));
 
-        let (engine, _, _) = make_engine(registry);
+        let (engine, _) = make_engine(registry);
 
         let n1 = NodeId::new();
         let n2 = NodeId::new();
@@ -1135,7 +1088,7 @@ mod tests {
     #[tokio::test]
     async fn missing_action_key_returns_error() {
         let registry = Arc::new(ActionRegistry::new());
-        let (engine, _, _) = make_engine(registry);
+        let (engine, _) = make_engine(registry);
 
         let n = NodeId::new();
         let wf = make_workflow(vec![NodeDefinition::new(n, "A", "unknown")], vec![]);
@@ -1152,7 +1105,7 @@ mod tests {
     #[tokio::test]
     async fn empty_workflow_returns_planning_error() {
         let registry = Arc::new(ActionRegistry::new());
-        let (engine, _, _) = make_engine(registry);
+        let (engine, _) = make_engine(registry);
 
         let wf = make_workflow(vec![], vec![]);
         let result = engine
@@ -1169,9 +1122,7 @@ mod tests {
             meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
 
-        let (engine, event_bus, metrics) = make_engine(registry);
-
-        let mut sub = event_bus.subscribe();
+        let (engine, metrics) = make_engine(registry);
 
         let n = NodeId::new();
         let wf = make_workflow(vec![NodeDefinition::new(n, "echo", "echo")], vec![]);
@@ -1180,13 +1131,6 @@ mod tests {
             .execute_workflow(&wf, serde_json::json!("test"), ExecutionBudget::default())
             .await
             .unwrap();
-
-        // Should have events from both engine (Started, Completed) and runtime
-        let mut event_count = 0;
-        while sub.try_recv().is_some() {
-            event_count += 1;
-        }
-        assert!(event_count >= 3);
 
         assert!(
             metrics
@@ -1209,7 +1153,7 @@ mod tests {
             meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
         }));
 
-        let (engine, _, metrics) = make_engine(registry);
+        let (engine, metrics) = make_engine(registry);
 
         let n = NodeId::new();
         let wf = make_workflow(vec![NodeDefinition::new(n, "fail", "fail")], vec![]);
@@ -1312,7 +1256,7 @@ mod tests {
             selected: "true".into(),
         }));
 
-        let (engine, _, _) = make_engine(registry);
+        let (engine, _) = make_engine(registry);
 
         let a = NodeId::new();
         let b = NodeId::new();
@@ -1360,7 +1304,7 @@ mod tests {
             meta: ActionMetadata::new(action_key!("skip"), "Skip", "always skips"),
         }));
 
-        let (engine, _, _) = make_engine(registry);
+        let (engine, _) = make_engine(registry);
 
         let a = NodeId::new();
         let b = NodeId::new();
@@ -1400,7 +1344,7 @@ mod tests {
             meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
         }));
 
-        let (engine, _, _) = make_engine(registry);
+        let (engine, _) = make_engine(registry);
 
         let a = NodeId::new();
         let b = NodeId::new();
@@ -1446,7 +1390,7 @@ mod tests {
             meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
         }));
 
-        let (engine, _, _) = make_engine(registry);
+        let (engine, _) = make_engine(registry);
 
         let a = NodeId::new();
         let b = NodeId::new();
@@ -1479,7 +1423,7 @@ mod tests {
             meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
 
-        let (engine, _, _) = make_engine(registry);
+        let (engine, _) = make_engine(registry);
 
         let a = NodeId::new();
         let b = NodeId::new();
@@ -1515,7 +1459,7 @@ mod tests {
             meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
 
-        let (engine, _, _) = make_engine(registry);
+        let (engine, _) = make_engine(registry);
 
         let a = NodeId::new();
         let b = NodeId::new();

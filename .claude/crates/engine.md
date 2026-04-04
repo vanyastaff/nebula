@@ -9,6 +9,7 @@ Workflow execution orchestrator — DAG scheduler, level-by-level execution, nod
 - Execution is level-by-level: builds `ExecutionPlan` from `DependencyGraph` (from nebula-workflow), then executes each level in parallel with bounded concurrency.
 - Node inputs are resolved from predecessor outputs (output wiring). `resolver` module handles this.
 - `WorkflowEngine` re-exports `PluginRegistry` — callers register plugins into the engine, not separately.
+- `WorkflowEngine::new(runtime, metrics)` — no EventBus. Execution events removed (2026-04-04); engine records metrics only. Events will be redesigned when engine stabilizes.
 
 ## Traps
 - Engine is **blocked** on nebula-resource stabilization. Don't invest heavily in engine internals until resource/credential DI is stable.
