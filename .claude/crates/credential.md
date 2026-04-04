@@ -66,7 +66,7 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - Registry target: key on `Credential::KEY` (current: `state_kind`), return `Result` on duplicate
 
 ## Relations
-- Depends on: nebula-core, nebula-eventbus, nebula-resilience, nebula-parameter, nebula-log. Peer: nebula-resource.
+- Depends on: nebula-core, nebula-eventbus, nebula-resilience, nebula-parameter, nebula-telemetry, nebula-metrics. Peer: nebula-resource.
 - Built-in credentials: `ApiKeyCredential`, `BasicAuthCredential`, `DatabaseCredential`, `HeaderAuthCredential`, `OAuth2Credential`.
 - Rotation module: feature-gated, disconnected from v2 Credential trait.
 - `CredentialEvent` lives in nebula-core (both emitter/consumer without peer import). Resolver emits via optional `EventBus<CredentialEvent>`.
@@ -83,4 +83,4 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 <!-- reviewed: 2026-04-02 — dep cleanup: removed domain-key, subtle, nebula-log; futures moved to dev-deps; humantime-serde now used: rotation Duration fields use #[serde(with = "humantime_serde")] for human-readable config -->
 <!-- reviewed: 2026-04-02 — clippy cleanup in scope layer: collapsed nested if in ScopeLayer::list; no behavior change -->
 
-<!-- reviewed: 2026-04-02 -->
+<!-- reviewed: 2026-04-04 — RotationMetrics replaced with registry-backed impl (nebula-telemetry + nebula-metrics); CredentialMetrics struct removed; lock-free counters/gauges/histograms replace RwLock<MetricsInner> -->
