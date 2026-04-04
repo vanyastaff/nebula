@@ -20,6 +20,7 @@ on:
       - ".agents/**"
       - "LICENSE"
       - "CHANGELOG.md"
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -41,7 +42,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ── Formatting ─────────────────────────────────────────────────────────────
+  # ── Formatting (gate — everything else waits) ─────────────────────────────
   fmt:
     name: Formatting
     runs-on: ubuntu-latest
@@ -58,6 +59,7 @@ jobs:
   # ── Linting ────────────────────────────────────────────────────────────────
   clippy:
     name: Clippy
+    needs: [fmt]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -69,6 +71,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
+          shared-key: ci-linux
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Run Clippy lints
@@ -77,6 +80,7 @@ jobs:
   # ── Type check ─────────────────────────────────────────────────────────────
   check:
     name: Check
+    needs: [fmt]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -86,6 +90,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
+          shared-key: ci-linux
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Run cargo check
@@ -94,6 +99,7 @@ jobs:
   # ── Feature combinations ───────────────────────────────────────────────────
   feature-check:
     name: Feature Matrix (cargo-hack)
+    needs: [check]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -103,6 +109,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
+          shared-key: ci-linux
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Check all features across workspace
@@ -111,6 +118,7 @@ jobs:
   # ── Tests ──────────────────────────────────────────────────────────────────
   test:
     name: Tests
+    needs: [clippy]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -120,6 +128,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
+          shared-key: ci-linux
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Install cargo-nextest
@@ -128,6 +137,11 @@ jobs:
         run: cargo nextest run --workspace --profile ci
       - name: Run doctests
         run: cargo test --workspace --doc
+      - name: Test summary
+        if: always()
+        uses: test-summary/action@v2
+        with:
+          paths: target/nextest/ci/junit.xml
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v7
@@ -140,6 +154,7 @@ jobs:
   # ── MSRV ───────────────────────────────────────────────────────────────────
   msrv:
     name: MSRV (1.94)
+    needs: [check]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -149,6 +164,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
+          shared-key: ci-msrv
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Run cargo check
@@ -157,6 +173,7 @@ jobs:
   # ── Documentation ──────────────────────────────────────────────────────────
   doc:
     name: Documentation
+    needs: [check]
     runs-on: ubuntu-latest
     env:
       RUSTDOCFLAGS: -D warnings
@@ -168,6 +185,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
+          shared-key: ci-linux
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Build documentation
@@ -196,6 +214,7 @@ jobs:
   # ── Benchmarks ─────────────────────────────────────────────────────────────
   bench:
     name: Benchmark Thresholds
+    needs: [test]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -205,6 +224,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
+          shared-key: ci-linux
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Run benchmarks
