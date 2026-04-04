@@ -27,14 +27,24 @@ use super::stats::CacheStats;
 /// sync_to_registry(&stats, &registry);
 /// ```
 pub fn sync_to_registry(stats: &CacheStats, registry: &MetricsRegistry) {
-    registry.gauge(NEBULA_CACHE_HITS).set(stats.hits as i64);
-    registry.gauge(NEBULA_CACHE_MISSES).set(stats.misses as i64);
+    registry
+        .gauge(NEBULA_CACHE_HITS)
+        .set(saturating_u64_to_i64(stats.hits));
+    registry
+        .gauge(NEBULA_CACHE_MISSES)
+        .set(saturating_u64_to_i64(stats.misses));
     registry
         .gauge(NEBULA_CACHE_EVICTIONS)
-        .set(stats.evictions as i64);
+        .set(saturating_u64_to_i64(stats.evictions));
     registry
         .gauge(NEBULA_CACHE_SIZE)
-        .set(stats.entry_count as i64);
+        .set(saturating_u64_to_i64(stats.entry_count));
+}
+
+/// Converts `u64` to `i64`, clamping at `i64::MAX` to avoid wrap-around.
+#[inline]
+fn saturating_u64_to_i64(value: u64) -> i64 {
+    value.min(i64::MAX as u64) as i64
 }
 
 #[cfg(test)]

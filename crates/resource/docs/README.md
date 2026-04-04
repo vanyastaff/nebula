@@ -240,7 +240,7 @@ correct `ErrorKind::Transient`, `ErrorKind::Permanent`, and
 | Config hot-reload (fingerprint-based) | Implement `ResourceConfig::fingerprint` |
 | Lifecycle event stream | `manager.subscribe_events()` → `broadcast::Receiver<ResourceEvent>` |
 | Async background cleanup | `ReleaseQueue` (owned by `Manager`, transparent to callers) |
-| Atomic operation counters | `ResourceOpsMetrics` via `manager.metrics()` |
+| Atomic operation counters | `Option<ResourceOpsMetrics>` via `manager.metrics()` (`None` when no registry configured) |
 
 ---
 
