@@ -1,7 +1,5 @@
 # Metrics Unification Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-
 **Goal:** Unify three independent metrics systems into a single path: nebula-telemetry registry -> nebula-metrics export.
 
 **Architecture:** Domain crates receive `Option<Arc<MetricsRegistry>>` via DI and record to the shared registry using naming constants from `nebula-metrics`. Custom atomic structs (`ResourceMetrics`, `RotationMetrics`) are replaced. nebula-log's `metrics` crate dependency is removed. A `/metrics` Prometheus endpoint is wired in nebula-api.
