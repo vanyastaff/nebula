@@ -10,12 +10,12 @@ mod config;
 pub mod multi_level;
 pub mod partitioned;
 pub mod policies;
+#[cfg(feature = "telemetry")]
+pub mod registry_bridge;
 pub mod scheduled;
 #[cfg(feature = "async")]
 pub mod simple;
 pub mod stats;
-#[cfg(feature = "telemetry")]
-pub mod registry_bridge;
 // Re-exports for convenience
 pub use compute::{CacheEntry, CacheKey, CacheResult, ComputeCache};
 pub use concurrent::ConcurrentComputeCache;

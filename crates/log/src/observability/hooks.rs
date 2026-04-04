@@ -375,5 +375,4 @@ mod tests {
         // Should not panic
         hook.on_event(&event);
     }
-
 }
