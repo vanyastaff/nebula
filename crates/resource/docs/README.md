@@ -240,7 +240,7 @@ correct `ErrorKind::Transient`, `ErrorKind::Permanent`, and
 | Config hot-reload (fingerprint-based) | Implement `ResourceConfig::fingerprint` |
 | Lifecycle event stream | `manager.subscribe_events()` → `broadcast::Receiver<ResourceEvent>` |
 | Async background cleanup | `ReleaseQueue` (owned by `Manager`, transparent to callers) |
-| Atomic operation counters | `ResourceMetrics` via `manager.metrics()` |
+| Atomic operation counters | `ResourceOpsMetrics` via `manager.metrics()` |
 
 ---
 
@@ -258,7 +258,7 @@ crates/resource/
 │   ├── error.rs           Error, ErrorKind, ErrorScope
 │   ├── events.rs          ResourceEvent — lifecycle observability
 │   ├── options.rs         AcquireOptions, AcquireIntent
-│   ├── metrics.rs         ResourceMetrics, MetricsSnapshot
+│   ├── metrics.rs         ResourceOpsMetrics, ResourceOpsSnapshot
 │   ├── state.rs           ResourcePhase, ResourceStatus
 │   ├── cell.rs            Cell — ArcSwap-based lock-free cell for resident topologies
 │   ├── release_queue.rs   ReleaseQueue — background async cleanup workers
