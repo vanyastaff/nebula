@@ -24,12 +24,17 @@ jobs:
 
       - name: Check commit messages
         if: github.actor != 'dependabot[bot]'
-        uses: wagoid/commitlint-github-action@v5
+        uses: wagoid/commitlint-github-action@v6
 
       - name: Check PR title
-        uses: deepakputhraya/action-pr-title@v1.0.2
-        with:
-          regex: '^(feat|fix|docs|style|refactor|perf|test|chore)(\(.+\))?: .+'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if ! echo "$TITLE" | grep -qP '^(feat|fix|docs|style|refactor|perf|test|chore)(\(.+\))?: .+'; then
+            echo "::error::PR title must follow conventional commits: type(scope): description"
+            echo "  Got: $TITLE"
+            exit 1
+          fi
 
       - name: Auto label PR
         uses: actions/labeler@v5
