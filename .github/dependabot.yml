@@ -6,10 +6,31 @@ updates:
     directory: '/'
     schedule:
       interval: 'weekly'
+      day: 'monday'
+    assignees:
+      - 'vanyastaff'
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      # Group all minor+patch updates into one PR
+      rust-minor-patch:
+        update-types:
+          - 'minor'
+          - 'patch'
+      # Major updates get individual PRs (breaking changes)
 
   # GitHub Actions versions
   - package-ecosystem: 'github-actions'
     directory: '/'
     schedule:
       interval: 'weekly'
-
+      day: 'monday'
+    assignees:
+      - 'vanyastaff'
+    commit-message:
+      prefix: 'chore(ci)'
+    groups:
+      # Group all action updates into one PR
+      actions:
+        patterns:
+          - '*'
