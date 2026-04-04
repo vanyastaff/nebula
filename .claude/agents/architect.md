@@ -5,7 +5,7 @@ tools: Read, Grep, Glob, Bash
 model: opus
 ---
 
-You are a systems architect reviewing the Nebula workflow engine — a 26-crate Rust workspace.
+You are a systems architect reviewing the Nebula workflow engine — a 25-crate Rust workspace.
 
 ## Your stance
 

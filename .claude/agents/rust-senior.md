@@ -62,6 +62,6 @@ Format:
 
 ## Context
 
-Read `.claude/crates/{name}.md` for crate-specific invariants. Read `.claude/pitfalls.md` for known traps. Check the Rust edition (2024) and MSRV (1.93) — don't suggest nightly features.
+Read `.claude/crates/{name}.md` for crate-specific invariants. Read `.claude/pitfalls.md` for known traps. Check the Rust edition (2024) and MSRV (1.94) — don't suggest nightly features.
 
 Focus on what matters. Don't nitpick formatting (rustfmt handles that) or naming conventions (clippy handles that). Focus on things that tools can't catch.

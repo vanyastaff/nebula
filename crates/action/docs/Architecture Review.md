@@ -657,7 +657,7 @@ pub trait ResourceInstance: Send + Sync + 'static {
     fn id(&self) -> &ResourceInstanceId;
     async fn health_check(&self) -> Result<HealthStatus, ResourceError>;
     async fn cleanup(&mut self) -> Result<(), ResourceError>;
-    fn metrics(&self) -> ResourceMetrics;
+    fn metrics(&self) -> ResourceOpsMetrics;
     fn is_reusable(&self) -> bool;
     async fn reset(&mut self) -> Result<(), ResourceError>;
 }

@@ -3045,16 +3045,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
-name = "metrics"
-version = "0.24.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d5312e9ba3771cfa961b585728215e3d972c950a3eed9252aa093d6301277e8"
-dependencies = [
- "ahash",
- "portable-atomic",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3159,7 +3149,9 @@ dependencies = [
  "nebula-config",
  "nebula-core",
  "nebula-error",
+ "nebula-metrics",
  "nebula-storage",
+ "nebula-telemetry",
  "nebula-validator",
  "serde",
  "serde_json",
@@ -3240,8 +3232,10 @@ dependencies = [
  "nebula-credential-macros",
  "nebula-error",
  "nebula-eventbus",
+ "nebula-metrics",
  "nebula-parameter",
  "nebula-resilience",
+ "nebula-telemetry",
  "parking_lot",
  "rand 0.10.0",
  "reqwest 0.13.2",
@@ -3364,7 +3358,6 @@ dependencies = [
  "arc-swap",
  "codspeed-criterion-compat",
  "flate2",
- "metrics",
  "nebula-error",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -3412,7 +3405,9 @@ dependencies = [
  "libc",
  "nebula-error",
  "nebula-log",
+ "nebula-metrics",
  "nebula-system",
+ "nebula-telemetry",
  "parking_lot",
  "pin-project",
  "rand 0.10.0",
@@ -3509,8 +3504,10 @@ dependencies = [
  "dashmap",
  "nebula-core",
  "nebula-error",
+ "nebula-metrics",
  "nebula-resilience",
  "nebula-resource-macros",
+ "nebula-telemetry",
  "smallvec",
  "thiserror 2.0.18",
  "tokio",

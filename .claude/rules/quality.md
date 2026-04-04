@@ -82,6 +82,6 @@
 
 ## MSRV
 
-- rust-version 1.93 — CI runs `cargo check` with this exact version
+- rust-version 1.94 — CI runs `cargo check` with this exact version
 - Don't use nightly features or unstable APIs
 - If a dep bumps its MSRV above ours, pin the older version or find an alternative

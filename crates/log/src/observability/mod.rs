@@ -80,6 +80,3 @@ pub use registry::{emit_event, register_hook, set_hook_policy, shutdown_hooks};
 pub use resources::{LogLevel, LoggerResource, NotificationPrefs, NotificationSeverity};
 pub use semantic::EventKind;
 pub use span::get_current_logger_resource;
-
-#[cfg(feature = "observability")]
-pub use hooks::MetricsHook;

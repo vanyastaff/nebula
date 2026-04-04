@@ -1,6 +1,6 @@
 ---
 name: doc-writer
-description: Technical writer for Nebula. Writes and reviews doc comments, examples, crate-level docs, error documentation, and migration guides. Ensures open-source documentation quality across all 26 crates. Use when writing docs, reviewing doc quality, or preparing crates for public release.
+description: Technical writer for Nebula. Writes and reviews doc comments, examples, crate-level docs, error documentation, and migration guides. Ensures open-source documentation quality across all 25 crates. Use when writing docs, reviewing doc quality, or preparing crates for public release.
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: sonnet
 ---

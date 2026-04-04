@@ -13,10 +13,12 @@ Standard `nebula_*` metric naming constants, TelemetryAdapter, Prometheus text e
 ## Traps
 - Forgetting `LabelAllowlist` means unbounded label cardinality (e.g., per-user metric dimensions) → OOM in production.
 - `snapshot()` function returns Prometheus text format — call `content_type()` for the correct `Content-Type` header.
+- Cache metrics (`NEBULA_CACHE_HITS`, `NEBULA_CACHE_MISSES`, `NEBULA_CACHE_EVICTIONS`, `NEBULA_CACHE_SIZE`) are **gauges** (point-in-time snapshots), not counters — no `_total` suffix. The registry bridge uses `gauge().set()`.
+- When adding naming constants, ensure the Prometheus type (`counter_help` / `gauge_help` / `histogram_help`) matches the semantic type and the test uses the matching registry method.
 
 ## Relations
 - Re-exports `Counter`, `Gauge`, `Histogram`, `MetricsRegistry` from nebula-telemetry. Used by nebula-api for the `/metrics` endpoint.
 
 <\!-- reviewed: 2026-03-30 -->
 
-<!-- reviewed: 2026-04-02 -->
+<!-- reviewed: 2026-04-04 -->

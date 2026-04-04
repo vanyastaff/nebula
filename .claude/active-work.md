@@ -1,10 +1,11 @@
 # Active Work
-Updated: 2026-04-03
+Updated: 2026-04-04
 
 ## In Progress
 - **Desktop app** (Tauri): `apps/desktop/`
 
 ## Recently Completed
+- **Metrics unification** (04-04): Unified 3 independent metrics systems into single path (telemetry registry -> metrics export). Replaced custom `ResourceMetrics` (resource) and `RotationMetrics` (credential) with registry-backed structs. Added optional telemetry bridge for memory cache. Removed `metrics` crate from log. Wired `GET /metrics` Prometheus endpoint in API. Added credential + cache naming constants. Plan at `docs/plans/2026-04-04-metrics-unification-design.md`.
 - **nebula-system overhaul** (04-03): Phase 1 cleanup (removed broken management API, dead features, stubs), Phase 2 test hardening (38 tests + 5 doctests), Phase 3 ProcessMonitor (per-PID sandbox tracking), Phase 4 SystemLoad (adaptive worker scaling). Deleted old `crates/system/design/`. Plan at `docs/plans/2026-04-03-nebula-system-overhaul.md`.
 - **nebula-credential HLD v1.5** (04-01): Full architecture review: 10 adversarial rounds, 2 dev challenges, 2 town halls, 2 open conferences (10 external devs total incl. gaming, Airflow migration, SOC2 auditor, dev tooling, Vault skeptic). 33 v1 ship items. 17 bugs. SOC2 grades: CC6.1/CC7.2 CONDITIONAL, CC6.3 PASS. New in v1.5: DecryptedCacheLayer, DatabaseAuth.extensions, registry introspection. v1.1 deferred: CredentialStore dyn-compat, put_batch. HLD at `docs/plans/nebula-credential-hld-v1.md`.
 - **nebula-credential DX excellence** (03-31): Typed `CredentialSnapshot` (`Box<dyn Any>` + `project::<S>()`), `credential_typed::<S>()` on ActionContext/TriggerContext, rotation feature-gated, `CredentialResolverRef` for composition, 285 tests + 19 doctests, missing Debug impls added, broken doctests fixed.
@@ -22,7 +23,7 @@ Updated: 2026-04-03
 - **nebula-auth**: RFC phase — blocked on RFC convergence, no stable API yet
 - **Desktop Phase 2+**: blocked on engine working end-to-end (Group 2 acceptance criteria)
 
-## Cross-Crate Priority Order (from TASKS.md)
+## Cross-Crate Priority Order
 1. `nebula-storage` Phase 1 (Postgres) — unblocks engine
 2. `nebula-action` Phase 2 — finish context model (unblocks runtime + credential integration)
 3. `nebula-resource` Phase 1 — contract docs + scope invariants

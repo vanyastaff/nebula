@@ -1,8 +1,8 @@
 # Rust Coding Rules — Nebula
 
 ## Edition & MSRV
-- Edition 2024, `rust-version = "1.93"` — never use features beyond this
-- Check CI runs MSRV gate: `cargo check` with Rust 1.93
+- Edition 2024, `rust-version = "1.94"` — never use features beyond this
+- Check CI runs MSRV gate: `cargo check` with Rust 1.94
 
 ## Error Handling
 - Libraries (`crates/`): `thiserror` with typed error enums per crate

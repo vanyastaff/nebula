@@ -32,9 +32,9 @@
 **Choice**: `MemoryStorage` for tests, `PostgresStorage` for production
 **Why**: Tests never hit the database; `Storage` trait abstracts both.
 
-## REST + WebSocket
-**Choice**: REST for CRUD, WebSocket for real-time, versioned at `/v1/`
-**Why**: Simpler than GraphQL; WebSocket handles live execution updates.
+## REST API
+**Choice**: REST for CRUD, versioned at `/api/v1/`
+**Why**: Simpler than GraphQL. WebSocket for real-time execution updates is planned but not yet implemented.
 
 ## Credential–Resource Integration via Typed Refs + Events
 **Choice**: `CredentialRef<C>` (typed) / `ErasedCredentialRef` in `ResourceComponents`; `Pool<R>` stores credential state + `CredentialHandler<R::Instance>`; rotation via `CredentialRotationEvent` on `EventBus`

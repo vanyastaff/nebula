@@ -7,13 +7,13 @@ DAG-based workflow automation engine in Rust (n8n/Zapier).
 core · validator · parameter · expression · memory · workflow · execution
 
 **Cross-cutting** (importable at any layer)
-log · system · eventbus · telemetry · metrics · config · resilience
+log · system · eventbus · telemetry · metrics · config · resilience · error
 
 **Business logic**
-credential · resource · action · plugin · auth
+credential · resource · action · plugin · auth (RFC — not yet in workspace)
 
 **Exec / API / Infra**
-engine · runtime · storage · api · webhook · macros · sdk
+engine · runtime · storage · api · webhook · sdk
 
 **Desktop app**
 apps/desktop (Tauri — React + TypeScript; replaces former nebula-app/egui)
@@ -24,7 +24,7 @@ apps/desktop (Tauri — React + TypeScript; replaces former nebula-app/egui)
 → active-work.md — current focus areas
 
 ## Conventions
-- Edition 2024, rust-version 1.93
+- Edition 2024, rust-version 1.94
 - `serde_json::Value` as universal data type (no nebula-value crate — was removed)
 - Errors: `thiserror` in libs, `anyhow` in binaries
 - Layers enforced by `cargo deny`: Infra → Core → Business → Exec → API

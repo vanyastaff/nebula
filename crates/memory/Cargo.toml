@@ -27,6 +27,7 @@ cache = ["std", "hashbrown", "rand", "dashmap"]
 stats = ["std"]
 budget = ["std"]
 logging = ["std", "nebula-log"]
+telemetry = ["nebula-telemetry", "nebula-metrics"]
 
 # Platform optimization
 numa-aware = ["libc"]
@@ -43,7 +44,7 @@ nightly = []
 backtrace-feature = ["std", "backtrace"]
 
 # Convenience sets (для удобства пользователей)
-full = ["std", "pool", "arena", "cache", "stats", "budget", "monitoring", "logging"]
+full = ["std", "pool", "arena", "cache", "stats", "budget", "monitoring", "logging", "telemetry"]
 
 [dependencies]
 # Collections
@@ -78,7 +79,9 @@ pin-project = "1.1"
 thiserror = { workspace = true }
 nebula-error = { workspace = true, features = ["derive"] }
 nebula-log = { path = "../log", optional = true }
+nebula-metrics = { path = "../metrics", optional = true }
 nebula-system = { path = "../system" }
+nebula-telemetry = { path = "../telemetry", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["memoryapi", "sysinfoapi", "libloaderapi"] }

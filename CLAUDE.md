@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Nebula** is a modular, type-safe workflow automation engine (like n8n/Zapier) built in Rust 1.93+. Workflows are DAGs of composable actions with built-in retries/error handling, extensible via plugins. Alpha: core crates stable, execution engine + credential system in active development. 26-crate workspace with strict one-way layer dependencies.
+**Nebula** is a modular, type-safe workflow automation engine (like n8n/Zapier) built in Rust 1.94+. Workflows are DAGs of composable actions with built-in retries/error handling, extensible via plugins. Alpha: core crates stable, execution engine + credential system in active development. 25-crate workspace with strict one-way layer dependencies.
 
 ---
 
@@ -122,7 +122,7 @@ Workspace context lives in `.claude/` — do not re-derive what is already docum
 | `.claude/pitfalls.md` | 300 | Global traps and non-obvious constraints |
 | `.claude/active-work.md` | 200 | Current work, blocked areas, migration state |
 | `.claude/crates/{name}.md` | 500 each | Per-crate invariants, traps, non-obvious decisions |
-| `.claude/plans/{date}-{slug}.md` | — | Implementation plans for multi-step work (date-prefixed) |
+| `docs/plans/{date}-{slug}.md` | — | Implementation plans for multi-step work (date-prefixed) |
 | `.claude/research/{slug}.md` | — | Background research, competitive analysis, findings |
 
 **Include:** invariants, non-obvious design decisions, active constraints, traps that burned someone.

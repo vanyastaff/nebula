@@ -275,7 +275,7 @@ pub use grace_period::{
     GracePeriodConfig, GracePeriodState, GracePeriodTracker, UsageMetrics,
     cleanup_expired_credentials, track_credential_usage,
 };
-pub use metrics::{CredentialMetrics, RotationMetrics};
+pub use metrics::RotationMetrics;
 pub use policy::{
     BeforeExpiryConfig, ManualConfig, PeriodicConfig, RotationPolicy, ScheduledConfig,
 };

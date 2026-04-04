@@ -25,9 +25,17 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 - `Registry::get_typed<R>` keys on `TypeId::of::<ManagedResource<R>>()` not `TypeId::of::<R>()`
 - `WatchdogHandle` cancels on drop but does NOT await — use `stop()` for graceful
 
+## Decisions
+
+- `ResourceMetrics` (hand-rolled atomics) replaced with `ResourceOpsMetrics` backed by `MetricsRegistry` from nebula-telemetry
+- Per-resource metrics removed — single aggregate `Option<ResourceOpsMetrics>` on Manager (all topologies share same registry counters)
+- `ManagerConfig.metrics_registry: Option<Arc<MetricsRegistry>>` — metrics are opt-in, zero overhead when None
+- `ResourceHealthSnapshot.metrics` is now `Option<ResourceOpsSnapshot>` (None when no registry)
+- Runtime `acquire()` methods take `Option<ResourceOpsMetrics>` (Clone, no Arc needed) instead of `Arc<ResourceMetrics>`
+
 ## Relations
 
-- Depends on: nebula-core, nebula-resource-macros
+- Depends on: nebula-core, nebula-metrics, nebula-telemetry, nebula-resource-macros
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 
 <!-- reviewed: 2026-03-30 (backpressure retryable, retry_hint floor, bounded release queue, new events) -->
@@ -38,3 +46,4 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 <!-- reviewed: 2026-04-02 -->
 
 <!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
+<!-- reviewed: 2026-04-04 — replaced ResourceMetrics with registry-backed ResourceOpsMetrics, removed per-resource metrics -->
