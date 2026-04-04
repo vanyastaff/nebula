@@ -52,6 +52,10 @@ pub const NEBULA_RESOURCE_RELEASE_TOTAL: &str = "nebula_resource_release_total";
 pub const NEBULA_RESOURCE_USAGE_DURATION_SECONDS: &str = "nebula_resource_usage_duration_seconds";
 /// Counter: resource cleanups.
 pub const NEBULA_RESOURCE_CLEANUP_TOTAL: &str = "nebula_resource_cleanup_total";
+/// Counter: resource instances destroyed (unregistered).
+pub const NEBULA_RESOURCE_DESTROY_TOTAL: &str = "nebula_resource_destroy_total";
+/// Counter: resource acquire errors.
+pub const NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL: &str = "nebula_resource_acquire_error_total";
 /// Counter: resource errors.
 pub const NEBULA_RESOURCE_ERROR_TOTAL: &str = "nebula_resource_error_total";
 /// Gauge: health state (1=healthy, 0.5=degraded/unknown, 0=unhealthy).
@@ -154,18 +158,18 @@ mod tests {
     use super::{
         NEBULA_CACHE_EVICTIONS_TOTAL, NEBULA_CACHE_HITS_TOTAL, NEBULA_CACHE_MISSES_TOTAL,
         NEBULA_CACHE_SIZE, NEBULA_CREDENTIAL_ACTIVE_TOTAL, NEBULA_CREDENTIAL_EXPIRED_TOTAL,
-        NEBULA_CREDENTIAL_ROTATIONS_TOTAL, NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS,
-        NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL, NEBULA_RESOURCE_ACQUIRE_TOTAL,
-        NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS, NEBULA_RESOURCE_CLEANUP_TOTAL,
-        NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL, NEBULA_RESOURCE_CREATE_TOTAL,
-        NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL, NEBULA_RESOURCE_ERROR_TOTAL,
-        NEBULA_RESOURCE_HEALTH_STATE, NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL,
-        NEBULA_RESOURCE_POOL_WAITERS, NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL,
-        NEBULA_RESOURCE_QUARANTINE_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL,
-        NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
+        NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS, NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL,
+        NEBULA_CREDENTIAL_ROTATIONS_TOTAL, NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
+        NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
+        NEBULA_RESOURCE_CLEANUP_TOTAL, NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
+        NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
+        NEBULA_RESOURCE_DESTROY_TOTAL, NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
+        NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
+        NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
+        NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
     };
 
-    const RESOURCE_METRIC_NAMES: [&str; 14] = [
+    const RESOURCE_METRIC_NAMES: [&str; 16] = [
         NEBULA_RESOURCE_CREATE_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
@@ -180,6 +184,8 @@ mod tests {
         NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL,
         NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
+        NEBULA_RESOURCE_DESTROY_TOTAL,
+        NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
     ];
 
     #[test]
@@ -203,7 +209,7 @@ mod tests {
             assert_eq!(counter.get(), 1);
         }
 
-        assert_eq!(unique.len(), 14);
+        assert_eq!(unique.len(), 16);
     }
 
     const CREDENTIAL_METRIC_NAMES: [&str; 5] = [
@@ -228,9 +234,11 @@ mod tests {
         for metric_name in CREDENTIAL_METRIC_NAMES {
             assert!(!metric_name.is_empty());
             assert!(metric_name.starts_with("nebula_credential_"));
-            assert!(metric_name
-                .chars()
-                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'));
+            assert!(
+                metric_name
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+            );
             assert!(unique.insert(metric_name));
             let counter = registry.counter(metric_name);
             counter.inc();
@@ -246,9 +254,11 @@ mod tests {
         for metric_name in CACHE_METRIC_NAMES {
             assert!(!metric_name.is_empty());
             assert!(metric_name.starts_with("nebula_cache_"));
-            assert!(metric_name
-                .chars()
-                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'));
+            assert!(
+                metric_name
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+            );
             assert!(unique.insert(metric_name));
             let counter = registry.counter(metric_name);
             counter.inc();

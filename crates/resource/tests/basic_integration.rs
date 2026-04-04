@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use nebula_resource::AcquireOptions;
 use nebula_resource::Manager;
-use nebula_resource::ResourceMetrics;
 use nebula_resource::ShutdownConfig;
 use nebula_resource::ctx::{BasicCtx, Ctx, ScopeLevel};
 use nebula_resource::error::{Error, ErrorKind};
@@ -252,7 +251,7 @@ async fn pool_acquire_use_release_reacquire() {
             &rq,
             0,
             &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
+            None,
         )
         .await
         .expect("first acquire should succeed");
@@ -280,7 +279,7 @@ async fn pool_acquire_use_release_reacquire() {
             &rq,
             0,
             &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
+            None,
         )
         .await
         .expect("second acquire should succeed");
@@ -319,7 +318,7 @@ async fn pool_broken_instance_gets_replaced() {
             &rq,
             0,
             &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
+            None,
         )
         .await
         .unwrap();
@@ -340,7 +339,7 @@ async fn pool_broken_instance_gets_replaced() {
             &rq,
             0,
             &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
+            None,
         )
         .await
         .expect("should create a fresh instance");
@@ -666,7 +665,7 @@ async fn tainted_handle_not_recycled() {
             &rq,
             0,
             &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
+            None,
         )
         .await
         .unwrap();
@@ -807,7 +806,7 @@ async fn pool_concurrent_acquire_respects_max_size() {
                 &rq,
                 0,
                 &AcquireOptions::default(),
-                Arc::new(ResourceMetrics::new()),
+                None,
             )
             .await
             .expect("acquire within max_size should succeed");
@@ -822,16 +821,7 @@ async fn pool_concurrent_acquire_respects_max_size() {
     let opts = AcquireOptions::default()
         .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(100));
     let result = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &(),
-            &ctx,
-            &rq,
-            0,
-            &opts,
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &test_config(), &(), &ctx, &rq, 0, &opts, None)
         .await;
     let err = match result {
         Err(e) => e,
@@ -869,7 +859,7 @@ async fn pool_backpressure_when_full() {
             &rq,
             0,
             &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
+            None,
         )
         .await
         .expect("first acquire should succeed");
@@ -878,16 +868,7 @@ async fn pool_backpressure_when_full() {
     let opts = AcquireOptions::default()
         .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(50));
     let result = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &(),
-            &ctx,
-            &rq,
-            0,
-            &opts,
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &test_config(), &(), &ctx, &rq, 0, &opts, None)
         .await;
 
     let err = match result {
@@ -1007,7 +988,11 @@ async fn manager_scope_mismatch_not_found() {
 
 #[tokio::test]
 async fn metrics_track_acquire_release_create_destroy() {
-    let manager = Manager::new();
+    let registry = std::sync::Arc::new(nebula_telemetry::metrics::MetricsRegistry::new());
+    let manager = Manager::with_config(nebula_resource::ManagerConfig {
+        release_queue_workers: 2,
+        metrics_registry: Some(registry.clone()),
+    });
     let resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
@@ -1024,7 +1009,7 @@ async fn metrics_track_acquire_release_create_destroy() {
         .expect("registration should succeed");
 
     // register calls record_create
-    let snap = manager.metrics().snapshot();
+    let snap = manager.metrics().expect("metrics present").snapshot();
     assert_eq!(snap.create_total, 1, "register should record create");
 
     // Acquire.
@@ -1034,7 +1019,7 @@ async fn metrics_track_acquire_release_create_destroy() {
         .await
         .expect("acquire should succeed");
 
-    let snap = manager.metrics().snapshot();
+    let snap = manager.metrics().expect("metrics present").snapshot();
     assert_eq!(snap.acquire_total, 1, "acquire should be counted");
     assert_eq!(snap.acquire_errors, 0, "no errors expected");
 
@@ -1044,7 +1029,7 @@ async fn metrics_track_acquire_release_create_destroy() {
     let key = resource_key!("test-resident");
     manager.remove(&key).expect("remove should succeed");
 
-    let snap = manager.metrics().snapshot();
+    let snap = manager.metrics().expect("metrics present").snapshot();
     assert_eq!(snap.destroy_total, 1, "remove should record destroy");
 }
 
@@ -1156,7 +1141,7 @@ async fn pool_acquire_with_deadline() {
             &rq,
             0,
             &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
+            None,
         )
         .await
         .expect("first acquire should succeed");
@@ -1166,16 +1151,7 @@ async fn pool_acquire_with_deadline() {
         .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(100));
     let start = std::time::Instant::now();
     let result = pool
-        .acquire(
-            &resource,
-            &test_config(),
-            &(),
-            &ctx,
-            &rq,
-            0,
-            &opts,
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &test_config(), &(), &ctx, &rq, 0, &opts, None)
         .await;
 
     let elapsed = start.elapsed();
@@ -1222,7 +1198,7 @@ async fn pool_detach_removes_from_pool() {
             &rq,
             0,
             &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
+            None,
         )
         .await
         .expect("acquire should succeed");
@@ -1509,14 +1485,7 @@ async fn service_acquire_cloned_token() {
 
     // Acquire first token.
     let h1 = rt
-        .acquire(
-            &resource,
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &ctx, &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("first acquire should succeed");
 
@@ -1526,14 +1495,7 @@ async fn service_acquire_cloned_token() {
 
     // Acquire second token concurrently — both should succeed.
     let h2 = rt
-        .acquire(
-            &resource,
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &ctx, &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("second acquire should succeed");
 
@@ -1600,14 +1562,7 @@ async fn transport_acquire_opens_session() {
     let ctx = test_ctx();
 
     let handle = rt
-        .acquire(
-            &resource,
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &ctx, &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("acquire should succeed");
 
@@ -1645,26 +1600,12 @@ async fn transport_session_bounded_by_semaphore() {
 
     // Acquire two sessions — should both succeed (max_sessions = 2).
     let h1 = rt
-        .acquire(
-            &resource,
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &ctx, &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("first session");
 
     let h2 = rt
-        .acquire(
-            &resource,
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &ctx, &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("second session");
 
@@ -1684,7 +1625,7 @@ async fn transport_session_bounded_by_semaphore() {
                 rq_ref,
                 0,
                 &AcquireOptions::default(),
-                Arc::new(ResourceMetrics::new()),
+                None,
             )
             .await
     })
@@ -1698,14 +1639,7 @@ async fn transport_session_bounded_by_semaphore() {
 
     // Now third acquire should succeed.
     let h3 = rt
-        .acquire(
-            &resource,
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &ctx, &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("third session after release");
 
@@ -1737,27 +1671,13 @@ async fn transport_acquire_timeout_when_sessions_exhausted() {
 
     // Hold the only session.
     let _held = rt
-        .acquire(
-            &resource,
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &ctx, &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("first acquire should succeed");
 
     // Second acquire must time out (no deadline override — uses config timeout).
     let result = rt
-        .acquire(
-            &resource,
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &ctx, &rq, 0, &AcquireOptions::default(), None)
         .await;
     let err = match result {
         Err(e) => e,
@@ -1772,16 +1692,7 @@ async fn transport_acquire_timeout_when_sessions_exhausted() {
     // With an explicit deadline the caller-supplied timeout is respected.
     let short_deadline = std::time::Instant::now() + std::time::Duration::from_millis(25);
     let opts = AcquireOptions::default().with_deadline(short_deadline);
-    let result2 = rt
-        .acquire(
-            &resource,
-            &ctx,
-            &rq,
-            0,
-            &opts,
-            Arc::new(ResourceMetrics::new()),
-        )
-        .await;
+    let result2 = rt.acquire(&resource, &ctx, &rq, 0, &opts, None).await;
     let err2 = match result2 {
         Err(e) => e,
         Ok(_) => panic!("deadline acquire should time out"),
@@ -1816,13 +1727,7 @@ async fn exclusive_acquire_one_at_a_time() {
 
     // First acquire succeeds.
     let h1 = rt
-        .acquire(
-            &resource,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("first acquire should succeed");
 
@@ -1835,13 +1740,7 @@ async fn exclusive_acquire_one_at_a_time() {
 
     let result = tokio::time::timeout(std::time::Duration::from_millis(100), async {
         rt_ref
-            .acquire(
-                resource_ref,
-                rq_ref,
-                0,
-                &AcquireOptions::default(),
-                Arc::new(ResourceMetrics::new()),
-            )
+            .acquire(resource_ref, rq_ref, 0, &AcquireOptions::default(), None)
             .await
     })
     .await;
@@ -1854,13 +1753,7 @@ async fn exclusive_acquire_one_at_a_time() {
 
     // Now second acquire should succeed.
     let h2 = rt
-        .acquire(
-            &resource,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("second acquire after release");
 
@@ -1885,13 +1778,7 @@ async fn exclusive_reset_called_on_release() {
     let rq = Arc::new(rq);
 
     let handle = rt
-        .acquire(
-            &resource,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("acquire should succeed");
 
@@ -1909,13 +1796,7 @@ async fn exclusive_reset_called_on_release() {
 
     // Acquire and release again to confirm reset increments.
     let handle2 = rt
-        .acquire(
-            &resource,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("second acquire");
 
@@ -1945,25 +1826,13 @@ async fn exclusive_acquire_timeout_when_locked() {
 
     // Hold the exclusive lock.
     let _h1 = rt
-        .acquire(
-            &resource,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("first acquire should succeed");
 
     // Second acquire should time out via config timeout.
     let result = rt
-        .acquire(
-            &resource,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
         .await;
     let err = match result {
         Err(e) => e,
@@ -1978,15 +1847,7 @@ async fn exclusive_acquire_timeout_when_locked() {
     // Also test deadline-based timeout via AcquireOptions.
     let short_deadline = AcquireOptions::default()
         .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(10));
-    let result2 = rt
-        .acquire(
-            &resource,
-            &rq,
-            0,
-            &short_deadline,
-            Arc::new(ResourceMetrics::new()),
-        )
-        .await;
+    let result2 = rt.acquire(&resource, &rq, 0, &short_deadline, None).await;
     let err2 = match result2 {
         Err(e) => e,
         Ok(_) => panic!("deadline acquire should time out"),
@@ -2021,8 +1882,6 @@ async fn pool_permit_not_leaked_after_release() {
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
-    let metrics = Arc::new(ResourceMetrics::new());
-
     let handle = pool
         .acquire(
             &resource,
@@ -2032,7 +1891,7 @@ async fn pool_permit_not_leaked_after_release() {
             &rq,
             0,
             &AcquireOptions::default(),
-            metrics.clone(),
+            None,
         )
         .await
         .expect("first acquire should succeed");
@@ -2051,7 +1910,7 @@ async fn pool_permit_not_leaked_after_release() {
             &rq,
             0,
             &AcquireOptions::default(),
-            metrics,
+            None,
         )
         .await
         .expect("second acquire must not block — permit should be available");
@@ -2063,14 +1922,18 @@ async fn pool_permit_not_leaked_after_release() {
 }
 
 // ---------------------------------------------------------------------------
-// Per-resource metrics tests
+// Registry-backed metrics tests
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn per_resource_metrics_are_independent() {
-    let manager = Manager::new();
+async fn registry_backed_metrics_record_operations() {
+    let registry = std::sync::Arc::new(nebula_telemetry::metrics::MetricsRegistry::new());
+    let manager = Manager::with_config(nebula_resource::ManagerConfig {
+        release_queue_workers: 1,
+        metrics_registry: Some(registry.clone()),
+    });
 
-    // Register a pooled resource.
+    // Register two resources.
     let pool_resource = PoolTestResource::new();
     let pool_config = nebula_resource::topology::pooled::config::Config {
         max_size: 4,
@@ -2089,7 +1952,6 @@ async fn per_resource_metrics_are_independent() {
         )
         .expect("pool registration should succeed");
 
-    // Register a resident resource.
     let resident_resource = ResidentTestResource::new();
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
@@ -2114,41 +1976,35 @@ async fn per_resource_metrics_are_independent() {
     drop(handle);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // Check per-resource metrics: pool should have 1 acquire, resident 0.
-    let pool_metrics = manager
-        .resource_metrics(&resource_key!("test-pool"), &ScopeLevel::Global)
-        .expect("pool metrics should exist");
-    let pool_snap = pool_metrics.snapshot();
-    assert_eq!(pool_snap.acquire_total, 1, "pool should have 1 acquire");
-    assert_eq!(pool_snap.acquire_errors, 0);
+    // Aggregate metrics via snapshot.
+    let snap = manager
+        .metrics()
+        .expect("metrics should be present")
+        .snapshot();
+    assert_eq!(snap.acquire_total, 1, "should have 1 acquire");
     assert_eq!(
-        pool_snap.create_total, 1,
-        "pool registration records create"
+        snap.create_total, 2,
+        "should have 2 creates (pool + resident)"
     );
 
-    let resident_metrics = manager
-        .resource_metrics(&resource_key!("test-resident"), &ScopeLevel::Global)
-        .expect("resident metrics should exist");
-    let resident_snap = resident_metrics.snapshot();
-    assert_eq!(
-        resident_snap.acquire_total, 0,
-        "resident should have 0 acquires"
-    );
-    assert_eq!(
-        resident_snap.create_total, 1,
-        "resident registration records create"
-    );
-
-    // Aggregate metrics should show 1 acquire total (from pool) and 2 creates.
-    let agg = manager.metrics().snapshot();
-    assert_eq!(agg.acquire_total, 1, "aggregate should have 1 acquire");
-    assert_eq!(agg.create_total, 2, "aggregate should have 2 creates");
+    // Same counters visible via registry directly.
+    let create_counter = registry.counter(nebula_metrics::naming::NEBULA_RESOURCE_CREATE_TOTAL);
+    assert_eq!(create_counter.get(), 2);
 
     manager
         .graceful_shutdown(ShutdownConfig {
             drain_timeout: std::time::Duration::from_millis(50),
         })
         .await;
+}
+
+#[tokio::test]
+async fn metrics_none_when_no_registry() {
+    let manager = Manager::new();
+    assert!(
+        manager.metrics().is_none(),
+        "manager without registry should have no metrics"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2791,7 +2647,7 @@ async fn pool_stale_fingerprint_evicts_idle_entry() {
             &rq,
             0,
             &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
+            None,
         )
         .await
         .expect("first acquire should succeed");
@@ -2814,7 +2670,7 @@ async fn pool_stale_fingerprint_evicts_idle_entry() {
             &rq,
             0,
             &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
+            None,
         )
         .await
         .expect("second acquire should succeed after fingerprint change");
@@ -2859,7 +2715,7 @@ async fn pool_max_lifetime_evicts_expired_entry() {
             &rq,
             0,
             &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
+            None,
         )
         .await
         .expect("first acquire should succeed");
@@ -2882,7 +2738,7 @@ async fn pool_max_lifetime_evicts_expired_entry() {
             &rq,
             0,
             &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
+            None,
         )
         .await
         .expect("second acquire should succeed after max_lifetime expiry");
@@ -2987,7 +2843,7 @@ async fn pool_recycle_drop_destroys_entry() {
             &rq,
             0,
             &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
+            None,
         )
         .await
         .expect("acquire should succeed");
@@ -3062,14 +2918,7 @@ async fn transport_open_session_failure_frees_permit() {
 
     // First acquire should fail (open_session errors).
     let result = transport_rt
-        .acquire(
-            &resource,
-            &ctx,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &ctx, &rq, 0, &AcquireOptions::default(), None)
         .await;
     assert!(result.is_err(), "open_session should fail");
 
@@ -3083,7 +2932,7 @@ async fn transport_open_session_failure_frees_permit() {
             0,
             &AcquireOptions::default()
                 .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(200)),
-            Arc::new(ResourceMetrics::new()),
+            None,
         )
         .await;
     assert!(
@@ -3156,13 +3005,7 @@ async fn exclusive_reset_failure_does_not_block_next_acquire() {
 
     // First acquire should succeed.
     let handle = exclusive_rt
-        .acquire(
-            &resource,
-            &rq,
-            0,
-            &AcquireOptions::default(),
-            Arc::new(ResourceMetrics::new()),
-        )
+        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("first acquire should succeed");
 
@@ -3179,7 +3022,7 @@ async fn exclusive_reset_failure_does_not_block_next_acquire() {
             0,
             &AcquireOptions::default()
                 .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(500)),
-            Arc::new(ResourceMetrics::new()),
+            None,
         )
         .await;
     assert!(

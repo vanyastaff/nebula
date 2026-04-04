@@ -10,7 +10,7 @@ use tokio::sync::Semaphore;
 
 use crate::error::Error;
 use crate::handle::ResourceHandle;
-use crate::metrics::ResourceMetrics;
+use crate::metrics::ResourceOpsMetrics;
 use crate::options::AcquireOptions;
 use crate::release_queue::ReleaseQueue;
 use crate::resource::Resource;
@@ -72,7 +72,7 @@ where
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
         options: &AcquireOptions,
-        metrics: Arc<ResourceMetrics>,
+        metrics: Option<ResourceOpsMetrics>,
     ) -> Result<ResourceHandle<R>, Error>
     where
         R::Runtime: Into<R::Lease>,
@@ -96,7 +96,9 @@ where
             TopologyTag::Exclusive,
             generation,
             move |_returned_lease, _tainted| {
-                metrics.record_release();
+                if let Some(m) = &metrics {
+                    m.record_release();
+                }
                 rq.submit(move || Box::pin(release_exclusive(resource_clone, runtime)));
             },
             Some(permit),
