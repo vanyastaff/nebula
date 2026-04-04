@@ -17,8 +17,8 @@ use nebula_telemetry::metrics::MetricsRegistry;
 
 use crate::naming::{
     NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,
-    NEBULA_CACHE_EVICTIONS_TOTAL, NEBULA_CACHE_HITS_TOTAL, NEBULA_CACHE_MISSES_TOTAL,
-    NEBULA_CACHE_SIZE, NEBULA_CREDENTIAL_ACTIVE_TOTAL, NEBULA_CREDENTIAL_EXPIRED_TOTAL,
+    NEBULA_CACHE_EVICTIONS, NEBULA_CACHE_HITS, NEBULA_CACHE_MISSES, NEBULA_CACHE_SIZE,
+    NEBULA_CREDENTIAL_ACTIVE_TOTAL, NEBULA_CREDENTIAL_EXPIRED_TOTAL,
     NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS, NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL,
     NEBULA_CREDENTIAL_ROTATIONS_TOTAL, NEBULA_EVENTBUS_DROP_RATIO_PPM, NEBULA_EVENTBUS_DROPPED,
     NEBULA_EVENTBUS_SENT, NEBULA_EVENTBUS_SUBSCRIBERS, NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
@@ -67,9 +67,6 @@ fn counter_help(name: &str) -> &'static str {
         NEBULA_CREDENTIAL_ROTATIONS_TOTAL => "Total credential rotation attempts.",
         NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL => "Total credential rotation failures.",
         NEBULA_CREDENTIAL_EXPIRED_TOTAL => "Total credentials expired.",
-        NEBULA_CACHE_HITS_TOTAL => "Total cache hits.",
-        NEBULA_CACHE_MISSES_TOTAL => "Total cache misses.",
-        NEBULA_CACHE_EVICTIONS_TOTAL => "Total cache evictions.",
         _ => "Custom counter.",
     }
 }
@@ -85,6 +82,9 @@ fn gauge_help(name: &str) -> &'static str {
         NEBULA_EVENTBUS_SUBSCRIBERS => "EventBus active subscribers snapshot.",
         NEBULA_EVENTBUS_DROP_RATIO_PPM => "EventBus drop ratio in parts-per-million.",
         NEBULA_CREDENTIAL_ACTIVE_TOTAL => "Number of active credentials.",
+        NEBULA_CACHE_HITS => "Cache hits snapshot.",
+        NEBULA_CACHE_MISSES => "Cache misses snapshot.",
+        NEBULA_CACHE_EVICTIONS => "Cache evictions snapshot.",
         NEBULA_CACHE_SIZE => "Current cache size in entries.",
         _ => "Custom gauge.",
     }

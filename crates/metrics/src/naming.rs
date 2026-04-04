@@ -115,12 +115,12 @@ pub const NEBULA_CREDENTIAL_EXPIRED_TOTAL: &str = "nebula_credential_expired_tot
 // Cache (memory crate)
 // ---------------------------------------------------------------------------
 
-/// Counter: total cache hits.
-pub const NEBULA_CACHE_HITS_TOTAL: &str = "nebula_cache_hits_total";
-/// Counter: total cache misses.
-pub const NEBULA_CACHE_MISSES_TOTAL: &str = "nebula_cache_misses_total";
-/// Counter: total cache evictions.
-pub const NEBULA_CACHE_EVICTIONS_TOTAL: &str = "nebula_cache_evictions_total";
+/// Gauge: cache hits snapshot (point-in-time absolute value).
+pub const NEBULA_CACHE_HITS: &str = "nebula_cache_hits";
+/// Gauge: cache misses snapshot (point-in-time absolute value).
+pub const NEBULA_CACHE_MISSES: &str = "nebula_cache_misses";
+/// Gauge: cache evictions snapshot (point-in-time absolute value).
+pub const NEBULA_CACHE_EVICTIONS: &str = "nebula_cache_evictions";
 /// Gauge: current cache size (number of entries).
 pub const NEBULA_CACHE_SIZE: &str = "nebula_cache_size";
 
@@ -131,8 +131,8 @@ mod tests {
     use nebula_telemetry::metrics::MetricsRegistry;
 
     use super::{
-        NEBULA_CACHE_EVICTIONS_TOTAL, NEBULA_CACHE_HITS_TOTAL, NEBULA_CACHE_MISSES_TOTAL,
-        NEBULA_CACHE_SIZE, NEBULA_CREDENTIAL_ACTIVE_TOTAL, NEBULA_CREDENTIAL_EXPIRED_TOTAL,
+        NEBULA_CACHE_EVICTIONS, NEBULA_CACHE_HITS, NEBULA_CACHE_MISSES, NEBULA_CACHE_SIZE,
+        NEBULA_CREDENTIAL_ACTIVE_TOTAL, NEBULA_CREDENTIAL_EXPIRED_TOTAL,
         NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS, NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL,
         NEBULA_CREDENTIAL_ROTATIONS_TOTAL, NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
@@ -163,6 +163,14 @@ mod tests {
         NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
     ];
 
+    const RESOURCE_GAUGE_NAMES: [&str; 2] =
+        [NEBULA_RESOURCE_HEALTH_STATE, NEBULA_RESOURCE_POOL_WAITERS];
+
+    const RESOURCE_HISTOGRAM_NAMES: [&str; 2] = [
+        NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
+        NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
+    ];
+
     #[test]
     fn resource_constants_are_accessible_unique_and_registry_safe() {
         let registry = MetricsRegistry::new();
@@ -179,9 +187,19 @@ mod tests {
             );
             assert!(unique.insert(metric_name));
 
-            let counter = registry.counter(metric_name);
-            counter.inc();
-            assert_eq!(counter.get(), 1);
+            if RESOURCE_GAUGE_NAMES.contains(&metric_name) {
+                let gauge = registry.gauge(metric_name);
+                gauge.set(1);
+                assert_eq!(gauge.get(), 1);
+            } else if RESOURCE_HISTOGRAM_NAMES.contains(&metric_name) {
+                let histogram = registry.histogram(metric_name);
+                histogram.observe(1.0);
+                assert_eq!(histogram.count(), 1);
+            } else {
+                let counter = registry.counter(metric_name);
+                counter.inc();
+                assert_eq!(counter.get(), 1);
+            }
         }
 
         assert_eq!(unique.len(), 16);
@@ -196,9 +214,9 @@ mod tests {
     ];
 
     const CACHE_METRIC_NAMES: [&str; 4] = [
-        NEBULA_CACHE_HITS_TOTAL,
-        NEBULA_CACHE_MISSES_TOTAL,
-        NEBULA_CACHE_EVICTIONS_TOTAL,
+        NEBULA_CACHE_HITS,
+        NEBULA_CACHE_MISSES,
+        NEBULA_CACHE_EVICTIONS,
         NEBULA_CACHE_SIZE,
     ];
 
@@ -215,9 +233,20 @@ mod tests {
                     .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
             );
             assert!(unique.insert(metric_name));
-            let counter = registry.counter(metric_name);
-            counter.inc();
-            assert_eq!(counter.get(), 1);
+
+            if metric_name == NEBULA_CREDENTIAL_ACTIVE_TOTAL {
+                let gauge = registry.gauge(metric_name);
+                gauge.set(1);
+                assert_eq!(gauge.get(), 1);
+            } else if metric_name == NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS {
+                let histogram = registry.histogram(metric_name);
+                histogram.observe(1.0);
+                assert_eq!(histogram.count(), 1);
+            } else {
+                let counter = registry.counter(metric_name);
+                counter.inc();
+                assert_eq!(counter.get(), 1);
+            }
         }
         assert_eq!(unique.len(), 5);
     }
@@ -235,10 +264,15 @@ mod tests {
                     .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
             );
             assert!(unique.insert(metric_name));
-            let counter = registry.counter(metric_name);
-            counter.inc();
-            assert_eq!(counter.get(), 1);
         }
+
+        // All cache metrics are gauges (point-in-time snapshots)
+        for metric_name in CACHE_METRIC_NAMES {
+            let gauge = registry.gauge(metric_name);
+            gauge.set(1);
+            assert_eq!(gauge.get(), 1);
+        }
+
         assert_eq!(unique.len(), 4);
     }
 }

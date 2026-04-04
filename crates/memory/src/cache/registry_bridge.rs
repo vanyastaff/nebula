@@ -4,8 +4,7 @@
 //! into the shared metrics registry for Prometheus export.
 
 use nebula_metrics::naming::{
-    NEBULA_CACHE_EVICTIONS_TOTAL, NEBULA_CACHE_HITS_TOTAL, NEBULA_CACHE_MISSES_TOTAL,
-    NEBULA_CACHE_SIZE,
+    NEBULA_CACHE_EVICTIONS, NEBULA_CACHE_HITS, NEBULA_CACHE_MISSES, NEBULA_CACHE_SIZE,
 };
 use nebula_telemetry::MetricsRegistry;
 
@@ -28,14 +27,10 @@ use super::stats::CacheStats;
 /// sync_to_registry(&stats, &registry);
 /// ```
 pub fn sync_to_registry(stats: &CacheStats, registry: &MetricsRegistry) {
+    registry.gauge(NEBULA_CACHE_HITS).set(stats.hits as i64);
+    registry.gauge(NEBULA_CACHE_MISSES).set(stats.misses as i64);
     registry
-        .gauge(NEBULA_CACHE_HITS_TOTAL)
-        .set(stats.hits as i64);
-    registry
-        .gauge(NEBULA_CACHE_MISSES_TOTAL)
-        .set(stats.misses as i64);
-    registry
-        .gauge(NEBULA_CACHE_EVICTIONS_TOTAL)
+        .gauge(NEBULA_CACHE_EVICTIONS)
         .set(stats.evictions as i64);
     registry
         .gauge(NEBULA_CACHE_SIZE)
@@ -61,9 +56,9 @@ mod tests {
 
         sync_to_registry(&stats, &registry);
 
-        assert_eq!(registry.gauge(NEBULA_CACHE_HITS_TOTAL).get(), 42);
-        assert_eq!(registry.gauge(NEBULA_CACHE_MISSES_TOTAL).get(), 8);
-        assert_eq!(registry.gauge(NEBULA_CACHE_EVICTIONS_TOTAL).get(), 3);
+        assert_eq!(registry.gauge(NEBULA_CACHE_HITS).get(), 42);
+        assert_eq!(registry.gauge(NEBULA_CACHE_MISSES).get(), 8);
+        assert_eq!(registry.gauge(NEBULA_CACHE_EVICTIONS).get(), 3);
         assert_eq!(registry.gauge(NEBULA_CACHE_SIZE).get(), 45);
     }
 
@@ -80,7 +75,7 @@ mod tests {
         };
         sync_to_registry(&first, &registry);
 
-        assert_eq!(registry.gauge(NEBULA_CACHE_HITS_TOTAL).get(), 10);
+        assert_eq!(registry.gauge(NEBULA_CACHE_HITS).get(), 10);
 
         let second = CacheStats {
             hits: 100,
@@ -91,9 +86,9 @@ mod tests {
         };
         sync_to_registry(&second, &registry);
 
-        assert_eq!(registry.gauge(NEBULA_CACHE_HITS_TOTAL).get(), 100);
-        assert_eq!(registry.gauge(NEBULA_CACHE_MISSES_TOTAL).get(), 50);
-        assert_eq!(registry.gauge(NEBULA_CACHE_EVICTIONS_TOTAL).get(), 10);
+        assert_eq!(registry.gauge(NEBULA_CACHE_HITS).get(), 100);
+        assert_eq!(registry.gauge(NEBULA_CACHE_MISSES).get(), 50);
+        assert_eq!(registry.gauge(NEBULA_CACHE_EVICTIONS).get(), 10);
         assert_eq!(registry.gauge(NEBULA_CACHE_SIZE).get(), 200);
     }
 }
