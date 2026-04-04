@@ -91,6 +91,36 @@ pub const NEBULA_EVENTBUS_SUBSCRIBERS: &str = "nebula_eventbus_subscribers";
 pub const NEBULA_EVENTBUS_DROP_RATIO_PPM: &str = "nebula_eventbus_drop_ratio_ppm";
 
 // ---------------------------------------------------------------------------
+// Credential (rotation subsystem)
+// ---------------------------------------------------------------------------
+
+/// Counter: total credential rotation attempts.
+pub const NEBULA_CREDENTIAL_ROTATIONS_TOTAL: &str = "nebula_credential_rotations_total";
+/// Counter: total credential rotation failures.
+pub const NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL: &str =
+    "nebula_credential_rotation_failures_total";
+/// Histogram: credential rotation duration in seconds.
+pub const NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS: &str =
+    "nebula_credential_rotation_duration_seconds";
+/// Gauge: number of active (non-expired) credentials.
+pub const NEBULA_CREDENTIAL_ACTIVE_TOTAL: &str = "nebula_credential_active_total";
+/// Counter: total credentials that have expired.
+pub const NEBULA_CREDENTIAL_EXPIRED_TOTAL: &str = "nebula_credential_expired_total";
+
+// ---------------------------------------------------------------------------
+// Cache (memory crate)
+// ---------------------------------------------------------------------------
+
+/// Counter: total cache hits.
+pub const NEBULA_CACHE_HITS_TOTAL: &str = "nebula_cache_hits_total";
+/// Counter: total cache misses.
+pub const NEBULA_CACHE_MISSES_TOTAL: &str = "nebula_cache_misses_total";
+/// Counter: total cache evictions.
+pub const NEBULA_CACHE_EVICTIONS_TOTAL: &str = "nebula_cache_evictions_total";
+/// Gauge: current cache size (number of entries).
+pub const NEBULA_CACHE_SIZE: &str = "nebula_cache_size";
+
+// ---------------------------------------------------------------------------
 // Legacy names (for backward compatibility during migration)
 // ---------------------------------------------------------------------------
 
@@ -122,13 +152,17 @@ mod tests {
     use nebula_telemetry::metrics::MetricsRegistry;
 
     use super::{
-        NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
-        NEBULA_RESOURCE_CLEANUP_TOTAL, NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
-        NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
-        NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
-        NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
-        NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
-        NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
+        NEBULA_CACHE_EVICTIONS_TOTAL, NEBULA_CACHE_HITS_TOTAL, NEBULA_CACHE_MISSES_TOTAL,
+        NEBULA_CACHE_SIZE, NEBULA_CREDENTIAL_ACTIVE_TOTAL, NEBULA_CREDENTIAL_EXPIRED_TOTAL,
+        NEBULA_CREDENTIAL_ROTATIONS_TOTAL, NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS,
+        NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL, NEBULA_RESOURCE_ACQUIRE_TOTAL,
+        NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS, NEBULA_RESOURCE_CLEANUP_TOTAL,
+        NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL, NEBULA_RESOURCE_CREATE_TOTAL,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL, NEBULA_RESOURCE_ERROR_TOTAL,
+        NEBULA_RESOURCE_HEALTH_STATE, NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL,
+        NEBULA_RESOURCE_POOL_WAITERS, NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL,
+        NEBULA_RESOURCE_QUARANTINE_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL,
+        NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
     };
 
     const RESOURCE_METRIC_NAMES: [&str; 14] = [
@@ -170,5 +204,56 @@ mod tests {
         }
 
         assert_eq!(unique.len(), 14);
+    }
+
+    const CREDENTIAL_METRIC_NAMES: [&str; 5] = [
+        NEBULA_CREDENTIAL_ROTATIONS_TOTAL,
+        NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL,
+        NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS,
+        NEBULA_CREDENTIAL_ACTIVE_TOTAL,
+        NEBULA_CREDENTIAL_EXPIRED_TOTAL,
+    ];
+
+    const CACHE_METRIC_NAMES: [&str; 4] = [
+        NEBULA_CACHE_HITS_TOTAL,
+        NEBULA_CACHE_MISSES_TOTAL,
+        NEBULA_CACHE_EVICTIONS_TOTAL,
+        NEBULA_CACHE_SIZE,
+    ];
+
+    #[test]
+    fn credential_constants_are_accessible_unique_and_registry_safe() {
+        let registry = MetricsRegistry::new();
+        let mut unique = HashSet::new();
+        for metric_name in CREDENTIAL_METRIC_NAMES {
+            assert!(!metric_name.is_empty());
+            assert!(metric_name.starts_with("nebula_credential_"));
+            assert!(metric_name
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'));
+            assert!(unique.insert(metric_name));
+            let counter = registry.counter(metric_name);
+            counter.inc();
+            assert_eq!(counter.get(), 1);
+        }
+        assert_eq!(unique.len(), 5);
+    }
+
+    #[test]
+    fn cache_constants_are_accessible_unique_and_registry_safe() {
+        let registry = MetricsRegistry::new();
+        let mut unique = HashSet::new();
+        for metric_name in CACHE_METRIC_NAMES {
+            assert!(!metric_name.is_empty());
+            assert!(metric_name.starts_with("nebula_cache_"));
+            assert!(metric_name
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'));
+            assert!(unique.insert(metric_name));
+            let counter = registry.counter(metric_name);
+            counter.inc();
+            assert_eq!(counter.get(), 1);
+        }
+        assert_eq!(unique.len(), 4);
     }
 }
