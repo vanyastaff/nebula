@@ -5,6 +5,7 @@
 
 use nebula_config::Config;
 use nebula_storage::{ExecutionRepo, WorkflowRepo};
+use nebula_telemetry::metrics::MetricsRegistry;
 use std::sync::Arc;
 
 /// Application State, передаваемый через Router::with_state
@@ -22,6 +23,10 @@ pub struct AppState {
 
     /// Execution Repository (port/trait)
     pub execution_repo: Arc<dyn ExecutionRepo>,
+
+    /// Optional metrics registry for Prometheus export.
+    /// When `None`, the `GET /metrics` endpoint returns 503.
+    pub metrics_registry: Option<Arc<MetricsRegistry>>,
     // TODO: Добавить другие порты по мере необходимости:
     // pub task_queue: Arc<dyn TaskQueue>,
     // pub credential_store: Arc<dyn CredentialStore>,
@@ -42,6 +47,14 @@ impl AppState {
             jwt_secret: jwt_secret.into(),
             workflow_repo,
             execution_repo,
+            metrics_registry: None,
         }
+    }
+
+    /// Attach a metrics registry for Prometheus export via `GET /metrics`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_metrics_registry(mut self, registry: Arc<MetricsRegistry>) -> Self {
+        self.metrics_registry = Some(registry);
+        self
     }
 }

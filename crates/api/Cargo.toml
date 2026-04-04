@@ -17,6 +17,8 @@ nebula-storage = { path = "../storage" }
 nebula-config = { path = "../config" }
 nebula-core = { path = "../core" }
 nebula-validator = { path = "../validator" }
+nebula-metrics = { path = "../metrics" }
+nebula-telemetry = { path = "../telemetry" }
 
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "net", "signal"] }
 axum = { workspace = true }
