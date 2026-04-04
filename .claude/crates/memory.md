@@ -59,6 +59,7 @@ High-performance memory management — arenas, pools, LRU/TTL caching, memory pr
 
 ## Relations
 - Optional dep on nebula-log (feature: `logging`), nebula-system for pressure detection.
+- Optional dep on nebula-telemetry + nebula-metrics (feature: `telemetry`) — `registry_bridge::sync_to_registry` pushes `CacheStats` snapshot into `MetricsRegistry` as gauges.
 - Only consumer: nebula-expression (uses `ConcurrentComputeCache`, `CacheConfig`, `CacheStats`, `MemoryError`).
 
 - `memory_prefetch` is `unsafe fn` — dereferences `*const u8` via `read_volatile`; was previously missing `unsafe` keyword (soundness hole).
