@@ -3604,10 +3604,8 @@ dependencies = [
 name = "nebula-telemetry"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "dashmap",
  "lasso",
- "nebula-core",
  "nebula-error",
  "nebula-eventbus",
  "rand 0.10.0",

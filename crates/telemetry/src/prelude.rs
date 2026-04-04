@@ -12,6 +12,3 @@ pub use crate::event::{EventBus, ExecutionEvent};
 
 // ── Metrics ─────────────────────────────────────────────────────────────────
 pub use crate::metrics::{Counter, Gauge, Histogram, MetricsRegistry};
-
-// ── Recording ───────────────────────────────────────────────────────────────
-pub use crate::recorder::{NoopRecorder, Recorder};

@@ -1,21 +1,20 @@
 //! Telemetry service trait and implementations.
 //!
 //! [`TelemetryService`] is the main facade for the telemetry subsystem.
-//! It provides access to the event bus, metrics registry, and execution recorder.
+//! It provides access to the event bus and metrics registry.
 //!
 //! Two implementations are provided:
 //! - [`NoopTelemetry`] — no-op (metrics in-memory, no export). Testing and MVP.
-//! - [`ProductionTelemetry`] — configurable components with buffered recording.
+//! - [`ProductionTelemetry`] — configurable components with event bus and metrics.
 
 use std::sync::Arc;
 
 use crate::event::EventBus;
 use crate::metrics::MetricsRegistry;
-use crate::recorder::{BufferedRecorder, BufferedRecorderConfig, LogSink, Recorder};
 
 /// Telemetry service facade.
 ///
-/// Provides access to the event bus, metrics registry, and execution recorder.
+/// Provides access to the event bus and metrics registry.
 /// Shared via `Arc<dyn TelemetryService>` across the engine and runtime.
 ///
 /// Both [`EventBus`] and [`MetricsRegistry`] are cheaply cloneable (Arc-backed
@@ -27,10 +26,6 @@ pub trait TelemetryService: Send + Sync {
 
     /// Access the metrics registry for recording metrics.
     fn metrics(&self) -> &MetricsRegistry;
-
-    /// Return the execution recorder for resource usage and call traces.
-    /// Engine injects this into resource context so one backend receives all trace data.
-    fn execution_recorder(&self) -> Arc<dyn Recorder>;
 }
 
 /// No-op telemetry implementation.
@@ -52,7 +47,6 @@ pub trait TelemetryService: Send + Sync {
 pub struct NoopTelemetry {
     event_bus: EventBus,
     metrics: MetricsRegistry,
-    recorder: Arc<dyn Recorder>,
 }
 
 impl NoopTelemetry {
@@ -62,7 +56,6 @@ impl NoopTelemetry {
         Self {
             event_bus: EventBus::new(128),
             metrics: MetricsRegistry::new(),
-            recorder: Arc::new(crate::recorder::NoopRecorder),
         }
     }
 
@@ -87,17 +80,12 @@ impl TelemetryService for NoopTelemetry {
     fn metrics(&self) -> &MetricsRegistry {
         &self.metrics
     }
-
-    fn execution_recorder(&self) -> Arc<dyn Recorder> {
-        Arc::clone(&self.recorder)
-    }
 }
 
 // ── ProductionTelemetry ──────────────────────────────────────────────────────
 
 /// Production-ready telemetry service with configurable components.
 ///
-/// Uses [`BufferedRecorder`] by default for non-blocking record collection.
 /// Build via [`ProductionTelemetryBuilder`].
 ///
 /// # Examples
@@ -114,7 +102,6 @@ impl TelemetryService for NoopTelemetry {
 pub struct ProductionTelemetry {
     event_bus: EventBus,
     metrics: MetricsRegistry,
-    recorder: Arc<dyn Recorder>,
 }
 
 impl ProductionTelemetry {
@@ -138,10 +125,6 @@ impl TelemetryService for ProductionTelemetry {
     fn metrics(&self) -> &MetricsRegistry {
         &self.metrics
     }
-
-    fn execution_recorder(&self) -> Arc<dyn Recorder> {
-        Arc::clone(&self.recorder)
-    }
 }
 
 // ── ProductionTelemetryBuilder ───────────────────────────────────────────────
@@ -151,13 +134,10 @@ impl TelemetryService for ProductionTelemetry {
 /// All components have sensible defaults:
 /// - Event bus: capacity 1024
 /// - Metrics: new in-memory registry
-/// - Recorder: [`BufferedRecorder`] with [`LogSink`] and default config
 #[derive(Default)]
 pub struct ProductionTelemetryBuilder {
     event_bus: Option<EventBus>,
     metrics: Option<MetricsRegistry>,
-    recorder: Option<Arc<dyn Recorder>>,
-    buffer_config: Option<BufferedRecorderConfig>,
 }
 
 impl ProductionTelemetryBuilder {
@@ -175,41 +155,15 @@ impl ProductionTelemetryBuilder {
         self
     }
 
-    /// Set a custom recorder (overrides buffer config).
-    #[must_use]
-    pub fn with_recorder(mut self, recorder: Arc<dyn Recorder>) -> Self {
-        self.recorder = Some(recorder);
-        self
-    }
-
-    /// Configure the default [`BufferedRecorder`].
-    ///
-    /// Ignored if a custom recorder is set via [`with_recorder`](Self::with_recorder).
-    #[must_use]
-    pub fn with_buffer_config(mut self, config: BufferedRecorderConfig) -> Self {
-        self.buffer_config = Some(config);
-        self
-    }
-
     /// Build the production telemetry service.
-    ///
-    /// Must be called within a tokio runtime (spawns background tasks).
     #[must_use]
     pub fn build(self) -> ProductionTelemetry {
         let event_bus = self.event_bus.unwrap_or_else(|| EventBus::new(1024));
         let metrics = self.metrics.unwrap_or_default();
-        let recorder = self.recorder.unwrap_or_else(|| {
-            let config = self.buffer_config.unwrap_or_default();
-            Arc::new(BufferedRecorder::start(config, LogSink))
-        });
 
         tracing::info!("production telemetry service initialized");
 
-        ProductionTelemetry {
-            event_bus,
-            metrics,
-            recorder,
-        }
+        ProductionTelemetry { event_bus, metrics }
     }
 }
 
@@ -237,15 +191,15 @@ mod tests {
         t.metrics().counter("x").inc();
     }
 
-    #[tokio::test]
-    async fn production_telemetry_builder_defaults() {
+    #[test]
+    fn production_telemetry_builder_defaults() {
         let telemetry = ProductionTelemetry::builder().build();
         telemetry.metrics().counter("test").inc();
         assert_eq!(telemetry.metrics().counter("test").get(), 1);
     }
 
-    #[tokio::test]
-    async fn production_telemetry_custom_components() {
+    #[test]
+    fn production_telemetry_custom_components() {
         let bus = EventBus::new(64);
         let metrics = MetricsRegistry::new();
 
@@ -258,17 +212,10 @@ mod tests {
         assert_eq!(metrics.counter("shared").get(), 1);
     }
 
-    #[tokio::test]
-    async fn production_telemetry_arc_is_object_safe() {
+    #[test]
+    fn production_telemetry_arc_is_object_safe() {
         let t: Arc<dyn TelemetryService> = ProductionTelemetry::builder().build().arc();
         t.metrics().counter("x").inc();
         assert_eq!(t.metrics().counter("x").get(), 1);
-    }
-
-    #[tokio::test]
-    async fn production_telemetry_execution_recorder_works() {
-        let telemetry = ProductionTelemetry::builder().build();
-        let recorder = telemetry.execution_recorder();
-        assert!(recorder.is_enrichment_enabled());
     }
 }

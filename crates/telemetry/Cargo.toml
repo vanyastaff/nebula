@@ -12,10 +12,8 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-nebula-core = { path = "../core" }
 nebula-error = { workspace = true, features = ["derive"] }
 nebula-eventbus = { path = "../eventbus" }
-async-trait = { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

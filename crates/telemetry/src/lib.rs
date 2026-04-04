@@ -9,12 +9,9 @@
 //! - [`EventBus`] — broadcast-based event distribution (backed by [`nebula_eventbus`])
 //! - [`ExecutionEvent`] — execution lifecycle events with optional [`TraceContext`]
 //! - [`TelemetryService`] trait — pluggable telemetry backend
-//! - [`ProductionTelemetry`] — full-featured implementation with event bus, metrics,
-//!   and [`BufferedRecorder`]
+//! - [`ProductionTelemetry`] — full-featured implementation with event bus and metrics
 //! - [`NoopTelemetry`] — no-op implementation for testing/MVP
 //! - [`TraceContext`] — W3C trace context propagation (trace ID + span ID + sampling)
-//! - [`BufferedRecorder`] — background-buffered resource call recording with
-//!   pluggable [`RecordSink`]
 //! - [`LabelInterner`] / [`LabelSet`] — `lasso`-backed string interning for
 //!   label keys and values, enabling zero-copy metric dimensions
 //! - [`TelemetryError`] — unified error type for the telemetry subsystem
@@ -35,7 +32,6 @@ pub mod labels;
 pub mod metrics;
 /// Convenience re-exports.
 pub mod prelude;
-pub mod recorder;
 pub mod service;
 pub mod trace;
 
@@ -43,10 +39,6 @@ pub use error::{TelemetryError, TelemetryResult};
 pub use event::{EventBus, EventSubscriber, ExecutionEvent, ScopedSubscriber};
 pub use labels::{LabelInterner, LabelSet, MetricKey};
 pub use metrics::{Counter, Gauge, Histogram, MetricsRegistry};
-pub use recorder::{
-    BufferedRecorder, BufferedRecorderConfig, CallBody, CallPayload, CallRecord, CallStatus,
-    DropReason, LogSink, NoopRecorder, RecordEntry, RecordSink, Recorder, ResourceUsageRecord,
-};
 pub use service::{
     NoopTelemetry, ProductionTelemetry, ProductionTelemetryBuilder, TelemetryService,
 };
