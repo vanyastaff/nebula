@@ -138,3 +138,11 @@ codegen-units = 16  # Parallel compilation, more stable than 1
 opt-level = 3       # Maximum optimization level
 strip = "symbols"   # Remove symbols for smaller binary
 panic = 'abort'     # Smaller binary, faster unwinding
+
+[profile.profiling]
+inherits = "release"
+debug = 2
+strip = "none"
+
+[profile.bench]
+debug = 2

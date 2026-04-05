@@ -28,7 +28,7 @@ impl Validate<serde_json::Value> for SecretRejectingValidator {
 #[tokio::test]
 async fn diagnostics_do_not_leak_sensitive_values_from_validator_context() {
     let result = ConfigBuilder::new()
-        .with_defaults_json(serde_json::json!({
+        .with_defaults(serde_json::json!({
             "credentials": {
                 "password": "super-secret-value"
             }

@@ -3170,8 +3170,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "codspeed-criterion-compat",
  "dashmap",
  "futures",
+ "itoa",
  "nebula-config-macros",
  "nebula-error",
  "nebula-log",
@@ -3180,6 +3182,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "smallvec",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

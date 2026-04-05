@@ -25,7 +25,7 @@ async fn precedence_matrix_resolves_deterministically() {
     let fixture: PrecedenceFixture =
         serde_json::from_str(&fixture_raw).expect("precedence fixture must be valid JSON");
 
-    let mut builder = ConfigBuilder::new().with_defaults_json(fixture.defaults);
+    let mut builder = ConfigBuilder::new().with_defaults(fixture.defaults);
     let mut loader = StaticFixtureLoader::default();
 
     for source in &fixture.sources {

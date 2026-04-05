@@ -25,7 +25,7 @@ impl Validate<serde_json::Value> for RequireModeProd {
 #[tokio::test]
 async fn valid_candidate_activates_with_nebula_validator_bridge() {
     let config = ConfigBuilder::new()
-        .with_defaults_json(serde_json::json!({
+        .with_defaults(serde_json::json!({
             "service": {
                 "mode": "prod"
             }
