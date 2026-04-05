@@ -17,7 +17,7 @@ async fn build_snapshot() -> serde_json::Value {
         .with_payload(override_source.clone(), json!({"shared": {"c": 4}}));
 
     ConfigBuilder::new()
-        .with_defaults_json(json!({"a": 1, "shared": {"b": "default"}}))
+        .with_defaults(json!({"a": 1, "shared": {"b": "default"}}))
         .with_source(file_source)
         .with_source(env_source)
         .with_source(override_source)

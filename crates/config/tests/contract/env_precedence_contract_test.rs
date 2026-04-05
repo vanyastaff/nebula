@@ -16,7 +16,7 @@ async fn env_overrides_file_and_defaults() {
     unsafe { std::env::set_var(&env_key, "9100") };
 
     let config = ConfigBuilder::new()
-        .with_defaults_json(json!({"service":{"port":3000,"host":"default-host"}}))
+        .with_defaults(json!({"service":{"port":3000,"host":"default-host"}}))
         .with_source(ConfigSource::File(file_path))
         .with_source(ConfigSource::EnvWithPrefix(prefix.clone()))
         .build()

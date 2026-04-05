@@ -57,7 +57,7 @@ async fn json_defaults_with_interpolation() {
     unsafe { std::env::set_var("NEBULA_INTERP_IT_NAME", "nebula") };
 
     let config = ConfigBuilder::new()
-        .with_defaults_json(serde_json::json!({
+        .with_defaults(serde_json::json!({
             "app": {
                 "name": "${NEBULA_INTERP_IT_NAME}",
                 "version": "1.0"

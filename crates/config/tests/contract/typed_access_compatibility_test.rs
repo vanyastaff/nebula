@@ -24,7 +24,7 @@ async fn typed_access_contract_fixture_is_compatible() {
         serde_json::from_str(&fixture_raw).expect("path fixture must be valid");
 
     let config = ConfigBuilder::new()
-        .with_defaults_json(fixture.data)
+        .with_defaults(fixture.data)
         .build()
         .await
         .expect("config should build from fixture data");

@@ -32,7 +32,7 @@ impl Validate<serde_json::Value> for NestedContextValidator {
 #[tokio::test]
 async fn diagnostics_include_source_and_path_context() {
     let result = ConfigBuilder::new()
-        .with_defaults_json(serde_json::json!({"service":{"port":0}}))
+        .with_defaults(serde_json::json!({"service":{"port":0}}))
         .with_validator(std::sync::Arc::new(ContextAwareValidator))
         .build()
         .await;
@@ -50,7 +50,7 @@ async fn diagnostics_include_source_and_path_context() {
 #[tokio::test]
 async fn diagnostics_promote_nested_field_context_from_validator() {
     let result = ConfigBuilder::new()
-        .with_defaults_json(serde_json::json!({"service":{"port":"bad"}}))
+        .with_defaults(serde_json::json!({"service":{"port":"bad"}}))
         .with_validator(std::sync::Arc::new(NestedContextValidator))
         .build()
         .await;

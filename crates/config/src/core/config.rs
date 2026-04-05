@@ -4,10 +4,14 @@ use super::{ConfigError, ConfigResult, ConfigSource, SourceMetadata};
 use super::{ConfigLoader, ConfigValidator, ConfigWatcher};
 use dashmap::DashMap;
 use serde::de::DeserializeOwned;
+use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+
+/// Inline storage for config sources — most configs have 1-3 sources.
+pub type Sources = SmallVec<[ConfigSource; 4]>;
 
 /// Runtime behavior options for `Config`.
 #[derive(Debug, Clone, Copy)]
@@ -23,7 +27,7 @@ pub struct Config {
     data: Arc<RwLock<serde_json::Value>>,
 
     /// Configuration sources
-    sources: Vec<ConfigSource>,
+    sources: Sources,
 
     /// Default values captured at build time and reused during reload.
     defaults: Option<serde_json::Value>,
@@ -54,7 +58,7 @@ impl Config {
     /// Create new config (internal use only, use ConfigBuilder)
     pub(crate) fn new(
         data: serde_json::Value,
-        sources: Vec<ConfigSource>,
+        sources: Sources,
         defaults: Option<serde_json::Value>,
         loader: Arc<dyn ConfigLoader>,
         validator: Option<Arc<dyn ConfigValidator>>,
@@ -490,12 +494,14 @@ impl Config {
         self.set_value(path, json_value).await
     }
 
-    /// Get all configuration as flat key-value map
-    pub async fn flatten(&self) -> HashMap<String, serde_json::Value> {
-        let value = self.as_value().await;
-        let mut map = HashMap::new();
-        flatten_into("", &value, &mut map);
-        map
+    /// Get all configuration as flat key-value pairs.
+    pub async fn flatten(&self) -> Vec<(String, serde_json::Value)> {
+        let data = self.data.read().await;
+        let capacity = count_leaves(&data);
+        let mut pairs = Vec::with_capacity(capacity);
+        let mut buf = String::with_capacity(64);
+        flatten_into(&mut buf, &data, &mut pairs);
+        pairs
     }
 
     /// Merge configuration from dynamic value
@@ -525,10 +531,13 @@ pub(crate) fn merge_json(
     match (target, source) {
         (serde_json::Value::Object(target_obj), serde_json::Value::Object(source_obj)) => {
             for (key, value) in source_obj {
-                if let Some(existing) = target_obj.get_mut(&key) {
-                    merge_json(existing, value)?;
-                } else {
-                    target_obj.insert(key, value);
+                match target_obj.entry(key) {
+                    serde_json::map::Entry::Occupied(mut entry) => {
+                        merge_json(entry.get_mut(), value)?;
+                    }
+                    serde_json::map::Entry::Vacant(entry) => {
+                        entry.insert(value);
+                    }
                 }
             }
         }
@@ -539,35 +548,55 @@ pub(crate) fn merge_json(
     Ok(())
 }
 
-/// Flatten serde_json::Value into a map with dot-notation keys
+/// Count leaf nodes for pre-allocation.
+#[inline]
+fn count_leaves(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Object(obj) => obj.values().map(count_leaves).sum(),
+        serde_json::Value::Array(arr) => arr.iter().map(count_leaves).sum(),
+        _ => 1,
+    }
+}
+
+/// Flatten serde_json::Value into key-value pairs.
+///
+/// Uses a single reusable `String` buffer (push/truncate) instead of
+/// `format!()` per recursion level, and `itoa` for array indices.
 fn flatten_into(
-    prefix: &str,
+    buf: &mut String,
     value: &serde_json::Value,
-    map: &mut HashMap<String, serde_json::Value>,
+    out: &mut Vec<(String, serde_json::Value)>,
 ) {
     match value {
         serde_json::Value::Object(obj) => {
             for (key, val) in obj {
-                let full_key = if prefix.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{prefix}.{key}")
-                };
-                flatten_into(&full_key, val, map);
+                let prev_len = buf.len();
+                if !buf.is_empty() {
+                    buf.push('.');
+                }
+                buf.push_str(key);
+                flatten_into(buf, val, out);
+                buf.truncate(prev_len);
             }
         }
         serde_json::Value::Array(arr) => {
+            let mut itoa_buf = itoa::Buffer::new();
             for (index, val) in arr.iter().enumerate() {
-                let full_key = if prefix.is_empty() {
-                    index.to_string()
+                let prev_len = buf.len();
+                let index_str = itoa_buf.format(index);
+                if buf.is_empty() {
+                    buf.push_str(index_str);
                 } else {
-                    format!("{prefix}[{index}]")
-                };
-                flatten_into(&full_key, val, map);
+                    buf.push('[');
+                    buf.push_str(index_str);
+                    buf.push(']');
+                }
+                flatten_into(buf, val, out);
+                buf.truncate(prev_len);
             }
         }
         _ => {
-            map.insert(prefix.to_string(), value.clone());
+            out.push((buf.clone(), value.clone()));
         }
     }
 }
@@ -607,7 +636,7 @@ mod tests {
     fn test_config(data: serde_json::Value) -> Config {
         Config::new(
             data,
-            vec![ConfigSource::Default],
+            smallvec::smallvec![ConfigSource::Default],
             None,
             Arc::new(crate::loaders::CompositeLoader::default()),
             None,
@@ -746,10 +775,11 @@ mod tests {
         }));
 
         let flat = cfg.flatten().await;
-        assert_eq!(flat["server.host"], json!("localhost"));
-        assert_eq!(flat["server.port"], json!(8080));
-        assert_eq!(flat["tags[0]"], json!("a"));
-        assert_eq!(flat["tags[1]"], json!("b"));
+        let find = |key: &str| flat.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        assert_eq!(find("server.host"), Some(json!("localhost")));
+        assert_eq!(find("server.port"), Some(json!(8080)));
+        assert_eq!(find("tags[0]"), Some(json!("a")));
+        assert_eq!(find("tags[1]"), Some(json!("b")));
     }
 
     #[tokio::test]

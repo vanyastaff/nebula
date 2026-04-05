@@ -1,18 +1,18 @@
 //! Configuration builder
 
-use super::config::ConfigRuntimeOptions;
-use super::config::merge_json;
+use super::config::{ConfigRuntimeOptions, Sources, merge_json};
 use super::{Config, ConfigError, ConfigResult, ConfigSource};
 use crate::loaders::CompositeLoader;
 #[cfg(feature = "env")]
 use crate::loaders::EnvParseMode;
 use crate::{ConfigLoader, ConfigValidator, ConfigWatcher};
+use smallvec::SmallVec;
 use std::sync::Arc;
 
 /// Configuration builder
 pub struct ConfigBuilder {
     /// Configuration sources
-    sources: Vec<ConfigSource>,
+    sources: Sources,
 
     /// Default values
     defaults: Option<serde_json::Value>,
@@ -47,7 +47,7 @@ impl ConfigBuilder {
     /// Create a new configuration builder
     pub fn new() -> Self {
         Self {
-            sources: Vec::new(),
+            sources: SmallVec::new(),
             defaults: None,
             loader: None,
             validator: None,
@@ -70,26 +70,23 @@ impl ConfigBuilder {
 
     /// Add multiple configuration sources
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_sources(mut self, sources: Vec<ConfigSource>) -> Self {
+    pub fn with_sources(mut self, sources: impl IntoIterator<Item = ConfigSource>) -> Self {
         self.sources.extend(sources);
         self
     }
 
-    /// Set default values
+    /// Set default values (accepts `serde_json::Value` directly — zero-cost)
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_defaults<T>(mut self, defaults: T) -> ConfigResult<Self>
-    where
-        T: serde::Serialize,
-    {
-        self.defaults = Some(serde_json::to_value(defaults)?);
-        Ok(self)
-    }
-
-    /// Set default values from JSON
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_defaults_json(mut self, defaults: serde_json::Value) -> Self {
+    pub fn with_defaults(mut self, defaults: serde_json::Value) -> Self {
         self.defaults = Some(defaults);
         self
+    }
+
+    /// Set default values from a serializable type
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_defaults_from<T: serde::Serialize>(mut self, defaults: T) -> ConfigResult<Self> {
+        self.defaults = Some(serde_json::to_value(defaults)?);
+        Ok(self)
     }
 
     /// Set configuration loader
@@ -349,7 +346,7 @@ mod tests {
     #[tokio::test]
     async fn test_builder_defaults_only() {
         let config = ConfigBuilder::new()
-            .with_defaults_json(json!({"name": "app", "port": 8080}))
+            .with_defaults(json!({"name": "app", "port": 8080}))
             .build()
             .await
             .unwrap();
@@ -369,7 +366,7 @@ mod tests {
         }
 
         let config = ConfigBuilder::new()
-            .with_defaults(Defaults {
+            .with_defaults_from(Defaults {
                 host: "localhost".into(),
                 port: 3000,
             })
@@ -404,7 +401,7 @@ mod tests {
 
         // Valid config passes
         let config = ConfigBuilder::new()
-            .with_defaults_json(json!({"name": "app"}))
+            .with_defaults(json!({"name": "app"}))
             .with_validator(Arc::new(ClosureValidator(|data: &serde_json::Value| {
                 if data.get("name").is_none() {
                     Err(ConfigError::validation("name required"))
@@ -418,7 +415,7 @@ mod tests {
 
         // Invalid config fails build
         let result = ConfigBuilder::new()
-            .with_defaults_json(json!({"port": 8080}))
+            .with_defaults(json!({"port": 8080}))
             .with_validator(Arc::new(ClosureValidator(|data: &serde_json::Value| {
                 if data.get("name").is_none() {
                     Err(ConfigError::validation("name required"))
