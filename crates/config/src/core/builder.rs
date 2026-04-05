@@ -91,7 +91,6 @@ impl ConfigBuilder {
 
     /// Set default values from a `serde_json::Value`.
     ///
-    /// # Deprecated
     /// Use [`with_defaults`](Self::with_defaults) instead.
     #[deprecated(since = "0.1.0", note = "use `with_defaults` instead")]
     #[must_use = "builder methods must be chained or built"]
