@@ -10,7 +10,7 @@ const TEST_JWT_SECRET: &str = "test-secret-for-integration-tests";
 /// Helper to create test app state
 async fn create_test_state() -> AppState {
     let config = ConfigBuilder::new()
-        .with_defaults_json(serde_json::json!({
+        .with_defaults(serde_json::json!({
             "api": {
                 "port": 8080,
                 "host": "127.0.0.1"

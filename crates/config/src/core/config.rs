@@ -510,6 +510,17 @@ impl Config {
         pairs
     }
 
+    /// Get all configuration as a flat `HashMap` with dot-notation keys.
+    ///
+    /// Array elements use dot-separated indices (e.g. `tags.0`, `tags.1`)
+    /// consistent with the `get`/`set_value` path API.
+    ///
+    /// Use this variant when you need O(1) key lookups. For iteration only,
+    /// prefer [`flatten`](Self::flatten) to avoid the extra allocation.
+    pub async fn flatten_map(&self) -> HashMap<String, serde_json::Value> {
+        self.flatten().await.into_iter().collect()
+    }
+
     /// Merge configuration from dynamic value
     pub async fn merge(&self, value: serde_json::Value) -> ConfigResult<()> {
         let mut data = self.data.write().await;

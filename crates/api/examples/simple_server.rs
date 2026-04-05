@@ -8,7 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let config = ConfigBuilder::new()
-        .with_defaults_json(serde_json::json!({
+        .with_defaults(serde_json::json!({
             "api": {
                 "host": "127.0.0.1",
                 "port": 8080
