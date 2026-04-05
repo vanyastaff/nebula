@@ -45,38 +45,59 @@ fn bench_key_lookup(c: &mut Criterion) {
                 "database": {"host": "localhost", "port": 5432,
                     "connection": {"pool_size": 10, "timeout": 5000}}
             }))
-            .build().await.unwrap()
+            .build()
+            .await
+            .unwrap()
     });
 
     group.bench_function("shallow_string", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        b.to_async(&rt).iter(|| { let cfg = &config; async move {
-            black_box(cfg.get::<String>("app.name").await.unwrap());
-        }});
+        b.to_async(&rt).iter(|| {
+            let cfg = &config;
+            async move {
+                black_box(cfg.get::<String>("app.name").await.unwrap());
+            }
+        });
     });
     group.bench_function("shallow_u16", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        b.to_async(&rt).iter(|| { let cfg = &config; async move {
-            black_box(cfg.get::<u16>("app.port").await.unwrap());
-        }});
+        b.to_async(&rt).iter(|| {
+            let cfg = &config;
+            async move {
+                black_box(cfg.get::<u16>("app.port").await.unwrap());
+            }
+        });
     });
     group.bench_function("deep_i64", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        b.to_async(&rt).iter(|| { let cfg = &config; async move {
-            black_box(cfg.get::<i64>("database.connection.pool_size").await.unwrap());
-        }});
+        b.to_async(&rt).iter(|| {
+            let cfg = &config;
+            async move {
+                black_box(
+                    cfg.get::<i64>("database.connection.pool_size")
+                        .await
+                        .unwrap(),
+                );
+            }
+        });
     });
     group.bench_function("get_value", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        b.to_async(&rt).iter(|| { let cfg = &config; async move {
-            black_box(cfg.get_value("database.connection").await.unwrap());
-        }});
+        b.to_async(&rt).iter(|| {
+            let cfg = &config;
+            async move {
+                black_box(cfg.get_value("database.connection").await.unwrap());
+            }
+        });
     });
     group.bench_function("missing_key", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        b.to_async(&rt).iter(|| { let cfg = &config; async move {
-            let _ = black_box(cfg.get::<String>("nonexistent.key").await);
-        }});
+        b.to_async(&rt).iter(|| {
+            let cfg = &config;
+            async move {
+                let _ = black_box(cfg.get::<String>("nonexistent.key").await);
+            }
+        });
     });
     group.finish();
 }
@@ -89,15 +110,23 @@ fn bench_merge(c: &mut Criterion) {
             let config = rt.block_on(async {
                 nebula_config::ConfigBuilder::new()
                     .with_defaults(json!({"base": "value"}))
-                    .build().await.unwrap()
+                    .build()
+                    .await
+                    .unwrap()
             });
             let overlay: serde_json::Value = {
                 let mut map = serde_json::Map::new();
-                for i in 0..size { map.insert(format!("key_{i}"), json!(i)); }
+                for i in 0..size {
+                    map.insert(format!("key_{i}"), json!(i));
+                }
                 serde_json::Value::Object(map)
             };
-            b.to_async(&rt).iter(|| { let cfg = &config; let ov = overlay.clone();
-                async move { cfg.merge(ov).await.unwrap(); }
+            b.to_async(&rt).iter(|| {
+                let cfg = &config;
+                let ov = overlay.clone();
+                async move {
+                    cfg.merge(ov).await.unwrap();
+                }
             });
         });
     }
@@ -114,13 +143,18 @@ fn bench_flatten(c: &mut Criterion) {
                 "f": {"g": {"h": {"i": 4}}},
                 "j": 5, "k": [1, 2, 3]
             }))
-            .build().await.unwrap()
+            .build()
+            .await
+            .unwrap()
     });
     group.bench_function("nested", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        b.to_async(&rt).iter(|| { let cfg = &config; async move {
-            black_box(cfg.flatten().await);
-        }});
+        b.to_async(&rt).iter(|| {
+            let cfg = &config;
+            async move {
+                black_box(cfg.flatten().await);
+            }
+        });
     });
     group.finish();
 }
@@ -134,24 +168,49 @@ fn bench_parse(c: &mut Criterion) {
     let yaml_s = "server:\n  port: 8080\n  host: localhost\ndebug: true\n";
 
     group.bench_function("json", |b| {
-        b.iter(|| black_box(
-            nebula_config::utils::parse_config_string(json_s, nebula_config::ConfigFormat::Json).unwrap()
-        ));
+        b.iter(|| {
+            black_box(
+                nebula_config::utils::parse_config_string(
+                    json_s,
+                    nebula_config::ConfigFormat::Json,
+                )
+                .unwrap(),
+            )
+        });
     });
     #[cfg(feature = "toml")]
     group.bench_function("toml", |b| {
-        b.iter(|| black_box(
-            nebula_config::utils::parse_config_string(toml_s, nebula_config::ConfigFormat::Toml).unwrap()
-        ));
+        b.iter(|| {
+            black_box(
+                nebula_config::utils::parse_config_string(
+                    toml_s,
+                    nebula_config::ConfigFormat::Toml,
+                )
+                .unwrap(),
+            )
+        });
     });
     #[cfg(feature = "yaml")]
     group.bench_function("yaml", |b| {
-        b.iter(|| black_box(
-            nebula_config::utils::parse_config_string(yaml_s, nebula_config::ConfigFormat::Yaml).unwrap()
-        ));
+        b.iter(|| {
+            black_box(
+                nebula_config::utils::parse_config_string(
+                    yaml_s,
+                    nebula_config::ConfigFormat::Yaml,
+                )
+                .unwrap(),
+            )
+        });
     });
     group.finish();
 }
 
-criterion_group!(benches, bench_config_build, bench_key_lookup, bench_merge, bench_flatten, bench_parse);
+criterion_group!(
+    benches,
+    bench_config_build,
+    bench_key_lookup,
+    bench_merge,
+    bench_flatten,
+    bench_parse
+);
 criterion_main!(benches);
