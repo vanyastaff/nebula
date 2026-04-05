@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "cache_size": 1024
                 }
             }
-        }))?
+        }))
         .build()
         .await?;
 
@@ -127,18 +127,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Example 5: Flat configuration map for debugging
+    // Example 5: Flat configuration pairs for debugging
     info!("=== Configuration Debugging ===");
 
-    let flat_map = config.flatten().await;
+    let flat_pairs = config.flatten().await;
     debug!(
-        total_keys = flat_map.len(),
-        config_keys = ?flat_map.keys().collect::<Vec<_>>(),
+        total_keys = flat_pairs.len(),
+        config_keys = ?flat_pairs.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
         "Configuration flattened for debugging"
     );
 
     // Show some key configuration values
-    for (key, value) in flat_map.iter().take(5) {
+    for (key, value) in flat_pairs.iter().take(5) {
         debug!(
             config_key = %key,
             config_value = %value,

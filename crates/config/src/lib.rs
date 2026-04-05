@@ -277,7 +277,7 @@ mod tests {
         use serde_json::json;
         use url::Url;
         let cfg = ConfigBuilder::new()
-            .with_defaults_json(json!({ "endpoint": "https://api.example.com/v1" }))
+            .with_defaults(json!({ "endpoint": "https://api.example.com/v1" }))
             .build()
             .await
             .unwrap();
@@ -291,7 +291,7 @@ mod tests {
         use serde_json::json;
         use std::net::SocketAddr;
         let cfg = ConfigBuilder::new()
-            .with_defaults_json(json!({ "bind": "0.0.0.0:8080" }))
+            .with_defaults(json!({ "bind": "0.0.0.0:8080" }))
             .build()
             .await
             .unwrap();
@@ -304,7 +304,7 @@ mod tests {
         use serde_json::json;
         use std::net::IpAddr;
         let cfg = ConfigBuilder::new()
-            .with_defaults_json(json!({ "host": "192.168.0.1" }))
+            .with_defaults(json!({ "host": "192.168.0.1" }))
             .build()
             .await
             .unwrap();
@@ -317,7 +317,7 @@ mod tests {
         use serde_json::json;
         use std::path::PathBuf;
         let cfg = ConfigBuilder::new()
-            .with_defaults_json(json!({ "data_dir": "/var/app/data" }))
+            .with_defaults(json!({ "data_dir": "/var/app/data" }))
             .build()
             .await
             .unwrap();
@@ -337,7 +337,7 @@ mod tests {
             ]
         });
         let config = ConfigBuilder::new()
-            .with_defaults_json(defaults)
+            .with_defaults(defaults)
             .build()
             .await
             .expect("build ok");

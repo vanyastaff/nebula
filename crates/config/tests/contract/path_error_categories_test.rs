@@ -5,7 +5,7 @@ use serde_json::json;
 #[tokio::test]
 async fn missing_path_maps_to_missing_path_category() {
     let config = ConfigBuilder::new()
-        .with_defaults_json(json!({"server":{"port":8080}}))
+        .with_defaults(json!({"server":{"port":8080}}))
         .build()
         .await
         .expect("config should build");
@@ -21,7 +21,7 @@ async fn missing_path_maps_to_missing_path_category() {
 #[tokio::test]
 async fn type_mismatch_maps_to_type_mismatch_category() {
     let config = ConfigBuilder::new()
-        .with_defaults_json(json!({"server":{"port":8080}}))
+        .with_defaults(json!({"server":{"port":8080}}))
         .build()
         .await
         .expect("config should build");
