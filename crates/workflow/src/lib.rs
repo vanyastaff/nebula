@@ -27,7 +27,10 @@ pub mod validate;
 
 pub use builder::WorkflowBuilder;
 pub use connection::{Connection, EdgeCondition, ErrorMatcher, ResultMatcher};
-pub use definition::{CheckpointingConfig, RetryConfig, WorkflowConfig, WorkflowDefinition};
+pub use definition::{
+    CheckpointingConfig, ErrorStrategy, RetryConfig, TriggerDefinition, WorkflowConfig,
+    WorkflowDefinition,
+};
 pub use error::WorkflowError;
 pub use graph::DependencyGraph;
 pub use node::{NodeDefinition, ParamValue};

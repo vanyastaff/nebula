@@ -178,6 +178,7 @@ impl WorkflowBuilder {
             connections: self.connections,
             variables: self.variables,
             config: self.config,
+            trigger: None,
             tags: self.tags,
             created_at: now,
             updated_at: now,

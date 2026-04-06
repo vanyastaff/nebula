@@ -176,6 +176,7 @@ fn make_workflow(nodes: Vec<NodeDefinition>, connections: Vec<Connection>) -> Wo
         connections,
         variables: HashMap::new(),
         config: WorkflowConfig::default(),
+        trigger: None,
         tags: Vec::new(),
         created_at: now,
         updated_at: now,

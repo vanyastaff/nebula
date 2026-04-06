@@ -32,6 +32,9 @@ pub struct WorkflowDefinition {
     /// Runtime configuration.
     #[serde(default)]
     pub config: WorkflowConfig,
+    /// What triggers this workflow. `None` = manual only.
+    #[serde(default)]
+    pub trigger: Option<TriggerDefinition>,
     /// Free-form tags for filtering and grouping.
     #[serde(default)]
     pub tags: Vec<String>,
@@ -39,6 +42,47 @@ pub struct WorkflowDefinition {
     pub created_at: DateTime<Utc>,
     /// When this definition was last modified.
     pub updated_at: DateTime<Utc>,
+}
+
+/// What starts a workflow execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum TriggerDefinition {
+    /// Triggered manually via the API.
+    Manual,
+    /// Triggered by a cron schedule.
+    Cron {
+        /// Cron expression (e.g., `"0 */5 * * *"`).
+        expression: String,
+    },
+    /// Triggered by an incoming webhook.
+    Webhook {
+        /// HTTP method (GET, POST, etc.).
+        method: String,
+        /// URL path suffix.
+        path: String,
+    },
+    /// Triggered by an event on the EventBus.
+    Event {
+        /// Event type name to subscribe to.
+        event_type: String,
+    },
+}
+
+/// Strategy for handling node failures without explicit error edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ErrorStrategy {
+    /// Fail the entire workflow immediately on first node failure.
+    #[default]
+    FailFast,
+    /// Continue executing unaffected branches; fail the workflow only after
+    /// all reachable nodes have completed or failed.
+    ContinueOnError,
+    /// Ignore node failures entirely — the workflow always completes.
+    IgnoreErrors,
 }
 
 /// Runtime configuration for a workflow execution.
@@ -56,6 +100,9 @@ pub struct WorkflowConfig {
     /// Default retry policy applied to nodes that do not declare their own.
     #[serde(default)]
     pub retry_policy: Option<RetryConfig>,
+    /// What to do when a node fails and has no error edge.
+    #[serde(default)]
+    pub error_strategy: ErrorStrategy,
 }
 
 fn default_max_parallel() -> usize {
@@ -69,6 +116,7 @@ impl Default for WorkflowConfig {
             max_parallel_nodes: default_max_parallel(),
             checkpointing: CheckpointingConfig::default(),
             retry_policy: None,
+            error_strategy: ErrorStrategy::default(),
         }
     }
 }
@@ -216,6 +264,7 @@ mod tests {
                 interval: Some(Duration::from_millis(1_000)),
             },
             retry_policy: Some(RetryConfig::fixed(3, 500)),
+            error_strategy: ErrorStrategy::ContinueOnError,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: WorkflowConfig = serde_json::from_str(&json).unwrap();

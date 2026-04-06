@@ -72,6 +72,7 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
         connections: vec![],
         variables: HashMap::new(),
         config: WorkflowConfig::default(),
+        trigger: None,
         tags: Vec::new(),
         created_at: now,
         updated_at: now,

@@ -256,6 +256,7 @@ impl WorkflowBuilder {
             connections,
             variables: self.variables,
             config: WorkflowConfig::default(),
+            trigger: None,
             tags: Vec::new(),
             created_at: now,
             updated_at: now,
