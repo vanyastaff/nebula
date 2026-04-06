@@ -284,3 +284,17 @@ Input-hash-based node caching saves 40-60% compute on iterative workflows. Desig
 - **Dynamic fan-out (ForEach):** `NodeKind::ForEach { collection_expr, max_parallelism }` — engine spawns N parallel branches at runtime. v2.
 - **Sub-workflows:** A node can invoke another WorkflowDefinition as a step. v2.
 - **Expression language spec:** Formal grammar for `{{ }}` expressions — field access, operators, built-in functions. Separate spec: `expression-v1-design.md`. v1 blocker.
+
+---
+
+## Post-Conference Round 9 — Real User Needs
+
+Product gaps identified by 5 real users (DevOps, Marketing, SOC, ML, Data Analyst):
+
+**v1 must-have:** `sql.query` + `http.request` built-in actions, air-gapped mode, environment credential selection.
+
+**v1.1:** `Engine::rerun_node()`, `--dry-run` mode, execution history API.
+
+**v2:** Visual editor, WaitForEvent delays, ForEach, pre-built integration plugins.
+
+**Key insight:** Engine architecture serves all 5 use cases. The gap is product layer (UI, built-in actions, dashboard), not engine.
