@@ -29,3 +29,5 @@ n8n-compatible expression language evaluating `serde_json::Value` — used in wo
 <!-- reviewed: 2026-04-02 -->
 
 <!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
+
+<!-- reviewed: 2026-04-06 — TokenKind::String changed from &'a str to Cow<'a, str>, Box::leak removed -->
