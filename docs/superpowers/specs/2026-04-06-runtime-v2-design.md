@@ -154,3 +154,9 @@ Large binary payloads stream to blob storage without full memory buffering.
 
 ### RT3. Deserialization recursion limit (Notion)
 Default depth limit 128 on all serde_json deserialization at runtime boundary.
+
+---
+
+## Serialization Strategy
+
+See `2026-04-06-serialization-strategy-design.md` for cross-cutting serialization decisions affecting this crate.

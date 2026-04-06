@@ -527,3 +527,9 @@ User fills form → ParameterValues → Credential::resolve() → AuthScheme →
 - PendingStateStore Redis/Postgres backends — after storage crate stabilizes
 - Credential UI components — desktop app concern
 - Localization of credential forms — uses parameter localization system
+
+---
+
+## Serialization Strategy
+
+See `2026-04-06-serialization-strategy-design.md` for cross-cutting serialization decisions affecting this crate.

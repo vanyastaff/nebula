@@ -403,3 +403,9 @@ Add serde_json recursion limit (default 128) at StatelessAdapter deserialization
 
 ### B4. BlobStorage accepts AsyncRead (Instagram)
 `BlobStorage::write` changed to streaming to avoid double-memory for large payloads.
+
+---
+
+## Serialization Strategy
+
+See `2026-04-06-serialization-strategy-design.md` for cross-cutting serialization decisions affecting this crate.

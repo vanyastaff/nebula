@@ -447,3 +447,9 @@ Metric: `NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL` counter, tagged by resource_k
 - Pool warm-up hooks (Phase 2)
 - Create retry with backoff (handled by resilience pipeline at acquire time)
 - Resource-level localization (uses parameter localization system)
+
+---
+
+## Serialization Strategy
+
+See `2026-04-06-serialization-strategy-design.md` for cross-cutting serialization decisions affecting this crate.
