@@ -536,9 +536,7 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
     let wf = make_workflow(nodes, vec![]);
 
     // Limit concurrency to 2
-    let budget = ExecutionBudget {
-        max_concurrent_nodes: 2,
-    };
+    let budget = ExecutionBudget::default().with_max_concurrent_nodes(2);
 
     let result = engine
         .execute_workflow(&wf, serde_json::json!("parallel"), budget)
