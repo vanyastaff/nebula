@@ -424,7 +424,152 @@ Labels bounded by registry size:
 
 ---
 
-## 10. Not In Scope
+## 10. Storage Backend Recommendations
+
+### Why NOT Elasticsearch
+ELK is overkill for workflow execution logs: JVM Heap hunger (8-32GB RAM), complex scaling, expensive full-text indexing when we mostly query by structured fields (execution_id, node_id, status, timestamp).
+
+### Recommended Stack
+
+| Data type | Storage | Why | Deployment |
+|-----------|---------|-----|------------|
+| **Metrics** (counters, gauges, histograms) | **Prometheus** or **VictoriaMetrics** | Already supported via `PrometheusExporter`. VM is drop-in compatible, 10x less RAM | Self-hosted: VM single binary. SaaS: VM cluster |
+| **Execution history** (node I/O, timings, large payloads) | **ClickHouse** | Columnar, 10-100x compression vs Elastic. Perfect for analytics queries. Low CPU/RAM | Self-hosted: single node. SaaS: distributed |
+| **Logs** (structured text, errors, debug) | **Grafana Loki** | Only indexes labels (not full text), 10x lighter than Elastic. Pairs with Grafana | Self-hosted: single binary. SaaS: Loki cluster |
+| **Traces** (OTEL spans) | **Jaeger** or **Grafana Tempo** | Already supported via OTEL exporter. Tempo = no external DB needed | Self-hosted: Jaeger all-in-one. SaaS: Tempo |
+| **Local desktop** | **SQLite/libSQL** | Embedded, no external deps, offline-first | In-process |
+
+### ClickHouse for Execution History
+
+Node inputs/outputs are the heaviest data. ClickHouse handles this efficiently:
+
+```sql
+CREATE TABLE nebula_node_outputs (
+    execution_id UUID,
+    node_id UUID,
+    action_key LowCardinality(String),
+    workflow_id UUID,
+    owner_id LowCardinality(String),
+    status Enum8('completed' = 1, 'failed' = 2, 'skipped' = 3),
+    started_at DateTime64(3),
+    completed_at DateTime64(3),
+    duration_ms UInt32,
+    input_bytes UInt32,
+    output_bytes UInt32,
+    output_json String CODEC(ZSTD(3)),  -- compressed JSON
+    error_message Nullable(String),
+    INDEX idx_status status TYPE set(10) GRANULARITY 4,
+    INDEX idx_action action_key TYPE set(100) GRANULARITY 4
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(started_at)
+ORDER BY (owner_id, workflow_id, execution_id, started_at)
+TTL started_at + INTERVAL 90 DAY;
+```
+
+Queries that become fast:
+```sql
+-- How many times did this workflow fail last month?
+SELECT count() FROM nebula_node_outputs
+WHERE workflow_id = ? AND status = 'failed'
+AND started_at > now() - INTERVAL 30 DAY;
+
+-- Slowest nodes across all workflows
+SELECT action_key, avg(duration_ms), p99(duration_ms)
+FROM nebula_node_outputs
+WHERE owner_id = ?
+GROUP BY action_key
+ORDER BY avg(duration_ms) DESC
+LIMIT 20;
+
+-- Full execution replay (all node I/O for one execution)
+SELECT node_id, action_key, status, duration_ms, output_json
+FROM nebula_node_outputs
+WHERE execution_id = ?
+ORDER BY started_at;
+```
+
+Compression: 10KB JSON per node → ~500 bytes in ClickHouse (ZSTD). 1M node outputs = ~500MB storage vs ~10GB in Elasticsearch.
+
+### VictoriaMetrics vs Prometheus
+
+Both use the same PromQL query language and remote_write protocol. Nebula's existing `PrometheusExporter` works with both.
+
+| Feature | Prometheus | VictoriaMetrics |
+|---------|-----------|-----------------|
+| RAM per 1M series | ~3GB | ~1GB |
+| Disk per 1M series/day | ~2GB | ~0.5GB |
+| Long-term retention | Needs Thanos/Cortex | Built-in, unlimited |
+| HA | External (Thanos) | Built-in clustering |
+| PromQL compatible | Native | 100% compatible |
+| Deployment | Single binary | Single binary |
+
+Recommendation: **VictoriaMetrics for self-hosted** (simpler HA, less RAM). Prometheus for dev/small deployments.
+
+### Grafana Loki for Logs
+
+Nebula's structured logs (JSON format) are perfect for Loki:
+- Labels: `{app="nebula", level="error", execution_id="ex_abc"}` — indexed
+- Log content: full JSON line — NOT indexed, only stored
+- Query: `{app="nebula"} |= "credential_resolve" | json | duration_ms > 100`
+
+10x less storage than Elasticsearch because only labels are indexed.
+
+### Integration Architecture
+
+```
+Self-hosted deployment:
+
+  Nebula Engine
+    │
+    ├── /metrics (Prometheus scrape) ──→ VictoriaMetrics ──→ Grafana
+    │
+    ├── OTEL traces ──→ Jaeger/Tempo ──→ Grafana
+    │
+    ├── Structured logs (stdout JSON) ──→ Promtail ──→ Loki ──→ Grafana
+    │
+    └── Node I/O (async writer) ──→ ClickHouse ──→ Grafana (CH plugin)
+                                                 ──→ API (execution replay)
+```
+
+All four data types visible in ONE Grafana dashboard.
+
+### ExecutionHistoryWriter — Async ClickHouse Integration
+
+```rust
+/// Async writer that batches node outputs to ClickHouse.
+/// Engine calls record_node_output() after each node.
+/// Writer flushes batch to ClickHouse every N records or M seconds.
+pub struct ExecutionHistoryWriter {
+    buffer: Mutex<Vec<NodeOutputRecord>>,
+    batch_size: usize,         // default 100
+    flush_interval: Duration,  // default 5s
+    client: clickhouse::Client,
+}
+
+impl ExecutionHistoryWriter {
+    pub fn record_node_output(&self, record: NodeOutputRecord) {
+        let mut buf = self.buffer.lock();
+        buf.push(record);
+        if buf.len() >= self.batch_size {
+            self.flush_batch(buf);
+        }
+    }
+
+    async fn flush_batch(&self, records: Vec<NodeOutputRecord>) {
+        let mut insert = self.client.insert("nebula_node_outputs").unwrap();
+        for record in records {
+            insert.write(&record).await.unwrap();
+        }
+        insert.end().await.unwrap();
+    }
+}
+```
+
+Feature-gated: `clickhouse-history` feature. Not required for local or basic self-hosted.
+
+---
+
+## 11. Not In Scope
 
 - Custom dashboards (Grafana dashboards are user-configured)
 - Log aggregation (ELK/Loki — external tooling)
