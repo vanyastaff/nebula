@@ -404,6 +404,20 @@ Add serde_json recursion limit (default 128) at StatelessAdapter deserialization
 ### B4. BlobStorage accepts AsyncRead (Instagram)
 `BlobStorage::write` changed to streaming to avoid double-memory for large payloads.
 
+### B6. action_version pinning on NodeDefinition (Uber/Cadence, Netflix/Conductor)
+`NodeDefinition` gains `action_version: Option<InterfaceVersion>`. If set, engine uses `ActionRegistry::get(key, version)` — never `get_latest()` during execution. `get_latest()` is editor-only for workflow construction. Prevents silent action upgrades on running workflows.
+
+### B7. CostMetrics on ActionResult (Vercel AI) — v1.1
+```rust
+pub struct CostMetrics {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub model_id: Option<String>,
+    pub estimated_cost_usd: Option<f64>,
+}
+```
+Optional field on ActionResult. Engine aggregates per-execution. No pricing registry in core — plugin concern.
+
 ### B5. Derive macro semver contract (Figma)
 `#[derive(Action)]` output stability is governed by semver on the `Action` trait, `ActionMetadata` struct, and `ActionDependencies` trait. Breaking changes to these types = major version bump. Macro internals (code generation patterns) are NOT part of the public API — only the generated trait impls are.
 

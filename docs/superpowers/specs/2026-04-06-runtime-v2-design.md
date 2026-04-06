@@ -205,6 +205,15 @@ v1: Postgres implementation (`SELECT ... FOR UPDATE SKIP LOCKED`). v2: Redis/NAT
 ### RT12. Node output individually durable (Inngest, Hatchet)
 RT7 checkpoint must persist **individual node outputs**, not just aggregate status. Crash between node complete and checkpoint write → re-execute that node (idempotent via B1 durable IdempotencyManager). `NodeOutput` serialized to storage before next node starts.
 
+### RT14. Checkpoint spill threshold (Netflix/Conductor)
+Node outputs above `spill_threshold_bytes` (default: configurable per deployment, NOT per workflow) automatically go to BlobStorage. Only `BlobRef` persisted in checkpoint. Prevents checkpoint bloat for wide workflows. Global threshold — Conductor's per-workflow override was their biggest mistake.
+
+### RT15. Engine::rerun_node API (Databricks) — v1.1
+With per-node output durability (RT12), re-running a single node is natural: load predecessor outputs, call action, compare. `Engine::rerun_node(execution_id, node_id, override_input: Option<Value>)` for interactive debugging.
+
+### RT16. Per-route rate limit key (Discord)
+Extend RT9 key from `(owner_id, provider_key)` to `(owner_id, provider_key, route_key: Option<String>)`. Enables Discord's per-route bucket model. `route_key` extracted by action author via ActionContext.
+
 ### RT13. ResourceRequirements on ActionMetadata — design now (DolphinScheduler)
 ```rust
 pub struct ResourceRequirements {
