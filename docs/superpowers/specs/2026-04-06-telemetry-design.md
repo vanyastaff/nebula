@@ -569,7 +569,66 @@ Feature-gated: `clickhouse-history` feature. Not required for local or basic sel
 
 ---
 
-## 11. Not In Scope
+## 11. Post-Conference Amendments (Observability Expert Panel)
+
+### OBS-1. Loki labels — structured metadata, NOT labels for high-cardinality fields
+`execution_id`, `node_id`, `action_key` go as Loki structured metadata, NOT stream labels. Labels: only `{app="nebula", level="...", component="engine"}` (3 bounded dimensions). Avoids cardinality explosion.
+
+### OBS-2. ClickHouse materialized views for dashboards
+Pre-aggregate per-action-per-hour via `SummingMergeTree` materialized view. Dashboard queries hit pre-aggregated table (thousands of rows), raw table only for execution replay.
+
+### OBS-3. ClickHouse batch size: 100 → 10,000
+`ExecutionHistoryWriter` batch increased from 100 to 10,000 records, flush interval from 5s to 15s. Alternative: use ClickHouse `async_insert=1` server-side batching. Prevents "too many parts" at high throughput.
+
+### OBS-4. ClickHouse queryable fields alongside raw JSON
+Add `Map(String, String)` column for top-level output fields (http_status, error_code) extracted at insert time. Enables WHERE on structured fields without parsing JSON blob.
+
+### OBS-5. Grafana Alloy as single collection agent
+Replace 3 separate agents (Prometheus scrape + Promtail + OTEL exporter) with single Grafana Alloy. One agent receives OTEL traces, scrapes /metrics, ships structured JSON logs to Loki.
+
+### OBS-6. vmagent streaming aggregation
+Pre-aggregate histograms into quantiles (p50/p95/p99) at the source via `vmagent -remoteWrite.streamAggr.config`. Raw histograms kept 2h short-term. Aggregated quantiles kept 90 days. 10x cardinality reduction.
+
+### OBS-7. Tail-based sampling for traces
+OTEL Collector tail-based sampling: errors and slow executions (>5s) = 100% sampled. Healthy executions = 5%. Saves 90%+ of trace storage.
+
+### OBS-8. USDT + OTEL correlation contract
+`execution_id` is emitted in BOTH OTEL span attributes AND USDT probe arguments. This is the explicit correlation bridge between kernel-level and application-level tracing.
+
+### OBS-9. Traces reintroduction rationale
+Traces stripped 2026-04-04: dependency weight + premature (engine not stable). Reintroduced now: engine stabilized, traces opt-in behind `otel` feature flag, dep weight acceptable when feature-gated.
+
+### OBS-10. "Simple mode" — ClickHouse as single backend
+For self-hosted users who don't want 4 systems: ClickHouse stores metrics (time series table), logs (structured text rows), traces (span table), and execution history. ONE database instead of four. Grafana queries all four via ClickHouse plugin.
+
+### OBS-11. LocalEventStore for desktop debugging
+`LocalMetricsStore` gains `LocalEventStore` that captures wide events per node execution in SQLite:
+```rust
+pub struct NodeExecutionEvent {
+    pub execution_id: ExecutionId,
+    pub node_id: NodeId,
+    pub action_key: ActionKey,
+    pub status: NodeState,
+    pub duration_ms: u32,
+    pub input_bytes: u32,
+    pub output_bytes: u32,
+    pub input_preview: Option<Value>,  // first 1KB of input
+    pub output_preview: Option<Value>, // first 1KB of output
+    pub error: Option<String>,
+    pub credential_key: Option<String>,
+    pub resource_key: Option<String>,
+    pub expression_eval_count: u32,
+    pub retry_count: u32,
+}
+```
+Desktop user clicks failed node → sees full context without re-running.
+
+### OBS-12. BillingCollector merged into metrics pipeline
+Per-tenant billing counters extracted from existing metrics via VictoriaMetrics relabeling rules. No separate `BillingCollector` struct needed — metrics pipeline already carries `owner_id` labels.
+
+---
+
+## 12. Not In Scope
 
 - Custom dashboards (Grafana dashboards are user-configured)
 - Log aggregation (ELK/Loki — external tooling)
