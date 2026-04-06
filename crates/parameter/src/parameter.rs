@@ -230,6 +230,18 @@ impl Parameter {
         )
     }
 
+    /// Creates an object parameter with pre-populated child parameters.
+    #[must_use]
+    pub fn object_with(id: impl Into<String>, parameters: Vec<Parameter>) -> Self {
+        new_parameter(
+            id,
+            ParameterType::Object {
+                parameters,
+                display_mode: DisplayMode::default(),
+            },
+        )
+    }
+
     /// Creates a list parameter with the given item template.
     #[must_use]
     pub fn list(id: impl Into<String>, item: Parameter) -> Self {

@@ -24,6 +24,8 @@
 #![warn(missing_docs)]
 
 // ── Public modules ──────────────────────────────────────────────────────────
+/// Typed closure builder for parameter collections.
+pub mod builder;
 /// Parameter collection container.
 pub mod collection;
 /// Declarative conditions for field visibility and required logic.
@@ -74,6 +76,10 @@ pub mod values;
 // ── Top-level re-exports ────────────────────────────────────────────────────
 pub use nebula_parameter_macros::Parameters;
 
+pub use builder::{
+    BooleanBuilder, CodeBuilder, GroupBuilder, ListBuilder, NumberBuilder, ObjectBuilder,
+    ParameterCollectionBuilder, SelectBuilder, StringBuilder,
+};
 pub use collection::ParameterCollection;
 pub use conditions::Condition;
 pub use display_mode::{ComputedReturn, DisplayMode};
