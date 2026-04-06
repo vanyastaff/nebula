@@ -162,11 +162,13 @@ impl ExpressionEngine {
         // Parse the expression (with lock-free caching if enabled)
         let ast = if let Some(cache) = &self.expr_cache {
             let key: Arc<str> = Arc::from(expression);
-            cache.get_or_compute(key, || {
-                self.parse_expression(expression).map_err(|_| {
-                    nebula_memory::MemoryError::invalid_layout("parse expression failed")
-                })
-            })?
+            if let Some(cached) = cache.get(&key) {
+                cached
+            } else {
+                let parsed = self.parse_expression(expression)?;
+                let _ = cache.insert(key, parsed.clone());
+                parsed
+            }
         } else {
             self.parse_expression(expression)?
         };
@@ -188,12 +190,13 @@ impl ExpressionEngine {
         // Use lock-free cache if available
         if let Some(cache) = &self.template_cache {
             let key: Arc<str> = Arc::from(source_str.as_str());
-            let template = cache.get_or_compute(key, || {
-                crate::Template::new(&source_str).map_err(|_| {
-                    nebula_memory::MemoryError::invalid_layout("template creation failed")
-                })
-            })?;
-            Ok(template)
+            if let Some(cached) = cache.get(&key) {
+                Ok(cached)
+            } else {
+                let template = crate::Template::new(&source_str)?;
+                let _ = cache.insert(key, template.clone());
+                Ok(template)
+            }
         } else {
             crate::Template::new(source_str)
         }
@@ -824,6 +827,40 @@ mod tests {
         assert!(overview.template_cache_enabled);
         assert!(overview.expr_entries >= 1);
         assert!(overview.template_entries >= 1);
+    }
+
+    #[test]
+    fn cache_preserves_parse_error_details() {
+        let engine = ExpressionEngine::with_cache_size(100);
+        let ctx = EvaluationContext::new();
+
+        let err = engine.evaluate("@@@invalid!!!", &ctx).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("memory layout"),
+            "Error was erased to MemoryError: {msg}"
+        );
+        assert!(
+            !msg.contains("parse expression failed"),
+            "Error was erased: {msg}"
+        );
+    }
+
+    #[test]
+    fn cache_preserves_template_error_details() {
+        let engine = ExpressionEngine::with_cache_size(100);
+
+        // Use unclosed delimiter to trigger a template parse error
+        let err = engine.parse_template("Hello {{ unclosed").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("memory layout"),
+            "Error was erased to MemoryError: {msg}"
+        );
+        assert!(
+            !msg.contains("template creation failed"),
+            "Error was erased: {msg}"
+        );
     }
 
     #[test]

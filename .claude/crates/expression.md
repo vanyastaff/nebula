@@ -17,6 +17,7 @@ n8n-compatible expression language evaluating `serde_json::Value` — used in wo
 - `ast`, `lexer`, `parser`, `eval`, `token`, `interner`, `span` modules are `#[doc(hidden)]` — unstable, not public API.
 - `Template` != `ExpressionEngine::evaluate`. Templates process multiple `{{ }}` in a string; `evaluate` handles one expression.
 - `EvaluationContext` is built per-execution, not reused across executions.
+- Cache uses `get()` + `insert()` (not `get_or_compute`) to avoid erasing domain errors into `MemoryError`.
 
 ## Relations
 - Depends on nebula-memory (feature: `cache`) for `ConcurrentComputeCache`, `CacheConfig`, `CacheStats`.
