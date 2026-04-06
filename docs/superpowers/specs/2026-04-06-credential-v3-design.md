@@ -7,9 +7,26 @@ Redesign nebula-credential with security-first approach, open AuthScheme trait, 
 ## Philosophy
 
 - **Credential = Parameters → AuthScheme transformer.** User fills a form (parameters), credential resolves it into secret material (scheme). Transport injection is NOT credential's concern.
-- **AuthScheme = open trait.** 12 built-in patterns cover 95% of cases. Plugins add protocol-specific types.
-- **Security-first.** Encryption key rotation, AAD enforcement, zeroization. No shortcuts.
-- **Three authoring levels.** Derive macro (5 lines), composition (extends), manual impl (full control).
+- **AuthScheme = open trait.** 12 built-in patterns cover common cases. `AuthPattern::Custom` + open trait covers everything else. Plugins add protocol-specific types.
+- **Security-first.** Encryption key rotation, hard AAD enforcement (no legacy fallback), `Zeroizing<Vec<u8>>` for all plaintext buffers. No shortcuts.
+- **Three authoring levels.** Derive macro (5 lines), composition (extends, 1 level max), manual impl (full control).
+- **Two key types.** `CredentialKey` = type identity (compile-time, e.g. `"stripe"`). `CredentialId` = instance identity (runtime UUID).
+
+## Post-Review Amendments
+
+Amendments from agent review (security lead, architect, SDK user):
+
+1. **DatabaseAuth removed from built-in schemes.** host/port/db/ssl are resource concern. Credential provides `IdentityPassword`; database plugin extends it with connection config.
+2. **Field-to-scheme mapping explicit.** `#[credential(into = "field")]` attribute maps struct fields to scheme fields. Compile error on incomplete mapping.
+3. **AWS/SSH Agent → Custom schemes via open trait.** 12 built-in patterns are convenience, not limitation.
+4. **CredentialKey + CredentialId both kept.** Type key (compile-time) vs instance key (runtime UUID).
+5. **AAD legacy fallback removed entirely.** One-time migration re-encrypts all records. No `legacy_compat` flag.
+6. **Zeroization uses `Zeroizing<Vec<u8>>`**, not manual `.zeroize()` on clones.
+7. **`extends` limited to 1 level** of delegation. No multi-level chain.
+8. **OAuth2 `token_url` must be HTTPS.** Validated at macro expansion time.
+9. **Plugin AuthScheme deserialization sandboxed.** Core store never deserializes plugin types directly.
+10. **Rate limiting on `continue_resolve()`.** Framework enforces per-session rate limit.
+11. **Size limits on deserialized CredentialState.** Prevents OOM from corrupted records.
 
 ---
 
@@ -210,14 +227,32 @@ fn test(scheme: &IdentityPassword) -> Option<TestResult> {
 
 ```rust
 #[derive(Credential, Parameters)]
-#[credential(scheme = SecretToken, pattern = SecretToken)]
+#[credential(scheme = SecretToken)]
 struct StripeAuth {
     #[param(label = "Secret Key", secret)]
     #[validate(required)]
+    #[credential(into = "token")]  // maps api_key → SecretToken.token
     api_key: String,
 }
 // Auto-generates: resolve(), project(), description(), parameters()
-// resolve() reads api_key from ParameterValues, wraps in SecretToken
+// resolve() reads api_key from ParameterValues, wraps in SecretToken { token }
+// secret fields auto-wrapped in SecretString
+```
+
+```rust
+#[derive(Credential, Parameters)]
+#[credential(scheme = IdentityPassword)]
+struct BasicAuth {
+    #[param(label = "Username")]
+    #[validate(required)]
+    #[credential(into = "identity")]
+    username: String,
+
+    #[param(label = "Password", secret)]
+    #[validate(required)]
+    #[credential(into = "password")]
+    password: String,
+}
 ```
 
 ### Level 2 — Extends / Composition (OAuth2 providers)
@@ -287,27 +322,29 @@ pub struct EncryptionLayer<S> {
 - Decrypt by looking up `key_id` from `EncryptedData`
 - Re-encrypt on read if `key_id != current_key_id` (lazy rotation)
 
-### 4.2 Remove AAD Legacy Fallback
+### 4.2 Remove AAD Legacy Fallback — Hard Cutover
 
 ```rust
-// REMOVE: silent fallback to no-AAD decryption
-// Currently at encryption.rs:95-101
-// After: if AAD validation fails → return error, never fallback
+// REMOVE entirely: no fallback, no config flag
+// Provide one-time migration tool that re-encrypts all records with AAD
+// After migration: AAD validation failure = hard error, always
 ```
 
-Optional `legacy_compat: bool` config flag for migration period only.
+No `legacy_compat` flag — an attacker who can swap records can also strip AAD to force fallback, making the flag useless.
 
-### 4.3 Plaintext Zeroization
+### 4.3 Plaintext Zeroization — Use `Zeroizing<Vec<u8>>`
 
 ```rust
+use zeroize::Zeroizing;
+
 // In EncryptionLayer::put():
-let plaintext = credential.data.clone();
+let plaintext: Zeroizing<Vec<u8>> = Zeroizing::new(serde_json::to_vec(&credential.data)?);
 let encrypted = self.encrypt(&plaintext)?;
-// NEW: zeroize plaintext after encryption
-plaintext.zeroize();
+// plaintext auto-zeroized on drop — no manual .zeroize() needed
+// never clone plaintext buffers — pass by reference only
 ```
 
-Use `zeroize` crate's `Zeroize` trait on all intermediate plaintext buffers.
+All intermediate plaintext buffers use `Zeroizing<T>` wrapper, NOT manual `.zeroize()` on clones.
 
 ### 4.4 SecretString Serde Safety
 
@@ -317,25 +354,34 @@ Use `zeroize` crate's `Zeroize` trait on all intermediate plaintext buffers.
 
 ---
 
-## 5. Credential ID — Unified Type
+## 5. Credential Identity — Two Key Types
 
 ### 5.1 Problem
 
-Rotation subsystem uses `CredentialId` (UUID). Resolver uses `&str`. Inconsistent.
+Rotation subsystem uses `CredentialId` (UUID). Resolver uses `&str`. Spec initially tried to unify — wrong, they serve different purposes.
 
-### 5.2 Solution
+### 5.2 Solution — Keep Both
 
-All credential references use `CredentialKey` (validated string, from nebula-core `domain_key!` macro). NOT UUID — credential IDs are human-readable (like `"stripe-production"`, `"github-oauth-main"`).
+| Key | Purpose | Type | Example |
+|-----|---------|------|---------|
+| `CredentialKey` | **Type** identity (compile-time) | `domain_key!` string | `"stripe"`, `"github_oauth2"` |
+| `CredentialId` | **Instance** identity (runtime) | UUID | `550e8400-e29b-...` |
 
 ```rust
-// In resolver, store, events — all use CredentialKey
+// Registry uses CredentialKey (which credential TYPE)
+registry.register::<StripeAuth>();  // key = "stripe"
+
+// Store uses CredentialId (which credential INSTANCE)
+store.get(credential_id)?;  // specific user's Stripe key
+
+// Resolver uses CredentialId to load, CredentialKey to dispatch
 pub async fn resolve<C: Credential>(
     &self,
-    credential_key: &CredentialKey,
+    credential_id: &CredentialId,
 ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
 ```
 
-Migration: rotation subsystem moves from `CredentialId` (UUID) to `CredentialKey`.
+Resolver internally: `CredentialId` → load from store → `state_kind` string → `CredentialKey` → dispatch to registered `Credential` impl.
 
 ---
 
@@ -414,47 +460,48 @@ pub trait PendingStateStore: Send + Sync {
 
 ## 9. Integration with Parameters
 
-Credential parameters use the same nebula-parameter system. The derive macro reads `#[param(...)]` and `#[validate(...)]` attributes from credential struct fields:
+Credential parameters use the same nebula-parameter system. The derive macro reads `#[param(...)]` and `#[validate(...)]` attributes from credential struct fields.
+
+**Important:** Credential fields contain ONLY auth material. Connection config (host/port/database/ssl) belongs on the Resource, not the Credential. A database credential is just `IdentityPassword`.
 
 ```rust
+// CORRECT: credential = auth material only
 #[derive(Credential, Parameters)]
 #[credential(scheme = IdentityPassword)]
-struct DatabaseAuth {
-    #[param(label = "Host")]
-    #[validate(required)]
-    host: String,
-
-    #[param(label = "Port", default = 5432)]
-    #[validate(range(1..=65535))]
-    port: u32,
-
+struct DatabaseLogin {
     #[param(label = "Username")]
     #[validate(required)]
+    #[credential(into = "identity")]
     username: String,
 
     #[param(label = "Password", secret)]
     #[validate(required)]
+    #[credential(into = "password")]
     password: String,
-
-    #[param(label = "Database")]
-    database: Option<String>,
-
-    #[param(label = "SSL Mode", no_expression)]
-    #[param(default = "prefer")]
-    ssl_mode: SslMode,
 }
 
-#[derive(EnumSelect)]
-enum SslMode {
-    #[param(label = "Disable")]    Disable,
-    #[param(label = "Prefer")]     Prefer,
-    #[param(label = "Require")]    Require,
-    #[param(label = "Verify CA")]  VerifyCa,
-    #[param(label = "Verify Full")] VerifyFull,
-}
+// Connection config lives on the RESOURCE (plugin side):
+// PostgresResource { host, port, database, ssl_mode, credential: CredentialId }
 ```
 
-User fills form → ParameterValues → Credential::resolve() → IdentityPassword scheme → Resource uses it to connect.
+More complex example — OAuth2 with scope selection:
+
+```rust
+#[derive(Credential)]
+#[credential(
+    extends = OAuth2Base,
+    auth_url = "https://accounts.google.com/o/oauth2/v2/auth",
+    token_url = "https://oauth2.googleapis.com/token",
+)]
+struct GoogleAuth;
+
+// Plugin extends with specific scopes:
+#[derive(Credential)]
+#[credential(extends = GoogleAuth, scopes = ["https://www.googleapis.com/auth/drive"])]
+struct GoogleDriveAuth;
+```
+
+User fills form → ParameterValues → Credential::resolve() → AuthScheme → Resource uses it to connect.
 
 ---
 
