@@ -14,7 +14,6 @@ Execution state machine types — persistent state, journals, idempotency, plans
 - **Name confusion**: `nebula-execution` ≠ execution engine. If you want the scheduler, look at nebula-engine.
 - `ExecutionContext` here is lightweight (execution_id + budget) — different from `ActionContext` in nebula-action which has DI capabilities.
 - `NodeAttempt` tracks individual retry attempts for a node. `NodeExecutionState` tracks overall node status. Both are needed.
-- `ExecutionBudget` uses builder pattern (`with_*` methods) — don't construct with struct literals (new fields will break).
 
 ## Relations
 - Depends on nebula-core (IDs). Used by nebula-engine, nebula-storage, nebula-api.
@@ -23,6 +22,4 @@ Execution state machine types — persistent state, journals, idempotency, plans
 
 <!-- reviewed: 2026-04-02 -->
 
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
-
-<!-- reviewed: 2026-04-06 — added Cancelling→Completed/TimedOut transitions, expanded ExecutionBudget, added ExecutionResult -->
+<!-- reviewed: 2026-04-06 �� added Cancelling→Completed and Cancelling→TimedOut transitions -->

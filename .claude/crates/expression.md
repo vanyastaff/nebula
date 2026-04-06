@@ -2,33 +2,18 @@
 n8n-compatible expression language evaluating `serde_json::Value` — used in workflow node parameter interpolation.
 
 ## Invariants
-- Syntax is n8n-compatible: `$node.data`, `$execution.id`, `$input`, etc.
-- Template delimiter is `{{ expression }}`. Outside delimiters is literal text.
-- All values are `serde_json::Value` — no typed coercion at the expression layer.
+- n8n-compatible syntax; template delimiter `{{ }}`.
+- All values are `serde_json::Value`.
+- Recursion depth capped at 256; step limit via `EvaluationPolicy::max_eval_steps`.
 
 ## Key Decisions
-- `ExpressionEngine::with_cache_size(N)` caches parsed ASTs by expression string. Use for hot paths.
-- `MaybeExpression` / `MaybeTemplate` are optimization types — skip parsing for static (non-expression) values.
-- `EvaluationPolicy` controls error handling on undefined variables.
-- `expr_cache_stats()` / `template_cache_stats()` return `Option<CacheStats>` (from nebula-memory) with real hit/miss/eviction data.
-- `CacheOverview` includes `expr_hits`, `expr_misses`, `template_hits`, `template_misses` for quick observability.
+- `EvaluationPolicy` controls function allow/deny lists, strict mode flags, step limits, and JSON parse limits.
+- Step counter uses `AtomicUsize` (not `Cell`) because `Evaluator` is shared across threads via `Arc<ExpressionEngine>`.
+- `eval()` resets the step counter; `eval_counting()` preserves it for lambda iterations in higher-order functions (map/filter/reduce).
 
 ## Traps
-- `ast`, `lexer`, `parser`, `eval`, `token`, `interner`, `span` modules are `#[doc(hidden)]` — unstable, not public API.
-- `Template` != `ExpressionEngine::evaluate`. Templates process multiple `{{ }}` in a string; `evaluate` handles one expression.
-- `EvaluationContext` is built per-execution, not reused across executions.
-- Cache uses `get()` + `insert()` (not `get_or_compute`) to avoid erasing domain errors into `MemoryError`.
+- `ast`, `lexer`, `parser`, `eval`, `token`, `interner`, `span` modules are `#[doc(hidden)]` — unstable.
+- `EvaluationContext` is per-execution, not reused.
+- `eval_lambda` calls `eval_counting` (not `eval`) so iterations share the step budget.
 
-## Relations
-- Depends on nebula-memory (feature: `cache`) for `ConcurrentComputeCache`, `CacheConfig`, `CacheStats`.
-- Used by nebula-workflow and nebula-engine for dynamic parameter resolution.
-
-<!-- reviewed: 2026-03-30 — derive Classify migration -->
-
-<!-- reviewed: 2026-04-02 -->
-
-<!-- reviewed: 2026-04-02 -->
-
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
-
-<!-- reviewed: 2026-04-06 — TokenKind::String changed from &'a str to Cow<'a, str>, Box::leak removed -->
+<!-- reviewed: 2026-04-06 — added max_eval_steps DoS prevention -->

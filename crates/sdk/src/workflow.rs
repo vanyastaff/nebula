@@ -217,6 +217,7 @@ impl WorkflowBuilder {
                     retry_policy: None,
                     timeout: None,
                     description: None,
+                    enabled: true,
                 })
             })
             .collect::<crate::Result<Vec<_>>>()?;

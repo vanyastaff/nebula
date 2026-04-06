@@ -25,4 +25,6 @@ Workflow execution orchestrator — DAG scheduler, level-by-level execution, nod
 
 <!-- reviewed: 2026-04-02 -->
 
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
+<!-- reviewed: 2026-04-06 — NodeDefinition::new now returns Result; all test call sites updated with .unwrap() -->
+<!-- phase0-fix -->
+<!-- phase0-reviewed: 2026-04-06 -->

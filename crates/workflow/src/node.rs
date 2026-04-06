@@ -33,6 +33,14 @@ pub struct NodeDefinition {
     /// Optional description of what this node does.
     #[serde(default)]
     pub description: Option<String>,
+    /// Whether this node is active. Disabled nodes are skipped during execution.
+    /// Useful for debugging workflows without removing nodes from the graph.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl NodeDefinition {
@@ -64,6 +72,7 @@ impl NodeDefinition {
             retry_policy: None,
             timeout: None,
             description: None,
+            enabled: true,
         })
     }
 
@@ -101,11 +110,19 @@ impl NodeDefinition {
         self.description = Some(desc.into());
         self
     }
+
+    /// Disable this node. Disabled nodes are skipped during execution.
+    #[must_use]
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
 }
 
 /// A parameter value that can be a literal, expression, template, or reference.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ParamValue {
     /// A static JSON value.
     Literal {

@@ -643,6 +643,7 @@ fn evaluate_edge(
         EdgeCondition::OnError { .. } => false, // Not failed, so OnError doesn't activate
         EdgeCondition::OnResult { matcher } => match_result_condition(matcher, result),
         EdgeCondition::Expression { expr } => evaluate_expression_condition(expr, result),
+        _ => false,
     }
 }
 
@@ -653,6 +654,7 @@ fn match_error_condition(matcher: &ErrorMatcher) -> bool {
         // For Code and Expression matchers, default to matching for now.
         // Full implementation would check error codes or evaluate expressions.
         ErrorMatcher::Code { .. } | ErrorMatcher::Expression { .. } => true,
+        _ => false,
     }
 }
 
@@ -672,6 +674,7 @@ fn match_result_condition(
         }
         // Expression-based result matching; default to true for now.
         ResultMatcher::Expression { .. } => true,
+        _ => false,
     }
 }
 

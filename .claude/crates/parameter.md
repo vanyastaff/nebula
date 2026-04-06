@@ -38,3 +38,4 @@ Parameter schema system (RFC 0005) — defines what inputs a workflow node accep
 <!-- reviewed: 2026-04-02 -->
 
 <!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
+<!-- reviewed: 2026-04-06 — removed panicking Index impl from ParameterValues and ValidatedValues -->
