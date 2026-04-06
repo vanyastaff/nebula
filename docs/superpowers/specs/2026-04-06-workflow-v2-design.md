@@ -259,7 +259,7 @@ pub struct CheckpointingConfig { ... }
 ## Post-Conference Round 2 Amendments
 
 ### W1. owner_id becomes required OwnerId (Meta)
-`owner_id: Option<String>` becomes `owner_id: OwnerId` (required newtype). All storage queries filter by OwnerId. V1 blocker for multi-tenant.
+`owner_id: Option<String>` becomes `owner_id: OwnerId` (required newtype). All storage queries filter by OwnerId. V1 blocker for multi-tenant. `PostgresStorage` must set `app.current_owner` session variable for Row Level Security policies — enforcement at the database layer, not just application code (Supabase feedback).
 
 ### W2. Durable webhook inbound queue (Telegram)
 Webhook events written to Postgres BEFORE HTTP 200 ack. At-least-once delivery with dedup by event fingerprint.

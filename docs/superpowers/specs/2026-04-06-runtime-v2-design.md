@@ -155,6 +155,15 @@ Large binary payloads stream to blob storage without full memory buffering.
 ### RT3. Deserialization recursion limit (Notion)
 Default depth limit 128 on all serde_json deserialization at runtime boundary.
 
+### RT4. Correlation ID in ActionContext (Datadog)
+`ActionContext` injects `execution_id` into the tracing span so all log lines within a node execution carry it. All cross-layer operations (credential resolution, resource acquisition, action execution) inherit this span — enabling full request-scoped correlation.
+
+### RT5. Metric cardinality limit (Datadog)
+Metric labels sourced from user input (node names, workflow names) are sanitized and bounded. `MetricsRegistry` rejects labels with cardinality >10,000 unique values per metric. Labels from system constants (action_key, resource_key, credential_key) are bounded by registry size.
+
+### RT6. Latency target (Grafana)
+Stated performance contract: 3-node workflow with 1KB payloads, no external I/O calls: **< 1ms end-to-end** (DAG resolution + scheduling + action dispatch + serialize). Benchmark this as CI gate.
+
 ---
 
 ## Serialization Strategy

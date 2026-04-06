@@ -404,6 +404,9 @@ Add serde_json recursion limit (default 128) at StatelessAdapter deserialization
 ### B4. BlobStorage accepts AsyncRead (Instagram)
 `BlobStorage::write` changed to streaming to avoid double-memory for large payloads.
 
+### B5. Derive macro semver contract (Figma)
+`#[derive(Action)]` output stability is governed by semver on the `Action` trait, `ActionMetadata` struct, and `ActionDependencies` trait. Breaking changes to these types = major version bump. Macro internals (code generation patterns) are NOT part of the public API — only the generated trait impls are.
+
 ---
 
 ## Serialization Strategy
