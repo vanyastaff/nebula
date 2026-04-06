@@ -208,3 +208,30 @@ pub enum ParameterType {
         severity: NoticeSeverity,
     },
 }
+
+impl ParameterType {
+    /// Returns the variant name as a static string.
+    #[must_use]
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            Self::String { .. } => "String",
+            Self::Number { .. } => "Number",
+            Self::Boolean => "Boolean",
+            Self::Select { .. } => "Select",
+            Self::Object { .. } => "Object",
+            Self::List { .. } => "List",
+            Self::Mode { .. } => "Mode",
+            Self::Code { .. } => "Code",
+            Self::Date => "Date",
+            Self::DateTime => "DateTime",
+            Self::Time => "Time",
+            Self::Color => "Color",
+            Self::File { .. } => "File",
+            Self::Hidden => "Hidden",
+            Self::Filter { .. } => "Filter",
+            Self::Computed { .. } => "Computed",
+            Self::Dynamic { .. } => "Dynamic",
+            Self::Notice { .. } => "Notice",
+        }
+    }
+}
