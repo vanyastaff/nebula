@@ -253,3 +253,13 @@ pub struct CheckpointingConfig { ... }
 - Soft delete (storage concern, not definition)
 - Tag validation/allowlists (API layer concern)
 - Node-to-node type checking (DataTag enforcement, editor concern)
+
+---
+
+## Post-Conference Round 2 Amendments
+
+### W1. owner_id becomes required OwnerId (Meta)
+`owner_id: Option<String>` becomes `owner_id: OwnerId` (required newtype). All storage queries filter by OwnerId. V1 blocker for multi-tenant.
+
+### W2. Durable webhook inbound queue (Telegram)
+Webhook events written to Postgres BEFORE HTTP 200 ack. At-least-once delivery with dedup by event fingerprint.

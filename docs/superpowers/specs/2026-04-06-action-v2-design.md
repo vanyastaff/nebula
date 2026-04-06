@@ -387,3 +387,19 @@ Both are implementation tasks per plans, no design changes needed.
 - QueueAction (deployment topology pending)
 - CachePolicy (engine DAG concern)
 - Task<T> structured concurrency (Phase 2)
+
+---
+
+## Post-Conference Round 2 Amendments
+
+### B1. IdempotencyManager must be durable (Stripe)
+`IdempotencyManager` backed by `Storage` trait (Postgres in production), not in-memory HashSet. Keys are deterministic (execution_id + node_id + attempt) — survives process restarts. V1 blocker for financial workflows.
+
+### B2. Compensating transactions — author responsibility (Stripe)
+No engine-level saga for v1. Document: if node N succeeds but N+1 fails, action N handles compensation. Engine saga (TransactionalAction) is post-v1.
+
+### B3. Deserialization depth limit (Notion)
+Add serde_json recursion limit (default 128) at StatelessAdapter deserialization boundary. Prevents stack overflow from deeply nested inputs.
+
+### B4. BlobStorage accepts AsyncRead (Instagram)
+`BlobStorage::write` changed to streaming to avoid double-memory for large payloads.

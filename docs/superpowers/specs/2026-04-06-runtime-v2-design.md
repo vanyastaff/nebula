@@ -141,3 +141,16 @@ impl ActionRegistry {
 - Health monitor / graceful shutdown (Phase 4)
 - WASM / container sandbox (Phase 3 per ADR 008)
 - Max total execution bytes enforcement (engine concern, not runtime)
+
+---
+
+## Post-Conference Round 2 Amendments
+
+### RT1. Enforce max_total_execution_bytes (Meta)
+Engine accumulates output bytes across nodes via ExecutionBudget. Promote RTM-T007 to v1 blocker.
+
+### RT2. BlobStorage::write_stream with AsyncRead (Instagram)
+Large binary payloads stream to blob storage without full memory buffering.
+
+### RT3. Deserialization recursion limit (Notion)
+Default depth limit 128 on all serde_json deserialization at runtime boundary.
