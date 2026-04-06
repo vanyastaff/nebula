@@ -4,6 +4,7 @@
 //! including access to $node, $execution, $workflow, and $input variables.
 
 use crate::policy::EvaluationPolicy;
+use chrono::Utc;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -113,6 +114,14 @@ impl EvaluationContext {
             }
             "workflow" => Some((*self.workflow).clone()),
             "input" => Some((*self.input).clone()),
+            "now" => {
+                let now = Utc::now();
+                Some(Value::String(now.to_rfc3339()))
+            }
+            "today" => {
+                let today = Utc::now().format("%Y-%m-%d").to_string();
+                Some(Value::String(today))
+            }
             _ => None,
         }
     }
