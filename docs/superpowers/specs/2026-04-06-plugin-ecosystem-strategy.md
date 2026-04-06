@@ -51,8 +51,35 @@ consumes = ["text", "json"]
 | Tier | Badge | Requirements |
 |------|-------|-------------|
 | **Community** | None | Passes automated pipeline |
-| **Verified** | ✓ | + manual code review by core team |
-| **Certified** | ✓✓ | + backward compat test matrix + SLA on maintenance |
+| **Official** | ✓ | Under `nebula-plugins/` org, reviewed by core team |
+| **Essential** | ✓✓ | Official + funded maintenance + backward compat CI |
+
+---
+
+## 2.5. Everything Open Source — No DRM, No Paid Plugins
+
+**All plugins are open source. No paid plugins. No marketplace. No DRM.**
+
+Why:
+- One canonical plugin per service → nothing to compete on → nothing to sell
+- Plugin Fund pays developers → they don't need to sell
+- No file protection needed → no piracy problem
+- No billing infrastructure needed → massive simplification
+- No license key system → no support tickets about keys
+- Community can fork, fix, contribute back → ecosystem health
+
+What we DON'T need (removed from strategy):
+- ~~Revenue split (85/15)~~
+- ~~Stripe Connect billing integration~~
+- ~~Paid plugins / premium connectors~~
+- ~~DRM / license verification~~
+- ~~Marketplace infrastructure (ratings, reviews, disputes)~~
+
+What we DO need:
+- **Plugin Fund** — 10% of cloud revenue → bounties + maintenance grants
+- **Bounty board** — public list: "Salesforce connector: $5K bounty" 
+- **Maintainer grants** — $500-2K/month for active maintainers of Essential plugins
+- **Hub page** — catalog, not store. README + install + docs per plugin
 
 ---
 
