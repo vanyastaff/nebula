@@ -246,7 +246,7 @@ mod tests {
     }
 
     fn node(id: NodeId) -> NodeDefinition {
-        NodeDefinition::new(id, "n", "n")
+        NodeDefinition::new(id, "n", "n").unwrap()
     }
 
     // --- linear graph: A -> B -> C ---

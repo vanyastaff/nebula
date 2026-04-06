@@ -12,6 +12,7 @@ Workflow definition types and DAG model — pure data, no execution.
 - `EdgeCondition` / `ErrorMatcher` / `ResultMatcher` define conditional branching on connections.
 
 ## Traps
+- `NodeDefinition::new` returns `Result<Self, WorkflowError>` — it validates the `ActionKey` at construction. Callers must handle the error (or `.unwrap()` in tests).
 - `ParamValue` is the parameter value type at definition time (static). `FieldValues` (from nebula-parameter) is the runtime value map. They are different.
 - `NodeState` is lightweight node progress tracking inside `WorkflowDefinition` — not to be confused with `NodeExecutionState` in nebula-execution.
 - `RetryConfig` and `CheckpointingConfig` live on `WorkflowConfig` — they apply to the whole workflow, not individual nodes.

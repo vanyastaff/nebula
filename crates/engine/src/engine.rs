@@ -966,7 +966,10 @@ mod tests {
         let (engine, _) = make_engine(registry);
 
         let n = NodeId::new();
-        let wf = make_workflow(vec![NodeDefinition::new(n, "echo", "echo")], vec![]);
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
+            vec![],
+        );
 
         let result = engine
             .execute_workflow(&wf, serde_json::json!("hello"), ExecutionBudget::default())
@@ -990,8 +993,8 @@ mod tests {
         let n2 = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1, "A", "echo"),
-                NodeDefinition::new(n2, "B", "echo"),
+                NodeDefinition::new(n1, "A", "echo").unwrap(),
+                NodeDefinition::new(n2, "B", "echo").unwrap(),
             ],
             vec![Connection::new(n1, n2)],
         );
@@ -1022,10 +1025,10 @@ mod tests {
         let d = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "echo"),
-                NodeDefinition::new(b, "B", "echo"),
-                NodeDefinition::new(c, "C", "echo"),
-                NodeDefinition::new(d, "D", "echo"),
+                NodeDefinition::new(a, "A", "echo").unwrap(),
+                NodeDefinition::new(b, "B", "echo").unwrap(),
+                NodeDefinition::new(c, "C", "echo").unwrap(),
+                NodeDefinition::new(d, "D", "echo").unwrap(),
             ],
             vec![
                 Connection::new(a, b),
@@ -1067,9 +1070,9 @@ mod tests {
         let n3 = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1, "A", "echo"),
-                NodeDefinition::new(n2, "B", "fail"),
-                NodeDefinition::new(n3, "C", "echo"),
+                NodeDefinition::new(n1, "A", "echo").unwrap(),
+                NodeDefinition::new(n2, "B", "fail").unwrap(),
+                NodeDefinition::new(n3, "C", "echo").unwrap(),
             ],
             vec![Connection::new(n1, n2), Connection::new(n2, n3)],
         );
@@ -1091,7 +1094,10 @@ mod tests {
         let (engine, _) = make_engine(registry);
 
         let n = NodeId::new();
-        let wf = make_workflow(vec![NodeDefinition::new(n, "A", "unknown")], vec![]);
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n, "A", "unknown").unwrap()],
+            vec![],
+        );
 
         let result = engine
             .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
@@ -1125,7 +1131,10 @@ mod tests {
         let (engine, metrics) = make_engine(registry);
 
         let n = NodeId::new();
-        let wf = make_workflow(vec![NodeDefinition::new(n, "echo", "echo")], vec![]);
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
+            vec![],
+        );
 
         engine
             .execute_workflow(&wf, serde_json::json!("test"), ExecutionBudget::default())
@@ -1156,7 +1165,10 @@ mod tests {
         let (engine, metrics) = make_engine(registry);
 
         let n = NodeId::new();
-        let wf = make_workflow(vec![NodeDefinition::new(n, "fail", "fail")], vec![]);
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n, "fail", "fail").unwrap()],
+            vec![],
+        );
 
         let result = engine
             .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
@@ -1264,10 +1276,10 @@ mod tests {
         let d = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "branch"),
-                NodeDefinition::new(b, "B", "echo"),
-                NodeDefinition::new(c, "C", "echo"),
-                NodeDefinition::new(d, "D", "echo"),
+                NodeDefinition::new(a, "A", "branch").unwrap(),
+                NodeDefinition::new(b, "B", "echo").unwrap(),
+                NodeDefinition::new(c, "C", "echo").unwrap(),
+                NodeDefinition::new(d, "D", "echo").unwrap(),
             ],
             vec![
                 Connection::new(a, b).with_branch_key("true"),
@@ -1311,9 +1323,9 @@ mod tests {
         let c = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "echo"),
-                NodeDefinition::new(b, "B", "skip"),
-                NodeDefinition::new(c, "C", "echo"),
+                NodeDefinition::new(a, "A", "echo").unwrap(),
+                NodeDefinition::new(b, "B", "skip").unwrap(),
+                NodeDefinition::new(c, "C", "echo").unwrap(),
             ],
             vec![Connection::new(a, b), Connection::new(b, c)],
         );
@@ -1351,9 +1363,9 @@ mod tests {
         let c = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "echo"),
-                NodeDefinition::new(b, "B", "fail"),
-                NodeDefinition::new(c, "C", "echo"),
+                NodeDefinition::new(a, "A", "echo").unwrap(),
+                NodeDefinition::new(b, "B", "fail").unwrap(),
+                NodeDefinition::new(c, "C", "echo").unwrap(),
             ],
             vec![
                 Connection::new(a, b),
@@ -1397,9 +1409,9 @@ mod tests {
         let c = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "echo"),
-                NodeDefinition::new(b, "B", "fail"),
-                NodeDefinition::new(c, "C", "echo"),
+                NodeDefinition::new(a, "A", "echo").unwrap(),
+                NodeDefinition::new(b, "B", "fail").unwrap(),
+                NodeDefinition::new(c, "C", "echo").unwrap(),
             ],
             vec![Connection::new(a, b), Connection::new(b, c)],
         );
@@ -1429,8 +1441,8 @@ mod tests {
         let b = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "echo"),
-                NodeDefinition::new(b, "B", "echo"),
+                NodeDefinition::new(a, "A", "echo").unwrap(),
+                NodeDefinition::new(b, "B", "echo").unwrap(),
             ],
             vec![
                 Connection::new(a, b).with_condition(EdgeCondition::OnResult {
@@ -1467,10 +1479,10 @@ mod tests {
         let d = NodeId::new();
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "echo"),
-                NodeDefinition::new(b, "B", "echo"),
-                NodeDefinition::new(c, "C", "echo"),
-                NodeDefinition::new(d, "D", "echo"),
+                NodeDefinition::new(a, "A", "echo").unwrap(),
+                NodeDefinition::new(b, "B", "echo").unwrap(),
+                NodeDefinition::new(c, "C", "echo").unwrap(),
+                NodeDefinition::new(d, "D", "echo").unwrap(),
             ],
             vec![
                 Connection::new(a, b), // Always

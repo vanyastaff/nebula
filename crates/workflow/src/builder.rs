@@ -197,7 +197,7 @@ mod tests {
     use nebula_core::NodeId;
 
     fn node(id: NodeId) -> NodeDefinition {
-        NodeDefinition::new(id, "n", "n")
+        NodeDefinition::new(id, "n", "n").unwrap()
     }
 
     #[test]

@@ -97,7 +97,7 @@ mod tests {
     }
 
     fn node(id: NodeId) -> NodeDefinition {
-        NodeDefinition::new(id, "n", "n")
+        NodeDefinition::new(id, "n", "n").unwrap()
     }
 
     #[test]

@@ -51,6 +51,16 @@ pub enum WorkflowError {
         source_node_id: NodeId,
     },
 
+    /// Invalid action key format.
+    #[classify(category = "validation", code = "WORKFLOW:INVALID_ACTION_KEY")]
+    #[error("invalid action key `{key}`: {reason}")]
+    InvalidActionKey {
+        /// The invalid key string.
+        key: String,
+        /// Why it's invalid.
+        reason: String,
+    },
+
     /// Generic graph construction error.
     #[classify(category = "validation", code = "WORKFLOW:GRAPH_ERROR")]
     #[error("graph error: {0}")]
