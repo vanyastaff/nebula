@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::input_hint::InputHint;
 use crate::loader::OptionLoader;
 use crate::option::SelectOption;
 use crate::parameter::Parameter;
@@ -179,7 +180,7 @@ impl TryFrom<&Parameter> for FieldSpec {
         let label = param.label.clone().unwrap_or_default();
 
         match &param.param_type {
-            ParameterType::String { multiline } => Ok(FieldSpec::Text {
+            ParameterType::String { multiline, .. } => Ok(FieldSpec::Text {
                 id,
                 label,
                 multiline: *multiline,
@@ -230,7 +231,10 @@ impl From<FieldSpec> for Parameter {
                 multiline,
             } => Parameter {
                 id,
-                param_type: ParameterType::String { multiline },
+                param_type: ParameterType::String {
+                    multiline,
+                    input_hint: InputHint::default(),
+                },
                 label: Some(label),
                 ..Parameter::string("_placeholder")
             },

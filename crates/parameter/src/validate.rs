@@ -206,6 +206,7 @@ fn validate_type(
         }
 
         // All others: no type-specific validation beyond rules.
+        #[allow(deprecated)]
         ParameterType::String { .. }
         | ParameterType::Boolean
         | ParameterType::Code { .. }

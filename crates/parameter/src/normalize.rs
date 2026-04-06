@@ -66,6 +66,7 @@ fn normalize_one(param: &Parameter, values: &mut ParameterValues, depth: u8) {
         // Notice is display-only — no value to normalize.
         ParameterType::Notice { .. } => return,
         // Hidden parameters never get defaults backfilled.
+        #[allow(deprecated)]
         ParameterType::Hidden => return,
         _ => {}
     }
@@ -173,6 +174,7 @@ fn normalize_mode(
     let variant = variants.iter().find(|v| v.id == mode_key);
     if let Some(variant) = variant {
         // Hidden variant — no "value" key needed, skip recursion.
+        #[allow(deprecated)]
         if matches!(variant.param_type, ParameterType::Hidden) {
             values.set(key, Value::Object(obj));
             return;
@@ -246,6 +248,7 @@ fn normalize_object(
 fn normalize_pick_mode(parameters: &[Parameter], values: &mut ParameterValues, depth: u8) {
     for param in parameters {
         match &param.param_type {
+            #[allow(deprecated)]
             ParameterType::Computed { .. }
             | ParameterType::Notice { .. }
             | ParameterType::Hidden => {

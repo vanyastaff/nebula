@@ -32,6 +32,8 @@ pub mod conditions;
 pub mod display_mode;
 /// Error types for parameter operations.
 pub mod error;
+/// Input hints for String parameter UI rendering.
+pub mod input_hint;
 /// Typed field definitions for the Filter condition builder.
 pub mod filter_field;
 /// Schema lint diagnostics.
@@ -76,6 +78,7 @@ pub use collection::ParameterCollection;
 pub use conditions::Condition;
 pub use display_mode::{ComputedReturn, DisplayMode};
 pub use error::ParameterError;
+pub use input_hint::InputHint;
 pub use filter_field::{FilterField, FilterFieldType};
 pub use lint::{LintDiagnostic, LintLevel, lint_collection};
 pub use loader::{FilterFieldLoader, LoaderContext, LoaderError, OptionLoader, RecordLoader};
@@ -102,6 +105,7 @@ pub mod prelude {
     pub use crate::conditions::Condition;
     pub use crate::display_mode::{ComputedReturn, DisplayMode};
     pub use crate::error::ParameterError;
+    pub use crate::input_hint::InputHint;
     pub use crate::filter_field::{FilterField, FilterFieldType};
     pub use crate::lint::{LintDiagnostic, LintLevel, lint_collection};
     pub use crate::loader::{
