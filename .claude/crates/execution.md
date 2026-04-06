@@ -23,3 +23,5 @@ Execution state machine types — persistent state, journals, idempotency, plans
 <!-- reviewed: 2026-04-02 -->
 
 <!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
+
+<!-- reviewed: 2026-04-06 — added Cancelling→Completed and Cancelling→TimedOut transitions -->
