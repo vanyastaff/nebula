@@ -69,6 +69,7 @@ impl FileWatcher {
     }
 
     /// Start the event processing task
+    #[allow(clippy::excessive_nesting)] // Reason: async event loop with debounce logic
     async fn start_event_processor(&self, mut rx: mpsc::Receiver<ConfigWatchEvent>) {
         let callback = Arc::clone(&self.callback);
         let debounce_duration = self.debounce_duration;

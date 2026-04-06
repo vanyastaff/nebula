@@ -377,6 +377,7 @@ impl Config {
     }
 
     /// Set nested value in JSON using dot notation
+    #[allow(clippy::excessive_nesting)] // Reason: deeply nested JSON path traversal
     fn set_nested_value(
         &self,
         value: &mut serde_json::Value,
