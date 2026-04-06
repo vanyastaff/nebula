@@ -628,7 +628,185 @@ Per-tenant billing counters extracted from existing metrics via VictoriaMetrics 
 
 ---
 
-## 12. Not In Scope
+## 12. Recommended Rust Crates
+
+| Crate | Purpose | Replaces/Adds |
+|-------|---------|---------------|
+| **`tracing`** + **`tracing-subscriber`** | Structured logging + spans | Already used (nebula-log) |
+| **`tracing-opentelemetry`** | Bridge tracing spans → OTEL export | New — enables traces |
+| **`opentelemetry-otlp`** | OTEL gRPC/HTTP exporter | New — sends to Tempo/Jaeger |
+| **`metrics`** + **`metrics-exporter-prometheus`** | Metrics facade + Prometheus export | Consider replacing custom MetricsRegistry |
+| **`clickhouse-rs`** | Async ClickHouse client | New — ExecutionHistoryWriter |
+| **`sentry`** + **`sentry-tower`** + **`sentry-tracing`** | Application error tracking | New — crash reports |
+| **`aya`** | eBPF from pure Rust | New — USDT probes (RT17) |
+| **`pprof-rs`** | CPU profiling | New — production debugging |
+
+---
+
+## 13. Sentry — Application Error Tracking
+
+### What Sentry captures (Nebula application errors)
+- Panics, OOM, storage failures, unexpected internal errors
+- Stack trace, OS info, Rust version, nebula version
+- `execution_id` if available (for correlation)
+
+### What Sentry NEVER captures
+- Credential values or secrets
+- Workflow data or node outputs
+- User PII
+- Tenant-specific information
+
+### Deployment modes
+
+| Mode | Sentry | Behavior |
+|------|--------|----------|
+| **Local desktop** | **Opt-in** | First launch: "Send anonymous crash reports?" popup. User decides. |
+| **Self-hosted** | **Off by default** | Operator can configure own Sentry DSN in config |
+| **SaaS** | **Always on** | Our Sentry instance. We are responsible for reliability |
+
+### Two error layers (don't confuse them)
+
+| Error type | Example | Where it goes |
+|-----------|---------|---------------|
+| **Nebula bug** (panic, internal error) | `unwrap()` on None, storage connection lost | **Sentry** |
+| **Workflow error** (user's workflow fails) | HTTP 500 from API, credential expired, timeout | **LocalEventStore / ClickHouse / UI** |
+
+Sentry is for Nebula's OWN health. Workflow errors go through the execution pipeline, not Sentry.
+
+### Integration
+
+```rust
+// Feature-gated: sentry feature
+fn init_sentry(profile: &TelemetryProfile) -> Option<sentry::ClientGuard> {
+    let dsn = match profile {
+        TelemetryProfile::Local => {
+            if user_consented_to_crash_reports() {
+                Some(NEBULA_PUBLIC_SENTRY_DSN)
+            } else { None }
+        }
+        TelemetryProfile::SelfHosted { sentry_dsn, .. } => sentry_dsn.clone(),
+        TelemetryProfile::Cloud { .. } => Some(NEBULA_CLOUD_SENTRY_DSN.into()),
+    };
+
+    dsn.map(|dsn| sentry::init(sentry::ClientOptions {
+        dsn: Some(dsn.parse().unwrap()),
+        release: Some(env!("CARGO_PKG_VERSION").into()),
+        traces_sample_rate: 0.1,
+        before_send: Some(Arc::new(|mut event| {
+            // Strip all PII — Nebula errors only
+            event.user = None;
+            event.request = None;
+            Some(event)
+        })),
+        ..Default::default()
+    }))
+}
+```
+
+### Axum middleware (API layer)
+
+```rust
+// Catches panics in HTTP handlers and reports to Sentry
+let app = Router::new()
+    .route("/api/v1/workflows", get(list_workflows))
+    // ...
+    .layer(sentry_tower::NewSentryLayer::new_from_top())
+    .layer(sentry_tower::SentryHttpLayer::with_transaction());
+```
+
+### Tracing integration
+
+```rust
+// Sentry captures tracing events as breadcrumbs
+// Errors with ERROR level → Sentry events
+// Spans → Sentry transaction traces (sampled)
+let _guard = sentry::init(options);
+tracing_subscriber::registry()
+    .with(sentry_tracing::layer())
+    .with(fmt::layer())
+    .init();
+```
+
+---
+
+## 14. Recommended Observability Stack by Deployment
+
+### Local Desktop — Minimal, embedded
+```
+Nebula Desktop
+├── tracing → stdout (pretty format for dev)
+├── LocalMetricsStore (in-memory counters)
+├── LocalEventStore (SQLite wide events per node)
+├── Sentry (opt-in crash reports only)
+└── No external dependencies
+```
+
+### Self-Hosted — Standard ops stack
+```
+Nebula Server
+├── /metrics → OTel Collector → VictoriaMetrics → Grafana
+├── OTEL traces → OTel Collector → Tempo → Grafana
+├── stdout JSON logs → OTel Collector → Loki → Grafana
+├── Node I/O → ExecutionHistoryWriter → ClickHouse → Grafana
+├── Sentry (optional, self-hosted DSN)
+└── Pyroscope (optional, continuous profiling)
+```
+
+### Self-Hosted Simple — Single backend
+```
+Nebula Server
+├── /metrics → OTel Collector → SigNoz (ClickHouse)
+├── OTEL traces → OTel Collector → SigNoz
+├── stdout JSON logs → OTel Collector → SigNoz
+├── Node I/O → ExecutionHistoryWriter → SigNoz (same ClickHouse)
+└── ONE docker-compose, ONE dashboard
+```
+
+### SaaS — Full observability
+```
+Nebula Cloud
+├── VictoriaMetrics cluster (metrics + billing via relabeling)
+├── Tempo cluster (traces, tail-sampled)
+├── Loki cluster (logs, structured metadata)
+├── ClickHouse cluster (execution history + analytics)
+├── Sentry (always on, our instance)
+├── Pyroscope (continuous profiling)
+├── Grafana (unified dashboards)
+└── PagerDuty/OpsGenie (alerting)
+```
+
+---
+
+## 15. OTel Semantic Conventions for Nebula
+
+Custom resource attributes (contribute upstream when stable):
+
+```
+# Resource attributes (per-process)
+nebula.version = "1.0.0"
+nebula.deployment.mode = "self_hosted"  # local | self_hosted | cloud
+
+# Span attributes (per-operation)
+nebula.workflow.id = "wf_abc123"
+nebula.workflow.name = "Sync Orders"
+nebula.execution.id = "ex_def456"
+nebula.node.id = "nd_ghi789"
+nebula.action.key = "http.request"
+nebula.action.version = "1.0"
+nebula.owner.id = "tenant_xyz"
+nebula.credential.key = "bearer_secret"  # key only, never value
+nebula.resource.key = "postgres_pool"
+nebula.isolation.level = "capability_gated"
+
+# Metric labels (bounded cardinality)
+nebula.action.key     # bounded by ActionRegistry (~100s)
+nebula.owner.id       # bounded by tenant count
+nebula.status         # enum: completed | failed | cancelled | skipped
+```
+
+---
+
+## 16. Not In Scope
 
 - Custom dashboards (Grafana dashboards are user-configured)
 - Log aggregation (ELK/Loki — external tooling)
