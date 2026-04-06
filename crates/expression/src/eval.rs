@@ -16,6 +16,7 @@ use serde_json::{Number, Value};
 #[cfg(feature = "regex")]
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Maximum recursion depth for expression evaluation
 const MAX_RECURSION_DEPTH: usize = 256;
@@ -32,6 +33,8 @@ const MAX_REGEX_CACHE_SIZE: usize = 100;
 pub struct Evaluator {
     builtins: Arc<BuiltinRegistry>,
     policy: Option<Arc<EvaluationPolicy>>,
+    /// Step counter for DoS prevention (reset per top-level eval call).
+    steps: AtomicUsize,
     /// Regex cache (pattern -> compiled Regex)
     /// Using Mutex for thread-safe interior mutability
     #[cfg(feature = "regex")]
@@ -52,6 +55,7 @@ impl Evaluator {
         Self {
             builtins,
             policy,
+            steps: AtomicUsize::new(0),
             #[cfg(feature = "regex")]
             regex_cache: Mutex::new(HashMap::new()),
         }
@@ -60,6 +64,7 @@ impl Evaluator {
     /// Evaluate an expression in the given context
     #[inline]
     pub fn eval(&self, expr: &Expr, context: &EvaluationContext) -> ExpressionResult<Value> {
+        self.steps.store(0, Ordering::Relaxed);
         self.eval_with_depth(expr, context, 0)
     }
 
@@ -74,10 +79,24 @@ impl Evaluator {
         // Check recursion depth limit
         if depth > MAX_RECURSION_DEPTH {
             return Err(ExpressionError::expression_eval_error(format!(
-                "Maximum recursion depth ({}) exceeded",
-                MAX_RECURSION_DEPTH
+                "Maximum recursion depth ({MAX_RECURSION_DEPTH}) exceeded",
             )));
         }
+
+        // Check step limit
+        let step = self.steps.fetch_add(1, Ordering::Relaxed) + 1;
+        if self
+            .policy
+            .as_ref()
+            .and_then(|p| p.max_eval_steps())
+            .is_some_and(|max| step > max)
+        {
+            let max = self.policy.as_ref().unwrap().max_eval_steps().unwrap();
+            return Err(ExpressionError::expression_eval_error(format!(
+                "Maximum evaluation steps ({max}) exceeded",
+            )));
+        }
+
         match expr {
             Expr::Literal(val) => Ok(val.clone()),
 
