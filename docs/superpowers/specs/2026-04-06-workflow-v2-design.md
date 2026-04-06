@@ -264,6 +264,22 @@ pub struct CheckpointingConfig { ... }
 ### W2. Durable webhook inbound queue (Telegram)
 Webhook events written to Postgres BEFORE HTTP 200 ack. At-least-once delivery with dedup by event fingerprint.
 
+### W4. ConcurrencyPolicy on WorkflowConfig (Restate, Inngest, Hatchet)
+Per-key concurrency limit with overflow strategy. See RT10 in runtime spec.
+
+### W5. WaitForEvent node type — design now (Inngest, Restate)
+Engine suspends node, persists wait condition, resumes on matching event or timeout. v2 implementation.
+```rust
+pub struct WaitCondition {
+    pub event_name: String,
+    pub filter_expr: Option<String>,
+    pub timeout: Duration,
+}
+```
+
+### W6. CachePolicy — promote to v1.1 (Flyte)
+Input-hash-based node caching saves 40-60% compute on iterative workflows. Design: `CachePolicy { key: hash(action_key + input), ttl, store: BlobRef }`. Engine checks cache before execution.
+
 ### W3. v2 Roadmap items (AWS, Google)
 - **Dynamic fan-out (ForEach):** `NodeKind::ForEach { collection_expr, max_parallelism }` — engine spawns N parallel branches at runtime. v2.
 - **Sub-workflows:** A node can invoke another WorkflowDefinition as a step. v2.

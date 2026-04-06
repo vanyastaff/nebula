@@ -170,6 +170,52 @@ Engine persists `ExecutionState` to storage after EACH node completion (mandator
 ### RT8. Ingest durability — local spill buffer (Twilio)
 If Postgres is unreachable during webhook ingest, buffer events in a bounded local WAL (append-only file or in-memory ring). Replay to Postgres on recovery. Bounded queue size (configurable, default 10,000 events). Circuit breaker on the Postgres write path — fail open to local buffer, not drop events.
 
+### RT10. Per-key concurrency control — design now, implement v2 (Restate, Inngest, Hatchet)
+Three competing engines independently built per-key concurrency. Design the schema now:
+```rust
+pub struct ConcurrencyPolicy {
+    /// Expression extracting the concurrency key (e.g., "{{ input.userId }}")
+    pub key_expr: String,
+    /// Maximum concurrent executions per key
+    pub max_concurrent: u32,
+    /// What to do when limit reached
+    pub overflow: ConcurrencyOverflow,
+}
+
+pub enum ConcurrencyOverflow {
+    Queue,          // wait in line
+    Reject,         // fail immediately
+    CancelOldest,   // cancel the oldest running
+}
+```
+Field on `WorkflowConfig` or per-node. v2 implementation, but schema and storage designed for v1.
+
+### RT11. QueueBackend trait — design now (Kestra, Hatchet, DolphinScheduler)
+Three engines hit Postgres-as-queue ceiling (~5-10K tasks/sec). Design abstract trait now:
+```rust
+pub trait QueueBackend: Send + Sync {
+    async fn enqueue(&self, task: QueuedTask) -> Result<()>;
+    async fn dequeue(&self, worker_id: &str) -> Result<Option<QueuedTask>>;
+    async fn ack(&self, task_id: &str) -> Result<()>;
+    async fn nack(&self, task_id: &str) -> Result<()>;
+}
+```
+v1: Postgres implementation (`SELECT ... FOR UPDATE SKIP LOCKED`). v2: Redis/NATS/Kafka adapters.
+
+### RT12. Node output individually durable (Inngest, Hatchet)
+RT7 checkpoint must persist **individual node outputs**, not just aggregate status. Crash between node complete and checkpoint write → re-execute that node (idempotent via B1 durable IdempotencyManager). `NodeOutput` serialized to storage before next node starts.
+
+### RT13. ResourceRequirements on ActionMetadata — design now (DolphinScheduler)
+```rust
+pub struct ResourceRequirements {
+    pub gpu: bool,
+    pub memory_class: MemoryClass,
+    pub worker_group: Option<String>,
+}
+pub enum MemoryClass { Standard, High, Unlimited }
+```
+Field on `ActionMetadata`. Engine ignores in v1 (single-process). v2 routes to matching workers.
+
 ### RT9. Per-tenant rate limiting (Twilio)
 `ActionContext` carries `TenantRateLimiter` keyed by `(owner_id, provider_key)`. Rate limits configured per external provider. Uses `nebula-resilience` rate limiter internally. Even single-tenant deployments need per-provider rate limiting to avoid API bans.
 
