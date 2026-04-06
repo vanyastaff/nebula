@@ -218,10 +218,26 @@ With per-node output durability (RT12), re-running a single node is natural: loa
 ### RT16. Per-route rate limit key (Discord)
 Extend RT9 key from `(owner_id, provider_key)` to `(owner_id, provider_key, route_key: Option<String>)`. Enables Discord's per-route bucket model. `route_key` extracted by action author via ActionContext.
 
+### RT17. USDT probe contract — 6 stable probe points (Oxide)
+Commit as stable observability API:
+1. `nebula:action__entry(execution_id, node_id, action_key)`
+2. `nebula:action__return(execution_id, node_id, latency_us, ok)`
+3. `nebula:checkpoint__write(execution_id, node_id, bytes)`
+4. `nebula:credential__resolve(credential_key, scheme, latency_us)`
+5. `nebula:blob__write(execution_id, node_id, bytes, content_type)`
+6. `nebula:resource__acquire(resource_key, topology, latency_us)`
+
+### RT18. Performance benchmarking requirements (Intel, ScyllaDB, io_uring)
+v1 must include:
+- `strace -c` syscall count for 10-node workflow
+- `perf stat -e cache-misses` for RT6 latency benchmark
+- jemalloc vs system allocator comparison
+- moka cache GC overhead under 50K credential load
+
 ### RT13. ResourceRequirements on ActionMetadata — design now (DolphinScheduler)
 ```rust
 pub struct ResourceRequirements {
-    pub gpu: bool,
+    pub gpu_memory_mb: Option<u32>,  // was: gpu: bool (NVIDIA feedback)
     pub memory_class: MemoryClass,
     pub worker_group: Option<String>,
 }
