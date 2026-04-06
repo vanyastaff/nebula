@@ -263,3 +263,8 @@ pub struct CheckpointingConfig { ... }
 
 ### W2. Durable webhook inbound queue (Telegram)
 Webhook events written to Postgres BEFORE HTTP 200 ack. At-least-once delivery with dedup by event fingerprint.
+
+### W3. v2 Roadmap items (AWS, Google)
+- **Dynamic fan-out (ForEach):** `NodeKind::ForEach { collection_expr, max_parallelism }` — engine spawns N parallel branches at runtime. v2.
+- **Sub-workflows:** A node can invoke another WorkflowDefinition as a step. v2.
+- **Expression language spec:** Formal grammar for `{{ }}` expressions — field access, operators, built-in functions. Separate spec: `expression-v1-design.md`. v1 blocker.

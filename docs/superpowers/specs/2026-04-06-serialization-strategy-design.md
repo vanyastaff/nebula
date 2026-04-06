@@ -332,7 +332,31 @@ async fn write_stream(
 
 ---
 
-## 7. Not In Scope
+## 7. Archive Versioning (Confluent feedback)
+
+All rkyv-archived data includes a version prefix:
+```rust
+/// Format: [version: u32 LE][rkyv bytes]
+fn write_archived<T: rkyv::Serialize<...>>(value: &T, version: u32) -> Vec<u8> {
+    let mut buf = version.to_le_bytes().to_vec();
+    buf.extend(rkyv::to_bytes::<rkyv::rancor::Error>(value).unwrap());
+    buf
+}
+
+fn read_archived<T: rkyv::Archive>(bytes: &[u8]) -> Result<&T::Archived> {
+    let version = u32::from_le_bytes(bytes[..4].try_into()?);
+    if version != CURRENT_VERSION {
+        return Err(ArchiveError::VersionMismatch { expected: CURRENT_VERSION, found: version });
+    }
+    rkyv::access::<T::Archived, rkyv::rancor::Error>(&bytes[4..])
+}
+```
+
+Version checked before access. Stale archives (wrong version) trigger re-serialization from source, not silent corruption.
+
+---
+
+## 8. Not In Scope
 
 - Replacing `serde_json::Value` in public API (stays forever — it IS the interface)
 - `flatbuffers` / `capnp` (schema codegen overhead not justified)

@@ -164,6 +164,15 @@ Metric labels sourced from user input (node names, workflow names) are sanitized
 ### RT6. Latency target (Grafana)
 Stated performance contract: 3-node workflow with 1KB payloads, no external I/O calls: **< 1ms end-to-end** (DAG resolution + scheduling + action dispatch + serialize). Benchmark this as CI gate.
 
+### RT7. Checkpoint contract (AWS)
+Engine persists `ExecutionState` to storage after EACH node completion (mandatory). Resume semantics: on restart, query `ExecutionStatus::Running`, skip nodes in terminal states, resume from first non-terminal node. `CheckpointingConfig.interval` controls additional periodic checkpoints between nodes for long-running actions.
+
+### RT8. Ingest durability — local spill buffer (Twilio)
+If Postgres is unreachable during webhook ingest, buffer events in a bounded local WAL (append-only file or in-memory ring). Replay to Postgres on recovery. Bounded queue size (configurable, default 10,000 events). Circuit breaker on the Postgres write path — fail open to local buffer, not drop events.
+
+### RT9. Per-tenant rate limiting (Twilio)
+`ActionContext` carries `TenantRateLimiter` keyed by `(owner_id, provider_key)`. Rate limits configured per external provider. Uses `nebula-resilience` rate limiter internally. Even single-tenant deployments need per-provider rate limiting to avoid API bans.
+
 ---
 
 ## Serialization Strategy

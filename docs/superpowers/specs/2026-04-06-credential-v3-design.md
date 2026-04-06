@@ -533,3 +533,13 @@ User fills form → ParameterValues → Credential::resolve() → AuthScheme →
 ## Serialization Strategy
 
 See `2026-04-06-serialization-strategy-design.md` for cross-cutting serialization decisions affecting this crate.
+
+---
+
+## Post-Conference Round 4 Amendments
+
+### C5. Proactive credential refresh before node execution (HashiCorp)
+Engine checks `expires_at` on resolved credential BEFORE each node that declares credential dependency. If within refresh threshold (default: 5 min before expiry), triggers `Credential::refresh()` proactively. On 401/auth-failure from action, engine triggers refresh + single retry. Actions never see expired credentials.
+
+### C6. Dynamic/ephemeral secrets — v2 extension point (HashiCorp)
+v2 adds `CredentialLease { id, ttl, revoke_handle }` for Vault-pattern short-lived credentials. `resolve()` returns a lease instead of a bare scheme. Runtime revokes on execution completion. Credential crate extension point — not a v1 concern.
