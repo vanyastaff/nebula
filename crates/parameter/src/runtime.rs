@@ -100,13 +100,6 @@ impl ValidatedValues {
     }
 }
 
-impl std::ops::Index<&str> for ValidatedValues {
-    type Output = serde_json::Value;
-
-    fn index(&self, key: &str) -> &Self::Output {
-        &self.values[key]
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -171,9 +164,10 @@ mod tests {
     }
 
     #[test]
-    fn index_delegates() {
+    fn get_delegates() {
         let v = make_validated(&[("key", json!("val"))]);
-        assert_eq!(v["key"], json!("val"));
+        assert_eq!(v.get("key"), Some(&json!("val")));
+        assert_eq!(v.get("missing"), None);
     }
 
     #[test]
