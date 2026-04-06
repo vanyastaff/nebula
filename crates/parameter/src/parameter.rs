@@ -88,7 +88,10 @@ pub struct Parameter {
     pub secret: bool,
 
     /// Whether the field supports expression mode (e.g. `{{ variable }}`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    ///
+    /// Defaults to `true` — most fields support expressions. Use
+    /// `.no_expression()` to disable for fields like boolean toggles.
+    #[serde(default = "default_true")]
     pub expression: bool,
 
     /// Override the HTML input type (e.g. `"email"`, `"url"`).
@@ -122,6 +125,10 @@ pub struct Parameter {
 
 // ── Private helper ─────────────────────────────────────────────────────────
 
+fn default_true() -> bool {
+    true
+}
+
 /// Creates a [`Parameter`] with all shared metadata at defaults.
 fn new_parameter(id: impl Into<String>, param_type: ParameterType) -> Parameter {
     Parameter {
@@ -134,7 +141,7 @@ fn new_parameter(id: impl Into<String>, param_type: ParameterType) -> Parameter 
         default: None,
         required: false,
         secret: false,
-        expression: false,
+        expression: true,
         input_type: None,
         rules: Vec::new(),
         visible_when: None,
@@ -521,9 +528,21 @@ impl Parameter {
     }
 
     /// Enables expression mode (allows `{{ variable }}` interpolation).
+    ///
+    /// This is the default — most fields support expressions.
     #[must_use]
     pub fn expression(mut self) -> Self {
         self.expression = true;
+        self
+    }
+
+    /// Disables expression mode for this field.
+    ///
+    /// Use for fields where expressions don't make sense (e.g., boolean
+    /// toggles, resource pickers).
+    #[must_use]
+    pub fn no_expression(mut self) -> Self {
+        self.expression = false;
         self
     }
 }
