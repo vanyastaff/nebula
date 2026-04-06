@@ -56,27 +56,47 @@ consumes = ["text", "json"]
 
 ---
 
-## 3. Monetization Model
+## 3. One Plugin Per Service — Collaborative Model
 
-### For Nebula (the project)
-- **Open source engine:** MIT/Apache-2.0. Free forever.
-- **Nebula Cloud:** Hosted service. Per-execution pricing.
-- **Enterprise:** SSO, RBAC, audit, SLA, compliance attestation.
+### Anti-pattern: VSCode/WordPress marketplace
+500 competing Slack plugins = fragmented quality, user confusion, abandoned forks. **Nebula rejects this.**
 
-### For Plugin Developers
-- **Free plugins:** Hosted in marketplace for free. No commission.
-- **Paid plugins:** Billing via Stripe Connect integration.
-  - v1: Developer handles own billing (link to external site)
-  - v2: Nebula Marketplace billing (85% to developer, 15% platform fee)
-- **Bounty program:** $1K-5K for high-priority connectors (Salesforce, HubSpot, Stripe, etc.)
+### Nebula approach: ONE canonical plugin per service
+- **One** `nebula-plugin-slack`, **one** `nebula-plugin-stripe`, **one** `nebula-plugin-postgres`
+- Multiple contributors work TOGETHER on the same plugin (like a crate, not a marketplace listing)
+- Plugin Hub page = catalog of canonical plugins, not a competitive marketplace
 
-### Revenue Split
+### How developers contribute
+1. **Claim or join:** Developer finds `nebula-plugin-salesforce` doesn't exist → creates RFC. Or exists → opens PR to add actions.
+2. **Collaborative development:** Multiple developers from different companies co-maintain one plugin. Like how `serde` has many contributors, not 50 competing serialization crates.
+3. **Crate ownership:** Plugin published to crates.io under `nebula-plugins` org. Multiple maintainers with publish rights.
+
+### Nebula Plugin Fund
+Open-source fund (from cloud revenue) pays contributors:
+- **Bounties:** $1K-10K for implementing a priority plugin from scratch
+- **Maintenance grants:** $500/month for maintaining critical plugins (ongoing)
+- **Feature bounties:** $200-2K for adding specific actions to existing plugins
+
 ```
-Plugin sale $49/month
-  → $41.65 to developer (85%)
-  → $7.35 to Nebula Marketplace (15%)
-    → CDN, hosting, review staff, support infrastructure
+Cloud revenue → 10% to Plugin Fund
+Plugin Fund → bounties + maintenance grants + infrastructure
 ```
+
+### Why this works better
+| Marketplace model | Nebula model |
+|-------------------|-------------|
+| 50 Slack plugins, 3 good | 1 Slack plugin, excellent |
+| Authors compete, fragment effort | Authors collaborate, compound effort |
+| Abandoned plugins = user pain | Community maintains, fund sustains |
+| "Which Slack plugin?" confusion | One canonical choice, always |
+| Revenue split creates incentive to fork | Grants create incentive to contribute |
+
+### Hub page (not marketplace)
+- **nebula.dev/plugins** — catalog of all canonical plugins
+- Each plugin: README, actions list, credential requirements, install instructions
+- **No ratings, no competing listings** — one entry per service
+- "Want a plugin that doesn't exist? → Start an RFC"
+- "Want to improve an existing plugin? → Open a PR"
 
 ---
 
@@ -92,16 +112,18 @@ Core team commits to maintaining 50 essential plugins:
 - Twilio, SendGrid, Discord
 - Salesforce, HubSpot (if funded)
 
-### Abandonment Policy
-1. Plugin inactive 6 months → "Maintenance Mode" warning
-2. Inactive 12 months → Community can fork under same name
-3. Critical plugins (Essential 50) → Core team adopts
+### Maintainer Succession
+Since each plugin has ONE canonical repo with multiple maintainers:
+1. Maintainer goes inactive → other co-maintainers continue
+2. All maintainers inactive 3 months → core team posts "maintainer wanted" call
+3. No new maintainer 6 months → core team adopts or archives
+4. Critical plugins (Essential 50) → always have ≥2 active maintainers
 
 ### Support Triage
 - Plugin errors carry `plugin_key` in error metadata
 - Nebula Cloud SLA covers engine + Essential 50 plugins
-- Community plugins: support via plugin author's channels
-- Error messages: "This error originates from the `slack` plugin. Contact: github.com/nebula-plugins/slack/issues"
+- Plugin issues filed on plugin repo (e.g., `nebula-plugins/slack/issues`)
+- Error messages: "This error originates from the `slack` plugin. Report: github.com/nebula-plugins/slack/issues"
 
 ---
 
