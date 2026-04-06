@@ -592,3 +592,9 @@ This is a runtime concern (engine/UI layer), not a parameter schema concern. The
 | `ValidationError` gains `code`/`params` fields | Any code constructing `ValidationError` directly | Add new fields |
 | Expression default flips to `true` | Parameters that assumed no-expression | Add `no_expression` where needed |
 | Loader types unified to `Loader<T>` | Code importing `OptionLoader`/`RecordLoader`/`FilterFieldLoader` | Import `Loader<T>` |
+
+---
+
+## 12. Serde Alignment (Serde maintainer feedback)
+
+The `Parameters` derive macro emits `#[serde(default = "...")]` for fields that have `#[param(default = ...)]`. This ensures parameter schema defaults and serde deserialization defaults are always aligned. Without this, a field with `#[param(default = "GET")]` but no `#[serde(default)]` would fail deserialization on missing values despite the schema declaring a default.

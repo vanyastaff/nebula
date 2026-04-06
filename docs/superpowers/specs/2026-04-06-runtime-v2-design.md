@@ -54,9 +54,13 @@ Replace warning-only with actual blob storage:
 
 ```rust
 /// Trait for external blob storage (S3, local filesystem, etc.)
+/// NOTE: Return futures must be Send (required for tokio::spawn).
+/// Use `-> impl Future<...> + Send` or `#[async_trait]` consistently.
 pub trait BlobStorage: Send + Sync {
-    async fn write(&self, data: &[u8], content_type: &str) -> Result<BlobRef, RuntimeError>;
-    async fn read(&self, blob_ref: &BlobRef) -> Result<Vec<u8>, RuntimeError>;
+    fn write(&self, data: &[u8], content_type: &str)
+        -> impl Future<Output = Result<BlobRef, RuntimeError>> + Send;
+    fn read(&self, blob_ref: &BlobRef)
+        -> impl Future<Output = Result<Vec<u8>, RuntimeError>> + Send;
 }
 
 /// Reference to externally stored data.

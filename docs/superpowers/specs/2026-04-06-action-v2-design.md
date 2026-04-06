@@ -407,6 +407,27 @@ Add serde_json recursion limit (default 128) at StatelessAdapter deserialization
 ### B6. action_version pinning on NodeDefinition (Uber/Cadence, Netflix/Conductor)
 `NodeDefinition` gains `action_version: Option<InterfaceVersion>`. If set, engine uses `ActionRegistry::get(key, version)` — never `get_latest()` during execution. `get_latest()` is editor-only for workflow construction. Prevents silent action upgrades on running workflows.
 
+### B8. StatefulAction cancel safety documentation (Tokio maintainer)
+`StatefulAction::execute` must document: "If this future is cancelled, `state` retains its value from the last completed iteration. Framework re-calls `execute` with the last committed state. Action authors: perform state mutations atomically — update local copy, then assign to `*state` at the end, not field-by-field."
+
+### B9. Manual registration example without proc macros (Bevy maintainer)
+For users who prefer no proc macros, document the equivalent manual path:
+```rust
+let metadata = ActionMetadata::builder("my.action", "My Action")
+    .with_parameters(ParameterCollection::builder()
+        .string("url", |s| s.label("URL").required())
+        .build())
+    .build();
+
+registry.register_handler(
+    metadata.key.clone(),
+    metadata.version,
+    Arc::new(FnHandler::new(metadata, |input: Value, ctx: &ActionContext| async move {
+        Ok(ActionResult::success(input))
+    })),
+);
+```
+
 ### B7. CostMetrics on ActionResult (Vercel AI) — v1.1
 ```rust
 pub struct CostMetrics {
