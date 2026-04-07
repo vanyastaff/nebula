@@ -176,13 +176,9 @@ fn make_workflow(nodes: Vec<NodeDefinition>, connections: Vec<Connection>) -> Wo
         connections,
         variables: HashMap::new(),
         config: WorkflowConfig::default(),
-        trigger: None,
         tags: Vec::new(),
         created_at: now,
         updated_at: now,
-        owner_id: None,
-        ui_metadata: None,
-        schema_version: 1,
     }
 }
 
@@ -226,10 +222,7 @@ async fn engine_and_runtime_share_metrics_registry() {
     let engine = WorkflowEngine::new(runtime, metrics.clone());
 
     let n = NodeId::new();
-    let wf = make_workflow(
-        vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
-        vec![],
-    );
+    let wf = make_workflow(vec![NodeDefinition::new(n, "echo", "echo")], vec![]);
 
     let _result = engine
         .execute_workflow(&wf, serde_json::json!("hi"), ExecutionBudget::default())
@@ -266,8 +259,8 @@ async fn linear_pipeline_data_flows_through() {
     let b = NodeId::new();
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", "echo").unwrap(),
-            NodeDefinition::new(b, "B", "double").unwrap(),
+            NodeDefinition::new(a, "A", "echo"),
+            NodeDefinition::new(b, "B", "double"),
         ],
         vec![Connection::new(a, b)],
     );
@@ -304,9 +297,9 @@ async fn fan_out_parallel_execution() {
     let c = NodeId::new();
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", "echo").unwrap(),
-            NodeDefinition::new(b, "B", "double").unwrap(),
-            NodeDefinition::new(c, "C", "add10").unwrap(),
+            NodeDefinition::new(a, "A", "echo"),
+            NodeDefinition::new(b, "B", "double"),
+            NodeDefinition::new(c, "C", "add10"),
         ],
         vec![Connection::new(a, b), Connection::new(a, c)],
     );
@@ -345,10 +338,10 @@ async fn diamond_merge_receives_combined_outputs() {
     let d = NodeId::new();
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", "echo").unwrap(),
-            NodeDefinition::new(b, "B", "double").unwrap(),
-            NodeDefinition::new(c, "C", "add10").unwrap(),
-            NodeDefinition::new(d, "D", "echo").unwrap(), // echoes merged input
+            NodeDefinition::new(a, "A", "echo"),
+            NodeDefinition::new(b, "B", "double"),
+            NodeDefinition::new(c, "C", "add10"),
+            NodeDefinition::new(d, "D", "echo"), // echoes merged input
         ],
         vec![
             Connection::new(a, b),
@@ -396,9 +389,9 @@ async fn error_propagation_stops_downstream() {
     let c = NodeId::new();
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", "echo").unwrap(),
-            NodeDefinition::new(b, "B", "fail").unwrap(),
-            NodeDefinition::new(c, "C", "echo").unwrap(),
+            NodeDefinition::new(a, "A", "echo"),
+            NodeDefinition::new(b, "B", "fail"),
+            NodeDefinition::new(c, "C", "echo"),
         ],
         vec![Connection::new(a, b), Connection::new(b, c)],
     );
@@ -446,10 +439,10 @@ async fn cancellation_via_sibling_failure() {
     let downstream = NodeId::new();
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(entry, "Entry", "echo").unwrap(),
-            NodeDefinition::new(slow, "Slow", "slow").unwrap(),
-            NodeDefinition::new(fail, "Fail", "fail").unwrap(),
-            NodeDefinition::new(downstream, "Down", "echo").unwrap(),
+            NodeDefinition::new(entry, "Entry", "echo"),
+            NodeDefinition::new(slow, "Slow", "slow"),
+            NodeDefinition::new(fail, "Fail", "fail"),
+            NodeDefinition::new(downstream, "Down", "echo"),
         ],
         vec![
             Connection::new(entry, slow),
@@ -490,8 +483,8 @@ async fn metrics_cover_full_lifecycle() {
     let b = NodeId::new();
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", "echo").unwrap(),
-            NodeDefinition::new(b, "B", "echo").unwrap(),
+            NodeDefinition::new(a, "A", "echo"),
+            NodeDefinition::new(b, "B", "echo"),
         ],
         vec![Connection::new(a, b)],
     );
@@ -534,13 +527,15 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
 
     // Create 8 independent nodes (all entry nodes, no connections)
     let nodes: Vec<NodeDefinition> = (0..8)
-        .map(|i| NodeDefinition::new(NodeId::new(), format!("N{i}"), "counter").unwrap())
+        .map(|i| NodeDefinition::new(NodeId::new(), format!("N{i}"), "counter"))
         .collect();
 
     let wf = make_workflow(nodes, vec![]);
 
     // Limit concurrency to 2
-    let budget = ExecutionBudget::default().with_max_concurrent_nodes(2);
+    let budget = ExecutionBudget {
+        max_concurrent_nodes: 2,
+    };
 
     let result = engine
         .execute_workflow(&wf, serde_json::json!("parallel"), budget)
@@ -571,10 +566,10 @@ async fn deep_chain_propagates_outputs() {
     let d = NodeId::new();
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", "echo").unwrap(), // echo(2) = 2
-            NodeDefinition::new(b, "B", "double").unwrap(), // double(2) = 4
-            NodeDefinition::new(c, "C", "double").unwrap(), // double(4) = 8
-            NodeDefinition::new(d, "D", "double").unwrap(), // double(8) = 16
+            NodeDefinition::new(a, "A", "echo"),   // echo(2) = 2
+            NodeDefinition::new(b, "B", "double"), // double(2) = 4
+            NodeDefinition::new(c, "C", "double"), // double(4) = 8
+            NodeDefinition::new(d, "D", "double"), // double(8) = 16
         ],
         vec![
             Connection::new(a, b),
@@ -606,10 +601,7 @@ async fn metrics_accurate_on_failure() {
     let (engine, metrics) = make_engine(registry);
 
     let a = NodeId::new();
-    let wf = make_workflow(
-        vec![NodeDefinition::new(a, "fail-node", "fail").unwrap()],
-        vec![],
-    );
+    let wf = make_workflow(vec![NodeDefinition::new(a, "fail-node", "fail")], vec![]);
 
     let result = engine
         .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())

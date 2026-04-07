@@ -4,6 +4,7 @@
 //! Содержит только порты (traits) — не зависит от конкретных реализаций.
 
 use nebula_config::Config;
+use nebula_resource::Manager as ResourceManager;
 use nebula_storage::{ExecutionRepo, WorkflowRepo};
 use nebula_telemetry::metrics::MetricsRegistry;
 use std::sync::Arc;
@@ -27,9 +28,10 @@ pub struct AppState {
     /// Optional metrics registry for Prometheus export.
     /// When `None`, the `GET /metrics` endpoint returns 503.
     pub metrics_registry: Option<Arc<MetricsRegistry>>,
-    // TODO: Добавить другие порты по мере необходимости:
-    // pub task_queue: Arc<dyn TaskQueue>,
-    // pub credential_store: Arc<dyn CredentialStore>,
+
+    /// Optional resource manager for resource lifecycle inspection.
+    /// When `None`, the `GET /api/v1/resources` endpoint returns 503.
+    pub resource_manager: Option<Arc<ResourceManager>>,
 }
 
 impl AppState {
@@ -48,6 +50,7 @@ impl AppState {
             workflow_repo,
             execution_repo,
             metrics_registry: None,
+            resource_manager: None,
         }
     }
 
@@ -55,6 +58,13 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_metrics_registry(mut self, registry: Arc<MetricsRegistry>) -> Self {
         self.metrics_registry = Some(registry);
+        self
+    }
+
+    /// Attach a resource manager for resource inspection via `GET /api/v1/resources`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_resource_manager(mut self, manager: Arc<ResourceManager>) -> Self {
+        self.resource_manager = Some(manager);
         self
     }
 }

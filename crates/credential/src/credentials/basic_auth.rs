@@ -1,7 +1,7 @@
 //! HTTP Basic Auth credential -- static, non-interactive.
 //!
-//! Resolves a username + password pair into [`IdentityPassword`]. State and
-//! Scheme are the same type via [`identity_state!`](crate::identity_state).
+//! Resolves a username + password pair into [`BasicAuth`]. State and Scheme
+//! are the same type via [`identity_state!`](crate::identity_state).
 
 use nebula_parameter::values::ParameterValues;
 use nebula_parameter::{Parameter, ParameterCollection};
@@ -13,10 +13,10 @@ use crate::description::CredentialDescription;
 use crate::error::CredentialError;
 use crate::pending::NoPendingState;
 use crate::resolve::StaticResolveResult;
-use crate::scheme::IdentityPassword;
+use crate::scheme::BasicAuth;
 
 /// HTTP Basic Auth credential -- resolves username + password into
-/// [`IdentityPassword`].
+/// [`BasicAuth`].
 ///
 /// - **Non-interactive:** resolves in one step from user input.
 /// - **Non-refreshable:** static credentials have no expiry.
@@ -24,8 +24,8 @@ use crate::scheme::IdentityPassword;
 pub struct BasicAuthCredential;
 
 impl Credential for BasicAuthCredential {
-    type Scheme = IdentityPassword;
-    type State = IdentityPassword;
+    type Scheme = BasicAuth;
+    type State = BasicAuth;
     type Pending = NoPendingState;
 
     const KEY: &'static str = "basic_auth";
@@ -39,7 +39,6 @@ impl Credential for BasicAuthCredential {
             icon_url: None,
             documentation_url: None,
             properties: Self::parameters(),
-            pattern: nebula_core::AuthPattern::IdentityPassword,
         }
     }
 
@@ -60,14 +59,14 @@ impl Credential for BasicAuthCredential {
             )
     }
 
-    fn project(state: &IdentityPassword) -> IdentityPassword {
+    fn project(state: &BasicAuth) -> BasicAuth {
         state.clone()
     }
 
     async fn resolve(
         values: &ParameterValues,
         _ctx: &CredentialContext,
-    ) -> Result<StaticResolveResult<IdentityPassword>, CredentialError> {
+    ) -> Result<StaticResolveResult<BasicAuth>, CredentialError> {
         let username = values.get_string("username").ok_or_else(|| {
             CredentialError::Provider("missing required field 'username'".to_owned())
         })?;
@@ -75,7 +74,7 @@ impl Credential for BasicAuthCredential {
             CredentialError::Provider("missing required field 'password'".to_owned())
         })?;
         let secret = SecretString::new(password.to_owned());
-        Ok(StaticResolveResult::Complete(IdentityPassword::new(
+        Ok(StaticResolveResult::Complete(BasicAuth::new(
             username, secret,
         )))
     }
@@ -92,17 +91,17 @@ mod tests {
 
     #[test]
     fn capabilities_are_all_false() {
-        const { assert!(!BasicAuthCredential::INTERACTIVE) };
-        const { assert!(!BasicAuthCredential::REFRESHABLE) };
-        const { assert!(!BasicAuthCredential::REVOCABLE) };
-        const { assert!(!BasicAuthCredential::TESTABLE) };
+        assert!(!BasicAuthCredential::INTERACTIVE);
+        assert!(!BasicAuthCredential::REFRESHABLE);
+        assert!(!BasicAuthCredential::REVOCABLE);
+        assert!(!BasicAuthCredential::TESTABLE);
     }
 
     #[test]
     fn project_returns_clone_of_state() {
-        let auth = IdentityPassword::new("admin", SecretString::new("s3cret"));
+        let auth = BasicAuth::new("admin", SecretString::new("s3cret"));
         let projected = BasicAuthCredential::project(&auth);
-        assert_eq!(projected.identity(), "admin");
+        assert_eq!(projected.username, "admin");
         let original = auth.password().expose_secret(|s| s.to_owned());
         let cloned = projected.password().expose_secret(|s| s.to_owned());
         assert_eq!(original, cloned);
@@ -123,7 +122,7 @@ mod tests {
         let result = BasicAuthCredential::resolve(&values, &ctx).await.unwrap();
         match result {
             StaticResolveResult::Complete(auth) => {
-                assert_eq!(auth.identity(), "alice");
+                assert_eq!(auth.username, "alice");
                 let pw = auth.password().expose_secret(|s| s.to_owned());
                 assert_eq!(pw, "p@ssw0rd");
             }

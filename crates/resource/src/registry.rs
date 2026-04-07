@@ -7,11 +7,12 @@ use std::any::{Any, TypeId};
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use nebula_core::ResourceKey;
+use nebula_core::{ResourceKey, ScopeLevel};
 
-use crate::ctx::ScopeLevel;
 use crate::resource::Resource;
 use crate::runtime::managed::ManagedResource;
+use crate::state::ResourceStatus;
+use crate::topology_tag::TopologyTag;
 
 /// Type-erased trait for managed resources stored in the [`Registry`].
 ///
@@ -21,6 +22,15 @@ pub trait AnyManagedResource: Send + Sync + 'static {
     /// Returns the resource key for this managed resource.
     fn resource_key(&self) -> ResourceKey;
 
+    /// Returns the topology tag (Pool, Resident, Service, etc.).
+    fn topology_tag(&self) -> TopologyTag;
+
+    /// Returns the current lifecycle status.
+    fn status(&self) -> Arc<ResourceStatus>;
+
+    /// Returns the current generation counter.
+    fn generation(&self) -> u64;
+
     /// Returns a reference to `self` as `&dyn Any` for downcasting.
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync>;
 }
@@ -28,6 +38,18 @@ pub trait AnyManagedResource: Send + Sync + 'static {
 impl<R: Resource> AnyManagedResource for ManagedResource<R> {
     fn resource_key(&self) -> ResourceKey {
         R::key()
+    }
+
+    fn topology_tag(&self) -> TopologyTag {
+        self.topology.tag()
+    }
+
+    fn status(&self) -> Arc<ResourceStatus> {
+        self.status.load_full()
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation()
     }
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {

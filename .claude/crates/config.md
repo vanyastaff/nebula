@@ -23,4 +23,6 @@ Multi-source configuration with env interpolation, hot-reload, and typed access.
 ## Relations
 - Depends on nebula-log (re-exports `info!`, `debug!` etc. in prelude). Used by nebula-api, nebula-runtime, and any crate needing runtime configuration.
 
-<!-- reviewed: 2026-04-06 — perf: optimized hot paths (3.5x flatten, 2.2x build), added benchmarks; no architectural changes -->
+<!-- reviewed: 2026-04-01 — Config derive moved to nebula-config-macros, re-exported from crate root -->
+
+<!-- reviewed: 2026-04-02 — perf: interpolate now takes Value by value; get_nested_value uses byte-scan loop; empty path segments explicitly rejected -->

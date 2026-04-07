@@ -28,3 +28,4 @@ pub use crate::validation::{
 };
 
 pub use nebula_parameter::{Parameter, ParameterCollection};
+pub use nebula_resource::handle::ResourceHandle;

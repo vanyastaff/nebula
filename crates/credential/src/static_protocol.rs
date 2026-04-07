@@ -8,12 +8,12 @@
 //!
 //! ```ignore
 //! use nebula_credential::StaticProtocol;
-//! use nebula_credential::scheme::ConnectionUri;
+//! use nebula_credential::scheme::DatabaseAuth;
 //!
-//! struct PostgresProtocol;
+//! struct DatabaseProtocol;
 //!
-//! impl StaticProtocol for PostgresProtocol {
-//!     type Scheme = ConnectionUri;
+//! impl StaticProtocol for DatabaseProtocol {
+//!     type Scheme = DatabaseAuth;
 //!
 //!     fn parameters() -> ParameterCollection {
 //!         ParameterCollection::new()
@@ -21,11 +21,9 @@
 //!             .add(Parameter::integer("port").default(json!(5432)))
 //!     }
 //!
-//!     fn build(values: &ParameterValues) -> Result<ConnectionUri, CredentialError> {
+//!     fn build(values: &ParameterValues) -> Result<DatabaseAuth, CredentialError> {
 //!         let host = values.get_string("host").unwrap_or_default();
-//!         Ok(ConnectionUri::new(SecretString::new(
-//!             format!("postgres://user:pass@{host}:5432/db")
-//!         )))
+//!         Ok(DatabaseAuth::new(host, 5432, "db", "user", SecretString::new("pass")))
 //!     }
 //! }
 //! ```
@@ -50,7 +48,7 @@ use crate::error::CredentialError;
 ///
 /// ```ignore
 /// use nebula_credential::StaticProtocol;
-/// use nebula_credential::scheme::SecretToken;
+/// use nebula_credential::scheme::BearerToken;
 /// use nebula_credential::SecretString;
 /// use nebula_credential::CredentialError;
 /// use nebula_parameter::ParameterCollection;
@@ -59,17 +57,17 @@ use crate::error::CredentialError;
 /// struct ApiKeyProtocol;
 ///
 /// impl StaticProtocol for ApiKeyProtocol {
-///     type Scheme = SecretToken;
+///     type Scheme = BearerToken;
 ///
 ///     fn parameters() -> ParameterCollection {
 ///         ParameterCollection::new()
 ///     }
 ///
-///     fn build(values: &ParameterValues) -> Result<SecretToken, CredentialError> {
+///     fn build(values: &ParameterValues) -> Result<BearerToken, CredentialError> {
 ///         let token = values
 ///             .get_string("token")
 ///             .ok_or_else(|| CredentialError::InvalidInput("missing token".into()))?;
-///         Ok(SecretToken::new(SecretString::new(token.to_owned())))
+///         Ok(BearerToken::new(SecretString::new(token.to_owned())))
 ///     }
 /// }
 /// ```
@@ -101,22 +99,22 @@ pub trait StaticProtocol: Send + Sync + 'static {
 mod tests {
     use super::*;
     use crate::SecretString;
-    use crate::scheme::SecretToken;
+    use crate::scheme::BearerToken;
 
     struct TestProtocol;
 
     impl StaticProtocol for TestProtocol {
-        type Scheme = SecretToken;
+        type Scheme = BearerToken;
 
         fn parameters() -> ParameterCollection {
             ParameterCollection::new()
         }
 
-        fn build(values: &ParameterValues) -> Result<SecretToken, CredentialError> {
+        fn build(values: &ParameterValues) -> Result<BearerToken, CredentialError> {
             let token = values
                 .get_string("token")
                 .ok_or_else(|| CredentialError::InvalidInput("missing token".into()))?;
-            Ok(SecretToken::new(SecretString::new(token.to_owned())))
+            Ok(BearerToken::new(SecretString::new(token.to_owned())))
         }
     }
 
@@ -132,7 +130,7 @@ mod tests {
         let mut values = ParameterValues::new();
         values.set("token", serde_json::json!("test-token"));
         let token = TestProtocol::build(&values).unwrap();
-        let value = token.token().expose_secret(|s| s.to_owned());
+        let value = token.expose().expose_secret(|s| s.to_owned());
         assert_eq!(value, "test-token");
     }
 

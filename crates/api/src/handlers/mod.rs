@@ -5,6 +5,7 @@
 
 pub mod execution;
 pub mod health;
+pub mod resource;
 pub mod workflow;
 
 pub use execution::*;

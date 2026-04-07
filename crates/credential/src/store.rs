@@ -80,6 +80,28 @@ pub enum StoreError {
     Backend(Box<dyn std::error::Error + Send + Sync>),
 }
 
+/// Shared test helper for constructing [`StoredCredential`] instances.
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    use super::StoredCredential;
+
+    /// Build a minimal [`StoredCredential`] for testing.
+    pub fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
+        StoredCredential {
+            id: id.into(),
+            credential_key: "test_credential".into(),
+            data: data.to_vec(),
+            state_kind: "test".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: None,
+            metadata: Default::default(),
+        }
+    }
+}
+
 /// Core CRUD trait for credential persistence.
 ///
 /// Implementations handle raw bytes — encryption/decryption is done
@@ -138,26 +160,4 @@ pub trait CredentialStore: Send + Sync {
     ///
     /// Returns [`StoreError::Backend`] on underlying storage failures.
     fn exists(&self, id: &str) -> impl Future<Output = Result<bool, StoreError>> + Send;
-}
-
-/// Shared test helper for constructing [`StoredCredential`] instances.
-#[cfg(test)]
-pub(crate) mod test_helpers {
-    use super::StoredCredential;
-
-    /// Build a minimal [`StoredCredential`] for testing.
-    pub fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
-        StoredCredential {
-            id: id.into(),
-            credential_key: "test_credential".into(),
-            data: data.to_vec(),
-            state_kind: "test".into(),
-            state_version: 1,
-            version: 0,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            expires_at: None,
-            metadata: Default::default(),
-        }
-    }
 }

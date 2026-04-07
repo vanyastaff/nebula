@@ -1,6 +1,6 @@
 //! Utility functions
 
-use super::{check_arg_count, check_min_arg_count};
+use super::check_arg_count;
 use crate::ExpressionError;
 use crate::context::EvaluationContext;
 use crate::error::{ExpressionErrorExt, ExpressionResult};
@@ -94,38 +94,5 @@ pub fn uuid(
 ) -> ExpressionResult<Value> {
     Err(ExpressionError::expression_function_not_found(
         "uuid (feature 'uuid' not enabled)",
-    ))
-}
-
-/// Return the first non-null value from the arguments
-///
-/// Example: `coalesce(null, null, 42, "hello")` returns `42`
-pub fn coalesce(
-    args: &[Value],
-    _eval: &Evaluator,
-    _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
-    check_min_arg_count("coalesce", args, 1)?;
-
-    for arg in args {
-        if !arg.is_null() {
-            return Ok(arg.clone());
-        }
-    }
-
-    Ok(Value::Null)
-}
-
-/// Return the type name of a value as a string
-///
-/// Example: `type_of(42)` returns `"number"`
-pub fn type_of(
-    args: &[Value],
-    _eval: &Evaluator,
-    _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
-    check_arg_count("type_of", args, 1)?;
-    Ok(Value::String(
-        crate::value_utils::value_type_name(&args[0]).to_string(),
     ))
 }

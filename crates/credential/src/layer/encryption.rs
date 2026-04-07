@@ -5,20 +5,10 @@
 //! bound as Additional Authenticated Data (AAD), preventing record-swapping
 //! attacks where encrypted data from one credential is copied to another.
 //!
-//! AAD validation is mandatory — data encrypted without AAD (or with a
-//! mismatched credential ID) is rejected with a hard error. There is no
-//! legacy fallback path.
-//!
-//! # Key rotation
-//!
-//! Multiple keys can be registered via [`EncryptionLayer::with_keys`]. On every
-//! read the layer inspects `EncryptedData::key_id`:
-//!
-//! - If `key_id` matches `current_key_id`, decrypt normally.
-//! - If `key_id` differs from `current_key_id`, decrypt with the old key and
-//!   **re-encrypt with the current key** before returning — lazy rotation.
+//! For backward compatibility, decryption falls back to no-AAD mode if
+//! AAD-based decryption fails, allowing legacy data to be read transparently.
+//! New writes always use AAD binding.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::crypto::{self, EncryptionKey};
@@ -26,129 +16,31 @@ use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// Wraps a store with AES-256-GCM encryption on the `data` field.
 ///
-/// Supports multi-key operation for transparent key rotation: data encrypted
-/// with an old key is automatically re-encrypted with the current key on read.
-///
 /// # Examples
 ///
 /// ```rust,ignore
 /// use nebula_credential::{EncryptionLayer, InMemoryStore, EncryptionKey};
 /// use std::sync::Arc;
 ///
-/// // Single-key mode
 /// let key = Arc::new(EncryptionKey::from_bytes([0x42; 32]));
 /// let store = EncryptionLayer::new(InMemoryStore::new(), key);
-///
-/// // Multi-key mode (key rotation)
-/// let old_key = Arc::new(EncryptionKey::from_bytes([0x01; 32]));
-/// let new_key = Arc::new(EncryptionKey::from_bytes([0x02; 32]));
-/// let store = EncryptionLayer::with_keys(
-///     InMemoryStore::new(),
-///     "new-key".to_string(),
-///     vec![
-///         ("old-key".to_string(), old_key),
-///         ("new-key".to_string(), new_key),
-///     ],
-/// );
 /// ```
 pub struct EncryptionLayer<S> {
     inner: S,
-    current_key_id: String,
-    keys: HashMap<String, Arc<EncryptionKey>>,
+    key: Arc<EncryptionKey>,
 }
 
 impl<S> EncryptionLayer<S> {
-    /// Create a new single-key encryption layer.
-    ///
-    /// The key is registered as `"default"` and used for all new writes.
-    /// An empty-string alias is also registered for migration compatibility
-    /// with pre-rotation data.
+    /// Create a new encryption layer wrapping the given store.
     pub fn new(inner: S, key: Arc<EncryptionKey>) -> Self {
-        let mut keys = HashMap::new();
-        keys.insert("default".into(), key.clone());
-        keys.insert(String::new(), key); // alias for pre-rotation data
-        Self {
-            inner,
-            current_key_id: "default".into(),
-            keys,
-        }
-    }
-
-    /// Create an encryption layer with multiple keys for rotation support.
-    ///
-    /// `current_key_id` must be present in `keys`; it is used for all new
-    /// writes. Other keys are used only for decrypting legacy data and are
-    /// replaced on read (lazy rotation).
-    ///
-    /// # Panics
-    ///
-    /// Panics if `current_key_id` is not present in `keys`.
-    pub fn with_keys(
-        inner: S,
-        current_key_id: impl Into<String>,
-        keys: Vec<(String, Arc<EncryptionKey>)>,
-    ) -> Self {
-        let current_key_id = current_key_id.into();
-        let keys: HashMap<String, Arc<EncryptionKey>> = keys.into_iter().collect();
-        assert!(
-            keys.contains_key(&current_key_id),
-            "current_key_id '{current_key_id}' must be present in the keys map"
-        );
-        Self {
-            inner,
-            current_key_id,
-            keys,
-        }
-    }
-
-    fn current_key(&self) -> Result<&EncryptionKey, StoreError> {
-        self.keys
-            .get(&self.current_key_id)
-            .map(|k| k.as_ref())
-            .ok_or_else(|| {
-                StoreError::Backend(
-                    format!("current encryption key '{}' not found", self.current_key_id).into(),
-                )
-            })
-    }
-
-    fn key_for_id(&self, key_id: &str) -> Result<&EncryptionKey, StoreError> {
-        self.keys.get(key_id).map(|k| k.as_ref()).ok_or_else(|| {
-            StoreError::Backend(
-                format!("encryption key '{key_id}' not found — cannot decrypt").into(),
-            )
-        })
+        Self { inner, key }
     }
 }
 
 impl<S: CredentialStore> CredentialStore for EncryptionLayer<S> {
     async fn get(&self, id: &str) -> Result<StoredCredential, StoreError> {
         let mut credential = self.inner.get(id).await?;
-        let (mut plaintext, rotated) = self.decrypt_possibly_rotating(&credential.data, id)?;
-        credential.data = std::mem::take(&mut *plaintext);
-
-        if let Some(re_encrypted) = rotated {
-            // Use CAS to avoid clobbering concurrent updates. If the record
-            // changed since we read it, skip — rotation will happen on next read.
-            let updated = StoredCredential {
-                data: re_encrypted,
-                ..credential.clone()
-            };
-            match self
-                .inner
-                .put(
-                    updated,
-                    PutMode::CompareAndSwap {
-                        expected_version: credential.version,
-                    },
-                )
-                .await
-            {
-                Ok(_) | Err(StoreError::VersionConflict { .. }) => {}
-                Err(other) => return Err(other),
-            }
-        }
-
+        credential.data = decrypt_data(&self.key, &credential.data, id)?;
         Ok(credential)
     }
 
@@ -159,7 +51,7 @@ impl<S: CredentialStore> CredentialStore for EncryptionLayer<S> {
     ) -> Result<StoredCredential, StoreError> {
         let id = credential.id.clone();
         let plaintext_data = credential.data.clone();
-        credential.data = self.encrypt_data(&plaintext_data, &id)?;
+        credential.data = encrypt_data(&self.key, &credential.data, &id)?;
         let mut stored = self.inner.put(credential, mode).await?;
         // Restore original plaintext instead of decrypting again
         stored.data = plaintext_data;
@@ -179,48 +71,34 @@ impl<S: CredentialStore> CredentialStore for EncryptionLayer<S> {
     }
 }
 
-impl<S> EncryptionLayer<S> {
-    /// Encrypt `plaintext` with the current key, serializing the envelope to bytes.
-    fn encrypt_data(&self, plaintext: &[u8], id: &str) -> Result<Vec<u8>, StoreError> {
-        let key = self.current_key()?;
-        let encrypted =
-            crypto::encrypt_with_key_id(key, &self.current_key_id, plaintext, id.as_bytes())
-                .map_err(|e| StoreError::Backend(Box::new(e)))?;
-        serde_json::to_vec(&encrypted).map_err(|e| StoreError::Backend(Box::new(e)))
+/// Encrypt plaintext data with the credential ID as AAD, serializing the
+/// [`EncryptedData`](crypto::EncryptedData) envelope to bytes.
+///
+/// The credential ID is bound as Additional Authenticated Data (AAD),
+/// preventing record-swapping attacks where encrypted data from one
+/// credential is copied to another.
+fn encrypt_data(key: &EncryptionKey, plaintext: &[u8], id: &str) -> Result<Vec<u8>, StoreError> {
+    let encrypted = crypto::encrypt_with_aad(key, plaintext, id.as_bytes())
+        .map_err(|e| StoreError::Backend(Box::new(e)))?;
+    serde_json::to_vec(&encrypted).map_err(|e| StoreError::Backend(Box::new(e)))
+}
+
+/// Deserialize an [`EncryptedData`](crypto::EncryptedData) envelope and decrypt.
+///
+/// Tries decryption with AAD (current format) first, then falls back to
+/// no-AAD decryption for backward compatibility with data encrypted before
+/// AAD binding was introduced.
+fn decrypt_data(key: &EncryptionKey, ciphertext: &[u8], id: &str) -> Result<Vec<u8>, StoreError> {
+    let encrypted: crypto::EncryptedData =
+        serde_json::from_slice(ciphertext).map_err(|e| StoreError::Backend(Box::new(e)))?;
+
+    // Try with AAD first (current format)
+    if let Ok(data) = crypto::decrypt_with_aad(key, &encrypted, id.as_bytes()) {
+        return Ok(data);
     }
 
-    /// Decrypt `ciphertext`, returning `(plaintext, Some(re_encrypted_bytes))` when
-    /// the data was stored under an old key and must be lazily rotated, or
-    /// `(plaintext, None)` when no rotation is needed.
-    ///
-    /// AAD (credential ID) is always enforced — data without AAD or with a
-    /// mismatched ID is rejected.
-    #[allow(clippy::type_complexity)]
-    // Reason: The return type is (plaintext, optional re-encryption bytes) — a type alias
-    // here would obscure the meaning without reducing complexity. The function is private.
-    fn decrypt_possibly_rotating(
-        &self,
-        ciphertext: &[u8],
-        id: &str,
-    ) -> Result<(zeroize::Zeroizing<Vec<u8>>, Option<Vec<u8>>), StoreError> {
-        let encrypted: crypto::EncryptedData =
-            serde_json::from_slice(ciphertext).map_err(|e| StoreError::Backend(Box::new(e)))?;
-
-        // Data encrypted with the current key — normal path.
-        if encrypted.key_id == self.current_key_id {
-            let key = self.current_key()?;
-            let plaintext = crypto::decrypt_with_aad(key, &encrypted, id.as_bytes())
-                .map_err(|e| StoreError::Backend(Box::new(e)))?;
-            return Ok((plaintext, None));
-        }
-
-        // Data encrypted with an older key — decrypt with old key, re-encrypt.
-        let old_key = self.key_for_id(&encrypted.key_id)?;
-        let plaintext = crypto::decrypt_with_aad(old_key, &encrypted, id.as_bytes())
-            .map_err(|e| StoreError::Backend(Box::new(e)))?;
-        let re_encrypted = self.encrypt_data(&plaintext, id)?;
-        Ok((plaintext, Some(re_encrypted)))
-    }
+    // Fall back to no-AAD decryption (legacy format)
+    crypto::decrypt(key, &encrypted).map_err(|e| StoreError::Backend(Box::new(e)))
 }
 
 #[cfg(test)]
@@ -234,10 +112,6 @@ mod tests {
     }
 
     use crate::store::test_helpers::make_credential;
-
-    // =========================================================================
-    // Existing single-key tests (preserved)
-    // =========================================================================
 
     #[tokio::test]
     async fn round_trip_encrypts_and_decrypts() {
@@ -305,7 +179,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_data_without_aad() {
+    async fn legacy_data_without_aad_still_readable() {
         let inner = InMemoryStore::new();
         let key = test_key();
 
@@ -328,11 +202,10 @@ mod tests {
         };
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
 
-        // Reading through the encryption layer must fail: AAD is mandatory.
-        // Data encrypted without AAD is unreadable — no legacy fallback.
+        // Read through encryption layer -- should fall back to no-AAD decrypt
         let store = EncryptionLayer::new(inner, key);
-        let err = store.get("legacy-1").await.unwrap_err();
-        assert!(matches!(err, StoreError::Backend(_)));
+        let fetched = store.get("legacy-1").await.unwrap();
+        assert_eq!(fetched.data, b"legacy-secret");
     }
 
     #[tokio::test]
@@ -348,96 +221,5 @@ mod tests {
         let store2 = EncryptionLayer::new(inner, key2);
         let err = store2.get("enc-4").await.unwrap_err();
         assert!(matches!(err, StoreError::Backend(_)));
-    }
-
-    // =========================================================================
-    // New multi-key / key rotation tests
-    // =========================================================================
-
-    #[tokio::test]
-    async fn single_key_mode_stores_key_id() {
-        let inner = InMemoryStore::new();
-        let store = EncryptionLayer::new(inner.clone(), test_key());
-
-        let cred = make_credential("key-id-check", b"secret");
-        store.put(cred, PutMode::CreateOnly).await.unwrap();
-
-        // Inspect the raw bytes stored — should contain "default" as key_id
-        let raw = inner.get("key-id-check").await.unwrap();
-        let envelope: crate::crypto::EncryptedData = serde_json::from_slice(&raw.data).unwrap();
-        assert_eq!(envelope.key_id, "default");
-    }
-
-    #[tokio::test]
-    async fn multi_key_round_trip() {
-        let key1 = Arc::new(EncryptionKey::from_bytes([0x01; 32]));
-        let key2 = Arc::new(EncryptionKey::from_bytes([0x02; 32]));
-        let store = EncryptionLayer::with_keys(
-            InMemoryStore::new(),
-            "key-2".to_string(),
-            vec![("key-1".to_string(), key1), ("key-2".to_string(), key2)],
-        );
-
-        let cred = make_credential("mk-1", b"multi-key-secret");
-        store.put(cred, PutMode::CreateOnly).await.unwrap();
-
-        let fetched = store.get("mk-1").await.unwrap();
-        assert_eq!(fetched.data, b"multi-key-secret");
-    }
-
-    #[tokio::test]
-    async fn decrypt_with_old_key_succeeds() {
-        let inner = InMemoryStore::new();
-        let key1 = Arc::new(EncryptionKey::from_bytes([0x01; 32]));
-        let key2 = Arc::new(EncryptionKey::from_bytes([0x02; 32]));
-
-        // Write with old key (key-1 is current)
-        let store_old = EncryptionLayer::with_keys(
-            inner.clone(),
-            "key-1".to_string(),
-            vec![("key-1".to_string(), key1.clone())],
-        );
-        let cred = make_credential("rotate-1", b"old-key-data");
-        store_old.put(cred, PutMode::CreateOnly).await.unwrap();
-
-        // Now rotate: key-2 is current, key-1 still available for decryption
-        let store_new = EncryptionLayer::with_keys(
-            inner.clone(),
-            "key-2".to_string(),
-            vec![("key-1".to_string(), key1), ("key-2".to_string(), key2)],
-        );
-
-        let fetched = store_new.get("rotate-1").await.unwrap();
-        assert_eq!(fetched.data, b"old-key-data");
-    }
-
-    #[tokio::test]
-    async fn lazy_reencryption_on_read_when_key_id_differs() {
-        let inner = InMemoryStore::new();
-        let key1 = Arc::new(EncryptionKey::from_bytes([0x01; 32]));
-        let key2 = Arc::new(EncryptionKey::from_bytes([0x02; 32]));
-
-        // Write with key-1
-        let store_old = EncryptionLayer::with_keys(
-            inner.clone(),
-            "key-1".to_string(),
-            vec![("key-1".to_string(), key1.clone())],
-        );
-        let cred = make_credential("lazy-1", b"will-be-rotated");
-        store_old.put(cred, PutMode::CreateOnly).await.unwrap();
-
-        // Read through new layer — triggers lazy rotation
-        let store_new = EncryptionLayer::with_keys(
-            inner.clone(),
-            "key-2".to_string(),
-            vec![("key-1".to_string(), key1), ("key-2".to_string(), key2)],
-        );
-        let fetched = store_new.get("lazy-1").await.unwrap();
-        assert_eq!(fetched.data, b"will-be-rotated");
-
-        // Verify the data was re-encrypted with key-2 in the backing store
-        let raw = inner.get("lazy-1").await.unwrap();
-        let envelope: crate::crypto::EncryptedData = serde_json::from_slice(&raw.data).unwrap();
-        assert_eq!(envelope.key_id, "key-2");
     }
 }

@@ -45,9 +45,10 @@ pub fn validate_with_profile(
     profile: ValidationProfile,
 ) -> ValidationReport {
     let mut report = ValidationReport::new(Vec::new(), Vec::new(), values.clone());
+    let values_map = values.as_map();
 
     for param in parameters {
-        validate_parameter(param, values, "", 0, &mut report);
+        validate_parameter(param, values, values_map, "", 0, &mut report);
     }
 
     // Unknown field check.
@@ -72,6 +73,7 @@ pub fn validate_with_profile(
 fn validate_parameter(
     param: &Parameter,
     values: &ParameterValues,
+    values_map: &std::collections::HashMap<String, Value>,
     path_prefix: &str,
     depth: u8,
     report: &mut ValidationReport,
@@ -94,7 +96,7 @@ fn validate_parameter(
 
     // 2. Check visible_when — if hidden and no value, skip entirely.
     if let Some(condition) = &param.visible_when
-        && !condition.evaluate(values)
+        && !condition.evaluate(values_map)
         && raw_value.is_none()
     {
         return;
@@ -105,7 +107,7 @@ fn validate_parameter(
         || param
             .required_when
             .as_ref()
-            .is_some_and(|c| c.evaluate(values));
+            .is_some_and(|c| c.evaluate(values_map));
 
     if is_required && is_missing_or_null(raw_value) {
         report
@@ -204,7 +206,6 @@ fn validate_type(
         }
 
         // All others: no type-specific validation beyond rules.
-        #[allow(deprecated)]
         ParameterType::String { .. }
         | ParameterType::Boolean
         | ParameterType::Code { .. }
@@ -336,6 +337,7 @@ fn validate_object(
 
     // Build a nested ParameterValues from the object for condition evaluation.
     let nested_values: ParameterValues = obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let nested_map = nested_values.as_map();
 
     let is_pick_mode = display_mode.is_pick_mode();
 
@@ -344,7 +346,14 @@ fn validate_object(
         if is_pick_mode && !obj.contains_key(&sub_param.id) {
             continue;
         }
-        validate_parameter(sub_param, &nested_values, key, depth + 1, report);
+        validate_parameter(
+            sub_param,
+            &nested_values,
+            nested_map,
+            key,
+            depth + 1,
+            report,
+        );
     }
 
     // Check for unknown fields within the object.
@@ -409,7 +418,8 @@ fn validate_list(
         let item_values: ParameterValues = vec![(item.id.clone(), item_value.clone())]
             .into_iter()
             .collect();
-        validate_parameter(item, &item_values, &item_key, depth + 1, report);
+        let item_map = item_values.as_map();
+        validate_parameter(item, &item_values, item_map, &item_key, depth + 1, report);
     }
 }
 
@@ -459,7 +469,15 @@ fn validate_mode(
         let variant_values: ParameterValues = vec![(variant.id.clone(), variant_value.clone())]
             .into_iter()
             .collect();
-        validate_parameter(variant, &variant_values, key, depth + 1, report);
+        let variant_map = variant_values.as_map();
+        validate_parameter(
+            variant,
+            &variant_values,
+            variant_map,
+            key,
+            depth + 1,
+            report,
+        );
     }
 
     // Check for unknown keys (only "mode" and "value" allowed).

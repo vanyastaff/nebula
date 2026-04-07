@@ -1,7 +1,6 @@
-//! Proc-macro crate for `Parameters` and `EnumSelect` derive macros.
+//! Proc-macro crate for the `Parameters` derive macro.
 //!
-//! - `#[derive(Parameters)]` generates `HasParameters` from struct fields
-//! - `#[derive(EnumSelect)]` generates `HasSelectOptions` from enum variants
+//! Generates `parameters()` and `param_count()` from struct fields.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -10,77 +9,38 @@ extern crate proc_macro;
 
 use proc_macro::TokenStream;
 
-mod enum_select;
 mod param_attrs;
 mod parameter;
 
-/// Derive macro for generating parameter definitions from struct fields.
+/// Derive macro for generating parameter definitions.
 ///
-/// Generates `HasParameters` trait impl and inherent `parameters()` method.
-/// Infers `ParameterType` from Rust types: `String` → string, `bool` → boolean,
-/// `u32`/`i64` → integer, `f64` → number, `Option<T>` → optional,
-/// `Vec<T>` → list, enum with `EnumSelect` → select.
+/// Generates `ParameterCollection` from struct fields and their attributes.
 ///
 /// # Field Attributes
 ///
-/// `#[param(...)]`:
-/// - `label = "..."` — display label
-/// - `description = "..."` — help text
-/// - `placeholder = "..."` — placeholder text
-/// - `hint = "url"` — input hint (url, email, date, etc.)
-/// - `default = value` — default value
-/// - `required` — mark as required
-/// - `secret` — mask in UI
-/// - `multiline` — textarea mode (String only)
-/// - `no_expression` — disable expression toggle
-/// - `skip` — exclude from schema
+/// - `#[param(description = "...")]` - Field description (optional)
+/// - `#[param(required)]` - Marks the field as required (default: optional)
+/// - `#[param(secret)]` - Marks the field as sensitive data
+/// - `#[param(default = ...)]` - Default value for the field
+/// - `#[param(validation = "...")]` - Validation rule (email, url, regex, range)
+/// - `#[param(options = [...])]` - Select options
 ///
 /// # Example
 ///
 /// ```ignore
 /// #[derive(Parameters)]
-/// struct HttpRequestInput {
-///     #[param(label = "URL", hint = "url")]
-///     url: String,
+/// pub struct DatabaseConfig {
+///     #[param(description = "Database host", required, default = "localhost")]
+///     host: String,
 ///
-///     #[param(default = "GET")]
-///     method: HttpMethod,
+///     #[param(description = "Port number", validation = "range(1, 65535)", default = 5432)]
+///     port: u16,
 ///
-///     #[param(label = "Timeout (s)")]
-///     timeout: Option<u32>,
-///
-///     #[param(skip)]
-///     _internal: (),
+///     #[param(description = "Password", secret)]
+///     password: String,
 /// }
 /// ```
 #[proc_macro_derive(Parameters, attributes(param))]
 pub fn derive_parameters(input: TokenStream) -> TokenStream {
     parameter::derive(input)
-}
-
-/// Derive macro for generating select options from enum variants.
-///
-/// Generates `HasSelectOptions` and `InferParameterType` trait impls.
-/// Only supports unit variants (no fields).
-///
-/// # Variant Attributes
-///
-/// `#[param(...)]`:
-/// - `label = "..."` — display label (defaults to variant name)
-/// - `description = "..."` — option description
-///
-/// # Example
-///
-/// ```ignore
-/// #[derive(EnumSelect)]
-/// enum HttpMethod {
-///     #[param(label = "GET")]
-///     Get,
-///     #[param(label = "POST")]
-///     Post,
-/// }
-/// ```
-#[proc_macro_derive(EnumSelect, attributes(param))]
-pub fn derive_enum_select(input: TokenStream) -> TokenStream {
-    enum_select::derive(input)
 }

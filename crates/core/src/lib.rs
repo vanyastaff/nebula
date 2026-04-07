@@ -5,7 +5,7 @@
 //!
 //! ## Key Components
 //!
-//! - **Identifiers**: UserId, TenantId, ExecutionId, WorkflowId, NodeId, ResourceId, CredentialId, ProjectId, RoleId, OrganizationId, OwnerId.  
+//! - **Identifiers**: UserId, TenantId, ExecutionId, WorkflowId, NodeId, ResourceId, CredentialId, ProjectId, RoleId, OrganizationId.  
 //!   (Node = workflow step / graph vertex; which action/plugin runs there is given by [`ActionKey`] = [`PluginKey`]; [`NodeDefinition`](https://docs.rs/nebula-workflow) has `action_key: ActionKey`.)
 //! - **Keys**: PluginKey (plugin type, e.g. `telegram_bot`), ActionKey (action within a plugin, e.g. `send_message`), ParameterKey, CredentialKey.
 //! - **Scope System**: Resource lifecycle management with different scope levels (Global, Organization, Project, Workflow, Execution, Action)
@@ -29,8 +29,6 @@
 //! ```
 
 pub mod auth;
-/// Classification of authentication patterns for UI, logging, and tooling.
-pub mod auth_pattern;
 pub mod constants;
 /// Credential lifecycle events for cross-crate signaling.
 pub mod credential_event;
@@ -52,7 +50,6 @@ pub mod types;
 // Re-export main types for convenience at the crate root. Downstream crates
 // should prefer `nebula_core::prelude::*` for a stable import surface.
 pub use auth::AuthScheme;
-pub use auth_pattern::AuthPattern;
 pub use constants::*;
 pub use credential_event::CredentialEvent;
 pub use deps::*;
@@ -74,8 +71,8 @@ pub type Result<T> = std::result::Result<T, error::CoreError>;
 pub mod prelude {
     // Identifiers (UUID-backed ids)
     pub use crate::id::{
-        CredentialId, ExecutionId, NodeId, OrganizationId, OwnerId, ProjectId, ResourceId, RoleId,
-        TenantId, UserId, WorkflowId,
+        CredentialId, ExecutionId, NodeId, OrganizationId, ProjectId, ResourceId, RoleId, TenantId,
+        UserId, WorkflowId,
     };
 
     // Domain keys (normalized string keys)
@@ -84,7 +81,7 @@ pub mod prelude {
     // Core errors and parse errors
     pub use crate::error::CoreError;
     pub use crate::scope::{ScopeLevel, ScopeResolver};
-    pub use crate::traits::{HasContext, Scoped};
+    pub use crate::traits::{BaseCtx, HasContext, Scoped};
     pub use crate::types::{InterfaceVersion, ProjectType, RoleScope};
     pub use domain_key::{KeyParseError, UuidParseError};
 

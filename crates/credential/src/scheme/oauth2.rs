@@ -1,7 +1,9 @@
 //! OAuth2 token -- consumer-facing (no refresh internals).
 
-use nebula_core::{AuthPattern, AuthScheme, SecretString};
+use nebula_core::AuthScheme;
 use serde::{Deserialize, Serialize};
+
+use nebula_core::SecretString;
 
 /// OAuth2 bearer token with metadata.
 ///
@@ -65,9 +67,7 @@ impl OAuth2Token {
 }
 
 impl AuthScheme for OAuth2Token {
-    fn pattern() -> AuthPattern {
-        AuthPattern::OAuth2
-    }
+    const KIND: &'static str = "oauth2";
 
     fn expires_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         self.expires_at

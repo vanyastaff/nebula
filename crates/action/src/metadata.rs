@@ -1,25 +1,9 @@
-use serde::{Deserialize, Serialize};
-
 use crate::port::{self, InputPort, OutputPort};
 use nebula_core::ActionKey;
 use nebula_parameter::collection::ParameterCollection;
 
 // Re-export from core so downstream code can continue using `nebula_action::InterfaceVersion`.
 pub use nebula_core::InterfaceVersion;
-
-/// How isolated this action's execution should be.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum IsolationLevel {
-    /// No isolation. Action runs directly in engine process.
-    #[default]
-    None,
-    /// Capability-gated in-process. SandboxedContext checks declared deps.
-    CapabilityGated,
-    /// Full isolation via WASM or microVM.
-    Isolated,
-}
 
 /// Compatibility validation errors for metadata evolution.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -73,8 +57,6 @@ pub struct ActionMetadata {
     pub outputs: Vec<OutputPort>,
     /// Parameter definitions for this action (from nebula-parameter).
     pub parameters: ParameterCollection,
-    /// Isolation level for this action's execution.
-    pub isolation_level: IsolationLevel,
 }
 
 impl ActionMetadata {
@@ -88,7 +70,6 @@ impl ActionMetadata {
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
             parameters: ParameterCollection::new(),
-            isolation_level: IsolationLevel::None,
         }
     }
 
@@ -113,13 +94,6 @@ impl ActionMetadata {
     /// Set the parameter definitions for this action.
     pub fn with_parameters(mut self, parameters: ParameterCollection) -> Self {
         self.parameters = parameters;
-        self
-    }
-
-    /// Set the isolation level for sandbox routing.
-    #[must_use]
-    pub fn with_isolation_level(mut self, level: IsolationLevel) -> Self {
-        self.isolation_level = level;
         self
     }
 
@@ -331,20 +305,6 @@ mod tests {
 
         let err = next.validate_compatibility(&prev).unwrap_err();
         assert!(matches!(err, MetadataCompatibilityError::KeyChanged { .. }));
-    }
-
-    #[test]
-    fn isolation_level_defaults_to_none() {
-        let meta = ActionMetadata::new(action_key!("test"), "Test", "A test action");
-        assert_eq!(meta.isolation_level, IsolationLevel::None);
-        assert_eq!(IsolationLevel::default(), IsolationLevel::None);
-    }
-
-    #[test]
-    fn with_isolation_level_builder() {
-        let meta = ActionMetadata::new(action_key!("test"), "Test", "desc")
-            .with_isolation_level(IsolationLevel::Isolated);
-        assert_eq!(meta.isolation_level, IsolationLevel::Isolated);
     }
 
     #[test]

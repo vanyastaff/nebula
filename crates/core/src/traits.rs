@@ -3,8 +3,59 @@
 //! These traits provide common functionality that can be implemented
 //! by various types throughout the system.
 
-use super::id::{ExecutionId, NodeId, TenantId, UserId, WorkflowId};
+use super::id::{ExecutionId, NodeId, OrganizationId, TenantId, UserId, WorkflowId};
 use super::scope::ScopeLevel;
+
+/// Base context trait for all Nebula subsystems.
+///
+/// Provides identity and scope information without runtime-specific
+/// dependencies (no async runtime, no cancellation tokens). Extension
+/// traits in individual crates add capabilities like cancellation,
+/// typed extensions, resource access, and credential resolution.
+///
+/// # Design rationale
+///
+/// This trait unifies the overlapping `Scoped`, `HasContext`, and various
+/// crate-local context traits into a single base. It lives in `nebula-core`
+/// so every layer can depend on it without circular imports.
+///
+/// Cancellation (`CancellationToken`) is intentionally excluded — it
+/// requires `tokio-util` which is a runtime dependency. Crates that need
+/// cancellation define extension traits (e.g. `nebula_resource::Ctx`).
+pub trait BaseCtx: Send + Sync {
+    /// Scope level for isolation and lifecycle management.
+    fn scope(&self) -> &ScopeLevel;
+
+    /// Organization ID for multi-tenant isolation.
+    fn organization_id(&self) -> Option<&OrganizationId> {
+        None
+    }
+
+    /// Execution ID for correlation and tracing.
+    fn execution_id(&self) -> Option<&ExecutionId> {
+        None
+    }
+
+    /// Workflow ID for scoped resource resolution.
+    fn workflow_id(&self) -> Option<&WorkflowId> {
+        None
+    }
+
+    /// Node ID for action-level context.
+    fn node_id(&self) -> Option<&NodeId> {
+        None
+    }
+
+    /// Tenant ID for multi-tenant isolation.
+    fn tenant_id(&self) -> Option<&TenantId> {
+        None
+    }
+
+    /// User ID for authorization context.
+    fn user_id(&self) -> Option<&UserId> {
+        None
+    }
+}
 
 /// Trait for entities that have a scope
 pub trait Scoped {

@@ -2,8 +2,6 @@
 //!
 //! This module defines all tokens that can appear in an expression.
 
-use std::borrow::Cow;
-
 use super::span::Span;
 
 /// A token in the expression language with position information
@@ -23,7 +21,7 @@ impl<'a> Token<'a> {
 }
 
 /// The kind of token
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TokenKind<'a> {
     // Literals
     /// Integer literal (e.g., 42, -10)
@@ -31,7 +29,7 @@ pub enum TokenKind<'a> {
     /// Float literal (e.g., 3.14, -2.5)
     Float(f64),
     /// String literal (e.g., "hello", 'world')
-    String(Cow<'a, str>),
+    String(&'a str),
     /// Boolean literal (true, false)
     Boolean(bool),
     /// Null literal

@@ -98,7 +98,6 @@ impl PollingWatcher {
     }
 
     /// Start the polling loop
-    #[allow(clippy::excessive_nesting)] // Reason: polling loop with per-source type dispatch
     async fn start_polling_loop(
         &self,
         sources: Vec<ConfigSource>,
@@ -206,7 +205,6 @@ impl PollingWatcher {
     }
 
     /// Check for directory changes (scan before locking, minimize lock scope)
-    #[allow(clippy::excessive_nesting)] // Reason: directory traversal with file comparison logic
     async fn check_directory_changes(
         &self,
         dir: &PathBuf,

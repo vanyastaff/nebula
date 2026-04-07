@@ -104,9 +104,9 @@ pub enum CredentialError {
     /// Scheme type mismatch between credential and resource.
     #[error("scheme mismatch: expected {expected}, got {actual}")]
     SchemeMismatch {
-        /// Expected scheme pattern.
-        expected: String,
-        /// Actual scheme pattern found.
+        /// Expected scheme kind.
+        expected: &'static str,
+        /// Actual scheme kind found.
         actual: String,
     },
 }
@@ -386,11 +386,11 @@ mod tests {
     #[test]
     fn scheme_mismatch_error() {
         let err = CredentialError::SchemeMismatch {
-            expected: "SecretToken".to_string(),
-            actual: "ConnectionUri".to_string(),
+            expected: "bearer",
+            actual: "database".to_string(),
         };
-        assert!(err.to_string().contains("SecretToken"));
-        assert!(err.to_string().contains("ConnectionUri"));
+        assert!(err.to_string().contains("bearer"));
+        assert!(err.to_string().contains("database"));
     }
 
     #[test]

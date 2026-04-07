@@ -5,39 +5,197 @@
 
 use nebula_core::SecretString;
 use nebula_credential::scheme::{
-    Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion, IdentityPassword,
-    InstanceBinding, KeyPair, OAuth2Token, OtpSeed, SecretToken, SharedKey, SigningKey,
+    ApiKeyAuth, AwsAuth, BasicAuth, BearerToken, CertificateAuth, DatabaseAuth, HeaderAuth,
+    HmacSecret, KerberosAuth, LdapAuth, OAuth2Token, SamlAuth, SshAuth,
 };
 
 #[test]
-fn secret_token_serde_roundtrip() {
-    let token = SecretToken::new(SecretString::new("my-secret-key"));
+fn bearer_token_serde_roundtrip() {
+    let token = BearerToken::new(SecretString::new("my-secret-key"));
     let json = serde_json::to_string(&token).unwrap();
     assert!(
         !json.contains("REDACTED"),
         "json must not contain REDACTED: {json}"
     );
     assert!(json.contains("my-secret-key"));
-    let recovered: SecretToken = serde_json::from_str(&json).unwrap();
+    let recovered: BearerToken = serde_json::from_str(&json).unwrap();
     recovered
-        .token()
+        .expose()
         .expose_secret(|s| assert_eq!(s, "my-secret-key"));
 }
 
 #[test]
-fn identity_password_serde_roundtrip() {
-    let auth = IdentityPassword::new("admin", SecretString::new("p@ssw0rd"));
+fn basic_auth_serde_roundtrip() {
+    let auth = BasicAuth::new("admin", SecretString::new("p@ssw0rd"));
     let json = serde_json::to_string(&auth).unwrap();
     assert!(
         !json.contains("REDACTED"),
         "json must not contain REDACTED: {json}"
     );
     assert!(json.contains("p@ssw0rd"));
-    let recovered: IdentityPassword = serde_json::from_str(&json).unwrap();
-    assert_eq!(recovered.identity(), "admin");
+    let recovered: BasicAuth = serde_json::from_str(&json).unwrap();
+    assert_eq!(recovered.username, "admin");
     recovered
         .password()
         .expose_secret(|s| assert_eq!(s, "p@ssw0rd"));
+}
+
+#[test]
+fn database_auth_serde_roundtrip() {
+    let auth = DatabaseAuth::new(
+        "localhost",
+        5432,
+        "mydb",
+        "user",
+        SecretString::new("db-pass"),
+    );
+    let json = serde_json::to_string(&auth).unwrap();
+    assert!(
+        !json.contains("REDACTED"),
+        "json must not contain REDACTED: {json}"
+    );
+    assert!(json.contains("db-pass"));
+    let recovered: DatabaseAuth = serde_json::from_str(&json).unwrap();
+    recovered
+        .password()
+        .expose_secret(|s| assert_eq!(s, "db-pass"));
+}
+
+#[test]
+fn api_key_auth_serde_roundtrip() {
+    let auth = ApiKeyAuth::header("X-API-Key", SecretString::new("key-123"));
+    let json = serde_json::to_string(&auth).unwrap();
+    assert!(
+        !json.contains("REDACTED"),
+        "json must not contain REDACTED: {json}"
+    );
+    assert!(json.contains("key-123"));
+    let recovered: ApiKeyAuth = serde_json::from_str(&json).unwrap();
+    recovered.key().expose_secret(|s| assert_eq!(s, "key-123"));
+}
+
+#[test]
+fn hmac_secret_serde_roundtrip() {
+    let hmac = HmacSecret::new(SecretString::new("signing-key"), "sha256");
+    let json = serde_json::to_string(&hmac).unwrap();
+    assert!(
+        !json.contains("REDACTED"),
+        "json must not contain REDACTED: {json}"
+    );
+    assert!(json.contains("signing-key"));
+    let recovered: HmacSecret = serde_json::from_str(&json).unwrap();
+    recovered
+        .secret()
+        .expose_secret(|s| assert_eq!(s, "signing-key"));
+}
+
+#[test]
+fn aws_auth_serde_roundtrip() {
+    let auth = AwsAuth::new(
+        SecretString::new("AKIAIOSFODNN7EXAMPLE"),
+        SecretString::new("wJalrXUtnFEMI"),
+        "us-east-1",
+    )
+    .with_session_token(SecretString::new("session-tok"));
+    let json = serde_json::to_string(&auth).unwrap();
+    assert!(
+        !json.contains("REDACTED"),
+        "json must not contain REDACTED: {json}"
+    );
+    assert!(json.contains("AKIAIOSFODNN7EXAMPLE"));
+    assert!(json.contains("wJalrXUtnFEMI"));
+    assert!(json.contains("session-tok"));
+    let recovered: AwsAuth = serde_json::from_str(&json).unwrap();
+    recovered
+        .access_key_id()
+        .expose_secret(|s| assert_eq!(s, "AKIAIOSFODNN7EXAMPLE"));
+    recovered
+        .secret_access_key()
+        .expose_secret(|s| assert_eq!(s, "wJalrXUtnFEMI"));
+    recovered
+        .session_token()
+        .unwrap()
+        .expose_secret(|s| assert_eq!(s, "session-tok"));
+}
+
+#[test]
+fn aws_auth_serde_roundtrip_no_session_token() {
+    let auth = AwsAuth::new(
+        SecretString::new("AKID"),
+        SecretString::new("SECRET"),
+        "eu-west-1",
+    );
+    let json = serde_json::to_string(&auth).unwrap();
+    assert!(!json.contains("REDACTED"));
+    let recovered: AwsAuth = serde_json::from_str(&json).unwrap();
+    assert!(recovered.session_token().is_none());
+}
+
+#[test]
+fn ssh_auth_password_serde_roundtrip() {
+    let auth = SshAuth::with_password("host.example.com", 22, "root", SecretString::new("ssh-pw"));
+    let json = serde_json::to_string(&auth).unwrap();
+    assert!(
+        !json.contains("REDACTED"),
+        "json must not contain REDACTED: {json}"
+    );
+    assert!(json.contains("ssh-pw"));
+    let _recovered: SshAuth = serde_json::from_str(&json).unwrap();
+}
+
+#[test]
+fn ssh_auth_keypair_serde_roundtrip() {
+    let auth = SshAuth::with_key_pair(
+        "host.example.com",
+        22,
+        "root",
+        SecretString::new("-----BEGIN RSA-----"),
+        Some(SecretString::new("my-passphrase")),
+    );
+    let json = serde_json::to_string(&auth).unwrap();
+    assert!(
+        !json.contains("REDACTED"),
+        "json must not contain REDACTED: {json}"
+    );
+    assert!(json.contains("-----BEGIN RSA-----"));
+    assert!(json.contains("my-passphrase"));
+    let _recovered: SshAuth = serde_json::from_str(&json).unwrap();
+}
+
+#[test]
+fn ssh_auth_keypair_no_passphrase_serde_roundtrip() {
+    let auth = SshAuth::with_key_pair(
+        "host.example.com",
+        22,
+        "root",
+        SecretString::new("-----BEGIN RSA-----"),
+        None,
+    );
+    let json = serde_json::to_string(&auth).unwrap();
+    assert!(!json.contains("REDACTED"));
+    let _recovered: SshAuth = serde_json::from_str(&json).unwrap();
+}
+
+#[test]
+fn certificate_auth_serde_roundtrip() {
+    let auth = CertificateAuth::new(
+        SecretString::new("-----BEGIN CERTIFICATE-----"),
+        SecretString::new("-----BEGIN PRIVATE KEY-----"),
+    );
+    let json = serde_json::to_string(&auth).unwrap();
+    assert!(
+        !json.contains("REDACTED"),
+        "json must not contain REDACTED: {json}"
+    );
+    assert!(json.contains("-----BEGIN CERTIFICATE-----"));
+    assert!(json.contains("-----BEGIN PRIVATE KEY-----"));
+    let recovered: CertificateAuth = serde_json::from_str(&json).unwrap();
+    recovered
+        .cert_pem()
+        .expose_secret(|s| assert_eq!(s, "-----BEGIN CERTIFICATE-----"));
+    recovered
+        .key_pem()
+        .expose_secret(|s| assert_eq!(s, "-----BEGIN PRIVATE KEY-----"));
 }
 
 #[test]
@@ -56,147 +214,80 @@ fn oauth2_token_serde_roundtrip() {
 }
 
 #[test]
-fn certificate_serde_roundtrip() {
-    let cert = Certificate::new("TEST_CERT_CHAIN", SecretString::new("TEST_PRIVATE_KEY"));
-    let json = serde_json::to_string(&cert).unwrap();
+fn header_auth_serde_roundtrip() {
+    let auth = HeaderAuth::new("X-Api-Key", SecretString::new("header-secret"));
+    let json = serde_json::to_string(&auth).unwrap();
     assert!(
         !json.contains("REDACTED"),
         "json must not contain REDACTED: {json}"
     );
-    assert!(json.contains("TEST_CERT_CHAIN"));
-    assert!(json.contains("TEST_PRIVATE_KEY"));
-    let recovered: Certificate = serde_json::from_str(&json).unwrap();
-    assert_eq!(recovered.cert_chain(), "TEST_CERT_CHAIN");
+    assert!(json.contains("header-secret"));
+    let recovered: HeaderAuth = serde_json::from_str(&json).unwrap();
     recovered
-        .private_key()
-        .expose_secret(|s| assert_eq!(s, "TEST_PRIVATE_KEY"));
+        .value()
+        .expose_secret(|s| assert_eq!(s, "header-secret"));
 }
 
 #[test]
-fn key_pair_serde_roundtrip() {
-    let kp = KeyPair::new("ssh-rsa AAAA...", SecretString::new("-----BEGIN RSA-----"));
-    let json = serde_json::to_string(&kp).unwrap();
+fn kerberos_auth_serde_roundtrip() {
+    let expiry = chrono::Utc::now() + chrono::Duration::hours(8);
+    let auth = KerberosAuth::new(
+        "user@REALM.COM",
+        "REALM.COM",
+        SecretString::new("ticket-data"),
+        expiry,
+    );
+    let json = serde_json::to_string(&auth).unwrap();
     assert!(
         !json.contains("REDACTED"),
         "json must not contain REDACTED: {json}"
     );
-    assert!(json.contains("-----BEGIN RSA-----"));
-    let recovered: KeyPair = serde_json::from_str(&json).unwrap();
-    assert_eq!(recovered.public_key(), "ssh-rsa AAAA...");
+    assert!(json.contains("ticket-data"));
+    let recovered: KerberosAuth = serde_json::from_str(&json).unwrap();
     recovered
-        .private_key()
-        .expose_secret(|s| assert_eq!(s, "-----BEGIN RSA-----"));
+        .service_ticket()
+        .expose_secret(|s| assert_eq!(s, "ticket-data"));
 }
 
 #[test]
-fn signing_key_serde_roundtrip() {
-    let sk = SigningKey::new(SecretString::new("signing-key"), "hmac-sha256");
-    let json = serde_json::to_string(&sk).unwrap();
+fn ldap_auth_simple_serde_roundtrip() {
+    let auth = LdapAuth::simple(
+        "ldap.example.com",
+        389,
+        "cn=admin,dc=example,dc=com",
+        SecretString::new("ldap-pass"),
+    );
+    let json = serde_json::to_string(&auth).unwrap();
     assert!(
         !json.contains("REDACTED"),
         "json must not contain REDACTED: {json}"
     );
-    assert!(json.contains("signing-key"));
-    let recovered: SigningKey = serde_json::from_str(&json).unwrap();
-    recovered
-        .key()
-        .expose_secret(|s| assert_eq!(s, "signing-key"));
-    assert_eq!(recovered.algorithm(), "hmac-sha256");
+    assert!(json.contains("ldap-pass"));
+    let _recovered: LdapAuth = serde_json::from_str(&json).unwrap();
 }
 
 #[test]
-fn shared_key_serde_roundtrip() {
-    let sk = SharedKey::new(SecretString::new("preshared-secret"));
-    let json = serde_json::to_string(&sk).unwrap();
-    assert!(
-        !json.contains("REDACTED"),
-        "json must not contain REDACTED: {json}"
-    );
-    assert!(json.contains("preshared-secret"));
-    let recovered: SharedKey = serde_json::from_str(&json).unwrap();
-    recovered
-        .key()
-        .expose_secret(|s| assert_eq!(s, "preshared-secret"));
-}
-
-#[test]
-fn connection_uri_serde_roundtrip() {
-    let cu = ConnectionUri::new(SecretString::new("postgres://user:pass@localhost/db"));
-    let json = serde_json::to_string(&cu).unwrap();
-    assert!(
-        !json.contains("REDACTED"),
-        "json must not contain REDACTED: {json}"
-    );
-    assert!(json.contains("postgres://user:pass@localhost/db"));
-    let recovered: ConnectionUri = serde_json::from_str(&json).unwrap();
-    recovered
-        .uri()
-        .expose_secret(|s| assert_eq!(s, "postgres://user:pass@localhost/db"));
-}
-
-#[test]
-fn federated_assertion_serde_roundtrip() {
-    let fa = FederatedAssertion::new(
-        SecretString::new("PHNhbWw+base64"),
-        "https://idp.example.com",
-    );
-    let json = serde_json::to_string(&fa).unwrap();
+fn saml_auth_with_assertion_serde_roundtrip() {
+    let auth =
+        SamlAuth::new("user@example.com").with_assertion(SecretString::new("PHNhbWw+base64"));
+    let json = serde_json::to_string(&auth).unwrap();
     assert!(
         !json.contains("REDACTED"),
         "json must not contain REDACTED: {json}"
     );
     assert!(json.contains("PHNhbWw+base64"));
-    let recovered: FederatedAssertion = serde_json::from_str(&json).unwrap();
+    let recovered: SamlAuth = serde_json::from_str(&json).unwrap();
     recovered
-        .assertion()
+        .assertion_b64()
+        .unwrap()
         .expose_secret(|s| assert_eq!(s, "PHNhbWw+base64"));
-    assert_eq!(recovered.issuer(), "https://idp.example.com");
 }
 
 #[test]
-fn challenge_secret_serde_roundtrip() {
-    let cs = ChallengeSecret::new("admin", SecretString::new("challenge-pw"), "scram-sha256");
-    let json = serde_json::to_string(&cs).unwrap();
-    assert!(
-        !json.contains("REDACTED"),
-        "json must not contain REDACTED: {json}"
-    );
-    assert!(json.contains("challenge-pw"));
-    let recovered: ChallengeSecret = serde_json::from_str(&json).unwrap();
-    assert_eq!(recovered.identity(), "admin");
-    recovered
-        .secret()
-        .expose_secret(|s| assert_eq!(s, "challenge-pw"));
-    assert_eq!(recovered.protocol(), "scram-sha256");
-}
-
-#[test]
-fn otp_seed_serde_roundtrip() {
-    let otp = OtpSeed::new(SecretString::new("JBSWY3DPEHPK3PXP"), "totp", 6);
-    let json = serde_json::to_string(&otp).unwrap();
-    assert!(
-        !json.contains("REDACTED"),
-        "json must not contain REDACTED: {json}"
-    );
-    assert!(json.contains("JBSWY3DPEHPK3PXP"));
-    let recovered: OtpSeed = serde_json::from_str(&json).unwrap();
-    recovered
-        .seed()
-        .expose_secret(|s| assert_eq!(s, "JBSWY3DPEHPK3PXP"));
-    assert_eq!(recovered.algorithm(), "totp");
-    assert_eq!(recovered.digits(), 6);
-}
-
-#[test]
-fn instance_binding_serde_roundtrip() {
-    let ib = InstanceBinding::new("aws", "arn:aws:iam::123456789012:role/MyRole");
-    let json = serde_json::to_string(&ib).unwrap();
-    assert!(json.contains("aws"));
-    assert!(json.contains("arn:aws:iam"));
-    let recovered: InstanceBinding = serde_json::from_str(&json).unwrap();
-    assert_eq!(recovered.provider(), "aws");
-    assert_eq!(
-        recovered.role_or_account(),
-        "arn:aws:iam::123456789012:role/MyRole"
-    );
+fn saml_auth_without_assertion_serde_roundtrip() {
+    let auth = SamlAuth::new("user@example.com");
+    let json = serde_json::to_string(&auth).unwrap();
+    assert!(!json.contains("REDACTED"));
+    let recovered: SamlAuth = serde_json::from_str(&json).unwrap();
+    assert!(recovered.assertion_b64().is_none());
 }

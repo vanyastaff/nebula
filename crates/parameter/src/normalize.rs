@@ -66,7 +66,6 @@ fn normalize_one(param: &Parameter, values: &mut ParameterValues, depth: u8) {
         // Notice is display-only — no value to normalize.
         ParameterType::Notice { .. } => return,
         // Hidden parameters never get defaults backfilled.
-        #[allow(deprecated)]
         ParameterType::Hidden => return,
         _ => {}
     }
@@ -174,7 +173,6 @@ fn normalize_mode(
     let variant = variants.iter().find(|v| v.id == mode_key);
     if let Some(variant) = variant {
         // Hidden variant — no "value" key needed, skip recursion.
-        #[allow(deprecated)]
         if matches!(variant.param_type, ParameterType::Hidden) {
             values.set(key, Value::Object(obj));
             return;
@@ -248,7 +246,6 @@ fn normalize_object(
 fn normalize_pick_mode(parameters: &[Parameter], values: &mut ParameterValues, depth: u8) {
     for param in parameters {
         match &param.param_type {
-            #[allow(deprecated)]
             ParameterType::Computed { .. }
             | ParameterType::Notice { .. }
             | ParameterType::Hidden => {
@@ -386,7 +383,6 @@ mod tests {
 
     #[test]
     fn skips_hidden_backfill() {
-        #[allow(deprecated)]
         let params = vec![Parameter::hidden("secret_id").default(json!("s3cr3t"))];
         let result = normalize_parameters(&params, &ParameterValues::new());
         assert!(!result.contains("secret_id"));
@@ -557,7 +553,7 @@ mod tests {
             if depth == 0 {
                 return Parameter::string("leaf").default(json!("deep"));
             }
-            Parameter::object(format!("level_{depth}")).add(deep_object(depth - 1))
+            Parameter::object(&format!("level_{depth}")).add(deep_object(depth - 1))
         }
 
         let params = vec![deep_object(20)];

@@ -15,7 +15,6 @@ documentation.workspace = true
 # Nebula crates
 nebula-core = { path = "../core" }
 nebula-resource = { path = "../resource" }
-nebula-resilience = { path = "../resilience" }
 
 # Async runtime
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
@@ -36,11 +35,6 @@ chrono = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# Crypto (signature verification)
-hmac = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
-
 # Logging
 tracing = { workspace = true }
 
@@ -50,7 +44,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true, features = ["json", "rustls"] }
-tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 default = []

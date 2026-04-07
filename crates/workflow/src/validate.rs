@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use crate::definition::{CURRENT_SCHEMA_VERSION, TriggerDefinition, WorkflowDefinition};
+use crate::definition::WorkflowDefinition;
 use crate::error::WorkflowError;
 use crate::graph::DependencyGraph;
 use crate::node::ParamValue;
@@ -62,32 +62,7 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
         }
     }
 
-    // 6. Check schema version
-    if !definition.is_schema_supported() {
-        errors.push(WorkflowError::UnsupportedSchema {
-            version: definition.schema_version,
-            max: CURRENT_SCHEMA_VERSION,
-        });
-    }
-
-    // 7. Check trigger configuration
-    if let Some(trigger) = &definition.trigger {
-        match trigger {
-            TriggerDefinition::Cron { expression } if expression.is_empty() => {
-                errors.push(WorkflowError::InvalidTrigger {
-                    reason: "cron expression must not be empty".into(),
-                });
-            }
-            TriggerDefinition::Webhook { path, .. } if !path.starts_with('/') => {
-                errors.push(WorkflowError::InvalidTrigger {
-                    reason: format!("webhook path must start with '/', got: {path:?}"),
-                });
-            }
-            _ => {}
-        }
-    }
-
-    // 8. Check graph structure
+    // 6. Check graph structure
     match DependencyGraph::from_definition(definition) {
         Ok(graph) => {
             if graph.has_cycle() {
@@ -128,18 +103,14 @@ mod tests {
             connections,
             variables: HashMap::new(),
             config: WorkflowConfig::default(),
-            trigger: None,
             tags: Vec::new(),
             created_at: now,
             updated_at: now,
-            owner_id: None,
-            ui_metadata: None,
-            schema_version: 1,
         }
     }
 
     fn node(id: NodeId) -> NodeDefinition {
-        NodeDefinition::new(id, "n", "n").unwrap()
+        NodeDefinition::new(id, "n", "n")
     }
 
     #[test]
@@ -236,86 +207,6 @@ mod tests {
             errors
                 .iter()
                 .any(|e| matches!(e, WorkflowError::CycleDetected))
-        );
-    }
-
-    #[test]
-    fn trigger_validation_rejects_invalid_webhook_path() {
-        let a = NodeId::new();
-        let mut def = make_definition("webhook-test", vec![node(a)], vec![]);
-        def.trigger = Some(crate::definition::TriggerDefinition::Webhook {
-            method: "POST".into(),
-            path: "no-leading-slash".into(),
-        });
-        let errors = validate_workflow(&def);
-        assert!(
-            errors
-                .iter()
-                .any(|e| matches!(e, WorkflowError::InvalidTrigger { .. })),
-            "expected InvalidTrigger, got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn trigger_validation_rejects_empty_cron_expression() {
-        let a = NodeId::new();
-        let mut def = make_definition("cron-test", vec![node(a)], vec![]);
-        def.trigger = Some(crate::definition::TriggerDefinition::Cron {
-            expression: String::new(),
-        });
-        let errors = validate_workflow(&def);
-        assert!(
-            errors
-                .iter()
-                .any(|e| matches!(e, WorkflowError::InvalidTrigger { .. })),
-            "expected InvalidTrigger, got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn trigger_validation_accepts_valid_webhook() {
-        let a = NodeId::new();
-        let mut def = make_definition("webhook-ok", vec![node(a)], vec![]);
-        def.trigger = Some(crate::definition::TriggerDefinition::Webhook {
-            method: "POST".into(),
-            path: "/hooks/incoming".into(),
-        });
-        let errors = validate_workflow(&def);
-        assert!(
-            !errors
-                .iter()
-                .any(|e| matches!(e, WorkflowError::InvalidTrigger { .. })),
-            "expected no InvalidTrigger, got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn trigger_validation_accepts_valid_cron() {
-        let a = NodeId::new();
-        let mut def = make_definition("cron-ok", vec![node(a)], vec![]);
-        def.trigger = Some(crate::definition::TriggerDefinition::Cron {
-            expression: "0 */5 * * *".into(),
-        });
-        let errors = validate_workflow(&def);
-        assert!(
-            !errors
-                .iter()
-                .any(|e| matches!(e, WorkflowError::InvalidTrigger { .. })),
-            "expected no InvalidTrigger, got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn detects_unsupported_schema_version() {
-        let a = NodeId::new();
-        let mut def = make_definition("schema-test", vec![node(a)], vec![]);
-        def.schema_version = 99;
-        let errors = validate_workflow(&def);
-        assert!(
-            errors
-                .iter()
-                .any(|e| matches!(e, WorkflowError::UnsupportedSchema { .. })),
-            "expected UnsupportedSchema, got: {errors:?}"
         );
     }
 }

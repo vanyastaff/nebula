@@ -16,7 +16,6 @@ use serde_json::{Number, Value};
 #[cfg(feature = "regex")]
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Maximum recursion depth for expression evaluation
 const MAX_RECURSION_DEPTH: usize = 256;
@@ -33,8 +32,6 @@ const MAX_REGEX_CACHE_SIZE: usize = 100;
 pub struct Evaluator {
     builtins: Arc<BuiltinRegistry>,
     policy: Option<Arc<EvaluationPolicy>>,
-    /// Step counter for DoS prevention (reset per top-level eval call).
-    steps: AtomicUsize,
     /// Regex cache (pattern -> compiled Regex)
     /// Using Mutex for thread-safe interior mutability
     #[cfg(feature = "regex")]
@@ -55,7 +52,6 @@ impl Evaluator {
         Self {
             builtins,
             policy,
-            steps: AtomicUsize::new(0),
             #[cfg(feature = "regex")]
             regex_cache: Mutex::new(HashMap::new()),
         }
@@ -64,7 +60,6 @@ impl Evaluator {
     /// Evaluate an expression in the given context
     #[inline]
     pub fn eval(&self, expr: &Expr, context: &EvaluationContext) -> ExpressionResult<Value> {
-        self.steps.store(0, Ordering::Relaxed);
         self.eval_with_depth(expr, context, 0)
     }
 
@@ -79,24 +74,10 @@ impl Evaluator {
         // Check recursion depth limit
         if depth > MAX_RECURSION_DEPTH {
             return Err(ExpressionError::expression_eval_error(format!(
-                "Maximum recursion depth ({MAX_RECURSION_DEPTH}) exceeded",
+                "Maximum recursion depth ({}) exceeded",
+                MAX_RECURSION_DEPTH
             )));
         }
-
-        // Check step limit
-        let step = self.steps.fetch_add(1, Ordering::Relaxed) + 1;
-        if self
-            .policy
-            .as_ref()
-            .and_then(|p| p.max_eval_steps())
-            .is_some_and(|max| step > max)
-        {
-            let max = self.policy.as_ref().unwrap().max_eval_steps().unwrap();
-            return Err(ExpressionError::expression_eval_error(format!(
-                "Maximum evaluation steps ({max}) exceeded",
-            )));
-        }
-
         match expr {
             Expr::Literal(val) => Ok(val.clone()),
 
@@ -105,11 +86,8 @@ impl Evaluator {
                 .ok_or_else(|| ExpressionError::expression_variable_not_found(&**name)),
 
             Expr::Identifier(name) => {
-                // Check if this identifier is a bound lambda parameter
-                if let Some(val) = context.get_lambda_var(name) {
-                    return Ok((*val).clone());
-                }
-                // Otherwise treat as a string constant
+                // Try to resolve as a constant or special value
+                // Optimize: use Arc<str> directly instead of converting to String
                 Ok(Value::String(name.as_ref().to_string()))
             }
 
@@ -831,7 +809,7 @@ impl Evaluator {
     ) -> ExpressionResult<Value> {
         // Create a new context with the lambda parameter
         let mut lambda_context = context.clone();
-        lambda_context.set_lambda_var(param, value.clone());
+        lambda_context.set_execution_var(param, value.clone());
         self.eval(body, &lambda_context)
     }
 
@@ -854,11 +832,8 @@ impl Evaluator {
             "map" => Some(self.eval_map(args, context, depth)),
             "reduce" => Some(self.eval_reduce(args, context, depth)),
             "find" => Some(self.eval_find(args, context, depth)),
-            "find_index" => Some(self.eval_find_index(args, context, depth)),
             "every" | "all" => Some(self.eval_every(args, context, depth)),
             "some" | "any" => Some(self.eval_some(args, context, depth)),
-            "group_by" => Some(self.eval_group_by(args, context, depth)),
-            "flat_map" => Some(self.eval_flat_map(args, context, depth)),
             _ => None,
         }
     }
@@ -1126,8 +1101,8 @@ impl Evaluator {
         for item in array.iter() {
             // Create context with both accumulator and current item
             let mut reduce_context = context.clone();
-            reduce_context.set_lambda_var("$acc", accumulator.clone());
-            reduce_context.set_lambda_var(param, item.clone());
+            reduce_context.set_execution_var("$acc", accumulator.clone());
+            reduce_context.set_execution_var(param, item.clone());
             accumulator = self.eval(body, &reduce_context)?;
         }
 
@@ -1267,166 +1242,6 @@ impl Evaluator {
         }
 
         Ok(Value::Bool(false))
-    }
-
-    /// Return the index of the first element matching a predicate, or -1
-    ///
-    /// Usage: `find_index(array, x => condition)`
-    /// Example: `find_index([1, 2, 3], x => x > 1)` returns `1`
-    fn eval_find_index(
-        &self,
-        args: &[Expr],
-        context: &EvaluationContext,
-        depth: usize,
-    ) -> ExpressionResult<Value> {
-        if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
-                "find_index",
-                format!("expected 2 arguments, got {}", args.len()),
-            ));
-        }
-
-        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
-        let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "array",
-                crate::value_utils::value_type_name(&array_val),
-            )
-        })?;
-
-        let (param, body) = match &args[1] {
-            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
-            _ => {
-                return Err(ExpressionError::expression_type_error(
-                    "lambda expression",
-                    "non-lambda",
-                ));
-            }
-        };
-
-        for (i, item) in array.iter().enumerate() {
-            let predicate_result = self.eval_lambda(param, body, item, context)?;
-            if self.coerce_boolean(&predicate_result, context)? {
-                return Ok(Value::Number((i as i64).into()));
-            }
-        }
-
-        Ok(Value::Number((-1_i64).into()))
-    }
-
-    /// Group array elements by a key returned by a lambda
-    ///
-    /// Usage: `group_by(array, x => key_expr)`
-    /// Example: `group_by([{name:"a",age:1},{name:"b",age:1}], x => x.age)`
-    ///   returns `{"1": [{name:"a",age:1},{name:"b",age:1}]}`
-    fn eval_group_by(
-        &self,
-        args: &[Expr],
-        context: &EvaluationContext,
-        depth: usize,
-    ) -> ExpressionResult<Value> {
-        if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
-                "group_by",
-                format!("expected 2 arguments, got {}", args.len()),
-            ));
-        }
-
-        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
-        let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "array",
-                crate::value_utils::value_type_name(&array_val),
-            )
-        })?;
-
-        let (param, body) = match &args[1] {
-            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
-            _ => {
-                return Err(ExpressionError::expression_type_error(
-                    "lambda expression",
-                    "non-lambda",
-                ));
-            }
-        };
-
-        let mut groups = serde_json::Map::new();
-        for item in array.iter() {
-            let key_val = self.eval_lambda(param, body, item, context)?;
-            let key = match &key_val {
-                Value::String(s) => s.clone(),
-                Value::Number(n) => n.to_string(),
-                Value::Bool(b) => b.to_string(),
-                Value::Null => "null".to_string(),
-                _ => {
-                    return Err(ExpressionError::expression_eval_error(
-                        "group_by key must be a string, number, boolean, or null",
-                    ));
-                }
-            };
-            let group_entry = groups
-                .entry(key)
-                .or_insert_with(|| Value::Array(Vec::new()));
-
-            match group_entry {
-                Value::Array(items) => items.push(item.clone()),
-                other => {
-                    return Err(ExpressionError::expression_type_error(
-                        "array",
-                        crate::value_utils::value_type_name(other),
-                    ));
-                }
-            }
-        }
-
-        Ok(Value::Object(groups))
-    }
-
-    /// Map then flatten one level
-    ///
-    /// Usage: `flat_map(array, x => transform)`
-    /// Example: `flat_map([[1,2],[3,4]], x => x)` returns `[1,2,3,4]`
-    fn eval_flat_map(
-        &self,
-        args: &[Expr],
-        context: &EvaluationContext,
-        depth: usize,
-    ) -> ExpressionResult<Value> {
-        if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
-                "flat_map",
-                format!("expected 2 arguments, got {}", args.len()),
-            ));
-        }
-
-        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
-        let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "array",
-                crate::value_utils::value_type_name(&array_val),
-            )
-        })?;
-
-        let (param, body) = match &args[1] {
-            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
-            _ => {
-                return Err(ExpressionError::expression_type_error(
-                    "lambda expression",
-                    "non-lambda",
-                ));
-            }
-        };
-
-        let mut result = Vec::new();
-        for item in array.iter() {
-            let transformed = self.eval_lambda(param, body, item, context)?;
-            match transformed {
-                Value::Array(inner) => result.extend(inner),
-                other => result.push(other),
-            }
-        }
-
-        Ok(Value::Array(result))
     }
 }
 

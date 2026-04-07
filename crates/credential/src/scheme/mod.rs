@@ -1,31 +1,34 @@
-//! Universal authentication scheme types.
+//! Built-in authentication scheme types.
 //!
-//! 12 built-in types cover common auth patterns. Plugins add protocol-specific
-//! types via the open [`AuthScheme`](nebula_core::AuthScheme) trait.
+//! Each type implements [`AuthScheme`](nebula_core::AuthScheme) and represents consumer-facing
+//! auth material that resources receive. All secret fields use
+//! [`SecretString`] and all `Debug` impls redact secrets.
 
+mod api_key;
+mod aws;
+mod basic;
+mod bearer;
 mod certificate;
-mod challenge_secret;
 mod coercion;
-mod connection_uri;
-mod federated_assertion;
-mod identity_password;
-mod instance_binding;
-mod key_pair;
+mod database;
+mod header;
+mod hmac;
+mod kerberos;
+mod ldap;
 mod oauth2;
-mod otp_seed;
-mod secret_token;
-mod shared_key;
-mod signing_key;
+mod saml;
+mod ssh;
 
-pub use certificate::Certificate;
-pub use challenge_secret::ChallengeSecret;
-pub use connection_uri::ConnectionUri;
-pub use federated_assertion::FederatedAssertion;
-pub use identity_password::IdentityPassword;
-pub use instance_binding::InstanceBinding;
-pub use key_pair::KeyPair;
+pub use api_key::ApiKeyAuth;
+pub use aws::AwsAuth;
+pub use basic::BasicAuth;
+pub use bearer::BearerToken;
+pub use certificate::CertificateAuth;
+pub use database::{DatabaseAuth, SslMode};
+pub use header::HeaderAuth;
+pub use hmac::HmacSecret;
+pub use kerberos::KerberosAuth;
+pub use ldap::{LdapAuth, LdapBindMethod, LdapTlsMode};
 pub use oauth2::OAuth2Token;
-pub use otp_seed::OtpSeed;
-pub use secret_token::SecretToken;
-pub use shared_key::SharedKey;
-pub use signing_key::SigningKey;
+pub use saml::SamlAuth;
+pub use ssh::{SshAuth, SshAuthMethod};

@@ -5,6 +5,7 @@
 pub mod execution;
 pub mod health;
 pub mod metrics;
+pub mod resource;
 pub mod workflow;
 
 use crate::{config::ApiConfig, middleware::auth::auth_middleware, state::AppState};
@@ -27,5 +28,6 @@ fn api_v1_routes(state: AppState) -> Router<AppState> {
     Router::new()
         .merge(workflow::router())
         .merge(execution::router())
+        .merge(resource::router())
         .layer(middleware::from_fn_with_state(state, auth_middleware))
 }

@@ -1,7 +1,7 @@
 //! API Key credential -- static, non-interactive.
 //!
-//! The simplest credential type: a single secret token resolved from user
-//! input. State and Scheme are the same type ([`SecretToken`]) via
+//! The simplest credential type: a single bearer token resolved from user
+//! input. State and Scheme are the same type ([`BearerToken`]) via
 //! [`identity_state!`](crate::identity_state).
 
 use nebula_parameter::values::ParameterValues;
@@ -14,9 +14,9 @@ use crate::description::CredentialDescription;
 use crate::error::CredentialError;
 use crate::pending::NoPendingState;
 use crate::resolve::StaticResolveResult;
-use crate::scheme::SecretToken;
+use crate::scheme::BearerToken;
 
-/// API Key credential -- resolves a single token into a [`SecretToken`].
+/// API Key credential -- resolves a single token into a [`BearerToken`].
 ///
 /// - **Non-interactive:** resolves in one step from user input.
 /// - **Non-refreshable:** static tokens have no expiry.
@@ -35,8 +35,8 @@ use crate::scheme::SecretToken;
 pub struct ApiKeyCredential;
 
 impl Credential for ApiKeyCredential {
-    type Scheme = SecretToken;
-    type State = SecretToken;
+    type Scheme = BearerToken;
+    type State = BearerToken;
     type Pending = NoPendingState;
 
     const KEY: &'static str = "api_key";
@@ -50,7 +50,6 @@ impl Credential for ApiKeyCredential {
             icon_url: None,
             documentation_url: None,
             properties: Self::parameters(),
-            pattern: nebula_core::AuthPattern::SecretToken,
         }
     }
 
@@ -71,19 +70,19 @@ impl Credential for ApiKeyCredential {
             )
     }
 
-    fn project(state: &SecretToken) -> SecretToken {
+    fn project(state: &BearerToken) -> BearerToken {
         state.clone()
     }
 
     async fn resolve(
         values: &ParameterValues,
         _ctx: &CredentialContext,
-    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+    ) -> Result<StaticResolveResult<BearerToken>, CredentialError> {
         let token = values.get_string("api_key").ok_or_else(|| {
             CredentialError::Provider("missing required field 'api_key'".to_owned())
         })?;
         let secret = SecretString::new(token.to_owned());
-        Ok(StaticResolveResult::Complete(SecretToken::new(secret)))
+        Ok(StaticResolveResult::Complete(BearerToken::new(secret)))
     }
 }
 
@@ -98,18 +97,18 @@ mod tests {
 
     #[test]
     fn capabilities_are_all_false() {
-        const { assert!(!ApiKeyCredential::INTERACTIVE) };
-        const { assert!(!ApiKeyCredential::REFRESHABLE) };
-        const { assert!(!ApiKeyCredential::REVOCABLE) };
-        const { assert!(!ApiKeyCredential::TESTABLE) };
+        assert!(!ApiKeyCredential::INTERACTIVE);
+        assert!(!ApiKeyCredential::REFRESHABLE);
+        assert!(!ApiKeyCredential::REVOCABLE);
+        assert!(!ApiKeyCredential::TESTABLE);
     }
 
     #[test]
     fn project_returns_clone_of_state() {
-        let token = SecretToken::new(SecretString::new("test-token"));
+        let token = BearerToken::new(SecretString::new("test-token"));
         let projected = ApiKeyCredential::project(&token);
-        let original = token.token().expose_secret(|s| s.to_owned());
-        let cloned = projected.token().expose_secret(|s| s.to_owned());
+        let original = token.expose().expose_secret(|s| s.to_owned());
+        let cloned = projected.expose().expose_secret(|s| s.to_owned());
         assert_eq!(original, cloned);
     }
 
@@ -123,8 +122,8 @@ mod tests {
         let ctx = CredentialContext::new("test-user");
         let result = ApiKeyCredential::resolve(&values, &ctx).await.unwrap();
         match result {
-            StaticResolveResult::Complete(token) => {
-                let exposed = token.token().expose_secret(|s| s.to_owned());
+            StaticResolveResult::Complete(bearer) => {
+                let exposed = bearer.expose().expose_secret(|s| s.to_owned());
                 assert_eq!(exposed, "sk-secret-123");
             }
             _ => panic!("expected Complete variant"),

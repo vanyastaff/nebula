@@ -13,7 +13,6 @@
 //! - [`ExecutionState`] and [`NodeExecutionState`] — persistent state tracking
 //! - [`ExecutionPlan`] — pre-computed parallel execution schedule
 //! - [`ExecutionContext`] — lightweight runtime context (execution_id, budget)
-//! - [`ExecutionResult`] — post-execution summary (status, timing, node counts, outputs)
 //! - [`JournalEntry`] — audit log of execution events
 //! - [`NodeOutput`] — node output data with metadata
 //! - [`NodeAttempt`] — individual execution attempt tracking
@@ -27,19 +26,17 @@ pub mod idempotency;
 pub mod journal;
 pub mod output;
 pub mod plan;
-pub mod result;
 pub mod state;
 pub mod status;
 pub mod transition;
 
 pub use attempt::NodeAttempt;
-pub use context::{ExecutionBudget, ExecutionContext};
+pub use context::ExecutionContext;
 pub use error::ExecutionError;
 pub use idempotency::{IdempotencyKey, IdempotencyManager};
 pub use journal::JournalEntry;
 pub use output::{ExecutionOutput, NodeOutput};
 pub use plan::ExecutionPlan;
-pub use result::ExecutionResult;
 pub use state::{ExecutionState, NodeExecutionState};
 pub use status::ExecutionStatus;
 

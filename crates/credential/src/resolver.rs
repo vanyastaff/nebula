@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use nebula_core::{CredentialEvent, CredentialId};
+use nebula_core::CredentialEvent;
 use nebula_eventbus::EventBus;
 
 use crate::context::CredentialContext;
@@ -219,9 +219,11 @@ impl<S: CredentialStore> CredentialResolver<S> {
     }
 
     /// Best-effort emit of a [`CredentialEvent::Refreshed`] event.
-    fn emit_refreshed(&self, credential_id: CredentialId) {
+    fn emit_refreshed(&self, credential_id: &str) {
         if let Some(bus) = &self.event_bus {
-            let _ = bus.emit(CredentialEvent::Refreshed { credential_id });
+            let _ = bus.emit(CredentialEvent::Refreshed {
+                credential_id: credential_id.to_string(),
+            });
         }
     }
 
@@ -322,13 +324,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         .await
                     {
                         Ok(_) => {
-                            match CredentialId::parse(credential_id) {
-                                Ok(id) => self.emit_refreshed(id),
-                                Err(_) => tracing::warn!(
-                                    credential_id,
-                                    "credential ID is not a valid UUID, refresh event not emitted",
-                                ),
-                            }
+                            self.emit_refreshed(credential_id);
                             let scheme = C::project(&state);
                             return Ok(CredentialHandle::new(scheme, credential_id));
                         }
@@ -425,7 +421,7 @@ mod tests {
     use crate::error::CredentialError;
     use crate::pending::NoPendingState;
     use crate::resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult};
-    use crate::scheme::SecretToken;
+    use crate::scheme::BearerToken;
     use nebula_parameter::ParameterCollection;
     use nebula_parameter::values::ParameterValues;
 
@@ -449,7 +445,7 @@ mod tests {
     struct RefreshableTestCredential;
 
     impl Credential for RefreshableTestCredential {
-        type Scheme = SecretToken;
+        type Scheme = BearerToken;
         type State = ExpiringState;
         type Pending = NoPendingState;
 
@@ -469,7 +465,6 @@ mod tests {
                 icon_url: None,
                 documentation_url: None,
                 properties: Self::parameters(),
-                pattern: nebula_core::AuthPattern::SecretToken,
             }
         }
 
@@ -477,8 +472,8 @@ mod tests {
             ParameterCollection::new()
         }
 
-        fn project(state: &ExpiringState) -> SecretToken {
-            SecretToken::new(SecretString::new(state.token.clone()))
+        fn project(state: &ExpiringState) -> BearerToken {
+            BearerToken::new(SecretString::new(state.token.clone()))
         }
 
         async fn resolve(
@@ -511,7 +506,7 @@ mod tests {
             id: "my-api-key".into(),
             credential_key: "api_key".into(),
             data,
-            state_kind: "secret_token".into(),
+            state_kind: "bearer".into(),
             state_version: 1,
             version: 0,
             created_at: chrono::Utc::now(),
@@ -528,7 +523,7 @@ mod tests {
             .unwrap();
 
         let snapshot = handle.snapshot();
-        let value = snapshot.token().expose_secret(|s| s.to_owned());
+        let value = snapshot.expose().expose_secret(|s| s.to_owned());
         assert_eq!(value, "test-api-key");
         assert_eq!(handle.credential_id(), "my-api-key");
     }
@@ -576,7 +571,7 @@ mod tests {
             id: "bad-data".into(),
             credential_key: "api_key".into(),
             data: b"not-valid-json".to_vec(),
-            state_kind: "secret_token".into(),
+            state_kind: "bearer".into(),
             state_version: 1,
             version: 0,
             created_at: chrono::Utc::now(),
@@ -626,7 +621,7 @@ mod tests {
             .unwrap();
 
         // The refresh should have fired because 4 min < 5 min early_refresh
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
         assert_eq!(value, "refreshed-token");
     }
 
@@ -695,13 +690,11 @@ mod tests {
     /// A test credential that counts how many times `refresh()` is called,
     /// to verify the CAS retry does NOT re-invoke refresh.
     static CAS_REFRESH_COUNT: AtomicU32 = AtomicU32::new(0);
-    /// Serializes CAS retry tests that share `CAS_REFRESH_COUNT`.
-    static CAS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     struct CasRetryTestCredential;
 
     impl Credential for CasRetryTestCredential {
-        type Scheme = SecretToken;
+        type Scheme = BearerToken;
         type State = ExpiringState;
         type Pending = NoPendingState;
 
@@ -722,7 +715,6 @@ mod tests {
                 icon_url: None,
                 documentation_url: None,
                 properties: Self::parameters(),
-                pattern: nebula_core::AuthPattern::SecretToken,
             }
         }
 
@@ -730,8 +722,8 @@ mod tests {
             ParameterCollection::new()
         }
 
-        fn project(state: &ExpiringState) -> SecretToken {
-            SecretToken::new(SecretString::new(state.token.clone()))
+        fn project(state: &ExpiringState) -> BearerToken {
+            BearerToken::new(SecretString::new(state.token.clone()))
         }
 
         async fn resolve(
@@ -754,7 +746,6 @@ mod tests {
 
     #[tokio::test]
     async fn cas_retry_succeeds_after_version_conflict() {
-        let _guard = CAS_TEST_LOCK.lock().unwrap();
         CAS_REFRESH_COUNT.store(0, Ordering::SeqCst);
 
         // 1 CAS conflict before success
@@ -790,7 +781,7 @@ mod tests {
             .unwrap();
 
         // Token should be the refreshed value despite CAS conflict
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
         assert_eq!(value, "refreshed-token");
 
         // Critical: refresh() must be called exactly once — the retry
@@ -804,7 +795,6 @@ mod tests {
 
     #[tokio::test]
     async fn cas_retry_exhausted_returns_version_conflict() {
-        let _guard = CAS_TEST_LOCK.lock().unwrap();
         CAS_REFRESH_COUNT.store(0, Ordering::SeqCst);
 
         // 5 CAS conflicts — more than the 3-attempt limit
@@ -886,15 +876,13 @@ mod tests {
             .unwrap();
 
         // Should NOT have refreshed -- token still valid outside the window
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
         assert_eq!(value, "still-valid-token");
     }
 
     #[tokio::test]
     async fn emits_refreshed_event_after_successful_refresh() {
         let store = Arc::new(InMemoryStore::new());
-        let cred_id = CredentialId::new();
-        let cred_id_str = cred_id.to_string();
 
         // Token expires in 2 minutes -- inside the 5-minute early_refresh window
         let expires_at = chrono::Utc::now() + chrono::Duration::minutes(2);
@@ -905,7 +893,7 @@ mod tests {
         let data = serde_json::to_vec(&state).unwrap();
 
         let cred = StoredCredential {
-            id: cred_id_str.clone(),
+            id: "event-cred".into(),
             credential_key: "refreshable_test".into(),
             data,
             state_kind: "expiring_test".into(),
@@ -925,12 +913,12 @@ mod tests {
         let ctx = CredentialContext::new("test-user");
 
         let handle = resolver
-            .resolve_with_refresh::<RefreshableTestCredential>(&cred_id_str, &ctx)
+            .resolve_with_refresh::<RefreshableTestCredential>("event-cred", &ctx)
             .await
             .unwrap();
 
         // Refresh should have fired
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
         assert_eq!(value, "refreshed-token");
 
         // Subscriber should have received a Refreshed event
@@ -942,7 +930,7 @@ mod tests {
         assert_eq!(
             event,
             CredentialEvent::Refreshed {
-                credential_id: cred_id,
+                credential_id: "event-cred".to_string(),
             }
         );
     }
@@ -985,7 +973,7 @@ mod tests {
             .unwrap();
 
         // Should NOT have refreshed
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
         assert_eq!(value, "still-valid");
 
         // No event should be pending -- recv should time out

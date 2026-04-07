@@ -55,7 +55,7 @@ nebula-log = { path = "../log" }
 nebula-validator = { path = "../validator" }
 
 [dev-dependencies]
-criterion = { workspace = true, features = ["async_tokio"] }
+criterion = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

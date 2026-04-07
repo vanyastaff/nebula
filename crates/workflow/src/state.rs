@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 /// The execution state of a single node within a workflow run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[non_exhaustive]
 pub enum NodeState {
     /// Not yet evaluated; waiting for predecessors.
     Pending,

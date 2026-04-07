@@ -8,8 +8,6 @@
 
 use std::fmt;
 
-use crate::CredentialId;
-
 /// Cross-crate credential lifecycle event.
 ///
 /// Emitted after credential state changes. All variants carry only
@@ -18,15 +16,14 @@ use crate::CredentialId;
 /// # Usage
 ///
 /// ```
-/// use nebula_core::{CredentialEvent, CredentialId};
+/// use nebula_core::CredentialEvent;
 ///
-/// let id = CredentialId::new();
 /// let event = CredentialEvent::Refreshed {
-///     credential_id: id,
+///     credential_id: "oauth2-github-42".to_string(),
 /// };
-/// assert_eq!(event.credential_id(), id);
+/// assert_eq!(event.credential_id(), "oauth2-github-42");
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CredentialEvent {
     /// Auth material was refreshed (e.g., OAuth2 token refresh).
@@ -35,7 +32,7 @@ pub enum CredentialEvent {
     /// checkout.
     Refreshed {
         /// The credential instance ID.
-        credential_id: CredentialId,
+        credential_id: String,
     },
 
     /// Credential was explicitly revoked.
@@ -44,16 +41,16 @@ pub enum CredentialEvent {
     /// immediately.
     Revoked {
         /// The credential instance ID.
-        credential_id: CredentialId,
+        credential_id: String,
     },
 }
 
 impl CredentialEvent {
     /// Returns the credential ID for all variants.
     #[must_use]
-    pub fn credential_id(&self) -> CredentialId {
+    pub fn credential_id(&self) -> &str {
         match self {
-            Self::Refreshed { credential_id } | Self::Revoked { credential_id } => *credential_id,
+            Self::Refreshed { credential_id } | Self::Revoked { credential_id } => credential_id,
         }
     }
 }
@@ -76,37 +73,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn credential_id_returns_typed_id_for_all_variants() {
-        let id1 = CredentialId::new();
-        let refreshed = CredentialEvent::Refreshed { credential_id: id1 };
-        assert_eq!(refreshed.credential_id(), id1);
+    fn credential_id_returns_id_for_all_variants() {
+        let refreshed = CredentialEvent::Refreshed {
+            credential_id: "cred-1".to_string(),
+        };
+        assert_eq!(refreshed.credential_id(), "cred-1");
 
-        let id2 = CredentialId::new();
-        let revoked = CredentialEvent::Revoked { credential_id: id2 };
-        assert_eq!(revoked.credential_id(), id2);
+        let revoked = CredentialEvent::Revoked {
+            credential_id: "cred-2".to_string(),
+        };
+        assert_eq!(revoked.credential_id(), "cred-2");
     }
 
     #[test]
-    fn display_formats_with_uuid() {
-        let id = CredentialId::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        let refreshed = CredentialEvent::Refreshed { credential_id: id };
-        assert_eq!(
-            refreshed.to_string(),
-            "credential refreshed: 550e8400-e29b-41d4-a716-446655440000"
-        );
+    fn display_formats_correctly() {
+        let refreshed = CredentialEvent::Refreshed {
+            credential_id: "abc".to_string(),
+        };
+        assert_eq!(refreshed.to_string(), "credential refreshed: abc");
 
-        let revoked = CredentialEvent::Revoked { credential_id: id };
-        assert_eq!(
-            revoked.to_string(),
-            "credential revoked: 550e8400-e29b-41d4-a716-446655440000"
-        );
+        let revoked = CredentialEvent::Revoked {
+            credential_id: "xyz".to_string(),
+        };
+        assert_eq!(revoked.to_string(), "credential revoked: xyz");
     }
 
     #[test]
-    fn copy_and_eq_work() {
-        let id = CredentialId::new();
-        let event = CredentialEvent::Refreshed { credential_id: id };
-        let copied = event;
-        assert_eq!(event, copied);
+    fn clone_and_eq_work() {
+        let event = CredentialEvent::Refreshed {
+            credential_id: "test".to_string(),
+        };
+        let cloned = event.clone();
+        assert_eq!(event, cloned);
     }
 }

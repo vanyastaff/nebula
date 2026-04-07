@@ -80,8 +80,6 @@ pub mod port;
 pub mod prelude;
 /// Execution result types carrying data and flow-control intent.
 pub mod result;
-/// Test utilities for action authors.
-pub mod testing;
 /// Action package validation utilities.
 pub mod validation;
 
@@ -100,7 +98,7 @@ pub use dependency::ActionDependencies;
 pub use error::ActionError;
 pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 pub use handler::{InternalHandler, StatelessActionAdapter};
-pub use metadata::{ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError};
+pub use metadata::{ActionMetadata, InterfaceVersion, MetadataCompatibilityError};
 pub use output::{
     ActionOutput, BinaryData, BinaryStorage, BufferConfig, CacheInfo, Cost, DataReference,
     DeferredOutput, DeferredRetryConfig, DeltaFormat, ExpectedOutput, OutputEnvelope, OutputMeta,
@@ -109,7 +107,6 @@ pub use output::{
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
-pub use testing::{SpyLogger, TestContextBuilder};
 pub use validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
 };

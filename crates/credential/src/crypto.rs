@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 // ============================================================================
 // Encryption & Key Derivation
@@ -75,13 +75,6 @@ pub struct EncryptedData {
     /// Algorithm version for future migrations
     pub version: u8,
 
-    /// Which encryption key was used. Empty after deserialization of
-    /// pre-rotation data (`#[serde(default)]`). The encryption layer
-    /// rejects empty key IDs at runtime — a migration must re-encrypt
-    /// all records before upgrading.
-    #[serde(default)]
-    pub key_id: String,
-
     /// 96-bit nonce (12 bytes) for AES-GCM
     pub nonce: [u8; 12],
 
@@ -97,15 +90,9 @@ impl EncryptedData {
     pub const CURRENT_VERSION: u8 = 1;
 
     /// Create new encrypted data structure
-    pub fn new(
-        key_id: impl Into<String>,
-        nonce: [u8; 12],
-        ciphertext: Vec<u8>,
-        tag: [u8; 16],
-    ) -> Self {
+    pub fn new(nonce: [u8; 12], ciphertext: Vec<u8>, tag: [u8; 16]) -> Self {
         Self {
             version: Self::CURRENT_VERSION,
-            key_id: key_id.into(),
             nonce,
             ciphertext,
             tag,
@@ -202,7 +189,7 @@ pub fn encrypt(key: &EncryptionKey, plaintext: &[u8]) -> Result<EncryptedData, C
     let mut nonce_bytes = [0u8; 12];
     nonce_bytes.copy_from_slice(nonce.as_slice());
 
-    Ok(EncryptedData::new("", nonce_bytes, ct.to_vec(), tag))
+    Ok(EncryptedData::new(nonce_bytes, ct.to_vec(), tag))
 }
 
 /// Decrypt ciphertext using AES-256-GCM with constant-time tag comparison
@@ -220,10 +207,7 @@ pub fn encrypt(key: &EncryptionKey, plaintext: &[u8]) -> Result<EncryptedData, C
 ///
 /// Returns `CryptoError::DecryptionFailed` if decryption fails
 /// Returns `CryptoError::UnsupportedVersion` if encryption version not supported
-pub fn decrypt(
-    key: &EncryptionKey,
-    encrypted: &EncryptedData,
-) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+pub fn decrypt(key: &EncryptionKey, encrypted: &EncryptedData) -> Result<Vec<u8>, CryptoError> {
     if !encrypted.is_supported_version() {
         return Err(CryptoError::UnsupportedVersion(encrypted.version));
     }
@@ -241,7 +225,7 @@ pub fn decrypt(
         .decrypt(nonce, ciphertext_with_tag.as_ref())
         .map_err(|_| CryptoError::DecryptionFailed)?;
 
-    Ok(Zeroizing::new(plaintext))
+    Ok(plaintext)
 }
 
 /// Encrypt plaintext using AES-256-GCM with Additional Authenticated Data (AAD).
@@ -291,7 +275,7 @@ pub fn encrypt_with_aad(
     let mut nonce_bytes = [0u8; 12];
     nonce_bytes.copy_from_slice(nonce.as_slice());
 
-    Ok(EncryptedData::new("", nonce_bytes, ct.to_vec(), tag))
+    Ok(EncryptedData::new(nonce_bytes, ct.to_vec(), tag))
 }
 
 /// Decrypt ciphertext using AES-256-GCM with Additional Authenticated Data (AAD).
@@ -317,7 +301,7 @@ pub fn decrypt_with_aad(
     key: &EncryptionKey,
     encrypted: &EncryptedData,
     aad: &[u8],
-) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+) -> Result<Vec<u8>, CryptoError> {
     if !encrypted.is_supported_version() {
         return Err(CryptoError::UnsupportedVersion(encrypted.version));
     }
@@ -340,64 +324,7 @@ pub fn decrypt_with_aad(
         .decrypt(nonce, payload)
         .map_err(|_| CryptoError::DecryptionFailed)?;
 
-    Ok(Zeroizing::new(plaintext))
-}
-
-/// Encrypt plaintext using AES-256-GCM with AAD, recording the key identity.
-///
-/// Like [`encrypt_with_aad`] but stores `key_id` in the resulting [`EncryptedData`]
-/// so the [`crate::layer::EncryptionLayer`] can select the correct decryption key
-/// during rotation.
-///
-/// # Arguments
-///
-/// * `key` - Encryption key (256 bits)
-/// * `key_id` - Identifier for this key (stored in the envelope for decryption lookup)
-/// * `plaintext` - Data to encrypt
-/// * `aad` - Additional authenticated data (e.g., credential ID bytes)
-///
-/// # Returns
-///
-/// Encrypted data with nonce, authentication tag, and key_id
-///
-/// # Errors
-///
-/// Returns `CryptoError::EncryptionFailed` if encryption fails
-pub fn encrypt_with_key_id(
-    key: &EncryptionKey,
-    key_id: &str,
-    plaintext: &[u8],
-    aad: &[u8],
-) -> Result<EncryptedData, CryptoError> {
-    if key_id.is_empty() {
-        return Err(CryptoError::EncryptionFailed(
-            "key_id must not be empty for new encryptions".into(),
-        ));
-    }
-
-    let cipher = Aes256Gcm::new_from_slice(key.as_bytes())
-        .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
-
-    let nonce = nonce_generator().next();
-
-    let payload = Payload {
-        msg: plaintext,
-        aad,
-    };
-
-    let ciphertext = cipher
-        .encrypt(&nonce, payload)
-        .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
-
-    // Split ciphertext and tag (last 16 bytes)
-    let (ct, tag_slice) = ciphertext.split_at(ciphertext.len() - 16);
-    let mut tag = [0u8; 16];
-    tag.copy_from_slice(tag_slice);
-
-    let mut nonce_bytes = [0u8; 12];
-    nonce_bytes.copy_from_slice(nonce.as_slice());
-
-    Ok(EncryptedData::new(key_id, nonce_bytes, ct.to_vec(), tag))
+    Ok(plaintext)
 }
 
 // ============================================================================
@@ -479,26 +406,16 @@ mod tests {
         let ciphertext = vec![2u8; 32];
         let tag = [3u8; 16];
 
-        let encrypted = EncryptedData::new("key-1", nonce, ciphertext.clone(), tag);
+        let encrypted = EncryptedData::new(nonce, ciphertext.clone(), tag);
         assert_eq!(encrypted.version, EncryptedData::CURRENT_VERSION);
-        assert_eq!(encrypted.key_id, "key-1");
         assert_eq!(encrypted.nonce, nonce);
         assert_eq!(encrypted.ciphertext, ciphertext);
         assert_eq!(encrypted.tag, tag);
     }
 
     #[test]
-    fn encrypted_data_stores_key_id() {
-        let encrypted = EncryptedData::new("my-key", [0u8; 12], vec![], [0u8; 16]);
-        assert_eq!(encrypted.key_id, "my-key");
-
-        let legacy = EncryptedData::new("", [0u8; 12], vec![], [0u8; 16]);
-        assert_eq!(legacy.key_id, "");
-    }
-
-    #[test]
     fn test_encrypted_data_version_check() {
-        let encrypted = EncryptedData::new("", [0u8; 12], vec![], [0u8; 16]);
+        let encrypted = EncryptedData::new([0u8; 12], vec![], [0u8; 16]);
         assert!(encrypted.is_supported_version());
 
         let mut unsupported = encrypted.clone();
@@ -550,7 +467,7 @@ mod tests {
 
         let encrypted = encrypt_with_aad(&key, plaintext, aad).unwrap();
         let decrypted = decrypt_with_aad(&key, &encrypted, aad).unwrap();
-        assert_eq!(decrypted.as_slice(), plaintext);
+        assert_eq!(decrypted, plaintext);
     }
 
     #[test]
@@ -572,19 +489,6 @@ mod tests {
         let encrypted = encrypt_with_aad(&key, plaintext, b"cred-1").unwrap();
         let result = decrypt(&key, &encrypted);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn encrypt_with_key_id_stores_key_id_and_round_trips() {
-        let key = EncryptionKey::from_bytes([0x42; 32]);
-        let plaintext = b"hello world";
-        let aad = b"credential-id-1";
-
-        let encrypted = encrypt_with_key_id(&key, "rotation-key-2", plaintext, aad).unwrap();
-        assert_eq!(encrypted.key_id, "rotation-key-2");
-
-        let decrypted = decrypt_with_aad(&key, &encrypted, aad).unwrap();
-        assert_eq!(decrypted.as_slice(), plaintext);
     }
 
     #[test]

@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::display_mode::{ComputedReturn, DisplayMode};
 use crate::filter_field::FilterField;
-use crate::input_hint::InputHint;
 use crate::loader::{FilterFieldLoader, OptionLoader, RecordLoader};
 use crate::notice::NoticeSeverity;
 use crate::option::SelectOption;
@@ -42,9 +41,6 @@ pub enum ParameterType {
         /// Render as a multi-line textarea.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         multiline: bool,
-        /// UI input hint (date picker, color picker, URL input, etc.).
-        #[serde(default, skip_serializing_if = "InputHint::is_default")]
-        input_hint: InputHint,
     },
 
     /// Numeric input (integer or floating-point).
@@ -135,19 +131,15 @@ pub enum ParameterType {
     },
 
     /// Date picker (no time component).
-    #[deprecated(since = "0.4.0", note = "use String with InputHint::Date")]
     Date,
 
     /// Date and time picker.
-    #[deprecated(since = "0.4.0", note = "use String with InputHint::DateTime")]
     DateTime,
 
     /// Time-only picker.
-    #[deprecated(since = "0.4.0", note = "use String with InputHint::Time")]
     Time,
 
     /// Color picker.
-    #[deprecated(since = "0.4.0", note = "use String with InputHint::Color")]
     Color,
 
     /// File upload input.
@@ -164,7 +156,6 @@ pub enum ParameterType {
     },
 
     /// Hidden parameter — not rendered in the UI.
-    #[deprecated(since = "0.4.0", note = "set visible = false on Parameter instead")]
     Hidden,
 
     /// Complex filter/query builder.
@@ -216,32 +207,4 @@ pub enum ParameterType {
         #[serde(default, skip_serializing_if = "NoticeSeverity::is_default")]
         severity: NoticeSeverity,
     },
-}
-
-impl ParameterType {
-    /// Returns the variant name as a static string.
-    #[must_use]
-    #[allow(deprecated)]
-    pub fn variant_name(&self) -> &'static str {
-        match self {
-            Self::String { .. } => "String",
-            Self::Number { .. } => "Number",
-            Self::Boolean => "Boolean",
-            Self::Select { .. } => "Select",
-            Self::Object { .. } => "Object",
-            Self::List { .. } => "List",
-            Self::Mode { .. } => "Mode",
-            Self::Code { .. } => "Code",
-            Self::Date => "Date",
-            Self::DateTime => "DateTime",
-            Self::Time => "Time",
-            Self::Color => "Color",
-            Self::File { .. } => "File",
-            Self::Hidden => "Hidden",
-            Self::Filter { .. } => "Filter",
-            Self::Computed { .. } => "Computed",
-            Self::Dynamic { .. } => "Dynamic",
-            Self::Notice { .. } => "Notice",
-        }
-    }
 }

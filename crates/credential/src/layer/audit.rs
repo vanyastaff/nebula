@@ -330,7 +330,8 @@ mod tests {
         let events = sink.events();
         let conflict_event = events
             .iter()
-            .rfind(|e| e.operation == AuditOperation::Put)
+            .filter(|e| e.operation == AuditOperation::Put)
+            .last()
             .unwrap();
         assert_eq!(conflict_event.result, AuditResult::Conflict);
     }

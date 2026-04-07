@@ -89,6 +89,15 @@ impl ConfigBuilder {
         Ok(self)
     }
 
+    /// Set default values from a `serde_json::Value`.
+    ///
+    /// Use [`with_defaults`](Self::with_defaults) instead.
+    #[deprecated(since = "0.1.0", note = "use `with_defaults` instead")]
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_defaults_json(self, defaults: serde_json::Value) -> Self {
+        self.with_defaults(defaults)
+    }
+
     /// Set configuration loader
     #[must_use = "builder methods must be chained or built"]
     pub fn with_loader(mut self, loader: Arc<dyn ConfigLoader>) -> Self {

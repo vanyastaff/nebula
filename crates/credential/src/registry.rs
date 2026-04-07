@@ -33,7 +33,7 @@ type ProjectFn =
 /// registry.register::<ApiKeyCredential>();
 ///
 /// // Later, project stored bytes without knowing the concrete type:
-/// let scheme = registry.project("secret_token", &stored_bytes)?;
+/// let scheme = registry.project("bearer", &stored_bytes)?;
 /// ```
 pub struct CredentialRegistry {
     handlers: HashMap<String, ProjectFn>,
@@ -151,23 +151,23 @@ pub enum RegistryError {
 mod tests {
     use super::*;
     use crate::credentials::ApiKeyCredential;
-    use crate::scheme::SecretToken;
+    use crate::scheme::BearerToken;
 
     #[test]
-    fn register_and_project_secret_token() {
+    fn register_and_project_bearer() {
         let mut registry = CredentialRegistry::new();
         registry.register::<ApiKeyCredential>();
 
-        assert!(registry.contains("secret_token"));
+        assert!(registry.contains("bearer"));
         assert_eq!(registry.len(), 1);
 
         // Construct raw JSON directly because SecretString serializes
         // as "[REDACTED]" — the real store would hold encrypted raw values.
         let data = br#"{"token":"test-key"}"#.to_vec();
 
-        let any = registry.project("secret_token", &data).unwrap();
-        let projected = any.downcast::<SecretToken>().unwrap();
-        let value = projected.token().expose_secret(|s| s.to_owned());
+        let any = registry.project("bearer", &data).unwrap();
+        let projected = any.downcast::<BearerToken>().unwrap();
+        let value = projected.expose().expose_secret(|s| s.to_owned());
         assert_eq!(value, "test-key");
     }
 
@@ -183,7 +183,7 @@ mod tests {
         let mut registry = CredentialRegistry::new();
         registry.register::<ApiKeyCredential>();
 
-        let result = registry.project("secret_token", b"not-json");
+        let result = registry.project("bearer", b"not-json");
         assert!(matches!(result, Err(RegistryError::Deserialize(_))));
     }
 
@@ -192,6 +192,6 @@ mod tests {
         let registry = CredentialRegistry::new();
         assert!(registry.is_empty());
         assert_eq!(registry.len(), 0);
-        assert!(!registry.contains("secret_token"));
+        assert!(!registry.contains("bearer"));
     }
 }

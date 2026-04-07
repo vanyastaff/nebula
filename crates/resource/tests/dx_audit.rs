@@ -24,7 +24,8 @@ use nebula_core::{ExecutionId, ResourceKey, resource_key};
 use nebula_resource::{
     AcquireOptions, AcquireResilience, Manager, PoolConfig, ResidentConfig, ResourceHandle,
     ShutdownConfig,
-    ctx::{BasicCtx, Ctx, ScopeLevel},
+    ScopeLevel,
+    ctx::{BasicCtx, Ctx},
     error::{Error, ErrorKind},
     resource::{Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
@@ -160,12 +161,12 @@ impl Pooled for HttpClientResource {
         BrokenCheck::Healthy
     }
 
-    async fn recycle(
+    fn recycle(
         &self,
         _runtime: &FakeHttpClient,
         _metrics: &InstanceMetrics,
-    ) -> Result<RecycleDecision, DxTestError> {
-        Ok(RecycleDecision::Keep)
+    ) -> impl std::future::Future<Output = Result<RecycleDecision, DxTestError>> + Send {
+        async { Ok(RecycleDecision::Keep) }
     }
 }
 

@@ -17,6 +17,8 @@
 //! ]);
 //! ```
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -224,7 +226,7 @@ impl Condition {
     /// Keys in `values` are matched against the field's
     /// [`ParameterPath::as_str`] representation.
     #[must_use]
-    pub fn evaluate(&self, values: &crate::values::ParameterValues) -> bool {
+    pub fn evaluate(&self, values: &HashMap<String, Value>) -> bool {
         #[allow(unreachable_patterns)]
         // Reason: wildcard arm required for #[non_exhaustive] in downstream crates
         match self {
@@ -311,7 +313,7 @@ impl Condition {
 mod tests {
     use super::*;
 
-    fn values(pairs: &[(&str, Value)]) -> crate::values::ParameterValues {
+    fn values(pairs: &[(&str, Value)]) -> HashMap<String, Value> {
         pairs
             .iter()
             .map(|(k, v)| ((*k).to_owned(), v.clone()))
@@ -335,7 +337,7 @@ mod tests {
     #[test]
     fn eq_rejects_absent_field() {
         let cond = Condition::eq("mode", "fast");
-        assert!(!cond.evaluate(&crate::values::ParameterValues::new()));
+        assert!(!cond.evaluate(&HashMap::new()));
     }
 
     #[test]
@@ -348,7 +350,7 @@ mod tests {
     #[test]
     fn ne_accepts_absent_field() {
         let cond = Condition::ne("mode", "fast");
-        assert!(cond.evaluate(&crate::values::ParameterValues::new()));
+        assert!(cond.evaluate(&HashMap::new()));
     }
 
     #[test]
@@ -388,13 +390,13 @@ mod tests {
     #[test]
     fn set_rejects_absent() {
         let cond = Condition::set("name");
-        assert!(!cond.evaluate(&crate::values::ParameterValues::new()));
+        assert!(!cond.evaluate(&HashMap::new()));
     }
 
     #[test]
     fn not_set_accepts_absent() {
         let cond = Condition::not_set("name");
-        assert!(cond.evaluate(&crate::values::ParameterValues::new()));
+        assert!(cond.evaluate(&HashMap::new()));
     }
 
     #[test]
@@ -450,7 +452,7 @@ mod tests {
         let cond = Condition::any([Condition::set("a"), Condition::set("b")]);
         let one = values(&[("b", Value::Bool(true))]);
         assert!(cond.evaluate(&one));
-        assert!(!cond.evaluate(&crate::values::ParameterValues::new()));
+        assert!(!cond.evaluate(&HashMap::new()));
     }
 
     #[test]
@@ -464,7 +466,7 @@ mod tests {
     #[test]
     fn not_negates_inner() {
         let cond = Condition::not(Condition::set("x"));
-        assert!(cond.evaluate(&crate::values::ParameterValues::new()));
+        assert!(cond.evaluate(&HashMap::new()));
         let vals = values(&[("x", Value::Bool(true))]);
         assert!(!cond.evaluate(&vals));
     }

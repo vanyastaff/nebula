@@ -2,26 +2,28 @@
 Storage trait abstraction — MemoryStorage for tests, PostgresStorage for production.
 
 ## Invariants
-- `MemoryStorage` is dev/test only — all data lost on restart.
-- `WorkflowRepo::save` uses CAS: version 0 = INSERT, non-zero = UPDATE WHERE version = $expected.
-- `ExecutionRepo::create` inserts with version=1, fails `Conflict` if ID exists. `transition` uses CAS.
-- Node outputs keyed by `(execution_id, node_id, attempt)` — loads return highest attempt per node.
-- `list_running` non-terminal statuses: `"created"`, `"running"`, `"paused"`, `"cancelling"`.
-- Idempotency: string key dedup, `mark_idempotent` is no-op if key exists.
+- `MemoryStorage` is for development and tests only. All data is lost on process restart. Never use in production.
+- `Storage` trait is the generic key-value contract. `ExecutionRepo` and `WorkflowRepo` are domain-specific repository traits on top.
+- `WorkflowRepo::save` uses CAS (compare-and-swap) semantics: callers pass the expected version, and the repo rejects with `VersionConflict` if the stored version differs. Version 0 means "new workflow" (INSERT); non-zero means "update existing" (UPDATE … WHERE version = $expected).
 
 ## Key Decisions
-- `PgWorkflowRepo` and `PgExecutionRepo` accept `Pool<Postgres>`, not a connection string — get pool from `PostgresStorage::pool()`.
+- `Storage<Key, Value>` is generic — typed by key and value. `MemoryStorageTyped` provides a typed wrapper.
+- `ExecutionRepo` / `InMemoryExecutionRepo` for execution state. `WorkflowRepo` / `InMemoryWorkflowRepo` for workflow definitions.
+- `PgWorkflowRepo` is the PostgreSQL-backed `WorkflowRepo`. Constructor accepts `Pool<Postgres>` (not a connection string) — obtain the pool from `PostgresStorage::pool()`.
 - `PgWorkflowRepo::list` orders by `created_at, id` for deterministic pagination.
-- `PgExecutionRepo` computes lease expiry in SQL via `make_interval(secs => $N)` — avoids chrono dependency.
-- lib.rs is in Russian — intentional, do not translate.
+- PostgreSQL backend behind `postgres` feature; Redis and S3 planned but not implemented.
+- lib.rs is in Russian — intentional, matches early project language. Do not translate.
 
 ## Traps
-- Three distinct error types: `StorageError`, `ExecutionRepoError`, `WorkflowRepoError`.
-- `PgWorkflowRepo` tests use guard pattern: skip when `DATABASE_URL` absent.
-- Lease TTL clamped to 1..86400 seconds — zero or extreme durations are safe.
-- Migration 00000000000007 adds nullable `lease_holder`/`lease_expires_at` to `executions`.
+- `StorageError` is distinct from `ExecutionRepoError` and `WorkflowRepoError` — each layer has its own error type.
+- `PostgresStorage` requires the `postgres` feature flag and a database connection string.
+- `PgWorkflowRepo` integration tests use a test-guard pattern: `pg_repo()` reads `DATABASE_URL` and returns `Option`; tests skip (pass) when no database is available.
 
 ## Relations
 - Depends on nebula-core (IDs). Used by nebula-engine, nebula-api.
 
-<!-- reviewed: 2026-04-06 — added PgExecutionRepo with full ExecutionRepo impl -->
+<!-- reviewed: 2026-03-30 — derive Classify migration -->
+
+<!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->

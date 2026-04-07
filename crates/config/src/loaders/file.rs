@@ -93,8 +93,6 @@ pub(crate) fn parse_content(
                 Err(ConfigError::format_not_supported("yaml"))
             }
         }
-        ConfigFormat::Json => serde_json::from_str::<serde_json::Value>(content)
-            .map_err(|e| ConfigError::parse_error(path, format!("JSON parse error: {e}"))),
         _ => Err(ConfigError::format_not_supported(format.to_string())),
     }
 }

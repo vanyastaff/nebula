@@ -14,7 +14,7 @@ categories = ["template-engine", "parser-implementations"]
 
 [dependencies]
 nebula-log = { path = "../log" }
-moka = { workspace = true, features = ["sync"], optional = true }
+nebula-memory = { path = "../memory", default-features = true, features = ["cache"] }
 
 # Error handling
 thiserror = { workspace = true }
@@ -38,7 +38,7 @@ harness = false
 
 [features]
 default = ["cache", "regex", "datetime", "uuid"]
-cache = ["dep:moka"]
+cache = ["nebula-memory/cache"]
 regex = ["dep:regex"]
 datetime = []
 uuid = ["dep:uuid"]

@@ -11,8 +11,6 @@
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::AuthPattern;
-
 /// Consumer-facing authentication material.
 ///
 /// Resources declare `type Auth: AuthScheme` to specify what auth
@@ -34,7 +32,7 @@ use crate::AuthPattern;
 /// # Examples
 ///
 /// ```
-/// use nebula_core::{AuthScheme, AuthPattern};
+/// use nebula_core::AuthScheme;
 /// use serde::{Deserialize, Serialize};
 ///
 /// #[derive(Clone, Serialize, Deserialize)]
@@ -43,18 +41,12 @@ use crate::AuthPattern;
 /// }
 ///
 /// impl AuthScheme for BearerToken {
-///     fn pattern() -> AuthPattern {
-///         AuthPattern::SecretToken
-///     }
+///     const KIND: &'static str = "bearer";
 /// }
 /// ```
 pub trait AuthScheme: Serialize + DeserializeOwned + Send + Sync + Clone + 'static {
-    /// Classification for UI, logging, and tooling.
-    ///
-    /// Returns the [`AuthPattern`] that best describes this scheme's
-    /// authentication mechanism. Used by framework tooling to categorize
-    /// credentials without inspecting their concrete type.
-    fn pattern() -> AuthPattern;
+    /// Unique identifier for this scheme type (e.g., `"bearer"`, `"basic"`).
+    const KIND: &'static str;
 
     /// When this auth material expires, if applicable.
     ///
@@ -67,34 +59,5 @@ pub trait AuthScheme: Serialize + DeserializeOwned + Send + Sync + Clone + 'stat
 
 /// No authentication required.
 impl AuthScheme for () {
-    fn pattern() -> AuthPattern {
-        AuthPattern::NoAuth
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::AuthPattern;
-
-    #[derive(Clone, serde::Serialize, serde::Deserialize)]
-    struct TestToken {
-        value: String,
-    }
-
-    impl AuthScheme for TestToken {
-        fn pattern() -> AuthPattern {
-            AuthPattern::SecretToken
-        }
-    }
-
-    #[test]
-    fn custom_scheme_reports_correct_pattern() {
-        assert_eq!(TestToken::pattern(), AuthPattern::SecretToken);
-    }
-
-    #[test]
-    fn unit_scheme_pattern_is_no_auth() {
-        assert_eq!(<() as AuthScheme>::pattern(), AuthPattern::NoAuth);
-    }
+    const KIND: &'static str = "none";
 }

@@ -239,18 +239,14 @@ mod tests {
             connections,
             variables: HashMap::new(),
             config: WorkflowConfig::default(),
-            trigger: None,
             tags: Vec::new(),
             created_at: now,
             updated_at: now,
-            owner_id: None,
-            ui_metadata: None,
-            schema_version: 1,
         }
     }
 
     fn node(id: NodeId) -> NodeDefinition {
-        NodeDefinition::new(id, "n", "n").unwrap()
+        NodeDefinition::new(id, "n", "n")
     }
 
     // --- linear graph: A -> B -> C ---

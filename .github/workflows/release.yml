@@ -46,7 +46,6 @@ jobs:
       - name: Bump version with cargo-release
         run: |
           cargo release version ${{ github.event.inputs.level }} \
-            --workspace \
             --no-confirm \
             --execute
 
@@ -64,6 +63,7 @@ jobs:
 
       - name: Tag release
         run: |
-          VERSION=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
           git tag -a "v$VERSION" -m "Release v$VERSION"
           git push origin "v$VERSION"
+

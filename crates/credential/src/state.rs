@@ -36,8 +36,8 @@ pub trait CredentialState: Serialize + DeserializeOwned + Send + Sync + 'static 
 /// # Examples
 ///
 /// ```ignore
-/// identity_state!(SecretToken, "secret_token", 1);
-/// // Now SecretToken can be used as both AuthScheme and CredentialState
+/// identity_state!(BearerToken, "bearer", 1);
+/// // Now BearerToken can be used as both AuthScheme and CredentialState
 /// ```
 #[macro_export]
 macro_rules! identity_state {

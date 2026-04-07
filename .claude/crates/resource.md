@@ -27,6 +27,14 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 
 ## Decisions
 
+- `Ctx: BaseCtx` supertrait — scope/identity methods come from `nebula_core::BaseCtx`, resource's `Ctx` adds only cancel_token + extensions
+- `ScopeLevel` is `nebula_core::ScopeLevel` (typed IDs: `OrganizationId`, `ProjectId`) — local enum deleted
+- `BasicCtx` implements `BaseCtx` + `Ctx` separately — BaseCtx gives scope/execution_id, Ctx gives cancel/ext
+- `execution_id()` returns `Option<&ExecutionId>` (via BaseCtx) — daemon.rs uses `.copied().unwrap_or_else(ExecutionId::new)` as fallback
+- `Resource::parameters() -> ParameterCollection` default method — returns empty collection; overridden to describe setup form fields
+- `ResourceMetadata.parameters` — schema stored alongside name/description/tags for UI rendering
+- `AnyResource::parameters()` — type-erased access for registry/engine without generics
+- Same pattern as `Credential::parameters()` and `ActionMetadata.parameters`
 - `ResourceMetrics` (hand-rolled atomics) replaced with `ResourceOpsMetrics` backed by `MetricsRegistry` from nebula-telemetry
 - Per-resource metrics removed — single aggregate `Option<ResourceOpsMetrics>` on Manager (all topologies share same registry counters)
 - `ManagerConfig.metrics_registry: Option<Arc<MetricsRegistry>>` — metrics are opt-in, zero overhead when None
@@ -35,7 +43,7 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 
 ## Relations
 
-- Depends on: nebula-core, nebula-metrics, nebula-telemetry, nebula-resource-macros
+- Depends on: nebula-core (BaseCtx, ScopeLevel, IDs), nebula-parameter (ParameterCollection), nebula-metrics, nebula-telemetry, nebula-resource-macros
 - Depended on by: nebula-action, nebula-plugin, nebula-engine, nebula-webhook
 
 <!-- reviewed: 2026-03-30 (backpressure retryable, retry_hint floor, bounded release queue, new events) -->
@@ -47,5 +55,5 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 
 <!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
 <!-- reviewed: 2026-04-04 — replaced ResourceMetrics with registry-backed ResourceOpsMetrics, removed per-resource metrics -->
-
-<!-- reviewed: 2026-04-07 -->
+<!-- reviewed: 2025-07-25 — BaseCtx supertrait, ScopeLevel dedup from core, execution_id now Option -->
+<!-- reviewed: 2026-04-05 — ParameterCollection on Resource + ResourceMetadata + AnyResource -->

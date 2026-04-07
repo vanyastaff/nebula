@@ -156,13 +156,13 @@ mod tests {
             resource_key!("cloned-svc")
         }
 
-        async fn create(
+        fn create(
             &self,
             _config: &String,
             _auth: &(),
             _ctx: &dyn Ctx,
-        ) -> Result<String, SvcError> {
-            Ok("runtime".into())
+        ) -> impl std::future::Future<Output = Result<String, SvcError>> + Send {
+            async { Ok("runtime".into()) }
         }
 
         fn metadata() -> ResourceMetadata {
@@ -201,13 +201,13 @@ mod tests {
             resource_key!("tracked-svc")
         }
 
-        async fn create(
+        fn create(
             &self,
             _config: &String,
             _auth: &(),
             _ctx: &dyn Ctx,
-        ) -> Result<String, SvcError> {
-            Ok("tracked-runtime".into())
+        ) -> impl std::future::Future<Output = Result<String, SvcError>> + Send {
+            async { Ok("tracked-runtime".into()) }
         }
 
         fn metadata() -> ResourceMetadata {

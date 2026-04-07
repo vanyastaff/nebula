@@ -377,7 +377,6 @@ impl Config {
     }
 
     /// Set nested value in JSON using dot notation
-    #[allow(clippy::excessive_nesting)] // Reason: deeply nested JSON path traversal
     fn set_nested_value(
         &self,
         value: &mut serde_json::Value,
@@ -509,6 +508,17 @@ impl Config {
         let mut buf = String::with_capacity(64);
         flatten_into(&mut buf, &snapshot, &mut pairs);
         pairs
+    }
+
+    /// Get all configuration as a flat `HashMap` with dot-notation keys.
+    ///
+    /// Array elements use dot-separated indices (e.g. `tags.0`, `tags.1`)
+    /// consistent with the `get`/`set_value` path API.
+    ///
+    /// Use this variant when you need O(1) key lookups. For iteration only,
+    /// prefer [`flatten`](Self::flatten) to avoid the extra allocation.
+    pub async fn flatten_map(&self) -> HashMap<String, serde_json::Value> {
+        self.flatten().await.into_iter().collect()
     }
 
     /// Merge configuration from dynamic value

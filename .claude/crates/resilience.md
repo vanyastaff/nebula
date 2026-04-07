@@ -130,5 +130,3 @@ Prefer `ResiliencePipeline` for composing multiple patterns — it handles layer
 
 <!-- reviewed: 2026-04-02 — memory audit: CallError Cancelled/FallbackFailed reason String→Cow<'static, str>, ConfigError message String→Cow<'static, str>, CancellationContext reason String→Cow<'static, str> — eliminates heap alloc for static error messages -->
 <!-- reviewed: 2026-04-02 — DX: added const constructors on CallError — cancelled(), cancelled_with(), fallback_failed(), fallback_failed_with(), rate_limited(), rate_limited_after() — all call sites migrated from struct syntax -->
-
-<!-- reviewed: 2026-04-07 -->

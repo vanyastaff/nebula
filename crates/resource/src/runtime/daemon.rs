@@ -15,6 +15,7 @@ use crate::error::Error;
 use crate::resource::Resource;
 use crate::topology::daemon::config::Config;
 use crate::topology::daemon::{Daemon, RestartPolicy};
+use nebula_core::ExecutionId;
 
 /// Runtime state for a daemon topology.
 ///
@@ -84,7 +85,10 @@ where
         let cancel = self.cancel.clone();
         let config = self.config.clone();
         let cancel_token_for_run = self.cancel.child_token();
-        let execution_id = *ctx.execution_id();
+        let execution_id = ctx
+            .execution_id()
+            .copied()
+            .unwrap_or_else(ExecutionId::new);
 
         let join_handle = tokio::spawn(async move {
             daemon_loop(

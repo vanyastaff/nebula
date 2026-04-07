@@ -72,13 +72,9 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
         connections: vec![],
         variables: HashMap::new(),
         config: WorkflowConfig::default(),
-        trigger: None,
         tags: Vec::new(),
         created_at: now,
         updated_at: now,
-        owner_id: None,
-        ui_metadata: None,
-        schema_version: 1,
     }
 }
 
@@ -123,9 +119,7 @@ async fn action_acquires_resource_through_engine() {
 
     // 4. Build and execute a single-node workflow
     let node = NodeId::new();
-    let wf = make_workflow(vec![
-        NodeDefinition::new(node, "A", "resource-consumer").unwrap(),
-    ]);
+    let wf = make_workflow(vec![NodeDefinition::new(node, "A", "resource-consumer")]);
 
     let result = engine
         .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
@@ -170,9 +164,7 @@ async fn full_resource_lifecycle_with_shutdown() {
 
     // 4. Execute a single-node workflow
     let node = NodeId::new();
-    let wf = make_workflow(vec![
-        NodeDefinition::new(node, "A", "resource-consumer").unwrap(),
-    ]);
+    let wf = make_workflow(vec![NodeDefinition::new(node, "A", "resource-consumer")]);
 
     let result = engine
         .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
@@ -221,9 +213,7 @@ async fn action_resource_fails_without_manager() {
     // No .with_resource_manager() — intentionally omitted
 
     let node = NodeId::new();
-    let wf = make_workflow(vec![
-        NodeDefinition::new(node, "A", "resource-consumer").unwrap(),
-    ]);
+    let wf = make_workflow(vec![NodeDefinition::new(node, "A", "resource-consumer")]);
 
     let result = engine
         .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())

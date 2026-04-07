@@ -1,4 +1,3 @@
-use nebula_core::AuthPattern;
 use nebula_parameter::collection::ParameterCollection;
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +13,6 @@ use serde::{Deserialize, Serialize};
 /// # Example
 ///
 /// ```
-/// use nebula_core::AuthPattern;
 /// use nebula_credential::CredentialDescription;
 /// use nebula_parameter::{Parameter, ParameterCollection};
 ///
@@ -30,7 +28,6 @@ use serde::{Deserialize, Serialize};
 ///     icon_url: None,
 ///     documentation_url: Some("https://docs.github.com/en/apps/oauth-apps".to_string()),
 ///     properties,
-///     pattern: AuthPattern::OAuth2,
 /// };
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,9 +55,6 @@ pub struct CredentialDescription {
 
     /// Parameter definitions - what fields this credential type requires.
     pub properties: ParameterCollection,
-
-    /// Authentication pattern classification for UI and tooling.
-    pub pattern: AuthPattern,
 }
 
 impl CredentialDescription {
@@ -80,7 +74,6 @@ pub struct CredentialDescriptionBuilder {
     icon_url: Option<String>,
     documentation_url: Option<String>,
     properties: Option<ParameterCollection>,
-    pattern: Option<AuthPattern>,
 }
 
 impl CredentialDescriptionBuilder {
@@ -126,12 +119,6 @@ impl CredentialDescriptionBuilder {
         self
     }
 
-    /// Set the authentication pattern
-    pub fn pattern(mut self, pattern: AuthPattern) -> Self {
-        self.pattern = Some(pattern);
-        self
-    }
-
     /// Build the CredentialDescription
     ///
     /// # Errors
@@ -146,7 +133,6 @@ impl CredentialDescriptionBuilder {
             icon_url: self.icon_url,
             documentation_url: self.documentation_url,
             properties: self.properties.ok_or("properties is required")?,
-            pattern: self.pattern.ok_or("pattern is required")?,
         })
     }
 }

@@ -25,7 +25,6 @@ thiserror = { workspace = true }
 tokio-util = { workspace = true }
 chrono = { workspace = true }
 
-parking_lot = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]

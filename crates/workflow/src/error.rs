@@ -51,34 +51,6 @@ pub enum WorkflowError {
         source_node_id: NodeId,
     },
 
-    /// Invalid action key format.
-    #[classify(category = "validation", code = "WORKFLOW:INVALID_ACTION_KEY")]
-    #[error("invalid action key `{key}`: {reason}")]
-    InvalidActionKey {
-        /// The invalid key string.
-        key: String,
-        /// Why it's invalid.
-        reason: String,
-    },
-
-    /// Invalid trigger configuration.
-    #[classify(category = "validation", code = "WORKFLOW:INVALID_TRIGGER")]
-    #[error("invalid trigger: {reason}")]
-    InvalidTrigger {
-        /// What's wrong with the trigger.
-        reason: String,
-    },
-
-    /// Workflow schema version not supported.
-    #[classify(category = "validation", code = "WORKFLOW:UNSUPPORTED_SCHEMA")]
-    #[error("unsupported schema version {version}, max supported: {max}")]
-    UnsupportedSchema {
-        /// The version found in the definition.
-        version: u32,
-        /// Maximum supported version.
-        max: u32,
-    },
-
     /// Generic graph construction error.
     #[classify(category = "validation", code = "WORKFLOW:GRAPH_ERROR")]
     #[error("graph error: {0}")]

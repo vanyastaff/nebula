@@ -39,21 +39,26 @@ pub use nebula_parameter::prelude::*;
 
 // Credential types (v2)
 pub use nebula_credential::{
+    // Auth schemes
+    ApiKeyAuth,
     // Built-in credentials
     ApiKeyCredential,
+    BasicAuth,
     BasicAuthCredential,
+    BearerToken,
     Credential,
     CredentialDescription,
     CredentialError,
     // Typed credential access
     CredentialSnapshot,
     CredentialState,
-    // Auth schemes (universal types)
-    IdentityPassword,
+    DatabaseAuth,
+    DatabaseCredential,
+    HeaderAuth,
+    HeaderAuthCredential,
     OAuth2Credential,
     OAuth2Token,
     SecretString,
-    SecretToken,
     SnapshotError,
 };
 pub use nebula_credential::{CredentialContext, CredentialId};

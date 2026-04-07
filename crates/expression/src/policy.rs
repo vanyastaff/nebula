@@ -15,7 +15,6 @@ pub struct EvaluationPolicy {
     strict_conversion_functions: bool,
     strict_numeric_comparisons: bool,
     max_json_parse_length: Option<usize>,
-    max_eval_steps: Option<usize>,
 }
 
 impl EvaluationPolicy {
@@ -88,16 +87,6 @@ impl EvaluationPolicy {
         self
     }
 
-    /// Set maximum evaluation steps before aborting.
-    ///
-    /// Each AST node evaluation counts as one step. When the limit is
-    /// exceeded, the evaluator returns an `EvalError`. `None` means
-    /// unlimited (the default).
-    pub fn with_max_eval_steps(mut self, max: usize) -> Self {
-        self.max_eval_steps = Some(max);
-        self
-    }
-
     /// Return the optional allowlist.
     pub fn allowed_functions(&self) -> Option<&HashSet<String>> {
         self.allowed_functions.as_deref()
@@ -126,11 +115,6 @@ impl EvaluationPolicy {
     /// Optional override for JSON parse input size limit.
     pub fn max_json_parse_length(&self) -> Option<usize> {
         self.max_json_parse_length
-    }
-
-    /// Maximum evaluation steps. `None` means unlimited.
-    pub fn max_eval_steps(&self) -> Option<usize> {
-        self.max_eval_steps
     }
 }
 

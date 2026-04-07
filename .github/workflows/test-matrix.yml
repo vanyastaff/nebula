@@ -53,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          FULL='["nebula-action","nebula-api","nebula-config","nebula-core","nebula-credential","nebula-engine","nebula-error","nebula-eventbus","nebula-execution","nebula-expression","nebula-log","nebula-metrics","nebula-parameter","nebula-plugin","nebula-resilience","nebula-resource","nebula-runtime","nebula-sdk","nebula-storage","nebula-system","nebula-telemetry","nebula-validator","nebula-webhook","nebula-workflow"]'
+          FULL='["nebula-action","nebula-api","nebula-auth","nebula-config","nebula-core","nebula-credential","nebula-engine","nebula-eventbus","nebula-execution","nebula-expression","nebula-log","nebula-macros","nebula-memory","nebula-metrics","nebula-parameter","nebula-plugin","nebula-resilience","nebula-resource","nebula-runtime","nebula-sdk","nebula-storage","nebula-system","nebula-telemetry","nebula-validator","nebula-webhook","nebula-workflow"]'
           SMOKE='["nebula-core","nebula-engine","nebula-runtime"]'
 
           if [[ "${{ github.event_name }}" == "push" ]]; then
@@ -84,31 +84,12 @@ jobs:
           JSON=$(printf '%s\n' "${PACKAGES[@]}" | jq -R . | jq -s -c .)
           echo "packages=$JSON" >> "$GITHUB_OUTPUT"
 
-  # Build workspace once and save cache — matrix jobs read it
-  warm-cache:
-    name: Warm Cache
-    needs: select-matrix
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: matrix
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
-      - name: Build workspace (populates cache)
-        run: cargo check --workspace --all-targets
-
   test-crates:
     name: Test ${{ matrix.package }}
-    needs: [select-matrix, warm-cache]
+    needs: select-matrix
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       max-parallel: 8
       matrix:
         package: ${{ fromJson(needs.select-matrix.outputs.packages) }}
@@ -123,7 +104,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: matrix
-          save-if: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
 
       - name: Install cargo-nextest
@@ -148,3 +129,4 @@ jobs:
           path: target/nextest/ci/junit.xml
           if-no-files-found: ignore
           retention-days: 3
+

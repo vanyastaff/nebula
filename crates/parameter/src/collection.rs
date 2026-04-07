@@ -49,31 +49,6 @@ impl ParameterCollection {
         Self::default()
     }
 
-    /// Creates a typed builder for fluent construction.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use nebula_parameter::ParameterCollection;
-    ///
-    /// let params = ParameterCollection::builder()
-    ///     .string("name", |s| s.label("Name").required())
-    ///     .integer("age", |n| n.label("Age").default(18))
-    ///     .build();
-    ///
-    /// assert_eq!(params.len(), 2);
-    /// ```
-    #[must_use]
-    pub fn builder() -> crate::builder::ParameterCollectionBuilder {
-        crate::builder::ParameterCollectionBuilder::new()
-    }
-
-    /// Consume the collection and return the inner parameter vec.
-    #[must_use]
-    pub fn into_vec(self) -> Vec<Parameter> {
-        self.parameters
-    }
-
     /// Appends a parameter to the collection.
     #[must_use]
     #[allow(clippy::should_implement_trait)]

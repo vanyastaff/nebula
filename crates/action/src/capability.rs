@@ -20,7 +20,7 @@ pub trait ResourceAccessor: Send + Sync {
     /// Acquire a resource by key.
     ///
     /// Returns a type-erased instance that action code can downcast.
-    async fn acquire(&self, key: &str) -> Result<Box<dyn Any + Send + Sync>, ActionError>;
+    async fn acquire(&self, key: &str) -> Result<Box<dyn Any + Send>, ActionError>;
 
     /// Check whether a resource exists for the given key.
     async fn exists(&self, key: &str) -> bool;
@@ -111,7 +111,7 @@ pub struct NoopResourceAccessor;
 
 #[async_trait]
 impl ResourceAccessor for NoopResourceAccessor {
-    async fn acquire(&self, _key: &str) -> Result<Box<dyn Any + Send + Sync>, ActionError> {
+    async fn acquire(&self, _key: &str) -> Result<Box<dyn Any + Send>, ActionError> {
         Err(ActionError::fatal(
             "resource capability is not configured in ActionContext",
         ))

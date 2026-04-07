@@ -55,15 +55,6 @@ pub enum Error {
     #[error("Webhook signature verification failed")]
     SignatureInvalid,
 
-    /// Request rate limit exceeded for this webhook path.
-    #[error("rate limited, retry after {retry_after_secs}s")]
-    RateLimited {
-        /// The rate-limited path (available for programmatic use, not shown in Display).
-        path: String,
-        /// Seconds until the limit resets.
-        retry_after_secs: u64,
-    },
-
     /// Operation was cancelled
     #[error("Operation was cancelled")]
     Cancelled,
@@ -95,7 +86,6 @@ impl nebula_error::Classify for Error {
             Self::RouteNotFound { .. } => nebula_error::ErrorCategory::NotFound,
             Self::TriggerFailed(_) => nebula_error::ErrorCategory::External,
             Self::SignatureInvalid => nebula_error::ErrorCategory::Authentication,
-            Self::RateLimited { .. } => nebula_error::ErrorCategory::RateLimit,
             Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
             Self::Resource(e) => nebula_error::Classify::category(e),
             Self::Timeout { .. } => nebula_error::ErrorCategory::Timeout,
@@ -114,7 +104,6 @@ impl nebula_error::Classify for Error {
             Self::TriggerFailed(_) => "WEBHOOK:TRIGGER_FAILED",
             Self::PayloadParse(_) => "WEBHOOK:PAYLOAD_PARSE",
             Self::SignatureInvalid => "WEBHOOK:SIGNATURE_INVALID",
-            Self::RateLimited { .. } => "WEBHOOK:RATE_LIMITED",
             Self::Cancelled => "WEBHOOK:CANCELLED",
             Self::Resource(_) => "WEBHOOK:RESOURCE",
             Self::Timeout { .. } => "WEBHOOK:TIMEOUT",
@@ -123,10 +112,8 @@ impl nebula_error::Classify for Error {
     }
 
     fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            Self::Timeout { .. } | Self::TriggerFailed(_) | Self::RateLimited { .. }
-        ) || matches!(self, Self::Resource(e) if nebula_error::Classify::is_retryable(e))
+        matches!(self, Self::Timeout { .. } | Self::TriggerFailed(_))
+            || matches!(self, Self::Resource(e) if nebula_error::Classify::is_retryable(e))
     }
 }
 
@@ -172,23 +159,6 @@ impl Error {
     /// Create a timeout error
     pub fn timeout(seconds: u64) -> Self {
         Self::Timeout { seconds }
-    }
-
-    /// Create a signature invalid error
-    ///
-    /// The `_reason` parameter is accepted for call-site documentation
-    /// purposes but is not embedded in the error display to avoid leaking
-    /// verification details in logs.
-    pub fn signature_invalid(_reason: impl Into<String>) -> Self {
-        Self::SignatureInvalid
-    }
-
-    /// Create a rate limited error
-    pub fn rate_limited(path: impl Into<String>, retry_after_secs: u64) -> Self {
-        Self::RateLimited {
-            path: path.into(),
-            retry_after_secs,
-        }
     }
 
     /// Create a generic error

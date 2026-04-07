@@ -13,7 +13,7 @@ use nebula_credential::description::CredentialDescription;
 use nebula_credential::error::CredentialError;
 use nebula_credential::pending::NoPendingState;
 use nebula_credential::resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult};
-use nebula_credential::scheme::SecretToken;
+use nebula_credential::scheme::BearerToken;
 use nebula_credential::store::{PutMode, StoredCredential};
 use nebula_credential::{CredentialResolver, CredentialStore, InMemoryStore};
 use nebula_parameter::ParameterCollection;
@@ -44,7 +44,7 @@ impl nebula_credential::state::CredentialState for ThunderingHerdState {
 struct ThunderingHerdCredential;
 
 impl Credential for ThunderingHerdCredential {
-    type Scheme = SecretToken;
+    type Scheme = BearerToken;
     type State = ThunderingHerdState;
     type Pending = NoPendingState;
 
@@ -65,7 +65,6 @@ impl Credential for ThunderingHerdCredential {
             icon_url: None,
             documentation_url: None,
             properties: Self::parameters(),
-            pattern: nebula_core::AuthPattern::SecretToken,
         }
     }
 
@@ -73,8 +72,8 @@ impl Credential for ThunderingHerdCredential {
         ParameterCollection::new()
     }
 
-    fn project(state: &ThunderingHerdState) -> SecretToken {
-        SecretToken::new(SecretString::new(state.token.clone()))
+    fn project(state: &ThunderingHerdState) -> BearerToken {
+        BearerToken::new(SecretString::new(state.token.clone()))
     }
 
     async fn resolve(
@@ -152,7 +151,7 @@ async fn only_one_refresh_under_concurrent_access() {
     // Verify all callers got the refreshed token
     for result in &results {
         let handle = result.as_ref().unwrap().as_ref().unwrap();
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
         assert_eq!(value, "refreshed-token");
     }
 

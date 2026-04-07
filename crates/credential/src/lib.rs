@@ -24,7 +24,7 @@
 //! ```rust,ignore
 //! use nebula_credential::{
 //!     Credential, CredentialStore, InMemoryStore,
-//!     ApiKeyCredential, SecretToken,
+//!     ApiKeyCredential, BearerToken,
 //! };
 //! ```
 #![deny(unsafe_code)]
@@ -98,8 +98,8 @@ pub mod resolver;
 // ── Root re-exports ─────────────────────────────────────────────────────────
 // Commonly-used types available directly as `nebula_credential::TypeName`.
 
-// Derive macros
-pub use nebula_credential_macros::{AuthScheme, Credential};
+// Derive macro
+pub use nebula_credential_macros::Credential;
 
 // Any-credential object-safe supertrait
 pub use crate::any::AnyCredential;
@@ -112,7 +112,7 @@ pub use crate::error::{
 };
 pub use crate::metadata::CredentialMetadata;
 pub use crate::snapshot::{CredentialSnapshot, SnapshotError};
-pub use nebula_core::{AuthPattern, AuthScheme, CredentialEvent, CredentialId};
+pub use nebula_core::{CredentialEvent, CredentialId};
 
 // Utils - crypto
 pub use crate::crypto::{EncryptedData, EncryptionKey, decrypt, encrypt};
@@ -136,10 +136,11 @@ pub use static_protocol::StaticProtocol;
 // v2: Credential state
 pub use state::CredentialState;
 
-// v2: Auth schemes (universal types)
+// v2: Auth schemes
 pub use scheme::{
-    Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion, IdentityPassword,
-    InstanceBinding, KeyPair, OAuth2Token, OtpSeed, SecretToken, SharedKey, SigningKey,
+    ApiKeyAuth, AwsAuth, BasicAuth, BearerToken, CertificateAuth, DatabaseAuth, HeaderAuth,
+    HmacSecret, KerberosAuth, LdapAuth, LdapBindMethod, LdapTlsMode, OAuth2Token, SamlAuth,
+    SshAuth, SshAuthMethod, SslMode,
 };
 
 // v2: Pending state
@@ -151,7 +152,8 @@ pub use pending_store_memory::InMemoryPendingStore;
 
 // v2: Built-in credential implementations
 pub use credentials::{
-    ApiKeyCredential, BasicAuthCredential, OAuth2Credential, OAuth2Pending, OAuth2State,
+    ApiKeyCredential, BasicAuthCredential, DatabaseCredential, HeaderAuthCredential,
+    OAuth2Credential, OAuth2Pending, OAuth2State,
 };
 
 // v2: Typed handle

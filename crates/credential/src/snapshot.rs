@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```
-//! use nebula_core::{AuthScheme, AuthPattern};
+//! use nebula_core::AuthScheme;
 //! use nebula_credential::{CredentialMetadata, CredentialSnapshot};
 //! use serde::{Deserialize, Serialize};
 //!
@@ -17,7 +17,7 @@
 //! struct MyToken { value: String }
 //!
 //! impl AuthScheme for MyToken {
-//!     fn pattern() -> AuthPattern { AuthPattern::SecretToken }
+//!     const KIND: &'static str = "my_token";
 //! }
 //!
 //! let snapshot = CredentialSnapshot::new(
@@ -27,7 +27,7 @@
 //! );
 //!
 //! assert_eq!(snapshot.kind(), "api_key");
-//! assert_eq!(snapshot.scheme_pattern(), "SecretToken");
+//! assert_eq!(snapshot.scheme_kind(), "my_token");
 //!
 //! let token = snapshot.project::<MyToken>().unwrap();
 //! assert_eq!(token.value, "secret");
@@ -40,7 +40,7 @@
 //! ```ignore
 //! // In the runtime's CredentialAccessor implementation:
 //! let handle = resolver.resolve::<ApiKeyCredential>(id).await?;
-//! let scheme: Arc<SecretToken> = handle.snapshot();
+//! let scheme: Arc<BearerToken> = handle.snapshot();
 //! let snapshot = CredentialSnapshot::new(
 //!     ApiKeyCredential::KEY,
 //!     metadata,
@@ -65,11 +65,11 @@ use crate::metadata::CredentialMetadata;
 #[non_exhaustive]
 pub enum SnapshotError {
     /// The requested scheme type does not match the projected type.
-    #[error("scheme mismatch: expected pattern `{expected}`, got `{actual}`")]
+    #[error("scheme mismatch: expected `{expected}`, got `{actual}`")]
     SchemeMismatch {
-        /// The pattern name of the requested `AuthScheme`.
-        expected: String,
-        /// The pattern name stored in the snapshot.
+        /// The `KIND` of the requested `AuthScheme`.
+        expected: &'static str,
+        /// The `scheme_kind` stored in the snapshot.
         actual: String,
     },
 }
@@ -99,8 +99,8 @@ pub enum SnapshotError {
 pub struct CredentialSnapshot {
     /// The credential type key (e.g. `"api_key"`, `"oauth2"`).
     kind: String,
-    /// The scheme pattern name from `AuthScheme::pattern()` (e.g. `"SecretToken"`, `"OAuth2"`).
-    scheme_pattern: String,
+    /// The scheme kind from `AuthScheme::KIND` (e.g. `"bearer"`, `"basic"`).
+    scheme_kind: String,
     /// Associated credential metadata.
     metadata: CredentialMetadata,
     /// Type-erased projected `AuthScheme`.
@@ -112,23 +112,21 @@ pub struct CredentialSnapshot {
 impl CredentialSnapshot {
     /// Creates a new snapshot from a credential kind, metadata, and projected scheme.
     ///
-    /// `scheme_pattern` is derived from `S::pattern()` automatically.
+    /// `scheme_kind` is derived from `S::KIND` automatically.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nebula_core::{AuthScheme, AuthPattern};
+    /// use nebula_core::AuthScheme;
     /// use nebula_credential::{CredentialMetadata, CredentialSnapshot};
     /// use serde::{Deserialize, Serialize};
     ///
     /// #[derive(Clone, Serialize, Deserialize)]
     /// struct Bearer { token: String }
-    /// impl AuthScheme for Bearer {
-    ///     fn pattern() -> AuthPattern { AuthPattern::SecretToken }
-    /// }
+    /// impl AuthScheme for Bearer { const KIND: &'static str = "bearer"; }
     ///
     /// let snap = CredentialSnapshot::new("api_key", CredentialMetadata::new(), Bearer { token: "t".into() });
-    /// assert_eq!(snap.scheme_pattern(), "SecretToken");
+    /// assert_eq!(snap.scheme_kind(), "bearer");
     /// ```
     #[must_use]
     pub fn new<S: AuthScheme>(
@@ -149,7 +147,7 @@ impl CredentialSnapshot {
 
         Self {
             kind: kind.into(),
-            scheme_pattern: format!("{:?}", S::pattern()),
+            scheme_kind: S::KIND.to_owned(),
             metadata,
             projected: Box::new(scheme),
             clone_fn: clone_projected::<S>,
@@ -166,8 +164,8 @@ impl CredentialSnapshot {
         self.projected
             .downcast_ref::<S>()
             .ok_or_else(|| SnapshotError::SchemeMismatch {
-                expected: format!("{:?}", S::pattern()),
-                actual: self.scheme_pattern.clone(),
+                expected: S::KIND,
+                actual: self.scheme_kind.clone(),
             })
     }
 
@@ -194,13 +192,12 @@ impl CredentialSnapshot {
     /// Returns [`SnapshotError::SchemeMismatch`] if `S` does not match
     /// the type originally stored.
     pub fn into_project<S: AuthScheme>(self) -> Result<S, SnapshotError> {
-        let actual = self.scheme_pattern;
         self.projected
             .downcast::<S>()
             .map(|b| *b)
             .map_err(|_| SnapshotError::SchemeMismatch {
-                expected: format!("{:?}", S::pattern()),
-                actual,
+                expected: S::KIND,
+                actual: self.scheme_kind,
             })
     }
 
@@ -210,10 +207,10 @@ impl CredentialSnapshot {
         &self.kind
     }
 
-    /// The scheme pattern name (e.g. `"SecretToken"`, `"OAuth2"`).
+    /// The scheme kind from `AuthScheme::KIND` (e.g. `"bearer"`, `"basic"`).
     #[must_use]
-    pub fn scheme_pattern(&self) -> &str {
-        &self.scheme_pattern
+    pub fn scheme_kind(&self) -> &str {
+        &self.scheme_kind
     }
 
     /// Associated credential metadata.
@@ -227,7 +224,7 @@ impl Clone for CredentialSnapshot {
     fn clone(&self) -> Self {
         Self {
             kind: self.kind.clone(),
-            scheme_pattern: self.scheme_pattern.clone(),
+            scheme_kind: self.scheme_kind.clone(),
             metadata: self.metadata.clone(),
             projected: (self.clone_fn)(&*self.projected),
             clone_fn: self.clone_fn,
@@ -239,7 +236,7 @@ impl fmt::Debug for CredentialSnapshot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CredentialSnapshot")
             .field("kind", &self.kind)
-            .field("scheme_pattern", &self.scheme_pattern)
+            .field("scheme_kind", &self.scheme_kind)
             .field("metadata", &self.metadata)
             .field("projected", &"[REDACTED]")
             .finish()
@@ -250,97 +247,101 @@ impl fmt::Debug for CredentialSnapshot {
 mod tests {
     use super::*;
     use crate::metadata::CredentialMetadata;
-    use crate::scheme::{ConnectionUri, SecretToken};
+    use crate::scheme::{BearerToken, DatabaseAuth};
     use nebula_core::SecretString;
 
-    fn token_snapshot() -> CredentialSnapshot {
+    fn bearer_snapshot() -> CredentialSnapshot {
         CredentialSnapshot::new(
             "api_key",
             CredentialMetadata::new(),
-            SecretToken::new(SecretString::new("test-token")),
+            BearerToken::new(SecretString::new("test-token")),
         )
     }
 
     #[test]
     fn project_returns_correct_type() {
-        let snap = token_snapshot();
-        let token = snap.project::<SecretToken>();
+        let snap = bearer_snapshot();
+        let token = snap.project::<BearerToken>();
         assert!(token.is_ok());
         token
             .unwrap()
-            .token()
+            .expose()
             .expose_secret(|t| assert_eq!(t, "test-token"));
     }
 
     #[test]
     fn project_wrong_type_returns_error() {
-        let snap = token_snapshot();
-        let result = snap.project::<ConnectionUri>();
+        let snap = bearer_snapshot();
+        let result = snap.project::<DatabaseAuth>();
         assert!(result.is_err());
         let err = result.unwrap_err();
         match &err {
             SnapshotError::SchemeMismatch { expected, actual } => {
-                assert_eq!(expected, "ConnectionUri");
-                assert_eq!(actual, "SecretToken");
+                assert_eq!(*expected, "database");
+                assert_eq!(actual, "bearer");
             }
         }
         // Verify error message
-        assert!(err.to_string().contains("ConnectionUri"));
-        assert!(err.to_string().contains("SecretToken"));
+        assert!(err.to_string().contains("database"));
+        assert!(err.to_string().contains("bearer"));
     }
 
     #[test]
     fn into_project_consumes_and_returns() {
-        let snap = token_snapshot();
-        let token = snap.into_project::<SecretToken>();
+        let snap = bearer_snapshot();
+        let token = snap.into_project::<BearerToken>();
         assert!(token.is_ok());
         token
             .unwrap()
-            .token()
+            .expose()
             .expose_secret(|t| assert_eq!(t, "test-token"));
     }
 
     #[test]
     fn kind_and_metadata_accessors() {
-        let snap = token_snapshot();
+        let snap = bearer_snapshot();
         assert_eq!(snap.kind(), "api_key");
-        assert_eq!(snap.scheme_pattern(), "SecretToken");
+        assert_eq!(snap.scheme_kind(), "bearer");
         assert_eq!(snap.metadata().version, 1);
     }
 
     #[test]
     fn into_project_wrong_type_returns_error() {
-        let snap = token_snapshot();
-        let result = snap.into_project::<ConnectionUri>();
+        let snap = bearer_snapshot();
+        let result = snap.into_project::<DatabaseAuth>();
         assert!(result.is_err());
         let err = result.unwrap_err();
-        match &err {
-            SnapshotError::SchemeMismatch { expected, .. } => {
-                assert_eq!(expected, "ConnectionUri");
+        assert!(matches!(
+            err,
+            SnapshotError::SchemeMismatch {
+                expected: "database",
+                ..
             }
-        }
+        ));
     }
 
     #[test]
     fn is_returns_true_for_matching_type() {
-        let snap = token_snapshot();
-        assert!(snap.is::<SecretToken>());
-        assert!(!snap.is::<ConnectionUri>());
+        let snap = bearer_snapshot();
+        assert!(snap.is::<BearerToken>());
+        assert!(!snap.is::<DatabaseAuth>());
     }
 
     #[test]
     fn clone_preserves_projected_value() {
-        let snap = token_snapshot();
+        let snap = bearer_snapshot();
         let cloned = snap.clone();
-        let token = cloned.project::<SecretToken>().unwrap();
-        token.token().expose_secret(|t| assert_eq!(t, "test-token"));
+        let token = cloned.project::<BearerToken>().unwrap();
+        token
+            .expose()
+            .expose_secret(|t| assert_eq!(t, "test-token"));
         assert_eq!(cloned.kind(), "api_key");
-        assert_eq!(cloned.scheme_pattern(), "SecretToken");
+        assert_eq!(cloned.scheme_kind(), "bearer");
     }
 
     #[test]
     fn debug_redacts_projected_value() {
-        let snap = token_snapshot();
+        let snap = bearer_snapshot();
         let debug_output = format!("{snap:?}");
         assert!(debug_output.contains("[REDACTED]"));
         assert!(!debug_output.contains("test-token"));

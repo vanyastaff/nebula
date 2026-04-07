@@ -17,9 +17,9 @@ use nebula_core::AuthScheme;
 /// # Examples
 ///
 /// ```ignore
-/// let handle: CredentialHandle<SecretToken> = resolver.resolve::<ApiKeyCredential>("my-cred").await?;
-/// let token: Arc<SecretToken> = handle.snapshot();
-/// token.token().expose_secret(|t| request.header("Authorization", format!("Bearer {t}")));
+/// let handle: CredentialHandle<BearerToken> = resolver.resolve::<ApiKeyCredential>("my-cred").await?;
+/// let token: Arc<BearerToken> = handle.snapshot();
+/// request.header("Authorization", token.bearer_header());
 /// ```
 pub struct CredentialHandle<S: AuthScheme> {
     scheme: ArcSwap<S>,
@@ -82,29 +82,29 @@ impl<S: AuthScheme + std::fmt::Debug> std::fmt::Debug for CredentialHandle<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scheme::SecretToken;
+    use crate::scheme::BearerToken;
     use nebula_core::SecretString;
 
     #[test]
     fn snapshot_returns_current_scheme() {
-        let token = SecretToken::new(SecretString::new("abc"));
+        let token = BearerToken::new(SecretString::new("abc"));
         let handle = CredentialHandle::new(token, "cred-1");
 
         let snapshot = handle.snapshot();
-        let value = snapshot.token().expose_secret(|s| s.to_owned());
+        let value = snapshot.expose().expose_secret(|s| s.to_owned());
         assert_eq!(value, "abc");
     }
 
     #[test]
     fn credential_id_is_preserved() {
-        let token = SecretToken::new(SecretString::new("x"));
+        let token = BearerToken::new(SecretString::new("x"));
         let handle = CredentialHandle::new(token, "my-cred-id");
         assert_eq!(handle.credential_id(), "my-cred-id");
     }
 
     #[test]
     fn clone_creates_independent_handle() {
-        let token = SecretToken::new(SecretString::new("shared"));
+        let token = BearerToken::new(SecretString::new("shared"));
         let handle = CredentialHandle::new(token, "c1");
         let cloned = handle.clone();
 
@@ -112,33 +112,33 @@ mod tests {
         assert!(Arc::ptr_eq(&handle.snapshot(), &cloned.snapshot()));
 
         // Replacing on one does not affect the other (independent ArcSwap)
-        handle.replace(SecretToken::new(SecretString::new("updated")));
-        let orig_val = handle.snapshot().token().expose_secret(|s| s.to_owned());
-        let clone_val = cloned.snapshot().token().expose_secret(|s| s.to_owned());
+        handle.replace(BearerToken::new(SecretString::new("updated")));
+        let orig_val = handle.snapshot().expose().expose_secret(|s| s.to_owned());
+        let clone_val = cloned.snapshot().expose().expose_secret(|s| s.to_owned());
         assert_eq!(orig_val, "updated");
         assert_eq!(clone_val, "shared");
     }
 
     #[test]
     fn replace_swaps_auth_material() {
-        let token = SecretToken::new(SecretString::new("original"));
+        let token = BearerToken::new(SecretString::new("original"));
         let handle = CredentialHandle::new(token, "cred-1");
 
         let snap1 = handle.snapshot();
-        assert_eq!(snap1.token().expose_secret(|s| s.to_owned()), "original");
+        assert_eq!(snap1.expose().expose_secret(|s| s.to_owned()), "original");
 
-        handle.replace(SecretToken::new(SecretString::new("refreshed")));
+        handle.replace(BearerToken::new(SecretString::new("refreshed")));
 
         let snap2 = handle.snapshot();
-        assert_eq!(snap2.token().expose_secret(|s| s.to_owned()), "refreshed");
+        assert_eq!(snap2.expose().expose_secret(|s| s.to_owned()), "refreshed");
 
         // Old snapshot still valid
-        assert_eq!(snap1.token().expose_secret(|s| s.to_owned()), "original");
+        assert_eq!(snap1.expose().expose_secret(|s| s.to_owned()), "original");
     }
 
     #[test]
     fn debug_includes_credential_id() {
-        let token = SecretToken::new(SecretString::new("secret"));
+        let token = BearerToken::new(SecretString::new("secret"));
         let handle = CredentialHandle::new(token, "debug-test");
         let debug = format!("{handle:?}");
         assert!(debug.contains("debug-test"));

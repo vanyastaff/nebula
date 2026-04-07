@@ -20,8 +20,6 @@ pub fn can_transition_execution(from: ExecutionStatus, to: ExecutionStatus) -> b
             | (ExecutionStatus::Paused, ExecutionStatus::Cancelling)
             | (ExecutionStatus::Cancelling, ExecutionStatus::Cancelled)
             | (ExecutionStatus::Cancelling, ExecutionStatus::Failed)
-            | (ExecutionStatus::Cancelling, ExecutionStatus::Completed)
-            | (ExecutionStatus::Cancelling, ExecutionStatus::TimedOut)
     )
 }
 
@@ -107,22 +105,6 @@ mod tests {
         ));
         assert!(can_transition_execution(
             ExecutionStatus::Running,
-            ExecutionStatus::TimedOut
-        ));
-    }
-
-    #[test]
-    fn cancelling_can_transition_to_completed() {
-        assert!(can_transition_execution(
-            ExecutionStatus::Cancelling,
-            ExecutionStatus::Completed
-        ));
-    }
-
-    #[test]
-    fn cancelling_can_transition_to_timed_out() {
-        assert!(can_transition_execution(
-            ExecutionStatus::Cancelling,
             ExecutionStatus::TimedOut
         ));
     }

@@ -18,6 +18,7 @@ default = []
 # Nebula ecosystem
 nebula-core = { path = "../core" }
 nebula-metrics = { path = "../metrics" }
+nebula-parameter = { path = "../parameter" }
 nebula-resilience = { path = "../resilience" }
 nebula-resource-macros = { path = "macros" }
 nebula-telemetry = { path = "../telemetry" }
@@ -30,6 +31,7 @@ tokio-util = { workspace = true }
 nebula-error = { workspace = true }
 arc-swap = { workspace = true }
 dashmap = { workspace = true }
+parking_lot = { workspace = true }
 smallvec = { workspace = true }
 tracing = { workspace = true }
 

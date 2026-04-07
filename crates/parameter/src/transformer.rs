@@ -3,27 +3,9 @@
 //! Transformers operate on [`serde_json::Value`] and are composable via
 //! [`Transformer::Chain`] and [`Transformer::FirstMatch`].
 
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
-
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-/// Module-level cache for compiled regex patterns. Avoids recompilation
-/// on every `Transformer::Regex::apply()` call.
-static REGEX_CACHE: LazyLock<Mutex<HashMap<String, Option<Regex>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-fn get_or_compile_regex(pattern: &str) -> Option<Regex> {
-    let mut cache = REGEX_CACHE.lock().expect("regex cache poisoned");
-    if let Some(cached) = cache.get(pattern) {
-        return cached.clone();
-    }
-    let compiled = Regex::new(pattern).ok();
-    cache.insert(pattern.to_string(), compiled.clone());
-    compiled
-}
 
 /// Returns the default capture group index for regex transformers.
 fn default_group() -> usize {
@@ -152,7 +134,7 @@ impl Transformer {
                 let Some(s) = value.as_str() else {
                     return value.clone();
                 };
-                let Some(re) = get_or_compile_regex(pattern) else {
+                let Ok(re) = Regex::new(pattern) else {
                     return value.clone();
                 };
                 match re.captures(s) {

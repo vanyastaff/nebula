@@ -23,7 +23,7 @@ pub enum ParameterError {
     },
 
     /// A parameter with the given key already exists.
-    #[classify(category = "conflict", code = "PARAM_ALREADY_EXISTS")]
+    #[classify(category = "not_found", code = "PARAM_ALREADY_EXISTS")]
     #[error("parameter already exists: `{key}`")]
     AlreadyExists {
         /// The duplicate key.
@@ -102,6 +102,49 @@ pub enum ParameterError {
 }
 
 impl ParameterError {
+    /// Broad error category for grouping in logs and metrics.
+    #[must_use]
+    pub fn category(&self) -> &str {
+        match self {
+            Self::InvalidKeyFormat { .. } => "format",
+            Self::NotFound { .. } => "lookup",
+            Self::AlreadyExists { .. } => "lookup",
+            Self::InvalidType { .. } => "type",
+            Self::InvalidValue { .. } => "value",
+            Self::MissingValue { .. } => "value",
+            Self::UnknownField { .. } => "value",
+            Self::ValidationIssue { .. } => "validation",
+            Self::DeserializationError { .. } => "serialization",
+            Self::SerializationError { .. } => "serialization",
+        }
+    }
+
+    /// Machine-readable error code for programmatic handling.
+    #[must_use]
+    pub fn code(&self) -> &str {
+        match self {
+            Self::InvalidKeyFormat { .. } => "PARAM_INVALID_KEY",
+            Self::NotFound { .. } => "PARAM_NOT_FOUND",
+            Self::AlreadyExists { .. } => "PARAM_ALREADY_EXISTS",
+            Self::InvalidType { .. } => "PARAM_INVALID_TYPE",
+            Self::InvalidValue { .. } => "PARAM_INVALID_VALUE",
+            Self::MissingValue { .. } => "PARAM_MISSING_VALUE",
+            Self::UnknownField { .. } => "PARAM_UNKNOWN_FIELD",
+            Self::ValidationIssue { .. } => "PARAM_VALIDATION_ISSUE",
+            Self::DeserializationError { .. } => "PARAM_DESER",
+            Self::SerializationError { .. } => "PARAM_SER",
+        }
+    }
+
+    /// Whether the operation might succeed if retried with the same input.
+    ///
+    /// All parameter errors are deterministic — same input, same result.
+    /// Returns `false` for every variant.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        false
+    }
+
     /// Returns structured validation code when available.
     #[must_use]
     pub fn validation_code(&self) -> Option<&str> {
@@ -203,51 +246,117 @@ mod tests {
     }
 
     #[test]
-    fn classify_categories_are_correct() {
-        use nebula_error::Classify;
+    fn categories_are_consistent() {
+        let cases: Vec<(ParameterError, &str)> = vec![
+            (
+                ParameterError::InvalidKeyFormat {
+                    key: String::new(),
+                    reason: String::new(),
+                },
+                "format",
+            ),
+            (ParameterError::NotFound { key: String::new() }, "lookup"),
+            (
+                ParameterError::AlreadyExists { key: String::new() },
+                "lookup",
+            ),
+            (
+                ParameterError::InvalidType {
+                    key: String::new(),
+                    expected_type: String::new(),
+                    actual_details: String::new(),
+                },
+                "type",
+            ),
+            (
+                ParameterError::InvalidValue {
+                    key: String::new(),
+                    reason: String::new(),
+                },
+                "value",
+            ),
+            (ParameterError::MissingValue { key: String::new() }, "value"),
+            (ParameterError::UnknownField { key: String::new() }, "value"),
+            (
+                ParameterError::ValidationIssue {
+                    key: String::new(),
+                    code: String::new(),
+                    reason: String::new(),
+                    params: Vec::new(),
+                },
+                "validation",
+            ),
+            (
+                ParameterError::DeserializationError {
+                    key: String::new(),
+                    error: String::new(),
+                },
+                "serialization",
+            ),
+            (
+                ParameterError::SerializationError {
+                    error: String::new(),
+                },
+                "serialization",
+            ),
+        ];
 
-        let not_found = ParameterError::NotFound { key: "x".into() };
-        assert_eq!(not_found.category().as_str(), "not_found");
-
-        let already = ParameterError::AlreadyExists { key: "x".into() };
-        assert_eq!(already.category().as_str(), "conflict");
-
-        let invalid = ParameterError::InvalidValue {
-            key: "x".into(),
-            reason: "bad".into(),
-        };
-        assert_eq!(invalid.category().as_str(), "validation");
+        for (err, expected_cat) in &cases {
+            assert_eq!(err.category(), *expected_cat, "for {:?}", err);
+        }
     }
 
     #[test]
-    fn classify_codes_start_with_param() {
-        use nebula_error::Classify;
-
-        let errors: Vec<ParameterError> = vec![
+    fn codes_are_unique_per_variant() {
+        let errors = vec![
             ParameterError::InvalidKeyFormat {
                 key: String::new(),
                 reason: String::new(),
             },
             ParameterError::NotFound { key: String::new() },
             ParameterError::AlreadyExists { key: String::new() },
+            ParameterError::InvalidType {
+                key: String::new(),
+                expected_type: String::new(),
+                actual_details: String::new(),
+            },
+            ParameterError::InvalidValue {
+                key: String::new(),
+                reason: String::new(),
+            },
+            ParameterError::MissingValue { key: String::new() },
+            ParameterError::ValidationIssue {
+                key: String::new(),
+                code: String::new(),
+                reason: String::new(),
+                params: Vec::new(),
+            },
+            ParameterError::DeserializationError {
+                key: String::new(),
+                error: String::new(),
+            },
             ParameterError::SerializationError {
                 error: String::new(),
             },
         ];
 
-        for err in &errors {
-            let code = err.code();
+        let codes: Vec<&str> = errors.iter().map(|e| e.code()).collect();
+
+        for code in &codes {
             assert!(
-                code.as_str().starts_with("PARAM_"),
+                code.starts_with("PARAM_"),
                 "code should start with PARAM_: {code}"
             );
         }
+
+        let mut sorted = codes.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), codes.len(), "codes should be unique");
     }
 
     #[test]
     fn none_are_retryable() {
-        use nebula_error::Classify;
-
         let errors = vec![
             ParameterError::InvalidKeyFormat {
                 key: String::new(),
