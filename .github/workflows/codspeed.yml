@@ -64,7 +64,6 @@ jobs:
             -p nebula-eventbus \
             -p nebula-expression \
             -p nebula-log \
-            -p nebula-memory \
             -p nebula-resilience \
             -p nebula-system \
             -p nebula-validator
