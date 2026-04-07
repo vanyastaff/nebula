@@ -122,6 +122,9 @@ fn attr_value_to_default_expr(val: &attrs::AttrValue, ty: &syn::Type) -> proc_ma
         attrs::AttrValue::Lit(syn::Lit::Int(i)) => {
             quote! { #i }
         }
+        attrs::AttrValue::Lit(syn::Lit::Float(f)) => {
+            quote! { #f }
+        }
         attrs::AttrValue::Lit(syn::Lit::Bool(b)) => {
             let v = b.value;
             quote! { #v }
