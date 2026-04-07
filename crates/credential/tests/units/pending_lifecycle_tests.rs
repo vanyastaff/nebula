@@ -16,7 +16,7 @@ use nebula_credential::pending_store_memory::InMemoryPendingStore;
 use nebula_credential::resolve::{
     DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput,
 };
-use nebula_credential::scheme::BearerToken;
+use nebula_credential::scheme::SecretToken;
 use nebula_parameter::ParameterCollection;
 use nebula_parameter::values::ParameterValues;
 
@@ -58,7 +58,7 @@ impl nebula_credential::state::CredentialState for TestInteractiveState {
 struct InteractiveTestCredential;
 
 impl Credential for InteractiveTestCredential {
-    type Scheme = BearerToken;
+    type Scheme = SecretToken;
     type State = TestInteractiveState;
     type Pending = TestPending;
 
@@ -81,8 +81,8 @@ impl Credential for InteractiveTestCredential {
         ParameterCollection::new()
     }
 
-    fn project(state: &TestInteractiveState) -> BearerToken {
-        BearerToken::new(SecretString::new(state.token.clone()))
+    fn project(state: &TestInteractiveState) -> SecretToken {
+        SecretToken::new(SecretString::new(state.token.clone()))
     }
 
     async fn resolve(

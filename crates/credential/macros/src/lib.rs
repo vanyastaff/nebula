@@ -39,8 +39,8 @@ mod credential;
 /// #[credential(
 ///     key = "postgres",
 ///     name = "PostgreSQL",
-///     scheme = DatabaseAuth,
-///     protocol = DatabaseProtocol,
+///     scheme = ConnectionUri,
+///     protocol = PostgresProtocol,
 ///     icon = "postgres",
 /// )]
 /// pub struct PostgresCredential;

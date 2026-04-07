@@ -24,7 +24,7 @@
 //! ```rust,ignore
 //! use nebula_credential::{
 //!     Credential, CredentialStore, InMemoryStore,
-//!     ApiKeyCredential, BearerToken,
+//!     ApiKeyCredential, SecretToken,
 //! };
 //! ```
 #![deny(unsafe_code)]
@@ -136,11 +136,10 @@ pub use static_protocol::StaticProtocol;
 // v2: Credential state
 pub use state::CredentialState;
 
-// v2: Auth schemes
+// v2: Auth schemes (universal types)
 pub use scheme::{
-    ApiKeyAuth, AwsAuth, BasicAuth, BearerToken, CertificateAuth, DatabaseAuth, HeaderAuth,
-    HmacSecret, KerberosAuth, LdapAuth, LdapBindMethod, LdapTlsMode, OAuth2Token, SamlAuth,
-    SshAuth, SshAuthMethod, SslMode,
+    Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion, IdentityPassword,
+    InstanceBinding, KeyPair, OAuth2Token, OtpSeed, SecretToken, SharedKey, SigningKey,
 };
 
 // v2: Pending state
@@ -152,8 +151,7 @@ pub use pending_store_memory::InMemoryPendingStore;
 
 // v2: Built-in credential implementations
 pub use credentials::{
-    ApiKeyCredential, BasicAuthCredential, DatabaseCredential, HeaderAuthCredential,
-    OAuth2Credential, OAuth2Pending, OAuth2State,
+    ApiKeyCredential, BasicAuthCredential, OAuth2Credential, OAuth2Pending, OAuth2State,
 };
 
 // v2: Typed handle

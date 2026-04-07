@@ -144,7 +144,7 @@ impl ActionContext {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// let token: BearerToken = ctx.credential_typed::<BearerToken>("api_key").await?;
+    /// let token: SecretToken = ctx.credential_typed::<SecretToken>("api_key").await?;
     /// ```
     pub async fn credential_typed<S: AuthScheme>(&self, id: &str) -> Result<S, ActionError> {
         let snapshot = self.credentials.get(id).await?;
@@ -305,7 +305,7 @@ mod tests {
 
     use async_trait::async_trait;
     use nebula_credential::{
-        BearerToken, CredentialMetadata, CredentialSnapshot, DatabaseAuth, SecretString,
+        CredentialMetadata, CredentialSnapshot, SecretString, SecretToken, scheme::ConnectionUri,
     };
 
     use crate::capability::{ActionLogLevel, ActionLogger, ExecutionEmitter, TriggerScheduler};
@@ -382,7 +382,7 @@ mod tests {
             Ok(CredentialSnapshot::new(
                 "api_key",
                 CredentialMetadata::new(),
-                BearerToken::new(SecretString::new("test-token")),
+                SecretToken::new(SecretString::new("test-token")),
             ))
         }
 
@@ -425,13 +425,11 @@ mod tests {
         )
         .with_credentials(Arc::new(TestCredentialAccessor));
 
-        let token: BearerToken = ctx
-            .credential_typed::<BearerToken>("api_key")
+        let token: SecretToken = ctx
+            .credential_typed::<SecretToken>("api_key")
             .await
             .unwrap();
-        token
-            .expose()
-            .expose_secret(|t| assert_eq!(t, "test-token"));
+        token.token().expose_secret(|t| assert_eq!(t, "test-token"));
     }
 
     #[tokio::test]
@@ -444,7 +442,7 @@ mod tests {
         )
         .with_credentials(Arc::new(TestCredentialAccessor));
 
-        let result = ctx.credential_typed::<DatabaseAuth>("api_key").await;
+        let result = ctx.credential_typed::<ConnectionUri>("api_key").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.is_fatal());
@@ -456,13 +454,11 @@ mod tests {
         let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new())
             .with_credentials(Arc::new(TestCredentialAccessor));
 
-        let token: BearerToken = ctx
-            .credential_typed::<BearerToken>("api_key")
+        let token: SecretToken = ctx
+            .credential_typed::<SecretToken>("api_key")
             .await
             .unwrap();
-        token
-            .expose()
-            .expose_secret(|t| assert_eq!(t, "test-token"));
+        token.token().expose_secret(|t| assert_eq!(t, "test-token"));
     }
 
     #[tokio::test]
@@ -470,7 +466,7 @@ mod tests {
         let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new())
             .with_credentials(Arc::new(TestCredentialAccessor));
 
-        let result = ctx.credential_typed::<DatabaseAuth>("api_key").await;
+        let result = ctx.credential_typed::<ConnectionUri>("api_key").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.is_fatal());

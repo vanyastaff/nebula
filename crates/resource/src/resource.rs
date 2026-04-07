@@ -107,8 +107,8 @@ pub trait Resource: Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + Into<crate::Error> + 'static;
     /// Authentication scheme resolved by the credential system.
     ///
-    /// Declares what auth material this resource needs (e.g., `BearerToken`,
-    /// `DatabaseAuth`). Use `()` for resources that require no authentication.
+    /// Declares what auth material this resource needs (e.g., `SecretToken`,
+    /// `IdentityPassword`). Use `()` for resources that require no authentication.
     type Auth: AuthScheme;
 
     /// Returns the unique key identifying this resource type.

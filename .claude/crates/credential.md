@@ -5,22 +5,19 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - Credentials always encrypted at rest (AES-256-GCM). `SecretString` zeroizes on drop.
 - No direct import with nebula-resource — use EventBus.
 - All `AuthScheme` `Debug` impls redact secrets.
-- Error hierarchy: `CredentialError` + `StoreError` + `SnapshotError`. No `StorageError`/`ManagerError`.
-- `CredentialSnapshot` carries `Box<dyn Any + Send + Sync>`. Fields private — use `project::<S>()`/`into_project::<S>()`.
+- Schemes use `fn pattern() -> AuthPattern` — not `const KIND`.
 
 ## Key Decisions
-- Subfolders only: `scheme/`, `credentials/`, `layer/`, `rotation/`. No `utils/` or `core/`.
-- `SecretString` lives in nebula-core; re-exported here. Serde: `nebula_core::serde_secret` / `nebula_core::option_serde_secret`.
-- Schemes use `fn pattern() -> AuthPattern` — not `const KIND`.
-- Rotation module: feature-gated (`rotation`), disconnected from v2 `Credential` trait.
-- `OAuth2State.auth_style` preserved from initial exchange for correct refresh.
+- Subfolders: `scheme/`, `credentials/`, `layer/`, `rotation/`.
+- `SecretString` in nebula-core; serde via `serde_secret` / `option_serde_secret`.
+- Rotation: feature-gated (`rotation`), disconnected from v2 `Credential` trait.
+- `SnapshotError::SchemeMismatch.expected` is `String` (pattern has no static str).
+- identity_state kinds: `"secret_token"`, `"identity_password"`.
 
 ## Traps
-- `CredentialSnapshot::into_project::<S>()` consumes self — type mismatch loses it. Use `project::<S>()` (borrow) first.
-- `CredentialHandle::Clone` creates independent `ArcSwap` — clones don't see rotation updates. Share via `Arc<CredentialHandle<S>>`.
-- `verify_owner` fail-closed: credentials without `owner_id` in metadata are admin-only.
-- `InMemoryStore` CAS on missing row creates instead of NotFound (B10, open).
-- `bearer.rs` still uses `const KIND` — fails to compile until Task 7 wires `scheme/mod.rs`.
-- `option_serde_secret` module exists in nebula-core (credential-v3 branch) for `Option<SecretString>` fields.
+- `into_project::<S>()` consumes snapshot — use `project::<S>()` first to verify type.
+- `CredentialHandle::Clone` creates independent `ArcSwap` — share via `Arc<CredentialHandle<S>>`.
+- `InMemoryStore` CAS on missing row creates instead of NotFound.
+- CAS retry tests share global `AtomicU32` — race in parallel. Use `--test-threads=1`.
 
-<!-- reviewed: 2026-04-07 — Task 3-5: 10 new scheme files + certificate.rs (CertificateAuth→Certificate, new fields) + oauth2.rs → fn pattern(). -->
+<!-- reviewed: 2026-04-07 — Task 8: universal scheme types, deleted database/header_auth credentials. -->

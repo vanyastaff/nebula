@@ -425,7 +425,7 @@ mod tests {
     use crate::error::CredentialError;
     use crate::pending::NoPendingState;
     use crate::resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult};
-    use crate::scheme::BearerToken;
+    use crate::scheme::SecretToken;
     use nebula_parameter::ParameterCollection;
     use nebula_parameter::values::ParameterValues;
 
@@ -449,7 +449,7 @@ mod tests {
     struct RefreshableTestCredential;
 
     impl Credential for RefreshableTestCredential {
-        type Scheme = BearerToken;
+        type Scheme = SecretToken;
         type State = ExpiringState;
         type Pending = NoPendingState;
 
@@ -476,8 +476,8 @@ mod tests {
             ParameterCollection::new()
         }
 
-        fn project(state: &ExpiringState) -> BearerToken {
-            BearerToken::new(SecretString::new(state.token.clone()))
+        fn project(state: &ExpiringState) -> SecretToken {
+            SecretToken::new(SecretString::new(state.token.clone()))
         }
 
         async fn resolve(
@@ -510,7 +510,7 @@ mod tests {
             id: "my-api-key".into(),
             credential_key: "api_key".into(),
             data,
-            state_kind: "bearer".into(),
+            state_kind: "secret_token".into(),
             state_version: 1,
             version: 0,
             created_at: chrono::Utc::now(),
@@ -527,7 +527,7 @@ mod tests {
             .unwrap();
 
         let snapshot = handle.snapshot();
-        let value = snapshot.expose().expose_secret(|s| s.to_owned());
+        let value = snapshot.token().expose_secret(|s| s.to_owned());
         assert_eq!(value, "test-api-key");
         assert_eq!(handle.credential_id(), "my-api-key");
     }
@@ -575,7 +575,7 @@ mod tests {
             id: "bad-data".into(),
             credential_key: "api_key".into(),
             data: b"not-valid-json".to_vec(),
-            state_kind: "bearer".into(),
+            state_kind: "secret_token".into(),
             state_version: 1,
             version: 0,
             created_at: chrono::Utc::now(),
@@ -625,7 +625,7 @@ mod tests {
             .unwrap();
 
         // The refresh should have fired because 4 min < 5 min early_refresh
-        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
         assert_eq!(value, "refreshed-token");
     }
 
@@ -698,7 +698,7 @@ mod tests {
     struct CasRetryTestCredential;
 
     impl Credential for CasRetryTestCredential {
-        type Scheme = BearerToken;
+        type Scheme = SecretToken;
         type State = ExpiringState;
         type Pending = NoPendingState;
 
@@ -726,8 +726,8 @@ mod tests {
             ParameterCollection::new()
         }
 
-        fn project(state: &ExpiringState) -> BearerToken {
-            BearerToken::new(SecretString::new(state.token.clone()))
+        fn project(state: &ExpiringState) -> SecretToken {
+            SecretToken::new(SecretString::new(state.token.clone()))
         }
 
         async fn resolve(
@@ -785,7 +785,7 @@ mod tests {
             .unwrap();
 
         // Token should be the refreshed value despite CAS conflict
-        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
         assert_eq!(value, "refreshed-token");
 
         // Critical: refresh() must be called exactly once — the retry
@@ -880,7 +880,7 @@ mod tests {
             .unwrap();
 
         // Should NOT have refreshed -- token still valid outside the window
-        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
         assert_eq!(value, "still-valid-token");
     }
 
@@ -924,7 +924,7 @@ mod tests {
             .unwrap();
 
         // Refresh should have fired
-        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
         assert_eq!(value, "refreshed-token");
 
         // Subscriber should have received a Refreshed event
@@ -979,7 +979,7 @@ mod tests {
             .unwrap();
 
         // Should NOT have refreshed
-        let value = handle.snapshot().expose().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
         assert_eq!(value, "still-valid");
 
         // No event should be pending -- recv should time out
