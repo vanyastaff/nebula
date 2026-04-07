@@ -2,29 +2,24 @@
 Foundation shared by every other crate — IDs, domain keys, scope system, and shared traits.
 
 ## Invariants
-- Must stay small and stable. It is imported by all 25 other crates — changes cascade everywhere.
-- Adding new ID types is safe. Changing existing trait signatures is not (requires approval).
-- Keys (`PluginKey`, `ActionKey`, `ParameterKey`, etc.) are normalized lowercase ASCII with only `.`, `_`, `-` as separators. Validated by `domain-key` crate at construction.
+- Must stay small and stable. Imported by all 25 crates — changes cascade everywhere.
+- Adding new ID types is safe. Changing trait signatures requires approval.
+- Keys normalized lowercase ASCII (`.`, `_`, `-` separators), validated by `domain-key` at construction.
 
 ## Key Decisions
-- `NodeId` identifies a *position in the workflow graph*, not the action type. `ActionKey`/`PluginKey` carry type identity. `NodeDefinition.action_key` is the binding.
-- Compile-time key construction via `plugin_key!`, `action_key!`, etc. macros — validated at compile time.
-- `ScopeLevel` hierarchy: Global → Organization → Project → Workflow → Execution → Action.
-- `AuthScheme` trait lives here as a contract type between credential and resource crates. Requires `Serialize + DeserializeOwned + Send + Sync + Clone + 'static`, `const KIND: &'static str`, and provides default `expires_at() -> Option<DateTime<Utc>>`. `()` implements it for credential-free resources.
-- `SecretString` + `serde_secret` module live here (moved from nebula-credential). Fundamental secret-safe type usable by any crate (log, auth, config, webhook) without depending on credential. `Zeroize + ZeroizeOnDrop`, `Debug`/`Display` prints `[REDACTED]`, `Serialize` redacts by default, `serde_secret` for transparent storage round-trip.
-
-- `CredentialEvent` lives here (not in nebula-credential) so both emitter (credential) and consumer (resource) can use it without peer dependency. Plain enum, no EventBus dependency — the bus lives in consuming crates.
+- `NodeId` = graph position, `ActionKey`/`PluginKey` = type identity. Multiple nodes can share an `ActionKey`.
+- `BaseCtx` trait: unified base context for all subsystems (scope, org/execution/node/user/tenant/workflow IDs). Cancellation excluded (requires tokio-util) — downstream extension traits add it.
+- `AuthScheme` trait: `const KIND: &'static str` (replaced former `pattern()` method; `AuthPattern` enum removed). `()` implements it for credential-free resources.
+- `SecretString` + `serde_secret` live here — usable by any crate without depending on credential.
+- `CredentialEvent` lives here to avoid credential↔resource peer dependency.
+- `OwnerId` removed from core ID types.
 
 ## Traps
-- Confusing `NodeId` with `ActionKey`: multiple nodes can run the same action; they have different `NodeId`s but the same `ActionKey`.
-- `domain_key::KeyParseError` vs `UuidParseError` — both exported from prelude; keys and IDs have different parse error types.
-- `deps` module (`DependencyGraph` primitives) is shared across crates — don't duplicate graph logic elsewhere.
+- `NodeId` vs `ActionKey` confusion — see Key Decisions above.
+- `KeyParseError` vs `UuidParseError` — keys and IDs have different parse error types.
+- `deps` module is shared — don't duplicate graph logic elsewhere.
 
 ## Relations
-- Imported by every other nebula crate. No nebula deps of its own — only external crates (`uuid`, `domain-key`, `zeroize`, `serde`, etc.).
+- Imported by every nebula crate. No nebula deps.
 
-<!-- reviewed: 2026-04-01 — SecretString moved here from nebula-credential -->
-
-<!-- reviewed: 2026-04-02 -->
-
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
+<!-- reviewed: 2026-04-07 — BaseCtx added, AuthPattern removed, OwnerId removed, ScopeLevel derives Default -->

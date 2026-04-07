@@ -2,27 +2,22 @@
 Workflow execution orchestrator — DAG scheduler, level-by-level execution, node dispatch.
 
 ## Invariants
-- Engine sits between the user-facing API and nebula-runtime. It does not execute actions directly — it delegates to `ActionRuntime`.
-- Currently blocked: credential/resource injection not wired. Engine can schedule but cannot fully inject DI into actions yet.
+- Sits between API and nebula-runtime. Does not execute actions directly — delegates to `ActionRuntime`.
+- Resource manager wired via `with_resource_manager()`. Credential injection still not wired.
 
 ## Key Decisions
-- Execution is level-by-level: builds `ExecutionPlan` from `DependencyGraph` (from nebula-workflow), then executes each level in parallel with bounded concurrency.
-- Node inputs are resolved from predecessor outputs (output wiring). `resolver` module handles this.
-- `WorkflowEngine` re-exports `PluginRegistry` — callers register plugins into the engine, not separately.
-- `WorkflowEngine::new(runtime, metrics)` — no EventBus. Execution events removed (2026-04-04); engine records metrics only. Events will be redesigned when engine stabilizes.
+- Level-by-level execution with bounded concurrency from `ExecutionPlan`/`DependencyGraph`.
+- `resource` module bridges engine context to `nebula_resource::Manager` for per-node acquisition.
+- Execution repo removed — persistent checkpointing deferred until storage stabilizes.
+- Error handling simplified: `process_outgoing_edges` replaces former `handle_node_failure` + `ErrorStrategy`.
+- No EventBus — metrics only. Events will be redesigned when engine stabilizes.
 
 ## Traps
-- Engine is **blocked** on nebula-resource stabilization. Don't invest heavily in engine internals until resource/credential DI is stable.
-- `pub(crate) resolver` — the input resolution logic is internal. Don't expose it without design review.
-- `result::ExecutionResult` is distinct from `execution::ExecutionState`. The former is the engine's final return type; the latter is persistent state in nebula-execution.
+- Still needs credential DI (`CredentialResolver` into `ActionContext`) for end-to-end execution.
+- `pub(crate) resolver` — internal input resolution. Don't expose without design review.
+- `result::ExecutionResult` ≠ `execution::ExecutionState` (engine return type vs persistent state).
 
 ## Relations
-- Depends on nebula-workflow, nebula-execution, nebula-action, nebula-plugin, nebula-runtime. Used by nebula-api.
+- Depends on nebula-workflow, nebula-execution, nebula-action, nebula-plugin, nebula-runtime, nebula-resource. Used by nebula-api.
 
-<\!-- reviewed: 2026-03-25 -->
-
-<!-- reviewed: 2026-03-30 -->
-
-<!-- reviewed: 2026-04-02 -->
-
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
+<!-- reviewed: 2026-04-07 — resource manager wired, execution repo removed, error handling simplified -->
