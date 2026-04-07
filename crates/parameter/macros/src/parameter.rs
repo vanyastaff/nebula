@@ -6,7 +6,7 @@ use syn::parse_macro_input;
 
 use nebula_macro_support::{attrs, diag, utils};
 
-use crate::param_attrs::ParameterAttrs;
+use crate::param_attrs::{ParameterAttrs, ValidateAttrs};
 
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);
@@ -34,7 +34,20 @@ fn expand(input: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         }
 
         let attrs = ParameterAttrs::parse(&param_attrs, field_name)?;
-        let def = attrs.param_def_expr(field_type)?;
+
+        // Parse #[validate(...)] if present
+        let validate_args = attrs::parse_attrs(&field.attrs, "validate")?;
+        let validate_attrs = ValidateAttrs::parse(&validate_args)?;
+
+        let mut def = attrs.param_def_expr(field_type)?;
+
+        if validate_attrs.required {
+            def = quote! { #def.required() };
+        }
+        for rule_setter in validate_attrs.rule_exprs() {
+            def = quote! { #def #rule_setter };
+        }
+
         param_defs.push(def);
     }
 

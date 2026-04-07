@@ -53,7 +53,7 @@ mod parameter;
 ///     _internal: (),
 /// }
 /// ```
-#[proc_macro_derive(Parameters, attributes(param))]
+#[proc_macro_derive(Parameters, attributes(param, validate))]
 pub fn derive_parameters(input: TokenStream) -> TokenStream {
     parameter::derive(input)
 }

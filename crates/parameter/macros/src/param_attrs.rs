@@ -232,6 +232,86 @@ impl ParameterAttrs {
     }
 }
 
+/// Parsed `#[validate(...)]` field attributes.
+#[derive(Debug, Clone, Default)]
+pub struct ValidateAttrs {
+    /// Mark field as required.
+    pub required: bool,
+    /// Apply URL validation rule.
+    pub url: bool,
+    /// Apply email validation rule.
+    pub email: bool,
+    /// Apply minimum length rule.
+    pub min_length: Option<u64>,
+    /// Apply maximum length rule.
+    pub max_length: Option<u64>,
+    /// Apply minimum value rule.
+    pub min: Option<u64>,
+    /// Apply maximum value rule.
+    pub max: Option<u64>,
+    /// Apply pattern (regex) rule.
+    pub pattern: Option<String>,
+}
+
+impl ValidateAttrs {
+    /// Parse from `#[validate(...)]` attribute args.
+    pub fn parse(attr_args: &attrs::AttrArgs) -> Result<Self> {
+        Ok(Self {
+            required: attr_args.has_flag("required"),
+            url: attr_args.has_flag("url"),
+            email: attr_args.has_flag("email"),
+            min_length: attr_args.get_int("min_length"),
+            max_length: attr_args.get_int("max_length"),
+            min: attr_args.get_int("min"),
+            max: attr_args.get_int("max"),
+            pattern: attr_args.get_string("pattern"),
+        })
+    }
+
+    /// Generate chained `.with_rule(...)` expressions for all active rules.
+    pub fn rule_exprs(&self) -> Vec<TokenStream2> {
+        let mut rules = Vec::new();
+        if self.url {
+            rules.push(
+                quote! { .with_rule(::nebula_parameter::rules::Rule::Url { message: None }) },
+            );
+        }
+        if self.email {
+            rules.push(
+                quote! { .with_rule(::nebula_parameter::rules::Rule::Email { message: None }) },
+            );
+        }
+        if let Some(min) = self.min_length {
+            let min = min as usize;
+            rules.push(
+                quote! { .with_rule(::nebula_parameter::rules::Rule::MinLength { min: #min, message: None }) },
+            );
+        }
+        if let Some(max) = self.max_length {
+            let max = max as usize;
+            rules.push(
+                quote! { .with_rule(::nebula_parameter::rules::Rule::MaxLength { max: #max, message: None }) },
+            );
+        }
+        if let Some(min) = self.min {
+            rules.push(
+                quote! { .with_rule(::nebula_parameter::rules::Rule::Min { min: ::serde_json::Number::from(#min), message: None }) },
+            );
+        }
+        if let Some(max) = self.max {
+            rules.push(
+                quote! { .with_rule(::nebula_parameter::rules::Rule::Max { max: ::serde_json::Number::from(#max), message: None }) },
+            );
+        }
+        if let Some(pat) = &self.pattern {
+            rules.push(
+                quote! { .with_rule(::nebula_parameter::rules::Rule::Pattern { pattern: #pat.to_owned(), message: None }) },
+            );
+        }
+        rules
+    }
+}
+
 /// Unwrap `Option<T>` → (T, true). If not Option, return (ty, false).
 fn unwrap_option(ty: &Type) -> (&Type, bool) {
     let Type::Path(type_path) = ty else {

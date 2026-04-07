@@ -3,27 +3,24 @@ Parameter schema system (RFC 0005) — defines what inputs a workflow node accep
 
 ## Invariants
 - `ValidatedValues` only via `into_validated()` — `pub(crate)` constructor; `ValidationReport` not `Default`.
-- `ValidationReport.errors`/`.warnings` are `pub(crate)`; public surface: `.errors()`/`.warnings()` (read), `push_error()`/`push_warning()` (write, crate-only).
-- Loaders are fallible — `Result<LoaderResult<T>, LoaderError>`.
-- `Condition` (visibility/required predicate) is separate from `Rule` (value constraint). Never mix.
-- `ParameterValues::from_map` and `from_single` are the canonical constructors for nested validation — do not re-inline `.collect()` in validate.rs.
+- `ValidationReport.errors`/`.warnings` are `pub(crate)`; accessors: `.errors()`/`.warnings()`, `push_error()`/`push_warning()`.
+- `Condition` (visibility predicate) is separate from `Rule` (value constraint). Never mix.
+- `ParameterValues::from_map`/`from_single` are canonical constructors — don't re-inline in validate.rs.
 
 ## Key Decisions
-- v3 API: `Parameter` struct + `ParameterType` enum (19 variants).
-- `ModeVariant` removed — Mode variants are `Vec<Parameter>` (param.id = variant key).
-- `DisplayMode` PickFields/Sections skip backfill for absent keys.
-- `Transformer` applied lazily via `get_transformed()` — does NOT affect validation/normalization.
-- `FieldSpec` restricted subset (4 variants) for dynamic providers.
+- v3 API: `Parameter` + `ParameterType` (19 variants). `ModeVariant` removed.
+- `Transformer` applied lazily via `get_transformed()` — does NOT affect validation.
 
 ## Traps
 - `docs/crates/parameter/` describes removed v1 APIs — do not use.
-- `Rule` re-exported from `nebula_validator` — same type, one source.
-- Type-specific builders `debug_assert!` on wrong `ParameterType` variant (panics in debug).
-- Unknown fields inside nested objects produce **warnings**, not errors (even in Strict profile).
+- `Rule` re-exported from `nebula_validator` — one source.
+- Type-specific builders `debug_assert!` on wrong variant (panics in debug).
+- Unknown nested fields → warnings, not errors (even Strict profile).
 - `ParameterError::ValidationError` removed — use `ValidationIssue`.
-- `input_type` field/method deprecated (0.4.0) — use `.input_hint(InputHint::...)`. Macro now emits `.input_hint(InputHint::...)` for all known hints (url, email, password, phone, ip); date/datetime/time/color use convenience constructors. Unknown hints silently fall back to plain `string`.
+- `input_type` deprecated — macro emits `.input_hint(InputHint::...)`.
+- `#[validate(...)]` derive: flat keys `required`, `url`, `email`, `min_length`, `max_length`, `min`, `max`, `pattern` → `.with_rule(Rule::...)`. `min`/`max` are `u64`.
 
 ## Relations
-- Used by nebula-action (re-exports `Parameter`, `ParameterCollection`), nebula-credential, nebula-sdk, nebula-macros.
+- Used by nebula-action, nebula-credential, nebula-sdk.
 
 <!-- reviewed: 2026-04-07 -->
