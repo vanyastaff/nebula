@@ -23,7 +23,7 @@ Most automation platforms are runtime-interpreted, dynamically typed, and treat 
 
 **Resilience is not optional.** Retry with backoff, circuit breakers, rate limiting, hedged requests, and bulkhead isolation are composable building blocks in `nebula-resilience`. Every pattern returns `CallError<E>` with enough context to decide what to do next. These aren't wrappers around another library &mdash; they're purpose-built, audited (153 tests, 14 integration tests, 7 benchmark suites), and designed for the engine's concurrency model.
 
-**Modularity is enforced, not aspirational.** The 25-crate workspace has strict one-way layer dependencies checked by `cargo deny` on every CI run. Cross-crate communication goes through `EventBus`, not direct imports. You can use `nebula-credential` without touching `nebula-engine`. You can embed `nebula-resilience` in a project that has nothing to do with workflows.
+**Modularity is enforced, not aspirational.** The 24-crate workspace has strict one-way layer dependencies checked by `cargo deny` on every CI run. Cross-crate communication goes through `EventBus`, not direct imports. You can use `nebula-credential` without touching `nebula-engine`. You can embed `nebula-resilience` in a project that has nothing to do with workflows.
 
 ## Design Principles
 
@@ -39,7 +39,7 @@ Most automation platforms are runtime-interpreted, dynamically typed, and treat 
 API              api, webhook
 Exec             engine, runtime, storage, sdk
 Business         credential, resource, action, plugin
-Core             core, validator, parameter, expression, memory, workflow, execution
+Core             core, validator, parameter, expression, workflow, execution
 Cross-cutting    log, system, eventbus, telemetry, metrics, config, resilience, error
 ```
 
@@ -66,7 +66,6 @@ Trigger (webhook / cron / event)
 | | `validator` | Schema validation |
 | | `parameter` | Typed parameter definitions, `#[derive(Parameters)]` |
 | | `expression` | Template expression engine |
-| | `memory` | Shared execution memory |
 | | `workflow` | Workflow definition, DAG structure |
 | | `execution` | Execution state machine |
 | **Business** | `credential` | Encrypted storage, key rotation, 12 universal auth schemes, `#[derive(AuthScheme)]` |
