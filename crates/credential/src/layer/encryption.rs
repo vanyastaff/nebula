@@ -5,9 +5,9 @@
 //! bound as Additional Authenticated Data (AAD), preventing record-swapping
 //! attacks where encrypted data from one credential is copied to another.
 //!
-//! For backward compatibility, decryption falls back to no-AAD mode if
-//! AAD-based decryption fails, allowing legacy data to be read transparently.
-//! New writes always use AAD binding.
+//! AAD validation is mandatory — data encrypted without AAD (or with a
+//! mismatched credential ID) is rejected with a hard error. There is no
+//! legacy fallback path.
 //!
 //! # Key rotation
 //!
@@ -15,8 +15,6 @@
 //! read the layer inspects `EncryptedData::key_id`:
 //!
 //! - If `key_id` matches `current_key_id`, decrypt normally.
-//! - If `key_id` is empty (legacy data pre-dating rotation), decrypt with the
-//!   current key (legacy fallback path).
 //! - If `key_id` differs from `current_key_id`, decrypt with the old key and
 //!   **re-encrypt with the current key** before returning — lazy rotation.
 
@@ -180,6 +178,9 @@ impl<S> EncryptionLayer<S> {
     /// Decrypt `ciphertext`, returning `(plaintext, Some(re_encrypted_bytes))` when
     /// the data was stored under an old key and must be lazily rotated, or
     /// `(plaintext, None)` when no rotation is needed.
+    ///
+    /// AAD (credential ID) is always enforced — data without AAD or with a
+    /// mismatched ID is rejected.
     fn decrypt_possibly_rotating(
         &self,
         ciphertext: &[u8],
@@ -188,56 +189,21 @@ impl<S> EncryptionLayer<S> {
         let encrypted: crypto::EncryptedData =
             serde_json::from_slice(ciphertext).map_err(|e| StoreError::Backend(Box::new(e)))?;
 
-        // Legacy data (key_id is empty): try current key with AAD, then without AAD.
-        if encrypted.key_id.is_empty() {
-            let plaintext = decrypt_legacy(&self.keys, &self.current_key_id, &encrypted, id)?;
-            // Re-encrypt with current key so legacy data gets rotated on next read.
-            let re_encrypted = self.encrypt_data(&plaintext, id)?;
-            return Ok((plaintext, Some(re_encrypted)));
-        }
-
         // Data encrypted with the current key — normal path.
         if encrypted.key_id == self.current_key_id {
             let key = self.current_key()?;
-            let plaintext = decrypt_with_aad_fallback(key, &encrypted, id)?;
+            let plaintext = crypto::decrypt_with_aad(key, &encrypted, id.as_bytes())
+                .map_err(|e| StoreError::Backend(Box::new(e)))?;
             return Ok((plaintext, None));
         }
 
         // Data encrypted with an older key — decrypt with old key, re-encrypt.
         let old_key = self.key_for_id(&encrypted.key_id)?;
-        let plaintext = decrypt_with_aad_fallback(old_key, &encrypted, id)?;
+        let plaintext = crypto::decrypt_with_aad(old_key, &encrypted, id.as_bytes())
+            .map_err(|e| StoreError::Backend(Box::new(e)))?;
         let re_encrypted = self.encrypt_data(&plaintext, id)?;
         Ok((plaintext, Some(re_encrypted)))
     }
-}
-
-/// Try decrypting legacy data (no `key_id`) with the current key, with AAD
-/// fallback to no-AAD for data written before AAD binding was introduced.
-fn decrypt_legacy(
-    keys: &HashMap<String, Arc<EncryptionKey>>,
-    current_key_id: &str,
-    encrypted: &crypto::EncryptedData,
-    id: &str,
-) -> Result<Vec<u8>, StoreError> {
-    let key = keys
-        .get(current_key_id)
-        .map(|k| k.as_ref())
-        .ok_or_else(|| {
-            StoreError::Backend(format!("current key '{current_key_id}' not found").into())
-        })?;
-    decrypt_with_aad_fallback(key, encrypted, id)
-}
-
-/// Try decryption with AAD (current format) then fall back to no-AAD (legacy format).
-fn decrypt_with_aad_fallback(
-    key: &EncryptionKey,
-    encrypted: &crypto::EncryptedData,
-    id: &str,
-) -> Result<Vec<u8>, StoreError> {
-    if let Ok(data) = crypto::decrypt_with_aad(key, encrypted, id.as_bytes()) {
-        return Ok(data);
-    }
-    crypto::decrypt(key, encrypted).map_err(|e| StoreError::Backend(Box::new(e)))
 }
 
 #[cfg(test)]
@@ -322,7 +288,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_data_without_aad_still_readable() {
+    async fn rejects_data_without_aad() {
         let inner = InMemoryStore::new();
         let key = test_key();
 
@@ -345,10 +311,11 @@ mod tests {
         };
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
 
-        // Read through encryption layer -- should fall back to no-AAD decrypt
+        // Reading through the encryption layer must fail: AAD is mandatory.
+        // Data encrypted without AAD is unreadable — no legacy fallback.
         let store = EncryptionLayer::new(inner, key);
-        let fetched = store.get("legacy-1").await.unwrap();
-        assert_eq!(fetched.data, b"legacy-secret");
+        let err = store.get("legacy-1").await.unwrap_err();
+        assert!(matches!(err, StoreError::Backend(_)));
     }
 
     #[tokio::test]
