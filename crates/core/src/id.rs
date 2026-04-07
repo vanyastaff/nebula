@@ -25,6 +25,7 @@ define_uuid!(pub CredentialIdDomain => CredentialId);
 define_uuid!(pub ProjectIdDomain => ProjectId);
 define_uuid!(pub RoleIdDomain => RoleId);
 define_uuid!(pub OrganizationIdDomain => OrganizationId);
+define_uuid!(pub OwnerIdDomain => OwnerId);
 
 #[cfg(test)]
 mod tests {
@@ -87,6 +88,12 @@ mod tests {
     #[test]
     fn organization_id_v4_creates_non_nil_uuid() {
         let id = OrganizationId::new();
+        assert!(!id.is_nil());
+    }
+
+    #[test]
+    fn owner_id_v4_creates_non_nil_uuid() {
+        let id = OwnerId::new();
         assert!(!id.is_nil());
     }
 

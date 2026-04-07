@@ -5,7 +5,7 @@
 //!
 //! ## Key Components
 //!
-//! - **Identifiers**: UserId, TenantId, ExecutionId, WorkflowId, NodeId, ResourceId, CredentialId, ProjectId, RoleId, OrganizationId.  
+//! - **Identifiers**: UserId, TenantId, ExecutionId, WorkflowId, NodeId, ResourceId, CredentialId, ProjectId, RoleId, OrganizationId, OwnerId.  
 //!   (Node = workflow step / graph vertex; which action/plugin runs there is given by [`ActionKey`] = [`PluginKey`]; [`NodeDefinition`](https://docs.rs/nebula-workflow) has `action_key: ActionKey`.)
 //! - **Keys**: PluginKey (plugin type, e.g. `telegram_bot`), ActionKey (action within a plugin, e.g. `send_message`), ParameterKey, CredentialKey.
 //! - **Scope System**: Resource lifecycle management with different scope levels (Global, Organization, Project, Workflow, Execution, Action)
@@ -71,8 +71,8 @@ pub type Result<T> = std::result::Result<T, error::CoreError>;
 pub mod prelude {
     // Identifiers (UUID-backed ids)
     pub use crate::id::{
-        CredentialId, ExecutionId, NodeId, OrganizationId, ProjectId, ResourceId, RoleId, TenantId,
-        UserId, WorkflowId,
+        CredentialId, ExecutionId, NodeId, OrganizationId, OwnerId, ProjectId, ResourceId, RoleId,
+        TenantId, UserId, WorkflowId,
     };
 
     // Domain keys (normalized string keys)
