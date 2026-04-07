@@ -26,7 +26,7 @@ fn strict_unknown_field_is_error() {
 
     let report = collection.validate_with_profile(&values, ValidationProfile::Strict);
     assert!(report.has_errors());
-    assert!(report.errors.iter().any(|e| matches!(
+    assert!(report.errors().iter().any(|e| matches!(
         e,
         nebula_parameter::ParameterError::UnknownField { key } if key == "extra"
     )));
@@ -52,7 +52,7 @@ fn warn_profile_unknown_field_is_warning_not_error() {
     let report = collection.validate_with_profile(&values, ValidationProfile::Warn);
     assert!(!report.has_errors(), "should have no errors");
     assert!(report.has_warnings(), "should have a warning");
-    assert!(report.warnings.iter().any(|w| matches!(
+    assert!(report.warnings().iter().any(|w| matches!(
         w,
         nebula_parameter::ParameterError::UnknownField { key } if key == "ghost"
     )));
@@ -270,7 +270,7 @@ fn nested_unknown_field_reports_dotted_path() {
 
     // Unknown fields inside nested objects are reported as warnings.
     let report = collection.validate_with_profile(&values, ValidationProfile::Strict);
-    assert!(report.warnings.iter().any(|w| matches!(
+    assert!(report.warnings().iter().any(|w| matches!(
         w,
         nebula_parameter::ParameterError::UnknownField { key } if key == "config.port"
     )));
