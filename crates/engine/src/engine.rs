@@ -2007,8 +2007,10 @@ mod tests {
         let b = NodeId::new();
         let c = NodeId::new();
 
-        let mut config = WorkflowConfig::default();
-        config.error_strategy = ErrorStrategy::ContinueOnError;
+        let config = WorkflowConfig {
+            error_strategy: ErrorStrategy::ContinueOnError,
+            ..WorkflowConfig::default()
+        };
 
         let wf = make_workflow_with_config(
             vec![
@@ -2057,8 +2059,10 @@ mod tests {
         let a = NodeId::new();
         let b = NodeId::new();
 
-        let mut config = WorkflowConfig::default();
-        config.error_strategy = ErrorStrategy::IgnoreErrors;
+        let config = WorkflowConfig {
+            error_strategy: ErrorStrategy::IgnoreErrors,
+            ..WorkflowConfig::default()
+        };
 
         let wf = make_workflow_with_config(
             vec![

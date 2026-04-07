@@ -160,12 +160,12 @@ impl Pooled for HttpClientResource {
         BrokenCheck::Healthy
     }
 
-    fn recycle(
+    async fn recycle(
         &self,
         _runtime: &FakeHttpClient,
         _metrics: &InstanceMetrics,
-    ) -> impl std::future::Future<Output = Result<RecycleDecision, DxTestError>> + Send {
-        async { Ok(RecycleDecision::Keep) }
+    ) -> Result<RecycleDecision, DxTestError> {
+        Ok(RecycleDecision::Keep)
     }
 }
 

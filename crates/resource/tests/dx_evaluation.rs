@@ -450,7 +450,7 @@ async fn error_not_found_on_missing_resource() {
     // IS present in lib.rs, but the README Error Handling section only shows
     // err.is_retryable() — it doesn't show how to pattern-match on ErrorKind.
     // I had to guess the import path.
-    assert!(matches!(err.kind(), ErrorKind::NotFound { .. }));
+    assert!(matches!(err.kind(), ErrorKind::NotFound));
     assert!(!err.is_retryable());
 }
 

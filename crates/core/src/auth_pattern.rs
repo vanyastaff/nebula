@@ -1,8 +1,8 @@
 //! Classification of authentication patterns.
 //!
 //! [`AuthPattern`] groups auth schemes into universal categories for UI,
-//! logging, and tooling. Each [`AuthScheme`](super::AuthScheme) implementation
-//! declares its pattern via [`AuthScheme::pattern()`](super::AuthScheme::pattern).
+//! logging, and tooling. Each [`AuthScheme`](crate::AuthScheme) implementation
+//! declares its pattern via [`AuthScheme::pattern()`](crate::AuthScheme::pattern).
 
 use serde::{Deserialize, Serialize};
 

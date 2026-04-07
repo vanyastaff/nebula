@@ -92,10 +92,10 @@ mod tests {
 
     #[test]
     fn capabilities_are_all_false() {
-        assert!(!BasicAuthCredential::INTERACTIVE);
-        assert!(!BasicAuthCredential::REFRESHABLE);
-        assert!(!BasicAuthCredential::REVOCABLE);
-        assert!(!BasicAuthCredential::TESTABLE);
+        const { assert!(!BasicAuthCredential::INTERACTIVE) };
+        const { assert!(!BasicAuthCredential::REFRESHABLE) };
+        const { assert!(!BasicAuthCredential::REVOCABLE) };
+        const { assert!(!BasicAuthCredential::TESTABLE) };
     }
 
     #[test]

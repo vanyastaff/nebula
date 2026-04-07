@@ -933,11 +933,8 @@ mod tests {
             }
         }
 
-        fn destroy(
-            &self,
-            _runtime: u32,
-        ) -> impl std::future::Future<Output = Result<(), MockError>> + Send {
-            async { Ok(()) }
+        async fn destroy(&self, _runtime: u32) -> Result<(), MockError> {
+            Ok(())
         }
 
         fn metadata() -> ResourceMetadata {

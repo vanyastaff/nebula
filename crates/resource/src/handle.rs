@@ -357,14 +357,13 @@ mod tests {
             nebula_core::resource_key!("dummy")
         }
 
-        fn create(
+        async fn create(
             &self,
             _config: &(),
             _auth: &(),
             _ctx: &dyn crate::ctx::Ctx,
-        ) -> impl std::future::Future<Output = Result<(), std::convert::Infallible>> + Send
-        {
-            async { Ok(()) }
+        ) -> Result<(), std::convert::Infallible> {
+            Ok(())
         }
     }
 

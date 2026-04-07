@@ -285,6 +285,14 @@ mod tests {
     // Backoff calculation and jitter tests are covered by nebula-resilience.
     // These tests verify the retry_with_policy integration.
 
+    fn attempt_result(n: u32) -> Result<&'static str, TestErr> {
+        if n < 2 {
+            Err(TestErr("transient"))
+        } else {
+            Ok("success")
+        }
+    }
+
     /// Test error implementing Classify.
     #[derive(Debug, Clone, PartialEq)]
     struct TestErr(&'static str);
@@ -326,13 +334,7 @@ mod tests {
 
         let result: Result<&str, TestErr> = retry_with_policy(&policy, || {
             let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            async move {
-                if n < 2 {
-                    Err(TestErr("transient"))
-                } else {
-                    Ok("success")
-                }
-            }
+            async move { attempt_result(n) }
         })
         .await;
 

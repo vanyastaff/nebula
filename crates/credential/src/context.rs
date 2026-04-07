@@ -225,6 +225,16 @@ mod tests {
     use nebula_core::SecretString;
     use nebula_core::{ProjectId, ScopeLevel};
 
+    struct MockResolverForComposition;
+    impl CredentialResolverRef for MockResolverForComposition {
+        fn resolve_scheme(&self, _id: &str, _kind: &str) -> ResolveSchemeResult<'_> {
+            Box::pin(async move {
+                let token = SecretToken::new(SecretString::new("composed-token"));
+                Ok(Box::new(token) as Box<dyn Any + Send + Sync>)
+            })
+        }
+    }
+
     #[test]
     fn test_context_new() {
         let ctx = CredentialContext::new("user_123");
@@ -328,17 +338,8 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_credential_composition() {
-        struct MockResolver;
-        impl CredentialResolverRef for MockResolver {
-            fn resolve_scheme(&self, _id: &str, _kind: &str) -> ResolveSchemeResult<'_> {
-                Box::pin(async {
-                    let token = SecretToken::new(SecretString::new("composed-token"));
-                    Ok(Box::new(token) as Box<dyn Any + Send + Sync>)
-                })
-            }
-        }
-
-        let ctx = CredentialContext::new("test-user").with_resolver(Arc::new(MockResolver));
+        let ctx =
+            CredentialContext::new("test-user").with_resolver(Arc::new(MockResolverForComposition));
         let token: SecretToken = ctx.resolve_credential("base-cred").await.unwrap();
         token
             .token()

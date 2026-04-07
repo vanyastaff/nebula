@@ -98,10 +98,10 @@ mod tests {
 
     #[test]
     fn capabilities_are_all_false() {
-        assert!(!ApiKeyCredential::INTERACTIVE);
-        assert!(!ApiKeyCredential::REFRESHABLE);
-        assert!(!ApiKeyCredential::REVOCABLE);
-        assert!(!ApiKeyCredential::TESTABLE);
+        const { assert!(!ApiKeyCredential::INTERACTIVE) };
+        const { assert!(!ApiKeyCredential::REFRESHABLE) };
+        const { assert!(!ApiKeyCredential::REVOCABLE) };
+        const { assert!(!ApiKeyCredential::TESTABLE) };
     }
 
     #[test]

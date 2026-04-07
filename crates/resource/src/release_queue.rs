@@ -259,18 +259,22 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    async fn increment_counter(c: Arc<AtomicU32>) {
+        c.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn submit_increment(queue: &ReleaseQueue, counter: &Arc<AtomicU32>) {
+        let c = counter.clone();
+        queue.submit(move || Box::pin(increment_counter(c)));
+    }
+
     #[tokio::test]
     async fn submit_and_execute() {
         let (queue, handle) = ReleaseQueue::new(2);
         let counter = Arc::new(AtomicU32::new(0));
 
         for _ in 0..10 {
-            let c = counter.clone();
-            queue.submit(move || {
-                Box::pin(async move {
-                    c.fetch_add(1, Ordering::Relaxed);
-                })
-            });
+            submit_increment(&queue, &counter);
         }
 
         // Give workers time to process.
@@ -280,6 +284,8 @@ mod tests {
         drop(queue);
         ReleaseQueue::shutdown(handle).await;
     }
+
+    use std::sync::atomic::AtomicBool;
 
     #[tokio::test]
     async fn shutdown_completes_after_drop() {
@@ -299,8 +305,6 @@ mod tests {
         assert!(done.load(Ordering::Relaxed));
     }
 
-    use std::sync::atomic::AtomicBool;
-
     #[tokio::test]
     #[should_panic(expected = "worker_count must be at least 1")]
     async fn zero_workers_panics() {
@@ -316,12 +320,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
 
         for _ in 0..total_tasks {
-            let c = counter.clone();
-            queue.submit(move || {
-                Box::pin(async move {
-                    c.fetch_add(1, Ordering::Relaxed);
-                })
-            });
+            submit_increment(&queue, &counter);
         }
 
         // Give workers time to drain all tasks.
@@ -343,12 +342,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
 
         for _ in 0..5 {
-            let c = counter.clone();
-            queue.submit(move || {
-                Box::pin(async move {
-                    c.fetch_add(1, Ordering::Relaxed);
-                })
-            });
+            submit_increment(&queue, &counter);
         }
 
         // Signal drain via close() without dropping the queue.
