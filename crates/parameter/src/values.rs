@@ -61,6 +61,27 @@ impl ParameterValue {
         Self::Literal(value.clone())
     }
 
+    /// Parses a typed value from an owned JSON value without cloning.
+    ///
+    /// Prefer this over [`from_json`](Self::from_json) when the caller
+    /// already owns the `Value` and does not need to retain it.
+    #[must_use]
+    pub fn from_json_owned(value: serde_json::Value) -> Self {
+        if let serde_json::Value::Object(ref object) = value {
+            if object.len() == 1
+                && let Some(expr) = object.get(EXPRESSION_KEY).and_then(|v| v.as_str())
+            {
+                return Self::Expression(expr.to_owned());
+            }
+            if let Some(mode) = object.get("mode").and_then(|v| v.as_str()) {
+                let mode = mode.to_owned();
+                let val = object.get("value").cloned();
+                return Self::Mode { mode, value: val };
+            }
+        }
+        Self::Literal(value)
+    }
+
     /// Converts this typed value to the JSON wire representation.
     #[must_use]
     pub fn into_json(self) -> serde_json::Value {
@@ -629,6 +650,33 @@ mod tests {
         assert_eq!(
             vals.get_typed("port"),
             Some(ParameterValue::Literal(json!(8080)))
+        );
+    }
+
+    #[test]
+    fn from_json_owned_avoids_clone() {
+        let value = serde_json::json!("hello");
+        let pv = ParameterValue::from_json_owned(value);
+        assert_eq!(pv, ParameterValue::Literal(serde_json::json!("hello")));
+    }
+
+    #[test]
+    fn from_json_owned_detects_expression() {
+        let value = serde_json::json!({ "$expr": "{{ $input.name }}" });
+        let pv = ParameterValue::from_json_owned(value);
+        assert_eq!(pv, ParameterValue::Expression("{{ $input.name }}".to_owned()));
+    }
+
+    #[test]
+    fn from_json_owned_detects_mode() {
+        let value = serde_json::json!({ "mode": "basic", "value": "secret" });
+        let pv = ParameterValue::from_json_owned(value);
+        assert_eq!(
+            pv,
+            ParameterValue::Mode {
+                mode: "basic".to_owned(),
+                value: Some(serde_json::json!("secret")),
+            }
         );
     }
 
