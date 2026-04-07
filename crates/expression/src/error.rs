@@ -187,15 +187,6 @@ impl ExpressionError {
 // External Error Conversions
 // ============================================================================
 
-/// Convert from nebula_memory::MemoryError
-impl From<nebula_memory::MemoryError> for ExpressionError {
-    fn from(error: nebula_memory::MemoryError) -> Self {
-        ExpressionError::Internal {
-            message: error.to_string(),
-        }
-    }
-}
-
 // ============================================================================
 // Result Type
 // ============================================================================
