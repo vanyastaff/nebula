@@ -241,25 +241,24 @@ impl ExecutionRepo for PgExecutionRepo {
             Err(sqlx::Error::Database(db_err)) if db_err.code().as_deref() == Some("23505") => {
                 // A unique-constraint violation guarantees the row exists, so
                 // fetch its current version to provide an accurate Conflict error.
-                let actual_version = sqlx::query_scalar::<_, i64>(
-                    "SELECT version FROM executions WHERE id = $1",
-                )
-                .bind(exec_uuid)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(map_err)?
-                .ok_or_else(|| {
-                    ExecutionRepoError::Internal(format!(
-                        "execution {id} not found after unique-constraint violation"
-                    ))
-                })
-                .and_then(|v| {
-                    u64::try_from(v).map_err(|_| {
-                        ExecutionRepoError::Internal(format!(
-                            "execution {id} version {v} overflows u64"
-                        ))
-                    })
-                })?;
+                let actual_version =
+                    sqlx::query_scalar::<_, i64>("SELECT version FROM executions WHERE id = $1")
+                        .bind(exec_uuid)
+                        .fetch_optional(&self.pool)
+                        .await
+                        .map_err(map_err)?
+                        .ok_or_else(|| {
+                            ExecutionRepoError::Internal(format!(
+                                "execution {id} not found after unique-constraint violation"
+                            ))
+                        })
+                        .and_then(|v| {
+                            u64::try_from(v).map_err(|_| {
+                                ExecutionRepoError::Internal(format!(
+                                    "execution {id} version {v} overflows u64"
+                                ))
+                            })
+                        })?;
 
                 Err(ExecutionRepoError::Conflict {
                     entity: "execution".into(),
@@ -282,9 +281,7 @@ impl ExecutionRepo for PgExecutionRepo {
         let eid = execution_to_uuid(execution_id);
         let nid = node_to_uuid(node_id);
         let attempt_i32 = i32::try_from(attempt).map_err(|_| {
-            ExecutionRepoError::Internal(format!(
-                "attempt value {attempt} exceeds i32::MAX"
-            ))
+            ExecutionRepoError::Internal(format!("attempt value {attempt} exceeds i32::MAX"))
         })?;
         sqlx::query(
             "INSERT INTO node_outputs (execution_id, node_id, attempt, output) \
@@ -438,9 +435,7 @@ mod tests {
         let wf_id = WorkflowId::new();
         let state = serde_json::json!({"status": "created"});
 
-        repo.create(id, wf_id, state.clone())
-            .await
-            .expect("create");
+        repo.create(id, wf_id, state.clone()).await.expect("create");
 
         let (version, got) = repo.get_state(id).await.expect("get").expect("some");
         assert_eq!(version, 1);
@@ -456,9 +451,7 @@ mod tests {
         let wf_id = WorkflowId::new();
         let state = serde_json::json!({"status": "created"});
 
-        repo.create(id, wf_id, state.clone())
-            .await
-            .expect("create");
+        repo.create(id, wf_id, state.clone()).await.expect("create");
 
         let err = repo
             .create(id, wf_id, state)
@@ -562,10 +555,7 @@ mod tests {
             .await
             .expect("save attempt 1");
 
-        let all = repo
-            .load_all_outputs(exec_id)
-            .await
-            .expect("load all");
+        let all = repo.load_all_outputs(exec_id).await.expect("load all");
         assert_eq!(all.get(&node_id), Some(&serde_json::json!("attempt1")));
     }
 
@@ -588,7 +578,9 @@ mod tests {
             .expect("first mark");
 
         assert!(
-            repo.check_idempotency(&key).await.expect("check after first mark"),
+            repo.check_idempotency(&key)
+                .await
+                .expect("check after first mark"),
             "key should exist after marking"
         );
 
@@ -598,7 +590,9 @@ mod tests {
             .expect("second mark should not fail");
 
         assert!(
-            repo.check_idempotency(&key).await.expect("check after second mark"),
+            repo.check_idempotency(&key)
+                .await
+                .expect("check after second mark"),
             "key should still exist after second mark"
         );
     }
