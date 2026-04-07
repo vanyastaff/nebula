@@ -11,6 +11,8 @@
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::AuthPattern;
+
 /// Consumer-facing authentication material.
 ///
 /// Resources declare `type Auth: AuthScheme` to specify what auth
@@ -32,7 +34,7 @@ use serde::de::DeserializeOwned;
 /// # Examples
 ///
 /// ```
-/// use nebula_core::AuthScheme;
+/// use nebula_core::{AuthScheme, AuthPattern};
 /// use serde::{Deserialize, Serialize};
 ///
 /// #[derive(Clone, Serialize, Deserialize)]
@@ -41,12 +43,18 @@ use serde::de::DeserializeOwned;
 /// }
 ///
 /// impl AuthScheme for BearerToken {
-///     const KIND: &'static str = "bearer";
+///     fn pattern() -> AuthPattern {
+///         AuthPattern::SecretToken
+///     }
 /// }
 /// ```
 pub trait AuthScheme: Serialize + DeserializeOwned + Send + Sync + Clone + 'static {
-    /// Unique identifier for this scheme type (e.g., `"bearer"`, `"basic"`).
-    const KIND: &'static str;
+    /// Classification for UI, logging, and tooling.
+    ///
+    /// Returns the [`AuthPattern`] that best describes this scheme's
+    /// authentication mechanism. Used by framework tooling to categorize
+    /// credentials without inspecting their concrete type.
+    fn pattern() -> AuthPattern;
 
     /// When this auth material expires, if applicable.
     ///
@@ -59,5 +67,34 @@ pub trait AuthScheme: Serialize + DeserializeOwned + Send + Sync + Clone + 'stat
 
 /// No authentication required.
 impl AuthScheme for () {
-    const KIND: &'static str = "none";
+    fn pattern() -> AuthPattern {
+        AuthPattern::Custom
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::AuthPattern;
+
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    struct TestToken {
+        value: String,
+    }
+
+    impl AuthScheme for TestToken {
+        fn pattern() -> AuthPattern {
+            AuthPattern::SecretToken
+        }
+    }
+
+    #[test]
+    fn custom_scheme_reports_correct_pattern() {
+        assert_eq!(TestToken::pattern(), AuthPattern::SecretToken);
+    }
+
+    #[test]
+    fn unit_scheme_pattern_is_custom() {
+        assert_eq!(<() as AuthScheme>::pattern(), AuthPattern::Custom);
+    }
 }
