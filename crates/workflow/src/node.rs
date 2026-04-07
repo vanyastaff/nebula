@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::definition::RetryConfig;
 
 /// A single action step inside a workflow graph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeDefinition {
     /// Unique node identifier within this workflow.
     pub id: NodeId,
@@ -120,7 +120,7 @@ impl NodeDefinition {
 }
 
 /// A parameter value that can be a literal, expression, template, or reference.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ParamValue {

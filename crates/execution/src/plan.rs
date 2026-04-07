@@ -94,6 +94,9 @@ mod tests {
             tags: Vec::new(),
             created_at: now,
             updated_at: now,
+            owner_id: None,
+            ui_metadata: None,
+            schema_version: 1,
         }
     }
 
