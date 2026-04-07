@@ -384,8 +384,6 @@ impl WorkflowEngine {
                     // Node failed at runtime — delegate to
                     // strategy-aware handler.
                     mark_node_failed(exec_state, node_id, err);
-                    self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
-                        .await;
 
                     let abort = handle_node_failure(
                         node_id,
@@ -399,6 +397,13 @@ impl WorkflowEngine {
                         &mut ready_queue,
                         exec_state,
                     );
+
+                    // Checkpoint *after* handle_node_failure so the persisted
+                    // node state reflects the final resolved state (e.g.
+                    // Completed for IgnoreErrors, Failed for FailFast/Continue).
+                    self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
+                        .await;
+
                     if let Some(err_msg) = abort {
                         cancel_token.cancel();
                         return Some((node_id, err_msg));
