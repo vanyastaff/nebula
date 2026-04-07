@@ -21,6 +21,7 @@ Parameter schema system (RFC 0005) — defines what inputs a workflow node accep
 - Type-specific builders `debug_assert!` on wrong `ParameterType` variant (panics in debug).
 - Unknown fields inside nested objects produce **warnings**, not errors (even in Strict profile).
 - `ParameterError::ValidationError` removed — use `ValidationIssue`.
+- `input_type` field/method deprecated (0.4.0) — use `.input_hint(InputHint::...)`. Macro still emits `.input_type()` — Task 5 fixes that.
 
 ## Relations
 - Used by nebula-action (re-exports `Parameter`, `ParameterCollection`), nebula-credential, nebula-sdk, nebula-macros.

@@ -95,6 +95,7 @@ pub struct Parameter {
     pub expression: bool,
 
     /// Override the HTML input type (e.g. `"email"`, `"url"`).
+    #[deprecated(since = "0.4.0", note = "use InputHint on ParameterType::String instead")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_type: Option<String>,
 
@@ -130,6 +131,7 @@ fn default_true() -> bool {
 }
 
 /// Creates a [`Parameter`] with all shared metadata at defaults.
+#[allow(deprecated)]
 fn new_parameter(id: impl Into<String>, param_type: ParameterType) -> Parameter {
     Parameter {
         id: id.into(),
@@ -527,8 +529,22 @@ impl Parameter {
 
     /// Overrides the HTML input type (e.g. `"email"`, `"url"`).
     #[must_use]
+    #[deprecated(since = "0.4.0", note = "use .input_hint(InputHint::...) instead")]
+    #[allow(deprecated)]
     pub fn input_type(mut self, input_type: impl Into<String>) -> Self {
         self.input_type = Some(input_type.into());
+        self
+    }
+
+    /// Sets the input hint for String parameters.
+    ///
+    /// Controls the UI widget rendered for this field (date picker,
+    /// color picker, URL input, etc.). Only affects `ParameterType::String`.
+    #[must_use]
+    pub fn input_hint(mut self, hint: InputHint) -> Self {
+        if let ParameterType::String { input_hint, .. } = &mut self.param_type {
+            *input_hint = hint;
+        }
         self
     }
 
@@ -1495,5 +1511,19 @@ mod tests {
     #[should_panic(expected = "accept()")]
     fn accept_on_wrong_type_panics_in_debug() {
         let _ = Parameter::string("x").accept("image/*");
+    }
+
+    #[test]
+    fn input_hint_and_string_constructor_agree() {
+        let via_hint = Parameter::string("email").input_hint(InputHint::Email);
+        let via_date = Parameter::date("start");
+        match &via_hint.param_type {
+            ParameterType::String { input_hint, .. } => assert_eq!(*input_hint, InputHint::Email),
+            _ => panic!("expected String variant"),
+        }
+        match &via_date.param_type {
+            ParameterType::String { input_hint, .. } => assert_eq!(*input_hint, InputHint::Date),
+            _ => panic!("expected String variant"),
+        }
     }
 }
