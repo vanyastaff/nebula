@@ -3654,6 +3654,7 @@ dependencies = [
  "hmac",
  "nebula-core",
  "nebula-error",
+ "nebula-resilience",
  "nebula-resource",
  "reqwest 0.13.2",
  "serde",
