@@ -3,12 +3,12 @@
 //! State (versioned CAS), journal (append-only), leases. Used by API and engine;
 //! implementations in this crate or in adapters.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use nebula_core::ExecutionId;
+use nebula_core::{ExecutionId, NodeId, WorkflowId};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -159,7 +159,57 @@ pub trait ExecutionRepo: Send + Sync {
         id: ExecutionId,
         holder: &str,
     ) -> Result<bool, ExecutionRepoError>;
+
+    /// Inserts a new execution. Fails if the execution ID already exists.
+    async fn create(
+        &self,
+        id: ExecutionId,
+        workflow_id: WorkflowId,
+        state: serde_json::Value,
+    ) -> Result<(), ExecutionRepoError>;
+
+    /// Persists a single node output for a specific attempt.
+    async fn save_node_output(
+        &self,
+        execution_id: ExecutionId,
+        node_id: NodeId,
+        attempt: u32,
+        output: serde_json::Value,
+    ) -> Result<(), ExecutionRepoError>;
+
+    /// Loads the latest output for a node (highest attempt number).
+    async fn load_node_output(
+        &self,
+        execution_id: ExecutionId,
+        node_id: NodeId,
+    ) -> Result<Option<serde_json::Value>, ExecutionRepoError>;
+
+    /// Loads all node outputs for an execution (latest attempt per node).
+    async fn load_all_outputs(
+        &self,
+        execution_id: ExecutionId,
+    ) -> Result<HashMap<NodeId, serde_json::Value>, ExecutionRepoError>;
+
+    /// Lists execution IDs in non-terminal states.
+    async fn list_running(&self) -> Result<Vec<ExecutionId>, ExecutionRepoError>;
+
+    /// Counts executions, optionally filtered by workflow_id.
+    async fn count(&self, workflow_id: Option<WorkflowId>) -> Result<u64, ExecutionRepoError>;
+
+    /// Returns true if this idempotency key has been recorded.
+    async fn check_idempotency(&self, key: &str) -> Result<bool, ExecutionRepoError>;
+
+    /// Records an idempotency key. No-op if key already exists.
+    async fn mark_idempotent(
+        &self,
+        key: &str,
+        execution_id: ExecutionId,
+        node_id: NodeId,
+    ) -> Result<(), ExecutionRepoError>;
 }
+
+/// Key for node output storage: `(execution_id, node_id, attempt)`.
+type NodeOutputKey = (ExecutionId, NodeId, u32);
 
 /// In-memory execution repository for tests and single-process/health-only mode.
 #[derive(Default)]
@@ -167,6 +217,9 @@ pub struct InMemoryExecutionRepo {
     state: Arc<RwLock<HashMap<ExecutionId, (u64, serde_json::Value)>>>,
     journal: Arc<RwLock<HashMap<ExecutionId, Vec<serde_json::Value>>>>,
     leases: Arc<RwLock<HashMap<ExecutionId, String>>>,
+    workflows: Arc<RwLock<HashMap<ExecutionId, WorkflowId>>>,
+    node_outputs: Arc<RwLock<HashMap<NodeOutputKey, serde_json::Value>>>,
+    idempotency: Arc<RwLock<HashSet<String>>>,
 }
 
 impl InMemoryExecutionRepo {
@@ -255,5 +308,222 @@ impl ExecutionRepo for InMemoryExecutionRepo {
             leases.remove(&id);
         }
         Ok(ok)
+    }
+
+    async fn create(
+        &self,
+        id: ExecutionId,
+        workflow_id: WorkflowId,
+        state: serde_json::Value,
+    ) -> Result<(), ExecutionRepoError> {
+        let mut store = self.state.write().await;
+        if store.contains_key(&id) {
+            return Err(ExecutionRepoError::Conflict {
+                entity: "execution".into(),
+                id: id.to_string(),
+                expected_version: 0,
+                actual_version: 1,
+            });
+        }
+        store.insert(id, (1, state));
+        drop(store);
+        self.workflows.write().await.insert(id, workflow_id);
+        Ok(())
+    }
+
+    async fn save_node_output(
+        &self,
+        execution_id: ExecutionId,
+        node_id: NodeId,
+        attempt: u32,
+        output: serde_json::Value,
+    ) -> Result<(), ExecutionRepoError> {
+        self.node_outputs
+            .write()
+            .await
+            .insert((execution_id, node_id, attempt), output);
+        Ok(())
+    }
+
+    async fn load_node_output(
+        &self,
+        execution_id: ExecutionId,
+        node_id: NodeId,
+    ) -> Result<Option<serde_json::Value>, ExecutionRepoError> {
+        let outputs = self.node_outputs.read().await;
+        let best = outputs
+            .iter()
+            .filter(|((eid, nid, _), _)| *eid == execution_id && *nid == node_id)
+            .max_by_key(|((_, _, attempt), _)| *attempt)
+            .map(|(_, v)| v.clone());
+        Ok(best)
+    }
+
+    async fn load_all_outputs(
+        &self,
+        execution_id: ExecutionId,
+    ) -> Result<HashMap<NodeId, serde_json::Value>, ExecutionRepoError> {
+        let outputs = self.node_outputs.read().await;
+        let mut best: HashMap<NodeId, (u32, serde_json::Value)> = HashMap::new();
+        for ((eid, nid, attempt), val) in outputs.iter() {
+            if *eid != execution_id {
+                continue;
+            }
+            let entry = best.entry(*nid).or_insert((0, serde_json::Value::Null));
+            if *attempt > entry.0 {
+                *entry = (*attempt, val.clone());
+            }
+        }
+        Ok(best.into_iter().map(|(nid, (_, v))| (nid, v)).collect())
+    }
+
+    async fn list_running(&self) -> Result<Vec<ExecutionId>, ExecutionRepoError> {
+        let state = self.state.read().await;
+        let running = state
+            .iter()
+            .filter(|(_, (_, val))| {
+                matches!(
+                    val.get("status").and_then(|s| s.as_str()),
+                    Some("created" | "running" | "paused" | "cancelling")
+                )
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        Ok(running)
+    }
+
+    async fn count(&self, workflow_id: Option<WorkflowId>) -> Result<u64, ExecutionRepoError> {
+        let Some(wid) = workflow_id else {
+            let state = self.state.read().await;
+            return Ok(state.len() as u64);
+        };
+        let workflows = self.workflows.read().await;
+        let n = workflows.values().filter(|v| **v == wid).count() as u64;
+        Ok(n)
+    }
+
+    async fn check_idempotency(&self, key: &str) -> Result<bool, ExecutionRepoError> {
+        let set = self.idempotency.read().await;
+        Ok(set.contains(key))
+    }
+
+    async fn mark_idempotent(
+        &self,
+        key: &str,
+        _execution_id: ExecutionId,
+        _node_id: NodeId,
+    ) -> Result<(), ExecutionRepoError> {
+        self.idempotency.write().await.insert(key.to_owned());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn create_and_get_state() {
+        let repo = InMemoryExecutionRepo::default();
+        let eid = ExecutionId::new();
+        let wid = WorkflowId::new();
+        let state = serde_json::json!({"status": "created"});
+        repo.create(eid, wid, state.clone()).await.unwrap();
+        let (version, loaded) = repo.get_state(eid).await.unwrap().unwrap();
+        assert_eq!(version, 1);
+        assert_eq!(loaded, state);
+    }
+
+    #[tokio::test]
+    async fn create_duplicate_returns_conflict() {
+        let repo = InMemoryExecutionRepo::default();
+        let eid = ExecutionId::new();
+        let wid = WorkflowId::new();
+        let state = serde_json::json!({"status": "created"});
+        repo.create(eid, wid, state.clone()).await.unwrap();
+        let err = repo.create(eid, wid, state).await.unwrap_err();
+        assert!(matches!(err, ExecutionRepoError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn node_output_save_and_load() {
+        let repo = InMemoryExecutionRepo::default();
+        let eid = ExecutionId::new();
+        let nid = NodeId::new();
+        let output = serde_json::json!({"result": 42});
+        repo.save_node_output(eid, nid, 1, output.clone())
+            .await
+            .unwrap();
+        let loaded = repo.load_node_output(eid, nid).await.unwrap();
+        assert_eq!(loaded, Some(output));
+    }
+
+    #[tokio::test]
+    async fn node_output_returns_latest_attempt() {
+        let repo = InMemoryExecutionRepo::default();
+        let eid = ExecutionId::new();
+        let nid = NodeId::new();
+        repo.save_node_output(eid, nid, 1, serde_json::json!("first"))
+            .await
+            .unwrap();
+        repo.save_node_output(eid, nid, 2, serde_json::json!("second"))
+            .await
+            .unwrap();
+        let loaded = repo.load_node_output(eid, nid).await.unwrap();
+        assert_eq!(loaded, Some(serde_json::json!("second")));
+    }
+
+    #[tokio::test]
+    async fn load_all_outputs_returns_latest_per_node() {
+        let repo = InMemoryExecutionRepo::default();
+        let eid = ExecutionId::new();
+        let n1 = NodeId::new();
+        let n2 = NodeId::new();
+        repo.save_node_output(eid, n1, 1, serde_json::json!("n1_v1"))
+            .await
+            .unwrap();
+        repo.save_node_output(eid, n1, 2, serde_json::json!("n1_v2"))
+            .await
+            .unwrap();
+        repo.save_node_output(eid, n2, 1, serde_json::json!("n2_v1"))
+            .await
+            .unwrap();
+        let all = repo.load_all_outputs(eid).await.unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[&n1], serde_json::json!("n1_v2"));
+        assert_eq!(all[&n2], serde_json::json!("n2_v1"));
+    }
+
+    #[tokio::test]
+    async fn idempotency_check_and_mark() {
+        let repo = InMemoryExecutionRepo::default();
+        let key = "exec1:node1:1";
+        assert!(!repo.check_idempotency(key).await.unwrap());
+        repo.mark_idempotent(key, ExecutionId::new(), NodeId::new())
+            .await
+            .unwrap();
+        assert!(repo.check_idempotency(key).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn list_running_filters_by_status() {
+        let repo = InMemoryExecutionRepo::default();
+        let e1 = ExecutionId::new();
+        let e2 = ExecutionId::new();
+        let e3 = ExecutionId::new();
+        let wid = WorkflowId::new();
+        repo.create(e1, wid, serde_json::json!({"status": "running"}))
+            .await
+            .unwrap();
+        repo.create(e2, wid, serde_json::json!({"status": "completed"}))
+            .await
+            .unwrap();
+        repo.create(e3, wid, serde_json::json!({"status": "cancelling"}))
+            .await
+            .unwrap();
+        let running = repo.list_running().await.unwrap();
+        assert_eq!(running.len(), 2);
+        assert!(running.contains(&e1));
+        assert!(running.contains(&e3));
     }
 }
