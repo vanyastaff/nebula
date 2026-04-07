@@ -1,6 +1,6 @@
 //! Blob storage for large action outputs.
 //!
-//! When a node output exceeds [`DataPassingPolicy::max_node_output_bytes`],
+//! When a node output exceeds the configured max-node-output-bytes threshold,
 //! the runtime can spill data to external blob storage instead of rejecting it.
 
 use async_trait::async_trait;
