@@ -90,6 +90,9 @@ impl BuiltinRegistry {
         self.register("contains", string::contains);
         self.register("starts_with", string::starts_with);
         self.register("ends_with", string::ends_with);
+        self.register("pad_start", string::pad_start);
+        self.register("pad_end", string::pad_end);
+        self.register("repeat", string::repeat);
     }
 
     fn register_math_functions(&mut self) {
@@ -115,12 +118,18 @@ impl BuiltinRegistry {
         self.register("slice", array::slice);
         self.register("concat", array::concat);
         self.register("flatten", array::flatten);
+        self.register("unique", array::unique);
     }
 
     fn register_object_functions(&mut self) {
         self.register("keys", object::keys);
         self.register("values", object::values);
         self.register("has", object::has);
+        self.register("merge", object::merge);
+        self.register("pick", object::pick);
+        self.register("omit", object::omit);
+        self.register("entries", object::entries);
+        self.register("from_entries", object::from_entries);
     }
 
     fn register_conversion_functions(&mut self) {
@@ -139,6 +148,8 @@ impl BuiltinRegistry {
         self.register("is_string", util::is_string);
         self.register("is_number", util::is_number);
         self.register("uuid", util::uuid);
+        self.register("coalesce", util::coalesce);
+        self.register("type_of", util::type_of);
     }
 
     #[cfg(feature = "datetime")]

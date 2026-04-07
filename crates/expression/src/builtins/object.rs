@@ -1,6 +1,6 @@
 //! Object manipulation functions
 
-use super::{check_arg_count, get_object_arg};
+use super::{check_arg_count, check_min_arg_count, get_array_arg, get_object_arg};
 use crate::ExpressionError;
 use crate::context::EvaluationContext;
 use crate::error::{ExpressionErrorExt, ExpressionResult};
@@ -49,4 +49,127 @@ pub fn has(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Expre
     })?;
 
     Ok(Value::Bool(obj.contains_key(key)))
+}
+
+/// Shallow merge of multiple objects (right wins on key conflicts)
+///
+/// Example: `merge({a:1}, {b:2}, {a:3})` returns `{a:3, b:2}`
+pub fn merge(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
+    check_min_arg_count("merge", args, 1)?;
+
+    let mut result = serde_json::Map::new();
+    for (i, _) in args.iter().enumerate() {
+        let obj = get_object_arg("merge", args, i, "object")?;
+        for (k, v) in obj {
+            result.insert(k.clone(), v.clone());
+        }
+    }
+
+    Ok(Value::Object(result))
+}
+
+/// Return an object with only the specified keys
+///
+/// Example: `pick({a:1, b:2, c:3}, "a", "c")` returns `{a:1, c:3}`
+pub fn pick(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
+    check_min_arg_count("pick", args, 1)?;
+    let obj = get_object_arg("pick", args, 0, "object")?;
+
+    let keys_to_pick: Vec<&str> = args[1..].iter().filter_map(|v| v.as_str()).collect();
+
+    let result: serde_json::Map<String, Value> = obj
+        .iter()
+        .filter(|(k, _)| keys_to_pick.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    Ok(Value::Object(result))
+}
+
+/// Return an object without the specified keys
+///
+/// Example: `omit({a:1, b:2, c:3}, "b")` returns `{a:1, c:3}`
+pub fn omit(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
+    check_min_arg_count("omit", args, 1)?;
+    let obj = get_object_arg("omit", args, 0, "object")?;
+
+    let keys_to_omit: Vec<&str> = args[1..].iter().filter_map(|v| v.as_str()).collect();
+
+    let result: serde_json::Map<String, Value> = obj
+        .iter()
+        .filter(|(k, _)| !keys_to_omit.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    Ok(Value::Object(result))
+}
+
+/// Convert an object to an array of `{key, value}` pairs
+///
+/// Example: `entries({a:1, b:2})` returns `[{key:"a", value:1}, {key:"b", value:2}]`
+pub fn entries(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
+    check_arg_count("entries", args, 1)?;
+    let obj = get_object_arg("entries", args, 0, "object")?;
+
+    let result: Vec<Value> = obj
+        .iter()
+        .map(|(k, v)| {
+            let mut pair = serde_json::Map::new();
+            pair.insert("key".to_string(), Value::String(k.clone()));
+            pair.insert("value".to_string(), v.clone());
+            Value::Object(pair)
+        })
+        .collect();
+
+    Ok(Value::Array(result))
+}
+
+/// Convert an array of `{key, value}` pairs back to an object
+///
+/// Example: `from_entries([{key:"a", value:1}])` returns `{a:1}`
+pub fn from_entries(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
+    check_arg_count("from_entries", args, 1)?;
+    let arr = get_array_arg("from_entries", args, 0, "array")?;
+
+    let mut result = serde_json::Map::new();
+    for item in arr {
+        let pair = item.as_object().ok_or_else(|| {
+            ExpressionError::expression_invalid_argument(
+                "from_entries",
+                "Each element must be an object with 'key' and 'value' fields",
+            )
+        })?;
+
+        let key = pair.get("key").and_then(|v| v.as_str()).ok_or_else(|| {
+            ExpressionError::expression_invalid_argument(
+                "from_entries",
+                "Each element must have a string 'key' field",
+            )
+        })?;
+
+        let value = pair.get("value").cloned().unwrap_or(Value::Null);
+        result.insert(key.to_string(), value);
+    }
+
+    Ok(Value::Object(result))
 }
