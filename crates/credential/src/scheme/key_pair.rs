@@ -80,7 +80,10 @@ impl KeyPair {
 impl std::fmt::Debug for KeyPair {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KeyPair")
-            .field("public_key", &self.public_key)
+            .field(
+                "public_key",
+                &format_args!("[{} bytes]", self.public_key.len()),
+            )
             .field("private_key", &"[REDACTED]")
             .field(
                 "passphrase",
@@ -108,10 +111,11 @@ mod tests {
             .with_passphrase(SecretString::new("my-passphrase"))
             .with_algorithm("ed25519");
         let debug = format!("{kp:?}");
-        assert!(debug.contains("ssh-ed25519 AAAA..."));
+        assert!(debug.contains("[19 bytes]"));
         assert!(debug.contains("ed25519"));
         assert!(debug.contains("[REDACTED]"));
         assert!(!debug.contains("PRIVATE_KEY_DATA"));
         assert!(!debug.contains("my-passphrase"));
+        assert!(!debug.contains("ssh-ed25519"));
     }
 }

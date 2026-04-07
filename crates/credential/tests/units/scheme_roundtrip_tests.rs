@@ -57,22 +57,19 @@ fn oauth2_token_serde_roundtrip() {
 
 #[test]
 fn certificate_serde_roundtrip() {
-    let cert = Certificate::new(
-        "-----BEGIN CERTIFICATE-----",
-        SecretString::new("-----BEGIN PRIVATE KEY-----"),
-    );
+    let cert = Certificate::new("TEST_CERT_CHAIN", SecretString::new("TEST_PRIVATE_KEY"));
     let json = serde_json::to_string(&cert).unwrap();
     assert!(
         !json.contains("REDACTED"),
         "json must not contain REDACTED: {json}"
     );
-    assert!(json.contains("-----BEGIN CERTIFICATE-----"));
-    assert!(json.contains("-----BEGIN PRIVATE KEY-----"));
+    assert!(json.contains("TEST_CERT_CHAIN"));
+    assert!(json.contains("TEST_PRIVATE_KEY"));
     let recovered: Certificate = serde_json::from_str(&json).unwrap();
-    assert_eq!(recovered.cert_chain(), "-----BEGIN CERTIFICATE-----");
+    assert_eq!(recovered.cert_chain(), "TEST_CERT_CHAIN");
     recovered
         .private_key()
-        .expose_secret(|s| assert_eq!(s, "-----BEGIN PRIVATE KEY-----"));
+        .expose_secret(|s| assert_eq!(s, "TEST_PRIVATE_KEY"));
 }
 
 #[test]

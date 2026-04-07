@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Classification of authentication patterns.
 ///
-/// 12 built-in patterns cover the vast majority of auth mechanisms.
+/// 13 built-in patterns cover the vast majority of auth mechanisms.
 /// [`Custom`](AuthPattern::Custom) handles everything else.
 ///
 /// # Examples
@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum AuthPattern {
+    /// No authentication required.
+    NoAuth,
     /// Opaque secret string (API key, bearer token, session token).
     SecretToken,
     /// Identity + password pair (user/email/account + password).
@@ -57,6 +59,7 @@ mod tests {
     #[test]
     fn all_variants_are_distinct() {
         let variants = [
+            AuthPattern::NoAuth,
             AuthPattern::SecretToken,
             AuthPattern::IdentityPassword,
             AuthPattern::OAuth2,
@@ -72,7 +75,7 @@ mod tests {
             AuthPattern::Custom,
         ];
         let set: std::collections::HashSet<_> = variants.iter().collect();
-        assert_eq!(set.len(), 13);
+        assert_eq!(set.len(), 14);
     }
 
     #[test]

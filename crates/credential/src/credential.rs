@@ -178,19 +178,24 @@ pub trait Credential: Send + Sync + 'static {
 
     /// Test that the credential actually works.
     ///
-    /// Returns `None` if this credential type does not support live testing.
-    /// Credentials that override this method return `Some(TestResult::Success)`
-    /// or `Some(TestResult::Failed { reason })`.
+    /// Returns `Ok(None)` if this credential type does not support live testing.
+    /// Credentials that override this method return
+    /// `Ok(Some(TestResult::Success))` or `Ok(Some(TestResult::Failed { reason }))`.
     ///
-    /// Default: `None` (not testable).
+    /// Default: `Ok(None)` (not testable).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CredentialError`] on infrastructure failures (network, I/O)
+    /// that prevent determining whether the credential is valid.
     fn test(
         _scheme: &Self::Scheme,
         _ctx: &CredentialContext,
-    ) -> impl Future<Output = Option<TestResult>> + Send
+    ) -> impl Future<Output = Result<Option<TestResult>, CredentialError>> + Send
     where
         Self: Sized,
     {
-        async { None }
+        async { Ok(None) }
     }
 
     /// Refresh expiring auth material.

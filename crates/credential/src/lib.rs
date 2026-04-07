@@ -112,7 +112,7 @@ pub use crate::error::{
 };
 pub use crate::metadata::CredentialMetadata;
 pub use crate::snapshot::{CredentialSnapshot, SnapshotError};
-pub use nebula_core::{CredentialEvent, CredentialId};
+pub use nebula_core::{AuthPattern, AuthScheme, CredentialEvent, CredentialId};
 
 // Utils - crypto
 pub use crate::crypto::{EncryptedData, EncryptionKey, decrypt, encrypt};

@@ -11,7 +11,7 @@ Foundation shared by every other crate — IDs, domain keys, scope system, and s
 - Compile-time key construction via `plugin_key!`, `action_key!`, etc. macros.
 - `ScopeLevel` hierarchy: Global → Organization → Project → Workflow → Execution → Action.
 - `AuthScheme` trait: contract between credential and resource crates. `()` = no auth. Declares `fn pattern() -> AuthPattern` (`const KIND` removed).
-- `AuthPattern` enum (`#[non_exhaustive]`): 12 auth categories + `Custom`. Declared by each `AuthScheme` impl.
+- `AuthPattern` enum (`#[non_exhaustive]`): `NoAuth` + 12 auth categories + `Custom`. `()` maps to `NoAuth`.
 - `SecretString` + `serde_secret` live here — usable by any crate without depending on credential.
 - `CredentialEvent` lives here (not in nebula-credential) so both emitter and consumer avoid peer dependency. Uses typed `CredentialId` (Copy), no EventBus dependency.
 
@@ -23,4 +23,4 @@ Foundation shared by every other crate — IDs, domain keys, scope system, and s
 ## Relations
 - Imported by every other nebula crate. No nebula deps of its own — only external crates (`uuid`, `domain-key`, `zeroize`, `serde`, etc.).
 
-<!-- reviewed: 2026-04-07 — AuthPattern enum added (auth_pattern.rs) -->
+<!-- reviewed: 2026-04-07 — AuthPattern.NoAuth added, () maps to NoAuth -->

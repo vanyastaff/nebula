@@ -19,7 +19,7 @@ use nebula_core::AuthScheme;
 /// ```ignore
 /// let handle: CredentialHandle<SecretToken> = resolver.resolve::<ApiKeyCredential>("my-cred").await?;
 /// let token: Arc<SecretToken> = handle.snapshot();
-/// request.header("Authorization", token.bearer_header());
+/// token.token().expose_secret(|t| request.header("Authorization", format!("Bearer {t}")));
 /// ```
 pub struct CredentialHandle<S: AuthScheme> {
     scheme: ArcSwap<S>,

@@ -61,12 +61,15 @@ impl<S> EncryptionLayer<S> {
     /// Create a new single-key encryption layer.
     ///
     /// The key is registered as `"default"` and used for all new writes.
+    /// An empty-string alias is also registered for migration compatibility
+    /// with pre-rotation data.
     pub fn new(inner: S, key: Arc<EncryptionKey>) -> Self {
         let mut keys = HashMap::new();
-        keys.insert("default".to_string(), key);
+        keys.insert("default".into(), key.clone());
+        keys.insert(String::new(), key); // alias for pre-rotation data
         Self {
             inner,
-            current_key_id: "default".to_string(),
+            current_key_id: "default".into(),
             keys,
         }
     }
@@ -79,15 +82,15 @@ impl<S> EncryptionLayer<S> {
     ///
     /// # Panics
     ///
-    /// Panics in debug mode if `current_key_id` is not in `keys`. In release
-    /// mode the layer will return a decryption error on every write.
+    /// Panics if `current_key_id` is not present in `keys`.
     pub fn with_keys(
         inner: S,
-        current_key_id: String,
+        current_key_id: impl Into<String>,
         keys: Vec<(String, Arc<EncryptionKey>)>,
     ) -> Self {
+        let current_key_id = current_key_id.into();
         let keys: HashMap<String, Arc<EncryptionKey>> = keys.into_iter().collect();
-        debug_assert!(
+        assert!(
             keys.contains_key(&current_key_id),
             "current_key_id '{current_key_id}' must be present in the keys map"
         );
@@ -125,14 +128,25 @@ impl<S: CredentialStore> CredentialStore for EncryptionLayer<S> {
         credential.data = std::mem::take(&mut *plaintext);
 
         if let Some(re_encrypted) = rotated {
-            // Lazy rotation: write the re-encrypted data back to the store.
-            // Use a separate binding so the borrow of `credential.data` ends before
-            // we move `credential` into `put`.
+            // Use CAS to avoid clobbering concurrent updates. If the record
+            // changed since we read it, skip — rotation will happen on next read.
             let updated = StoredCredential {
                 data: re_encrypted,
                 ..credential.clone()
             };
-            self.inner.put(updated, PutMode::Overwrite).await?;
+            match self
+                .inner
+                .put(
+                    updated,
+                    PutMode::CompareAndSwap {
+                        expected_version: credential.version,
+                    },
+                )
+                .await
+            {
+                Ok(_) | Err(StoreError::VersionConflict { .. }) => {}
+                Err(other) => return Err(other),
+            }
         }
 
         Ok(credential)

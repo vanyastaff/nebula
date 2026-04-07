@@ -68,7 +68,7 @@ pub trait AuthScheme: Serialize + DeserializeOwned + Send + Sync + Clone + 'stat
 /// No authentication required.
 impl AuthScheme for () {
     fn pattern() -> AuthPattern {
-        AuthPattern::Custom
+        AuthPattern::NoAuth
     }
 }
 
@@ -94,7 +94,7 @@ mod tests {
     }
 
     #[test]
-    fn unit_scheme_pattern_is_custom() {
-        assert_eq!(<() as AuthScheme>::pattern(), AuthPattern::Custom);
+    fn unit_scheme_pattern_is_no_auth() {
+        assert_eq!(<() as AuthScheme>::pattern(), AuthPattern::NoAuth);
     }
 }

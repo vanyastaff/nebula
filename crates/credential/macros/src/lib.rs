@@ -57,6 +57,11 @@ pub fn derive_credential(input: TokenStream) -> TokenStream {
 /// [`AuthPattern`] variant. Types with custom `expires_at()` logic
 /// (e.g., `OAuth2Token`, `FederatedAssertion`) should keep a manual impl.
 ///
+/// # Errors
+///
+/// Emits a compile error when `#[auth_scheme(pattern = ...)]` is
+/// missing or the pattern variant is not a valid `AuthPattern` identifier.
+///
 /// # Attributes
 ///
 /// ## Container attributes (`#[auth_scheme(...)]` on the struct)

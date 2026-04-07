@@ -75,9 +75,10 @@ pub struct EncryptedData {
     /// Algorithm version for future migrations
     pub version: u8,
 
-    /// Which encryption key was used (for key rotation).
-    ///
-    /// Empty string for legacy data encrypted before key rotation was added.
+    /// Which encryption key was used. Empty after deserialization of
+    /// pre-rotation data (`#[serde(default)]`). The encryption layer
+    /// rejects empty key IDs at runtime — a migration must re-encrypt
+    /// all records before upgrading.
     #[serde(default)]
     pub key_id: String,
 
