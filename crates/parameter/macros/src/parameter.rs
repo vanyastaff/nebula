@@ -120,16 +120,17 @@ fn attr_value_to_default_expr(val: &attrs::AttrValue, ty: &syn::Type) -> proc_ma
             }
         }
         attrs::AttrValue::Lit(syn::Lit::Int(i)) => {
-            let v: i64 = i.base10_parse().unwrap_or(0);
-            quote! { #v as _ }
+            quote! { #i }
         }
         attrs::AttrValue::Lit(syn::Lit::Bool(b)) => {
             let v = b.value;
             quote! { #v }
         }
         attrs::AttrValue::Ident(i) => {
-            let s = i.to_string();
-            quote! { #s.into() }
+            quote! { #i }
+        }
+        attrs::AttrValue::Tokens(tokens) => {
+            quote! { #tokens }
         }
         _ => quote! { ::core::default::Default::default() },
     }
