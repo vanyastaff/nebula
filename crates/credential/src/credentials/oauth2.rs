@@ -205,6 +205,7 @@ impl Credential for OAuth2Credential {
             icon_url: None,
             documentation_url: None,
             properties: Self::parameters(),
+            pattern: nebula_core::AuthPattern::OAuth2,
         }
     }
 

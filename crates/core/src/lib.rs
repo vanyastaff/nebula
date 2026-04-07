@@ -29,6 +29,8 @@
 //! ```
 
 pub mod auth;
+/// Classification of authentication patterns for UI, logging, and tooling.
+pub mod auth_pattern;
 pub mod constants;
 /// Credential lifecycle events for cross-crate signaling.
 pub mod credential_event;
@@ -50,6 +52,7 @@ pub mod types;
 // Re-export main types for convenience at the crate root. Downstream crates
 // should prefer `nebula_core::prelude::*` for a stable import surface.
 pub use auth::AuthScheme;
+pub use auth_pattern::AuthPattern;
 pub use constants::*;
 pub use credential_event::CredentialEvent;
 pub use deps::*;

@@ -167,10 +167,7 @@ mod tests {
 
         let result = verifier.verify(&headers, &body).await;
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            Error::SignatureInvalid
-        ));
+        assert!(matches!(result.unwrap_err(), Error::SignatureInvalid));
     }
 
     #[tokio::test]
@@ -181,10 +178,7 @@ mod tests {
 
         let result = verifier.verify(&headers, &body).await;
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            Error::SignatureInvalid
-        ));
+        assert!(matches!(result.unwrap_err(), Error::SignatureInvalid));
     }
 
     #[tokio::test]

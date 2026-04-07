@@ -166,7 +166,7 @@ impl CredentialAccessor for TestCredentialAccessor {
 #[cfg(test)]
 mod tests {
     use nebula_core::SecretString;
-    use nebula_credential::{BearerToken, CredentialMetadata};
+    use nebula_credential::{CredentialMetadata, SecretToken};
 
     use super::*;
 
@@ -184,7 +184,7 @@ mod tests {
         let snapshot = CredentialSnapshot::new(
             "api_key",
             CredentialMetadata::new(),
-            BearerToken::new(SecretString::new("test-secret")),
+            SecretToken::new(SecretString::new("test-secret")),
         );
 
         let ctx = TestContextBuilder::new()
@@ -195,7 +195,7 @@ mod tests {
         assert!(!ctx.has_credential("other").await);
 
         let snap = ctx.credential("my_cred").await.unwrap();
-        assert_eq!(snap.scheme_kind(), "bearer");
+        assert_eq!(snap.scheme_pattern(), "SecretToken");
     }
 
     #[tokio::test]

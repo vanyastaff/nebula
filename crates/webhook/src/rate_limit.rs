@@ -60,7 +60,7 @@ impl WebhookRateLimiter {
     /// Create a rate limiter with the given requests-per-minute limit.
     ///
     /// Each webhook path is tracked independently using a sliding window.
-    /// At most [`DEFAULT_MAX_PATHS`] distinct paths are tracked; paths
+    /// At most 1 000 distinct paths are tracked; paths
     /// beyond that cap are passed through without rate limiting.
     #[must_use]
     pub fn new(requests_per_minute: u64) -> Self {
@@ -139,7 +139,11 @@ impl WebhookRateLimiter {
         Self::acquire(window, path, self.window.as_secs()).await
     }
 
-    async fn acquire(window: Arc<SlidingWindow>, path: &str, retry_after_secs: u64) -> Result<(), Error> {
+    async fn acquire(
+        window: Arc<SlidingWindow>,
+        path: &str,
+        retry_after_secs: u64,
+    ) -> Result<(), Error> {
         use nebula_resilience::RateLimiter;
         match window.acquire().await {
             Ok(()) => Ok(()),

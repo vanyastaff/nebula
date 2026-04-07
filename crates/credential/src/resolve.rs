@@ -158,6 +158,9 @@ pub enum RefreshOutcome {
 
 /// Outcome of
 /// [`Credential::test`](crate::credential::Credential::test).
+///
+/// `None` from `test()` means the credential type does not support testing.
+/// When `test()` returns `Some`, the result is one of these variants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TestResult {
@@ -168,8 +171,6 @@ pub enum TestResult {
         /// Human-readable failure reason.
         reason: String,
     },
-    /// Credential type doesn't support testing.
-    Untestable,
 }
 
 // ── RefreshPolicy ──────────────────────────────────────────────────────

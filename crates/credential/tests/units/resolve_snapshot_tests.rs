@@ -1,12 +1,12 @@
-//! Integration test: resolve → snapshot → typed access.
+//! Integration test: resolve -> snapshot -> typed access.
 //!
-//! Validates the full credential resolution → typed access pipeline:
-//! store → resolve → handle → snapshot → project.
+//! Validates the full credential resolution -> typed access pipeline:
+//! store -> resolve -> handle -> snapshot -> project.
 
 use std::sync::Arc;
 
 use nebula_credential::credentials::ApiKeyCredential;
-use nebula_credential::scheme::{BearerToken, DatabaseAuth};
+use nebula_credential::scheme::{ConnectionUri, SecretToken};
 use nebula_credential::store::{PutMode, StoredCredential};
 use nebula_credential::{
     Credential, CredentialMetadata, CredentialResolver, CredentialSnapshot, CredentialStore,
@@ -17,15 +17,15 @@ use nebula_credential::{
 async fn resolve_to_typed_snapshot() {
     let store = Arc::new(InMemoryStore::new());
 
-    // Store a bearer token credential.
+    // Store a secret token credential.
     // Note: SecretString serializes as "[REDACTED]", so we construct raw JSON
-    // directly — the real store holds encrypted raw values.
+    // directly -- the real store holds encrypted raw values.
     let data = br#"{"token":"test-key"}"#.to_vec();
     let cred = StoredCredential {
         id: "test-cred".into(),
         credential_key: "api_key".into(),
         data,
-        state_kind: "bearer".into(),
+        state_kind: "secret_token".into(),
         state_version: 1,
         version: 0,
         created_at: chrono::Utc::now(),
@@ -50,25 +50,24 @@ async fn resolve_to_typed_snapshot() {
     );
 
     // Typed access works
-    assert!(snapshot.is::<BearerToken>());
-    let token = snapshot.project::<BearerToken>().unwrap();
-    token.expose().expose_secret(|s| assert_eq!(s, "test-key"));
+    assert!(snapshot.is::<SecretToken>());
+    let token = snapshot.project::<SecretToken>().unwrap();
+    token.token().expose_secret(|s| assert_eq!(s, "test-key"));
 
     // Wrong type fails cleanly
-    assert!(!snapshot.is::<DatabaseAuth>());
-    let err = snapshot.project::<DatabaseAuth>().unwrap_err();
-    assert!(matches!(
-        err,
-        SnapshotError::SchemeMismatch {
-            expected: "database",
-            ..
+    assert!(!snapshot.is::<ConnectionUri>());
+    let err = snapshot.project::<ConnectionUri>().unwrap_err();
+    match &err {
+        SnapshotError::SchemeMismatch { expected, .. } => {
+            assert_eq!(expected, "ConnectionUri");
         }
-    ));
+        _ => panic!("unexpected error variant"),
+    }
 
     // Clone works
     let cloned = snapshot.clone();
-    let cloned_token = cloned.project::<BearerToken>().unwrap();
+    let cloned_token = cloned.project::<SecretToken>().unwrap();
     cloned_token
-        .expose()
+        .token()
         .expose_secret(|s| assert_eq!(s, "test-key"));
 }

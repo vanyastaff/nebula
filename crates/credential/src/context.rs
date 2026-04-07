@@ -200,16 +200,19 @@ impl CredentialContext {
         &self,
         credential_id: &str,
     ) -> Result<S, CredentialError> {
+        let expected_pattern = format!("{:?}", S::pattern());
         let resolver = self
             .resolver
             .as_ref()
             .ok_or(CredentialError::CompositionNotAvailable)?;
-        let boxed = resolver.resolve_scheme(credential_id, S::KIND).await?;
+        let boxed = resolver
+            .resolve_scheme(credential_id, &expected_pattern)
+            .await?;
         boxed
             .downcast::<S>()
             .map(|b| *b)
             .map_err(|_| CredentialError::SchemeMismatch {
-                expected: S::KIND,
+                expected: expected_pattern,
                 actual: "unknown".to_string(),
             })
     }
@@ -218,7 +221,7 @@ impl CredentialContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BearerToken;
+    use crate::scheme::SecretToken;
     use nebula_core::SecretString;
     use nebula_core::{ProjectId, ScopeLevel};
 
@@ -329,23 +332,23 @@ mod tests {
         impl CredentialResolverRef for MockResolver {
             fn resolve_scheme(&self, _id: &str, _kind: &str) -> ResolveSchemeResult<'_> {
                 Box::pin(async {
-                    let token = BearerToken::new(SecretString::new("composed-token"));
+                    let token = SecretToken::new(SecretString::new("composed-token"));
                     Ok(Box::new(token) as Box<dyn Any + Send + Sync>)
                 })
             }
         }
 
         let ctx = CredentialContext::new("test-user").with_resolver(Arc::new(MockResolver));
-        let token: BearerToken = ctx.resolve_credential("base-cred").await.unwrap();
+        let token: SecretToken = ctx.resolve_credential("base-cred").await.unwrap();
         token
-            .expose()
+            .token()
             .expose_secret(|s| assert_eq!(s, "composed-token"));
     }
 
     #[tokio::test]
     async fn resolve_credential_no_resolver_returns_error() {
         let ctx = CredentialContext::new("test-user");
-        let result = ctx.resolve_credential::<BearerToken>("any").await;
+        let result = ctx.resolve_credential::<SecretToken>("any").await;
         assert!(matches!(
             result,
             Err(CredentialError::CompositionNotAvailable)
