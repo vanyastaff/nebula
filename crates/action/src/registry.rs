@@ -1,4 +1,4 @@
-//! Registry of available actions, keyed by [`ActionKey`].
+//! Registry of available actions, keyed by [`ActionKey`](nebula_core::ActionKey).
 //!
 //! The `ActionRegistry` is the authoritative source for which action types are
 //! available in a running Nebula instance. The engine consults it during workflow
@@ -40,7 +40,7 @@ struct ActionEntry {
     handler: Arc<dyn InternalHandler>,
 }
 
-/// Type-safe registry for action handlers, keyed by [`ActionKey`].
+/// Type-safe registry for action handlers, keyed by [`ActionKey`](nebula_core::ActionKey).
 ///
 /// Supports version-aware lookup: when multiple versions of the same action are
 /// registered, [`get`](ActionRegistry::get) returns the latest and
