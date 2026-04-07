@@ -20,8 +20,10 @@ use crate::error::ActionError;
 /// # Examples
 ///
 /// ```rust,ignore
+/// use nebula_action::testing::TestContextBuilder;
+///
 /// let ctx = TestContextBuilder::new()
-///     .with_credential("api_key", json!({"token": "test"}))
+///     .with_credential_snapshot("api_key", snapshot)
 ///     .build();
 /// ```
 pub struct TestContextBuilder {

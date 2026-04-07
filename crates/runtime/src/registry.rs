@@ -64,11 +64,10 @@ impl ActionRegistry {
         // Latest-wins for primary lookup.
         self.handlers.insert(key.clone(), handler.clone());
 
-        // Add to version index.
-        self.versions
-            .entry(key)
-            .or_default()
-            .push((version, handler));
+        // Add to version index (dedup: replace existing entry for same version).
+        let mut entries = self.versions.entry(key).or_default();
+        entries.retain(|(v, _)| v != &version);
+        entries.push((version, handler));
     }
 
     /// Register a typed [`StatelessAction`](nebula_action::StatelessAction) directly.
@@ -155,6 +154,7 @@ impl ActionRegistry {
 
     /// Remove a handler by key. Returns the removed handler, if any.
     pub fn remove(&self, key: &str) -> Option<Arc<dyn InternalHandler>> {
+        self.versions.remove(key);
         self.handlers.remove(key).map(|(_, v)| v)
     }
 
@@ -380,5 +380,56 @@ mod tests {
     fn versions_returns_empty_for_unknown_key() {
         let reg = ActionRegistry::new();
         assert!(reg.versions("nonexistent").is_empty());
+    }
+
+    #[test]
+    fn register_same_version_replaces_handler() {
+        let reg = ActionRegistry::new();
+        reg.register(Arc::new(EchoHandler::with_version(
+            action_key!("test.echo"),
+            1,
+            0,
+        )));
+        // Re-register same key+version — should replace, not duplicate.
+        reg.register(Arc::new(EchoHandler::with_version(
+            action_key!("test.echo"),
+            1,
+            0,
+        )));
+
+        let versions = reg.versions("test.echo");
+        assert_eq!(
+            versions.len(),
+            1,
+            "duplicate version entry should not exist"
+        );
+        assert_eq!(versions[0], nebula_action::InterfaceVersion::new(1, 0));
+    }
+
+    #[test]
+    fn remove_clears_versions() {
+        let reg = ActionRegistry::new();
+        reg.register(Arc::new(EchoHandler::with_version(
+            action_key!("test.echo"),
+            1,
+            0,
+        )));
+        reg.register(Arc::new(EchoHandler::with_version(
+            action_key!("test.echo"),
+            2,
+            0,
+        )));
+
+        reg.remove("test.echo");
+
+        assert!(
+            reg.versions("test.echo").is_empty(),
+            "versions should be cleared after remove",
+        );
+        let v1 = nebula_action::InterfaceVersion::new(1, 0);
+        assert!(
+            reg.get_versioned("test.echo", &v1).is_err(),
+            "get_versioned should return NotFound after remove",
+        );
     }
 }
