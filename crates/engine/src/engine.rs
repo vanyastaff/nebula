@@ -62,6 +62,8 @@ pub struct WorkflowEngine {
     expression_engine: Arc<ExpressionEngine>,
     /// Optional resource manager for providing resources to actions.
     resource_manager: Option<Arc<nebula_resource::Manager>>,
+    /// Optional execution repository for persistent state storage.
+    execution_repo: Option<Arc<dyn nebula_storage::ExecutionRepo>>,
 }
 
 impl WorkflowEngine {
@@ -75,6 +77,7 @@ impl WorkflowEngine {
             resolver: ParamResolver::new(expression_engine.clone()),
             expression_engine,
             resource_manager: None,
+            execution_repo: None,
         }
     }
 
@@ -91,6 +94,17 @@ impl WorkflowEngine {
     /// Attach a resource manager for providing resources to actions.
     pub fn with_resource_manager(mut self, manager: Arc<nebula_resource::Manager>) -> Self {
         self.resource_manager = Some(manager);
+        self
+    }
+
+    /// Set the execution repository for persistent state storage.
+    ///
+    /// When set, the engine persists execution state after creation and
+    /// after each node completes (checkpoint). Without a repo, state
+    /// is in-memory only (suitable for testing).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_execution_repo(mut self, repo: Arc<dyn nebula_storage::ExecutionRepo>) -> Self {
+        self.execution_repo = Some(repo);
         self
     }
 
@@ -126,6 +140,17 @@ impl WorkflowEngine {
         let mut exec_state = ExecutionState::new(execution_id, workflow.id, &node_ids);
         exec_state.transition_status(ExecutionStatus::Running)?;
 
+        // 4b. Persist initial execution state
+        let mut repo_version: u64 = 0;
+        if let Some(repo) = &self.execution_repo {
+            let state_json = serde_json::to_value(&exec_state)
+                .map_err(|e| EngineError::PlanningFailed(format!("serialize state: {e}")))?;
+            repo.create(execution_id, workflow.id, state_json)
+                .await
+                .map_err(|e| EngineError::PlanningFailed(format!("persist initial state: {e}")))?;
+            repo_version = 1;
+        }
+
         // 5. Create cancellation token
         let cancel_token = CancellationToken::new();
 
@@ -154,6 +179,7 @@ impl WorkflowEngine {
                 execution_id,
                 workflow.id,
                 &input,
+                &mut repo_version,
             )
             .await;
 
@@ -162,6 +188,16 @@ impl WorkflowEngine {
         // 10. Determine final status and emit events
         let final_status = determine_final_status(&failed_node, &cancel_token);
         let _ = exec_state.transition_status(final_status);
+
+        // Persist final execution state (best-effort)
+        if let Some(repo) = &self.execution_repo
+            && let Ok(state_json) = serde_json::to_value(&exec_state)
+        {
+            let _ = repo
+                .transition(execution_id, repo_version, state_json)
+                .await;
+        }
+
         self.emit_final_event(execution_id, final_status, elapsed, &failed_node);
 
         // 11. Collect outputs
@@ -198,6 +234,7 @@ impl WorkflowEngine {
         execution_id: ExecutionId,
         workflow_id: WorkflowId,
         input: &serde_json::Value,
+        repo_version: &mut u64,
     ) -> Option<(NodeId, String)> {
         // Precompute how many incoming edges each node has
         let required_count: HashMap<NodeId, usize> = node_map
@@ -284,6 +321,10 @@ impl WorkflowEngine {
                     // Node ran and produced a result
                     mark_node_completed(exec_state, node_id);
 
+                    // Checkpoint: persist node output + execution state
+                    self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
+                        .await;
+
                     // Evaluate outgoing edges and update frontier
                     process_outgoing_edges(
                         node_id,
@@ -300,6 +341,10 @@ impl WorkflowEngine {
                 Ok((node_id, Err(ref err))) => {
                     // Node failed at runtime
                     mark_node_failed(exec_state, node_id, err);
+
+                    // Checkpoint: persist failure state
+                    self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
+                        .await;
 
                     // Check for error handlers
                     let error_handled = process_outgoing_edges(
@@ -428,6 +473,44 @@ impl WorkflowEngine {
         );
 
         true
+    }
+
+    /// Persist node output and execution state to the repository (best-effort).
+    ///
+    /// Silently ignores errors — checkpoint failures must not abort
+    /// an otherwise healthy execution.
+    async fn checkpoint_node(
+        &self,
+        execution_id: ExecutionId,
+        node_id: NodeId,
+        outputs: &Arc<DashMap<NodeId, serde_json::Value>>,
+        exec_state: &ExecutionState,
+        repo_version: &mut u64,
+    ) {
+        let Some(repo) = &self.execution_repo else {
+            return;
+        };
+
+        // Save node output individually
+        if let Some(output) = outputs.get(&node_id) {
+            let attempt = exec_state
+                .node_states
+                .get(&node_id)
+                .map(|ns| ns.attempt_count().max(1) as u32)
+                .unwrap_or(1);
+            let _ = repo
+                .save_node_output(execution_id, node_id, attempt, output.value().clone())
+                .await;
+        }
+
+        // Save execution state snapshot
+        if let Ok(state_json) = serde_json::to_value(exec_state)
+            && let Ok(true) = repo
+                .transition(execution_id, *repo_version, state_json)
+                .await
+        {
+            *repo_version += 1;
+        }
     }
 
     /// Record final execution metrics.
@@ -877,6 +960,7 @@ mod tests {
     use nebula_runtime::DataPassingPolicy;
     use nebula_runtime::registry::ActionRegistry;
     use nebula_runtime::{ActionExecutor, InProcessSandbox};
+    use nebula_storage::ExecutionRepo;
     use nebula_workflow::{Connection, NodeDefinition, WorkflowConfig, WorkflowDefinition};
 
     // -- Test handlers --
@@ -1511,5 +1595,112 @@ mod tests {
         // D should have merged input from B and C
         let d_output = result.node_output(d).unwrap();
         assert!(d_output.is_object());
+    }
+
+    // -- ExecutionRepo persistence tests --
+
+    #[tokio::test]
+    async fn persists_execution_state_on_success() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        }));
+
+        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let (engine, _) = make_engine(registry);
+        let engine = engine.with_execution_repo(repo.clone());
+
+        let n = NodeId::new();
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
+            vec![],
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("hello"), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        assert!(result.is_success());
+
+        // Verify state was persisted
+        let entry = repo.get_state(result.execution_id).await.unwrap();
+        assert!(entry.is_some(), "execution state should be persisted");
+        let (version, state) = entry.unwrap();
+        assert!(version >= 2, "repo version should have been bumped");
+        assert_eq!(
+            state.get("status").and_then(|s| s.as_str()),
+            Some("completed")
+        );
+
+        // Verify node output was saved
+        let node_output = repo.load_node_output(result.execution_id, n).await.unwrap();
+        assert_eq!(node_output, Some(serde_json::json!("hello")));
+    }
+
+    #[tokio::test]
+    async fn persists_execution_state_on_failure() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(FailHandler {
+            meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
+        }));
+
+        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let (engine, _) = make_engine(registry);
+        let engine = engine.with_execution_repo(repo.clone());
+
+        let n = NodeId::new();
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n, "fail", "fail").unwrap()],
+            vec![],
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        assert!(result.is_failure());
+
+        // Verify final state was persisted as failed
+        let entry = repo.get_state(result.execution_id).await.unwrap();
+        assert!(entry.is_some(), "execution state should be persisted");
+        let (_version, state) = entry.unwrap();
+        assert_eq!(state.get("status").and_then(|s| s.as_str()), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn persists_node_outputs_for_multi_node_workflow() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        }));
+
+        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let (engine, _) = make_engine(registry);
+        let engine = engine.with_execution_repo(repo.clone());
+
+        let n1 = NodeId::new();
+        let n2 = NodeId::new();
+        let wf = make_workflow(
+            vec![
+                NodeDefinition::new(n1, "A", "echo").unwrap(),
+                NodeDefinition::new(n2, "B", "echo").unwrap(),
+            ],
+            vec![Connection::new(n1, n2)],
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!(42), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        assert!(result.is_success());
+
+        // Both node outputs should be persisted
+        let all_outputs = repo.load_all_outputs(result.execution_id).await.unwrap();
+        assert_eq!(all_outputs.len(), 2);
+        assert_eq!(all_outputs[&n1], serde_json::json!(42));
+        assert_eq!(all_outputs[&n2], serde_json::json!(42));
     }
 }

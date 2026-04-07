@@ -3281,6 +3281,7 @@ dependencies = [
  "nebula-plugin",
  "nebula-resource",
  "nebula-runtime",
+ "nebula-storage",
  "nebula-telemetry",
  "nebula-workflow",
  "serde_json",
