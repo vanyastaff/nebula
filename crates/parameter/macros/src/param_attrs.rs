@@ -29,6 +29,14 @@ pub struct ParameterAttrs {
     pub no_expression: bool,
     /// Multiline text input.
     pub multiline: bool,
+    /// Field name for the `visible_when` condition.
+    pub visible_when_field: Option<String>,
+    /// Value for the `visible_when` condition.
+    pub visible_when_value: Option<String>,
+    /// Field name for the `required_when` condition.
+    pub required_when_field: Option<String>,
+    /// Value for the `required_when` condition.
+    pub required_when_value: Option<String>,
 }
 
 impl ParameterAttrs {
@@ -44,6 +52,10 @@ impl ParameterAttrs {
         let hint = attr_args.get_string("hint");
         let no_expression = attr_args.has_flag("no_expression");
         let multiline = attr_args.has_flag("multiline");
+        let visible_when_field = attr_args.get_string("visible_when_field");
+        let visible_when_value = attr_args.get_string("visible_when_value");
+        let required_when_field = attr_args.get_string("required_when_field");
+        let required_when_value = attr_args.get_string("required_when_value");
 
         Ok(Self {
             key,
@@ -56,6 +68,10 @@ impl ParameterAttrs {
             hint,
             no_expression,
             multiline,
+            visible_when_field,
+            visible_when_value,
+            required_when_field,
+            required_when_value,
         })
     }
 
@@ -118,6 +134,20 @@ impl ParameterAttrs {
             })
             .unwrap_or_default();
 
+        let visible_setter = match (&self.visible_when_field, &self.visible_when_value) {
+            (Some(field), Some(value)) => quote! {
+                .visible_when(::nebula_parameter::conditions::Condition::eq(#field, #value))
+            },
+            _ => quote! {},
+        };
+
+        let required_when_setter = match (&self.required_when_field, &self.required_when_value) {
+            (Some(field), Some(value)) => quote! {
+                .required_when(::nebula_parameter::conditions::Condition::eq(#field, #value))
+            },
+            _ => quote! {},
+        };
+
         Ok(quote! {
             #constructor
                 #label_setter
@@ -127,6 +157,8 @@ impl ParameterAttrs {
                 #secret_setter
                 #no_expr_setter
                 #default_setter
+                #visible_setter
+                #required_when_setter
         })
     }
 

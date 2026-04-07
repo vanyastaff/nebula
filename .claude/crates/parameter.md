@@ -19,6 +19,7 @@ Parameter schema system (RFC 0005) — defines what inputs a workflow node accep
 - `ParameterError::ValidationError` removed — use `ValidationIssue`.
 - `input_type` deprecated — macro emits `.input_hint(InputHint::...)`.
 - `#[validate(...)]` derive: flat keys `required`, `url`, `email`, `min_length`, `max_length`, `min`, `max`, `pattern` → `.with_rule(Rule::...)`. `min`/`max` are `u64`.
+- `#[param(visible_when_field = "f", visible_when_value = "v")]` / `required_when_field/value` — flat key pairs generate `Condition::eq(f, v)` setters. Both keys required; omitting one silently skips the setter.
 
 ## Relations
 - Used by nebula-action, nebula-credential, nebula-sdk.
