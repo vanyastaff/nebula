@@ -14,6 +14,7 @@
 //! sandbox (which provides isolation). It resolves actions from the
 //! registry, enforces data passing policies, and emits telemetry events.
 
+pub mod blob;
 pub mod data_policy;
 pub mod error;
 pub mod queue;
@@ -22,6 +23,7 @@ pub mod runtime;
 pub mod sandbox;
 pub mod stream_backpressure;
 
+pub use blob::{BlobRef, BlobStorage};
 pub use data_policy::{DataPassingPolicy, LargeDataStrategy};
 pub use error::RuntimeError;
 pub use queue::{MemoryQueue, QueueError, TaskQueue};
