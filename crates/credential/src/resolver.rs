@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use nebula_core::CredentialEvent;
+use nebula_core::{CredentialEvent, CredentialId};
 use nebula_eventbus::EventBus;
 
 use crate::context::CredentialContext;
@@ -219,11 +219,9 @@ impl<S: CredentialStore> CredentialResolver<S> {
     }
 
     /// Best-effort emit of a [`CredentialEvent::Refreshed`] event.
-    fn emit_refreshed(&self, credential_id: &str) {
+    fn emit_refreshed(&self, credential_id: CredentialId) {
         if let Some(bus) = &self.event_bus {
-            let _ = bus.emit(CredentialEvent::Refreshed {
-                credential_id: credential_id.to_string(),
-            });
+            let _ = bus.emit(CredentialEvent::Refreshed { credential_id });
         }
     }
 
@@ -324,7 +322,13 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         .await
                     {
                         Ok(_) => {
-                            self.emit_refreshed(credential_id);
+                            match CredentialId::parse(credential_id) {
+                                Ok(id) => self.emit_refreshed(id),
+                                Err(_) => tracing::warn!(
+                                    credential_id,
+                                    "credential ID is not a valid UUID, refresh event not emitted",
+                                ),
+                            }
                             let scheme = C::project(&state);
                             return Ok(CredentialHandle::new(scheme, credential_id));
                         }
@@ -883,6 +887,8 @@ mod tests {
     #[tokio::test]
     async fn emits_refreshed_event_after_successful_refresh() {
         let store = Arc::new(InMemoryStore::new());
+        let cred_id = CredentialId::new();
+        let cred_id_str = cred_id.to_string();
 
         // Token expires in 2 minutes -- inside the 5-minute early_refresh window
         let expires_at = chrono::Utc::now() + chrono::Duration::minutes(2);
@@ -893,7 +899,7 @@ mod tests {
         let data = serde_json::to_vec(&state).unwrap();
 
         let cred = StoredCredential {
-            id: "event-cred".into(),
+            id: cred_id_str.clone(),
             credential_key: "refreshable_test".into(),
             data,
             state_kind: "expiring_test".into(),
@@ -913,7 +919,7 @@ mod tests {
         let ctx = CredentialContext::new("test-user");
 
         let handle = resolver
-            .resolve_with_refresh::<RefreshableTestCredential>("event-cred", &ctx)
+            .resolve_with_refresh::<RefreshableTestCredential>(&cred_id_str, &ctx)
             .await
             .unwrap();
 
@@ -930,7 +936,7 @@ mod tests {
         assert_eq!(
             event,
             CredentialEvent::Refreshed {
-                credential_id: "event-cred".to_string(),
+                credential_id: cred_id,
             }
         );
     }
