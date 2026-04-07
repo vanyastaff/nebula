@@ -1101,7 +1101,13 @@ mod tests {
     fn string_constructor_defaults() {
         let p = Parameter::string("name");
         assert_eq!(p.id, "name");
-        assert_eq!(p.param_type, ParameterType::String { multiline: false, input_hint: InputHint::default() });
+        assert_eq!(
+            p.param_type,
+            ParameterType::String {
+                multiline: false,
+                input_hint: InputHint::default()
+            }
+        );
         assert!(!p.required);
         assert!(!p.secret);
         assert!(p.label.is_none());
@@ -1251,7 +1257,13 @@ mod tests {
     #[test]
     fn multiline_enables_textarea_mode() {
         let s = Parameter::string("text").multiline();
-        assert_eq!(s.param_type, ParameterType::String { multiline: true, input_hint: InputHint::default() });
+        assert_eq!(
+            s.param_type,
+            ParameterType::String {
+                multiline: true,
+                input_hint: InputHint::default()
+            }
+        );
     }
 
     #[test]

@@ -7,13 +7,12 @@ Foundation shared by every other crate — IDs, domain keys, scope system, and s
 - Keys (`PluginKey`, `ActionKey`, `ParameterKey`, etc.) are normalized lowercase ASCII with only `.`, `_`, `-` as separators. Validated by `domain-key` crate at construction.
 
 ## Key Decisions
-- `NodeId` identifies a *position in the workflow graph*, not the action type. `ActionKey`/`PluginKey` carry type identity. `NodeDefinition.action_key` is the binding.
-- Compile-time key construction via `plugin_key!`, `action_key!`, etc. macros — validated at compile time.
+- `NodeId` = graph position, `ActionKey`/`PluginKey` = type identity. Multiple nodes can share an `ActionKey`.
+- Compile-time key construction via `plugin_key!`, `action_key!`, etc. macros.
 - `ScopeLevel` hierarchy: Global → Organization → Project → Workflow → Execution → Action.
-- `AuthScheme` trait lives here as a contract type between credential and resource crates. Requires `Serialize + DeserializeOwned + Send + Sync + Clone + 'static`, `const KIND: &'static str`, and provides default `expires_at() -> Option<DateTime<Utc>>`. `()` implements it for credential-free resources.
-- `SecretString` + `serde_secret` module live here (moved from nebula-credential). Fundamental secret-safe type usable by any crate (log, auth, config, webhook) without depending on credential. `Zeroize + ZeroizeOnDrop`, `Debug`/`Display` prints `[REDACTED]`, `Serialize` redacts by default, `serde_secret` for transparent storage round-trip.
-
-- `CredentialEvent` lives here (not in nebula-credential) so both emitter (credential) and consumer (resource) can use it without peer dependency. Plain enum, no EventBus dependency — the bus lives in consuming crates.
+- `AuthScheme` trait: contract between credential and resource crates. `()` implements it for credential-free resources.
+- `SecretString` + `serde_secret` live here — usable by any crate without depending on credential.
+- `CredentialEvent` lives here (not in nebula-credential) so both emitter and consumer avoid peer dependency. Uses typed `CredentialId` (Copy), no EventBus dependency.
 
 ## Traps
 - Confusing `NodeId` with `ActionKey`: multiple nodes can run the same action; they have different `NodeId`s but the same `ActionKey`.

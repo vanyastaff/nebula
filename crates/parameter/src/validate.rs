@@ -344,13 +344,7 @@ fn validate_object(
         if is_pick_mode && !obj.contains_key(&sub_param.id) {
             continue;
         }
-        validate_parameter(
-            sub_param,
-            &nested_values,
-            key,
-            depth + 1,
-            report,
-        );
+        validate_parameter(sub_param, &nested_values, key, depth + 1, report);
     }
 
     // Check for unknown fields within the object.
@@ -465,13 +459,7 @@ fn validate_mode(
         let variant_values: ParameterValues = vec![(variant.id.clone(), variant_value.clone())]
             .into_iter()
             .collect();
-        validate_parameter(
-            variant,
-            &variant_values,
-            key,
-            depth + 1,
-            report,
-        );
+        validate_parameter(variant, &variant_values, key, depth + 1, report);
     }
 
     // Check for unknown keys (only "mode" and "value" allowed).

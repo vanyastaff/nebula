@@ -69,7 +69,7 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - Depends on: nebula-core, nebula-eventbus, nebula-resilience, nebula-parameter, nebula-telemetry, nebula-metrics. Peer: nebula-resource.
 - Built-in credentials: `ApiKeyCredential`, `BasicAuthCredential`, `DatabaseCredential`, `HeaderAuthCredential`, `OAuth2Credential`.
 - Rotation module: feature-gated, disconnected from v2 Credential trait.
-- `CredentialEvent` lives in nebula-core (both emitter/consumer without peer import). Resolver emits via optional `EventBus<CredentialEvent>`.
+- `CredentialEvent` lives in nebula-core (both emitter/consumer without peer import). Uses typed `CredentialId` (Copy), not String. Resolver emits via optional `EventBus<CredentialEvent>`.
 
 <!-- updated: 2026-04-01 — HLD v1.5, 17 bugs, 33 v1 items, 2 conferences (10 external devs), SOC2 audit grades -->
 <!-- reviewed: 2026-03-31 — B7 fix: CAS retry loop (3 attempts) reuses refreshed token, prevents OAuth2 single-use token loss -->
