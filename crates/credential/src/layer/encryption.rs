@@ -181,6 +181,9 @@ impl<S> EncryptionLayer<S> {
     ///
     /// AAD (credential ID) is always enforced — data without AAD or with a
     /// mismatched ID is rejected.
+    #[allow(clippy::type_complexity)]
+    // Reason: The return type is (plaintext, optional re-encryption bytes) — a type alias
+    // here would obscure the meaning without reducing complexity. The function is private.
     fn decrypt_possibly_rotating(
         &self,
         ciphertext: &[u8],

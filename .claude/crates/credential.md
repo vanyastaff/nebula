@@ -29,4 +29,7 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - `PutMode::Upsert` does not exist — use `PutMode::Overwrite`.
 - `Zeroizing<Vec<u8>>` has no `into_inner()` — extract via `std::mem::take(&mut *val)`.
 
-<!-- reviewed: 2026-04-07 — Task 12-13: AuthScheme derive macro + scheme migration. -->
+## test() signature
+- Returns `Option<TestResult>` — `None` = not testable. `Untestable` variant removed.
+
+<!-- reviewed: 2026-04-07 — Task 16: test() returns Option<TestResult> -->
