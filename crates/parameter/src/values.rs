@@ -391,7 +391,6 @@ impl FromIterator<(String, serde_json::Value)> for ParameterValues {
     }
 }
 
-
 /// A frozen copy of parameter values for snapshot/restore.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParameterValuesSnapshot {

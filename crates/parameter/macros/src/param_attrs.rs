@@ -109,10 +109,14 @@ impl ParameterAttrs {
             quote!()
         };
 
-        let default_setter = self.default.as_ref().map(|v| {
-            let val = attr_value_to_json(v);
-            quote!(.default(#val))
-        }).unwrap_or_default();
+        let default_setter = self
+            .default
+            .as_ref()
+            .map(|v| {
+                let val = attr_value_to_json(v);
+                quote!(.default(#val))
+            })
+            .unwrap_or_default();
 
         Ok(quote! {
             #constructor
@@ -150,13 +154,21 @@ impl ParameterAttrs {
                     }
                 } else if let Some(hint) = &self.hint {
                     match hint.as_str() {
-                        "url" => quote! { ::nebula_parameter::parameter::Parameter::string(#key).input_type("url") },
-                        "email" => quote! { ::nebula_parameter::parameter::Parameter::string(#key).input_type("email") },
+                        "url" => {
+                            quote! { ::nebula_parameter::parameter::Parameter::string(#key).input_type("url") }
+                        }
+                        "email" => {
+                            quote! { ::nebula_parameter::parameter::Parameter::string(#key).input_type("email") }
+                        }
                         "date" => quote! { ::nebula_parameter::parameter::Parameter::date(#key) },
-                        "datetime" => quote! { ::nebula_parameter::parameter::Parameter::datetime(#key) },
+                        "datetime" => {
+                            quote! { ::nebula_parameter::parameter::Parameter::datetime(#key) }
+                        }
                         "time" => quote! { ::nebula_parameter::parameter::Parameter::time(#key) },
                         "color" => quote! { ::nebula_parameter::parameter::Parameter::color(#key) },
-                        _ => quote! { ::nebula_parameter::parameter::Parameter::string(#key).input_type(#hint) },
+                        _ => {
+                            quote! { ::nebula_parameter::parameter::Parameter::string(#key).input_type(#hint) }
+                        }
                     }
                 } else {
                     quote! { ::nebula_parameter::parameter::Parameter::string(#key) }

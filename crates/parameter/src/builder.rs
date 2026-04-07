@@ -22,6 +22,7 @@
 //! assert_eq!(params.len(), 4);
 //! ```
 
+use crate::ParameterCollection;
 use crate::conditions::Condition;
 use crate::input_hint::InputHint;
 use crate::option::SelectOption;
@@ -29,7 +30,6 @@ use crate::parameter::Parameter;
 use crate::parameter_type::ParameterType;
 use crate::rules::Rule;
 use crate::transformer::Transformer;
-use crate::ParameterCollection;
 
 // ── Collection builder ─────────────────────────────────────────────────────
 

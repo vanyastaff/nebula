@@ -100,7 +100,6 @@ impl ValidatedValues {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
