@@ -57,7 +57,7 @@ impl ActionRegistry {
 
         tracing::info!(
             action_key = %key,
-            version = %format!("{}.{}", version.major, version.minor),
+            version = %version,
             "registered action handler",
         );
 

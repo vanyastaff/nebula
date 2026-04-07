@@ -19,9 +19,10 @@ use crate::error::ActionError;
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use nebula_action::testing::TestContextBuilder;
-///
+/// ```rust,no_run
+/// # use nebula_credential::CredentialSnapshot;
+/// # use nebula_action::testing::TestContextBuilder;
+/// # let snapshot: CredentialSnapshot = todo!();
 /// let ctx = TestContextBuilder::new()
 ///     .with_credential_snapshot("api_key", snapshot)
 ///     .build();
