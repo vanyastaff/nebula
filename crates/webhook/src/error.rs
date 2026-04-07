@@ -52,8 +52,11 @@ pub enum Error {
     PayloadParse(String),
 
     /// Signature verification failed
-    #[error("Webhook signature verification failed")]
-    SignatureInvalid,
+    #[error("Webhook signature verification failed: {reason}")]
+    SignatureInvalid {
+        /// Why verification failed.
+        reason: String,
+    },
 
     /// Operation was cancelled
     #[error("Operation was cancelled")]
@@ -85,7 +88,7 @@ impl nebula_error::Classify for Error {
             Self::RouteConflict { .. } => nebula_error::ErrorCategory::Conflict,
             Self::RouteNotFound { .. } => nebula_error::ErrorCategory::NotFound,
             Self::TriggerFailed(_) => nebula_error::ErrorCategory::External,
-            Self::SignatureInvalid => nebula_error::ErrorCategory::Authentication,
+            Self::SignatureInvalid { .. } => nebula_error::ErrorCategory::Authentication,
             Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
             Self::Resource(e) => nebula_error::Classify::category(e),
             Self::Timeout { .. } => nebula_error::ErrorCategory::Timeout,
@@ -103,7 +106,7 @@ impl nebula_error::Classify for Error {
             Self::InvalidPath(_) => "WEBHOOK:INVALID_PATH",
             Self::TriggerFailed(_) => "WEBHOOK:TRIGGER_FAILED",
             Self::PayloadParse(_) => "WEBHOOK:PAYLOAD_PARSE",
-            Self::SignatureInvalid => "WEBHOOK:SIGNATURE_INVALID",
+            Self::SignatureInvalid { .. } => "WEBHOOK:SIGNATURE_INVALID",
             Self::Cancelled => "WEBHOOK:CANCELLED",
             Self::Resource(_) => "WEBHOOK:RESOURCE",
             Self::Timeout { .. } => "WEBHOOK:TIMEOUT",
@@ -159,6 +162,13 @@ impl Error {
     /// Create a timeout error
     pub fn timeout(seconds: u64) -> Self {
         Self::Timeout { seconds }
+    }
+
+    /// Create a signature invalid error
+    pub fn signature_invalid(reason: impl Into<String>) -> Self {
+        Self::SignatureInvalid {
+            reason: reason.into(),
+        }
     }
 
     /// Create a generic error
