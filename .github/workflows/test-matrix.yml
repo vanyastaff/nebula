@@ -84,9 +84,28 @@ jobs:
           JSON=$(printf '%s\n' "${PACKAGES[@]}" | jq -R . | jq -s -c .)
           echo "packages=$JSON" >> "$GITHUB_OUTPUT"
 
+  # Build workspace once and save cache — matrix jobs read it
+  warm-cache:
+    name: Warm Cache
+    needs: select-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: matrix
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: Build workspace (populates cache)
+        run: cargo check --workspace --all-targets
+
   test-crates:
     name: Test ${{ matrix.package }}
-    needs: select-matrix
+    needs: [select-matrix, warm-cache]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -103,8 +122,8 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: matrix-${{ matrix.package }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: matrix
+          save-if: false
           cache-on-failure: true
 
       - name: Install cargo-nextest
