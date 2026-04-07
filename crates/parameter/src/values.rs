@@ -61,6 +61,27 @@ impl ParameterValue {
         Self::Literal(value.clone())
     }
 
+    /// Parses a typed value from an owned JSON value without cloning.
+    ///
+    /// Prefer this over [`from_json`](Self::from_json) when the caller
+    /// already owns the `Value` and does not need to retain it.
+    #[must_use]
+    pub fn from_json_owned(value: serde_json::Value) -> Self {
+        if let serde_json::Value::Object(ref object) = value {
+            if object.len() == 1
+                && let Some(expr) = object.get(EXPRESSION_KEY).and_then(|v| v.as_str())
+            {
+                return Self::Expression(expr.to_owned());
+            }
+            if let Some(mode) = object.get("mode").and_then(|v| v.as_str()) {
+                let mode = mode.to_owned();
+                let val = object.get("value").cloned();
+                return Self::Mode { mode, value: val };
+            }
+        }
+        Self::Literal(value)
+    }
+
     /// Converts this typed value to the JSON wire representation.
     #[must_use]
     pub fn into_json(self) -> serde_json::Value {
@@ -136,6 +157,22 @@ impl ParameterValues {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Creates `ParameterValues` from a JSON object map.
+    #[must_use]
+    pub fn from_map(map: &serde_json::Map<String, serde_json::Value>) -> Self {
+        Self {
+            values: map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        }
+    }
+
+    /// Creates `ParameterValues` with a single key-value pair.
+    #[must_use]
+    pub fn from_single(key: impl Into<String>, value: serde_json::Value) -> Self {
+        let mut values = HashMap::with_capacity(1);
+        values.insert(key.into(), value);
+        Self { values }
     }
 
     /// Get a value by parameter key.
@@ -613,6 +650,36 @@ mod tests {
         assert_eq!(
             vals.get_typed("port"),
             Some(ParameterValue::Literal(json!(8080)))
+        );
+    }
+
+    #[test]
+    fn from_json_owned_avoids_clone() {
+        let value = serde_json::json!("hello");
+        let pv = ParameterValue::from_json_owned(value);
+        assert_eq!(pv, ParameterValue::Literal(serde_json::json!("hello")));
+    }
+
+    #[test]
+    fn from_json_owned_detects_expression() {
+        let value = serde_json::json!({ "$expr": "{{ $input.name }}" });
+        let pv = ParameterValue::from_json_owned(value);
+        assert_eq!(
+            pv,
+            ParameterValue::Expression("{{ $input.name }}".to_owned())
+        );
+    }
+
+    #[test]
+    fn from_json_owned_detects_mode() {
+        let value = serde_json::json!({ "mode": "basic", "value": "secret" });
+        let pv = ParameterValue::from_json_owned(value);
+        assert_eq!(
+            pv,
+            ParameterValue::Mode {
+                mode: "basic".to_owned(),
+                value: Some(serde_json::json!("secret")),
+            }
         );
     }
 

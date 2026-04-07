@@ -29,6 +29,14 @@ pub struct ParameterAttrs {
     pub no_expression: bool,
     /// Multiline text input.
     pub multiline: bool,
+    /// Field name for the `visible_when` condition.
+    pub visible_when_field: Option<String>,
+    /// Value for the `visible_when` condition.
+    pub visible_when_value: Option<String>,
+    /// Field name for the `required_when` condition.
+    pub required_when_field: Option<String>,
+    /// Value for the `required_when` condition.
+    pub required_when_value: Option<String>,
 }
 
 impl ParameterAttrs {
@@ -44,6 +52,10 @@ impl ParameterAttrs {
         let hint = attr_args.get_string("hint");
         let no_expression = attr_args.has_flag("no_expression");
         let multiline = attr_args.has_flag("multiline");
+        let visible_when_field = attr_args.get_string("visible_when_field");
+        let visible_when_value = attr_args.get_string("visible_when_value");
+        let required_when_field = attr_args.get_string("required_when_field");
+        let required_when_value = attr_args.get_string("required_when_value");
 
         Ok(Self {
             key,
@@ -56,6 +68,10 @@ impl ParameterAttrs {
             hint,
             no_expression,
             multiline,
+            visible_when_field,
+            visible_when_value,
+            required_when_field,
+            required_when_value,
         })
     }
 
@@ -118,6 +134,20 @@ impl ParameterAttrs {
             })
             .unwrap_or_default();
 
+        let visible_setter = match (&self.visible_when_field, &self.visible_when_value) {
+            (Some(field), Some(value)) => quote! {
+                .visible_when(::nebula_parameter::conditions::Condition::eq(#field, #value))
+            },
+            _ => quote! {},
+        };
+
+        let required_when_setter = match (&self.required_when_field, &self.required_when_value) {
+            (Some(field), Some(value)) => quote! {
+                .required_when(::nebula_parameter::conditions::Condition::eq(#field, #value))
+            },
+            _ => quote! {},
+        };
+
         Ok(quote! {
             #constructor
                 #label_setter
@@ -127,6 +157,8 @@ impl ParameterAttrs {
                 #secret_setter
                 #no_expr_setter
                 #default_setter
+                #visible_setter
+                #required_when_setter
         })
     }
 
@@ -154,21 +186,36 @@ impl ParameterAttrs {
                     }
                 } else if let Some(hint) = &self.hint {
                     match hint.as_str() {
-                        "url" => {
-                            quote! { ::nebula_parameter::parameter::Parameter::string(#key).input_type("url") }
-                        }
-                        "email" => {
-                            quote! { ::nebula_parameter::parameter::Parameter::string(#key).input_type("email") }
-                        }
+                        "url" => quote! {
+                            ::nebula_parameter::parameter::Parameter::string(#key)
+                                .input_hint(::nebula_parameter::InputHint::Url)
+                        },
+                        "email" => quote! {
+                            ::nebula_parameter::parameter::Parameter::string(#key)
+                                .input_hint(::nebula_parameter::InputHint::Email)
+                        },
                         "date" => quote! { ::nebula_parameter::parameter::Parameter::date(#key) },
                         "datetime" => {
                             quote! { ::nebula_parameter::parameter::Parameter::datetime(#key) }
                         }
                         "time" => quote! { ::nebula_parameter::parameter::Parameter::time(#key) },
                         "color" => quote! { ::nebula_parameter::parameter::Parameter::color(#key) },
-                        _ => {
-                            quote! { ::nebula_parameter::parameter::Parameter::string(#key).input_type(#hint) }
-                        }
+                        "password" => quote! {
+                            ::nebula_parameter::parameter::Parameter::string(#key)
+                                .input_hint(::nebula_parameter::InputHint::Password)
+                        },
+                        "phone" => quote! {
+                            ::nebula_parameter::parameter::Parameter::string(#key)
+                                .input_hint(::nebula_parameter::InputHint::Phone)
+                        },
+                        "ip" => quote! {
+                            ::nebula_parameter::parameter::Parameter::string(#key)
+                                .input_hint(::nebula_parameter::InputHint::Ip)
+                        },
+                        // Unknown hint — fall back to plain string
+                        _ => quote! {
+                            ::nebula_parameter::parameter::Parameter::string(#key)
+                        },
                     }
                 } else {
                     quote! { ::nebula_parameter::parameter::Parameter::string(#key) }
@@ -217,6 +264,86 @@ impl ParameterAttrs {
     }
 }
 
+/// Parsed `#[validate(...)]` field attributes.
+#[derive(Debug, Clone, Default)]
+pub struct ValidateAttrs {
+    /// Mark field as required.
+    pub required: bool,
+    /// Apply URL validation rule.
+    pub url: bool,
+    /// Apply email validation rule.
+    pub email: bool,
+    /// Apply minimum length rule.
+    pub min_length: Option<u64>,
+    /// Apply maximum length rule.
+    pub max_length: Option<u64>,
+    /// Apply minimum value rule.
+    pub min: Option<u64>,
+    /// Apply maximum value rule.
+    pub max: Option<u64>,
+    /// Apply pattern (regex) rule.
+    pub pattern: Option<String>,
+}
+
+impl ValidateAttrs {
+    /// Parse from `#[validate(...)]` attribute args.
+    pub fn parse(attr_args: &attrs::AttrArgs) -> Result<Self> {
+        Ok(Self {
+            required: attr_args.has_flag("required"),
+            url: attr_args.has_flag("url"),
+            email: attr_args.has_flag("email"),
+            min_length: attr_args.get_int("min_length"),
+            max_length: attr_args.get_int("max_length"),
+            min: attr_args.get_int("min"),
+            max: attr_args.get_int("max"),
+            pattern: attr_args.get_string("pattern"),
+        })
+    }
+
+    /// Generate chained `.with_rule(...)` expressions for all active rules.
+    pub fn rule_exprs(&self) -> Vec<TokenStream2> {
+        let mut rules = Vec::new();
+        if self.url {
+            rules.push(
+                quote! { .with_rule(::nebula_parameter::rules::Rule::Url { message: None }) },
+            );
+        }
+        if self.email {
+            rules.push(
+                quote! { .with_rule(::nebula_parameter::rules::Rule::Email { message: None }) },
+            );
+        }
+        if let Some(min) = self.min_length {
+            let min = min as usize;
+            rules.push(
+                quote! { .with_rule(::nebula_parameter::rules::Rule::MinLength { min: #min, message: None }) },
+            );
+        }
+        if let Some(max) = self.max_length {
+            let max = max as usize;
+            rules.push(
+                quote! { .with_rule(::nebula_parameter::rules::Rule::MaxLength { max: #max, message: None }) },
+            );
+        }
+        if let Some(min) = self.min {
+            rules.push(
+                quote! { .with_rule(::nebula_parameter::rules::Rule::Min { min: ::serde_json::Number::from(#min), message: None }) },
+            );
+        }
+        if let Some(max) = self.max {
+            rules.push(
+                quote! { .with_rule(::nebula_parameter::rules::Rule::Max { max: ::serde_json::Number::from(#max), message: None }) },
+            );
+        }
+        if let Some(pat) = &self.pattern {
+            rules.push(
+                quote! { .with_rule(::nebula_parameter::rules::Rule::Pattern { pattern: #pat.to_owned(), message: None }) },
+            );
+        }
+        rules
+    }
+}
+
 /// Unwrap `Option<T>` → (T, true). If not Option, return (ty, false).
 fn unwrap_option(ty: &Type) -> (&Type, bool) {
     let Type::Path(type_path) = ty else {
@@ -256,7 +383,7 @@ fn unwrap_vec(ty: &Type) -> Option<&Type> {
 }
 
 /// Extract the last path segment as a string for type matching.
-fn type_to_string(ty: &Type) -> String {
+pub(crate) fn type_to_string(ty: &Type) -> String {
     let Type::Path(type_path) = ty else {
         return String::new();
     };

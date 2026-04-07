@@ -28,7 +28,7 @@ pub fn validate_parameters(
     values: &ParameterValues,
 ) -> Result<(), Vec<ParameterError>> {
     let report = validate_with_profile(parameters, values, ValidationProfile::Strict);
-    if report.errors.is_empty() {
+    if report.is_ok() {
         Ok(())
     } else {
         Err(report.errors)
@@ -58,8 +58,8 @@ pub fn validate_with_profile(
                 key: key.to_owned(),
             };
             match profile {
-                ValidationProfile::Strict => report.errors.push(error),
-                ValidationProfile::Warn => report.warnings.push(error),
+                ValidationProfile::Strict => report.push_error(error),
+                ValidationProfile::Warn => report.push_warning(error),
                 ValidationProfile::Permissive => {}
             }
         }
@@ -108,9 +108,7 @@ fn validate_parameter(
             .is_some_and(|c| c.evaluate(values));
 
     if is_required && is_missing_or_null(raw_value) {
-        report
-            .errors
-            .push(ParameterError::MissingValue { key: key.clone() });
+        report.push_error(ParameterError::MissingValue { key: key.clone() });
         return;
     }
 
@@ -126,7 +124,7 @@ fn validate_parameter(
             continue;
         }
         if let Err(validation_error) = rule.validate_value(value) {
-            report.errors.push(ParameterError::ValidationIssue {
+            report.push_error(ParameterError::ValidationIssue {
                 key: key.clone(),
                 code: validation_error.code.to_string(),
                 reason: validation_error.message.to_string(),
@@ -233,7 +231,7 @@ fn validate_number(
     report: &mut ValidationReport,
 ) {
     let Some(n) = value.as_f64() else {
-        report.errors.push(ParameterError::InvalidType {
+        report.push_error(ParameterError::InvalidType {
             key: key.to_owned(),
             expected_type: "number".to_owned(),
             actual_details: value_type_name(value),
@@ -242,7 +240,7 @@ fn validate_number(
     };
 
     if integer && n.fract() != 0.0 {
-        report.errors.push(ParameterError::InvalidType {
+        report.push_error(ParameterError::InvalidType {
             key: key.to_owned(),
             expected_type: "integer".to_owned(),
             actual_details: format!("float {n}"),
@@ -254,7 +252,7 @@ fn validate_number(
         && let Some(min_f) = min_num.as_f64()
         && n < min_f
     {
-        report.errors.push(ParameterError::ValidationIssue {
+        report.push_error(ParameterError::ValidationIssue {
             key: key.to_owned(),
             code: "number_min".to_owned(),
             reason: format!("value {n} is below minimum {min_f}"),
@@ -266,7 +264,7 @@ fn validate_number(
         && let Some(max_f) = max_num.as_f64()
         && n > max_f
     {
-        report.errors.push(ParameterError::ValidationIssue {
+        report.push_error(ParameterError::ValidationIssue {
             key: key.to_owned(),
             code: "number_max".to_owned(),
             reason: format!("value {n} exceeds maximum {max_f}"),
@@ -292,7 +290,7 @@ fn validate_select(
 
     if multiple {
         let Some(arr) = value.as_array() else {
-            report.errors.push(ParameterError::InvalidType {
+            report.push_error(ParameterError::InvalidType {
                 key: key.to_owned(),
                 expected_type: "array (multi-select)".to_owned(),
                 actual_details: value_type_name(value),
@@ -301,14 +299,14 @@ fn validate_select(
         };
         for item in arr {
             if !options.iter().any(|o| o.value == *item) {
-                report.errors.push(ParameterError::InvalidValue {
+                report.push_error(ParameterError::InvalidValue {
                     key: key.to_owned(),
                     reason: format!("value {item} is not in the allowed options"),
                 });
             }
         }
     } else if !options.is_empty() && !options.iter().any(|o| o.value == *value) {
-        report.errors.push(ParameterError::InvalidValue {
+        report.push_error(ParameterError::InvalidValue {
             key: key.to_owned(),
             reason: format!("value {value} is not in the allowed options"),
         });
@@ -326,7 +324,7 @@ fn validate_object(
     report: &mut ValidationReport,
 ) {
     let Some(obj) = value.as_object() else {
-        report.errors.push(ParameterError::InvalidType {
+        report.push_error(ParameterError::InvalidType {
             key: key.to_owned(),
             expected_type: "object".to_owned(),
             actual_details: value_type_name(value),
@@ -335,7 +333,7 @@ fn validate_object(
     };
 
     // Build a nested ParameterValues from the object for condition evaluation.
-    let nested_values: ParameterValues = obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let nested_values = ParameterValues::from_map(obj);
 
     let is_pick_mode = display_mode.is_pick_mode();
 
@@ -351,7 +349,7 @@ fn validate_object(
     let known_sub_ids: HashSet<&str> = parameters.iter().map(|p| p.id.as_str()).collect();
     for obj_key in obj.keys() {
         if !known_sub_ids.contains(obj_key.as_str()) {
-            report.warnings.push(ParameterError::UnknownField {
+            report.push_warning(ParameterError::UnknownField {
                 key: make_path(key, obj_key),
             });
         }
@@ -370,7 +368,7 @@ fn validate_list(
     report: &mut ValidationReport,
 ) {
     let Some(arr) = value.as_array() else {
-        report.errors.push(ParameterError::InvalidType {
+        report.push_error(ParameterError::InvalidType {
             key: key.to_owned(),
             expected_type: "array".to_owned(),
             actual_details: value_type_name(value),
@@ -383,7 +381,7 @@ fn validate_list(
     if let Some(min) = min_items
         && len < min as usize
     {
-        report.errors.push(ParameterError::ValidationIssue {
+        report.push_error(ParameterError::ValidationIssue {
             key: key.to_owned(),
             code: "min_items".to_owned(),
             reason: format!("expected at least {min} items, got {len}"),
@@ -394,7 +392,7 @@ fn validate_list(
     if let Some(max) = max_items
         && len > max as usize
     {
-        report.errors.push(ParameterError::ValidationIssue {
+        report.push_error(ParameterError::ValidationIssue {
             key: key.to_owned(),
             code: "max_items".to_owned(),
             reason: format!("expected at most {max} items, got {len}"),
@@ -406,9 +404,7 @@ fn validate_list(
     for (i, item_value) in arr.iter().enumerate() {
         let item_key = make_path(key, &i.to_string());
         // Build a single-entry ParameterValues for the item.
-        let item_values: ParameterValues = vec![(item.id.clone(), item_value.clone())]
-            .into_iter()
-            .collect();
+        let item_values = ParameterValues::from_single(&item.id, item_value.clone());
         validate_parameter(item, &item_values, &item_key, depth + 1, report);
     }
 }
@@ -424,7 +420,7 @@ fn validate_mode(
     report: &mut ValidationReport,
 ) {
     let Some(obj) = value.as_object() else {
-        report.errors.push(ParameterError::InvalidType {
+        report.push_error(ParameterError::InvalidType {
             key: key.to_owned(),
             expected_type: "object (mode)".to_owned(),
             actual_details: value_type_name(value),
@@ -435,7 +431,7 @@ fn validate_mode(
     let mode_key = obj.get("mode").and_then(Value::as_str).or(default_variant);
 
     let Some(mode_key) = mode_key else {
-        report.errors.push(ParameterError::InvalidValue {
+        report.push_error(ParameterError::InvalidValue {
             key: key.to_owned(),
             reason: "mode object missing \"mode\" key and no default variant".to_owned(),
         });
@@ -445,7 +441,7 @@ fn validate_mode(
     // Find matching variant by id.
     let variant = variants.iter().find(|v| v.id == mode_key);
     let Some(variant) = variant else {
-        report.errors.push(ParameterError::InvalidValue {
+        report.push_error(ParameterError::InvalidValue {
             key: key.to_owned(),
             reason: format!("unknown mode variant \"{mode_key}\""),
         });
@@ -456,16 +452,14 @@ fn validate_mode(
     if let Some(variant_value) = obj.get("value")
         && !variant_value.is_null()
     {
-        let variant_values: ParameterValues = vec![(variant.id.clone(), variant_value.clone())]
-            .into_iter()
-            .collect();
+        let variant_values = ParameterValues::from_single(&variant.id, variant_value.clone());
         validate_parameter(variant, &variant_values, key, depth + 1, report);
     }
 
     // Check for unknown keys (only "mode" and "value" allowed).
     for obj_key in obj.keys() {
         if obj_key != "mode" && obj_key != "value" {
-            report.warnings.push(ParameterError::UnknownField {
+            report.push_warning(ParameterError::UnknownField {
                 key: make_path(key, obj_key),
             });
         }
@@ -894,7 +888,7 @@ mod tests {
         let report = validate_with_profile(&params, &values, ValidationProfile::Permissive);
         assert!(report.has_errors());
         assert!(matches!(
-            &report.errors[0],
+            &report.errors()[0],
             ParameterError::MissingValue { key } if key == "token"
         ));
     }
@@ -909,6 +903,37 @@ mod tests {
         values.set("auth", json!("basic"));
         let report = validate_with_profile(&params, &values, ValidationProfile::Permissive);
         assert!(report.is_ok());
+    }
+
+    #[test]
+    fn validates_deeply_nested_object() {
+        let params = vec![
+            Parameter::object("level1")
+                .add(Parameter::object("level2").add(Parameter::string("deep_field").required()))
+                .required(),
+        ];
+        let mut values = ParameterValues::new();
+        values.set("level1", json!({"level2": {"deep_field": "value"}}));
+        let result = validate_parameters(&params, &values);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validates_deeply_nested_missing_required() {
+        let params = vec![
+            Parameter::object("level1")
+                .add(Parameter::object("level2").add(Parameter::string("deep_field").required()))
+                .required(),
+        ];
+        let mut values = ParameterValues::new();
+        values.set("level1", json!({"level2": {}}));
+        let result = validate_parameters(&params, &values);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(matches!(
+            &errors[0],
+            ParameterError::MissingValue { key } if key == "level1.level2.deep_field"
+        ));
     }
 
     #[test]

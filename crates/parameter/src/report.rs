@@ -11,9 +11,9 @@ use crate::values::ParameterValues;
 #[derive(Debug, Clone)]
 pub struct ValidationReport {
     /// Hard validation failures that block accepting the values.
-    pub errors: Vec<ParameterError>,
+    pub(crate) errors: Vec<ParameterError>,
     /// Non-blocking diagnostic notices (e.g. unknown fields under `Warn` profile).
-    pub warnings: Vec<ParameterError>,
+    pub(crate) warnings: Vec<ParameterError>,
     /// The values that were validated (used by `into_validated`).
     values: ParameterValues,
 }
@@ -30,6 +30,28 @@ impl ValidationReport {
             warnings,
             values,
         }
+    }
+
+    /// Returns a slice of hard validation errors.
+    #[must_use]
+    pub fn errors(&self) -> &[ParameterError] {
+        &self.errors
+    }
+
+    /// Returns a slice of non-blocking warnings.
+    #[must_use]
+    pub fn warnings(&self) -> &[ParameterError] {
+        &self.warnings
+    }
+
+    /// Adds a hard error to the report.
+    pub(crate) fn push_error(&mut self, error: ParameterError) {
+        self.errors.push(error);
+    }
+
+    /// Adds a warning to the report.
+    pub(crate) fn push_warning(&mut self, warning: ParameterError) {
+        self.warnings.push(warning);
     }
 
     /// Returns `true` if the report contains no hard errors.
