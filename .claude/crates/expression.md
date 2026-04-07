@@ -17,7 +17,6 @@ n8n-compatible expression language evaluating `serde_json::Value` — used in wo
 - `EvaluationContext` is per-execution, not reused.
 - `eval_lambda` calls `eval_counting` (not `eval`) so iterations share the step budget.
 - `pick`/`omit` validate all key args are strings; `pad_start`/`pad_end`/`repeat` use `get_int_arg_with_policy` (float coercion in non-strict mode).
-- `some`/`every`/`find`/`find_index`/`group_by` are intercepted by the evaluator as lambda-based HOFs (eval.rs ~856) and never reach the builtin registry — do NOT add value-based implementations, they will be dead code.
-- `flat_map` is a plain builtin (no lambda): extracts a named array field from each element and flattens.
+- `some`/`every`/`find`/`find_index`/`group_by`/`flat_map` are intercepted by the evaluator as lambda-based HOFs (eval.rs ~856-861) and never reach the builtin registry — do NOT add value-based implementations, they will be dead code.
 
-<!-- reviewed: 2026-04-07 — removed dead some/every/find/find_index/group_by builtins; HOF intercept boundary clarified -->
+<!-- reviewed: 2026-04-07 — removed dead HOF builtins (some/every/find/find_index/group_by/flat_map); all are evaluator-only -->

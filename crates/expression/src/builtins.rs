@@ -119,7 +119,9 @@ impl BuiltinRegistry {
         self.register("concat", array::concat);
         self.register("flatten", array::flatten);
         self.register("unique", array::unique);
-        self.register("flat_map", array::flat_map);
+        // Note: some, every, find, find_index, group_by, flat_map are
+        // higher-order functions handled by the evaluator via
+        // try_higher_order_function. NOT registered here.
     }
 
     fn register_object_functions(&mut self) {
