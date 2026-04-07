@@ -10,8 +10,6 @@ use std::sync::Arc;
 
 use nebula_core::AuthScheme;
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
-use nebula_resource::Resource;
-use nebula_resource::handle::ResourceHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::capability::{
@@ -116,37 +114,8 @@ impl ActionContext {
     }
 
     /// Acquire a resource by key through the configured accessor.
-    pub async fn resource(&self, key: &str) -> Result<Box<dyn Any + Send>, ActionError> {
+    pub async fn resource(&self, key: &str) -> Result<Box<dyn Any + Send + Sync>, ActionError> {
         self.resources.acquire(key).await
-    }
-
-    /// Acquire a typed resource handle by key.
-    ///
-    /// This is the primary typed resource access method for action authors.
-    /// It fetches the type-erased resource and downcasts it to a concrete
-    /// [`ResourceHandle<R>`], returning the strongly-typed handle.
-    ///
-    /// # Errors
-    ///
-    /// - Returns [`ActionError::Fatal`] if the resource does not exist or the
-    ///   accessor is not configured.
-    /// - Returns [`ActionError::Fatal`] if the stored resource type does not
-    ///   match `R` (type mismatch).
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// let handle: ResourceHandle<MyDatabase> = ctx.resource_typed::<MyDatabase>("db").await?;
-    /// ```
-    pub async fn resource_typed<R: Resource>(
-        &self,
-        key: &str,
-    ) -> Result<ResourceHandle<R>, ActionError> {
-        let boxed = self.resources.acquire(key).await?;
-        boxed
-            .downcast::<ResourceHandle<R>>()
-            .map(|b| *b)
-            .map_err(|_| ActionError::fatal(format!("resource `{key}`: type mismatch")))
     }
 
     /// Check whether a resource exists.
@@ -175,7 +144,7 @@ impl ActionContext {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// let token: BearerToken = ctx.credential_typed::<BearerToken>("api_key").await?;
+    /// let token: SecretToken = ctx.credential_typed::<SecretToken>("api_key").await?;
     /// ```
     pub async fn credential_typed<S: AuthScheme>(&self, id: &str) -> Result<S, ActionError> {
         let snapshot = self.credentials.get(id).await?;
@@ -336,7 +305,7 @@ mod tests {
 
     use async_trait::async_trait;
     use nebula_credential::{
-        BearerToken, CredentialMetadata, CredentialSnapshot, DatabaseAuth, SecretString,
+        CredentialMetadata, CredentialSnapshot, SecretString, SecretToken, scheme::ConnectionUri,
     };
 
     use crate::capability::{ActionLogLevel, ActionLogger, ExecutionEmitter, TriggerScheduler};
@@ -413,7 +382,7 @@ mod tests {
             Ok(CredentialSnapshot::new(
                 "api_key",
                 CredentialMetadata::new(),
-                BearerToken::new(SecretString::new("test-token")),
+                SecretToken::new(SecretString::new("test-token")),
             ))
         }
 
@@ -456,13 +425,11 @@ mod tests {
         )
         .with_credentials(Arc::new(TestCredentialAccessor));
 
-        let token: BearerToken = ctx
-            .credential_typed::<BearerToken>("api_key")
+        let token: SecretToken = ctx
+            .credential_typed::<SecretToken>("api_key")
             .await
             .unwrap();
-        token
-            .expose()
-            .expose_secret(|t| assert_eq!(t, "test-token"));
+        token.token().expose_secret(|t| assert_eq!(t, "test-token"));
     }
 
     #[tokio::test]
@@ -475,7 +442,7 @@ mod tests {
         )
         .with_credentials(Arc::new(TestCredentialAccessor));
 
-        let result = ctx.credential_typed::<DatabaseAuth>("api_key").await;
+        let result = ctx.credential_typed::<ConnectionUri>("api_key").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.is_fatal());
@@ -487,13 +454,11 @@ mod tests {
         let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new())
             .with_credentials(Arc::new(TestCredentialAccessor));
 
-        let token: BearerToken = ctx
-            .credential_typed::<BearerToken>("api_key")
+        let token: SecretToken = ctx
+            .credential_typed::<SecretToken>("api_key")
             .await
             .unwrap();
-        token
-            .expose()
-            .expose_secret(|t| assert_eq!(t, "test-token"));
+        token.token().expose_secret(|t| assert_eq!(t, "test-token"));
     }
 
     #[tokio::test]
@@ -501,7 +466,7 @@ mod tests {
         let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new())
             .with_credentials(Arc::new(TestCredentialAccessor));
 
-        let result = ctx.credential_typed::<DatabaseAuth>("api_key").await;
+        let result = ctx.credential_typed::<ConnectionUri>("api_key").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.is_fatal());

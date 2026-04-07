@@ -108,6 +108,7 @@ mod tests {
         let tx_id = RotationId::new();
         let encrypted = EncryptedData {
             version: 1,
+            key_id: "default".into(),
             nonce: [4u8; 12],
             ciphertext: vec![1, 2, 3],
             tag: [5u8; 16],
@@ -126,6 +127,7 @@ mod tests {
         let tx_id = RotationId::new();
         let encrypted = EncryptedData {
             version: 1,
+            key_id: "default".into(),
             nonce: [4u8; 12],
             ciphertext: vec![1, 2, 3],
             tag: [5u8; 16],
@@ -144,6 +146,7 @@ mod tests {
         let tx_id = RotationId::new();
         let encrypted = EncryptedData {
             version: 1,
+            key_id: "default".into(),
             nonce: [4u8; 12],
             ciphertext: vec![1, 2, 3],
             tag: [5u8; 16],

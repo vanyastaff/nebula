@@ -216,7 +216,7 @@ pub fn io_stats(device: &str) -> Option<DiskStats> {
         use std::fs;
 
         // Try to read from /sys/block/{device}/stat
-        let device_name = device.split('/').last().unwrap_or(device);
+        let device_name = device.rsplit('/').next().unwrap_or(device);
         let stat_path = format!("/sys/block/{}/stat", device_name);
 
         if let Ok(content) = fs::read_to_string(&stat_path) {

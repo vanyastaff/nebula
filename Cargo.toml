@@ -10,7 +10,6 @@ members = [
     "crates/execution",
     "crates/expression",
     "crates/log",
-    "crates/memory",
     "crates/metrics",
     "crates/plugin",
     "crates/parameter",
@@ -54,7 +53,7 @@ documentation = "https://docs.rs/nebula"
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1.50.0", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs"] }
+tokio = { version = "1.51.0", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs"] }
 tokio-util = "0.7.18"
 async-trait = "0.1.89"
 futures = "0.3"
@@ -69,14 +68,14 @@ serde_json = "1.0.149"
 thiserror = { version = "2.0.18" }
 anyhow = "1.0.102"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", default-features = false }
+tracing-subscriber = { version = "0.3.23", default-features = false }
 
 # Concurrency and synchronization
 dashmap = { version = "6.1.0", default-features = false }
 parking_lot = { version = "0.12.5", default-features = false }
 moka = { version = "0.12", default-features = false }
 once_cell = "1.21"
-arc-swap = "1.8"
+arc-swap = "1.9"
 
 # Graph
 petgraph = "0.8"
@@ -93,7 +92,9 @@ bytes = "1.11.1"
 lasso = { version = "0.7", features = ["multi-threaded"] }
 
 # Crypto
-sha2 = "0.10"
+sha2 = "0.11"
+hmac = "0.13"
+hex = "0.4"
 
 # HTTP
 reqwest = { version = "0.13", features = ["json"], default-features = false }
@@ -111,11 +112,11 @@ libc = "0.2"
 
 # Observability (optional)
 opentelemetry = "0.31.0"
-opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic", "trace"] }
+opentelemetry-otlp = { version = "0.31.1", features = ["grpc-tonic", "trace"] }
 opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
 tracing-opentelemetry = "0.32.1"
 metrics = "0.24.3"
-tempfile = "3.26.0"
+tempfile = "3.27.0"
 proptest = "1.11"
 criterion = { package = "codspeed-criterion-compat", version = "4" }
 

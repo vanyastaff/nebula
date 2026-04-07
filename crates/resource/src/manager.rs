@@ -22,10 +22,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Notify, broadcast};
 use tokio_util::sync::CancellationToken;
 
-use nebula_core::{ResourceKey, ScopeLevel};
+use nebula_core::ResourceKey;
 
-use crate::bridge::{AuthProvider, ErasedAcquireFn};
-use crate::ctx::Ctx;
+use crate::ctx::{Ctx, ScopeLevel};
 use crate::error::Error;
 use crate::events::ResourceEvent;
 use crate::integration::AcquireResilience;
@@ -44,8 +43,6 @@ use crate::runtime::managed::ManagedResource;
 pub struct ResourceHealthSnapshot {
     /// The resource's unique key.
     pub key: ResourceKey,
-    /// Topology kind (Pool, Resident, Service, etc.).
-    pub topology: crate::topology_tag::TopologyTag,
     /// Current lifecycle phase.
     pub phase: crate::state::ResourcePhase,
     /// Recovery gate state (if a gate is attached).
@@ -127,15 +124,6 @@ pub struct Manager {
     release_queue_handle: tokio::sync::Mutex<Option<ReleaseQueueHandle>>,
     /// Tracks active `ResourceHandle`s for drain-aware shutdown.
     drain_tracker: Arc<(AtomicU64, Notify)>,
-    /// Type-erased acquire closures keyed by `ResourceKey`.
-    ///
-    /// Built at registration time when concrete type info is available.
-    /// Called by [`acquire_erased`](Self::acquire_erased) for the type-erased path.
-    acquire_fns: dashmap::DashMap<ResourceKey, ErasedAcquireFn>,
-    /// Optional auth provider for credential resolution.
-    auth_provider: parking_lot::RwLock<Option<Arc<dyn AuthProvider>>>,
-    /// Credential key bindings: resource_key → credential identifier.
-    credential_bindings: dashmap::DashMap<ResourceKey, String>,
 }
 
 impl Manager {
@@ -163,9 +151,6 @@ impl Manager {
             release_queue: Arc::new(release_queue),
             release_queue_handle: tokio::sync::Mutex::new(Some(release_queue_handle)),
             drain_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
-            acquire_fns: dashmap::DashMap::new(),
-            auth_provider: parking_lot::RwLock::new(None),
-            credential_bindings: dashmap::DashMap::new(),
         }
     }
 
@@ -260,10 +245,7 @@ impl Manager {
         pool_config: crate::topology::pooled::config::Config,
     ) -> Result<(), Error>
     where
-        R: crate::topology::pooled::Pooled<Auth = ()> + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
-        R::Config: Send + Sync,
+        R: Resource<Auth = ()>,
     {
         use crate::resource::ResourceConfig as _;
 
@@ -278,13 +260,7 @@ impl Manager {
             )),
             None,
             None,
-        )?;
-        let key = R::key();
-        if let Some(managed) = self.registry.get_typed::<R>(&ScopeLevel::Global) {
-            self.acquire_fns
-                .insert(key, build_pool_acquire_fn(managed));
-        }
-        Ok(())
+        )
     }
 
     /// Registers a resident resource with sensible defaults.
@@ -425,13 +401,9 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: crate::topology::pooled::Pooled<Auth = ()> + Clone + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
-        R::Config: Send + Sync,
+        R: Resource<Auth = ()>,
     {
         use crate::resource::ResourceConfig as _;
-        let scope = options.scope.clone();
         let fingerprint = config.fingerprint();
         self.register(
             resource,
@@ -443,13 +415,7 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
-        )?;
-        let key = R::key();
-        if let Some(managed) = self.registry.get_typed::<R>(&scope) {
-            self.acquire_fns
-                .insert(key, build_pool_acquire_fn(managed));
-        }
-        Ok(())
+        )
     }
 
     /// Registers a resident resource with extended options.
@@ -1332,35 +1298,11 @@ impl Manager {
         let managed = self.lookup::<R>(scope)?;
         Ok(ResourceHealthSnapshot {
             key: R::key(),
-            topology: managed.topology.tag(),
             phase: managed.status().phase,
             gate_state: managed.recovery_gate.as_ref().map(|g| g.state()),
             metrics: self.metrics.as_ref().map(|m| m.snapshot()),
             generation: managed.generation(),
         })
-    }
-
-    /// Returns health snapshots for all registered resources.
-    ///
-    /// Uses the type-erased registry to iterate over all resources
-    /// without needing concrete type parameters.
-    pub fn health_all(&self) -> Vec<ResourceHealthSnapshot> {
-        let metrics_snapshot = self.metrics.as_ref().map(|m| m.snapshot());
-        self.registry
-            .keys()
-            .into_iter()
-            .filter_map(|key| {
-                let managed = self.registry.get(&key, &ScopeLevel::Global)?;
-                Some(ResourceHealthSnapshot {
-                    key,
-                    topology: managed.topology_tag(),
-                    phase: managed.status().phase,
-                    gate_state: None, // Recovery gate requires typed access
-                    metrics: metrics_snapshot,
-                    generation: managed.generation(),
-                })
-            })
-            .collect()
     }
 
     /// Looks up a managed resource by key and scope, returning the
@@ -1403,165 +1345,6 @@ impl Manager {
             }
         }
     }
-
-    // --- Type-erased acquire and auth integration ---
-
-    /// Sets the auth provider for credential resolution.
-    ///
-    /// When set, [`acquire_erased`](Self::acquire_erased) automatically
-    /// resolves credentials via this provider before acquiring resources.
-    pub fn set_auth_provider(&self, provider: Arc<dyn AuthProvider>) {
-        *self.auth_provider.write() = Some(provider);
-    }
-
-    /// Binds a credential key to a resource.
-    ///
-    /// When [`acquire_erased`](Self::acquire_erased) acquires this resource,
-    /// it uses the bound credential key to resolve auth via the
-    /// [`AuthProvider`].
-    pub fn bind_credential(&self, resource_key: ResourceKey, credential_key: impl Into<String>) {
-        self.credential_bindings
-            .insert(resource_key, credential_key.into());
-    }
-
-    /// Returns the credential key bound to the given resource, if any.
-    pub fn credential_key_for(&self, resource_key: &ResourceKey) -> Option<String> {
-        self.credential_bindings
-            .get(resource_key)
-            .map(|r| r.value().clone())
-    }
-
-    /// Type-erased acquire: looks up and acquires a resource by key string.
-    ///
-    /// This is the primary entry point for [`ResourceAccessor`](crate::bridge)
-    /// implementations. It:
-    ///
-    /// 1. Resolves the credential via the bound [`AuthProvider`] (if configured)
-    /// 2. Calls the type-erased acquire closure stored at registration time
-    /// 3. Returns the resource handle as `Box<dyn Any>`
-    ///
-    /// # Errors
-    ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no
-    ///   resource is registered with the given key.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if
-    ///   no type-erased acquire function was registered for this resource.
-    /// - Propagates auth resolution and acquire errors.
-    pub async fn acquire_erased(
-        &self,
-        key: &ResourceKey,
-        ctx: crate::ctx::BasicCtx,
-        options: &AcquireOptions,
-    ) -> Result<Box<dyn std::any::Any + Send>, Error> {
-        // Look up the erased acquire closure.
-        let acquire_fn = self
-            .acquire_fns
-            .get(key)
-            .ok_or_else(|| {
-                Error::permanent(format!(
-                    "{key}: no type-erased acquire function registered \
-                     (use convenience register methods for erased acquire support)"
-                ))
-            })?;
-
-        // Resolve auth via the provider if a credential binding exists.
-        let auth = if let Some(cred_key) = self.credential_bindings.get(key) {
-            let provider = self
-                .auth_provider
-                .read()
-                .clone()
-                .ok_or_else(|| {
-                    Error::permanent(format!(
-                        "{key}: credential binding `{}` exists but no AuthProvider is configured",
-                        cred_key.value()
-                    ))
-                })?;
-            provider.resolve(key).await?
-        } else {
-            None
-        };
-
-        let result = acquire_fn(
-            auth,
-            ctx,
-            options.clone(),
-            self.metrics.clone(),
-        )
-        .await;
-
-        result.inspect(|_| {
-            // Track drain for shutdown.
-            let (counter, notify) = &*self.drain_tracker;
-            counter.fetch_add(1, AtomicOrdering::Release);
-            let _ = notify;
-        })
-    }
-}
-
-/// Builds a type-erased acquire closure for Pool topology.
-///
-/// Requires Pool-specific bounds because `PoolRuntime::acquire`
-/// lives in a constrained impl block.
-fn build_pool_acquire_fn<R>(
-    managed: Arc<ManagedResource<R>>,
-) -> ErasedAcquireFn
-where
-    R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
-    R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-    R::Lease: Into<R::Runtime> + Send + 'static,
-    R::Config: Send + Sync,
-    R::Auth: Send + Sync,
-{
-    Box::new(move |auth, ctx, options, metrics| {
-        let managed = Arc::clone(&managed);
-        Box::pin(async move {
-            check_recovery_gate(&managed.recovery_gate)?;
-            let config = managed.config.load_full();
-            let generation = managed.generation();
-
-            // Downcast auth or default to () for Auth = () resources.
-            let auth: R::Auth = match auth {
-                Some(boxed) => *boxed.downcast::<R::Auth>().map_err(|_| {
-                    Error::permanent(format!(
-                        "{}: auth type mismatch in type-erased acquire",
-                        R::key()
-                    ))
-                })?,
-                None => {
-                    // Try to use () as the auth — works for Auth = ().
-                    let unit: Box<dyn std::any::Any + Send> = Box::new(());
-                    *unit.downcast::<R::Auth>().map_err(|_| {
-                        Error::permanent(format!(
-                            "{}: no auth provided but resource requires authentication",
-                            R::key()
-                        ))
-                    })?
-                }
-            };
-
-            match &managed.topology {
-                TopologyRuntime::Pool(rt) => {
-                    let handle = rt
-                        .acquire(
-                            &managed.resource,
-                            &config,
-                            &auth,
-                            &ctx,
-                            &managed.release_queue,
-                            generation,
-                            &options,
-                            metrics,
-                        )
-                        .await?;
-                    Ok(Box::new(handle) as Box<dyn std::any::Any + Send>)
-                }
-                _ => Err(Error::permanent(format!(
-                    "{}: expected Pool topology in type-erased acquire",
-                    R::key()
-                ))),
-            }
-        })
-    })
 }
 
 /// Checks the recovery gate before acquire.

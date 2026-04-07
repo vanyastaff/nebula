@@ -37,3 +37,5 @@ Infrastructure crate for sandbox monitoring, system health, and adaptive load sh
 - nebula-log does NOT depend on this (confirmed).
 
 <!-- reviewed: 2026-04-03 — full overhaul: cleanup, test hardening, ProcessMonitor, SystemLoad -->
+
+<!-- reviewed: 2026-04-07 -->

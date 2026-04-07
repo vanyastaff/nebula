@@ -29,10 +29,9 @@ use std::fmt;
 use super::id::{ExecutionId, NodeId, OrganizationId, ProjectId, WorkflowId};
 
 /// Defines the scope level for a resource
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ScopeLevel {
     /// Resource lives for the entire application lifetime
-    #[default]
     Global,
 
     /// Resource is scoped to an organization

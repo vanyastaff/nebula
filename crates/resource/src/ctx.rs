@@ -3,25 +3,47 @@
 //! [`Ctx`] provides cancellation, scope information, and an extensible type-map
 //! for threading arbitrary data through the resource subsystem. [`BasicCtx`] is
 //! the default concrete implementation.
-//!
-//! The base identity and scope methods come from [`BaseCtx`] (defined in
-//! `nebula-core`). This module adds runtime-specific capabilities:
-//! cancellation tokens and a typed extension map.
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 
-use nebula_core::{BaseCtx, ExecutionId, ScopeLevel};
+use nebula_core::{ExecutionId, WorkflowId};
 use tokio_util::sync::CancellationToken;
+
+/// Scope level for resource isolation.
+///
+/// Determines the lifecycle boundary of a resource instance. Finer scopes
+/// (e.g., `Execution`) are cleaned up more aggressively than coarser ones
+/// (e.g., `Global`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub enum ScopeLevel {
+    /// Application-lifetime singleton.
+    #[default]
+    Global,
+    /// Scoped to an organization.
+    Organization(String),
+    /// Scoped to a project.
+    Project(String),
+    /// Scoped to a workflow definition.
+    Workflow(WorkflowId),
+    /// Scoped to a single execution run.
+    Execution(ExecutionId),
+}
 
 /// Execution context for resource operations.
 ///
-/// Extends [`BaseCtx`] with cancellation and a typed extension map. Every
+/// Carries cancellation, scope, and arbitrary typed extensions. Every
 /// resource lifecycle method receives a `&dyn Ctx`.
 ///
 /// Use the free function [`ctx_ext`] to retrieve typed extensions from
 /// a `&dyn Ctx`.
-pub trait Ctx: BaseCtx {
+pub trait Ctx: Send + Sync {
+    /// Returns the scope level for this operation.
+    fn scope(&self) -> &ScopeLevel;
+
+    /// Returns the execution ID for tracing / correlation.
+    fn execution_id(&self) -> &ExecutionId;
+
     /// Returns the cancellation token for cooperative shutdown.
     fn cancel_token(&self) -> &CancellationToken;
 
@@ -76,8 +98,8 @@ impl Extensions {
 /// # Examples
 ///
 /// ```
-/// use nebula_resource::ctx::{BasicCtx, Ctx};
-/// use nebula_core::{ExecutionId, ScopeLevel, BaseCtx};
+/// use nebula_resource::ctx::{BasicCtx, Ctx, ScopeLevel};
+/// use nebula_core::ExecutionId;
 ///
 /// let ctx = BasicCtx::new(ExecutionId::new());
 /// assert_eq!(*ctx.scope(), ScopeLevel::Global);
@@ -128,17 +150,15 @@ impl std::fmt::Debug for BasicCtx {
     }
 }
 
-impl BaseCtx for BasicCtx {
+impl Ctx for BasicCtx {
     fn scope(&self) -> &ScopeLevel {
         &self.scope
     }
 
-    fn execution_id(&self) -> Option<&ExecutionId> {
-        Some(&self.execution_id)
+    fn execution_id(&self) -> &ExecutionId {
+        &self.execution_id
     }
-}
 
-impl Ctx for BasicCtx {
     fn cancel_token(&self) -> &CancellationToken {
         &self.cancel
     }
@@ -169,7 +189,7 @@ mod tests {
     fn basic_ctx_preserves_execution_id() {
         let id = ExecutionId::new();
         let ctx = BasicCtx::new(id);
-        assert_eq!(ctx.execution_id(), Some(&id));
+        assert_eq!(*ctx.execution_id(), id);
     }
 
     #[test]

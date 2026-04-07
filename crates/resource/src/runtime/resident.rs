@@ -230,11 +230,8 @@ mod tests {
             }
         }
 
-        fn destroy(
-            &self,
-            _runtime: u32,
-        ) -> impl std::future::Future<Output = Result<(), MockError>> + Send {
-            async { Ok(()) }
+        async fn destroy(&self, _runtime: u32) -> Result<(), MockError> {
+            Ok(())
         }
 
         fn metadata() -> ResourceMetadata {
@@ -373,23 +370,18 @@ mod tests {
             resource_key!("hanging-resident")
         }
 
-        fn create(
+        async fn create(
             &self,
             _config: &bool,
             _auth: &(),
             _ctx: &dyn Ctx,
-        ) -> impl std::future::Future<Output = Result<u32, MockError>> + Send {
-            async {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
-                Ok(0)
-            }
+        ) -> Result<u32, MockError> {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            Ok(0)
         }
 
-        fn destroy(
-            &self,
-            _runtime: u32,
-        ) -> impl std::future::Future<Output = Result<(), MockError>> + Send {
-            async { Ok(()) }
+        async fn destroy(&self, _runtime: u32) -> Result<(), MockError> {
+            Ok(())
         }
 
         fn metadata() -> ResourceMetadata {

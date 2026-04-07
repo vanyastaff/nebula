@@ -62,32 +62,32 @@ use crate::state::CredentialState;
 /// ```ignore
 /// use nebula_credential::{
 ///     Credential, NoPendingState, identity_state,
-///     scheme::BearerToken,
+///     scheme::SecretToken,
 ///     resolve::StaticResolveResult,
 /// };
 ///
 /// struct SlackBotToken;
 ///
-/// identity_state!(BearerToken, "bearer", 1);
+/// identity_state!(SecretToken, "secret_token", 1);
 ///
 /// impl Credential for SlackBotToken {
-///     type Scheme = BearerToken;
-///     type State = BearerToken;
+///     type Scheme = SecretToken;
+///     type State = SecretToken;
 ///     type Pending = NoPendingState;
 ///
 ///     const KEY: &'static str = "slack_bot_token";
 ///
 ///     fn description() -> CredentialDescription { /* ... */ }
 ///     fn parameters() -> ParameterCollection { /* ... */ }
-///     fn project(state: &BearerToken) -> BearerToken { state.clone() }
+///     fn project(state: &SecretToken) -> SecretToken { state.clone() }
 ///
 ///     fn resolve(
 ///         values: &ParameterValues,
 ///         _ctx: &CredentialContext,
-///     ) -> impl Future<Output = Result<StaticResolveResult<BearerToken>, CredentialError>> + Send {
+///     ) -> impl Future<Output = Result<StaticResolveResult<SecretToken>, CredentialError>> + Send {
 ///         async move {
 ///             let token = values.get_string("bot_token").unwrap_or_default();
-///             Ok(StaticResolveResult::Complete(BearerToken::new(token)))
+///             Ok(StaticResolveResult::Complete(SecretToken::new(SecretString::new(token))))
 ///         }
 ///     }
 /// }
@@ -178,15 +178,24 @@ pub trait Credential: Send + Sync + 'static {
 
     /// Test that the credential actually works.
     ///
-    /// Default: returns [`TestResult::Untestable`].
+    /// Returns `Ok(None)` if this credential type does not support live testing.
+    /// Credentials that override this method return
+    /// `Ok(Some(TestResult::Success))` or `Ok(Some(TestResult::Failed { reason }))`.
+    ///
+    /// Default: `Ok(None)` (not testable).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CredentialError`] on infrastructure failures (network, I/O)
+    /// that prevent determining whether the credential is valid.
     fn test(
         _scheme: &Self::Scheme,
         _ctx: &CredentialContext,
-    ) -> impl Future<Output = Result<TestResult, CredentialError>> + Send
+    ) -> impl Future<Output = Result<Option<TestResult>, CredentialError>> + Send
     where
         Self: Sized,
     {
-        async { Ok(TestResult::Untestable) }
+        async { Ok(None) }
     }
 
     /// Refresh expiring auth material.

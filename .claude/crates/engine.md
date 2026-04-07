@@ -1,23 +1,19 @@
 # nebula-engine
-Workflow execution orchestrator — DAG scheduler, level-by-level execution, node dispatch.
+Workflow execution orchestrator — frontier-based DAG scheduler, node dispatch.
 
 ## Invariants
-- Sits between API and nebula-runtime. Does not execute actions directly — delegates to `ActionRuntime`.
-- Resource manager wired via `with_resource_manager()`. Credential injection still not wired.
+- Delegates action execution to `ActionRuntime` — never runs actions directly.
+- Blocked: credential/resource DI not wired yet.
 
 ## Key Decisions
-- Level-by-level execution with bounded concurrency from `ExecutionPlan`/`DependencyGraph`.
-- `resource` module bridges engine context to `nebula_resource::Manager` for per-node acquisition.
-- Execution repo removed — persistent checkpointing deferred until storage stabilizes.
-- Error handling simplified: `process_outgoing_edges` replaces former `handle_node_failure` + `ErrorStrategy`.
-- No EventBus — metrics only. Events will be redesigned when engine stabilizes.
+- Frontier-based execution: nodes spawn when all incoming edges resolve (not level-by-level).
+- No EventBus — metrics only. Events redesigned when engine stabilizes.
+- Budget: `max_duration` and `max_output_bytes` checked before each dispatch. `max_total_retries` not enforced yet.
+- Error strategy via `handle_node_failure()`: FailFast cancels, ContinueOnError skips dependents, IgnoreErrors treats failure as null success.
 
 ## Traps
-- Still needs credential DI (`CredentialResolver` into `ActionContext`) for end-to-end execution.
-- `pub(crate) resolver` — internal input resolution. Don't expose without design review.
-- `result::ExecutionResult` ≠ `execution::ExecutionState` (engine return type vs persistent state).
+- Blocked on nebula-resource stabilization — don't invest heavily until DI is stable.
+- `pub(crate) resolver` is internal — don't expose without design review.
+- `ExecutionResult` (engine return) vs `ExecutionState` (persistent state) — different types.
 
-## Relations
-- Depends on nebula-workflow, nebula-execution, nebula-action, nebula-plugin, nebula-runtime, nebula-resource. Used by nebula-api.
-
-<!-- reviewed: 2026-04-07 — resource manager wired, execution repo removed, error handling simplified -->
+<!-- reviewed: 2026-04-06 -->

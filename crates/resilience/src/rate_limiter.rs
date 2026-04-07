@@ -669,10 +669,8 @@ impl RateLimiter for AdaptiveRateLimiter {
 
 #[cfg(feature = "governor")]
 mod governor_impl {
-    use governor::clock::Clock;
     use governor::{DefaultDirectRateLimiter, Quota, RateLimiter as GovernorLimiter};
     use std::fmt;
-    use std::future::Future;
     use std::num::NonZeroU32;
     use std::time::Duration;
 
@@ -693,7 +691,7 @@ mod governor_impl {
             f.debug_struct("GovernorRateLimiter")
                 .field("rate_per_second", &self.rate_per_second)
                 .field("burst_capacity", &self.burst_capacity)
-                .finish()
+                .finish_non_exhaustive()
         }
     }
 
@@ -792,7 +790,7 @@ mod governor_impl {
             let rate = limiter.current_rate().await;
 
             assert!(rate.is_finite());
-            assert_eq!(rate, 0.001);
+            assert!((rate - 0.001).abs() < f64::EPSILON);
         }
     }
 }

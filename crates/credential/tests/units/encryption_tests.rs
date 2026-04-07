@@ -33,8 +33,11 @@ fn test_encrypt_decrypt_roundtrip() {
     let decrypted = decrypt(&key, &encrypted).expect("decryption should succeed");
 
     // Verify roundtrip
-    assert_eq!(decrypted, plaintext);
-    assert_eq!(String::from_utf8(decrypted).unwrap(), "my-api-key-12345");
+    assert_eq!(*decrypted, plaintext);
+    assert_eq!(
+        String::from_utf8(decrypted.to_vec()).unwrap(),
+        "my-api-key-12345"
+    );
 }
 
 /// Test: Same password + salt → same key twice (deterministic)
@@ -58,12 +61,12 @@ fn test_key_derivation_deterministic() {
 
     // key2 should be able to decrypt what key1 encrypted
     let decrypted = decrypt(&key2, &encrypted).expect("decryption should succeed");
-    assert_eq!(decrypted, plaintext);
+    assert_eq!(decrypted.as_slice(), plaintext);
 
     // And vice versa
     let encrypted2 = encrypt(&key2, plaintext).expect("encryption should succeed");
     let decrypted2 = decrypt(&key1, &encrypted2).expect("decryption should succeed");
-    assert_eq!(decrypted2, plaintext);
+    assert_eq!(decrypted2.as_slice(), plaintext);
 }
 
 /// Test: Different passwords → different keys
@@ -217,12 +220,12 @@ fn test_key_derivation_from_bytes() {
 
     // Verify the second key can decrypt the data
     let decrypted = decrypt(&key2, &encrypted).expect("decryption should succeed");
-    assert_eq!(decrypted, plaintext);
+    assert_eq!(decrypted.as_slice(), plaintext);
 
     // Verify roundtrip works both ways
     let encrypted2 = encrypt(&key2, plaintext).expect("encryption should succeed");
     let decrypted2 = decrypt(&key1, &encrypted2).expect("decryption should succeed");
-    assert_eq!(decrypted2, plaintext);
+    assert_eq!(decrypted2.as_slice(), plaintext);
 
     // Verify that different bytes produce different keys
     let different_bytes = [0xff; 32];

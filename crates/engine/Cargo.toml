@@ -21,6 +21,7 @@ nebula-workflow = { path = "../workflow" }
 nebula-execution = { path = "../execution" }
 nebula-resource = { path = "../resource" }
 nebula-runtime = { path = "../runtime" }
+nebula-storage = { path = "../storage" }
 nebula-metrics = { path = "../metrics" }
 nebula-telemetry = { path = "../telemetry" }
 

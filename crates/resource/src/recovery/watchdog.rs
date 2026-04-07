@@ -214,13 +214,17 @@ mod tests {
             async move {
                 let n = count.fetch_add(1, Ordering::SeqCst);
                 // First 3 calls fail, then succeed.
-                if n < 3 {
-                    Err(crate::Error::transient("probe failed"))
-                } else {
-                    Ok(())
-                }
+                probe_result_for(n)
             }
         };
+
+        fn probe_result_for(n: u32) -> Result<(), crate::Error> {
+            if n < 3 {
+                Err(crate::Error::transient("probe failed"))
+            } else {
+                Ok(())
+            }
+        }
 
         let state = Arc::clone(&health_state);
         let on_change = move |healthy: bool| {

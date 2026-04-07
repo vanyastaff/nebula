@@ -1,94 +1,117 @@
-//! Client certificate (mTLS) authentication.
-
-use nebula_core::AuthScheme;
-use serde::{Deserialize, Serialize};
+//! X.509 client certificate authentication (mTLS, TLS client auth).
 
 use nebula_core::SecretString;
 
-/// Client certificate authentication for mutual TLS.
+use crate::AuthScheme;
+use serde::{Deserialize, Serialize};
+
+/// X.509 client certificate with private key for mutual TLS authentication.
 ///
 /// Produced by: mTLS credential configurations.
-/// Consumed by: HTTPS APIs, gRPC, internal service mesh.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct CertificateAuth {
-    /// PEM-encoded client certificate.
+/// Consumed by: HTTPS APIs requiring client certificates, gRPC, internal
+/// service mesh, and any TLS endpoint that validates client identity.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_credential::scheme::Certificate;
+/// use nebula_core::SecretString;
+///
+/// let cert = Certificate::new(
+///     "-----BEGIN CERTIFICATE-----\n...".to_string(),
+///     SecretString::new("-----BEGIN PRIVATE KEY-----\n..."),
+/// );
+/// ```
+#[derive(Clone, Serialize, Deserialize, AuthScheme)]
+#[auth_scheme(pattern = Certificate)]
+pub struct Certificate {
+    cert_chain: String,
     #[serde(with = "nebula_core::serde_secret")]
-    cert_pem: SecretString,
-    /// PEM-encoded private key.
-    #[serde(with = "nebula_core::serde_secret")]
-    key_pem: SecretString,
-    /// Optional PEM-encoded CA certificate for verification.
-    pub ca_pem: Option<String>,
+    private_key: SecretString,
+    #[serde(with = "nebula_core::option_serde_secret")]
+    passphrase: Option<SecretString>,
 }
 
-impl CertificateAuth {
-    /// Creates a new certificate auth with client cert and private key.
-    pub fn new(cert_pem: SecretString, key_pem: SecretString) -> Self {
+impl Certificate {
+    /// Creates a new certificate credential with a cert chain and private key.
+    #[must_use]
+    pub fn new(cert_chain: impl Into<String>, private_key: SecretString) -> Self {
         Self {
-            cert_pem,
-            key_pem,
-            ca_pem: None,
+            cert_chain: cert_chain.into(),
+            private_key,
+            passphrase: None,
         }
     }
 
-    /// Sets the CA certificate for verification.
-    pub fn with_ca_pem(mut self, ca_pem: impl Into<String>) -> Self {
-        self.ca_pem = Some(ca_pem.into());
+    /// Sets the passphrase protecting the private key.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_passphrase(mut self, passphrase: SecretString) -> Self {
+        self.passphrase = Some(passphrase);
         self
     }
 
-    /// Returns the PEM-encoded client certificate.
-    pub fn cert_pem(&self) -> &SecretString {
-        &self.cert_pem
+    /// Returns the PEM-encoded certificate chain.
+    pub fn cert_chain(&self) -> &str {
+        &self.cert_chain
     }
 
-    /// Returns the PEM-encoded private key.
-    pub fn key_pem(&self) -> &SecretString {
-        &self.key_pem
+    /// Returns the PEM-encoded private key secret.
+    pub fn private_key(&self) -> &SecretString {
+        &self.private_key
+    }
+
+    /// Returns the optional passphrase protecting the private key.
+    pub fn passphrase(&self) -> Option<&SecretString> {
+        self.passphrase.as_ref()
     }
 }
 
-impl AuthScheme for CertificateAuth {
-    const KIND: &'static str = "certificate";
-}
-
-impl std::fmt::Debug for CertificateAuth {
+impl std::fmt::Debug for Certificate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CertificateAuth")
-            .field("cert_pem", &"[REDACTED]")
-            .field("key_pem", &"[REDACTED]")
-            .field("ca_pem", &self.ca_pem.as_deref().map(|_| "[PRESENT]"))
+        f.debug_struct("Certificate")
+            .field(
+                "cert_chain",
+                &format_args!("[{} bytes]", self.cert_chain.len()),
+            )
+            .field("private_key", &"[REDACTED]")
+            .field(
+                "passphrase",
+                &self.passphrase.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::{AuthPattern, AuthScheme as _};
+
     use super::*;
 
     #[test]
-    fn kind_is_correct() {
-        assert_eq!(CertificateAuth::KIND, "certificate");
+    fn pattern_is_certificate() {
+        assert_eq!(Certificate::pattern(), AuthPattern::Certificate);
     }
 
     #[test]
     fn debug_redacts_secrets() {
-        let auth = CertificateAuth::new(
-            SecretString::new("-----BEGIN CERTIFICATE-----"),
+        let cert = Certificate::new(
+            "-----BEGIN CERTIFICATE-----",
             SecretString::new("-----BEGIN PRIVATE KEY-----"),
         )
-        .with_ca_pem("-----BEGIN CA-----");
-        let debug = format!("{auth:?}");
+        .with_passphrase(SecretString::new("my-passphrase"));
+        let debug = format!("{cert:?}");
         assert!(debug.contains("[REDACTED]"));
-        assert!(!debug.contains("-----BEGIN CERTIFICATE-----"));
         assert!(!debug.contains("-----BEGIN PRIVATE KEY-----"));
-        assert!(!debug.contains("-----BEGIN CA-----"));
+        assert!(!debug.contains("my-passphrase"));
     }
 
     #[test]
-    fn accessors_return_secrets() {
-        let auth = CertificateAuth::new(SecretString::new("cert"), SecretString::new("key"));
-        auth.cert_pem().expose_secret(|v| assert_eq!(v, "cert"));
-        auth.key_pem().expose_secret(|v| assert_eq!(v, "key"));
+    fn accessors_return_values() {
+        let cert = Certificate::new("-----BEGIN CERTIFICATE-----", SecretString::new("key-data"));
+        assert_eq!(cert.cert_chain(), "-----BEGIN CERTIFICATE-----");
+        cert.private_key()
+            .expose_secret(|v| assert_eq!(v, "key-data"));
+        assert!(cert.passphrase().is_none());
     }
 }

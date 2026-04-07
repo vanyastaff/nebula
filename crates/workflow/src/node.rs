@@ -3,13 +3,14 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use nebula_core::prelude::KeyParseError;
 use nebula_core::{ActionKey, InterfaceVersion, NodeId};
 use serde::{Deserialize, Serialize};
 
 use crate::definition::RetryConfig;
 
 /// A single action step inside a workflow graph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeDefinition {
     /// Unique node identifier within this workflow.
     pub id: NodeId,
@@ -32,22 +33,47 @@ pub struct NodeDefinition {
     /// Optional description of what this node does.
     #[serde(default)]
     pub description: Option<String>,
+    /// Whether this node is active. Disabled nodes are skipped during execution.
+    /// Useful for debugging workflows without removing nodes from the graph.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl NodeDefinition {
     /// Create a minimal node definition.
-    #[must_use]
-    pub fn new(id: NodeId, name: impl Into<String>, action_key: impl AsRef<str>) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidActionKey`](crate::WorkflowError::InvalidActionKey) if `action_key` is not a valid
+    /// [`ActionKey`] (lowercase alphanumeric, underscores, dots, hyphens).
+    pub fn new(
+        id: NodeId,
+        name: impl Into<String>,
+        action_key: impl AsRef<str>,
+    ) -> Result<Self, crate::WorkflowError> {
+        let key_str = action_key.as_ref();
+        let parsed_key =
+            key_str
+                .parse()
+                .map_err(|e: KeyParseError| crate::WorkflowError::InvalidActionKey {
+                    key: key_str.to_string(),
+                    reason: e.to_string(),
+                })?;
+        Ok(Self {
             id,
             name: name.into(),
-            action_key: action_key.as_ref().parse().expect("valid ActionKey"),
+            action_key: parsed_key,
             interface_version: None,
             parameters: HashMap::new(),
             retry_policy: None,
             timeout: None,
             description: None,
-        }
+            enabled: true,
+        })
     }
 
     /// Pin an interface version.
@@ -84,11 +110,19 @@ impl NodeDefinition {
         self.description = Some(desc.into());
         self
     }
+
+    /// Disable this node. Disabled nodes are skipped during execution.
+    #[must_use]
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
 }
 
 /// A parameter value that can be a literal, expression, template, or reference.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ParamValue {
     /// A static JSON value.
     Literal {
@@ -150,9 +184,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn new_rejects_invalid_action_key() {
+        let result = NodeDefinition::new(NodeId::new(), "test", "INVALID KEY!!!");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn new_accepts_valid_action_key() {
+        let result = NodeDefinition::new(NodeId::new(), "test", "http_request");
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn node_definition_new() {
         let id = NodeId::new();
-        let node = NodeDefinition::new(id, "fetch", "http_request");
+        let node = NodeDefinition::new(id, "fetch", "http_request").unwrap();
 
         assert_eq!(node.id, id);
         assert_eq!(node.name, "fetch");
@@ -168,6 +214,7 @@ mod tests {
     fn node_definition_builder_methods() {
         let id = NodeId::new();
         let node = NodeDefinition::new(id, "fetch", "http_request")
+            .unwrap()
             .with_interface_version(InterfaceVersion::new(1, 0))
             .with_parameter(
                 "url",
@@ -263,6 +310,7 @@ mod tests {
     fn node_definition_serde_roundtrip() {
         let id = NodeId::new();
         let node = NodeDefinition::new(id, "transform", "echo")
+            .unwrap()
             .with_parameter("input", ParamValue::literal(serde_json::json!("data")))
             .with_timeout(Duration::from_secs(30));
 

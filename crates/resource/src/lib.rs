@@ -25,7 +25,6 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
-pub mod bridge;
 pub mod cell;
 #[allow(deprecated)]
 pub mod compat;
@@ -47,7 +46,7 @@ pub mod topology;
 pub mod topology_tag;
 
 pub use cell::Cell;
-pub use ctx::{BasicCtx, Ctx, Extensions, ctx_ext};
+pub use ctx::{BasicCtx, Ctx, Extensions, ScopeLevel, ctx_ext};
 pub use error::{Error, ErrorKind, ErrorScope};
 pub use events::ResourceEvent;
 pub use handle::ResourceHandle;
@@ -75,12 +74,7 @@ pub use recovery::{
     RecoveryTicket, RecoveryWaiter, WatchdogConfig, WatchdogHandle,
 };
 
-pub use nebula_core::{
-    BaseCtx, ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource_key,
-};
-pub use nebula_parameter::{Parameter, ParameterCollection};
-
-pub use bridge::{AuthMaterial, AuthProvider, ResolveFuture};
+pub use nebula_core::{ExecutionId, ResourceKey, WorkflowId, resource_key};
 
 /// Derive macro that generates `From<T> for nebula_resource::Error`.
 ///

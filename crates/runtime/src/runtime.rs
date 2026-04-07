@@ -6,8 +6,11 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::sandbox::SandboxRunner;
+use crate::blob::BlobStorage;
+use crate::sandbox::{SandboxRunner, SandboxedContext};
 use nebula_action::ActionContext;
+use nebula_action::metadata::IsolationLevel;
+use nebula_action::output::{ActionOutput, DataReference};
 use nebula_action::result::ActionResult;
 use nebula_metrics::naming::{
     NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,
@@ -31,10 +34,10 @@ use crate::registry::ActionRegistry;
 /// 5. Emits telemetry events
 pub struct ActionRuntime {
     registry: Arc<ActionRegistry>,
-    #[allow(dead_code)] // reserved for sandboxed execution
     sandbox: Arc<dyn SandboxRunner>,
     data_policy: DataPassingPolicy,
     metrics: MetricsRegistry,
+    blob_storage: Option<Arc<dyn BlobStorage>>,
 }
 
 impl ActionRuntime {
@@ -50,12 +53,23 @@ impl ActionRuntime {
             sandbox,
             data_policy,
             metrics,
+            blob_storage: None,
         }
     }
 
     /// Access the action registry.
     pub fn registry(&self) -> &ActionRegistry {
         &self.registry
+    }
+
+    /// Set blob storage for the `SpillToBlob` strategy.
+    ///
+    /// Without blob storage, `SpillToBlob` falls back to rejecting
+    /// oversized output.
+    #[must_use]
+    pub fn with_blob_storage(mut self, storage: Arc<dyn BlobStorage>) -> Self {
+        self.blob_storage = Some(storage);
+        self
     }
 
     /// Access the data passing policy.
@@ -87,17 +101,29 @@ impl ActionRuntime {
         let error_counter = self.metrics.counter(NEBULA_ACTION_FAILURES_TOTAL);
         let duration_hist = self.metrics.histogram(NEBULA_ACTION_DURATION_SECONDS);
 
-        // TODO: Restore isolation level logic once ActionMetadata has capabilities/isolation
-        let result = handler.execute(input, &context).await;
+        let metadata = handler.metadata();
+        let result = match metadata.isolation_level {
+            IsolationLevel::None => {
+                // Direct execution -- no sandbox overhead for trusted actions.
+                handler.execute(input, &context).await
+            }
+            _ => {
+                // Wrap context with sandbox for capability checking / isolation.
+                // All non-`None` variants, including future ones, route through the sandbox for safety.
+                let sandboxed = SandboxedContext::new(context);
+                self.sandbox.execute(sandboxed, metadata, input).await
+            }
+        };
 
         let elapsed = started.elapsed();
         duration_hist.observe(elapsed.as_secs_f64());
         action_counter.inc();
 
         match result {
-            Ok(action_result) => {
+            Ok(mut action_result) => {
                 // Enforce data limits on the primary output value.
-                self.enforce_data_limit(action_key, &action_result, &error_counter)?;
+                self.enforce_data_limit(action_key, &mut action_result, &error_counter)
+                    .await?;
 
                 Ok(action_result)
             }
@@ -110,60 +136,116 @@ impl ActionRuntime {
 
     /// Check the primary output of an `ActionResult` against the data passing policy.
     ///
-    /// Returns `Ok(())` if within limits or if using `SpillToBlob` strategy.
-    /// Returns `Err(DataLimitExceeded)` if the output is too large and strategy is `Reject`.
-    fn enforce_data_limit(
+    /// Returns `Ok(())` if within limits.
+    /// For `SpillToBlob`, writes the output to blob storage if configured and
+    /// **rewrites** the primary output field to an [`ActionOutput::Reference`] so the
+    /// large inline payload is no longer carried downstream.
+    /// Returns `Err(DataLimitExceeded)` if the output is too large and cannot
+    /// be spilled.
+    async fn enforce_data_limit(
         &self,
         action_key: &str,
-        action_result: &ActionResult<serde_json::Value>,
+        action_result: &mut ActionResult<serde_json::Value>,
         error_counter: &nebula_telemetry::metrics::Counter,
     ) -> Result<(), RuntimeError> {
-        let output = match primary_output(action_result) {
+        let output = match primary_output_mut(action_result) {
             Some(o) => o,
             None => return Ok(()),
         };
 
-        let (limit, actual) = match self.data_policy.check_output_size(output) {
-            Ok(_) => return Ok(()),
-            Err(exceeded) => exceeded,
+        // Only inline values can exceed the size limit; binary/reference outputs
+        // are already managed by their respective storage backends.
+        let serialized = match &*output {
+            ActionOutput::Value(v) => serde_json::to_vec(v).map_err(|e| {
+                RuntimeError::Internal(format!(
+                    "failed to serialize output for size limit enforcement: {e}"
+                ))
+            })?,
+            _ => return Ok(()),
         };
 
-        error_counter.inc();
+        let actual = serialized.len() as u64;
+        let limit = self.data_policy.max_node_output_bytes;
 
+        if actual <= limit {
+            return Ok(());
+        }
+
+        // Output is oversized — apply the configured strategy.
         match self.data_policy.large_data_strategy {
-            LargeDataStrategy::Reject => Err(RuntimeError::DataLimitExceeded {
-                limit_bytes: limit,
-                actual_bytes: actual,
-            }),
-            LargeDataStrategy::SpillToBlob => {
-                // Phase 2: spill to blob storage.
-                tracing::warn!(
-                    action_key,
-                    actual,
-                    limit,
-                    "output exceeds limit, spill to blob not yet implemented"
-                );
-                Ok(())
+            LargeDataStrategy::Reject => {
+                error_counter.inc();
+                Err(RuntimeError::DataLimitExceeded {
+                    limit_bytes: limit,
+                    actual_bytes: actual,
+                })
             }
+            LargeDataStrategy::SpillToBlob => match &self.blob_storage {
+                Some(storage) => {
+                    let blob_ref = storage
+                        .write(&serialized, "application/json")
+                        .await
+                        .map_err(|e| {
+                            tracing::warn!(
+                                action_key,
+                                error = %e,
+                                "blob spill failed, rejecting output"
+                            );
+                            error_counter.inc();
+                            RuntimeError::DataLimitExceeded {
+                                limit_bytes: limit,
+                                actual_bytes: actual,
+                            }
+                        })?;
+                    tracing::info!(
+                        action_key,
+                        uri = %blob_ref.uri,
+                        size = blob_ref.size_bytes,
+                        "output spilled to blob storage"
+                    );
+                    // Replace the large inline value with a reference so downstream
+                    // nodes receive a small handle instead of the full payload.
+                    *output = ActionOutput::Reference(DataReference {
+                        storage_type: "blob".into(),
+                        path: blob_ref.uri,
+                        size: Some(blob_ref.size_bytes),
+                        content_type: Some(blob_ref.content_type),
+                    });
+                    Ok(())
+                }
+                None => {
+                    tracing::warn!(
+                        action_key,
+                        actual,
+                        limit,
+                        "output exceeds limit and no blob storage configured"
+                    );
+                    error_counter.inc();
+                    Err(RuntimeError::DataLimitExceeded {
+                        limit_bytes: limit,
+                        actual_bytes: actual,
+                    })
+                }
+            },
         }
     }
 }
 
-/// Extract the primary output value from an `ActionResult` for size checking.
-fn primary_output(result: &ActionResult<serde_json::Value>) -> Option<&serde_json::Value> {
+/// Extract a mutable reference to the primary output field of an `ActionResult`.
+///
+/// Returns `None` for variants that carry no primary output (e.g. `Retry`).
+fn primary_output_mut(
+    result: &mut ActionResult<serde_json::Value>,
+) -> Option<&mut ActionOutput<serde_json::Value>> {
     match result {
-        ActionResult::Success { output } => output.as_value(),
-        ActionResult::Skip { output, .. } => output.as_ref().and_then(|o| o.as_value()),
-        ActionResult::Continue { output, .. } => output.as_value(),
-        ActionResult::Break { output, .. } => output.as_value(),
-        ActionResult::Branch { output, .. } => output.as_value(),
-        ActionResult::Route { data, .. } => data.as_value(),
-        ActionResult::MultiOutput { main_output, .. } => {
-            main_output.as_ref().and_then(|o| o.as_value())
-        }
-        ActionResult::Wait { partial_output, .. } => {
-            partial_output.as_ref().and_then(|o| o.as_value())
-        }
+        ActionResult::Success { output } => Some(output),
+        ActionResult::Skip { output, .. } => output.as_mut(),
+        ActionResult::Continue { output, .. } => Some(output),
+        ActionResult::Break { output, .. } => Some(output),
+        ActionResult::Branch { output, .. } => Some(output),
+        ActionResult::Route { data, .. } => Some(data),
+        ActionResult::MultiOutput { main_output, .. } => main_output.as_mut(),
+        ActionResult::Wait { partial_output, .. } => partial_output.as_mut(),
         ActionResult::Retry { .. } => None,
         _ => None,
     }
@@ -363,5 +445,142 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn execute_uses_sandbox_for_capability_gated() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // Track whether sandbox was invoked.
+        let sandbox_called = Arc::new(AtomicBool::new(false));
+        let sandbox_called_clone = sandbox_called.clone();
+
+        let executor: ActionExecutor = Arc::new(move |_ctx, _meta, input| {
+            sandbox_called_clone.store(true, Ordering::SeqCst);
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
+        let sandbox = Arc::new(InProcessSandbox::new(executor));
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new(action_key!("test.gated"), "Gated", "capability gated")
+                .with_isolation_level(IsolationLevel::CapabilityGated),
+        }));
+
+        let metrics = MetricsRegistry::new();
+        let rt = ActionRuntime::new(registry, sandbox, DataPassingPolicy::default(), metrics);
+
+        let result = rt
+            .execute_action("test.gated", serde_json::json!({"data": 1}), test_context())
+            .await;
+        assert!(result.is_ok());
+        assert!(
+            sandbox_called.load(Ordering::SeqCst),
+            "sandbox should have been called for CapabilityGated action"
+        );
+    }
+
+    #[tokio::test]
+    async fn spill_to_blob_rejects_when_no_storage() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new(action_key!("test.spill"), "Spill", "large output"),
+        }));
+
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
+        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let metrics = MetricsRegistry::new();
+
+        let rt = ActionRuntime::new(
+            registry,
+            sandbox,
+            DataPassingPolicy {
+                max_node_output_bytes: 5,
+                large_data_strategy: LargeDataStrategy::SpillToBlob,
+                ..Default::default()
+            },
+            metrics,
+        );
+
+        // No blob storage configured -- should reject.
+        let input = serde_json::json!({"big": "this exceeds 5 bytes easily"});
+        let result = rt.execute_action("test.spill", input, test_context()).await;
+        assert!(
+            matches!(result, Err(RuntimeError::DataLimitExceeded { .. })),
+            "expected DataLimitExceeded when no blob storage configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn spill_to_blob_succeeds_with_storage() {
+        use crate::blob::{BlobRef, BlobStorage};
+
+        struct FakeBlobStorage;
+
+        #[async_trait::async_trait]
+        impl BlobStorage for FakeBlobStorage {
+            async fn write(
+                &self,
+                data: &[u8],
+                content_type: &str,
+            ) -> Result<BlobRef, RuntimeError> {
+                Ok(BlobRef {
+                    uri: "mem://test/blob-1".into(),
+                    size_bytes: data.len() as u64,
+                    content_type: content_type.into(),
+                })
+            }
+            async fn read(&self, _blob_ref: &BlobRef) -> Result<Vec<u8>, RuntimeError> {
+                Ok(vec![])
+            }
+        }
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new(
+                action_key!("test.spill_ok"),
+                "SpillOk",
+                "large output with storage",
+            ),
+        }));
+
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
+        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let metrics = MetricsRegistry::new();
+
+        let rt = ActionRuntime::new(
+            registry,
+            sandbox,
+            DataPassingPolicy {
+                max_node_output_bytes: 5,
+                large_data_strategy: LargeDataStrategy::SpillToBlob,
+                ..Default::default()
+            },
+            metrics,
+        )
+        .with_blob_storage(Arc::new(FakeBlobStorage));
+
+        let input = serde_json::json!({"big": "this exceeds 5 bytes easily"});
+        let result = rt
+            .execute_action("test.spill_ok", input, test_context())
+            .await;
+        let action_result = result.expect("should succeed when blob storage is configured");
+
+        // Verify the large inline payload was replaced with an external reference.
+        match action_result {
+            ActionResult::Success {
+                output: ActionOutput::Reference(data_ref),
+            } => {
+                assert_eq!(data_ref.storage_type, "blob");
+                assert_eq!(data_ref.path, "mem://test/blob-1");
+                assert!(data_ref.size.is_some());
+                assert_eq!(data_ref.content_type.as_deref(), Some("application/json"));
+            }
+            other => panic!("expected Success with Reference output after spill, got {other:?}"),
+        }
     }
 }

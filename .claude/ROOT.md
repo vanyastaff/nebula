@@ -4,7 +4,7 @@ DAG-based workflow automation engine in Rust (n8n/Zapier).
 ## Crates (→ .claude/crates/{name}.md)
 
 **Core layer**
-core · validator · parameter · expression · memory · workflow · execution
+core · validator · parameter · expression · workflow · execution
 
 **Cross-cutting** (importable at any layer)
 log · system · eventbus · telemetry · metrics · config · resilience · error

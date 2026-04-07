@@ -7,7 +7,6 @@
 use std::future::Future;
 
 use nebula_core::{AuthScheme, ResourceKey};
-use nebula_parameter::ParameterCollection;
 
 use crate::ctx::Ctx;
 
@@ -20,9 +19,6 @@ use crate::ctx::Ctx;
 pub trait AnyResource: Send + Sync + 'static {
     /// Returns the resource key.
     fn key(&self) -> ResourceKey;
-
-    /// Returns the parameter schema for the setup form.
-    fn parameters(&self) -> ParameterCollection;
 
     /// Returns resource metadata for UI and diagnostics.
     fn metadata(&self) -> ResourceMetadata;
@@ -58,8 +54,6 @@ pub struct ResourceMetadata {
     pub name: String,
     /// Optional longer description.
     pub description: Option<String>,
-    /// Parameter schema describing the configuration form.
-    pub parameters: ParameterCollection,
     /// Freeform tags for categorization.
     pub tags: Vec<String>,
 }
@@ -71,16 +65,8 @@ impl ResourceMetadata {
             key: key.clone(),
             name: key.to_string(),
             description: None,
-            parameters: ParameterCollection::new(),
             tags: Vec::new(),
         }
-    }
-
-    /// Sets the parameter schema for the configuration form.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_parameters(mut self, parameters: ParameterCollection) -> Self {
-        self.parameters = parameters;
-        self
     }
 }
 
@@ -121,22 +107,12 @@ pub trait Resource: Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + Into<crate::Error> + 'static;
     /// Authentication scheme resolved by the credential system.
     ///
-    /// Declares what auth material this resource needs (e.g., `BearerToken`,
-    /// `DatabaseAuth`). Use `()` for resources that require no authentication.
+    /// Declares what auth material this resource needs (e.g., `SecretToken`,
+    /// `IdentityPassword`). Use `()` for resources that require no authentication.
     type Auth: AuthScheme;
 
     /// Returns the unique key identifying this resource type.
     fn key() -> ResourceKey;
-
-    /// Returns the parameter schema for the configuration form.
-    ///
-    /// The UI uses this to render dynamic setup forms. Each parameter
-    /// describes one user-facing config field (host, port, pool size, etc.).
-    ///
-    /// The default returns an empty collection (no user-visible parameters).
-    fn parameters() -> ParameterCollection {
-        ParameterCollection::new()
-    }
 
     /// Creates a new runtime instance from config and auth material.
     fn create(
@@ -179,8 +155,6 @@ pub trait Resource: Send + Sync + 'static {
 
     /// Returns metadata for UI and diagnostics.
     fn metadata() -> ResourceMetadata {
-        let mut meta = ResourceMetadata::from_key(&Self::key());
-        meta.parameters = Self::parameters();
-        meta
+        ResourceMetadata::from_key(&Self::key())
     }
 }

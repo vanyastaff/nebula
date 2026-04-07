@@ -52,10 +52,21 @@ jobs:
           cache-on-failure: true
 
       - name: Install cargo-codspeed
-        run: cargo install cargo-codspeed --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-codspeed
 
       - name: Build the benchmark targets
-        run: cargo codspeed build --workspace
+        run: |
+          cargo codspeed build \
+            -p nebula-config \
+            -p nebula-core \
+            -p nebula-eventbus \
+            -p nebula-expression \
+            -p nebula-log \
+            -p nebula-resilience \
+            -p nebula-system \
+            -p nebula-validator
 
       - name: Run the benchmarks
         uses: CodSpeedHQ/action@v4

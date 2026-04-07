@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use crate::conditions::Condition;
 use crate::display_mode::{ComputedReturn, DisplayMode};
 use crate::filter_field::FilterField;
+use crate::input_hint::InputHint;
 use crate::loader::{FilterFieldLoader, LoaderContext, LoaderError, OptionLoader, RecordLoader};
 use crate::loader_result::LoaderResult;
 use crate::notice::NoticeSeverity;
@@ -87,7 +88,10 @@ pub struct Parameter {
     pub secret: bool,
 
     /// Whether the field supports expression mode (e.g. `{{ variable }}`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    ///
+    /// Defaults to `true` — most fields support expressions. Use
+    /// `.no_expression()` to disable for fields like boolean toggles.
+    #[serde(default = "default_true")]
     pub expression: bool,
 
     /// Override the HTML input type (e.g. `"email"`, `"url"`).
@@ -121,6 +125,10 @@ pub struct Parameter {
 
 // ── Private helper ─────────────────────────────────────────────────────────
 
+fn default_true() -> bool {
+    true
+}
+
 /// Creates a [`Parameter`] with all shared metadata at defaults.
 fn new_parameter(id: impl Into<String>, param_type: ParameterType) -> Parameter {
     Parameter {
@@ -133,7 +141,7 @@ fn new_parameter(id: impl Into<String>, param_type: ParameterType) -> Parameter 
         default: None,
         required: false,
         secret: false,
-        expression: false,
+        expression: true,
         input_type: None,
         rules: Vec::new(),
         visible_when: None,
@@ -150,7 +158,13 @@ impl Parameter {
     /// Creates a free-form text parameter.
     #[must_use]
     pub fn string(id: impl Into<String>) -> Self {
-        new_parameter(id, ParameterType::String { multiline: false })
+        new_parameter(
+            id,
+            ParameterType::String {
+                multiline: false,
+                input_hint: InputHint::default(),
+            },
+        )
     }
 
     /// Creates a numeric parameter (floating-point by default).
@@ -216,6 +230,18 @@ impl Parameter {
         )
     }
 
+    /// Creates an object parameter with pre-populated child parameters.
+    #[must_use]
+    pub fn object_with(id: impl Into<String>, parameters: Vec<Parameter>) -> Self {
+        new_parameter(
+            id,
+            ParameterType::Object {
+                parameters,
+                display_mode: DisplayMode::default(),
+            },
+        )
+    }
+
     /// Creates a list parameter with the given item template.
     #[must_use]
     pub fn list(id: impl Into<String>, item: Parameter) -> Self {
@@ -254,28 +280,52 @@ impl Parameter {
         )
     }
 
-    /// Creates a date picker parameter (no time component).
+    /// Creates a date picker parameter (String with `InputHint::Date`).
     #[must_use]
     pub fn date(id: impl Into<String>) -> Self {
-        new_parameter(id, ParameterType::Date)
+        new_parameter(
+            id,
+            ParameterType::String {
+                multiline: false,
+                input_hint: InputHint::Date,
+            },
+        )
     }
 
-    /// Creates a date-and-time picker parameter.
+    /// Creates a date-and-time picker parameter (String with `InputHint::DateTime`).
     #[must_use]
     pub fn datetime(id: impl Into<String>) -> Self {
-        new_parameter(id, ParameterType::DateTime)
+        new_parameter(
+            id,
+            ParameterType::String {
+                multiline: false,
+                input_hint: InputHint::DateTime,
+            },
+        )
     }
 
-    /// Creates a time-only picker parameter.
+    /// Creates a time-only picker parameter (String with `InputHint::Time`).
     #[must_use]
     pub fn time(id: impl Into<String>) -> Self {
-        new_parameter(id, ParameterType::Time)
+        new_parameter(
+            id,
+            ParameterType::String {
+                multiline: false,
+                input_hint: InputHint::Time,
+            },
+        )
     }
 
-    /// Creates a color picker parameter.
+    /// Creates a color picker parameter (String with `InputHint::Color`).
     #[must_use]
     pub fn color(id: impl Into<String>) -> Self {
-        new_parameter(id, ParameterType::Color)
+        new_parameter(
+            id,
+            ParameterType::String {
+                multiline: false,
+                input_hint: InputHint::Color,
+            },
+        )
     }
 
     /// Creates a file upload parameter.
@@ -293,6 +343,8 @@ impl Parameter {
 
     /// Creates a hidden parameter (not rendered in the UI).
     #[must_use]
+    #[deprecated(since = "0.4.0", note = "set visible = false on Parameter instead")]
+    #[allow(deprecated)]
     pub fn hidden(id: impl Into<String>) -> Self {
         new_parameter(id, ParameterType::Hidden)
     }
@@ -488,9 +540,21 @@ impl Parameter {
     }
 
     /// Enables expression mode (allows `{{ variable }}` interpolation).
+    ///
+    /// This is the default — most fields support expressions.
     #[must_use]
     pub fn expression(mut self) -> Self {
         self.expression = true;
+        self
+    }
+
+    /// Disables expression mode for this field.
+    ///
+    /// Use for fields where expressions don't make sense (e.g., boolean
+    /// toggles, resource pickers).
+    #[must_use]
+    pub fn no_expression(mut self) -> Self {
+        self.expression = false;
         self
     }
 }
@@ -1037,7 +1101,13 @@ mod tests {
     fn string_constructor_defaults() {
         let p = Parameter::string("name");
         assert_eq!(p.id, "name");
-        assert_eq!(p.param_type, ParameterType::String { multiline: false });
+        assert_eq!(
+            p.param_type,
+            ParameterType::String {
+                multiline: false,
+                input_hint: InputHint::default()
+            }
+        );
         assert!(!p.required);
         assert!(!p.secret);
         assert!(p.label.is_none());
@@ -1187,7 +1257,13 @@ mod tests {
     #[test]
     fn multiline_enables_textarea_mode() {
         let s = Parameter::string("text").multiline();
-        assert_eq!(s.param_type, ParameterType::String { multiline: true });
+        assert_eq!(
+            s.param_type,
+            ParameterType::String {
+                multiline: true,
+                input_hint: InputHint::default()
+            }
+        );
     }
 
     #[test]

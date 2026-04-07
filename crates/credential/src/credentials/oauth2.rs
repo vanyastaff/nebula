@@ -205,6 +205,7 @@ impl Credential for OAuth2Credential {
             icon_url: None,
             documentation_url: None,
             properties: Self::parameters(),
+            pattern: nebula_core::AuthPattern::OAuth2,
         }
     }
 
@@ -500,10 +501,10 @@ mod tests {
 
     #[test]
     fn capabilities_are_correct() {
-        assert!(OAuth2Credential::INTERACTIVE);
-        assert!(OAuth2Credential::REFRESHABLE);
-        assert!(!OAuth2Credential::REVOCABLE);
-        assert!(!OAuth2Credential::TESTABLE);
+        const { assert!(OAuth2Credential::INTERACTIVE) };
+        const { assert!(OAuth2Credential::REFRESHABLE) };
+        const { assert!(!OAuth2Credential::REVOCABLE) };
+        const { assert!(!OAuth2Credential::TESTABLE) };
     }
 
     #[test]

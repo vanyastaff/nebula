@@ -10,10 +10,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use nebula_resource::AcquireOptions;
 use nebula_resource::Manager;
 use nebula_resource::ShutdownConfig;
-use nebula_resource::ScopeLevel;
-use nebula_resource::ctx::{BasicCtx, Ctx};
+use nebula_resource::ctx::{BasicCtx, Ctx, ScopeLevel};
 use nebula_resource::error::{Error, ErrorKind};
-use nebula_core::OrganizationId;
 use nebula_resource::handle::ResourceHandle;
 use nebula_resource::recovery::{GateState, RecoveryGate, RecoveryGateConfig};
 use nebula_resource::release_queue::ReleaseQueue;
@@ -118,11 +116,8 @@ impl Resource for PoolTestResource {
         }
     }
 
-    fn destroy(
-        &self,
-        _runtime: Arc<AtomicU64>,
-    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
-        async { Ok(()) }
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+        Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
@@ -139,12 +134,12 @@ impl Pooled for PoolTestResource {
         }
     }
 
-    fn recycle(
+    async fn recycle(
         &self,
         _runtime: &Arc<AtomicU64>,
         _metrics: &nebula_resource::topology::pooled::InstanceMetrics,
-    ) -> impl std::future::Future<Output = Result<RecycleDecision, TestError>> + Send {
-        async { Ok(RecycleDecision::Keep) }
+    ) -> Result<RecycleDecision, TestError> {
+        Ok(RecycleDecision::Keep)
     }
 }
 
@@ -195,11 +190,8 @@ impl Resource for ResidentTestResource {
         }
     }
 
-    fn destroy(
-        &self,
-        _runtime: Arc<AtomicU64>,
-    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
-        async { Ok(()) }
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+        Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
@@ -553,7 +545,7 @@ async fn manager_shutdown_rejects_acquire() {
         .await;
 
     assert!(result.is_err());
-    let err = result.err().expect("should be an error");
+    let err = result.expect_err("should be an error");
     assert_eq!(*err.kind(), ErrorKind::Cancelled);
 }
 
@@ -565,7 +557,7 @@ async fn remove_nonexistent_returns_not_found() {
     let result = manager.remove(&key);
 
     assert!(result.is_err());
-    let err = result.err().expect("should be an error");
+    let err = result.expect_err("should be an error");
     assert_eq!(*err.kind(), ErrorKind::NotFound);
 }
 
@@ -897,8 +889,7 @@ async fn manager_scope_exact_match() {
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
-    let org_id = OrganizationId::new();
-    let scope = ScopeLevel::Organization(org_id);
+    let scope = ScopeLevel::Organization("acme".into());
     manager
         .register(
             resource.clone(),
@@ -942,7 +933,7 @@ async fn manager_scope_fallback_to_global() {
 
     // Acquire with Organization scope — should fall back to Global.
     let ctx =
-        BasicCtx::new(ExecutionId::new()).with_scope(ScopeLevel::Organization(OrganizationId::new()));
+        BasicCtx::new(ExecutionId::new()).with_scope(ScopeLevel::Organization("other-org".into()));
     let handle: ResourceHandle<ResidentTestResource> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
@@ -964,7 +955,7 @@ async fn manager_scope_mismatch_not_found() {
         .register(
             resource,
             test_config(),
-            ScopeLevel::Organization(OrganizationId::new()),
+            ScopeLevel::Organization("acme".into()),
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
@@ -973,7 +964,7 @@ async fn manager_scope_mismatch_not_found() {
 
     // Acquire with a different org scope — no match, no Global fallback.
     let ctx =
-        BasicCtx::new(ExecutionId::new()).with_scope(ScopeLevel::Organization(OrganizationId::new()));
+        BasicCtx::new(ExecutionId::new()).with_scope(ScopeLevel::Organization("other".into()));
     let result = manager
         .acquire_resident::<ResidentTestResource>(&(), &ctx, &AcquireOptions::default())
         .await;
@@ -1282,11 +1273,8 @@ impl Resource for ServiceTestResource {
         }
     }
 
-    fn destroy(
-        &self,
-        _runtime: Arc<ServiceInner>,
-    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
-        async { Ok(()) }
+    async fn destroy(&self, _runtime: Arc<ServiceInner>) -> Result<(), TestError> {
+        Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
@@ -1369,11 +1357,8 @@ impl Resource for TransportTestResource {
         }
     }
 
-    fn destroy(
-        &self,
-        _runtime: Arc<TransportInner>,
-    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
-        async { Ok(()) }
+    async fn destroy(&self, _runtime: Arc<TransportInner>) -> Result<(), TestError> {
+        Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
@@ -1448,11 +1433,8 @@ impl Resource for ExclusiveTestResource {
         }
     }
 
-    fn destroy(
-        &self,
-        _runtime: Arc<AtomicU64>,
-    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
-        async { Ok(()) }
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+        Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
@@ -2145,11 +2127,8 @@ impl Resource for FailingResidentResource {
         }
     }
 
-    fn destroy(
-        &self,
-        _runtime: Arc<AtomicU64>,
-    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
-        async { Ok(()) }
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+        Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
@@ -2216,11 +2195,8 @@ impl Resource for PermanentFailResource {
         async { Err(PermanentTestError("permanent failure".into())) }
     }
 
-    fn destroy(
-        &self,
-        _runtime: Arc<AtomicU64>,
-    ) -> impl std::future::Future<Output = Result<(), PermanentTestError>> + Send {
-        async { Ok(()) }
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), PermanentTestError> {
+        Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
@@ -2581,13 +2557,13 @@ impl Resource for HandleDummyResource {
         resource_key!("handle-dummy")
     }
 
-    fn create(
+    async fn create(
         &self,
         _config: &TestConfig,
         _auth: &(),
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<u32, TestError>> + Send {
-        async { Ok(1) }
+    ) -> Result<u32, TestError> {
+        Ok(1)
     }
 
     fn metadata() -> ResourceMetadata {
@@ -2801,11 +2777,8 @@ impl Resource for DropOnRecycleResource {
         }
     }
 
-    fn destroy(
-        &self,
-        _runtime: Arc<AtomicU64>,
-    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
-        async { Ok(()) }
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+        Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
@@ -2814,12 +2787,12 @@ impl Resource for DropOnRecycleResource {
 }
 
 impl Pooled for DropOnRecycleResource {
-    fn recycle(
+    async fn recycle(
         &self,
         _runtime: &Arc<AtomicU64>,
         _metrics: &nebula_resource::topology::pooled::InstanceMetrics,
-    ) -> impl std::future::Future<Output = Result<RecycleDecision, TestError>> + Send {
-        async { Ok(RecycleDecision::Drop) }
+    ) -> Result<RecycleDecision, TestError> {
+        Ok(RecycleDecision::Drop)
     }
 }
 
@@ -2883,13 +2856,13 @@ impl Resource for FailingSessionTransport {
         resource_key!("failing-session")
     }
 
-    fn create(
+    async fn create(
         &self,
         _config: &TestConfig,
         _auth: &(),
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<u32, TestError>> + Send {
-        async { Ok(1) }
+    ) -> Result<u32, TestError> {
+        Ok(1)
     }
 
     fn metadata() -> ResourceMetadata {
@@ -2898,12 +2871,8 @@ impl Resource for FailingSessionTransport {
 }
 
 impl Transport for FailingSessionTransport {
-    fn open_session(
-        &self,
-        _transport: &u32,
-        _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<u32, TestError>> + Send {
-        async { Err(TestError("session open failed".into())) }
+    async fn open_session(&self, _transport: &u32, _ctx: &dyn Ctx) -> Result<u32, TestError> {
+        Err(TestError("session open failed".into()))
     }
 }
 
@@ -2943,7 +2912,7 @@ async fn transport_open_session_failure_frees_permit() {
         "should fail again (still a bad resource), but not timeout waiting for permit"
     );
     // Verify it's a transient error (from open_session), not backpressure (from semaphore timeout).
-    let err = result2.err().expect("already asserted is_err above");
+    let err = result2.expect_err("already asserted is_err above");
     assert_ne!(
         *err.kind(),
         ErrorKind::Backpressure,
@@ -2973,13 +2942,13 @@ impl Resource for FailingResetExclusive {
         resource_key!("failing-reset")
     }
 
-    fn create(
+    async fn create(
         &self,
         _config: &TestConfig,
         _auth: &(),
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<u32, TestError>> + Send {
-        async { Ok(1) }
+    ) -> Result<u32, TestError> {
+        Ok(1)
     }
 
     fn metadata() -> ResourceMetadata {
@@ -2988,11 +2957,8 @@ impl Resource for FailingResetExclusive {
 }
 
 impl Exclusive for FailingResetExclusive {
-    fn reset(
-        &self,
-        _runtime: &u32,
-    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
-        async { Err(TestError("reset failed".into())) }
+    async fn reset(&self, _runtime: &u32) -> Result<(), TestError> {
+        Err(TestError("reset failed".into()))
     }
 }
 
@@ -3073,9 +3039,7 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await;
 
-    let err = result
-        .err()
-        .expect("acquire should fail when gate is permanently failed");
+    let err = result.expect_err("acquire should fail when gate is permanently failed");
     assert_eq!(
         *err.kind(),
         ErrorKind::Permanent,
@@ -3110,9 +3074,7 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await;
 
-    let err = result
-        .err()
-        .expect("acquire should fail when gate is in progress");
+    let err = result.expect_err("acquire should fail when gate is in progress");
     assert_eq!(
         *err.kind(),
         ErrorKind::Transient,

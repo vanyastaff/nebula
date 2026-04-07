@@ -18,7 +18,7 @@
 
 use nebula_core::{ActionKey, NodeId, Version, WorkflowId};
 use nebula_workflow::{
-    ParamValue, WorkflowConfig, WorkflowDefinition,
+    CURRENT_SCHEMA_VERSION, ParamValue, WorkflowConfig, WorkflowDefinition,
     connection::{Connection, EdgeCondition},
     node::NodeDefinition,
 };
@@ -217,6 +217,7 @@ impl WorkflowBuilder {
                     retry_policy: None,
                     timeout: None,
                     description: None,
+                    enabled: true,
                 })
             })
             .collect::<crate::Result<Vec<_>>>()?;
@@ -255,9 +256,13 @@ impl WorkflowBuilder {
             connections,
             variables: self.variables,
             config: WorkflowConfig::default(),
+            trigger: None,
             tags: Vec::new(),
             created_at: now,
             updated_at: now,
+            owner_id: None,
+            ui_metadata: None,
+            schema_version: CURRENT_SCHEMA_VERSION,
         })
     }
 }

@@ -106,26 +106,25 @@ impl std::fmt::Debug for LoaderContext {
 #[deprecated(since = "0.3.0", note = "renamed to `LoaderContext`")]
 pub type LoaderCtx = LoaderContext;
 
-// ── OptionLoader ─────────────────────────────────────────────────────────────
+// ── Generic Loader ──────────────────────────────────────────────────────────
 
-/// Async inline loader that resolves SelectOptions for a
-/// Select field or Select field with a
-/// Dynamic source.
+/// Generic async loader that resolves items of type `T` for a parameter field.
 ///
-/// Returns a LoaderResult supporting cursor-based pagination.
+/// The engine resolves credentials and injects them via [`LoaderContext`], then
+/// calls the loader to populate data at runtime.
 ///
-/// Two OptionLoaders always compare equal (`PartialEq` returns `true`),
-/// so adding a loader does not affect schema equality checks.
-pub struct OptionLoader(
-    Arc<dyn Fn(LoaderContext) -> LoaderFuture<LoaderResult<SelectOption>> + Send + Sync>,
+/// Two loaders always compare equal (`PartialEq` returns `true`), so
+/// adding a loader does not affect schema equality checks.
+pub struct Loader<T: Send + 'static>(
+    Arc<dyn Fn(LoaderContext) -> LoaderFuture<LoaderResult<T>> + Send + Sync>,
 );
 
-impl OptionLoader {
-    /// Wraps an async closure as an [`OptionLoader`].
+impl<T: Send + 'static> Loader<T> {
+    /// Wraps an async closure as a [`Loader`].
     pub fn new<F, Fut>(f: F) -> Self
     where
         F: Fn(LoaderContext) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<LoaderResult<SelectOption>, LoaderError>> + Send + 'static,
+        Fut: Future<Output = Result<LoaderResult<T>, LoaderError>> + Send + 'static,
     {
         Self(Arc::new(move |ctx| Box::pin(f(ctx))))
     }
@@ -134,136 +133,36 @@ impl OptionLoader {
     ///
     /// # Errors
     ///
-    /// Returns [`LoaderError`] if the loader cannot resolve options.
-    pub async fn call(
-        &self,
-        ctx: LoaderContext,
-    ) -> Result<LoaderResult<SelectOption>, LoaderError> {
+    /// Returns [`LoaderError`] if the loader cannot resolve data.
+    pub async fn call(&self, ctx: LoaderContext) -> Result<LoaderResult<T>, LoaderError> {
         (self.0)(ctx).await
     }
 }
 
-impl Clone for OptionLoader {
+impl<T: Send + 'static> Clone for Loader<T> {
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
     }
 }
 
-impl PartialEq for OptionLoader {
+impl<T: Send + 'static> PartialEq for Loader<T> {
     /// Always returns `true` — loaders are not compared structurally.
     fn eq(&self, _: &Self) -> bool {
         true
     }
 }
 
-impl std::fmt::Debug for OptionLoader {
+impl<T: Send + 'static> std::fmt::Debug for Loader<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("OptionLoader(<async fn>)")
+        f.write_str("Loader(<async fn>)")
     }
 }
 
-// ── RecordLoader ─────────────────────────────────────────────────────────────
+/// Async loader that resolves [`SelectOption`]s for Select/MultiSelect fields.
+pub type OptionLoader = Loader<SelectOption>;
 
-/// Async inline loader that resolves field specs for a
-/// DynamicFields field.
-///
-/// Returns a LoaderResult of JSON values (placeholder; will use typed
-/// Parameter once the migration completes).
-///
-/// Like OptionLoader, two RecordLoaders always compare equal.
-pub struct RecordLoader(
-    Arc<dyn Fn(LoaderContext) -> LoaderFuture<LoaderResult<serde_json::Value>> + Send + Sync>,
-);
+/// Async loader that resolves JSON records for Dynamic fields.
+pub type RecordLoader = Loader<serde_json::Value>;
 
-impl RecordLoader {
-    /// Wraps an async closure as a [`RecordLoader`].
-    pub fn new<F, Fut>(f: F) -> Self
-    where
-        F: Fn(LoaderContext) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<LoaderResult<serde_json::Value>, LoaderError>> + Send + 'static,
-    {
-        Self(Arc::new(move |ctx| Box::pin(f(ctx))))
-    }
-
-    /// Invokes the loader with the given context.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LoaderError`] if the loader cannot resolve field specs.
-    pub async fn call(
-        &self,
-        ctx: LoaderContext,
-    ) -> Result<LoaderResult<serde_json::Value>, LoaderError> {
-        (self.0)(ctx).await
-    }
-}
-
-impl Clone for RecordLoader {
-    fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
-    }
-}
-
-impl PartialEq for RecordLoader {
-    /// Always returns `true` — loaders are not compared structurally.
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-
-impl std::fmt::Debug for RecordLoader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("RecordLoader(<async fn>)")
-    }
-}
-
-// ── FilterFieldLoader ────────────────────────────────────────────────────────
-
-/// Async inline loader that resolves [`FilterField`]s for filter-based
-/// parameter UIs.
-///
-/// Returns a [`LoaderResult`] supporting cursor-based pagination.
-///
-/// Like [`OptionLoader`], two [`FilterFieldLoader`]s always compare equal.
-pub struct FilterFieldLoader(
-    Arc<dyn Fn(LoaderContext) -> LoaderFuture<LoaderResult<FilterField>> + Send + Sync>,
-);
-
-impl FilterFieldLoader {
-    /// Wraps an async closure as a [`FilterFieldLoader`].
-    pub fn new<F, Fut>(f: F) -> Self
-    where
-        F: Fn(LoaderContext) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<LoaderResult<FilterField>, LoaderError>> + Send + 'static,
-    {
-        Self(Arc::new(move |ctx| Box::pin(f(ctx))))
-    }
-
-    /// Invokes the loader with the given context.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LoaderError`] if the loader cannot resolve filter fields.
-    pub async fn call(&self, ctx: LoaderContext) -> Result<LoaderResult<FilterField>, LoaderError> {
-        (self.0)(ctx).await
-    }
-}
-
-impl Clone for FilterFieldLoader {
-    fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
-    }
-}
-
-impl PartialEq for FilterFieldLoader {
-    /// Always returns `true` — loaders are not compared structurally.
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-
-impl std::fmt::Debug for FilterFieldLoader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("FilterFieldLoader(<async fn>)")
-    }
-}
+/// Async loader that resolves [`FilterField`]s for Filter fields.
+pub type FilterFieldLoader = Loader<FilterField>;

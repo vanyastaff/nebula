@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::ops::Index;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -392,14 +391,6 @@ impl FromIterator<(String, serde_json::Value)> for ParameterValues {
     }
 }
 
-impl Index<&str> for ParameterValues {
-    type Output = serde_json::Value;
-
-    fn index(&self, key: &str) -> &Self::Output {
-        &self.values[key]
-    }
-}
-
 /// A frozen copy of parameter values for snapshot/restore.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParameterValuesSnapshot {
@@ -556,20 +547,6 @@ mod tests {
 
         assert_eq!(vals.len(), 2);
         assert_eq!(vals.get("a"), Some(&json!(1)));
-    }
-
-    #[test]
-    fn index_access() {
-        let mut vals = ParameterValues::new();
-        vals.set("key", json!("value"));
-        assert_eq!(vals["key"], json!("value"));
-    }
-
-    #[test]
-    #[should_panic]
-    fn index_missing_key_panics() {
-        let vals = ParameterValues::new();
-        let _ = &vals["missing"];
     }
 
     #[test]

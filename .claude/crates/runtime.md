@@ -6,7 +6,7 @@ Action execution layer — ActionRegistry, InProcessSandbox, data policies, and 
 - Actions run in-process inside `SandboxedContext`. The engine calls `ActionRuntime`, which calls `InProcessSandbox`, which calls the action handler.
 
 ## Key Decisions
-- `ActionRegistry` maps `ActionKey → InternalHandler`. Actions must be registered before the engine can dispatch them.
+- `ActionRegistry` maps `ActionKey → InternalHandler` with version index. `get()` returns latest; `get_versioned()` returns specific version.
 - `DataPassingPolicy` / `LargeDataStrategy` enforce output size limits — oversized outputs can be redirected to blob storage.
 - `MemoryQueue` / `TaskQueue` for async task dispatch. `BoundedStreamBuffer` / `PushOutcome` for streaming backpressure.
 - `SandboxedContext` wraps `ActionContext` with the sandbox boundary — implements the `Context` trait.
@@ -23,4 +23,4 @@ Action execution layer — ActionRegistry, InProcessSandbox, data policies, and 
 
 <!-- reviewed: 2026-04-02 -->
 
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
+<!-- reviewed: 2026-04-06 — added version-aware ActionRegistry (get_versioned, versions); fixed version index dedup on re-register and cleanup on remove -->

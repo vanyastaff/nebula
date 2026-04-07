@@ -6,19 +6,22 @@ Inbound webhook server — UUID-isolated endpoints per trigger, single server pe
 - `TriggerHandle` is RAII — dropping it automatically deregisters the webhook endpoint.
 
 ## Key Decisions
-- UUID isolation: each trigger gets `/webhook/{uuid}` for security and routing.
-- `Environment` separates test vs production traffic.
-- `StateStore` / `MemoryStateStore` for per-trigger state persistence.
-- `WebhookAction` trait: `on_subscribe`, `on_webhook`, `on_unsubscribe`, `test`.
-- Rate limiting, signature verification (`HmacSha256Verifier`), and webhook metrics removed — will be reimplemented at API/middleware layer when webhook v2 lands.
+- UUID isolation: each trigger gets a unique UUID path (`/webhook/{uuid}`) for security and routing. External services register this URL.
+- `Environment` separates test vs production traffic — test webhooks never cross into production routing.
+- `StateStore` / `MemoryStateStore` for per-trigger state persistence across webhook calls.
+- `WebhookAction` trait: implement `on_subscribe` (register with external service), `on_webhook` (handle incoming), `on_unsubscribe` (cleanup), `test` (verify connection).
 
 ## Traps
-- Don't start multiple `WebhookServer` instances in one process.
-- `TriggerCtx::webhook_url()` returns full URL with UUID — use in `on_subscribe`.
-- `on_webhook` returns `Option<Event>` — `None` acknowledges without emitting.
-- `Error::RateLimited` variant removed — don't match on it.
+- Don't start multiple `WebhookServer` instances in one process — only one port is expected.
+- `TriggerCtx::webhook_url()` returns the full URL including the UUID. Use this when registering with the external provider in `on_subscribe`.
+- `on_webhook` returns `Option<Event>` — returning `None` acknowledges the webhook but emits no event (useful for filtering).
 
 ## Relations
-- Depends on nebula-resource (for `Context`). Used by nebula-runtime.
+- Depends on nebula-resource (for `Context`). Used by nebula-runtime for webhook trigger management.
 
-<!-- reviewed: 2026-04-07 — removed rate_limit, verifier, metrics modules; RateLimited error variant removed -->
+<\!-- reviewed: 2026-03-25 -->
+
+<!-- reviewed: 2026-03-30 -->
+<!-- reviewed: 2026-04-02 -->
+
+<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->

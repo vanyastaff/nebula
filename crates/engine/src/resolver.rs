@@ -118,6 +118,12 @@ impl ParamResolver {
                 let value = navigate_path(output.value(), output_path);
                 Ok(value)
             }
+
+            _ => Err(EngineError::ParameterResolution {
+                node_id,
+                param_key: key.to_owned(),
+                error: format!("unsupported parameter type for key `{key}`"),
+            }),
         }
     }
 }
