@@ -533,9 +533,12 @@ impl WorkflowEngine {
                 .get(&node_id)
                 .map(|ns| ns.attempt_count().max(1) as u32)
                 .unwrap_or(1);
-            let _ = repo
+            if let Err(e) = repo
                 .save_node_output(execution_id, node_id, attempt, output.value().clone())
-                .await;
+                .await
+            {
+                tracing::warn!(%execution_id, %node_id, error = %e, "failed to persist node output");
+            }
         }
 
         // Save execution state snapshot

@@ -88,7 +88,7 @@ impl ExecutionRepo for PgExecutionRepo {
         .await
         .map_err(map_err)?;
 
-        Ok(row.map(|(version, state)| (version as u64, state.0)))
+        Ok(row.map(|(version, state)| (version.max(0) as u64, state.0)))
     }
 
     async fn transition(
@@ -375,7 +375,7 @@ impl ExecutionRepo for PgExecutionRepo {
                 .map_err(map_err)?,
         };
 
-        Ok(count as u64)
+        Ok(count.max(0) as u64)
     }
 
     async fn check_idempotency(&self, key: &str) -> Result<bool, ExecutionRepoError> {
