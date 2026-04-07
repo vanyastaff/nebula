@@ -176,10 +176,9 @@ impl Error {
 
     /// Create a signature invalid error
     ///
-    /// The `reason` is accepted for call-site documentation purposes
-    /// but is not included in the error display to avoid leaking
+    /// The `_reason` parameter is accepted for call-site documentation
+    /// purposes but is not embedded in the error display to avoid leaking
     /// verification details in logs.
-    #[allow(unused_variables)]
     pub fn signature_invalid(_reason: impl Into<String>) -> Self {
         Self::SignatureInvalid
     }

@@ -8,6 +8,7 @@
 //! paths beyond this limit pass through without per-path rate limiting.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -31,6 +32,10 @@ const DEFAULT_MAX_PATHS: usize = 10_000;
 /// Requests arriving on previously-unseen paths above the cap are allowed
 /// through without per-path rate limiting.
 ///
+/// The cap is a **soft limit**: in high concurrency scenarios, the map
+/// may briefly exceed `max_paths` by a small margin before the atomic
+/// counter catches up. This is acceptable for DoS-prevention purposes.
+///
 /// # Examples
 ///
 /// ```rust,ignore
@@ -47,6 +52,8 @@ pub struct WebhookRateLimiter {
     window: Duration,
     /// Maximum number of distinct paths to track.
     max_paths: usize,
+    /// Atomic count of distinct paths currently tracked.
+    path_count: AtomicUsize,
 }
 
 impl WebhookRateLimiter {
@@ -62,6 +69,7 @@ impl WebhookRateLimiter {
             max_requests: requests_per_minute.max(1) as usize,
             window: Duration::from_secs(60),
             max_paths: DEFAULT_MAX_PATHS,
+            path_count: AtomicUsize::new(0),
         }
     }
 
@@ -89,17 +97,38 @@ impl WebhookRateLimiter {
     /// Returns [`Error::RateLimited`] if the path has exceeded its
     /// per-minute request quota.
     pub async fn check(&self, path: &str) -> Result<(), Error> {
-        // Avoid inserting new entries once the cap is reached.
-        if !self.windows.contains_key(path) && self.windows.len() >= self.max_paths {
-            return Ok(());
+        // Fast path: path is already tracked — no allocation.
+        if let Some(window) = self.windows.get(path) {
+            return Self::acquire(window.clone(), path, self.window.as_secs()).await;
         }
 
+        // New path: check the soft cap before inserting.
+        // Uses compare-and-swap to atomically reserve a slot, avoiding
+        // unbounded DashMap growth from attacker-controlled paths.
+        let mut current = self.path_count.load(Ordering::Relaxed);
+        loop {
+            if current >= self.max_paths {
+                // Soft cap reached — pass through without per-path tracking.
+                return Ok(());
+            }
+            match self.path_count.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+
+        // Slot reserved. Insert the window (or reuse one if a concurrent
+        // thread already inserted for the same path, in which case the
+        // counter over-counts by one — acceptable for a soft limit).
         let window = self
             .windows
             .entry(path.to_string())
             .or_insert_with(|| {
-                // SlidingWindow::new validates inputs — our constructor
-                // already ensures max_requests >= 1 and window > 0.
                 Arc::new(
                     SlidingWindow::new(self.window, self.max_requests)
                         .expect("valid config: max_requests >= 1, window > 0"),
@@ -107,14 +136,14 @@ impl WebhookRateLimiter {
             })
             .clone();
 
+        Self::acquire(window, path, self.window.as_secs()).await
+    }
+
+    async fn acquire(window: Arc<SlidingWindow>, path: &str, retry_after_secs: u64) -> Result<(), Error> {
         use nebula_resilience::RateLimiter;
         match window.acquire().await {
             Ok(()) => Ok(()),
-            Err(_) => {
-                // SlidingWindow doesn't provide retry_after, estimate it
-                let retry_after = self.window.as_secs();
-                Err(Error::rate_limited(path, retry_after))
-            }
+            Err(_) => Err(Error::rate_limited(path, retry_after_secs)),
         }
     }
 }
