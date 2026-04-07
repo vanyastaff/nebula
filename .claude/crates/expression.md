@@ -17,7 +17,8 @@ n8n-compatible expression language evaluating `serde_json::Value` — used in wo
 - `ast`, `lexer`, `parser`, `eval`, `token`, `interner`, `span` modules are `#[doc(hidden)]` — unstable.
 - `EvaluationContext` is per-execution, not reused.
 - `eval_lambda` calls `eval_counting` (not `eval`) so iterations share the step budget.
-- `pick`/`omit` validate that all key arguments are strings and return `expression_invalid_argument` for non-strings.
-- `pad_start`, `pad_end`, `repeat` use `get_int_arg_with_policy` for the integer argument (supports float coercion in non-strict mode).
+- `pick`/`omit` validate all key args are strings; `pad_start`/`pad_end`/`repeat` use `get_int_arg_with_policy` (float coercion in non-strict mode).
+- `every([])` → `true` (vacuous truth); `group_by` skips elements missing the key field.
+- `some`/`every` second arg: string → field-name truthiness; non-string → equality. `is_truthy` is module-private.
 
-<!-- reviewed: 2026-04-07 — lambda scope isolation, pick/omit validation, integer coercion -->
+<!-- reviewed: 2026-04-07 — lambda scope isolation, pick/omit validation, integer coercion, new array builtins -->

@@ -119,6 +119,12 @@ impl BuiltinRegistry {
         self.register("concat", array::concat);
         self.register("flatten", array::flatten);
         self.register("unique", array::unique);
+        self.register("some", array::some);
+        self.register("every", array::every);
+        self.register("find", array::find);
+        self.register("find_index", array::find_index);
+        self.register("group_by", array::group_by);
+        self.register("flat_map", array::flat_map);
     }
 
     fn register_object_functions(&mut self) {
