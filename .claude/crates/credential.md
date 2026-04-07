@@ -6,6 +6,7 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - No direct import with nebula-resource — use EventBus.
 - All `AuthScheme` `Debug` impls redact secrets.
 - Schemes use `fn pattern() -> AuthPattern` — not `const KIND`.
+- 10 of 12 scheme types use `#[derive(AuthScheme)]`; `OAuth2Token` and `FederatedAssertion` keep manual impls (they override `expires_at()`).
 
 ## Key Decisions
 - Subfolders: `scheme/`, `credentials/`, `layer/`, `rotation/`.
@@ -28,4 +29,4 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - `PutMode::Upsert` does not exist — use `PutMode::Overwrite`.
 - `Zeroizing<Vec<u8>>` has no `into_inner()` — extract via `std::mem::take(&mut *val)`.
 
-<!-- reviewed: 2026-04-07 — Task 11: Zeroizing<Vec<u8>> for plaintext buffers. -->
+<!-- reviewed: 2026-04-07 — Task 12-13: AuthScheme derive macro + scheme migration. -->

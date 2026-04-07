@@ -1,6 +1,8 @@
 //! Compound connection URI authentication (postgres://, redis://, etc.).
 
-use nebula_core::{AuthPattern, AuthScheme, SecretString};
+use nebula_core::SecretString;
+
+use crate::AuthScheme;
 use serde::{Deserialize, Serialize};
 
 /// A connection URI that encodes all credentials and connection parameters.
@@ -19,7 +21,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// let uri = ConnectionUri::new(SecretString::new("postgres://alice:secret@db.example.com/mydb"));
 /// ```
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, AuthScheme)]
+#[auth_scheme(pattern = ConnectionUri)]
 pub struct ConnectionUri {
     #[serde(with = "nebula_core::serde_secret")]
     uri: SecretString,
@@ -38,12 +41,6 @@ impl ConnectionUri {
     }
 }
 
-impl AuthScheme for ConnectionUri {
-    fn pattern() -> AuthPattern {
-        AuthPattern::ConnectionUri
-    }
-}
-
 impl std::fmt::Debug for ConnectionUri {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConnectionUri")
@@ -54,6 +51,8 @@ impl std::fmt::Debug for ConnectionUri {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::{AuthPattern, AuthScheme as _};
+
     use super::*;
 
     #[test]

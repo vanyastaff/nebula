@@ -1,6 +1,8 @@
 //! Request signing credentials (HMAC, SigV4, webhook signatures).
 
-use nebula_core::{AuthPattern, AuthScheme, SecretString};
+use nebula_core::SecretString;
+
+use crate::AuthScheme;
 use serde::{Deserialize, Serialize};
 
 /// A signing key used to authenticate requests via HMAC or similar algorithms.
@@ -17,7 +19,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// let key = SigningKey::new(SecretString::new("whsec_abc123"), "hmac-sha256");
 /// ```
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, AuthScheme)]
+#[auth_scheme(pattern = RequestSigning)]
 pub struct SigningKey {
     #[serde(with = "nebula_core::serde_secret")]
     key: SecretString,
@@ -45,12 +48,6 @@ impl SigningKey {
     }
 }
 
-impl AuthScheme for SigningKey {
-    fn pattern() -> AuthPattern {
-        AuthPattern::RequestSigning
-    }
-}
-
 impl std::fmt::Debug for SigningKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SigningKey")
@@ -62,6 +59,8 @@ impl std::fmt::Debug for SigningKey {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::{AuthPattern, AuthScheme as _};
+
     use super::*;
 
     #[test]

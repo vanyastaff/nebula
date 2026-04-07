@@ -1,6 +1,8 @@
 //! Identity + password authentication (username/email + password).
 
-use nebula_core::{AuthPattern, AuthScheme, SecretString};
+use nebula_core::SecretString;
+
+use crate::AuthScheme;
 use serde::{Deserialize, Serialize};
 
 /// Identity (username, email, or account) paired with a password.
@@ -16,7 +18,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// let cred = IdentityPassword::new("alice@example.com", SecretString::new("hunter2"));
 /// ```
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, AuthScheme)]
+#[auth_scheme(pattern = IdentityPassword)]
 pub struct IdentityPassword {
     identity: String,
     #[serde(with = "nebula_core::serde_secret")]
@@ -44,12 +47,6 @@ impl IdentityPassword {
     }
 }
 
-impl AuthScheme for IdentityPassword {
-    fn pattern() -> AuthPattern {
-        AuthPattern::IdentityPassword
-    }
-}
-
 impl std::fmt::Debug for IdentityPassword {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IdentityPassword")
@@ -61,6 +58,8 @@ impl std::fmt::Debug for IdentityPassword {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::{AuthPattern, AuthScheme as _};
+
     use super::*;
 
     #[test]

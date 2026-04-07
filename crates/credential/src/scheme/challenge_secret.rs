@@ -1,6 +1,8 @@
 //! Challenge-response protocol credentials (Digest, NTLM, SCRAM).
 
-use nebula_core::{AuthPattern, AuthScheme, SecretString};
+use nebula_core::SecretString;
+
+use crate::AuthScheme;
 use serde::{Deserialize, Serialize};
 
 /// Credentials for challenge-response authentication protocols.
@@ -17,7 +19,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// let cred = ChallengeSecret::new("alice", SecretString::new("password"), "SCRAM-SHA-256");
 /// ```
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, AuthScheme)]
+#[auth_scheme(pattern = ChallengeResponse)]
 pub struct ChallengeSecret {
     identity: String,
     #[serde(with = "nebula_core::serde_secret")]
@@ -56,12 +59,6 @@ impl ChallengeSecret {
     }
 }
 
-impl AuthScheme for ChallengeSecret {
-    fn pattern() -> AuthPattern {
-        AuthPattern::ChallengeResponse
-    }
-}
-
 impl std::fmt::Debug for ChallengeSecret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChallengeSecret")
@@ -74,6 +71,8 @@ impl std::fmt::Debug for ChallengeSecret {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::{AuthPattern, AuthScheme as _};
+
     use super::*;
 
     #[test]

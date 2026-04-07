@@ -1,6 +1,8 @@
 //! X.509 client certificate authentication (mTLS, TLS client auth).
 
-use nebula_core::{AuthPattern, AuthScheme, SecretString};
+use nebula_core::SecretString;
+
+use crate::AuthScheme;
 use serde::{Deserialize, Serialize};
 
 /// X.509 client certificate with private key for mutual TLS authentication.
@@ -20,7 +22,8 @@ use serde::{Deserialize, Serialize};
 ///     SecretString::new("-----BEGIN PRIVATE KEY-----\n..."),
 /// );
 /// ```
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, AuthScheme)]
+#[auth_scheme(pattern = Certificate)]
 pub struct Certificate {
     cert_chain: String,
     #[serde(with = "nebula_core::serde_secret")]
@@ -63,12 +66,6 @@ impl Certificate {
     }
 }
 
-impl AuthScheme for Certificate {
-    fn pattern() -> AuthPattern {
-        AuthPattern::Certificate
-    }
-}
-
 impl std::fmt::Debug for Certificate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Certificate")
@@ -87,6 +84,8 @@ impl std::fmt::Debug for Certificate {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::{AuthPattern, AuthScheme as _};
+
     use super::*;
 
     #[test]

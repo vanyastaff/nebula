@@ -1,6 +1,8 @@
 //! Asymmetric key pair authentication (SSH, PGP, crypto wallets).
 
-use nebula_core::{AuthPattern, AuthScheme, SecretString};
+use nebula_core::SecretString;
+
+use crate::AuthScheme;
 use serde::{Deserialize, Serialize};
 
 /// Asymmetric key pair with optional passphrase and algorithm hint.
@@ -17,7 +19,8 @@ use serde::{Deserialize, Serialize};
 /// let kp = KeyPair::new("ssh-ed25519 AAAA...", SecretString::new("-----BEGIN OPENSSH PRIVATE KEY-----..."))
 ///     .with_algorithm("ed25519");
 /// ```
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, AuthScheme)]
+#[auth_scheme(pattern = KeyPair)]
 pub struct KeyPair {
     public_key: String,
     #[serde(with = "nebula_core::serde_secret")]
@@ -74,12 +77,6 @@ impl KeyPair {
     }
 }
 
-impl AuthScheme for KeyPair {
-    fn pattern() -> AuthPattern {
-        AuthPattern::KeyPair
-    }
-}
-
 impl std::fmt::Debug for KeyPair {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KeyPair")
@@ -96,6 +93,8 @@ impl std::fmt::Debug for KeyPair {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::{AuthPattern, AuthScheme as _};
+
     use super::*;
 
     #[test]

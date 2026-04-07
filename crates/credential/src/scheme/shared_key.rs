@@ -1,6 +1,8 @@
 //! Pre-shared symmetric key authentication (TLS-PSK, WireGuard, IoT).
 
-use nebula_core::{AuthPattern, AuthScheme, SecretString};
+use nebula_core::SecretString;
+
+use crate::AuthScheme;
 use serde::{Deserialize, Serialize};
 
 /// A pre-shared symmetric key, optionally paired with an identity hint.
@@ -17,7 +19,8 @@ use serde::{Deserialize, Serialize};
 /// let key = SharedKey::new(SecretString::new("base64-encoded-key=="))
 ///     .with_identity("device-001");
 /// ```
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, AuthScheme)]
+#[auth_scheme(pattern = SharedSecret)]
 pub struct SharedKey {
     #[serde(with = "nebula_core::serde_secret")]
     key: SecretString,
@@ -52,12 +55,6 @@ impl SharedKey {
     }
 }
 
-impl AuthScheme for SharedKey {
-    fn pattern() -> AuthPattern {
-        AuthPattern::SharedSecret
-    }
-}
-
 impl std::fmt::Debug for SharedKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SharedKey")
@@ -69,6 +66,8 @@ impl std::fmt::Debug for SharedKey {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::{AuthPattern, AuthScheme as _};
+
     use super::*;
 
     #[test]

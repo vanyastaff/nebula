@@ -10,6 +10,7 @@ extern crate proc_macro;
 
 use proc_macro::TokenStream;
 
+mod auth_scheme;
 mod credential;
 
 /// Derive macro for the v2 `Credential` trait.
@@ -48,4 +49,35 @@ mod credential;
 #[proc_macro_derive(Credential, attributes(credential, oauth2, ldap))]
 pub fn derive_credential(input: TokenStream) -> TokenStream {
     credential::derive(input)
+}
+
+/// Derive macro for the [`AuthScheme`] trait.
+///
+/// Generates an `impl AuthScheme` that returns the specified
+/// [`AuthPattern`] variant. Types with custom `expires_at()` logic
+/// (e.g., `OAuth2Token`, `FederatedAssertion`) should keep a manual impl.
+///
+/// # Attributes
+///
+/// ## Container attributes (`#[auth_scheme(...)]` on the struct)
+///
+/// - `pattern = Variant` — the [`AuthPattern`] variant (required)
+///
+/// # Example
+///
+/// ```ignore
+/// use nebula_credential::AuthScheme;
+///
+/// #[derive(Clone, Serialize, Deserialize, AuthScheme)]
+/// #[auth_scheme(pattern = SecretToken)]
+/// pub struct MyToken {
+///     token: String,
+/// }
+/// ```
+///
+/// [`AuthScheme`]: https://docs.rs/nebula-core/latest/nebula_core/trait.AuthScheme.html
+/// [`AuthPattern`]: https://docs.rs/nebula-core/latest/nebula_core/enum.AuthPattern.html
+#[proc_macro_derive(AuthScheme, attributes(auth_scheme))]
+pub fn derive_auth_scheme(input: TokenStream) -> TokenStream {
+    auth_scheme::derive(input)
 }

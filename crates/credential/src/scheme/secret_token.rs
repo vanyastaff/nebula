@@ -1,6 +1,8 @@
 //! Opaque secret token authentication (API key, bearer token, session token).
 
-use nebula_core::{AuthPattern, AuthScheme, SecretString};
+use nebula_core::SecretString;
+
+use crate::AuthScheme; // derive macro
 use serde::{Deserialize, Serialize};
 
 /// An opaque secret string used as an authentication token.
@@ -16,7 +18,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// let token = SecretToken::new(SecretString::new("sk-abc123"));
 /// ```
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, AuthScheme)]
+#[auth_scheme(pattern = SecretToken)]
 pub struct SecretToken {
     #[serde(with = "nebula_core::serde_secret")]
     token: SecretString,
@@ -35,12 +38,6 @@ impl SecretToken {
     }
 }
 
-impl AuthScheme for SecretToken {
-    fn pattern() -> AuthPattern {
-        AuthPattern::SecretToken
-    }
-}
-
 impl std::fmt::Debug for SecretToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SecretToken")
@@ -51,6 +48,8 @@ impl std::fmt::Debug for SecretToken {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::{AuthPattern, AuthScheme as _};
+
     use super::*;
 
     #[test]

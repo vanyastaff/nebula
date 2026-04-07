@@ -1,6 +1,6 @@
 //! Cloud/infrastructure instance identity (IMDS, managed identity).
 
-use nebula_core::{AuthPattern, AuthScheme};
+use crate::AuthScheme;
 use serde::{Deserialize, Serialize};
 
 /// Instance-level identity binding for cloud/infrastructure authentication.
@@ -22,7 +22,8 @@ use serde::{Deserialize, Serialize};
 /// let binding = InstanceBinding::new("aws", "arn:aws:iam::123456789012:role/MyRole")
 ///     .with_region("us-east-1");
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, AuthScheme)]
+#[auth_scheme(pattern = InstanceIdentity)]
 pub struct InstanceBinding {
     provider: String,
     role_or_account: String,
@@ -63,14 +64,10 @@ impl InstanceBinding {
     }
 }
 
-impl AuthScheme for InstanceBinding {
-    fn pattern() -> AuthPattern {
-        AuthPattern::InstanceIdentity
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use nebula_core::{AuthPattern, AuthScheme as _};
+
     use super::*;
 
     #[test]
