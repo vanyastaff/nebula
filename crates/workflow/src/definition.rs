@@ -214,7 +214,7 @@ impl RetryConfig {
 }
 
 fn default_schema_version() -> u32 {
-    1
+    CURRENT_SCHEMA_VERSION
 }
 
 /// Visual metadata for the workflow editor. Engine ignores this entirely.
