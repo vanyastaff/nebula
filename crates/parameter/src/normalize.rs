@@ -386,6 +386,7 @@ mod tests {
 
     #[test]
     fn skips_hidden_backfill() {
+        #[allow(deprecated)]
         let params = vec![Parameter::hidden("secret_id").default(json!("s3cr3t"))];
         let result = normalize_parameters(&params, &ParameterValues::new());
         assert!(!result.contains("secret_id"));
@@ -556,7 +557,7 @@ mod tests {
             if depth == 0 {
                 return Parameter::string("leaf").default(json!("deep"));
             }
-            Parameter::object(&format!("level_{depth}")).add(deep_object(depth - 1))
+            Parameter::object(format!("level_{depth}")).add(deep_object(depth - 1))
         }
 
         let params = vec![deep_object(20)];

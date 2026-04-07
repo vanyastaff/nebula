@@ -47,3 +47,5 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 
 <!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
 <!-- reviewed: 2026-04-04 — replaced ResourceMetrics with registry-backed ResourceOpsMetrics, removed per-resource metrics -->
+
+<!-- reviewed: 2026-04-07 -->
