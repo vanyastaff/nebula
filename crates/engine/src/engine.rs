@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use dashmap::DashMap;
@@ -168,6 +169,7 @@ impl WorkflowEngine {
         let semaphore = Arc::new(Semaphore::new(budget.max_concurrent_nodes));
 
         // 9. Execute using frontier-based loop
+        let error_strategy = workflow.config.error_strategy;
         let failed_node = self
             .run_frontier(
                 &graph,
@@ -180,6 +182,9 @@ impl WorkflowEngine {
                 workflow.id,
                 &input,
                 &mut repo_version,
+                &budget,
+                &started,
+                error_strategy,
             )
             .await;
 
@@ -235,7 +240,11 @@ impl WorkflowEngine {
         workflow_id: WorkflowId,
         input: &serde_json::Value,
         repo_version: &mut u64,
+        budget: &ExecutionBudget,
+        started: &Instant,
+        error_strategy: nebula_workflow::ErrorStrategy,
     ) -> Option<(NodeId, String)> {
+        let total_output_bytes = Arc::new(AtomicU64::new(0));
         // Precompute how many incoming edges each node has
         let required_count: HashMap<NodeId, usize> = node_map
             .keys()
@@ -266,6 +275,12 @@ impl WorkflowEngine {
                     break;
                 }
 
+                // Check budget limits before dispatching
+                if let Some(violation) = check_budget(budget, started, &total_output_bytes) {
+                    cancel_token.cancel();
+                    return Some((node_id, violation));
+                }
+
                 let spawned = self.spawn_node(
                     node_id,
                     node_map,
@@ -280,24 +295,26 @@ impl WorkflowEngine {
                     &activated_edges,
                     &mut join_set,
                 );
+                if spawned {
+                    continue;
+                }
 
                 // Node failed during setup (e.g., param resolution).
-                // Treat as a node failure: check for error handlers.
-                let has_error_handler = !spawned
-                    && process_outgoing_edges(
-                        node_id,
-                        None,
-                        Some("parameter resolution failed"),
-                        graph,
-                        &mut activated_edges,
-                        &mut resolved_edges,
-                        &required_count,
-                        &mut ready_queue,
-                        exec_state,
-                    );
-                if !spawned && !has_error_handler {
+                let abort = handle_node_failure(
+                    node_id,
+                    "parameter resolution failed",
+                    error_strategy,
+                    graph,
+                    outputs,
+                    &mut activated_edges,
+                    &mut resolved_edges,
+                    &required_count,
+                    &mut ready_queue,
+                    exec_state,
+                );
+                if let Some(err_msg) = abort {
                     cancel_token.cancel();
-                    return Some((node_id, "parameter resolution failed".into()));
+                    return Some((node_id, err_msg));
                 }
             }
 
@@ -321,6 +338,14 @@ impl WorkflowEngine {
                     // Node ran and produced a result
                     mark_node_completed(exec_state, node_id);
 
+                    // Track output size for budget enforcement
+                    if let Some(output) = outputs.get(&node_id) {
+                        let bytes = serde_json::to_string(output.value())
+                            .map(|s| s.len() as u64)
+                            .unwrap_or(0);
+                        total_output_bytes.fetch_add(bytes, Ordering::Relaxed);
+                    }
+
                     // Checkpoint: persist node output + execution state
                     self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
                         .await;
@@ -339,39 +364,27 @@ impl WorkflowEngine {
                     );
                 }
                 Ok((node_id, Err(ref err))) => {
-                    // Node failed at runtime
+                    // Node failed at runtime — delegate to
+                    // strategy-aware handler.
                     mark_node_failed(exec_state, node_id, err);
-
-                    // Checkpoint: persist failure state
                     self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
                         .await;
 
-                    // Check for error handlers
-                    let error_handled = process_outgoing_edges(
+                    let abort = handle_node_failure(
                         node_id,
-                        None, // no successful result
-                        Some(&err.to_string()),
+                        &err.to_string(),
+                        error_strategy,
                         graph,
+                        outputs,
                         &mut activated_edges,
                         &mut resolved_edges,
                         &required_count,
                         &mut ready_queue,
                         exec_state,
                     );
-
-                    if error_handled {
-                        // Store error info for OnError handler input
-                        outputs.insert(
-                            node_id,
-                            serde_json::json!({
-                                "error": err.to_string(),
-                                "node_id": node_id.to_string(),
-                            }),
-                        );
-                    } else {
-                        // No error handler → fail-fast
+                    if let Some(err_msg) = abort {
                         cancel_token.cancel();
-                        return Some((node_id, err.to_string()));
+                        return Some((node_id, err_msg));
                     }
                 }
                 Err(join_err) => {
@@ -829,6 +842,99 @@ fn propagate_skip(
 
 // ── Node state helpers ──────────────────────────────────────────────────────
 
+/// Check whether any budget limit has been exceeded.
+///
+/// Returns `Some(reason)` if a limit is exceeded, `None` otherwise.
+fn check_budget(
+    budget: &ExecutionBudget,
+    started: &Instant,
+    total_output_bytes: &AtomicU64,
+) -> Option<String> {
+    if let Some(max_dur) = budget.max_duration
+        && started.elapsed() > max_dur
+    {
+        return Some("execution budget exceeded: max_duration".into());
+    }
+    if let Some(max_bytes) = budget.max_output_bytes
+        && total_output_bytes.load(Ordering::Relaxed) > max_bytes
+    {
+        return Some("execution budget exceeded: max_output_bytes".into());
+    }
+    None
+}
+
+/// Handle a node failure according to the configured error strategy.
+///
+/// Returns `Some(error_message)` when the caller should cancel + return
+/// (i.e., fail-fast), or `None` when execution may continue.
+#[allow(clippy::too_many_arguments)]
+fn handle_node_failure(
+    node_id: NodeId,
+    error_msg: &str,
+    error_strategy: nebula_workflow::ErrorStrategy,
+    graph: &DependencyGraph,
+    outputs: &Arc<DashMap<NodeId, serde_json::Value>>,
+    activated_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
+    resolved_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
+    required_count: &HashMap<NodeId, usize>,
+    ready_queue: &mut VecDeque<NodeId>,
+    exec_state: &mut ExecutionState,
+) -> Option<String> {
+    // IgnoreErrors: treat the failure as a successful null result so
+    // downstream nodes activate normally.
+    if error_strategy == nebula_workflow::ErrorStrategy::IgnoreErrors {
+        outputs.insert(node_id, serde_json::json!(null));
+        process_outgoing_edges(
+            node_id,
+            Some(&ActionResult::success(serde_json::json!(null))),
+            None,
+            graph,
+            activated_edges,
+            resolved_edges,
+            required_count,
+            ready_queue,
+            exec_state,
+        );
+        return None;
+    }
+
+    // For FailFast / ContinueOnError: evaluate edges as a failure to
+    // check for OnError handlers.
+    let error_handled = process_outgoing_edges(
+        node_id,
+        None,
+        Some(error_msg),
+        graph,
+        activated_edges,
+        resolved_edges,
+        required_count,
+        ready_queue,
+        exec_state,
+    );
+
+    if error_handled {
+        // Store error info for the OnError handler's input.
+        outputs.insert(
+            node_id,
+            serde_json::json!({
+                "error": error_msg,
+                "node_id": node_id.to_string(),
+            }),
+        );
+        return None;
+    }
+
+    match error_strategy {
+        nebula_workflow::ErrorStrategy::ContinueOnError => {
+            // Edges already resolved (not activated) above — dependents
+            // will be skipped; unaffected branches continue.
+            None
+        }
+        // FailFast and future variants
+        _ => Some(error_msg.to_owned()),
+    }
+}
+
 /// Mark a node as completed in the execution state.
 fn mark_node_completed(exec_state: &mut ExecutionState, node_id: NodeId) {
     if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
@@ -961,7 +1067,10 @@ mod tests {
     use nebula_runtime::registry::ActionRegistry;
     use nebula_runtime::{ActionExecutor, InProcessSandbox};
     use nebula_storage::ExecutionRepo;
-    use nebula_workflow::{Connection, NodeDefinition, WorkflowConfig, WorkflowDefinition};
+    use nebula_workflow::{
+        Connection, ErrorStrategy, NodeDefinition, WorkflowConfig, WorkflowDefinition,
+    };
+    use std::time::Duration;
 
     // -- Test handlers --
 
@@ -1001,6 +1110,28 @@ mod tests {
         }
     }
 
+    struct SlowHandler {
+        meta: ActionMetadata,
+        delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl InternalHandler for SlowHandler {
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            ctx: &ActionContext,
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            tokio::select! {
+                () = tokio::time::sleep(self.delay) => Ok(ActionResult::success(input)),
+                () = ctx.cancellation.cancelled() => Err(ActionError::Cancelled),
+            }
+        }
+        fn metadata(&self) -> &ActionMetadata {
+            &self.meta
+        }
+    }
+
     // -- Helpers --
 
     fn make_workflow(
@@ -1017,6 +1148,28 @@ mod tests {
             connections,
             variables: HashMap::new(),
             config: WorkflowConfig::default(),
+            trigger: None,
+            tags: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn make_workflow_with_config(
+        nodes: Vec<NodeDefinition>,
+        connections: Vec<Connection>,
+        config: WorkflowConfig,
+    ) -> WorkflowDefinition {
+        let now = chrono::Utc::now();
+        WorkflowDefinition {
+            id: WorkflowId::new(),
+            name: "test".into(),
+            description: None,
+            version: Version::new(0, 1, 0),
+            nodes,
+            connections,
+            variables: HashMap::new(),
+            config,
             trigger: None,
             tags: Vec::new(),
             created_at: now,
@@ -1702,5 +1855,173 @@ mod tests {
         assert_eq!(all_outputs.len(), 2);
         assert_eq!(all_outputs[&n1], serde_json::json!(42));
         assert_eq!(all_outputs[&n2], serde_json::json!(42));
+    }
+
+    // -- Budget enforcement tests --
+
+    #[tokio::test]
+    async fn budget_max_duration_exceeded() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(SlowHandler {
+            meta: ActionMetadata::new(action_key!("slow"), "Slow", "sleeps"),
+            delay: Duration::from_millis(100),
+        }));
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        }));
+
+        let (engine, _) = make_engine(registry);
+
+        // Slow → Echo. Budget allows only 1ms.
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let wf = make_workflow(
+            vec![
+                NodeDefinition::new(a, "Slow", "slow").unwrap(),
+                NodeDefinition::new(b, "B", "echo").unwrap(),
+            ],
+            vec![Connection::new(a, b)],
+        );
+
+        let budget = ExecutionBudget::default().with_max_duration(Duration::from_millis(1));
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("data"), budget)
+            .await
+            .unwrap();
+
+        // The slow action takes >1ms, so budget should trigger before
+        // the next node is dispatched.
+        assert!(result.is_failure());
+    }
+
+    #[tokio::test]
+    async fn budget_max_output_bytes_exceeded() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        }));
+
+        let (engine, _) = make_engine(registry);
+
+        // A → B. Each echoes a payload. Budget allows very few bytes.
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let wf = make_workflow(
+            vec![
+                NodeDefinition::new(a, "A", "echo").unwrap(),
+                NodeDefinition::new(b, "B", "echo").unwrap(),
+            ],
+            vec![Connection::new(a, b)],
+        );
+
+        // Budget: max 5 bytes of total output (the JSON "hello" is 7 bytes)
+        let budget = ExecutionBudget::default().with_max_output_bytes(5);
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("hello"), budget)
+            .await
+            .unwrap();
+
+        // A's output exceeds 5 bytes → budget violation before B runs
+        assert!(result.is_failure());
+    }
+
+    // -- Error strategy tests --
+
+    #[tokio::test]
+    async fn error_strategy_continue_on_error_skips_dependents() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        }));
+        registry.register(Arc::new(FailHandler {
+            meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
+        }));
+
+        let (engine, _) = make_engine(registry);
+
+        // Entry → [Fail, Echo(C)]
+        // Fail → B
+        // With ContinueOnError: Fail fails, B is skipped, C still runs.
+        let entry = NodeId::new();
+        let fail_node = NodeId::new();
+        let b = NodeId::new();
+        let c = NodeId::new();
+
+        let mut config = WorkflowConfig::default();
+        config.error_strategy = ErrorStrategy::ContinueOnError;
+
+        let wf = make_workflow_with_config(
+            vec![
+                NodeDefinition::new(entry, "Entry", "echo").unwrap(),
+                NodeDefinition::new(fail_node, "Fail", "fail").unwrap(),
+                NodeDefinition::new(b, "B", "echo").unwrap(),
+                NodeDefinition::new(c, "C", "echo").unwrap(),
+            ],
+            vec![
+                Connection::new(entry, fail_node),
+                Connection::new(entry, c),
+                Connection::new(fail_node, b),
+            ],
+            config,
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("data"), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        // Workflow completes (not fail-fast)
+        assert!(result.is_success() || result.status == ExecutionStatus::Completed);
+        // Entry ran
+        assert!(result.node_output(entry).is_some());
+        // C is independent and should have run
+        assert!(result.node_output(c).is_some());
+        // B depends on the failed node — should be skipped (no output)
+        assert!(result.node_output(b).is_none());
+    }
+
+    #[tokio::test]
+    async fn error_strategy_ignore_errors_continues_downstream() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        }));
+        registry.register(Arc::new(FailHandler {
+            meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
+        }));
+
+        let (engine, _) = make_engine(registry);
+
+        // A(fail) → B(echo)
+        // With IgnoreErrors: A fails but B should still run with null input
+        let a = NodeId::new();
+        let b = NodeId::new();
+
+        let mut config = WorkflowConfig::default();
+        config.error_strategy = ErrorStrategy::IgnoreErrors;
+
+        let wf = make_workflow_with_config(
+            vec![
+                NodeDefinition::new(a, "A", "fail").unwrap(),
+                NodeDefinition::new(b, "B", "echo").unwrap(),
+            ],
+            vec![Connection::new(a, b)],
+            config,
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("data"), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        // Workflow should complete successfully
+        assert_eq!(result.status, ExecutionStatus::Completed);
+        // A's output was replaced with null
+        assert_eq!(result.node_output(a), Some(&serde_json::json!(null)));
+        // B ran and received null as input
+        assert!(result.node_output(b).is_some());
+        assert_eq!(result.node_output(b), Some(&serde_json::json!(null)));
     }
 }
