@@ -154,21 +154,36 @@ impl ParameterAttrs {
                     }
                 } else if let Some(hint) = &self.hint {
                     match hint.as_str() {
-                        "url" => {
-                            quote! { ::nebula_parameter::parameter::Parameter::string(#key).input_type("url") }
-                        }
-                        "email" => {
-                            quote! { ::nebula_parameter::parameter::Parameter::string(#key).input_type("email") }
-                        }
+                        "url" => quote! {
+                            ::nebula_parameter::parameter::Parameter::string(#key)
+                                .input_hint(::nebula_parameter::InputHint::Url)
+                        },
+                        "email" => quote! {
+                            ::nebula_parameter::parameter::Parameter::string(#key)
+                                .input_hint(::nebula_parameter::InputHint::Email)
+                        },
                         "date" => quote! { ::nebula_parameter::parameter::Parameter::date(#key) },
                         "datetime" => {
                             quote! { ::nebula_parameter::parameter::Parameter::datetime(#key) }
                         }
                         "time" => quote! { ::nebula_parameter::parameter::Parameter::time(#key) },
                         "color" => quote! { ::nebula_parameter::parameter::Parameter::color(#key) },
-                        _ => {
-                            quote! { ::nebula_parameter::parameter::Parameter::string(#key).input_type(#hint) }
-                        }
+                        "password" => quote! {
+                            ::nebula_parameter::parameter::Parameter::string(#key)
+                                .input_hint(::nebula_parameter::InputHint::Password)
+                        },
+                        "phone" => quote! {
+                            ::nebula_parameter::parameter::Parameter::string(#key)
+                                .input_hint(::nebula_parameter::InputHint::Phone)
+                        },
+                        "ip" => quote! {
+                            ::nebula_parameter::parameter::Parameter::string(#key)
+                                .input_hint(::nebula_parameter::InputHint::Ip)
+                        },
+                        // Unknown hint — fall back to plain string
+                        _ => quote! {
+                            ::nebula_parameter::parameter::Parameter::string(#key)
+                        },
                     }
                 } else {
                     quote! { ::nebula_parameter::parameter::Parameter::string(#key) }
