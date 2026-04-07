@@ -73,7 +73,10 @@ impl ActionRegistry {
         let entries = self.actions.entry(metadata.key.clone()).or_default();
 
         // Replace existing entry with the same version, or append.
-        if let Some(pos) = entries.iter().position(|e| e.metadata.version.to_string() == version_str) {
+        if let Some(pos) = entries
+            .iter()
+            .position(|e| e.metadata.version.to_string() == version_str)
+        {
             entries[pos] = ActionEntry { metadata, handler };
         } else {
             entries.push(ActionEntry { metadata, handler });
@@ -106,7 +109,11 @@ impl ActionRegistry {
         key: &ActionKey,
         version: &str,
     ) -> Option<(&ActionMetadata, &Arc<dyn InternalHandler>)> {
-        self.actions.get(key)?.iter().find(|e| e.metadata.version.to_string() == version).map(|e| (&e.metadata, &e.handler))
+        self.actions
+            .get(key)?
+            .iter()
+            .find(|e| e.metadata.version.to_string() == version)
+            .map(|e| (&e.metadata, &e.handler))
     }
 
     /// Iterate over all registered action keys.
@@ -193,7 +200,9 @@ mod tests {
     }
 
     fn make_handler(key: &'static str, major: u32, minor: u32) -> Arc<dyn InternalHandler> {
-        Arc::new(StatelessActionAdapter::new(NoopAction::new(key, major, minor)))
+        Arc::new(StatelessActionAdapter::new(NoopAction::new(
+            key, major, minor,
+        )))
     }
 
     fn make_meta(key: &'static str, major: u32, minor: u32) -> ActionMetadata {
@@ -219,7 +228,10 @@ mod tests {
             .get(&nebula_core::ActionKey::new("math.add").unwrap())
             .expect("action should be registered");
 
-        assert_eq!(found_meta.key, nebula_core::ActionKey::new("math.add").unwrap());
+        assert_eq!(
+            found_meta.key,
+            nebula_core::ActionKey::new("math.add").unwrap()
+        );
         assert_eq!(found_meta.version.major, 1);
         assert_eq!(found_meta.version.minor, 0);
     }
@@ -235,7 +247,10 @@ mod tests {
     fn keys_lists_all_registered() {
         let mut registry = ActionRegistry::new();
         registry.register(make_meta("http.get", 1, 0), make_handler("http.get", 1, 0));
-        registry.register(make_meta("http.post", 1, 0), make_handler("http.post", 1, 0));
+        registry.register(
+            make_meta("http.post", 1, 0),
+            make_handler("http.post", 1, 0),
+        );
         registry.register(make_meta("math.add", 1, 0), make_handler("math.add", 1, 0));
 
         let mut keys: Vec<String> = registry.keys().map(|k| k.as_str().to_owned()).collect();
@@ -258,9 +273,18 @@ mod tests {
     #[test]
     fn get_returns_latest_version() {
         let mut registry = ActionRegistry::new();
-        registry.register(make_meta("http.request", 1, 0), make_handler("http.request", 1, 0));
-        registry.register(make_meta("http.request", 2, 0), make_handler("http.request", 2, 0));
-        registry.register(make_meta("http.request", 1, 5), make_handler("http.request", 1, 5));
+        registry.register(
+            make_meta("http.request", 1, 0),
+            make_handler("http.request", 1, 0),
+        );
+        registry.register(
+            make_meta("http.request", 2, 0),
+            make_handler("http.request", 2, 0),
+        );
+        registry.register(
+            make_meta("http.request", 1, 5),
+            make_handler("http.request", 1, 5),
+        );
 
         let (meta, _) = registry
             .get(&nebula_core::ActionKey::new("http.request").unwrap())
@@ -272,8 +296,14 @@ mod tests {
     #[test]
     fn get_versioned_returns_specific_version() {
         let mut registry = ActionRegistry::new();
-        registry.register(make_meta("http.request", 1, 0), make_handler("http.request", 1, 0));
-        registry.register(make_meta("http.request", 2, 0), make_handler("http.request", 2, 0));
+        registry.register(
+            make_meta("http.request", 1, 0),
+            make_handler("http.request", 1, 0),
+        );
+        registry.register(
+            make_meta("http.request", 2, 0),
+            make_handler("http.request", 2, 0),
+        );
 
         let key = nebula_core::ActionKey::new("http.request").unwrap();
         let (meta, _) = registry.get_versioned(&key, "1.0").unwrap();
