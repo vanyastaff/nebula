@@ -100,7 +100,7 @@ impl HmacSha256Verifier {
 #[async_trait]
 impl WebhookVerifier for HmacSha256Verifier {
     async fn verify(&self, headers: &HeaderMap, body: &Bytes) -> Result<(), Error> {
-        use hmac::{Hmac, Mac};
+        use hmac::{Hmac, Mac, digest::KeyInit};
         use sha2::Sha256;
 
         let sig_header = headers
@@ -140,7 +140,7 @@ mod tests {
 
     #[tokio::test]
     async fn hmac_sha256_verifies_valid_signature() {
-        use hmac::{Hmac, Mac};
+        use hmac::{Hmac, Mac, digest::KeyInit};
         use sha2::Sha256;
 
         let secret = b"test-secret";
@@ -189,7 +189,7 @@ mod tests {
 
     #[tokio::test]
     async fn hmac_sha256_strips_prefix() {
-        use hmac::{Hmac, Mac};
+        use hmac::{Hmac, Mac, digest::KeyInit};
         use sha2::Sha256;
 
         let secret = b"secret";
