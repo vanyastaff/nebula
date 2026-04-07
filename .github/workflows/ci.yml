@@ -71,13 +71,13 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-linux
+          shared-key: ci-clippy
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Run Clippy lints
         run: cargo clippy --workspace -- -D warnings
 
-  # ── Type check ─────────────────────────────────────────────────────────────
+  # ── Type check (includes --all-features) ───────────────────────────────────
   check:
     name: Check
     needs: [fmt]
@@ -90,29 +90,10 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-linux
+          shared-key: ci-check
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Run cargo check
-        run: cargo check --workspace --all-targets
-
-  # ── Feature combinations ───────────────────────────────────────────────────
-  feature-check:
-    name: Feature Matrix (cargo-hack)
-    needs: [check]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-linux
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
-      - name: Check all features across workspace
         run: cargo check --workspace --all-features --all-targets
 
   # ── Tests ──────────────────────────────────────────────────────────────────
@@ -128,7 +109,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-linux
+          shared-key: ci-test
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Install cargo-nextest
@@ -187,31 +168,11 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-linux
+          shared-key: ci-doc
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Build documentation
         run: cargo doc --no-deps --workspace
-
-  # ── Unused dependencies ────────────────────────────────────────────────────
-  udeps:
-    name: Unused Dependencies (cargo-udeps)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src
-      - name: Install cargo-udeps
-        uses: taiki-e/install-action@cargo-udeps
-      - name: Check for unused dependencies
-        run: |
-          cargo +nightly udeps --workspace --all-targets || {
-            echo "cargo-udeps reported findings (non-blocking)";
-          }
 
   # ── Benchmarks ─────────────────────────────────────────────────────────────
   bench:
@@ -226,7 +187,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-linux
+          shared-key: ci-bench
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Run benchmarks
@@ -242,9 +203,6 @@ jobs:
               ("log/observability/emit_dispatch/inline_noop/1/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_EMIT_INLINE_NOOP_MAX_NS"])),
               ("log/observability/emit_dispatch/bounded_field_scan/1/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_EMIT_BOUNDED_COUNTING_MAX_NS"])),
           ]
-          # Criterion group "log/observability/emit_dispatch" may produce
-          # a directory named with slashes or underscores depending on the
-          # Criterion version (codspeed-criterion-compat v4 uses underscores).
           GROUP = "log/observability/emit_dispatch"
           GROUP_ALT = GROUP.replace("/", "_")
 
