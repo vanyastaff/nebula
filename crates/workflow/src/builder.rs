@@ -7,7 +7,7 @@ use chrono::Utc;
 use nebula_core::{NodeId, OwnerId, Version, WorkflowId};
 
 use crate::connection::{Connection, EdgeCondition};
-use crate::definition::{UiMetadata, WorkflowConfig, WorkflowDefinition};
+use crate::definition::{CURRENT_SCHEMA_VERSION, UiMetadata, WorkflowConfig, WorkflowDefinition};
 use crate::error::WorkflowError;
 use crate::graph::DependencyGraph;
 use crate::node::NodeDefinition;
@@ -201,7 +201,7 @@ impl WorkflowBuilder {
             updated_at: now,
             owner_id: self.owner_id,
             ui_metadata: self.ui_metadata,
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
         };
 
         // Validate graph structure

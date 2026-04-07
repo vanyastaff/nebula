@@ -63,7 +63,7 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
     }
 
     // 6. Check schema version
-    if definition.schema_version > CURRENT_SCHEMA_VERSION {
+    if !definition.is_schema_supported() {
         errors.push(WorkflowError::UnsupportedSchema {
             version: definition.schema_version,
             max: CURRENT_SCHEMA_VERSION,
