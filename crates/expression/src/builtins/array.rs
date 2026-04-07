@@ -278,8 +278,7 @@ pub fn some(
     let criterion = &args[1];
 
     let result = if let Some(key) = criterion.as_str() {
-        arr.iter()
-            .any(|elem| elem.get(key).is_some_and(is_truthy))
+        arr.iter().any(|elem| elem.get(key).is_some_and(is_truthy))
     } else {
         arr.iter().any(|elem| elem == criterion)
     };
@@ -309,8 +308,7 @@ pub fn every(
     let criterion = &args[1];
 
     let result = if let Some(key) = criterion.as_str() {
-        arr.iter()
-            .all(|elem| elem.get(key).is_some_and(is_truthy))
+        arr.iter().all(|elem| elem.get(key).is_some_and(is_truthy))
     } else {
         arr.iter().all(|elem| elem == criterion)
     };
