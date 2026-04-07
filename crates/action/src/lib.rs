@@ -72,6 +72,8 @@ pub mod execution;
 pub mod handler;
 /// Static metadata, versioning, and execution mode descriptors.
 pub mod metadata;
+/// Type-safe registry for action handlers, keyed by ActionKey.
+pub mod registry;
 /// Output data representations (inline JSON and blob references).
 pub mod output;
 /// Port definitions describing action input/output connection points.
@@ -100,6 +102,7 @@ pub use dependency::ActionDependencies;
 pub use error::ActionError;
 pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 pub use handler::{InternalHandler, StatelessActionAdapter};
+pub use registry::ActionRegistry;
 pub use metadata::{ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError};
 pub use output::{
     ActionOutput, BinaryData, BinaryStorage, BufferConfig, CacheInfo, Cost, DataReference,

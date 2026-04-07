@@ -22,6 +22,7 @@ pub use crate::output::{
 pub use crate::port::{
     ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort,
 };
+pub use crate::registry::ActionRegistry;
 pub use crate::result::ActionResult;
 pub use crate::validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
