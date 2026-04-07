@@ -138,6 +138,22 @@ impl ParameterValues {
         Self::default()
     }
 
+    /// Creates `ParameterValues` from a JSON object map.
+    #[must_use]
+    pub fn from_map(map: &serde_json::Map<String, serde_json::Value>) -> Self {
+        Self {
+            values: map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        }
+    }
+
+    /// Creates `ParameterValues` with a single key-value pair.
+    #[must_use]
+    pub fn from_single(key: impl Into<String>, value: serde_json::Value) -> Self {
+        let mut values = HashMap::with_capacity(1);
+        values.insert(key.into(), value);
+        Self { values }
+    }
+
     /// Get a value by parameter key.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&serde_json::Value> {

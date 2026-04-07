@@ -335,7 +335,7 @@ fn validate_object(
     };
 
     // Build a nested ParameterValues from the object for condition evaluation.
-    let nested_values: ParameterValues = obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let nested_values = ParameterValues::from_map(obj);
 
     let is_pick_mode = display_mode.is_pick_mode();
 
@@ -406,9 +406,7 @@ fn validate_list(
     for (i, item_value) in arr.iter().enumerate() {
         let item_key = make_path(key, &i.to_string());
         // Build a single-entry ParameterValues for the item.
-        let item_values: ParameterValues = vec![(item.id.clone(), item_value.clone())]
-            .into_iter()
-            .collect();
+        let item_values = ParameterValues::from_single(&item.id, item_value.clone());
         validate_parameter(item, &item_values, &item_key, depth + 1, report);
     }
 }
@@ -456,9 +454,7 @@ fn validate_mode(
     if let Some(variant_value) = obj.get("value")
         && !variant_value.is_null()
     {
-        let variant_values: ParameterValues = vec![(variant.id.clone(), variant_value.clone())]
-            .into_iter()
-            .collect();
+        let variant_values = ParameterValues::from_single(&variant.id, variant_value.clone());
         validate_parameter(variant, &variant_values, key, depth + 1, report);
     }
 
@@ -909,6 +905,43 @@ mod tests {
         values.set("auth", json!("basic"));
         let report = validate_with_profile(&params, &values, ValidationProfile::Permissive);
         assert!(report.is_ok());
+    }
+
+    #[test]
+    fn validates_deeply_nested_object() {
+        let params = vec![
+            Parameter::object("level1")
+                .add(
+                    Parameter::object("level2")
+                        .add(Parameter::string("deep_field").required()),
+                )
+                .required(),
+        ];
+        let mut values = ParameterValues::new();
+        values.set("level1", json!({"level2": {"deep_field": "value"}}));
+        let result = validate_parameters(&params, &values);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validates_deeply_nested_missing_required() {
+        let params = vec![
+            Parameter::object("level1")
+                .add(
+                    Parameter::object("level2")
+                        .add(Parameter::string("deep_field").required()),
+                )
+                .required(),
+        ];
+        let mut values = ParameterValues::new();
+        values.set("level1", json!({"level2": {}}));
+        let result = validate_parameters(&params, &values);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(matches!(
+            &errors[0],
+            ParameterError::MissingValue { key } if key == "level1.level2.deep_field"
+        ));
     }
 
     #[test]
