@@ -157,7 +157,9 @@ impl ActionRuntime {
         // are already managed by their respective storage backends.
         let serialized = match &*output {
             ActionOutput::Value(v) => serde_json::to_vec(v).map_err(|e| {
-                RuntimeError::Internal(format!("serialize for size check: {e}"))
+                RuntimeError::Internal(format!(
+                    "failed to serialize output for size limit enforcement: {e}"
+                ))
             })?,
             _ => return Ok(()),
         };
@@ -570,22 +572,15 @@ mod tests {
 
         // Verify the large inline payload was replaced with an external reference.
         match action_result {
-            ActionResult::Success { output } => {
-                assert!(
-                    output.is_reference(),
-                    "primary output should be a Reference after spill, got {output:?}"
-                );
-                if let ActionOutput::Reference(data_ref) = output {
-                    assert_eq!(data_ref.storage_type, "blob");
-                    assert_eq!(data_ref.path, "mem://test/blob-1");
-                    assert!(data_ref.size.is_some());
-                    assert_eq!(
-                        data_ref.content_type.as_deref(),
-                        Some("application/json")
-                    );
-                }
+            ActionResult::Success {
+                output: ActionOutput::Reference(data_ref),
+            } => {
+                assert_eq!(data_ref.storage_type, "blob");
+                assert_eq!(data_ref.path, "mem://test/blob-1");
+                assert!(data_ref.size.is_some());
+                assert_eq!(data_ref.content_type.as_deref(), Some("application/json"));
             }
-            other => panic!("expected Success, got {other:?}"),
+            other => panic!("expected Success with Reference output after spill, got {other:?}"),
         }
     }
 }
