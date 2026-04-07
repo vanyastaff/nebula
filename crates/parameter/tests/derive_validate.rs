@@ -1,5 +1,5 @@
-use nebula_parameter::rules::Rule;
 use nebula_parameter::Parameters;
+use nebula_parameter::rules::Rule;
 
 #[derive(Parameters)]
 #[allow(dead_code)]
@@ -27,24 +27,38 @@ fn derive_validate_attaches_rules() {
 
     let url_param = params.get("url").expect("url param");
     assert!(url_param.required);
-    assert!(url_param.rules.iter().any(|r| matches!(r, Rule::Url { .. })));
+    assert!(
+        url_param
+            .rules
+            .iter()
+            .any(|r| matches!(r, Rule::Url { .. }))
+    );
 
     let name_param = params.get("name").expect("name param");
-    assert!(name_param
-        .rules
-        .iter()
-        .any(|r| matches!(r, Rule::MinLength { min: 1, .. })));
-    assert!(name_param
-        .rules
-        .iter()
-        .any(|r| matches!(r, Rule::MaxLength { max: 100, .. })));
+    assert!(
+        name_param
+            .rules
+            .iter()
+            .any(|r| matches!(r, Rule::MinLength { min: 1, .. }))
+    );
+    assert!(
+        name_param
+            .rules
+            .iter()
+            .any(|r| matches!(r, Rule::MaxLength { max: 100, .. }))
+    );
 
     let port_param = params.get("port").expect("port param");
-    assert!(!port_param.rules.is_empty(), "port should have min/max rules");
+    assert!(
+        !port_param.rules.is_empty(),
+        "port should have min/max rules"
+    );
 
     let code_param = params.get("code").expect("code param");
-    assert!(code_param
-        .rules
-        .iter()
-        .any(|r| matches!(r, Rule::Pattern { .. })));
+    assert!(
+        code_param
+            .rules
+            .iter()
+            .any(|r| matches!(r, Rule::Pattern { .. }))
+    );
 }

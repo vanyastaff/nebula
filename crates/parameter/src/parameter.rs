@@ -95,7 +95,10 @@ pub struct Parameter {
     pub expression: bool,
 
     /// Override the HTML input type (e.g. `"email"`, `"url"`).
-    #[deprecated(since = "0.4.0", note = "use InputHint on ParameterType::String instead")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "use InputHint on ParameterType::String instead"
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_type: Option<String>,
 

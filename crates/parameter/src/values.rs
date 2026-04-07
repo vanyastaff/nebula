@@ -664,7 +664,10 @@ mod tests {
     fn from_json_owned_detects_expression() {
         let value = serde_json::json!({ "$expr": "{{ $input.name }}" });
         let pv = ParameterValue::from_json_owned(value);
-        assert_eq!(pv, ParameterValue::Expression("{{ $input.name }}".to_owned()));
+        assert_eq!(
+            pv,
+            ParameterValue::Expression("{{ $input.name }}".to_owned())
+        );
     }
 
     #[test]

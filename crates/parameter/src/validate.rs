@@ -909,10 +909,7 @@ mod tests {
     fn validates_deeply_nested_object() {
         let params = vec![
             Parameter::object("level1")
-                .add(
-                    Parameter::object("level2")
-                        .add(Parameter::string("deep_field").required()),
-                )
+                .add(Parameter::object("level2").add(Parameter::string("deep_field").required()))
                 .required(),
         ];
         let mut values = ParameterValues::new();
@@ -925,10 +922,7 @@ mod tests {
     fn validates_deeply_nested_missing_required() {
         let params = vec![
             Parameter::object("level1")
-                .add(
-                    Parameter::object("level2")
-                        .add(Parameter::string("deep_field").required()),
-                )
+                .add(Parameter::object("level2").add(Parameter::string("deep_field").required()))
                 .required(),
         ];
         let mut values = ParameterValues::new();

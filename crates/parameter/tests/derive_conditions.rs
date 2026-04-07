@@ -24,8 +24,14 @@ fn derive_condition_attributes() {
     let params = ConditionalInput::parameters();
 
     let body_param = params.get("body").expect("body param");
-    assert!(body_param.visible_when.is_some(), "body should have visible_when");
+    assert!(
+        body_param.visible_when.is_some(),
+        "body should have visible_when"
+    );
 
     let token_param = params.get("token").expect("token param");
-    assert!(token_param.required_when.is_some(), "token should have required_when");
+    assert!(
+        token_param.required_when.is_some(),
+        "token should have required_when"
+    );
 }
