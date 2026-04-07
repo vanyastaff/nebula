@@ -5,13 +5,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
 
-use nebula_core::{Version, WorkflowId};
+use nebula_core::{NodeId, OwnerId, Version, WorkflowId};
 
 use crate::connection::Connection;
 use crate::node::NodeDefinition;
 
+/// Current schema version of the workflow definition format.
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
 /// A complete workflow definition: nodes, connections, metadata, and config.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowDefinition {
     /// Unique identifier for this workflow.
     pub id: WorkflowId,
@@ -42,10 +45,30 @@ pub struct WorkflowDefinition {
     pub created_at: DateTime<Utc>,
     /// When this definition was last modified.
     pub updated_at: DateTime<Utc>,
+    /// Who owns this workflow (user/team/org ID for multi-tenant).
+    /// Required for storage with Row-Level Security.
+    #[serde(default)]
+    pub owner_id: Option<OwnerId>,
+    /// UI metadata: node positions, viewport, annotations.
+    /// Opaque to the engine — only desktop/web app reads this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_metadata: Option<UiMetadata>,
+    /// Schema version of the definition format itself.
+    /// Used for forward/backward compatibility detection.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+}
+
+impl WorkflowDefinition {
+    /// Check if this definition's schema version is supported.
+    #[must_use]
+    pub fn is_schema_supported(&self) -> bool {
+        self.schema_version <= CURRENT_SCHEMA_VERSION
+    }
 }
 
 /// What starts a workflow execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum TriggerDefinition {
@@ -86,7 +109,7 @@ pub enum ErrorStrategy {
 }
 
 /// Runtime configuration for a workflow execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowConfig {
     /// Maximum wall-clock time for the entire workflow run.
     #[serde(default, with = "crate::serde_duration_opt")]
@@ -122,7 +145,7 @@ impl Default for WorkflowConfig {
 }
 
 /// Settings that control how often execution progress is persisted.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CheckpointingConfig {
     /// Whether checkpointing is enabled at all.
     #[serde(default = "default_true")]
@@ -146,7 +169,7 @@ impl Default for CheckpointingConfig {
 }
 
 /// Retry policy with configurable backoff.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RetryConfig {
     /// Total number of attempts (including the first).
     pub max_attempts: u32,
@@ -188,6 +211,58 @@ impl RetryConfig {
         let capped = delay_ms.min(self.max_delay_ms as f64) as u64;
         Duration::from_millis(capped)
     }
+}
+
+fn default_schema_version() -> u32 {
+    1
+}
+
+/// Visual metadata for the workflow editor. Engine ignores this entirely.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UiMetadata {
+    /// Per-node visual properties (position, color, collapsed state).
+    #[serde(default)]
+    pub node_positions: HashMap<NodeId, NodePosition>,
+    /// Editor viewport (zoom, scroll position).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport: Option<Viewport>,
+    /// Free-form annotations (sticky notes, comments).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<Annotation>,
+}
+
+/// Position of a node in the visual editor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodePosition {
+    /// Horizontal coordinate.
+    pub x: f64,
+    /// Vertical coordinate.
+    pub y: f64,
+}
+
+/// Editor viewport state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Viewport {
+    /// Horizontal scroll offset.
+    pub x: f64,
+    /// Vertical scroll offset.
+    pub y: f64,
+    /// Zoom level (1.0 = 100%).
+    pub zoom: f64,
+}
+
+/// Free-form annotation (sticky note, comment) in the editor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Annotation {
+    /// Unique identifier for this annotation.
+    pub id: String,
+    /// Annotation text content.
+    pub text: String,
+    /// Position in the editor canvas.
+    pub position: NodePosition,
+    /// Optional color (CSS hex string).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 #[cfg(test)]
@@ -287,5 +362,103 @@ mod tests {
         assert_eq!(back.initial_delay_ms, cfg.initial_delay_ms);
         assert_eq!(back.max_delay_ms, cfg.max_delay_ms);
         assert!((back.backoff_multiplier - cfg.backoff_multiplier).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn schema_version_defaults_to_one() {
+        let json = r#"{
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "name": "test",
+            "version": {"major": 1, "minor": 0, "patch": 0},
+            "nodes": [],
+            "connections": [],
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        }"#;
+        let def: WorkflowDefinition = serde_json::from_str(json).unwrap();
+        assert_eq!(def.schema_version, 1);
+        assert!(def.is_schema_supported());
+    }
+
+    #[test]
+    fn future_schema_version_not_supported() {
+        let json = r#"{
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "name": "test",
+            "version": {"major": 1, "minor": 0, "patch": 0},
+            "nodes": [],
+            "connections": [],
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "schema_version": 99
+        }"#;
+        let def: WorkflowDefinition = serde_json::from_str(json).unwrap();
+        assert_eq!(def.schema_version, 99);
+        assert!(!def.is_schema_supported());
+    }
+
+    #[test]
+    fn ui_metadata_round_trips() {
+        let mut ui = UiMetadata::default();
+        ui.node_positions
+            .insert(NodeId::new(), NodePosition { x: 100.0, y: 200.0 });
+        ui.viewport = Some(Viewport {
+            x: 0.0,
+            y: 0.0,
+            zoom: 1.5,
+        });
+        let json = serde_json::to_string(&ui).unwrap();
+        let parsed: UiMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(ui, parsed);
+    }
+
+    #[test]
+    fn ui_metadata_empty_annotations_omitted() {
+        let ui = UiMetadata::default();
+        let json = serde_json::to_value(&ui).unwrap();
+        assert!(json.get("annotations").is_none());
+    }
+
+    #[test]
+    fn owner_id_serializes_as_uuid() {
+        use nebula_core::OwnerId;
+        let owner = OwnerId::new();
+        let json = serde_json::to_value(owner).unwrap();
+        // UUID format: 8-4-4-4-12 hex digits separated by hyphens
+        assert!(json.as_str().unwrap().contains('-'));
+    }
+
+    #[test]
+    fn owner_id_defaults_to_none() {
+        let json = r#"{
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "name": "test",
+            "version": {"major": 1, "minor": 0, "patch": 0},
+            "nodes": [],
+            "connections": [],
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        }"#;
+        let def: WorkflowDefinition = serde_json::from_str(json).unwrap();
+        assert!(def.owner_id.is_none());
+    }
+
+    #[test]
+    fn ui_metadata_skipped_when_none() {
+        let json = r#"{
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "name": "test",
+            "version": {"major": 1, "minor": 0, "patch": 0},
+            "nodes": [],
+            "connections": [],
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        }"#;
+        let def: WorkflowDefinition = serde_json::from_str(json).unwrap();
+        assert!(def.ui_metadata.is_none());
+
+        // Roundtrip: ui_metadata should be absent from serialized output
+        let serialized = serde_json::to_value(&def).unwrap();
+        assert!(serialized.get("ui_metadata").is_none());
     }
 }

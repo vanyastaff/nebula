@@ -4,14 +4,13 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use chrono::Utc;
-use nebula_core::{Version, WorkflowId};
+use nebula_core::{NodeId, OwnerId, Version, WorkflowId};
 
 use crate::connection::{Connection, EdgeCondition};
-use crate::definition::{WorkflowConfig, WorkflowDefinition};
+use crate::definition::{UiMetadata, WorkflowConfig, WorkflowDefinition};
 use crate::error::WorkflowError;
 use crate::graph::DependencyGraph;
 use crate::node::NodeDefinition;
-use nebula_core::NodeId;
 
 /// A builder that accumulates nodes, connections, and configuration, then validates
 /// and produces a [`WorkflowDefinition`].
@@ -25,6 +24,8 @@ pub struct WorkflowBuilder {
     variables: HashMap<String, serde_json::Value>,
     config: WorkflowConfig,
     tags: Vec<String>,
+    owner_id: Option<OwnerId>,
+    ui_metadata: Option<UiMetadata>,
 }
 
 impl WorkflowBuilder {
@@ -41,6 +42,8 @@ impl WorkflowBuilder {
             variables: HashMap::new(),
             config: WorkflowConfig::default(),
             tags: Vec::new(),
+            owner_id: None,
+            ui_metadata: None,
         }
     }
 
@@ -141,6 +144,20 @@ impl WorkflowBuilder {
         self
     }
 
+    /// Set the owner ID for multi-tenant workflows.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn owner(mut self, owner_id: OwnerId) -> Self {
+        self.owner_id = Some(owner_id);
+        self
+    }
+
+    /// Set UI metadata (node positions, viewport, annotations).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn ui_metadata(mut self, metadata: UiMetadata) -> Self {
+        self.ui_metadata = Some(metadata);
+        self
+    }
+
     /// Consume the builder, validate the workflow, and return the definition.
     ///
     /// Validation includes: non-empty name, at least one node, no duplicate IDs,
@@ -182,6 +199,9 @@ impl WorkflowBuilder {
             tags: self.tags,
             created_at: now,
             updated_at: now,
+            owner_id: self.owner_id,
+            ui_metadata: self.ui_metadata,
+            schema_version: 1,
         };
 
         // Validate graph structure

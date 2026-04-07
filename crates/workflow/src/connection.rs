@@ -4,7 +4,7 @@ use nebula_core::NodeId;
 use serde::{Deserialize, Serialize};
 
 /// A directed edge from one node to another, optionally conditional.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Connection {
     /// Source node.
     pub from_node: NodeId,
@@ -82,7 +82,7 @@ impl Connection {
 }
 
 /// Condition that determines whether an edge is traversed.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum EdgeCondition {
@@ -107,7 +107,7 @@ pub enum EdgeCondition {
 }
 
 /// Matches against a node's successful output.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ResultMatcher {
@@ -128,7 +128,7 @@ pub enum ResultMatcher {
 }
 
 /// Matches against a node's error output.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ErrorMatcher {
