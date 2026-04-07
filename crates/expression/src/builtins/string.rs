@@ -204,15 +204,27 @@ pub fn pad_start(
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("pad_start", args, 2)?;
+    if args.len() > 3 {
+        return Err(ExpressionError::expression_eval_error(format!(
+            "pad_start: expected 2 or 3 arguments, got {}",
+            args.len()
+        )));
+    }
     let s = get_string_arg("pad_start", args, 0, "text")?;
     let target_len = get_int_arg_with_policy("pad_start", args, 1, "length", eval, ctx)?;
     if target_len < 0 {
-        return Err(ExpressionError::expression_invalid_argument(
-            "pad_start",
-            "Argument 'length' must be non-negative",
+        return Err(ExpressionError::expression_eval_error(
+            "pad_start: length must be non-negative",
         ));
     }
     let target_len = target_len as usize;
+
+    const MAX_PAD_LENGTH: usize = 1_048_576;
+    if target_len > MAX_PAD_LENGTH {
+        return Err(ExpressionError::expression_eval_error(format!(
+            "pad_start: target length {target_len} exceeds maximum {MAX_PAD_LENGTH}"
+        )));
+    }
 
     let fill = if args.len() > 2 {
         get_string_arg("pad_start", args, 2, "fill_char")?
@@ -246,15 +258,27 @@ pub fn pad_end(
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("pad_end", args, 2)?;
+    if args.len() > 3 {
+        return Err(ExpressionError::expression_eval_error(format!(
+            "pad_end: expected 2 or 3 arguments, got {}",
+            args.len()
+        )));
+    }
     let s = get_string_arg("pad_end", args, 0, "text")?;
     let target_len = get_int_arg_with_policy("pad_end", args, 1, "length", eval, ctx)?;
     if target_len < 0 {
-        return Err(ExpressionError::expression_invalid_argument(
-            "pad_end",
-            "Argument 'length' must be non-negative",
+        return Err(ExpressionError::expression_eval_error(
+            "pad_end: length must be non-negative",
         ));
     }
     let target_len = target_len as usize;
+
+    const MAX_PAD_LENGTH: usize = 1_048_576;
+    if target_len > MAX_PAD_LENGTH {
+        return Err(ExpressionError::expression_eval_error(format!(
+            "pad_end: target length {target_len} exceeds maximum {MAX_PAD_LENGTH}"
+        )));
+    }
 
     let fill = if args.len() > 2 {
         get_string_arg("pad_end", args, 2, "fill_char")?

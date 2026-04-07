@@ -210,6 +210,15 @@ fn pick_no_keys() {
     assert_eq!(result, json!({}));
 }
 
+#[test]
+fn pick_rejects_non_string_selector() {
+    let err = eval_err(r#"pick({"a":1, "b":2}, 42)"#);
+    assert!(
+        err.contains("string"),
+        "Error should mention 'string': {err}"
+    );
+}
+
 // ──────────────────────────────────────────────
 // Object: omit
 // ──────────────────────────────────────────────
@@ -230,6 +239,15 @@ fn omit_missing_key_no_error() {
 fn omit_multiple_keys() {
     let result = eval(r#"omit({"a":1, "b":2, "c":3}, "a", "c")"#);
     assert_eq!(result, json!({"b": 2}));
+}
+
+#[test]
+fn omit_rejects_non_string_selector() {
+    let err = eval_err(r#"omit({"a":1}, true)"#);
+    assert!(
+        err.contains("string"),
+        "Error should mention 'string': {err}"
+    );
 }
 
 // ──────────────────────────────────────────────
@@ -313,6 +331,24 @@ fn pad_start_already_long_enough() {
     assert_eq!(eval(r#"pad_start("hello", 3, "0")"#), json!("hello"));
 }
 
+#[test]
+fn pad_start_rejects_excessive_length() {
+    let err = eval_err(r#"pad_start("x", 99999999)"#);
+    assert!(
+        err.contains("exceeds maximum"),
+        "Error should mention exceeds maximum: {err}"
+    );
+}
+
+#[test]
+fn pad_start_rejects_non_integer_length() {
+    let err = eval_err(r#"pad_start("x", "abc")"#);
+    assert!(
+        err.contains("integer"),
+        "Error should mention integer: {err}"
+    );
+}
+
 // ──────────────────────────────────────────────
 // String: pad_end
 // ──────────────────────────────────────────────
@@ -330,6 +366,24 @@ fn pad_end_default_space() {
 #[test]
 fn pad_end_already_long_enough() {
     assert_eq!(eval(r#"pad_end("hello", 3, "0")"#), json!("hello"));
+}
+
+#[test]
+fn pad_end_rejects_excessive_length() {
+    let err = eval_err(r#"pad_end("x", 99999999)"#);
+    assert!(
+        err.contains("exceeds maximum"),
+        "Error should mention exceeds maximum: {err}"
+    );
+}
+
+#[test]
+fn pad_end_rejects_non_integer_length() {
+    let err = eval_err(r#"pad_end("x", "abc")"#);
+    assert!(
+        err.contains("integer"),
+        "Error should mention integer: {err}"
+    );
 }
 
 // ──────────────────────────────────────────────
