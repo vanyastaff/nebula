@@ -1,7 +1,9 @@
 //! Metric name constants for webhook observability.
 //!
 //! These constants follow the `nebula_webhook_*` naming convention
-//! and are intended for use with the OpenTelemetry metrics SDK.
+//! and are intended for registration and emission through
+//! `nebula_telemetry::metrics::MetricsRegistry`, with names aligned to
+//! the shared `nebula-metrics` conventions used across the workspace.
 
 /// Total webhook requests received.
 pub const WEBHOOK_RECEIVED_TOTAL: &str = "nebula_webhook_received_total";

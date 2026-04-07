@@ -52,16 +52,13 @@ pub enum Error {
     PayloadParse(String),
 
     /// Signature verification failed
-    #[error("Webhook signature verification failed: {reason}")]
-    SignatureInvalid {
-        /// Why verification failed.
-        reason: String,
-    },
+    #[error("Webhook signature verification failed")]
+    SignatureInvalid,
 
     /// Request rate limit exceeded for this webhook path.
-    #[error("rate limited on path `{path}`, retry after {retry_after_secs}s")]
+    #[error("rate limited, retry after {retry_after_secs}s")]
     RateLimited {
-        /// The rate-limited path.
+        /// The rate-limited path (available for programmatic use, not shown in Display).
         path: String,
         /// Seconds until the limit resets.
         retry_after_secs: u64,
@@ -97,7 +94,7 @@ impl nebula_error::Classify for Error {
             Self::RouteConflict { .. } => nebula_error::ErrorCategory::Conflict,
             Self::RouteNotFound { .. } => nebula_error::ErrorCategory::NotFound,
             Self::TriggerFailed(_) => nebula_error::ErrorCategory::External,
-            Self::SignatureInvalid { .. } => nebula_error::ErrorCategory::Authentication,
+            Self::SignatureInvalid => nebula_error::ErrorCategory::Authentication,
             Self::RateLimited { .. } => nebula_error::ErrorCategory::RateLimit,
             Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
             Self::Resource(e) => nebula_error::Classify::category(e),
@@ -116,7 +113,7 @@ impl nebula_error::Classify for Error {
             Self::InvalidPath(_) => "WEBHOOK:INVALID_PATH",
             Self::TriggerFailed(_) => "WEBHOOK:TRIGGER_FAILED",
             Self::PayloadParse(_) => "WEBHOOK:PAYLOAD_PARSE",
-            Self::SignatureInvalid { .. } => "WEBHOOK:SIGNATURE_INVALID",
+            Self::SignatureInvalid => "WEBHOOK:SIGNATURE_INVALID",
             Self::RateLimited { .. } => "WEBHOOK:RATE_LIMITED",
             Self::Cancelled => "WEBHOOK:CANCELLED",
             Self::Resource(_) => "WEBHOOK:RESOURCE",
@@ -178,10 +175,13 @@ impl Error {
     }
 
     /// Create a signature invalid error
-    pub fn signature_invalid(reason: impl Into<String>) -> Self {
-        Self::SignatureInvalid {
-            reason: reason.into(),
-        }
+    ///
+    /// The `reason` is accepted for call-site documentation purposes
+    /// but is not included in the error display to avoid leaking
+    /// verification details in logs.
+    #[allow(unused_variables)]
+    pub fn signature_invalid(_reason: impl Into<String>) -> Self {
+        Self::SignatureInvalid
     }
 
     /// Create a rate limited error

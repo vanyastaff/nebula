@@ -50,7 +50,6 @@ pub trait WebhookVerifier: Send + Sync {
 /// // Stripe-style: bare hex in custom header
 /// let verifier = HmacSha256Verifier::new(b"whsec_xxx", "Stripe-Signature");
 /// ```
-#[derive(Debug)]
 pub struct HmacSha256Verifier {
     /// The shared secret key.
     secret: Vec<u8>,
@@ -58,6 +57,16 @@ pub struct HmacSha256Verifier {
     header_name: String,
     /// Optional prefix to strip from header value (e.g., "sha256=").
     prefix: Option<String>,
+}
+
+impl std::fmt::Debug for HmacSha256Verifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HmacSha256Verifier")
+            .field("secret", &"<redacted>")
+            .field("header_name", &self.header_name)
+            .field("prefix", &self.prefix)
+            .finish()
+    }
 }
 
 impl HmacSha256Verifier {
@@ -160,7 +169,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            Error::SignatureInvalid { .. }
+            Error::SignatureInvalid
         ));
     }
 
@@ -174,7 +183,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            Error::SignatureInvalid { .. }
+            Error::SignatureInvalid
         ));
     }
 
