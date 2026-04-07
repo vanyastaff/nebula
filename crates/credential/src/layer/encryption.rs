@@ -121,8 +121,8 @@ impl<S> EncryptionLayer<S> {
 impl<S: CredentialStore> CredentialStore for EncryptionLayer<S> {
     async fn get(&self, id: &str) -> Result<StoredCredential, StoreError> {
         let mut credential = self.inner.get(id).await?;
-        let (plaintext, rotated) = self.decrypt_possibly_rotating(&credential.data, id)?;
-        credential.data = plaintext;
+        let (mut plaintext, rotated) = self.decrypt_possibly_rotating(&credential.data, id)?;
+        credential.data = std::mem::take(&mut *plaintext);
 
         if let Some(re_encrypted) = rotated {
             // Lazy rotation: write the re-encrypted data back to the store.
@@ -185,7 +185,7 @@ impl<S> EncryptionLayer<S> {
         &self,
         ciphertext: &[u8],
         id: &str,
-    ) -> Result<(Vec<u8>, Option<Vec<u8>>), StoreError> {
+    ) -> Result<(zeroize::Zeroizing<Vec<u8>>, Option<Vec<u8>>), StoreError> {
         let encrypted: crypto::EncryptedData =
             serde_json::from_slice(ciphertext).map_err(|e| StoreError::Backend(Box::new(e)))?;
 

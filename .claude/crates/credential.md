@@ -15,16 +15,17 @@ Credential storage, rotation, v2 trait-based system. Flat module structure.
 - identity_state kinds: `"secret_token"`, `"identity_password"`.
 
 ## Key Rotation
-- `EncryptedData.key_id` is `#[serde(default)]`; empty = legacy pre-rotation data (now unreadable — rejected as hard error).
-- `EncryptionLayer::new()` uses key id `"default"`. `with_keys()` requires `current_key_id` in map (debug_assert).
-- Lazy rotation on `get()`: old key_id → decrypt with old key + AAD (mandatory), re-encrypt with current, `PutMode::Overwrite`.
-- **No legacy fallback**: AAD validation is always enforced. Data encrypted without AAD returns `StoreError::Backend`. There is no fallback to no-AAD decryption.
+- `EncryptedData.key_id` `#[serde(default)]`; empty = unreadable (hard error, no fallback).
+- `EncryptionLayer::new()` → key id `"default"`. `with_keys()` requires `current_key_id` in map.
+- Lazy rotation on `get()`: old key_id → decrypt + AAD + re-encrypt with current (`PutMode::Overwrite`).
+- AAD always enforced — no-AAD data rejected with `StoreError::Backend`.
 
 ## Traps
 - `into_project::<S>()` consumes snapshot — use `project::<S>()` first to verify type.
 - `CredentialHandle::Clone` creates independent `ArcSwap` — share via `Arc<CredentialHandle<S>>`.
 - `InMemoryStore` CAS on missing row creates instead of NotFound.
 - CAS retry tests share global `AtomicU32` — race in parallel. Use `--test-threads=1`.
-- `PutMode::Upsert` does not exist — use `PutMode::Overwrite` for unconditional writes.
+- `PutMode::Upsert` does not exist — use `PutMode::Overwrite`.
+- `Zeroizing<Vec<u8>>` has no `into_inner()` — extract via `std::mem::take(&mut *val)`.
 
-<!-- reviewed: 2026-04-07 — Task 10: removed AAD legacy fallback; AAD is now mandatory in EncryptionLayer. -->
+<!-- reviewed: 2026-04-07 — Task 11: Zeroizing<Vec<u8>> for plaintext buffers. -->

@@ -101,8 +101,7 @@ mod tests {
 
     #[test]
     fn debug_redacts_seed() {
-        let seed = OtpSeed::new(SecretString::new("JBSWY3DPEHPK3PXP"), "SHA1", 6)
-            .with_period(30);
+        let seed = OtpSeed::new(SecretString::new("JBSWY3DPEHPK3PXP"), "SHA1", 6).with_period(30);
         let debug = format!("{seed:?}");
         assert!(debug.contains("SHA1"));
         assert!(debug.contains("30"));

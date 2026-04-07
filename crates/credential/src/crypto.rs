@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 // ============================================================================
 // Encryption & Key Derivation
@@ -219,7 +219,10 @@ pub fn encrypt(key: &EncryptionKey, plaintext: &[u8]) -> Result<EncryptedData, C
 ///
 /// Returns `CryptoError::DecryptionFailed` if decryption fails
 /// Returns `CryptoError::UnsupportedVersion` if encryption version not supported
-pub fn decrypt(key: &EncryptionKey, encrypted: &EncryptedData) -> Result<Vec<u8>, CryptoError> {
+pub fn decrypt(
+    key: &EncryptionKey,
+    encrypted: &EncryptedData,
+) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
     if !encrypted.is_supported_version() {
         return Err(CryptoError::UnsupportedVersion(encrypted.version));
     }
@@ -237,7 +240,7 @@ pub fn decrypt(key: &EncryptionKey, encrypted: &EncryptedData) -> Result<Vec<u8>
         .decrypt(nonce, ciphertext_with_tag.as_ref())
         .map_err(|_| CryptoError::DecryptionFailed)?;
 
-    Ok(plaintext)
+    Ok(Zeroizing::new(plaintext))
 }
 
 /// Encrypt plaintext using AES-256-GCM with Additional Authenticated Data (AAD).
@@ -313,7 +316,7 @@ pub fn decrypt_with_aad(
     key: &EncryptionKey,
     encrypted: &EncryptedData,
     aad: &[u8],
-) -> Result<Vec<u8>, CryptoError> {
+) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
     if !encrypted.is_supported_version() {
         return Err(CryptoError::UnsupportedVersion(encrypted.version));
     }
@@ -336,7 +339,7 @@ pub fn decrypt_with_aad(
         .decrypt(nonce, payload)
         .map_err(|_| CryptoError::DecryptionFailed)?;
 
-    Ok(plaintext)
+    Ok(Zeroizing::new(plaintext))
 }
 
 /// Encrypt plaintext using AES-256-GCM with AAD, recording the key identity.
@@ -540,7 +543,7 @@ mod tests {
 
         let encrypted = encrypt_with_aad(&key, plaintext, aad).unwrap();
         let decrypted = decrypt_with_aad(&key, &encrypted, aad).unwrap();
-        assert_eq!(decrypted, plaintext);
+        assert_eq!(decrypted.as_slice(), plaintext);
     }
 
     #[test]
@@ -574,7 +577,7 @@ mod tests {
         assert_eq!(encrypted.key_id, "rotation-key-2");
 
         let decrypted = decrypt_with_aad(&key, &encrypted, aad).unwrap();
-        assert_eq!(decrypted, plaintext);
+        assert_eq!(decrypted.as_slice(), plaintext);
     }
 
     #[test]

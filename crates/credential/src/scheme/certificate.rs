@@ -109,12 +109,10 @@ mod tests {
 
     #[test]
     fn accessors_return_values() {
-        let cert = Certificate::new(
-            "-----BEGIN CERTIFICATE-----",
-            SecretString::new("key-data"),
-        );
+        let cert = Certificate::new("-----BEGIN CERTIFICATE-----", SecretString::new("key-data"));
         assert_eq!(cert.cert_chain(), "-----BEGIN CERTIFICATE-----");
-        cert.private_key().expose_secret(|v| assert_eq!(v, "key-data"));
+        cert.private_key()
+            .expose_secret(|v| assert_eq!(v, "key-data"));
         assert!(cert.passphrase().is_none());
     }
 }

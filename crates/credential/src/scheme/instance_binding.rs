@@ -80,11 +80,8 @@ mod tests {
 
     #[test]
     fn debug_exposes_no_secrets_because_there_are_none() {
-        let binding = InstanceBinding::new(
-            "aws",
-            "arn:aws:iam::123456789012:role/MyRole",
-        )
-        .with_region("us-east-1");
+        let binding = InstanceBinding::new("aws", "arn:aws:iam::123456789012:role/MyRole")
+            .with_region("us-east-1");
         let debug = format!("{binding:?}");
         // No secrets to redact — all fields are safe to display.
         assert!(debug.contains("aws"));

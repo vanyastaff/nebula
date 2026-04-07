@@ -78,8 +78,8 @@ mod tests {
 
     #[test]
     fn debug_redacts_key() {
-        let key = SharedKey::new(SecretString::new("base64-encoded-key=="))
-            .with_identity("device-001");
+        let key =
+            SharedKey::new(SecretString::new("base64-encoded-key==")).with_identity("device-001");
         let debug = format!("{key:?}");
         assert!(debug.contains("device-001"));
         assert!(debug.contains("[REDACTED]"));

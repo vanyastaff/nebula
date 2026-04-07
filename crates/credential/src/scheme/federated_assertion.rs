@@ -90,7 +90,10 @@ mod tests {
 
     #[test]
     fn pattern_is_federated_identity() {
-        assert_eq!(FederatedAssertion::pattern(), AuthPattern::FederatedIdentity);
+        assert_eq!(
+            FederatedAssertion::pattern(),
+            AuthPattern::FederatedIdentity
+        );
     }
 
     #[test]
@@ -108,8 +111,7 @@ mod tests {
     #[test]
     fn expires_at_propagates_to_auth_scheme() {
         let expiry = chrono::Utc::now() + chrono::Duration::hours(1);
-        let a = FederatedAssertion::new(SecretString::new("tok"), "issuer")
-            .with_expires_at(expiry);
+        let a = FederatedAssertion::new(SecretString::new("tok"), "issuer").with_expires_at(expiry);
         assert_eq!(AuthScheme::expires_at(&a), Some(expiry));
     }
 }

@@ -23,6 +23,8 @@ mod tests {
     fn oauth2_to_secret_token() {
         let oauth = OAuth2Token::new(SecretString::new("access-token-123"));
         let token: SecretToken = oauth.into();
-        token.token().expose_secret(|v| assert_eq!(v, "access-token-123"));
+        token
+            .token()
+            .expose_secret(|v| assert_eq!(v, "access-token-123"));
     }
 }
