@@ -2,27 +2,22 @@
 Action trait hierarchy and execution contract — Ports & Drivers architecture.
 
 ## Invariants
-- Defines **what** actions are, not how the engine runs them. Concrete execution environments (InProcessSandbox) are in nebula-runtime.
-- Actions may run concurrently. Do not store mutable state in action struct fields. Use `StatefulAction` if state is required (it carries explicit state type).
+- Defines **what** actions are, not how the engine runs them. Concrete execution environments are in nebula-runtime.
+- Actions may run concurrently. No mutable state in action struct fields — use `StatefulAction` for stateful loops.
 - `Context` is always injected — never construct `ActionContext` directly inside an action.
 
 ## Key Decisions
 - Action subtypes: `StatelessAction` (one-shot), `StatefulAction` (Continue/Break loop), `TriggerAction` (starts workflow), `ResourceAction` (branch-scoped DI setup/cleanup).
-- `ActionDependencies` declares resource and credential requirements statically — the engine reads this at registration time.
-- `ActionResult` carries both output data and flow-control intent (branch, wait, error).
-- `ActionOutput` has 4 variants: inline JSON value, binary blob reference, deferred (async result), stream.
-- `capability` module: `CredentialAccessor`, `ResourceAccessor`, `ActionLogger`, `ExecutionEmitter`, `TriggerScheduler` — these are the DI interfaces.
-- `credential_typed::<S>()` on `ActionContext`/`TriggerContext` consumes the snapshot via `into_project::<S>()` and maps `SnapshotError` to `ActionError::Fatal`. This is the primary typed credential access path for action authors.
+- `ActionDependencies` has two complementary pairs: `credential`/`resources` (trait-object, runtime injection) and `credential_keys`/`resource_keys` (typed keys, engine validation at registration). All four default to empty — no migration needed.
+- `ActionRegistry` (`registry.rs`): keyed by `ActionKey`, supports multiple versions per key. `get()` → latest, `get_versioned(&InterfaceVersion)` → specific. `Send + Sync` — use `Arc<ActionRegistry>` for read-only sharing, `Arc<RwLock<_>>` for mutation after sharing.
+- `credential_typed::<S>()` on `ActionContext`/`TriggerContext` consumes snapshot via `into_project::<S>()`, maps `SnapshotError` → `ActionError::Fatal`. Primary typed credential access path.
 
 ## Traps
-- `#[derive(Action)]` requires **unit structs** (no fields). Config goes in a separate type injected as a dependency.
-- `ActionError` distinguishes retryable from fatal. `ActionError::retryable(...)` vs `ActionError::fatal(...)` — the engine uses this to decide retry.
+- `#[derive(Action)]` requires **unit structs** (no fields). Config goes in a separate injected type.
+- `ActionError::retryable(...)` vs `ActionError::fatal(...)` — engine uses this to decide retry.
 - `FnStatelessAction` / `stateless_fn()` for closure-based actions (testing and one-off use).
 
 ## Relations
-- Depends on nebula-core, nebula-parameter (re-exports Field/Schema). Used by nebula-engine, nebula-runtime, nebula-sdk.
-<!-- reviewed: 2026-03-31 — added credential_typed<S>() to ActionContext and TriggerContext -->
+- Depends on nebula-core, nebula-parameter. Used by nebula-engine, nebula-runtime, nebula-sdk.
 
-<!-- reviewed: 2026-04-02 -->
-
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
+<!-- reviewed: 2026-04-07 — added ActionRegistry + typed credential_keys/resource_keys to ActionDependencies -->
