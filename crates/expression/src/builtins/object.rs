@@ -83,7 +83,22 @@ pub fn pick(
     check_min_arg_count("pick", args, 1)?;
     let obj = get_object_arg("pick", args, 0, "object")?;
 
-    let keys_to_pick: Vec<&str> = args[1..].iter().filter_map(|v| v.as_str()).collect();
+    let mut keys_to_pick: Vec<&str> = Vec::with_capacity(args.len().saturating_sub(1));
+    for (i, v) in args[1..].iter().enumerate() {
+        match v.as_str() {
+            Some(s) => keys_to_pick.push(s),
+            None => {
+                return Err(ExpressionError::expression_invalid_argument(
+                    "pick",
+                    format!(
+                        "Key argument at position {} must be a string, got {}",
+                        i + 1,
+                        crate::value_utils::value_type_name(v)
+                    ),
+                ));
+            }
+        }
+    }
 
     let result: serde_json::Map<String, Value> = obj
         .iter()
@@ -105,7 +120,22 @@ pub fn omit(
     check_min_arg_count("omit", args, 1)?;
     let obj = get_object_arg("omit", args, 0, "object")?;
 
-    let keys_to_omit: Vec<&str> = args[1..].iter().filter_map(|v| v.as_str()).collect();
+    let mut keys_to_omit: Vec<&str> = Vec::with_capacity(args.len().saturating_sub(1));
+    for (i, v) in args[1..].iter().enumerate() {
+        match v.as_str() {
+            Some(s) => keys_to_omit.push(s),
+            None => {
+                return Err(ExpressionError::expression_invalid_argument(
+                    "omit",
+                    format!(
+                        "Key argument at position {} must be a string, got {}",
+                        i + 1,
+                        crate::value_utils::value_type_name(v)
+                    ),
+                ));
+            }
+        }
+    }
 
     let result: serde_json::Map<String, Value> = obj
         .iter()

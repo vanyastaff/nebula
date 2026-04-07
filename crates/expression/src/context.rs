@@ -16,6 +16,8 @@ pub struct EvaluationContext {
     nodes: HashMap<Arc<str>, Arc<Value>>,
     /// Execution variables ($execution.id, $execution.mode, etc.)
     execution_vars: HashMap<Arc<str>, Arc<Value>>,
+    /// Lambda-bound parameters (isolated from execution_vars to avoid name collisions)
+    lambda_vars: HashMap<Arc<str>, Arc<Value>>,
     /// Workflow metadata ($workflow.id, $workflow.name, etc.)
     workflow: Arc<Value>,
     /// Input data ($input.item, $input.all, etc.)
@@ -30,6 +32,7 @@ impl EvaluationContext {
         Self {
             nodes: HashMap::new(),
             execution_vars: HashMap::new(),
+            lambda_vars: HashMap::new(),
             workflow: Arc::new(Value::Object(serde_json::Map::new())),
             input: Arc::new(Value::Object(serde_json::Map::new())),
             policy: None,
@@ -56,6 +59,18 @@ impl EvaluationContext {
     /// Get an execution variable
     pub fn get_execution_var(&self, name: &str) -> Option<Arc<Value>> {
         self.execution_vars.get(name).cloned()
+    }
+
+    /// Set a lambda-bound parameter (used exclusively for lambda scopes to avoid
+    /// collisions with real execution variables)
+    pub fn set_lambda_var(&mut self, name: impl AsRef<str>, value: Value) {
+        let key: Arc<str> = Arc::from(name.as_ref());
+        self.lambda_vars.insert(key, Arc::new(value));
+    }
+
+    /// Get a lambda-bound parameter
+    pub fn get_lambda_var(&self, name: &str) -> Option<Arc<Value>> {
+        self.lambda_vars.get(name).cloned()
     }
 
     /// Set the workflow metadata
@@ -90,7 +105,12 @@ impl EvaluationContext {
 
     /// Resolve a variable by name
     pub fn resolve_variable(&self, name: &str) -> Option<Value> {
-        // First, check for local variables (e.g., lambda parameters)
+        // Lambda-bound parameters take priority (e.g., `x` in `filter(arr, x => x > 2)`).
+        if let Some(value) = self.lambda_vars.get(name) {
+            return Some((**value).clone());
+        }
+
+        // Custom execution variables set via `set_execution_var` (e.g., `$obj`).
         if let Some(value) = self.execution_vars.get(name) {
             return Some((**value).clone());
         }
@@ -191,6 +211,7 @@ impl EvaluationContextBuilder {
         EvaluationContext {
             nodes: self.nodes,
             execution_vars: self.execution_vars,
+            lambda_vars: HashMap::new(),
             workflow: self
                 .workflow
                 .unwrap_or_else(|| Arc::new(Value::Object(serde_json::Map::new()))),

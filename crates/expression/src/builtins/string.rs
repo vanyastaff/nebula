@@ -200,20 +200,12 @@ pub fn ends_with(
 /// Default fill character is a space.
 pub fn pad_start(
     args: &[Value],
-    _eval: &Evaluator,
-    _ctx: &EvaluationContext,
+    eval: &Evaluator,
+    ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("pad_start", args, 2)?;
     let s = get_string_arg("pad_start", args, 0, "text")?;
-    let target_len = args[1].as_i64().ok_or_else(|| {
-        ExpressionError::expression_invalid_argument(
-            "pad_start",
-            format!(
-                "Argument 'length' must be a number, got {}",
-                crate::value_utils::value_type_name(&args[1])
-            ),
-        )
-    })?;
+    let target_len = get_int_arg_with_policy("pad_start", args, 1, "length", eval, ctx)?;
     if target_len < 0 {
         return Err(ExpressionError::expression_invalid_argument(
             "pad_start",
@@ -250,20 +242,12 @@ pub fn pad_start(
 /// Default fill character is a space.
 pub fn pad_end(
     args: &[Value],
-    _eval: &Evaluator,
-    _ctx: &EvaluationContext,
+    eval: &Evaluator,
+    ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("pad_end", args, 2)?;
     let s = get_string_arg("pad_end", args, 0, "text")?;
-    let target_len = args[1].as_i64().ok_or_else(|| {
-        ExpressionError::expression_invalid_argument(
-            "pad_end",
-            format!(
-                "Argument 'length' must be a number, got {}",
-                crate::value_utils::value_type_name(&args[1])
-            ),
-        )
-    })?;
+    let target_len = get_int_arg_with_policy("pad_end", args, 1, "length", eval, ctx)?;
     if target_len < 0 {
         return Err(ExpressionError::expression_invalid_argument(
             "pad_end",
@@ -299,20 +283,12 @@ pub fn pad_end(
 /// Example: `repeat("ab", 3)` returns `"ababab"`
 pub fn repeat(
     args: &[Value],
-    _eval: &Evaluator,
-    _ctx: &EvaluationContext,
+    eval: &Evaluator,
+    ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("repeat", args, 2)?;
     let s = get_string_arg("repeat", args, 0, "text")?;
-    let count = args[1].as_i64().ok_or_else(|| {
-        ExpressionError::expression_invalid_argument(
-            "repeat",
-            format!(
-                "Argument 'count' must be a number, got {}",
-                crate::value_utils::value_type_name(&args[1])
-            ),
-        )
-    })?;
+    let count = get_int_arg_with_policy("repeat", args, 1, "count", eval, ctx)?;
     if count < 0 {
         return Err(ExpressionError::expression_invalid_argument(
             "repeat",

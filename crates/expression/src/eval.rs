@@ -106,7 +106,7 @@ impl Evaluator {
 
             Expr::Identifier(name) => {
                 // Check if this identifier is a bound lambda parameter
-                if let Some(val) = context.get_execution_var(name) {
+                if let Some(val) = context.get_lambda_var(name) {
                     return Ok((*val).clone());
                 }
                 // Otherwise treat as a string constant
@@ -831,7 +831,7 @@ impl Evaluator {
     ) -> ExpressionResult<Value> {
         // Create a new context with the lambda parameter
         let mut lambda_context = context.clone();
-        lambda_context.set_execution_var(param, value.clone());
+        lambda_context.set_lambda_var(param, value.clone());
         self.eval(body, &lambda_context)
     }
 
@@ -1126,8 +1126,8 @@ impl Evaluator {
         for item in array.iter() {
             // Create context with both accumulator and current item
             let mut reduce_context = context.clone();
-            reduce_context.set_execution_var("$acc", accumulator.clone());
-            reduce_context.set_execution_var(param, item.clone());
+            reduce_context.set_lambda_var("$acc", accumulator.clone());
+            reduce_context.set_lambda_var(param, item.clone());
             accumulator = self.eval(body, &reduce_context)?;
         }
 
@@ -1364,12 +1364,19 @@ impl Evaluator {
                     ));
                 }
             };
-            groups
+            let group_entry = groups
                 .entry(key)
-                .or_insert_with(|| Value::Array(Vec::new()))
-                .as_array_mut()
-                .expect("just inserted an array")
-                .push(item.clone());
+                .or_insert_with(|| Value::Array(Vec::new()));
+
+            match group_entry {
+                Value::Array(items) => items.push(item.clone()),
+                other => {
+                    return Err(ExpressionError::expression_type_error(
+                        "array",
+                        crate::value_utils::value_type_name(other),
+                    ));
+                }
+            }
         }
 
         Ok(Value::Object(groups))

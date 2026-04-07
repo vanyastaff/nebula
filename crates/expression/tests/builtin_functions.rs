@@ -412,3 +412,62 @@ fn type_of_null() {
 fn type_of_boolean() {
     assert_eq!(eval("type_of(true)"), json!("boolean"));
 }
+
+// ──────────────────────────────────────────────
+// Lambda scope isolation
+// ──────────────────────────────────────────────
+
+#[test]
+fn lambda_param_does_not_shadow_execution_var() {
+    // An execution var named "x" must NOT affect the bare identifier "x" used as
+    // a lambda parameter in a higher-order function.
+    let engine = ExpressionEngine::default();
+    let mut ctx = EvaluationContext::default();
+    ctx.set_execution_var("x", json!(999)); // should be invisible inside the lambda body
+    let result = engine
+        .evaluate("filter([1,2,3], x => x > 1)", &ctx)
+        .unwrap();
+    assert_eq!(result, json!([2, 3]));
+}
+
+// ──────────────────────────────────────────────
+// Object: pick / omit – non-string key errors
+// ──────────────────────────────────────────────
+
+#[test]
+fn pick_rejects_non_string_key() {
+    let err = eval_err("pick({\"a\":1}, 42)");
+    assert!(
+        err.contains("string"),
+        "Error should mention string type: {err}"
+    );
+}
+
+#[test]
+fn omit_rejects_non_string_key() {
+    let err = eval_err("omit({\"a\":1}, true)");
+    assert!(
+        err.contains("string"),
+        "Error should mention string type: {err}"
+    );
+}
+
+// ──────────────────────────────────────────────
+// String: integer coercion for pad_start/pad_end/repeat
+// ──────────────────────────────────────────────
+
+#[test]
+fn pad_start_accepts_float_length() {
+    // Non-strict mode: float 3.0 should be coerced to integer 3
+    assert_eq!(eval(r#"pad_start("5", 3.0, "0")"#), json!("005"));
+}
+
+#[test]
+fn pad_end_accepts_float_length() {
+    assert_eq!(eval(r#"pad_end("5", 3.0, "0")"#), json!("500"));
+}
+
+#[test]
+fn repeat_accepts_float_count() {
+    assert_eq!(eval(r#"repeat("ab", 2.0)"#), json!("abab"));
+}
