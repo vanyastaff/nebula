@@ -369,6 +369,12 @@ pub fn encrypt_with_key_id(
     plaintext: &[u8],
     aad: &[u8],
 ) -> Result<EncryptedData, CryptoError> {
+    if key_id.is_empty() {
+        return Err(CryptoError::EncryptionFailed(
+            "key_id must not be empty for new encryptions".into(),
+        ));
+    }
+
     let cipher = Aes256Gcm::new_from_slice(key.as_bytes())
         .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
 
