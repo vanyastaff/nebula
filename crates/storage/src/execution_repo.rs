@@ -318,12 +318,12 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         state: serde_json::Value,
     ) -> Result<(), ExecutionRepoError> {
         let mut store = self.state.write().await;
-        if store.contains_key(&id) {
+        if let Some((actual_version, _)) = store.get(&id) {
             return Err(ExecutionRepoError::Conflict {
                 entity: "execution".into(),
                 id: id.to_string(),
                 expected_version: 0,
-                actual_version: 1,
+                actual_version: *actual_version,
             });
         }
         store.insert(id, (1, state));
@@ -370,7 +370,7 @@ impl ExecutionRepo for InMemoryExecutionRepo {
             if *eid != execution_id {
                 continue;
             }
-            let entry = best.entry(*nid).or_insert((0, serde_json::Value::Null));
+            let entry = best.entry(*nid).or_insert((*attempt, val.clone()));
             if *attempt > entry.0 {
                 *entry = (*attempt, val.clone());
             }

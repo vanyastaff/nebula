@@ -921,6 +921,12 @@ fn handle_node_failure(
     // IgnoreErrors: treat the failure as a successful null result so
     // downstream nodes activate normally.
     if error_strategy == nebula_workflow::ErrorStrategy::IgnoreErrors {
+        // The node was already marked Failed by the caller; recover it to
+        // Completed since we are ignoring the error, keeping state consistent.
+        if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
+            ns.state = NodeState::Completed;
+            ns.error_message = None;
+        }
         outputs.insert(node_id, serde_json::json!(null));
         process_outgoing_edges(
             node_id,

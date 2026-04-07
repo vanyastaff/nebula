@@ -239,11 +239,21 @@ impl ExecutionRepo for PgExecutionRepo {
         match result {
             Ok(_) => Ok(()),
             Err(sqlx::Error::Database(db_err)) if db_err.code().as_deref() == Some("23505") => {
+                let actual_version = sqlx::query_scalar::<_, i64>(
+                    "SELECT version FROM executions WHERE id = $1",
+                )
+                .bind(exec_uuid)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(map_err)?
+                .and_then(|v| u64::try_from(v).ok())
+                .unwrap_or(1);
+
                 Err(ExecutionRepoError::Conflict {
                     entity: "execution".into(),
                     id: id.to_string(),
                     expected_version: 0,
-                    actual_version: 1,
+                    actual_version,
                 })
             }
             Err(err) => Err(map_err(err)),
@@ -259,6 +269,11 @@ impl ExecutionRepo for PgExecutionRepo {
     ) -> Result<(), ExecutionRepoError> {
         let eid = execution_to_uuid(execution_id);
         let nid = node_to_uuid(node_id);
+        let attempt_i32 = i32::try_from(attempt).map_err(|_| {
+            ExecutionRepoError::Internal(format!(
+                "attempt value {attempt} exceeds i32::MAX"
+            ))
+        })?;
         sqlx::query(
             "INSERT INTO node_outputs (execution_id, node_id, attempt, output) \
              VALUES ($1, $2, $3, $4) \
@@ -267,7 +282,7 @@ impl ExecutionRepo for PgExecutionRepo {
         )
         .bind(eid)
         .bind(nid)
-        .bind(attempt as i32)
+        .bind(attempt_i32)
         .bind(Json(&output))
         .execute(&self.pool)
         .await
@@ -386,5 +401,183 @@ impl ExecutionRepo for PgExecutionRepo {
         .map_err(map_err)?;
 
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "postgres"))]
+mod tests {
+    use super::*;
+    use crate::backend::postgres::PostgresStorage;
+
+    /// Helper: create a `PgExecutionRepo` from `DATABASE_URL`, or skip the test.
+    async fn pg_exec_repo() -> Option<PgExecutionRepo> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        let storage = PostgresStorage::new(url).await.expect("connect");
+        storage.run_migrations().await.expect("migrations");
+        Some(PgExecutionRepo::new(storage.pool().clone()))
+    }
+
+    #[tokio::test]
+    async fn pg_create_and_get_state() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let state = serde_json::json!({"status": "created"});
+
+        repo.create(id, wf_id, state.clone())
+            .await
+            .expect("create");
+
+        let (version, got) = repo.get_state(id).await.expect("get").expect("some");
+        assert_eq!(version, 1);
+        assert_eq!(got, state);
+    }
+
+    #[tokio::test]
+    async fn pg_create_conflict_returns_actual_version() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let state = serde_json::json!({"status": "created"});
+
+        repo.create(id, wf_id, state.clone())
+            .await
+            .expect("create");
+
+        let err = repo
+            .create(id, wf_id, state)
+            .await
+            .expect_err("duplicate create");
+        match err {
+            ExecutionRepoError::Conflict {
+                actual_version,
+                expected_version,
+                ..
+            } => {
+                assert_eq!(expected_version, 0);
+                assert_eq!(actual_version, 1);
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn pg_transition_cas_succeeds_and_bumps_version() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let state1 = serde_json::json!({"status": "created"});
+        let state2 = serde_json::json!({"status": "running"});
+
+        repo.create(id, wf_id, state1).await.expect("create");
+
+        let ok = repo
+            .transition(id, 1, state2.clone())
+            .await
+            .expect("transition");
+        assert!(ok, "CAS should succeed with correct version");
+
+        let (version, got) = repo.get_state(id).await.expect("get").expect("some");
+        assert_eq!(version, 2);
+        assert_eq!(got, state2);
+    }
+
+    #[tokio::test]
+    async fn pg_transition_cas_fails_on_wrong_version() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let state = serde_json::json!({"status": "created"});
+
+        repo.create(id, wf_id, state.clone()).await.expect("create");
+
+        let ok = repo
+            .transition(id, 99, state)
+            .await
+            .expect("transition (wrong version)");
+        assert!(!ok, "CAS should fail with incorrect version");
+    }
+
+    #[tokio::test]
+    async fn pg_save_and_load_node_output() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let exec_id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let node_id = NodeId::new();
+        let output = serde_json::json!({"result": 42});
+
+        repo.create(exec_id, wf_id, serde_json::json!({}))
+            .await
+            .expect("create");
+        repo.save_node_output(exec_id, node_id, 0, output.clone())
+            .await
+            .expect("save output");
+
+        let got = repo
+            .load_node_output(exec_id, node_id)
+            .await
+            .expect("load")
+            .expect("some");
+        assert_eq!(got, output);
+    }
+
+    #[tokio::test]
+    async fn pg_load_all_outputs_returns_highest_attempt() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let exec_id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let node_id = NodeId::new();
+
+        repo.create(exec_id, wf_id, serde_json::json!({}))
+            .await
+            .expect("create");
+        repo.save_node_output(exec_id, node_id, 0, serde_json::json!("attempt0"))
+            .await
+            .expect("save attempt 0");
+        repo.save_node_output(exec_id, node_id, 1, serde_json::json!("attempt1"))
+            .await
+            .expect("save attempt 1");
+
+        let all = repo
+            .load_all_outputs(exec_id)
+            .await
+            .expect("load all");
+        assert_eq!(all.get(&node_id), Some(&serde_json::json!("attempt1")));
+    }
+
+    #[tokio::test]
+    async fn pg_idempotency_check_and_mark() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let key = format!("test-idempotency-{}", ExecutionId::new());
+        let exec_id = ExecutionId::new();
+        let node_id = NodeId::new();
+
+        assert!(
+            !repo.check_idempotency(&key).await.expect("check before"),
+            "key should not exist yet"
+        );
+
+        repo.mark_idempotent(&key, exec_id, node_id)
+            .await
+            .expect("mark");
+
+        assert!(
+            repo.check_idempotency(&key).await.expect("check after"),
+            "key should exist after marking"
+        );
     }
 }
