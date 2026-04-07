@@ -49,7 +49,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true, features = ["json", "rustls"] }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 
 [features]
 default = []
