@@ -695,6 +695,8 @@ mod tests {
     /// A test credential that counts how many times `refresh()` is called,
     /// to verify the CAS retry does NOT re-invoke refresh.
     static CAS_REFRESH_COUNT: AtomicU32 = AtomicU32::new(0);
+    /// Serializes CAS retry tests that share `CAS_REFRESH_COUNT`.
+    static CAS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     struct CasRetryTestCredential;
 
@@ -752,6 +754,7 @@ mod tests {
 
     #[tokio::test]
     async fn cas_retry_succeeds_after_version_conflict() {
+        let _guard = CAS_TEST_LOCK.lock().unwrap();
         CAS_REFRESH_COUNT.store(0, Ordering::SeqCst);
 
         // 1 CAS conflict before success
@@ -801,6 +804,7 @@ mod tests {
 
     #[tokio::test]
     async fn cas_retry_exhausted_returns_version_conflict() {
+        let _guard = CAS_TEST_LOCK.lock().unwrap();
         CAS_REFRESH_COUNT.store(0, Ordering::SeqCst);
 
         // 5 CAS conflicts — more than the 3-attempt limit
