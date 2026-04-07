@@ -193,3 +193,143 @@ pub fn ends_with(
 
     Ok(Value::Bool(s.ends_with(suffix)))
 }
+
+/// Pad a string from the left to a target length
+///
+/// Example: `pad_start("5", 3, "0")` returns `"005"`
+/// Default fill character is a space.
+pub fn pad_start(
+    args: &[Value],
+    eval: &Evaluator,
+    ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
+    check_min_arg_count("pad_start", args, 2)?;
+    if args.len() > 3 {
+        return Err(ExpressionError::expression_eval_error(format!(
+            "pad_start: expected 2 or 3 arguments, got {}",
+            args.len()
+        )));
+    }
+    let s = get_string_arg("pad_start", args, 0, "text")?;
+    let target_len = get_int_arg_with_policy("pad_start", args, 1, "length", eval, ctx)?;
+    if target_len < 0 {
+        return Err(ExpressionError::expression_eval_error(
+            "pad_start: length must be non-negative",
+        ));
+    }
+    let target_len = target_len as usize;
+
+    const MAX_PAD_LENGTH: usize = 1_048_576;
+    if target_len > MAX_PAD_LENGTH {
+        return Err(ExpressionError::expression_eval_error(format!(
+            "pad_start: target length {target_len} exceeds maximum {MAX_PAD_LENGTH}"
+        )));
+    }
+
+    let fill = if args.len() > 2 {
+        get_string_arg("pad_start", args, 2, "fill_char")?
+    } else {
+        " "
+    };
+    if fill.is_empty() {
+        return Err(ExpressionError::expression_invalid_argument(
+            "pad_start",
+            "Fill string must not be empty",
+        ));
+    }
+
+    let char_count = s.chars().count();
+    if char_count >= target_len {
+        return Ok(Value::String(s.to_string()));
+    }
+
+    let pad_len = target_len - char_count;
+    let padding: String = fill.chars().cycle().take(pad_len).collect();
+    Ok(Value::String(format!("{padding}{s}")))
+}
+
+/// Pad a string from the right to a target length
+///
+/// Example: `pad_end("5", 3, "0")` returns `"500"`
+/// Default fill character is a space.
+pub fn pad_end(
+    args: &[Value],
+    eval: &Evaluator,
+    ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
+    check_min_arg_count("pad_end", args, 2)?;
+    if args.len() > 3 {
+        return Err(ExpressionError::expression_eval_error(format!(
+            "pad_end: expected 2 or 3 arguments, got {}",
+            args.len()
+        )));
+    }
+    let s = get_string_arg("pad_end", args, 0, "text")?;
+    let target_len = get_int_arg_with_policy("pad_end", args, 1, "length", eval, ctx)?;
+    if target_len < 0 {
+        return Err(ExpressionError::expression_eval_error(
+            "pad_end: length must be non-negative",
+        ));
+    }
+    let target_len = target_len as usize;
+
+    const MAX_PAD_LENGTH: usize = 1_048_576;
+    if target_len > MAX_PAD_LENGTH {
+        return Err(ExpressionError::expression_eval_error(format!(
+            "pad_end: target length {target_len} exceeds maximum {MAX_PAD_LENGTH}"
+        )));
+    }
+
+    let fill = if args.len() > 2 {
+        get_string_arg("pad_end", args, 2, "fill_char")?
+    } else {
+        " "
+    };
+    if fill.is_empty() {
+        return Err(ExpressionError::expression_invalid_argument(
+            "pad_end",
+            "Fill string must not be empty",
+        ));
+    }
+
+    let char_count = s.chars().count();
+    if char_count >= target_len {
+        return Ok(Value::String(s.to_string()));
+    }
+
+    let pad_len = target_len - char_count;
+    let padding: String = fill.chars().cycle().take(pad_len).collect();
+    Ok(Value::String(format!("{s}{padding}")))
+}
+
+/// Repeat a string N times
+///
+/// Example: `repeat("ab", 3)` returns `"ababab"`
+pub fn repeat(
+    args: &[Value],
+    eval: &Evaluator,
+    ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
+    check_arg_count("repeat", args, 2)?;
+    let s = get_string_arg("repeat", args, 0, "text")?;
+    let count = get_int_arg_with_policy("repeat", args, 1, "count", eval, ctx)?;
+    if count < 0 {
+        return Err(ExpressionError::expression_invalid_argument(
+            "repeat",
+            "Argument 'count' must be non-negative",
+        ));
+    }
+    let count = count as usize;
+
+    // Guard against excessive allocation
+    const MAX_RESULT_LEN: usize = 1_000_000;
+    let result_len = s.len().saturating_mul(count);
+    if result_len > MAX_RESULT_LEN {
+        return Err(ExpressionError::expression_eval_error(format!(
+            "repeat would produce a string of {} bytes, exceeding limit of {MAX_RESULT_LEN}",
+            result_len
+        )));
+    }
+
+    Ok(Value::String(s.repeat(count)))
+}
