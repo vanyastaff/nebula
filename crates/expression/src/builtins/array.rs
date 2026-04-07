@@ -208,6 +208,32 @@ pub fn concat(
     Ok(Value::Array(result))
 }
 
+/// Remove duplicate elements from an array, preserving order
+///
+/// Uses string representation for equality comparison.
+/// Example: `unique([1,2,2,3,1])` returns `[1,2,3]`
+pub fn unique(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
+    check_arg_count("unique", args, 1)?;
+    let arr = get_array_arg("unique", args, 0, "array")?;
+
+    let mut seen = std::collections::HashSet::new();
+    let result: Vec<Value> = arr
+        .iter()
+        .filter(|item| {
+            // Use JSON serialization for stable equality comparison
+            let key = item.to_string();
+            seen.insert(key)
+        })
+        .cloned()
+        .collect();
+
+    Ok(Value::Array(result))
+}
+
 /// Flatten a nested array
 pub fn flatten(
     args: &[Value],
