@@ -48,7 +48,7 @@ impl NodeDefinition {
     ///
     /// # Errors
     ///
-    /// Returns [`WorkflowError::InvalidActionKey`] if `action_key` is not a valid
+    /// Returns [`InvalidActionKey`](crate::WorkflowError::InvalidActionKey) if `action_key` is not a valid
     /// [`ActionKey`] (lowercase alphanumeric, underscores, dots, hyphens).
     pub fn new(
         id: NodeId,
