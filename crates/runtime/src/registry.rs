@@ -4,9 +4,12 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
-use nebula_action::InternalHandler;
+use nebula_action::{InterfaceVersion, InternalHandler};
 
 use crate::error::RuntimeError;
+
+/// A versioned handler entry: (version, handler).
+type VersionedHandler = (InterfaceVersion, Arc<dyn InternalHandler>);
 
 /// Thread-safe registry of action handlers.
 ///
@@ -28,7 +31,10 @@ use crate::error::RuntimeError;
 /// let handler = registry.get("http.request").unwrap();
 /// ```
 pub struct ActionRegistry {
+    /// Primary storage: action_key → latest handler.
     handlers: DashMap<String, Arc<dyn InternalHandler>>,
+    /// Version index: action_key → list of (version, handler).
+    versions: DashMap<String, Vec<VersionedHandler>>,
 }
 
 impl ActionRegistry {
@@ -37,6 +43,7 @@ impl ActionRegistry {
     pub fn new() -> Self {
         Self {
             handlers: DashMap::new(),
+            versions: DashMap::new(),
         }
     }
 
@@ -44,9 +51,24 @@ impl ActionRegistry {
     ///
     /// If a handler with the same key already exists, it is replaced.
     pub fn register(&self, handler: Arc<dyn InternalHandler>) {
-        let key = handler.metadata().key.as_str().to_owned();
-        tracing::info!(action_key = %key, "registered action handler");
-        self.handlers.insert(key, handler);
+        let meta = handler.metadata();
+        let key = meta.key.as_str().to_owned();
+        let version = meta.version;
+
+        tracing::info!(
+            action_key = %key,
+            version = %format!("{}.{}", version.major, version.minor),
+            "registered action handler",
+        );
+
+        // Latest-wins for primary lookup.
+        self.handlers.insert(key.clone(), handler.clone());
+
+        // Add to version index.
+        self.versions
+            .entry(key)
+            .or_default()
+            .push((version, handler));
     }
 
     /// Register a typed [`StatelessAction`](nebula_action::StatelessAction) directly.
@@ -79,6 +101,52 @@ impl ActionRegistry {
             })
     }
 
+    /// Look up an action handler by key and specific version.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::ActionNotFound`] if no handler is registered
+    /// for the given key and version combination.
+    pub fn get_versioned(
+        &self,
+        key: &str,
+        version: &InterfaceVersion,
+    ) -> Result<Arc<dyn InternalHandler>, RuntimeError> {
+        self.versions
+            .get(key)
+            .and_then(|versions| {
+                versions
+                    .iter()
+                    .find(|(v, _)| v == version)
+                    .map(|(_, h)| h.clone())
+            })
+            .ok_or_else(|| RuntimeError::ActionNotFound {
+                key: format!("{key}@{}.{}", version.major, version.minor),
+            })
+    }
+
+    /// Get the latest version handler for an action key.
+    ///
+    /// This is what [`get()`](Self::get) already does — this is an
+    /// explicit alias.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::ActionNotFound`] if no handler is registered
+    /// for the given key.
+    pub fn get_latest(&self, key: &str) -> Result<Arc<dyn InternalHandler>, RuntimeError> {
+        self.get(key)
+    }
+
+    /// List all registered versions for an action key.
+    #[must_use]
+    pub fn versions(&self, key: &str) -> Vec<InterfaceVersion> {
+        self.versions
+            .get(key)
+            .map(|v| v.iter().map(|(ver, _)| *ver).collect())
+            .unwrap_or_default()
+    }
+
     /// Check if a handler is registered for the given key.
     #[must_use]
     pub fn contains(&self, key: &str) -> bool {
@@ -109,6 +177,14 @@ impl ActionRegistry {
     }
 }
 
+impl std::fmt::Debug for ActionRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActionRegistry")
+            .field("handler_count", &self.handlers.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for ActionRegistry {
     fn default() -> Self {
         Self::new()
@@ -135,6 +211,13 @@ mod tests {
             let name = key.to_string();
             Self {
                 meta: ActionMetadata::new(key, name, "test handler"),
+            }
+        }
+
+        fn with_version(key: ActionKey, major: u32, minor: u32) -> Self {
+            let name = key.to_string();
+            Self {
+                meta: ActionMetadata::new(key, name, "test handler").with_version(major, minor),
             }
         }
     }
@@ -209,5 +292,93 @@ mod tests {
         let reg = ActionRegistry::new();
         assert!(reg.is_empty());
         assert_eq!(reg.len(), 0);
+    }
+
+    #[test]
+    fn get_versioned_returns_specific_version() {
+        let reg = ActionRegistry::new();
+        reg.register(Arc::new(EchoHandler::with_version(
+            action_key!("test.echo"),
+            1,
+            0,
+        )));
+        reg.register(Arc::new(EchoHandler::with_version(
+            action_key!("test.echo"),
+            2,
+            0,
+        )));
+
+        let v1 = nebula_action::InterfaceVersion::new(1, 0);
+        let handler = reg.get_versioned("test.echo", &v1).unwrap();
+        assert_eq!(handler.metadata().version, v1);
+
+        let v2 = nebula_action::InterfaceVersion::new(2, 0);
+        let handler = reg.get_versioned("test.echo", &v2).unwrap();
+        assert_eq!(handler.metadata().version, v2);
+    }
+
+    #[test]
+    fn get_versioned_missing_version_returns_error() {
+        let reg = ActionRegistry::new();
+        reg.register(Arc::new(EchoHandler::with_version(
+            action_key!("test.echo"),
+            1,
+            0,
+        )));
+
+        let v3 = nebula_action::InterfaceVersion::new(3, 0);
+        let result = reg.get_versioned("test.echo", &v3);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_latest_returns_last_registered() {
+        let reg = ActionRegistry::new();
+        reg.register(Arc::new(EchoHandler::with_version(
+            action_key!("test.echo"),
+            1,
+            0,
+        )));
+        reg.register(Arc::new(EchoHandler::with_version(
+            action_key!("test.echo"),
+            2,
+            0,
+        )));
+
+        let handler = reg.get_latest("test.echo").unwrap();
+        let v2 = nebula_action::InterfaceVersion::new(2, 0);
+        assert_eq!(handler.metadata().version, v2);
+    }
+
+    #[test]
+    fn versions_lists_all_registered() {
+        let reg = ActionRegistry::new();
+        reg.register(Arc::new(EchoHandler::with_version(
+            action_key!("test.echo"),
+            1,
+            0,
+        )));
+        reg.register(Arc::new(EchoHandler::with_version(
+            action_key!("test.echo"),
+            1,
+            1,
+        )));
+        reg.register(Arc::new(EchoHandler::with_version(
+            action_key!("test.echo"),
+            2,
+            0,
+        )));
+
+        let versions = reg.versions("test.echo");
+        assert_eq!(versions.len(), 3);
+        assert!(versions.contains(&nebula_action::InterfaceVersion::new(1, 0)));
+        assert!(versions.contains(&nebula_action::InterfaceVersion::new(1, 1)));
+        assert!(versions.contains(&nebula_action::InterfaceVersion::new(2, 0)));
+    }
+
+    #[test]
+    fn versions_returns_empty_for_unknown_key() {
+        let reg = ActionRegistry::new();
+        assert!(reg.versions("nonexistent").is_empty());
     }
 }
