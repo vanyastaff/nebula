@@ -469,6 +469,7 @@ mod tests {
                 icon_url: None,
                 documentation_url: None,
                 properties: Self::parameters(),
+                pattern: nebula_core::AuthPattern::SecretToken,
             }
         }
 
@@ -719,6 +720,7 @@ mod tests {
                 icon_url: None,
                 documentation_url: None,
                 properties: Self::parameters(),
+                pattern: nebula_core::AuthPattern::SecretToken,
             }
         }
 
