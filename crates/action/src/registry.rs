@@ -29,6 +29,8 @@ use std::sync::Arc;
 
 use nebula_core::ActionKey;
 
+use nebula_core::InterfaceVersion;
+
 use crate::handler::InternalHandler;
 use crate::metadata::ActionMetadata;
 
@@ -46,9 +48,11 @@ struct ActionEntry {
 ///
 /// # Thread safety
 ///
-/// `ActionRegistry` is not `Sync` — wrap in an `Arc<RwLock<ActionRegistry>>` if
-/// shared across threads. Typically registries are built at startup and then
-/// either frozen or wrapped.
+/// `ActionRegistry` is `Send + Sync` by auto-trait, so it can be shared across
+/// threads for read-only access, for example via `Arc<ActionRegistry>`.
+/// Mutating the registry after sharing it across threads requires
+/// external synchronization, such as `Arc<RwLock<ActionRegistry>>`. Typically
+/// registries are built at startup and then treated as immutable.
 #[derive(Default)]
 pub struct ActionRegistry {
     /// Map from action key to list of entries, each at a distinct version.
@@ -69,14 +73,11 @@ impl ActionRegistry {
     /// Entries are kept sorted from lowest to highest version so that [`get`](Self::get)
     /// can return the latest in O(1).
     pub fn register(&mut self, metadata: ActionMetadata, handler: Arc<dyn InternalHandler>) {
-        let version_str = metadata.version.to_string();
+        let version = metadata.version;
         let entries = self.actions.entry(metadata.key.clone()).or_default();
 
         // Replace existing entry with the same version, or append.
-        if let Some(pos) = entries
-            .iter()
-            .position(|e| e.metadata.version.to_string() == version_str)
-        {
+        if let Some(pos) = entries.iter().position(|e| e.metadata.version == version) {
             entries[pos] = ActionEntry { metadata, handler };
         } else {
             entries.push(ActionEntry { metadata, handler });
@@ -101,18 +102,18 @@ impl ActionRegistry {
             .map(|e| (&e.metadata, &e.handler))
     }
 
-    /// Look up an action by key and exact version string (e.g. `"1.0"` or `"2.3"`).
+    /// Look up an action by key and exact version.
     ///
     /// Returns `None` if no entry matching both key and version was found.
     pub fn get_versioned(
         &self,
         key: &ActionKey,
-        version: &str,
+        version: &InterfaceVersion,
     ) -> Option<(&ActionMetadata, &Arc<dyn InternalHandler>)> {
         self.actions
             .get(key)?
             .iter()
-            .find(|e| e.metadata.version.to_string() == version)
+            .find(|e| e.metadata.version == *version)
             .map(|e| (&e.metadata, &e.handler))
     }
 
@@ -306,13 +307,17 @@ mod tests {
         );
 
         let key = nebula_core::ActionKey::new("http.request").unwrap();
-        let (meta, _) = registry.get_versioned(&key, "1.0").unwrap();
+        let v1 = nebula_core::InterfaceVersion::new(1, 0);
+        let v2 = nebula_core::InterfaceVersion::new(2, 0);
+        let v3 = nebula_core::InterfaceVersion::new(3, 0);
+
+        let (meta, _) = registry.get_versioned(&key, &v1).unwrap();
         assert_eq!(meta.version.major, 1);
 
-        let (meta2, _) = registry.get_versioned(&key, "2.0").unwrap();
+        let (meta2, _) = registry.get_versioned(&key, &v2).unwrap();
         assert_eq!(meta2.version.major, 2);
 
-        assert!(registry.get_versioned(&key, "3.0").is_none());
+        assert!(registry.get_versioned(&key, &v3).is_none());
     }
 
     #[test]
