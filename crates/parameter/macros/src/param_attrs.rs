@@ -383,7 +383,7 @@ fn unwrap_vec(ty: &Type) -> Option<&Type> {
 }
 
 /// Extract the last path segment as a string for type matching.
-fn type_to_string(ty: &Type) -> String {
+pub(crate) fn type_to_string(ty: &Type) -> String {
     let Type::Path(type_path) = ty else {
         return String::new();
     };

@@ -23,6 +23,8 @@ fn expand(input: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
     let fields = utils::require_named_fields(&input)?;
     let mut param_defs = Vec::new();
+    let mut default_fields = Vec::new();
+    let mut has_any_default = false;
 
     for field in &fields.named {
         let field_name = field.ident.as_ref().expect("named field");
@@ -30,10 +32,19 @@ fn expand(input: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         let param_attrs = attrs::parse_attrs(&field.attrs, "param")?;
 
         if ParameterAttrs::is_skip(&param_attrs) {
+            default_fields.push(quote! { #field_name: ::core::default::Default::default() });
             continue;
         }
 
         let attrs = ParameterAttrs::parse(&param_attrs, field_name)?;
+
+        if let Some(default_val) = &attrs.default {
+            has_any_default = true;
+            let expr = attr_value_to_default_expr(default_val, field_type);
+            default_fields.push(quote! { #field_name: #expr });
+        } else {
+            default_fields.push(quote! { #field_name: ::core::default::Default::default() });
+        }
 
         // Parse #[validate(...)] if present
         let validate_args = attrs::parse_attrs(&field.attrs, "validate")?;
@@ -50,6 +61,18 @@ fn expand(input: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
         param_defs.push(def);
     }
+
+    let default_impl = if has_any_default {
+        quote! {
+            impl #impl_generics ::core::default::Default for #struct_name #ty_generics #where_clause {
+                fn default() -> Self {
+                    Self { #(#default_fields,)* }
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
 
     let param_count = param_defs.len();
     let expanded = quote! {
@@ -78,7 +101,36 @@ fn expand(input: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 #param_count
             }
         }
+
+        #default_impl
     };
 
     Ok(expanded)
+}
+
+/// Convert an `AttrValue` default to a Rust expression suitable for a `Default` impl field.
+fn attr_value_to_default_expr(val: &attrs::AttrValue, ty: &syn::Type) -> proc_macro2::TokenStream {
+    let type_name = crate::param_attrs::type_to_string(ty);
+    match val {
+        attrs::AttrValue::Lit(syn::Lit::Str(s)) => {
+            let v = s.value();
+            match type_name.as_str() {
+                "String" => quote! { #v.to_owned() },
+                _ => quote! { #v.into() },
+            }
+        }
+        attrs::AttrValue::Lit(syn::Lit::Int(i)) => {
+            let v: i64 = i.base10_parse().unwrap_or(0);
+            quote! { #v as _ }
+        }
+        attrs::AttrValue::Lit(syn::Lit::Bool(b)) => {
+            let v = b.value;
+            quote! { #v }
+        }
+        attrs::AttrValue::Ident(i) => {
+            let s = i.to_string();
+            quote! { #s.into() }
+        }
+        _ => quote! { ::core::default::Default::default() },
+    }
 }
