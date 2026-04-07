@@ -14,6 +14,7 @@ use tokio::sync::RwLock;
 
 /// Errors returned by execution repository operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ExecutionRepoError {
     /// Requested entity is absent in storage.
     #[error("{entity} not found: {id}")]

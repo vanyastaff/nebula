@@ -93,6 +93,7 @@ impl WorkflowEngine {
     }
 
     /// Attach a resource manager for providing resources to actions.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_resource_manager(mut self, manager: Arc<nebula_resource::Manager>) -> Self {
         self.resource_manager = Some(manager);
         self
@@ -198,9 +199,25 @@ impl WorkflowEngine {
         if let Some(repo) = &self.execution_repo
             && let Ok(state_json) = serde_json::to_value(&exec_state)
         {
-            let _ = repo
+            match repo
                 .transition(execution_id, repo_version, state_json)
-                .await;
+                .await
+            {
+                Ok(true) => { /* success */ }
+                Ok(false) => {
+                    tracing::warn!(
+                        %execution_id,
+                        "final state checkpoint CAS mismatch"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        %execution_id,
+                        error = %e,
+                        "final state checkpoint failed"
+                    );
+                }
+            }
         }
 
         self.emit_final_event(execution_id, final_status, elapsed, &failed_node);
@@ -517,12 +534,30 @@ impl WorkflowEngine {
         }
 
         // Save execution state snapshot
-        if let Ok(state_json) = serde_json::to_value(exec_state)
-            && let Ok(true) = repo
+        if let Ok(state_json) = serde_json::to_value(exec_state) {
+            match repo
                 .transition(execution_id, *repo_version, state_json)
                 .await
-        {
-            *repo_version += 1;
+            {
+                Ok(true) => *repo_version += 1,
+                Ok(false) => {
+                    // CAS mismatch — re-read current version to recover
+                    tracing::warn!(
+                        %execution_id,
+                        "checkpoint CAS mismatch, re-reading version"
+                    );
+                    if let Ok(Some((current_version, _))) = repo.get_state(execution_id).await {
+                        *repo_version = current_version;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        %execution_id,
+                        error = %e,
+                        "checkpoint persist failed"
+                    );
+                }
+            }
         }
     }
 
@@ -575,7 +610,10 @@ struct NodeTask {
 impl NodeTask {
     /// Execute this node: acquire semaphore, check cancellation, run action.
     async fn run(self) -> (NodeId, Result<ActionResult<serde_json::Value>, EngineError>) {
-        let _permit = self.sem.acquire().await.expect("semaphore closed");
+        let _permit = match self.sem.acquire().await {
+            Ok(permit) => permit,
+            Err(_) => return (self.node_id, Err(EngineError::Cancelled)),
+        };
 
         if self.cancel.is_cancelled() {
             return (self.node_id, Err(EngineError::Cancelled));
