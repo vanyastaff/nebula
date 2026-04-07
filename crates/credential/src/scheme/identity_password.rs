@@ -3,6 +3,7 @@
 use nebula_core::SecretString;
 
 use crate::AuthScheme;
+use crate::identity_state;
 use serde::{Deserialize, Serialize};
 
 /// Identity (username, email, or account) paired with a password.
@@ -46,6 +47,9 @@ impl IdentityPassword {
         &self.password
     }
 }
+
+// Static credentials use State = Scheme (identity projection).
+identity_state!(IdentityPassword, "identity_password", 1);
 
 impl std::fmt::Debug for IdentityPassword {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

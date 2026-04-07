@@ -1,272 +1,66 @@
 # nebula-credential
 
-Universal credential management system for workflow automation.
+Universal credential management for workflow automation.
 
 ## Overview
 
-`nebula-credential` provides a secure, extensible credential management system supporting multiple authentication protocols (OAuth2, API Keys, JWT, SAML, etc.) with interactive flows and secure storage.
+Secure, extensible credential system with 12 universal auth scheme types, an open `AuthScheme` trait, composable storage layers, AES-256-GCM encryption with key rotation, and derive macros for low-boilerplate credential definitions.
 
 ## Key Features
 
-- **Protocol-Agnostic Flows** - OAuth2, API Keys, JWT, SAML, Kerberos, mTLS
-- **Type-Safe Credentials** - Compile-time verification with generic flows
-- **Interactive Authentication** - Multi-step flows with user interaction
-- **Secure Storage** - Zero-copy secrets with automatic zeroization
-- **Minimal Boilerplate** - ~30-50 lines to add new integrations
-- **Provider Abstraction** - Decoupled credential access via `CredentialProvider` trait
+- **12 Universal Auth Schemes** — SecretToken, IdentityPassword, OAuth2Token, KeyPair, Certificate, SigningKey, FederatedAssertion, ChallengeSecret, OtpSeed, ConnectionUri, InstanceBinding, SharedKey
+- **Open `AuthScheme` Trait** — plugins add custom schemes via `#[derive(AuthScheme)]`
+- **Unified `Credential` Trait** — resolve, refresh, test, revoke in one trait
+- **Composable Storage** — EncryptionLayer, CacheLayer, AuditLayer, ScopeLayer
+- **Encryption Key Rotation** — multi-key support with lazy re-encryption on read
+- **AAD Enforcement** — credential ID bound as additional authenticated data, no legacy fallback
+- **Interactive Flows** — OAuth2 with PKCE, device code, multi-step resolve
+- **Derive Macros** — `#[derive(Credential)]` and `#[derive(AuthScheme)]`
 
 ## Quick Start
 
-### Using CredentialProvider (Decoupled Access)
+```rust,ignore
+use nebula_credential::{Credential, scheme::SecretToken, SecretString};
 
-For actions and triggers, use the provider pattern:
+// Static credentials use identity projection (State = Scheme)
+struct ApiKeyCredential;
 
-```rust
-use nebula_credential::{CredentialProvider, CredentialContext, SecretString};
+impl Credential for ApiKeyCredential {
+    type Scheme = SecretToken;
+    type State = SecretToken;
+    type Pending = nebula_credential::NoPendingState;
 
-// Type-safe acquisition
-struct GithubToken;
-let token = provider.credential::<GithubToken>(&ctx).await?;
+    const KEY: &'static str = "api_key";
 
-// Or dynamic acquisition by ID
-let token = provider.get("github_token", &ctx).await?;
-```
-
-See [CREDENTIAL_REF.md](./CREDENTIAL_REF.md) for detailed documentation.
-
-### API Key Authentication
-
-```rust
-use nebula_credential::prelude::*;
-
-// Create API key credential
-let api_key = ApiKeyCredential {
-    key: SecureString::from("your-api-key"),
-    header_name: "X-API-Key".to_string(),
-};
-
-// Use in HTTP request
-let request = reqwest::Client::new()
-    .get("https://api.example.com/data")
-    .header(&api_key.header_name, api_key.key.expose());
-```
-
-### OAuth2 Flow
-
-```rust
-use nebula_credential::prelude::*;
-
-// Initialize OAuth2 flow
-let flow = AuthorizationCodeFlow::new(
-    "client-id".to_string(),
-    "client-secret".to_string(),
-    "https://auth.example.com/authorize".to_string(),
-    "https://auth.example.com/token".to_string(),
-);
-
-// Start authentication
-let init_result = flow.initialize(context).await?;
-
-match init_result {
-    InitializeResult::NeedsInteraction(request) => {
-        // Show authorization URL to user
-        println!("Go to: {}", request.url);
-
-        // After user completes auth, resume with code
-        let code = user_provides_code();
-        let credential = flow.resume(code, context).await?;
-
-        // credential is now ready to use
-    }
-    InitializeResult::Complete(credential) => {
-        // Already authenticated
-    }
+    // implement resolve(), project(), description(), parameters()
 }
 ```
-
-### Basic Authentication
-
-```rust
-use nebula_credential::prelude::*;
-
-let basic_auth = BasicAuthCredential {
-    username: "user".to_string(),
-    password: SecureString::from("password"),
-};
-
-// Automatically handles base64 encoding
-let auth_header = basic_auth.to_header_value();
-```
-
-## Built-in Flows
-
-### Simple Flows
-- **ApiKeyFlow** - API key in header/query
-- **BasicAuthFlow** - HTTP Basic authentication
-- **BearerTokenFlow** - Bearer token authentication
-- **PasswordFlow** - Username/password
-
-### OAuth2 Flows
-- **AuthorizationCodeFlow** - OAuth2 authorization code grant
-- **ClientCredentialsFlow** - OAuth2 client credentials grant
-- **DeviceCodeFlow** - OAuth2 device code flow (upcoming)
-- **RefreshTokenFlow** - Token refresh
-
-## Interactive Credentials
-
-For flows requiring user interaction (OAuth2, SAML):
-
-```rust
-use nebula_credential::prelude::*;
-
-#[async_trait]
-impl InteractiveCredential for MyFlow {
-    async fn initialize(&self, ctx: &CredentialContext)
-        -> Result<InitializeResult, CredentialError> {
-
-        // Return interaction request
-        Ok(InitializeResult::NeedsInteraction(InteractionRequest {
-            url: "https://auth.example.com/login".to_string(),
-            method: "GET".to_string(),
-            display_data: DisplayData::AuthorizationUrl {
-                url: auth_url,
-                code_format: CodeFormat::Alphanumeric,
-            },
-            ..Default::default()
-        }))
-    }
-
-    async fn resume(&self, input: UserInput, ctx: &CredentialContext)
-        -> Result<FlowCredential, CredentialError> {
-        // Handle user's input (code, token, etc.)
-        // Return completed credential
-    }
-}
-```
-
-## Secure Storage
-
-```rust
-use nebula_credential::core::SecureString;
-
-// Automatically zeroized on drop
-let secret = SecureString::from("sensitive-data");
-
-// Access when needed
-println!("Secret: {}", secret.expose());
-
-// Automatically cleared from memory when dropped
-```
-
-## Credential Context
-
-```rust
-use nebula_credential::core::CredentialContext;
-
-let context = CredentialContext {
-    user_id: "user-123".to_string(),
-    tenant_id: Some("tenant-456".to_string()),
-    workflow_id: Some("workflow-789".to_string()),
-    redirect_uri: Some("https://app.example.com/callback".to_string()),
-    ..Default::default()
-};
-
-let credential = flow.initialize(context).await?;
-```
-
-## State Management
-
-```rust
-#[async_trait]
-impl StateStore for MyStateStore {
-    async fn save(&self, key: &str, state: PartialState)
-        -> Result<(), CredentialError>;
-
-    async fn load(&self, key: &str)
-        -> Result<Option<PartialState>, CredentialError>;
-
-    async fn delete(&self, key: &str)
-        -> Result<(), CredentialError>;
-}
-```
-
-## Error Handling
-
-```rust
-use nebula_credential::core::CredentialError;
-
-match credential_result {
-    Err(CredentialError::InvalidCredentials) => {
-        // Handle invalid credentials
-    }
-    Err(CredentialError::ExpiredCredentials) => {
-        // Handle expired credentials - refresh needed
-    }
-    Err(CredentialError::AuthenticationFailed(msg)) => {
-        // Handle auth failure
-    }
-    Ok(credential) => {
-        // Use credential
-    }
-}
-```
-
-## Creating Custom Flows
-
-```rust
-use nebula_credential::prelude::*;
-
-pub struct MyCustomFlow {
-    // Your config
-}
-
-#[async_trait]
-impl Credential for MyCustomFlow {
-    type Output = MyCredential;
-
-    async fn authenticate(&self, ctx: &CredentialContext)
-        -> Result<Self::Output, CredentialError> {
-        // Your authentication logic
-        Ok(MyCredential { /* ... */ })
-    }
-}
-```
-
-## Best Practices
-
-1. **Use SecureString** - For all sensitive data (passwords, tokens, keys)
-2. **Implement refresh** - For OAuth2 and other expiring tokens
-3. **Store state securely** - Use encrypted storage for partial states
-4. **Validate inputs** - Check redirect URIs and state parameters
-5. **Handle errors gracefully** - Provide clear feedback to users
 
 ## Architecture
 
 ```
 nebula-credential/
-├── core/              # Core types and errors
-│   ├── reference.rs  # CredentialRef + CredentialProvider (NEW)
-│   └── ...
-├── flows/             # Built-in flows
-│   ├── api_key/
-│   ├── basic_auth/
-│   ├── bearer_token/
-│   ├── oauth2/
-│   └── password/
-├── manager/           # Credential manager
-├── protocols/         # Protocol implementations
-├── providers/         # Storage providers
-├── traits/            # Core traits
-└── utils/             # Helper functions
+├── src/
+│   ├── scheme/         # 12 universal auth scheme types
+│   ├── credentials/    # Built-in credential impls (ApiKey, BasicAuth, OAuth2)
+│   ├── layer/          # Composable storage layers
+│   ├── rotation/       # Credential rotation (feature-gated)
+│   ├── crypto.rs       # AES-256-GCM, key derivation, PKCE
+│   ├── credential.rs   # Unified Credential trait
+│   ├── store.rs        # CredentialStore trait
+│   ├── resolver.rs     # Runtime resolution engine
+│   └── registry.rs     # Type-erased dispatch
+├── macros/             # #[derive(Credential)], #[derive(AuthScheme)]
+└── tests/
 ```
 
 ## Security
 
-- ✅ Zero-copy secret handling with zeroization
-- ✅ PKCE support for OAuth2
-- ✅ State parameter validation
-- ✅ Redirect URI validation
-- ✅ No unsafe code (`#![forbid(unsafe_code)]`)
+- AES-256-GCM encryption at rest with Argon2id key derivation
+- `SecretString` with automatic zeroization on drop
+- `Zeroizing<Vec<u8>>` for all intermediate plaintext buffers
+- `Debug` impls redact all secret fields
+- `#![forbid(unsafe_code)]`
 
 ## License
 

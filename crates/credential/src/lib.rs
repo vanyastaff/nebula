@@ -1,22 +1,24 @@
-//! Nebula Credential - Universal credential management system
+//! Nebula Credential — Universal credential management system.
 //!
-//! A secure, extensible credential management system for workflow automation.
+//! Secure, extensible credential management for workflow automation.
+//! 12 universal auth scheme types, open [`AuthScheme`] trait, composable
+//! storage layers, encryption key rotation, and derive macros.
 //!
-//! # Architecture (v2)
+//! # Architecture
 //!
-//! The credential system uses a trait-based approach:
+//! - **[`Credential`] trait** — unified trait for the full credential lifecycle:
+//!   `resolve()`, `refresh()`, `test()`, `project()`.
 //!
-//! - **[`Credential`] trait** -- single unified trait replacing six v1 traits.
-//!   Each credential type implements `resolve()`, `refresh()`, `test()`, and
-//!   `project()` (extracts the auth scheme consumers see).
+//! - **[`AuthScheme`]** — open trait (in nebula-core) classifying auth material
+//!   via [`AuthPattern`]. 12 built-in scheme types + `Custom` for plugins.
 //!
-//! - **[`CredentialStore`]** -- composable storage with layered encryption,
-//!   caching, scoping, and audit via [`layer`] module.
+//! - **[`CredentialStore`]** — composable storage with layered encryption,
+//!   caching, scoping, and audit via the [`layer`] module.
 //!
-//! - **[`CredentialRegistry`]** -- type-erased runtime dispatch for credential
+//! - **[`CredentialRegistry`]** — type-erased runtime dispatch for credential
 //!   resolution.
 //!
-//! - **[`CredentialResolver`]** -- runtime resolution engine: resolve, refresh,
+//! - **[`CredentialResolver`]** — runtime resolution engine: resolve, refresh,
 //!   test credentials via the registry.
 //!
 //! # Quick Start
@@ -34,7 +36,7 @@
 pub mod any;
 /// Credential operation context.
 pub mod context;
-/// Unified Credential trait replacing six v1 traits.
+/// Unified Credential trait.
 pub mod credential;
 /// Built-in credential type implementations.
 pub mod credentials;
@@ -74,7 +76,7 @@ pub mod state;
 /// Reusable protocol pattern for static credentials.
 pub mod static_protocol;
 
-// ── v2 Storage ──────────────────────────────────────────────────────────────
+// ── Storage ─────────────────────────────────────────────────────────────────
 
 /// Composable storage layers (encryption, etc.) for stores.
 pub mod layer;
@@ -83,14 +85,14 @@ pub mod store;
 /// In-memory credential store for testing.
 pub mod store_memory;
 
-// ── v2 Executor ────────────────────────────────────────────────────────
+// ── Executor ────────────────────────────────────────────────────────────────
 
 /// Framework executor for credential resolution with timeouts.
 pub mod executor;
 
-// ── v2 Resolution ───────────────────────────────────────────────────────────
+// ── Resolution ──────────────────────────────────────────────────────────────
 
-/// Refresh coordination -- thundering herd prevention.
+/// Refresh coordination — thundering herd prevention.
 pub mod refresh;
 /// Runtime credential resolution.
 pub mod resolver;
@@ -114,50 +116,50 @@ pub use crate::metadata::CredentialMetadata;
 pub use crate::snapshot::{CredentialSnapshot, SnapshotError};
 pub use nebula_core::{AuthPattern, AuthScheme, CredentialEvent, CredentialId};
 
-// Utils - crypto
+// Crypto utilities
 pub use crate::crypto::{EncryptedData, EncryptionKey, decrypt, encrypt};
 pub use nebula_core::SecretString;
 
-// Rotation
+// Rotation (feature-gated)
 #[cfg(feature = "rotation")]
 pub use crate::rotation::{
     CredentialRotationEvent, GracePeriodConfig, RotationError, RotationResult,
 };
 
-// v2: Credential key newtype
+// Credential key newtype
 pub use key::CredentialKey;
 
-// v2: Unified Credential trait
+// Unified Credential trait
 pub use credential::Credential;
 
-// v2: Static protocol pattern
+// Static protocol pattern
 pub use static_protocol::StaticProtocol;
 
-// v2: Credential state
+// Credential state
 pub use state::CredentialState;
 
-// v2: Auth schemes (universal types)
+// Auth schemes (12 universal types)
 pub use scheme::{
     Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion, IdentityPassword,
     InstanceBinding, KeyPair, OAuth2Token, OtpSeed, SecretToken, SharedKey, SigningKey,
 };
 
-// v2: Pending state
+// Pending state
 pub use pending::{NoPendingState, PendingState, PendingToken};
 
-// v2: Pending state store
+// Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};
 pub use pending_store_memory::InMemoryPendingStore;
 
-// v2: Built-in credential implementations
+// Built-in credential implementations
 pub use credentials::{
     ApiKeyCredential, BasicAuthCredential, OAuth2Credential, OAuth2Pending, OAuth2State,
 };
 
-// v2: Typed handle
+// Typed handle
 pub use handle::CredentialHandle;
 
-// v2: Storage
+// Storage layers
 pub use layer::{
     AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
     CacheStats, EncryptionLayer, ScopeLayer, ScopeResolver,
@@ -165,19 +167,19 @@ pub use layer::{
 pub use store::{CredentialStore, PutMode, StoreError, StoredCredential};
 pub use store_memory::InMemoryStore;
 
-// v2: Registry
+// Registry
 pub use registry::{CredentialRegistry, RegistryError};
 
-// v2: Resolver
+// Resolver
 pub use resolver::{CredentialResolver, ResolveError};
 
-// v2: Refresh coordination
+// Refresh coordination
 pub use refresh::{RefreshAttempt, RefreshCoordinator};
 
-// v2: Framework executor
+// Framework executor
 pub use executor::{ExecutorError, ResolveResponse, execute_continue, execute_resolve};
 
-// v2: Resolve types
+// Resolve types
 pub use resolve::{
     DisplayData, InteractionRequest, RefreshOutcome, RefreshPolicy, ResolveResult,
     StaticResolveResult, TestResult, UserInput,

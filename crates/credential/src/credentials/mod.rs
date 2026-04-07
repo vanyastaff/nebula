@@ -14,14 +14,3 @@ pub mod oauth2_flow;
 pub use api_key::ApiKeyCredential;
 pub use basic_auth::BasicAuthCredential;
 pub use oauth2::{OAuth2Credential, OAuth2Pending, OAuth2State};
-
-// ── identity_state! invocations ─────────────────────────────────────────
-//
-// For static credentials, State = Scheme. These macro calls implement
-// `CredentialStateV2` for each scheme type so they can be stored directly.
-
-use crate::identity_state;
-use crate::scheme::{IdentityPassword, SecretToken};
-
-identity_state!(SecretToken, "secret_token", 1);
-identity_state!(IdentityPassword, "identity_password", 1);

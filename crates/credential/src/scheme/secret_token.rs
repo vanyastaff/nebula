@@ -3,6 +3,7 @@
 use nebula_core::SecretString;
 
 use crate::AuthScheme; // derive macro
+use crate::identity_state;
 use serde::{Deserialize, Serialize};
 
 /// An opaque secret string used as an authentication token.
@@ -37,6 +38,9 @@ impl SecretToken {
         &self.token
     }
 }
+
+// Static credentials use State = Scheme (identity projection).
+identity_state!(SecretToken, "secret_token", 1);
 
 impl std::fmt::Debug for SecretToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
