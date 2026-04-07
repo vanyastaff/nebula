@@ -139,7 +139,11 @@ impl WebhookRateLimiter {
         Self::acquire(window, path, self.window.as_secs()).await
     }
 
-    async fn acquire(window: Arc<SlidingWindow>, path: &str, retry_after_secs: u64) -> Result<(), Error> {
+    async fn acquire(
+        window: Arc<SlidingWindow>,
+        path: &str,
+        retry_after_secs: u64,
+    ) -> Result<(), Error> {
         use nebula_resilience::RateLimiter;
         match window.acquire().await {
             Ok(()) => Ok(()),
