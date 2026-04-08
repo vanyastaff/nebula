@@ -19,9 +19,14 @@ pub async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCode> {
     let content = std::fs::read_to_string(&args.workflow)
         .with_context(|| format!("failed to read {}", args.workflow.display()))?;
 
-    let definition = super::validate::parse_workflow_lenient(&content, &args.workflow)?;
+    let mut definition = super::validate::parse_workflow_lenient(&content, &args.workflow)?;
 
-    // 2. Validate workflow.
+    // 2. Apply --set overrides.
+    if !args.overrides.is_empty() {
+        apply_overrides(&mut definition, &args.overrides)?;
+    }
+
+    // 3. Validate workflow.
     let errors = nebula_workflow::validate_workflow(&definition);
     if !errors.is_empty() {
         for err in &errors {
@@ -210,6 +215,88 @@ fn print_text_result(result: &nebula_engine::ExecutionResult) {
             println!("  {node_id}: {error}");
         }
     }
+}
+
+/// Apply --set overrides to workflow node parameters.
+///
+/// Format: `<node_name>.params.<key>=<value>`
+/// Example: `fetch.params.url=https://staging.api.com`
+fn apply_overrides(
+    workflow: &mut nebula_workflow::WorkflowDefinition,
+    overrides: &[String],
+) -> anyhow::Result<()> {
+    let node_names: Vec<String> = workflow.nodes.iter().map(|n| n.name.clone()).collect();
+
+    for override_str in overrides {
+        let (path, value) = override_str
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("invalid --set format: \"{override_str}\"\nExpected: <node_name>.params.<key>=<value>"))?;
+
+        let parts: Vec<&str> = path.split('.').collect();
+        if parts.len() < 3 || parts[1] != "params" {
+            anyhow::bail!("invalid --set path: \"{path}\"\nExpected: <node_name>.params.<key>");
+        }
+
+        let node_name = parts[0];
+        let param_key = parts[2..].join(".");
+
+        // Find node by name (case-insensitive).
+        let node = workflow
+            .nodes
+            .iter_mut()
+            .find(|n| n.name.eq_ignore_ascii_case(node_name));
+
+        let node = match node {
+            Some(n) => n,
+            None => {
+                let suggestion = find_closest(&node_names, node_name);
+                let hint = suggestion
+                    .map(|s| format!(" Did you mean \"{s}\"?"))
+                    .unwrap_or_default();
+                anyhow::bail!(
+                    "unknown node \"{node_name}\" in --set.{hint}\nAvailable: {}",
+                    node_names.join(", ")
+                );
+            }
+        };
+
+        // Parse value as JSON, fall back to string.
+        let json_value: serde_json::Value = serde_json::from_str(value)
+            .unwrap_or_else(|_| serde_json::Value::String(value.to_owned()));
+
+        // Set as a literal parameter.
+        node.parameters.insert(
+            param_key,
+            nebula_workflow::ParamValue::Literal { value: json_value },
+        );
+    }
+
+    Ok(())
+}
+
+/// Find the closest match to `target` in `options` (simple Levenshtein-like).
+fn find_closest<'a>(options: &'a [String], target: &str) -> Option<&'a str> {
+    let target_lower = target.to_lowercase();
+    options
+        .iter()
+        .filter(|o| {
+            let o_lower = o.to_lowercase();
+            // Simple heuristic: starts with same prefix or edit distance < 3
+            o_lower.starts_with(&target_lower[..target_lower.len().clamp(1, 3)])
+                || o_lower.contains(&target_lower)
+        })
+        .min_by_key(|o| {
+            // Crude edit distance approximation
+            let o_lower = o.to_lowercase();
+            if o_lower == target_lower {
+                return 0;
+            }
+            if o_lower.contains(&target_lower) || target_lower.contains(&o_lower) {
+                return 1;
+            }
+            o_lower.len().abs_diff(target_lower.len()) + 2
+        })
+        .map(|s| s.as_str())
 }
 
 /// --dry-run: show execution plan without running.
