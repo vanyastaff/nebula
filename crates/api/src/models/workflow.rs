@@ -67,3 +67,13 @@ pub struct ListWorkflowsResponse {
     /// Page size
     pub page_size: usize,
 }
+
+/// Workflow validate response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowValidateResponse {
+    /// Whether the workflow definition is valid
+    pub valid: bool,
+
+    /// List of human-readable validation error messages (empty when `valid` is `true`)
+    pub errors: Vec<String>,
+}

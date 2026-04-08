@@ -15,13 +15,16 @@ Thin axum REST + WebSocket server — entry point for external clients.
 ## Traps
 - lib.rs and key modules are in Russian (consistent with early project docs). Don't translate.
 - `build_app()` returns the axum Router — compose middlewares here, not in individual route modules.
-- WebSocket message types are defined in `models` — changing them is a breaking API change.
+- WebSocket message types in `models` are a breaking API change.
+- Catalog registries on `AppState` are `Option` — absent → 503, not panic.
+- `validate_workflow_handler` always returns 200 OK — negative result is `{valid: false, errors}`, not 422.
+- Auth folds over ALL keys without short-circuit (timing oracle). `.fold()` is intentional — do not replace with `.any()`.
+- `api_keys` from `ApiConfig` must be passed to `.with_api_keys()` after `AppState::new()`. `build_app` does not wire this automatically.
+- `get_execution_outputs` and `get_execution_logs` call `get_state` first — return 404 for unknown IDs.
+- Execution list uses `list_running()` only; workflow-scoped filter is in-memory (TODO).
+- `ApiConfig` has manual `Debug` redacting secrets — never add `#[derive(Debug)]`.
 
 ## Relations
-- Depends on nebula-engine, nebula-storage, nebula-credential, nebula-execution. Highest layer — nothing depends on it.
+- Depends on nebula-storage, nebula-workflow, nebula-action, nebula-plugin. Highest layer.
 
-<!-- reviewed: 2026-03-30 — derive Classify migration -->
-
-<!-- reviewed: 2026-04-02 -->
-
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
+<!-- reviewed: 2026-04-07 -->

@@ -4,7 +4,7 @@ use crate::{
     errors::{ApiError, ApiResult},
     models::{
         CreateWorkflowRequest, ExecutionResponse, ListWorkflowsResponse, StartExecutionRequest,
-        UpdateWorkflowRequest, WorkflowResponse,
+        UpdateWorkflowRequest, WorkflowResponse, WorkflowValidateResponse,
     },
     state::AppState,
 };
@@ -498,4 +498,61 @@ pub async fn execute_workflow(
     };
 
     Ok((StatusCode::ACCEPTED, Json(response)))
+}
+
+/// Validate workflow definition without executing it.
+///
+/// Loads the stored workflow, deserializes it as a
+/// [`nebula_workflow::WorkflowDefinition`], and runs structural validation
+/// (DAG cycle check, node references, schema version, etc.).
+///
+/// Always returns **200 OK**. The response body indicates the outcome:
+/// - `{valid: true, errors: []}` — definition is structurally valid.
+/// - `{valid: false, errors: ["…"]}` — definition has validation errors.
+///
+/// A 422 is only returned when the stored JSON cannot be parsed at all (i.e.
+/// the blob is not a `WorkflowDefinition`), which is treated as a validation
+/// error rather than a not-found condition.
+///
+/// # Errors
+///
+/// - [`ApiError::Validation`] if `id` is not a valid workflow ID or the definition cannot be parsed.
+/// - [`ApiError::NotFound`] if the workflow does not exist.
+/// - [`ApiError::Internal`] if the repository is unavailable.
+pub async fn validate_workflow_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<WorkflowValidateResponse>> {
+    let workflow_id = WorkflowId::parse(&id)
+        .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {}", e)))?;
+
+    let definition = state
+        .workflow_repo
+        .get(workflow_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Workflow {} not found", id)))?;
+
+    // Deserialise the stored JSON into a WorkflowDefinition.
+    let workflow_def: nebula_workflow::WorkflowDefinition = serde_json::from_value(definition)
+        .map_err(|e| {
+            ApiError::validation_message(format!(
+                "Workflow definition cannot be parsed as WorkflowDefinition: {}",
+                e
+            ))
+        })?;
+
+    let errors = nebula_workflow::validate_workflow(&workflow_def);
+    if errors.is_empty() {
+        Ok(Json(WorkflowValidateResponse {
+            valid: true,
+            errors: vec![],
+        }))
+    } else {
+        let error_messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        Ok(Json(WorkflowValidateResponse {
+            valid: false,
+            errors: error_messages,
+        }))
+    }
 }

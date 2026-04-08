@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 /// API Server Configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ApiConfig {
     /// Host and port to bind (e.g. "0.0.0.0:8080")
     pub bind_address: SocketAddr,
@@ -32,6 +32,13 @@ pub struct ApiConfig {
 
     /// Rate limiting: requests per second per IP
     pub rate_limit_per_second: u32,
+
+    /// Static API keys accepted via `X-API-Key` header.
+    ///
+    /// Each key must have the `nbl_sk_` prefix. Keys are compared in constant
+    /// time to prevent timing attacks. An empty list disables API key auth.
+    #[serde(default)]
+    pub api_keys: Vec<String>,
 }
 
 impl Default for ApiConfig {
@@ -45,7 +52,24 @@ impl Default for ApiConfig {
             enable_tracing: true,
             jwt_secret: "dev-secret-change-in-production".to_string(),
             rate_limit_per_second: 100,
+            api_keys: Vec::new(),
         }
+    }
+}
+
+impl std::fmt::Debug for ApiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiConfig")
+            .field("bind_address", &self.bind_address)
+            .field("request_timeout", &self.request_timeout)
+            .field("max_body_size", &self.max_body_size)
+            .field("cors_allowed_origins", &self.cors_allowed_origins)
+            .field("enable_compression", &self.enable_compression)
+            .field("enable_tracing", &self.enable_tracing)
+            .field("jwt_secret", &"[REDACTED]")
+            .field("rate_limit_per_second", &self.rate_limit_per_second)
+            .field("api_keys", &"[REDACTED]")
+            .finish()
     }
 }
 
@@ -86,6 +110,15 @@ impl ApiConfig {
             .unwrap_or_else(|_| "100".to_string())
             .parse()?;
 
+        // API keys: comma-separated list in `API_KEYS` env var.
+        let api_keys = std::env::var("API_KEYS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+
         Ok(Self {
             bind_address,
             request_timeout,
@@ -95,6 +128,7 @@ impl ApiConfig {
             enable_tracing,
             jwt_secret,
             rate_limit_per_second,
+            api_keys,
         })
     }
 }

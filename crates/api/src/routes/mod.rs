@@ -1,7 +1,8 @@
 //! Routes
 //!
-//! Модульная маршрутизация по доменам.
+//! Modular routing by domain.
 
+pub mod catalog;
 pub mod execution;
 pub mod health;
 pub mod metrics;
@@ -27,5 +28,6 @@ fn api_v1_routes(state: AppState) -> Router<AppState> {
     Router::new()
         .merge(workflow::router())
         .merge(execution::router())
+        .merge(catalog::router())
         .layer(middleware::from_fn_with_state(state, auth_middleware))
 }
