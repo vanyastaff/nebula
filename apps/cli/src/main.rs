@@ -8,6 +8,7 @@ mod commands;
 mod config;
 mod output;
 mod plugins;
+mod suggestions;
 #[cfg(feature = "tui")]
 mod tui;
 

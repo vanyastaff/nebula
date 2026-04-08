@@ -137,9 +137,15 @@ pub async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCode> {
             OutputFormat::Json => print_json_result(&result),
             OutputFormat::Text => print_text_result(&result),
         }
+
+        // Show recovery suggestions for failed nodes.
+        if !result.node_errors.is_empty() {
+            let suggestions = crate::suggestions::suggest(&result);
+            crate::suggestions::print_suggestions(&suggestions);
+        }
     }
 
-    // 7. Exit code based on workflow status.
+    // 9. Exit code based on workflow status.
     Ok(exit_code_for_status(&result.status))
 }
 
