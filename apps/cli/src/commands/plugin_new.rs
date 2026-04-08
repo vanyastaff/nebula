@@ -117,6 +117,7 @@ name = "{crate_name}"
 path = "src/main.rs"
 
 [dependencies]
+nebula-plugin-protocol = "0.1"
 serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 "#
@@ -124,29 +125,25 @@ serde_json = "1"
 }
 
 fn main_rs(plugin_key: &str, struct_name: &str, name: &str, action_names: &[String]) -> String {
-    let action_descriptors: String = action_names
+    let action_builders: String = action_names
         .iter()
         .map(|a| {
             let display_name = to_pascal_case(a);
             format!(
-                r#"            {{
-                "key": "{plugin_key}.{a}",
-                "name": "{display_name}",
-                "description": "TODO: describe {a}"
-            }}"#
+                r#"            .action("{plugin_key}.{a}", "{display_name}", "TODO: describe {a}")"#,
             )
         })
         .collect::<Vec<_>>()
-        .join(",\n");
+        .join("\n");
 
     let action_match_arms: String = action_names
         .iter()
         .map(|a| {
             format!(
-                r#"        "{plugin_key}.{a}" | "{a}" => {{
-            // TODO: implement {a}
-            Ok(serde_json::json!({{"ok": true, "action": "{a}"}}))
-        }}"#
+                r#"            "{plugin_key}.{a}" | "{a}" => {{
+                // TODO: implement {a}
+                PluginResult::success(serde_json::json!({{"ok": true, "action": "{a}"}}))
+            }}"#,
             )
         })
         .collect::<Vec<_>>()
@@ -154,40 +151,29 @@ fn main_rs(plugin_key: &str, struct_name: &str, name: &str, action_names: &[Stri
 
     format!(
         r#"//! Nebula plugin: {name}
-//!
-//! Protocol: reads JSON from stdin, writes JSON to stdout.
-//! - `{{"action_key": "__metadata__"}}` → returns plugin metadata
-//! - `{{"action_key": "...", "input": {{...}}}}` → executes action
 
-use serde_json::{{Value, json}};
+use nebula_plugin_protocol::{{PluginHandler, PluginMetadata, PluginResult}};
+use serde_json::Value;
 
-fn main() {{
-    let request: Value = serde_json::from_reader(std::io::stdin()).unwrap_or(json!({{}}));
-    let action_key = request["action_key"].as_str().unwrap_or("");
-    let input = &request["input"];
+struct {struct_name};
 
-    let result = handle(action_key, input);
+impl PluginHandler for {struct_name} {{
+    fn metadata(&self) -> PluginMetadata {{
+        PluginMetadata::new("{plugin_key}", "{struct_name}")
+            .description("TODO: describe {name} plugin")
+{action_builders}
+    }}
 
-    match result {{
-        Ok(output) => println!("{{}}", json!({{"output": output}})),
-        Err(e) => println!("{{}}", json!({{"error": e, "code": "PLUGIN_ERROR"}})),
+    fn execute(&self, action_key: &str, input: Value) -> PluginResult {{
+        match action_key {{
+{action_match_arms}
+            other => PluginResult::unknown_action(other),
+        }}
     }}
 }}
 
-fn handle(action_key: &str, input: &Value) -> Result<Value, String> {{
-    match action_key {{
-        "__metadata__" => Ok(json!({{
-            "key": "{plugin_key}",
-            "name": "{struct_name}",
-            "version": 1,
-            "description": "TODO: describe {name} plugin",
-            "actions": [
-{action_descriptors}
-            ]
-        }})),
-{action_match_arms}
-        other => Err(format!("unknown action: {{other}}")),
-    }}
+fn main() {{
+    nebula_plugin_protocol::run({struct_name});
 }}
 "#
     )

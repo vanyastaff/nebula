@@ -139,7 +139,7 @@ impl PluginCapabilities {
     pub fn check_fs_read(&self, path: &str) -> bool {
         self.capabilities.iter().any(|c| match c {
             Capability::FilesystemRead { paths } | Capability::FilesystemWrite { paths } => {
-                paths.iter().any(|p| path.starts_with(p))
+                paths.iter().any(|p| path_under(path, p))
             }
             _ => false,
         })
@@ -148,7 +148,7 @@ impl PluginCapabilities {
     /// Check if a filesystem path is writable.
     pub fn check_fs_write(&self, path: &str) -> bool {
         self.capabilities.iter().any(|c| match c {
-            Capability::FilesystemWrite { paths } => paths.iter().any(|p| path.starts_with(p)),
+            Capability::FilesystemWrite { paths } => paths.iter().any(|p| path_under(path, p)),
             _ => false,
         })
     }
@@ -174,6 +174,12 @@ impl PluginCapabilities {
 
 /// Match a host against a domain pattern.
 /// Supports wildcard prefix: "*.example.com" matches "api.example.com".
+/// Check if `path` is under `base` directory.
+/// "/tmp/foo" is under "/tmp", but "/tmp_evil" is NOT under "/tmp".
+fn path_under(path: &str, base: &str) -> bool {
+    path == base || path.starts_with(&format!("{base}/"))
+}
+
 fn match_domain(host: &str, pattern: &str) -> bool {
     let host = host.to_lowercase();
     let pattern = pattern.to_lowercase();

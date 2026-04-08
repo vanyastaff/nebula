@@ -34,6 +34,7 @@ members = [
     "crates/validator/macros",
     "crates/config/macros",
     "crates/sandbox",
+    "crates/plugin-protocol",
     "apps/cli",
 ]
 exclude = [

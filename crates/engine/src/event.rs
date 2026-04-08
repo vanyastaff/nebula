@@ -10,6 +10,7 @@ use nebula_core::id::{ExecutionId, NodeId};
 
 /// Events emitted during workflow execution.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ExecutionEvent {
     /// A node started executing.
     NodeStarted {

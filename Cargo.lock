@@ -3822,6 +3822,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-plugin-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nebula-resilience"
 version = "0.1.0"
 dependencies = [
@@ -3900,6 +3908,7 @@ dependencies = [
  "landlock",
  "nebula-action",
  "nebula-core",
+ "nebula-plugin-protocol",
  "nix 0.31.2",
  "serde",
  "serde_json",

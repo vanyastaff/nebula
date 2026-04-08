@@ -7,72 +7,48 @@ use std::time::Duration;
 use nebula_action::handler::InternalHandler;
 use nebula_action::metadata::ActionMetadata;
 use nebula_core::ActionKey;
+use nebula_plugin_protocol::{PROTOCOL_VERSION, PluginMetadata, PluginResponse};
 
 use crate::handler::ProcessSandboxHandler;
 use crate::process::ProcessSandbox;
 
-/// Metadata returned by a plugin binary.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct DiscoveredPlugin {
-    /// Plugin key.
-    pub key: String,
-    /// Human-readable name.
-    pub name: String,
-    /// Plugin version.
-    #[serde(default = "default_version")]
-    pub version: u32,
-    /// Description.
-    #[serde(default)]
-    pub description: String,
-    /// Actions this plugin provides.
-    #[serde(default)]
-    pub actions: Vec<DiscoveredAction>,
-}
-
-/// An action discovered from a plugin.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct DiscoveredAction {
-    /// Action key.
-    pub key: String,
-    /// Human-readable name.
-    pub name: String,
-    /// Description.
-    #[serde(default)]
-    pub description: String,
-}
-
-fn default_version() -> u32 {
-    1
-}
-
 /// Discover a plugin by running its binary and asking for metadata.
-///
-/// Sends `{"action_key":"__metadata__","input":{}}` to stdin,
-/// expects `{"output":{...}}` on stdout with plugin metadata.
-pub async fn discover_plugin(binary: &Path) -> Result<DiscoveredPlugin, String> {
+pub async fn discover_plugin(binary: &Path) -> Result<PluginMetadata, String> {
     let sandbox = ProcessSandbox::new(binary.to_path_buf(), Duration::from_secs(5));
 
     let output = sandbox
-        .call("__metadata__", "{}")
+        .call("__metadata__", serde_json::Value::Null)
         .await
         .map_err(|e| format!("discovery failed for {}: {e}", binary.display()))?;
 
-    // Parse the response — could be wrapped in {"output": ...} or direct.
-    let value: serde_json::Value =
-        serde_json::from_str(&output).map_err(|e| format!("invalid metadata JSON: {e}"))?;
+    // Parse the tagged response.
+    let response: PluginResponse = serde_json::from_str(&output)
+        .map_err(|e| format!("invalid response from {}: {e}", binary.display()))?;
 
-    let metadata_value = if value.get("output").is_some() {
-        value["output"].clone()
-    } else {
-        value
+    let metadata_value = match response {
+        PluginResponse::Ok { output } => output,
+        PluginResponse::Error { code, message, .. } => {
+            return Err(format!("{}: {code}: {message}", binary.display()));
+        }
     };
 
-    serde_json::from_value(metadata_value).map_err(|e| format!("invalid plugin metadata: {e}"))
+    let metadata: LeftPluginMetadata = serde_json::from_value(metadata_value)
+        .map_err(|e| format!("invalid metadata from {}: {e}", binary.display()))?;
+
+    // Validate protocol version.
+    if metadata.protocol_version != PROTOCOL_VERSION {
+        return Err(format!(
+            "{}: protocol version mismatch (plugin={}, host={})",
+            binary.display(),
+            metadata.protocol_version,
+            PROTOCOL_VERSION,
+        ));
+    }
+
+    Ok(metadata.into_protocol())
 }
 
 /// Discover all plugins in a directory and create handlers.
-///
-/// Returns a list of `(plugin_name, Vec<handlers>)` ready to register.
 pub async fn discover_directory(
     dir: &Path,
     default_timeout: Duration,
@@ -87,7 +63,14 @@ pub async fn discover_directory(
         }
     };
 
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read directory entry");
+                continue;
+            }
+        };
         let path = entry.path();
 
         if !is_executable(&path) {
@@ -119,7 +102,7 @@ pub async fn discover_directory(
 
 /// Create InternalHandler instances for each action in a discovered plugin.
 fn create_handlers(
-    plugin: &DiscoveredPlugin,
+    plugin: &PluginMetadata,
     sandbox: Arc<ProcessSandbox>,
 ) -> Vec<Arc<dyn InternalHandler>> {
     plugin
@@ -152,19 +135,16 @@ fn create_handlers(
 
 /// Check if a file looks like an executable plugin binary.
 fn is_executable(path: &Path) -> bool {
-    // Skip non-files.
     if !path.is_file() {
         return false;
     }
 
-    // Must start with "nebula-plugin-" or "nebula_plugin_".
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     if !name.starts_with("nebula-plugin-") && !name.starts_with("nebula_plugin_") {
         return false;
     }
 
-    // Skip common non-executable extensions.
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     if matches!(
         ext,
@@ -173,7 +153,6 @@ fn is_executable(path: &Path) -> bool {
         return false;
     }
 
-    // On Unix, check executable bit.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -185,7 +164,37 @@ fn is_executable(path: &Path) -> bool {
 
     #[cfg(not(unix))]
     {
-        // On Windows, check for .exe extension.
         ext == "exe" || ext.is_empty()
+    }
+}
+
+/// Internal type for parsing metadata with protocol_version field.
+#[derive(serde::Deserialize)]
+struct LeftPluginMetadata {
+    #[serde(default)]
+    protocol_version: u32,
+    key: String,
+    name: String,
+    #[serde(default = "default_version")]
+    version: u32,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    actions: Vec<nebula_plugin_protocol::ActionMeta>,
+}
+
+fn default_version() -> u32 {
+    1
+}
+
+impl LeftPluginMetadata {
+    fn into_protocol(self) -> PluginMetadata {
+        let mut meta = PluginMetadata::new(self.key, self.name)
+            .version(self.version)
+            .description(self.description);
+        for action in self.actions {
+            meta = meta.action(action.key, action.name, action.description);
+        }
+        meta
     }
 }

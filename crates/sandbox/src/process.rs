@@ -1,11 +1,7 @@
 //! Process-based sandbox for community plugins.
 //!
-//! Each plugin is a separate binary. The host communicates via stdin/stdout JSON.
-//!
-//! Protocol:
-//! - Host writes a JSON request to stdin: `{"action_key": "...", "input": {...}}`
-//! - Plugin writes a JSON response to stdout: `{"output": {...}}` or `{"error": {...}}`
-//! - Plugin stderr goes to host tracing (debug level)
+//! Each plugin is a separate binary using the `nebula-plugin-protocol` crate.
+//! Host communicates via stdin/stdout JSON with tagged `PluginResponse`.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -13,16 +9,20 @@ use std::time::Duration;
 use async_trait::async_trait;
 use nebula_action::result::ActionResult;
 use nebula_action::{ActionError, ActionMetadata};
+use nebula_plugin_protocol::{PluginRequest, PluginResponse};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use crate::SandboxRunner;
 use crate::runner::SandboxedContext;
 
+/// Maximum stdout size from a plugin (10 MB). Prevents DoS.
+const MAX_STDOUT_BYTES: usize = 10 * 1024 * 1024;
+
 /// Process sandbox: runs plugin actions as isolated child processes.
 ///
-/// Each action execution spawns the plugin binary, sends JSON over stdin,
-/// reads JSON from stdout. The child process is killed on timeout.
+/// Each action execution spawns the plugin binary, sends a [`PluginRequest`]
+/// via stdin, reads a [`PluginResponse`] from stdout.
 pub struct ProcessSandbox {
     /// Path to the plugin binary.
     binary: PathBuf,
@@ -41,13 +41,12 @@ impl ProcessSandbox {
     pub(crate) async fn call(
         &self,
         action_key: &str,
-        input_json: &str,
+        input: serde_json::Value,
     ) -> Result<String, ActionError> {
-        let request = serde_json::json!({
-            "action_key": action_key,
-            "input": serde_json::from_str::<serde_json::Value>(input_json)
-                .unwrap_or(serde_json::Value::Null),
-        });
+        let request = PluginRequest {
+            action_key: action_key.to_owned(),
+            input,
+        };
 
         let mut child = Command::new(&self.binary)
             .stdin(std::process::Stdio::piped())
@@ -106,11 +105,17 @@ impl ProcessSandbox {
             )));
         }
 
-        // Parse stdout as JSON.
-        let stdout = String::from_utf8(output.stdout)
-            .map_err(|e| ActionError::fatal(format!("plugin output is not UTF-8: {e}")))?;
+        // Enforce stdout size limit (prevents DoS from malicious plugins).
+        if output.stdout.len() > MAX_STDOUT_BYTES {
+            return Err(ActionError::fatal(format!(
+                "plugin stdout exceeds {} bytes limit",
+                MAX_STDOUT_BYTES
+            )));
+        }
 
-        Ok(stdout)
+        // Parse stdout.
+        String::from_utf8(output.stdout)
+            .map_err(|e| ActionError::fatal(format!("plugin output is not UTF-8: {e}")))
     }
 }
 
@@ -125,8 +130,6 @@ impl SandboxRunner for ProcessSandbox {
         context.check_cancelled()?;
 
         let action_key = metadata.key.as_str();
-        let input_json = serde_json::to_string(&input)
-            .map_err(|e| ActionError::fatal(format!("input serialization: {e}")))?;
 
         tracing::debug!(
             action_key = %action_key,
@@ -134,14 +137,18 @@ impl SandboxRunner for ProcessSandbox {
             "executing action in process sandbox"
         );
 
-        let output_json = self.call(action_key, &input_json).await?;
+        let output_json = self.call(action_key, input).await?;
 
-        // Parse the plugin response.
-        let response: PluginResponse = serde_json::from_str(&output_json)
-            .map_err(|e| ActionError::fatal(format!("invalid plugin response: {e}")))?;
+        // Parse the tagged plugin response.
+        let response: PluginResponse = serde_json::from_str(&output_json).map_err(|e| {
+            ActionError::fatal(format!(
+                "invalid plugin response: {e}\nraw output: {}",
+                truncate_str(&output_json, 500)
+            ))
+        })?;
 
         match response {
-            PluginResponse::Success { output } => Ok(ActionResult::success(output)),
+            PluginResponse::Ok { output } => Ok(ActionResult::success(output)),
             PluginResponse::Error {
                 code,
                 message,
@@ -157,29 +164,10 @@ impl SandboxRunner for ProcessSandbox {
     }
 }
 
-/// Response format from a plugin process.
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum PluginResponse {
-    /// Successful execution.
-    Success {
-        /// The action output.
-        output: serde_json::Value,
-    },
-    /// Failed execution.
-    Error {
-        /// Error code.
-        #[serde(default = "default_error_code")]
-        code: String,
-        /// Error message.
-        #[serde(alias = "error")]
-        message: String,
-        /// Whether the error is retryable.
-        #[serde(default)]
-        retryable: bool,
-    },
-}
-
-fn default_error_code() -> String {
-    "PLUGIN_ERROR".to_owned()
+/// Truncate a string safely at char boundary.
+fn truncate_str(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        Some((idx, _)) => &s[..idx],
+        None => s,
+    }
 }

@@ -180,7 +180,7 @@ fn print_json_result(result: &nebula_engine::ExecutionResult) {
 
     println!(
         "{}",
-        serde_json::to_string_pretty(&json).expect("json serialization")
+        serde_json::to_string_pretty(&json).unwrap_or_else(|_| "{}".to_owned())
     );
 }
 
@@ -195,7 +195,8 @@ fn print_text_result(result: &nebula_engine::ExecutionResult) {
         for (node_id, output) in &result.node_outputs {
             let json = serde_json::to_string(output).unwrap_or_else(|_| "???".to_owned());
             let truncated = if json.len() > 200 {
-                format!("{}...", &json[..200])
+                let end = json.char_indices().nth(200).map_or(json.len(), |(i, _)| i);
+                format!("{}...", &json[..end])
             } else {
                 json
             };
@@ -245,7 +246,10 @@ fn dry_run(
                 "exit_nodes": plan.exit_nodes.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 "parallel_groups": groups,
             });
-            println!("{}", serde_json::to_string_pretty(&json).expect("json"));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json).unwrap_or_else(|_| "{}".to_owned())
+            );
         }
         OutputFormat::Text => {
             println!("Execution Plan (dry-run)");
@@ -298,6 +302,7 @@ fn print_stream_event(event: &nebula_engine::ExecutionEvent) {
             let status = if *success { "completed" } else { "failed" };
             eprintln!("  ═ Execution {status} ({elapsed:?})");
         }
+        _ => {}
     }
 }
 
@@ -377,8 +382,8 @@ async fn run_tui_live(
                 total_elapsed: elapsed,
                 success,
             },
+            _ => continue,
         };
-        // Apply directly to app state.
         app.apply_event(tui_event);
     }
 
