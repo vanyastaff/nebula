@@ -227,7 +227,7 @@ fn print_text_result(result: &nebula_engine::ExecutionResult) {
 ///
 /// Format: `<node_name>.params.<key>=<value>`
 /// Example: `fetch.params.url=https://staging.api.com`
-fn apply_overrides(
+pub fn apply_overrides(
     workflow: &mut nebula_workflow::WorkflowDefinition,
     overrides: &[String],
 ) -> anyhow::Result<()> {

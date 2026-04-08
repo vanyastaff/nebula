@@ -3521,6 +3521,7 @@ dependencies = [
  "nebula-sandbox",
  "nebula-telemetry",
  "nebula-workflow",
+ "notify",
  "ratatui",
  "reqwest 0.13.2",
  "serde",

@@ -7,6 +7,7 @@ pub mod plugin_new;
 pub mod replay;
 pub mod run;
 pub mod validate;
+pub mod watch;
 
 /// Shared exit code constants.
 pub mod exit_codes {

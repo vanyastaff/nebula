@@ -33,6 +33,9 @@ pub enum Command {
     /// Replay a previous execution from a specific node.
     Replay(ReplayArgs),
 
+    /// Watch a workflow file and re-run on changes.
+    Watch(WatchArgs),
+
     /// List and inspect available actions.
     Actions {
         #[command(subcommand)]
@@ -241,6 +244,25 @@ pub struct RunArgs {
     /// Output format (auto-detects: text for terminal, json for pipes).
     #[arg(long)]
     pub format: Option<OutputFormat>,
+}
+
+/// Arguments for the `watch` command.
+#[derive(Parser)]
+pub struct WatchArgs {
+    /// Path to the workflow file (YAML or JSON).
+    pub workflow: PathBuf,
+
+    /// Input data as a JSON string.
+    #[arg(short, long, default_value = "{}")]
+    pub input: String,
+
+    /// Override node parameters.
+    #[arg(long = "set", value_name = "NODE.PARAMS.KEY=VALUE")]
+    pub overrides: Vec<String>,
+
+    /// Maximum concurrent nodes.
+    #[arg(long, default_value = "10")]
+    pub concurrency: usize,
 }
 
 /// Arguments for the `replay` command.

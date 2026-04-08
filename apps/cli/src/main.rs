@@ -66,6 +66,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Run(args) => commands::run::execute(args, quiet).await,
         Command::Validate(args) => commands::validate::execute(args, quiet),
         Command::Replay(args) => commands::replay::execute(args, quiet).await,
+        Command::Watch(args) => commands::watch::execute(args).await,
         Command::Actions { command } => {
             match command {
                 ActionsCommand::List(args) => commands::actions::list(args),
