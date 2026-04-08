@@ -201,7 +201,11 @@ pub struct RunArgs {
     #[arg(long, default_value = "10")]
     pub concurrency: usize,
 
-    /// Stream node progress to stderr.
+    /// Show execution plan without running (validate + resolve DAG).
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Stream node progress to stderr during execution.
     #[arg(long)]
     pub stream: bool,
 

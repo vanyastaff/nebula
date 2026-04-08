@@ -28,6 +28,10 @@ serde_json = { workspace = true }
 serde_yaml = "0.9"
 toml = "1.1"
 
+# Time + ID generation
+uuid = { workspace = true }
+chrono = { workspace = true }
+
 # Logging
 tracing = { workspace = true }
 

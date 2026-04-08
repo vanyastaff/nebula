@@ -3,9 +3,11 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use anyhow::Context;
+use nebula_core::id::ExecutionId;
 use nebula_engine::WorkflowEngine;
 use nebula_execution::ExecutionStatus;
 use nebula_execution::context::ExecutionBudget;
+use nebula_execution::plan::ExecutionPlan;
 use nebula_runtime::{ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessSandbox};
 use nebula_telemetry::metrics::MetricsRegistry;
 
@@ -17,12 +19,26 @@ pub async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCode> {
     let content = std::fs::read_to_string(&args.workflow)
         .with_context(|| format!("failed to read {}", args.workflow.display()))?;
 
-    let definition = super::validate::parse_workflow(&content, &args.workflow)?;
+    let definition = super::validate::parse_workflow_lenient(&content, &args.workflow)?;
 
-    // 2. Parse input data (from --input or --input-file).
+    // 2. Validate workflow.
+    let errors = nebula_workflow::validate_workflow(&definition);
+    if !errors.is_empty() {
+        for err in &errors {
+            eprintln!("validation error: {err}");
+        }
+        return Ok(ExitCode::from(super::exit_codes::VALIDATION_FAILED));
+    }
+
+    // 3. Dry-run: show execution plan and exit.
+    if args.dry_run {
+        return dry_run(&definition, &args, quiet);
+    }
+
+    // 4. Parse input data (from --input or --input-file).
     let input: serde_json::Value = load_input(&args)?;
 
-    // 3. Build the execution stack.
+    // 5. Build the execution stack.
     let registry = Arc::new(ActionRegistry::new());
     crate::actions::register_builtins(&registry);
 
@@ -67,9 +83,20 @@ pub async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCode> {
         max_total_retries: None,
     };
 
-    // 5. Optionally attach event channel for TUI.
-    #[cfg(feature = "tui")]
-    let (event_tx, event_rx) = if args.tui {
+    // 7. Optionally attach event channel for --stream or --tui.
+    let want_events = args.stream
+        || cfg!(feature = "tui") && {
+            #[cfg(feature = "tui")]
+            {
+                args.tui
+            }
+            #[cfg(not(feature = "tui"))]
+            {
+                false
+            }
+        };
+
+    let (event_tx, mut event_rx) = if want_events {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         (Some(tx), Some(rx))
     } else {
@@ -77,14 +104,8 @@ pub async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCode> {
     };
 
     let mut engine = WorkflowEngine::new(runtime, metrics);
-    #[cfg(feature = "tui")]
     if let Some(tx) = event_tx {
         engine = engine.with_event_sender(tx);
-    }
-
-    // 6. Execute.
-    if args.stream && !quiet {
-        eprintln!("Executing {}...", args.workflow.display());
     }
 
     // TUI mode: run engine in background, TUI consumes live events.
@@ -94,6 +115,16 @@ pub async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCode> {
     }
 
     let result = engine.execute_workflow(&definition, input, budget).await?;
+
+    // --stream: print collected node events to stderr.
+    if args.stream
+        && !quiet
+        && let Some(ref mut rx) = event_rx
+    {
+        while let Ok(event) = rx.try_recv() {
+            print_stream_event(&event);
+        }
+    }
 
     if !quiet {
         let format = resolve_format(args.format);
@@ -176,6 +207,96 @@ fn print_text_result(result: &nebula_engine::ExecutionResult) {
         println!("\nNode errors:");
         for (node_id, error) in &result.node_errors {
             println!("  {node_id}: {error}");
+        }
+    }
+}
+
+/// --dry-run: show execution plan without running.
+fn dry_run(
+    workflow: &nebula_workflow::WorkflowDefinition,
+    args: &RunArgs,
+    quiet: bool,
+) -> anyhow::Result<ExitCode> {
+    let budget = ExecutionBudget {
+        max_concurrent_nodes: args.concurrency,
+        max_duration: args.timeout,
+        max_output_bytes: None,
+        max_total_retries: None,
+    };
+
+    let plan = ExecutionPlan::from_workflow(ExecutionId::new(), workflow, budget)
+        .map_err(|e| anyhow::anyhow!("failed to build execution plan: {e}"))?;
+
+    if quiet {
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let format = resolve_format(args.format.clone());
+    match format {
+        OutputFormat::Json => {
+            let groups: Vec<Vec<String>> = plan
+                .parallel_groups
+                .iter()
+                .map(|g| g.iter().map(ToString::to_string).collect())
+                .collect();
+            let json = serde_json::json!({
+                "total_nodes": plan.total_nodes,
+                "entry_nodes": plan.entry_nodes.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "exit_nodes": plan.exit_nodes.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "parallel_groups": groups,
+            });
+            println!("{}", serde_json::to_string_pretty(&json).expect("json"));
+        }
+        OutputFormat::Text => {
+            println!("Execution Plan (dry-run)");
+            println!("  Nodes:        {}", plan.total_nodes);
+            println!("  Entry points: {}", plan.entry_nodes.len());
+            println!("  Exit points:  {}", plan.exit_nodes.len());
+            println!("  Concurrency:  {}", args.concurrency);
+            println!();
+
+            // Show node details per group.
+            for (i, group) in plan.parallel_groups.iter().enumerate() {
+                println!("  Level {}:", i + 1);
+                for node_id in group {
+                    let name = workflow
+                        .nodes
+                        .iter()
+                        .find(|n| n.id == *node_id)
+                        .map(|n| format!("{} ({})", n.name, n.action_key))
+                        .unwrap_or_else(|| node_id.to_string());
+                    println!("    {node_id}  {name}");
+                }
+            }
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Print a single engine event to stderr (for --stream mode).
+fn print_stream_event(event: &nebula_engine::ExecutionEvent) {
+    use nebula_engine::ExecutionEvent;
+    match event {
+        ExecutionEvent::NodeStarted {
+            node_id,
+            action_key,
+            ..
+        } => eprintln!("  ▶ {node_id} ({action_key}) started"),
+        ExecutionEvent::NodeCompleted {
+            node_id, elapsed, ..
+        } => eprintln!("  ✓ {node_id} completed ({elapsed:?})"),
+        ExecutionEvent::NodeFailed { node_id, error, .. } => {
+            eprintln!("  ✗ {node_id} failed: {error}")
+        }
+        ExecutionEvent::NodeSkipped { node_id, .. } => {
+            eprintln!("  ⊘ {node_id} skipped");
+        }
+        ExecutionEvent::ExecutionFinished {
+            success, elapsed, ..
+        } => {
+            let status = if *success { "completed" } else { "failed" };
+            eprintln!("  ═ Execution {status} ({elapsed:?})");
         }
     }
 }
