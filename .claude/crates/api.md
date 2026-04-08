@@ -18,10 +18,12 @@ Thin axum REST + WebSocket server — entry point for external clients.
 - WebSocket message types are defined in `models` — changing them is a breaking API change.
 
 ## Relations
-- Depends on nebula-engine, nebula-storage, nebula-credential, nebula-execution. Highest layer — nothing depends on it.
+- Depends on nebula-storage, nebula-workflow, nebula-action, nebula-plugin. Highest layer.
 
-<!-- reviewed: 2026-03-30 — derive Classify migration -->
+## Traps
+- Catalog registries (`action_registry`, `plugin_registry`) on `AppState` are `Option` — absent → 503, not panic. Wire via `with_action_registry()` / `with_plugin_registry()` at startup.
+- `validate_workflow_handler` deserialises stored flat JSON as `WorkflowDefinition` — unparseable blob → 422, not 404.
+- `X-API-Key` requires `nbl_sk_` prefix; wrong prefix → 401 with no JWT fallback. Keys: `ApiConfig.api_keys` (env `API_KEYS`) → `AppState.api_keys` via `with_api_keys()`. Constant-time compare.
+- Execution list uses `list_running()` only — no full history until `ExecutionRepo::list()` exists.
 
-<!-- reviewed: 2026-04-02 -->
-
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
+<!-- reviewed: 2026-04-07 -->
