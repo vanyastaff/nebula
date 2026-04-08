@@ -26,6 +26,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod descriptor;
 mod error;
 #[cfg(feature = "dynamic-loading")]
 mod loader;
@@ -38,6 +39,8 @@ mod versions;
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
 pub use nebula_plugin_macros::Plugin;
+
+pub use descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor};
 
 pub use error::PluginError;
 #[cfg(feature = "dynamic-loading")]

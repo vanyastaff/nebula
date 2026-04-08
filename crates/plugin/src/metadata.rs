@@ -50,6 +50,21 @@ pub struct PluginMetadata {
     color: Option<String>,
     #[serde(default)]
     tags: Vec<String>,
+    /// Plugin author or organization name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    author: Option<String>,
+    /// SPDX license identifier (e.g. `"MIT"`, `"Apache-2.0"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    license: Option<String>,
+    /// Homepage URL for the plugin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    homepage: Option<String>,
+    /// Source repository URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    repository: Option<String>,
+    /// Minimum Nebula engine version required by this plugin (semver string).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nebula_version: Option<String>,
 }
 
 fn default_version() -> u32 {
@@ -70,6 +85,11 @@ impl PluginMetadata {
             documentation_url: None,
             color: None,
             tags: Vec::new(),
+            author: None,
+            license: None,
+            homepage: None,
+            repository: None,
+            nebula_version: None,
         }
     }
 
@@ -132,6 +152,36 @@ impl PluginMetadata {
     pub fn tags(&self) -> &[String] {
         &self.tags
     }
+
+    /// Plugin author or organization name.
+    #[inline]
+    pub fn author(&self) -> Option<&str> {
+        self.author.as_deref()
+    }
+
+    /// SPDX license identifier (e.g. `"MIT"`, `"Apache-2.0"`).
+    #[inline]
+    pub fn license(&self) -> Option<&str> {
+        self.license.as_deref()
+    }
+
+    /// Homepage URL for the plugin.
+    #[inline]
+    pub fn homepage(&self) -> Option<&str> {
+        self.homepage.as_deref()
+    }
+
+    /// Source repository URL.
+    #[inline]
+    pub fn repository(&self) -> Option<&str> {
+        self.repository.as_deref()
+    }
+
+    /// Minimum Nebula engine version required by this plugin (semver string).
+    #[inline]
+    pub fn nebula_version(&self) -> Option<&str> {
+        self.nebula_version.as_deref()
+    }
 }
 
 /// Builder for [`PluginMetadata`].
@@ -146,6 +196,11 @@ pub struct PluginMetadataBuilder {
     documentation_url: Option<String>,
     color: Option<String>,
     tags: Vec<String>,
+    author: Option<String>,
+    license: Option<String>,
+    homepage: Option<String>,
+    repository: Option<String>,
+    nebula_version: Option<String>,
 }
 
 impl PluginMetadataBuilder {
@@ -197,6 +252,36 @@ impl PluginMetadataBuilder {
         self
     }
 
+    /// Set the author or organization name.
+    pub fn author(mut self, author: impl Into<String>) -> Self {
+        self.author = Some(author.into());
+        self
+    }
+
+    /// Set the SPDX license identifier (e.g. `"MIT"`, `"Apache-2.0"`).
+    pub fn license(mut self, license: impl Into<String>) -> Self {
+        self.license = Some(license.into());
+        self
+    }
+
+    /// Set the homepage URL.
+    pub fn homepage(mut self, url: impl Into<String>) -> Self {
+        self.homepage = Some(url.into());
+        self
+    }
+
+    /// Set the source repository URL.
+    pub fn repository(mut self, url: impl Into<String>) -> Self {
+        self.repository = Some(url.into());
+        self
+    }
+
+    /// Set the minimum required Nebula engine version (semver string).
+    pub fn nebula_version(mut self, version: impl Into<String>) -> Self {
+        self.nebula_version = Some(version.into());
+        self
+    }
+
     /// Validate and build the metadata.
     ///
     /// The raw key is normalized before validation: spaces become underscores and
@@ -217,6 +302,11 @@ impl PluginMetadataBuilder {
             documentation_url: self.documentation_url,
             color: self.color,
             tags: self.tags,
+            author: self.author,
+            license: self.license,
+            homepage: self.homepage,
+            repository: self.repository,
+            nebula_version: self.nebula_version,
         })
     }
 }
@@ -285,5 +375,64 @@ mod tests {
         assert_eq!(back.key().as_str(), "slack");
         assert_eq!(back.version(), 3);
         assert_eq!(back.description(), "Send messages");
+    }
+
+    #[test]
+    fn new_optional_fields_default_to_none() {
+        let meta = PluginMetadata::builder("slack", "Slack").build().unwrap();
+        assert!(meta.author().is_none());
+        assert!(meta.license().is_none());
+        assert!(meta.homepage().is_none());
+        assert!(meta.repository().is_none());
+        assert!(meta.nebula_version().is_none());
+    }
+
+    #[test]
+    fn new_optional_fields_via_builder() {
+        let meta = PluginMetadata::builder("slack", "Slack")
+            .author("Acme Corp")
+            .license("MIT")
+            .homepage("https://example.com")
+            .repository("https://github.com/acme/slack-plugin")
+            .nebula_version("0.5.0")
+            .build()
+            .unwrap();
+
+        assert_eq!(meta.author(), Some("Acme Corp"));
+        assert_eq!(meta.license(), Some("MIT"));
+        assert_eq!(meta.homepage(), Some("https://example.com"));
+        assert_eq!(
+            meta.repository(),
+            Some("https://github.com/acme/slack-plugin")
+        );
+        assert_eq!(meta.nebula_version(), Some("0.5.0"));
+    }
+
+    #[test]
+    fn new_optional_fields_serde_roundtrip() {
+        let meta = PluginMetadata::builder("slack", "Slack")
+            .author("Acme Corp")
+            .license("Apache-2.0")
+            .build()
+            .unwrap();
+
+        let json = serde_json::to_string(&meta).unwrap();
+        let back: PluginMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(back.author(), Some("Acme Corp"));
+        assert_eq!(back.license(), Some("Apache-2.0"));
+        assert!(back.homepage().is_none());
+    }
+
+    #[test]
+    fn new_optional_fields_omitted_from_json_when_none() {
+        let meta = PluginMetadata::builder("slack", "Slack").build().unwrap();
+        let json = serde_json::to_string(&meta).unwrap();
+        // None fields should be skipped entirely (skip_serializing_if = "Option::is_none")
+        assert!(!json.contains("author"));
+        assert!(!json.contains("license"));
+        assert!(!json.contains("homepage"));
+        assert!(!json.contains("repository"));
+        assert!(!json.contains("nebula_version"));
     }
 }
