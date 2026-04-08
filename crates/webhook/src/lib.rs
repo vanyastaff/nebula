@@ -61,6 +61,7 @@ mod error;
 mod handle;
 pub mod metrics;
 mod payload;
+pub mod queue;
 pub mod rate_limit;
 mod route_map;
 mod server;
@@ -74,6 +75,7 @@ pub use environment::Environment;
 pub use error::{Error, Result};
 pub use handle::TriggerHandle;
 pub use payload::WebhookPayload;
+pub use queue::{InboundQueue, MemoryInboundQueue};
 pub use rate_limit::WebhookRateLimiter;
 pub use server::{WebhookServer, WebhookServerConfig};
 pub use state::TriggerState;
@@ -84,8 +86,8 @@ pub use verifier::{HmacSha256Verifier, WebhookVerifier};
 /// Convenience re-exports
 pub mod prelude {
     pub use crate::{
-        Environment, Error, HmacSha256Verifier, MemoryStateStore, Result, StateStore, TestResult,
-        TriggerCtx, TriggerHandle, TriggerState, WebhookAction, WebhookPayload, WebhookRateLimiter,
-        WebhookServer, WebhookServerConfig, WebhookVerifier,
+        Environment, Error, HmacSha256Verifier, InboundQueue, MemoryInboundQueue, MemoryStateStore,
+        Result, StateStore, TestResult, TriggerCtx, TriggerHandle, TriggerState, WebhookAction,
+        WebhookPayload, WebhookRateLimiter, WebhookServer, WebhookServerConfig, WebhookVerifier,
     };
 }
