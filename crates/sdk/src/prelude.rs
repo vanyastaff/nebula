@@ -15,16 +15,8 @@ pub use nebula_core::{
 
 // Action traits and types
 pub use nebula_action::{
-    Action,
-    ActionError,
-    ActionResult,
-    Parameter,
-    ParameterCollection,
-    // TODO: Action types temporarily unavailable
-    // InteractiveAction, ProcessAction, SimpleAction, StatefulAction, StreamingAction,
-    // TransactionalAction, TriggerAction,
-    metadata::ActionMetadata,
-    port::InputPort,
+    Action, ActionDependencies, ActionError, ActionResult, Parameter, ParameterCollection,
+    StatelessAction, context::Context as ActionContext, metadata::ActionMetadata, port::InputPort,
     port::OutputPort,
 };
 
@@ -59,7 +51,13 @@ pub use nebula_credential::{
 pub use nebula_credential::{CredentialContext, CredentialId};
 
 // Plugin types
-pub use nebula_plugin::{Plugin, PluginMetadata};
+pub use nebula_plugin::{
+    Plugin, PluginMetadata,
+    descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor},
+};
+
+// Core macros
+pub use nebula_core::action_key;
 
 // Derive macros (re-exported from their respective domain crates)
 // Action, Credential, and Plugin derive macros are already in scope from the

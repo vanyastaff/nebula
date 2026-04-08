@@ -1,29 +1,19 @@
 # nebula-sdk
-Re-exports of core crates for plugin/action authors — the single entry point for external integrations.
+Re-exports of core crates — single entry point for plugin/action authors.
 
 ## Invariants
-- Thin facade only. Contains minimal own logic; primarily re-exports nebula-action, nebula-core, nebula-credential, nebula-macros, nebula-parameter, nebula-plugin, nebula-validator, nebula-workflow.
+- Thin facade. Primarily re-exports nebula-action, nebula-core, nebula-credential, nebula-parameter, nebula-plugin, nebula-validator, nebula-workflow.
 
 ## Key Decisions
-- Action authors import from `nebula_sdk::prelude::*` instead of depending on individual crates.
-- `testing` feature adds `tokio` re-export and a `testing` module with test utilities.
-- Helper macros: `params!` (builds `FieldValues`), `workflow!` (DAG builder), `simple_action!` (closure-based action).
+- `use nebula_sdk::prelude::*` gives everything for plugin authoring (StatelessAction, ActionContext, action_key!, Plugin, descriptors, Value, json!, Serialize/Deserialize).
+- `testing` feature adds `tokio` re-export.
 
 ## Traps
-- `params!` macro references `nebula_parameter::values::ParameterValues` — this type may change during parameter migration (RFC 0005). Verify it compiles after parameter changes.
-- `simple_action!` macro uses `ProcessAction` trait — verify this trait name is current before referencing it in docs.
-- Re-exports can shadow each other. If something is missing from `prelude::*`, check the individual re-exported crate directly.
-- `#[derive(Credential)]` macro in `nebula-sdk-macros` currently emits `compile_error!("rewrite for v2")` — v1 credential traits were deleted. Needs rewrite for v2 `Credential` trait (Phase 9).
-- SDK prelude now re-exports v2 credential types only. v1 types (CredentialType, StaticProtocol, FlowProtocol, StorageProvider, CredentialManager, etc.) no longer exist.
+- `ActionContext` is re-exported as alias (avoids conflict with `anyhow::Context`).
+- `simple_action!` macro uses `ProcessAction` — verify trait name is current.
+- `params!` references `nebula_parameter::values::ParameterValues` — may change.
 
 ## Relations
-- Re-exports: nebula-action, nebula-core, nebula-credential, nebula-macros, nebula-parameter, nebula-plugin, nebula-validator, nebula-workflow, anyhow, async-trait, serde, serde_json, thiserror.
+- Re-exports: nebula-action, nebula-core, nebula-credential, nebula-parameter, nebula-plugin, nebula-validator, nebula-workflow, anyhow, async-trait, serde, serde_json, thiserror.
 
-<!-- reviewed: 2026-03-31 — prelude adjusted for credential rotation feature-gate -->
-
-<!-- reviewed: 2026-04-02 -->
-
-<!-- reviewed: 2026-04-02 -->
-
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
-<!-- reviewed: 2026-04-06 — added enabled field to NodeDefinition struct literal -->
+<!-- reviewed: 2026-04-08 — expanded prelude with StatelessAction, ActionDependencies, ActionContext, action_key!, descriptors -->
