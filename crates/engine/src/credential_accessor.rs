@@ -17,9 +17,9 @@
 //!
 //! # Allowlist semantics
 //!
-//! - An **empty** allowlist means **no credentials are permitted**. If an
-//!   action has no declared credential dependencies, no credentials can be
-//!   fetched.
+//! - An **empty** allowlist means **all credentials are permitted** (open/passthrough
+//!   mode). This is the current default until per-node credential declarations are
+//!   wired in from action dependency metadata.
 //! - A **non-empty** allowlist only permits the keys in the set. Requests for
 //!   undeclared keys are rejected with [`ActionError::SandboxViolation`].
 
@@ -73,22 +73,29 @@ type ResolveFn = Arc<
 pub struct EngineCredentialAccessor {
     /// Set of credential keys this accessor is permitted to resolve.
     ///
-    /// An empty set means no credentials are accessible.
+    /// An empty set means **all** credentials are accessible (open/passthrough mode).
+    /// This is used when node-level credential declarations have not yet been populated
+    /// from action dependency metadata (current default).
     allowed_keys: HashSet<String>,
     /// Type-erased async resolution function.
     resolve_fn: ResolveFn,
+    /// Identity of the action this accessor is scoped to, for security attribution.
+    action_id: String,
 }
 
 impl EngineCredentialAccessor {
-    /// Creates a new accessor with the given allowlist and resolution function.
+    /// Creates a new accessor with the given allowlist, resolution function, and action identity.
     ///
     /// # Parameters
     ///
     /// - `allowed_keys` — the set of credential IDs this accessor may resolve.
-    ///   Pass an empty set to deny all credential access.
+    ///   Pass an empty set to allow all credential access (open/passthrough mode, used when
+    ///   per-node declarations are not yet populated).
     /// - `resolve_fn` — async closure that resolves a credential ID to a
     ///   [`CredentialSnapshot`] or an [`ActionError`].
-    pub fn new<F, Fut>(allowed_keys: HashSet<String>, resolve_fn: F) -> Self
+    /// - `action_id` — the action key or node identifier for security attribution in
+    ///   [`ActionError::SandboxViolation`] events.
+    pub fn new<F, Fut>(allowed_keys: HashSet<String>, resolve_fn: F, action_id: String) -> Self
     where
         F: Fn(&str) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<CredentialSnapshot, ActionError>> + Send + 'static,
@@ -99,12 +106,16 @@ impl EngineCredentialAccessor {
                 Box::pin(resolve_fn(id))
                     as Pin<Box<dyn Future<Output = Result<CredentialSnapshot, ActionError>> + Send>>
             }),
+            action_id,
         }
     }
 
-    /// Returns `true` if `id` is in the allowed set.
+    /// Returns `true` if `id` is permitted by the allowlist.
+    ///
+    /// When the allowlist is **empty**, all keys are permitted (open/passthrough mode).
+    /// When the allowlist is **non-empty**, only listed keys are permitted.
     fn is_allowed(&self, id: &str) -> bool {
-        self.allowed_keys.contains(id)
+        self.allowed_keys.is_empty() || self.allowed_keys.contains(id)
     }
 }
 
@@ -113,6 +124,7 @@ impl fmt::Debug for EngineCredentialAccessor {
         f.debug_struct("EngineCredentialAccessor")
             .field("allowed_keys", &self.allowed_keys)
             .field("resolve_fn", &"<fn>")
+            .field("action_id", &self.action_id)
             .finish()
     }
 }
@@ -123,7 +135,8 @@ impl CredentialAccessor for EngineCredentialAccessor {
     ///
     /// # Errors
     ///
-    /// - [`ActionError::SandboxViolation`] — if `id` is not in the allowlist.
+    /// - [`ActionError::SandboxViolation`] — if `id` is not in the allowlist (when the
+    ///   allowlist is non-empty and `id` is not listed).
     /// - Any error returned by the underlying resolver function.
     ///
     /// # Cancel safety
@@ -134,22 +147,25 @@ impl CredentialAccessor for EngineCredentialAccessor {
         if !self.is_allowed(id) {
             return Err(ActionError::SandboxViolation {
                 capability: format!("credential:{id}"),
-                action_id: String::new(),
+                action_id: self.action_id.clone(),
             });
         }
         (self.resolve_fn)(id).await
     }
 
-    /// Check whether a credential key is in the allowed set.
+    /// Check whether a credential key is accessible and exists in the store.
     ///
-    /// Returns `true` only if `id` was declared as an allowed credential key.
-    /// This does **not** verify that the credential exists in the store.
+    /// Returns `true` only if `id` is permitted by the allowlist **and** the
+    /// underlying resolver can successfully resolve it. When the allowlist is
+    /// empty (open/passthrough mode), all keys that resolve successfully are
+    /// considered available.
     ///
     /// # Cancel safety
     ///
-    /// This method is cancel-safe — it performs no async I/O.
+    /// This method is cancel-safe. If the future is dropped before completion,
+    /// no state is modified.
     async fn has(&self, id: &str) -> bool {
-        self.is_allowed(id)
+        self.is_allowed(id) && (self.resolve_fn)(id).await.is_ok()
     }
 }
 
@@ -159,13 +175,15 @@ mod tests {
 
     /// Builds an accessor with the given allowed keys and a stub resolver.
     ///
-    /// The stub resolver always succeeds if called (it returns a test snapshot
-    /// via `nebula_credential::CredentialSnapshot::new`).
+    /// The stub resolver always fails with "not implemented in stub". Use
+    /// [`make_succeeding_accessor`] when resolver success is needed.
     fn make_accessor(allowed: impl IntoIterator<Item = &'static str>) -> EngineCredentialAccessor {
         let allowed_keys: HashSet<String> = allowed.into_iter().map(str::to_owned).collect();
-        EngineCredentialAccessor::new(allowed_keys, |_id: &str| async {
-            Err(ActionError::fatal("not implemented in stub"))
-        })
+        EngineCredentialAccessor::new(
+            allowed_keys,
+            |_id: &str| async { Err(ActionError::fatal("not implemented in stub")) },
+            "test_action".to_owned(),
+        )
     }
 
     /// Builds an accessor whose resolver always returns the given error.
@@ -174,10 +192,14 @@ mod tests {
         err: ActionError,
     ) -> EngineCredentialAccessor {
         let allowed_keys: HashSet<String> = allowed.into_iter().map(str::to_owned).collect();
-        EngineCredentialAccessor::new(allowed_keys, move |_id: &str| {
-            let err = err.clone();
-            async move { Err(err) }
-        })
+        EngineCredentialAccessor::new(
+            allowed_keys,
+            move |_id: &str| {
+                let err = err.clone();
+                async move { Err(err) }
+            },
+            "test_action".to_owned(),
+        )
     }
 
     #[tokio::test]
@@ -195,9 +217,11 @@ mod tests {
         let allowed_keys: HashSet<String> =
             ["my_credential"].iter().map(|s| s.to_string()).collect();
 
-        let accessor = EngineCredentialAccessor::new(allowed_keys, |_id: &str| async {
-            Err(ActionError::fatal("resolver reached"))
-        });
+        let accessor = EngineCredentialAccessor::new(
+            allowed_keys,
+            |_id: &str| async { Err(ActionError::fatal("resolver reached")) },
+            "test_action".to_owned(),
+        );
 
         let result = accessor.get("my_credential").await;
         // The resolver was called — we get a fatal error, not a sandbox violation.
@@ -208,40 +232,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn has_returns_true_for_allowed_key() {
+    async fn has_returns_false_for_allowed_key_not_in_store() {
+        // Resolver fails → key is in allowlist but not resolvable → has() = false.
         let accessor = make_accessor(["allowed"]);
-        assert!(accessor.has("allowed").await);
+        assert!(!accessor.has("allowed").await);
     }
 
     #[tokio::test]
     async fn has_returns_false_for_undeclared_key() {
+        // Key is not in (non-empty) allowlist → rejected before resolver call.
         let accessor = make_accessor(["allowed"]);
         assert!(!accessor.has("not_allowed").await);
     }
 
     #[tokio::test]
-    async fn has_returns_false_for_empty_allowlist() {
+    async fn has_returns_false_for_empty_allowlist_when_resolver_fails() {
+        // Empty allowlist = allow all, but resolver still fails → has() = false.
         let accessor = make_accessor([]);
         assert!(!accessor.has("anything").await);
     }
 
     #[tokio::test]
-    async fn get_rejects_all_keys_when_allowlist_is_empty() {
+    async fn get_allows_any_key_when_allowlist_is_empty() {
+        // Empty allowlist = open/passthrough mode: no SandboxViolation, resolver is called.
         let accessor = make_accessor([]);
         let result = accessor.get("any_key").await;
+        // Stub resolver returns Fatal, not SandboxViolation — resolver was reached.
         assert!(
-            matches!(result, Err(ActionError::SandboxViolation { .. })),
-            "expected SandboxViolation, got {result:?}"
+            matches!(result, Err(ActionError::Fatal { .. })),
+            "expected Fatal from resolver (not SandboxViolation), got {result:?}"
         );
     }
 
     #[tokio::test]
-    async fn sandbox_violation_contains_credential_capability_name() {
+    async fn sandbox_violation_contains_credential_capability_name_and_action_id() {
         let accessor = make_accessor(["allowed"]);
         let err = accessor.get("secret_key").await.unwrap_err();
         match err {
-            ActionError::SandboxViolation { capability, .. } => {
+            ActionError::SandboxViolation {
+                capability,
+                action_id,
+            } => {
                 assert_eq!(capability, "credential:secret_key");
+                assert_eq!(action_id, "test_action");
             }
             other => panic!("expected SandboxViolation, got {other:?}"),
         }

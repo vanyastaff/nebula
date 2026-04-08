@@ -93,19 +93,17 @@ impl ResourceAccessor for EngineResourceAccessor {
         Ok(Box::new(any_managed.as_any_arc()))
     }
 
-    /// Check whether a resource with the given key is registered.
+    /// Check whether a resource with the given key is registered in the global scope.
     ///
-    /// Returns `true` if `key` parses as a valid [`ResourceKey`] and a resource
-    /// with that key is registered. Returns `false` for invalid key formats.
+    /// Delegates to [`acquire`](Self::acquire) for consistency — a resource exists if
+    /// and only if it can be acquired from the global scope. Returns `false` for invalid
+    /// key formats or unregistered resources.
     ///
     /// # Cancel safety
     ///
     /// This method is cancel-safe — it performs no async I/O.
     async fn exists(&self, key: &str) -> bool {
-        let Ok(resource_key) = ResourceKey::new(key) else {
-            return false;
-        };
-        self.manager.contains(&resource_key)
+        self.acquire(key).await.is_ok()
     }
 }
 

@@ -42,6 +42,7 @@ use tokio_util::sync::CancellationToken;
 use nebula_expression::{EvaluationContext, ExpressionEngine};
 use nebula_plugin::PluginRegistry;
 
+use crate::credential_accessor::EngineCredentialAccessor;
 use crate::error::EngineError;
 use crate::resolver::ParamResolver;
 use crate::resource_accessor::EngineResourceAccessor;
@@ -63,41 +64,6 @@ type CredentialResolveFn = Arc<
         > + Send
         + Sync,
 >;
-
-/// Passthrough [`CredentialAccessor`] that delegates directly to the engine's resolver
-/// function without enforcing an allowlist.
-///
-/// Used during node dispatch when per-node declared credential keys are not yet
-/// tracked. The [`crate::credential_accessor::EngineCredentialAccessor`] enforces an
-/// allowlist and will be used in a future task when node-level credential declarations
-/// are wired in.
-struct ResolverCredentialAccessor {
-    resolve_fn: CredentialResolveFn,
-}
-
-impl std::fmt::Debug for ResolverCredentialAccessor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ResolverCredentialAccessor")
-            .field("resolve_fn", &"<fn>")
-            .finish()
-    }
-}
-
-#[async_trait::async_trait]
-impl CredentialAccessor for ResolverCredentialAccessor {
-    async fn get(
-        &self,
-        id: &str,
-    ) -> Result<nebula_credential::CredentialSnapshot, nebula_action::error::ActionError> {
-        (self.resolve_fn)(id).await
-    }
-
-    async fn has(&self, _id: &str) -> bool {
-        // Without a store reference we cannot check existence without a full resolve.
-        // Callers should use `get` and handle the error case.
-        true
-    }
-}
 
 /// The workflow execution engine.
 ///
@@ -496,6 +462,7 @@ impl WorkflowEngine {
                     // count it before any retry mechanism re-enqueues the node.
                     if matches!(action_result, ActionResult::Retry { .. }) {
                         total_retries.fetch_add(1, Ordering::Relaxed);
+                        // TODO: implement retry re-enqueue; currently treated as terminal (follow-up plan)
                     }
 
                     mark_node_completed(exec_state, node_id);
@@ -625,12 +592,22 @@ impl WorkflowEngine {
         let sem = semaphore.clone();
         let outputs_ref = outputs.clone();
 
-        // Build credential accessor: use the resolver if configured, else noop.
+        // Build credential accessor: when a resolver is configured, use EngineCredentialAccessor
+        // with an empty allowlist (open/passthrough mode — allows all keys until per-node
+        // credential declarations are populated from action dependency metadata).
+        // TODO: populate allowed_keys from node_def's declared credential dependencies.
         let credentials: Arc<dyn CredentialAccessor> =
             if let Some(resolver_fn) = &self.credential_resolver {
-                Arc::new(ResolverCredentialAccessor {
-                    resolve_fn: Arc::clone(resolver_fn),
-                })
+                let resolver_fn = Arc::clone(resolver_fn);
+                Arc::new(EngineCredentialAccessor::new(
+                    std::collections::HashSet::new(),
+                    move |id: &str| {
+                        let resolver_fn = Arc::clone(&resolver_fn);
+                        let id = id.to_owned();
+                        async move { (resolver_fn)(&id).await }
+                    },
+                    node_def.action_key.as_str().to_owned(),
+                ))
             } else {
                 default_credential_accessor()
             };

@@ -3,9 +3,9 @@ Workflow execution orchestrator — frontier-based DAG scheduler, node dispatch.
 
 ## Invariants
 - Delegates action execution to `ActionRuntime` — never runs actions directly.
-- `EngineCredentialAccessor`: empty `allowed_keys` denies ALL access.
-- `ResolverCredentialAccessor` (engine-internal): passthrough, no allowlist. `has()` always `true`.
-- Credential/resource DI injected into `ActionContext` via `.with_credentials()` / `.with_resources()`.
+- `EngineCredentialAccessor`: empty `allowed_keys` = **allow all** (passthrough). Non-empty = strict allowlist. `has()` checks allowlist AND resolver. Carries `action_id` for `SandboxViolation` attribution.
+- `ResolverCredentialAccessor` deleted — all credential access goes through `EngineCredentialAccessor`.
+- `EngineResourceAccessor::exists()` delegates to `acquire()` (both use `ScopeLevel::Global`).
 - `credential_resolver: None` → noop. `resource_manager: None` → noop.
 - `with_credential_resolver()` type-erases the resolver fn — engine stays non-generic.
 
@@ -21,4 +21,4 @@ Workflow execution orchestrator — frontier-based DAG scheduler, node dispatch.
 - `ExecutionResult` (engine return) vs `ExecutionState` (persistent) — different types.
 - `nebula-credential` is a direct dep (for `CredentialSnapshot`).
 
-<!-- updated: 2026-04-07 — E4: disabled node skip propagation -->
+<!-- updated: 2026-04-07 — PR#229: remove ResolverCredentialAccessor, fix allowlist semantics, action_id attribution, exists() scope fix -->
