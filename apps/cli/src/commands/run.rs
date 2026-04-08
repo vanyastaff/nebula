@@ -59,8 +59,6 @@ pub async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCode> {
         metrics.clone(),
     ));
 
-    let engine = WorkflowEngine::new(runtime, metrics);
-
     // 4. Build execution budget.
     let budget = ExecutionBudget {
         max_concurrent_nodes: args.concurrency,
@@ -69,18 +67,33 @@ pub async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCode> {
         max_total_retries: None,
     };
 
-    // 5. Execute.
+    // 5. Optionally attach event channel for TUI.
+    #[cfg(feature = "tui")]
+    let (event_tx, event_rx) = if args.tui {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
+    let mut engine = WorkflowEngine::new(runtime, metrics);
+    #[cfg(feature = "tui")]
+    if let Some(tx) = event_tx {
+        engine = engine.with_event_sender(tx);
+    }
+
+    // 6. Execute.
     if args.stream && !quiet {
         eprintln!("Executing {}...", args.workflow.display());
     }
 
-    let result = engine.execute_workflow(&definition, input, budget).await?;
-
-    // 6. Output result.
+    // TUI mode: run engine in background, TUI consumes live events.
     #[cfg(feature = "tui")]
     if args.tui {
-        return run_tui_view(&definition, &result).await;
+        return run_tui_live(&definition, engine, input, budget, event_rx.unwrap()).await;
     }
+
+    let result = engine.execute_workflow(&definition, input, budget).await?;
 
     if !quiet {
         let format = resolve_format(args.format);
@@ -175,65 +188,95 @@ fn exit_code_for_status(status: &ExecutionStatus) -> ExitCode {
     }
 }
 
-/// Launch the TUI view with results from a completed execution.
+/// Launch the TUI with engine events collected during execution.
+///
+/// Engine runs first (events sent via channel), then TUI displays
+/// the collected events + final result interactively.
 #[cfg(feature = "tui")]
-async fn run_tui_view(
+async fn run_tui_live(
     workflow: &nebula_workflow::WorkflowDefinition,
-    result: &nebula_engine::ExecutionResult,
+    engine: WorkflowEngine,
+    input: serde_json::Value,
+    budget: ExecutionBudget,
+    mut engine_rx: tokio::sync::mpsc::UnboundedReceiver<nebula_engine::ExecutionEvent>,
 ) -> anyhow::Result<ExitCode> {
-    use crate::tui::app::{App, NodeStatus};
+    use crate::tui::app::App;
     use crate::tui::event::{LogLevel, TuiEvent};
 
-    // Build node order from workflow definition.
+    // Run engine — events are sent synchronously during execution.
+    let result = engine.execute_workflow(workflow, input, budget).await?;
+
+    // Build TUI app from workflow definition.
     let node_order: Vec<_> = workflow
         .nodes
         .iter()
         .map(|n| (n.id, n.name.clone(), n.action_key.to_string()))
         .collect();
 
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (_tui_tx, tui_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::new(
         workflow.name.clone(),
         result.execution_id.to_string(),
         node_order,
     );
 
-    // Populate app state from the completed result.
+    // Replay collected engine events into the TUI app state.
+    while let Ok(event) = engine_rx.try_recv() {
+        let tui_event = match event {
+            nebula_engine::ExecutionEvent::NodeStarted {
+                node_id,
+                action_key,
+                ..
+            } => TuiEvent::NodeStarted {
+                node_id,
+                name: String::new(),
+                action_key,
+            },
+            nebula_engine::ExecutionEvent::NodeCompleted {
+                node_id, elapsed, ..
+            } => TuiEvent::NodeCompleted {
+                node_id,
+                elapsed,
+                output: serde_json::Value::Null,
+            },
+            nebula_engine::ExecutionEvent::NodeFailed { node_id, error, .. } => {
+                TuiEvent::NodeFailed {
+                    node_id,
+                    elapsed: std::time::Duration::ZERO,
+                    error,
+                }
+            }
+            nebula_engine::ExecutionEvent::NodeSkipped { node_id, .. } => TuiEvent::Log {
+                level: LogLevel::Info,
+                message: format!("node {node_id} skipped"),
+            },
+            nebula_engine::ExecutionEvent::ExecutionFinished {
+                success, elapsed, ..
+            } => TuiEvent::WorkflowDone {
+                total_elapsed: elapsed,
+                success,
+            },
+        };
+        // Apply directly to app state.
+        app.apply_event(tui_event);
+    }
+
+    // Also populate outputs/errors from result (events don't carry output data).
     for (node_id, output) in &result.node_outputs {
         if let Some(&idx) = app.node_index.get(node_id) {
-            app.nodes[idx].1.status = NodeStatus::Completed;
             app.nodes[idx].1.output = Some(output.clone());
         }
     }
     for (node_id, error) in &result.node_errors {
         if let Some(&idx) = app.node_index.get(node_id) {
-            app.nodes[idx].1.status = NodeStatus::Failed;
             app.nodes[idx].1.error = Some(error.clone());
-        }
-    }
-
-    // Set durations from the overall result.
-    for (_, info) in &mut app.nodes {
-        if info.status == NodeStatus::Completed || info.status == NodeStatus::Failed {
-            // Individual node durations not available yet — show total.
-            info.elapsed = Some(result.duration);
         }
     }
 
     app.done = true;
     app.success = result.status == ExecutionStatus::Completed;
 
-    // Send completion event for the log panel.
-    let _ = tx.send(TuiEvent::Log {
-        level: if app.success {
-            LogLevel::Info
-        } else {
-            LogLevel::Error
-        },
-        message: format!("execution {:?} in {:?}", result.status, result.duration),
-    });
-
-    crate::tui::run_tui(rx, app)
+    crate::tui::run_tui(tui_rx, app)
         .await
         .map_err(|e| anyhow::anyhow!("TUI error: {e}"))?;
 

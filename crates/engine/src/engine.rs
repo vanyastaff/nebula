@@ -35,7 +35,7 @@ use nebula_workflow::{
     Connection, DependencyGraph, EdgeCondition, ErrorMatcher, NodeState, ResultMatcher,
     WorkflowDefinition,
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
@@ -44,9 +44,13 @@ use nebula_plugin::PluginRegistry;
 
 use crate::credential_accessor::EngineCredentialAccessor;
 use crate::error::EngineError;
+use crate::event::ExecutionEvent;
 use crate::resolver::ParamResolver;
 use crate::resource_accessor::EngineResourceAccessor;
 use crate::result::ExecutionResult;
+
+/// Type alias for the optional event sender.
+type EventSender = mpsc::UnboundedSender<ExecutionEvent>;
 
 /// Type alias for the boxed async credential-refresh function stored on the engine.
 ///
@@ -113,6 +117,8 @@ pub struct WorkflowEngine {
     /// credentials. The callee is responsible for refreshing the credential so
     /// the resolver returns a fresh snapshot when the action requests it.
     credential_refresh: Option<CredentialRefreshFn>,
+    /// Optional event sender for real-time execution monitoring (TUI, logging).
+    event_sender: Option<EventSender>,
 }
 
 impl WorkflowEngine {
@@ -130,6 +136,7 @@ impl WorkflowEngine {
             workflow_repo: None,
             credential_resolver: None,
             credential_refresh: None,
+            event_sender: None,
         }
     }
 
@@ -262,6 +269,24 @@ impl WorkflowEngine {
         self
     }
 
+    /// Attach an event sender for real-time execution monitoring.
+    ///
+    /// When set, the engine emits [`ExecutionEvent`]s for node lifecycle
+    /// transitions (started, completed, failed, skipped) and execution completion.
+    /// Used by the CLI TUI for live monitoring.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_event_sender(mut self, sender: mpsc::UnboundedSender<ExecutionEvent>) -> Self {
+        self.event_sender = Some(sender);
+        self
+    }
+
+    /// Emit an execution event if a sender is configured.
+    fn emit_event(&self, event: ExecutionEvent) {
+        if let Some(sender) = &self.event_sender {
+            let _ = sender.send(event);
+        }
+    }
+
     /// Execute a workflow from start to finish.
     ///
     /// Builds an execution plan for validation, then processes nodes
@@ -377,6 +402,11 @@ impl WorkflowEngine {
         }
 
         self.emit_final_event(execution_id, final_status, elapsed, &failed_node);
+        self.emit_event(ExecutionEvent::ExecutionFinished {
+            execution_id,
+            success: final_status == ExecutionStatus::Completed,
+            elapsed,
+        });
 
         // 11. Collect outputs and errors
         let node_outputs: HashMap<NodeId, serde_json::Value> = outputs
@@ -627,6 +657,11 @@ impl WorkflowEngine {
         }
 
         self.emit_final_event(execution_id, final_status, elapsed, &failed_node);
+        self.emit_event(ExecutionEvent::ExecutionFinished {
+            execution_id,
+            success: final_status == ExecutionStatus::Completed,
+            elapsed,
+        });
 
         let node_outputs: HashMap<NodeId, serde_json::Value> = outputs
             .iter()
@@ -777,6 +812,15 @@ impl WorkflowEngine {
                     &mut join_set,
                 );
                 if spawned {
+                    let action_key = node_map
+                        .get(&node_id)
+                        .map(|n| n.action_key.to_string())
+                        .unwrap_or_default();
+                    self.emit_event(ExecutionEvent::NodeStarted {
+                        execution_id,
+                        node_id,
+                        action_key,
+                    });
                     continue;
                 }
 
@@ -827,6 +871,11 @@ impl WorkflowEngine {
                     }
 
                     mark_node_completed(exec_state, node_id);
+                    self.emit_event(ExecutionEvent::NodeCompleted {
+                        execution_id,
+                        node_id,
+                        elapsed: started.elapsed(),
+                    });
 
                     // Track output size for budget enforcement
                     if let Some(output) = outputs.get(&node_id) {
@@ -861,6 +910,11 @@ impl WorkflowEngine {
                     // Node failed at runtime — delegate to
                     // strategy-aware handler.
                     mark_node_failed(exec_state, node_id, err);
+                    self.emit_event(ExecutionEvent::NodeFailed {
+                        execution_id,
+                        node_id,
+                        error: err.to_string(),
+                    });
 
                     let abort = handle_node_failure(
                         node_id,

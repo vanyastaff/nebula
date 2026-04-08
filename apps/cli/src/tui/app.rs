@@ -117,7 +117,8 @@ impl App {
         self.nodes.get(self.selected_node).map(|(_, info)| info)
     }
 
-    fn handle_tui_event(&mut self, evt: TuiEvent) {
+    /// Apply a TUI event to update app state.
+    pub fn apply_event(&mut self, evt: TuiEvent) {
         match evt {
             TuiEvent::Key(key) => {
                 if key.kind == KeyEventKind::Press {
@@ -230,7 +231,7 @@ pub async fn run_tui(mut rx: mpsc::UnboundedReceiver<TuiEvent>, mut app: App) ->
 
         // Drain all pending engine events.
         while let Ok(evt) = rx.try_recv() {
-            app.handle_tui_event(evt);
+            app.apply_event(evt);
         }
 
         if app.should_quit {
