@@ -28,7 +28,7 @@ use sha2::Sha256;
 use tracing::{debug, error, warn};
 
 /// Configuration for an outbound webhook endpoint.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WebhookEndpoint {
     /// Full URL the payload will be POSTed to.
     pub url: String,
@@ -39,6 +39,16 @@ pub struct WebhookEndpoint {
     /// Whether this endpoint is active.  [`WebhookDeliverer::deliver`] returns
     /// `Ok(())` immediately without making a network call when `false`.
     pub enabled: bool,
+}
+
+impl std::fmt::Debug for WebhookEndpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookEndpoint")
+            .field("url", &self.url)
+            .field("secret", &"[REDACTED]")
+            .field("enabled", &self.enabled)
+            .finish()
+    }
 }
 
 /// Outbound webhook delivery with HMAC signing and configurable retries.
@@ -67,7 +77,10 @@ impl WebhookDeliverer {
     #[must_use]
     pub fn new(max_retries: u32) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("reqwest client builder is valid"),
             max_retries: max_retries.max(1),
         }
     }
@@ -80,9 +93,12 @@ impl WebhookDeliverer {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Other`] if all attempts are exhausted or if
-    /// the HMAC key is invalid (zero-length secret is rejected by the
-    /// underlying implementation).
+    /// - [`Error::Other`] — all retry attempts are exhausted (5xx or connection
+    ///   errors on every attempt).
+    /// - [`Error::Config`] — the HMAC key is invalid (e.g. rejected by the
+    ///   underlying digest implementation).
+    /// - [`Error::Other`] — the remote returned a 4xx response (permanent
+    ///   failure; not retried).
     ///
     /// Returns `Ok(())` immediately when `endpoint.enabled` is `false`.
     ///
@@ -184,6 +200,11 @@ fn sign_payload(secret: &[u8], payload: &[u8]) -> Result<String, Error> {
     mac.update(payload);
     Ok(hex::encode(mac.finalize().into_bytes()))
 }
+
+// TODO(#follow-up): Add HTTP-level delivery tests using a mock server (e.g.
+// `wiremock` or `httpmock`).  These require a test server that can simulate
+// 2xx, 4xx, and 5xx responses as well as connection failures, to verify the
+// retry logic and back-off behaviour end-to-end.
 
 #[cfg(test)]
 mod tests {

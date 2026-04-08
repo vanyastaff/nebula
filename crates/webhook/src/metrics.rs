@@ -7,10 +7,11 @@
 //!
 //! # Wiring
 //!
-//! These constants are string keys only — integration with a metrics registry
-//! (e.g. `nebula-metrics` or OpenTelemetry) is the responsibility of the
-//! embedding application.  The webhook crate increments them via `tracing`
-//! events today; future work will wire them through `nebula_telemetry`.
+//! These constants are string keys only — they are **defined here for future
+//! wiring** through `nebula_telemetry` or an embedding application's metrics
+//! registry (e.g. OpenTelemetry).  They are not yet connected to any live
+//! metrics instrument; integration is the responsibility of the embedding
+//! application once the telemetry plumbing is in place.
 
 /// Total webhook requests received.
 pub const WEBHOOK_RECEIVED_TOTAL: &str = "nebula_webhook_received_total";

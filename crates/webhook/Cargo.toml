@@ -52,7 +52,7 @@ nebula-error = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-reqwest = { workspace = true, features = ["json", "rustls"] }
+tower = { version = "0.5", features = ["util"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 
 [features]

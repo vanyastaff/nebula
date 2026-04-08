@@ -61,17 +61,14 @@ impl MemoryInboundQueue {
     pub fn drain(&self) -> Vec<Value> {
         self.items
             .lock()
-            .expect("MemoryInboundQueue mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .drain(..)
             .collect()
     }
 
     /// Number of items currently in the queue.
     pub fn len(&self) -> usize {
-        self.items
-            .lock()
-            .expect("MemoryInboundQueue mutex poisoned")
-            .len()
+        self.items.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Whether the queue is currently empty.

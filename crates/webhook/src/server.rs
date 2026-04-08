@@ -143,7 +143,12 @@ impl WebhookServer {
     ///
     /// The queue field is `Option` so existing users are unaffected.
     ///
-    /// # Examples
+    /// # Timing constraint
+    ///
+    /// This method **must** be called before the server starts accepting requests.
+    /// It returns a **new** `Arc<WebhookServer>` — requests dispatched through
+    /// the original `Arc` will not see the queue.  Prefer calling this
+    /// immediately after construction and discarding the original handle:
     ///
     /// ```no_run
     /// use std::sync::Arc;
@@ -151,8 +156,10 @@ impl WebhookServer {
     ///
     /// # async fn run() -> nebula_webhook::Result<()> {
     /// let queue = Arc::new(MemoryInboundQueue::new());
-    /// let server = WebhookServer::new(WebhookServerConfig::default()).await?;
-    /// // Note: attach before first request — see `new_with_queue` for a combined constructor.
+    /// // Use new_embedded so no server is bound yet, then attach the queue.
+    /// let server = WebhookServer::new_embedded(WebhookServerConfig::default())?;
+    /// let server = server.with_inbound_queue(queue);
+    /// // `server` now has the queue wired in; mount server.router() into your app.
     /// # Ok(())
     /// # }
     /// ```
@@ -408,10 +415,13 @@ async fn webhook_handler(
     // process crashes immediately after.  If the queue call fails we return
     // HTTP 500 so the sender retries.
     if let Some(ref queue) = state.inbound_queue {
+        // TODO(security): `payload.headers` may contain sensitive values such as
+        // `Authorization` or `X-Hub-Signature`.  A follow-up should strip or
+        // redact secret headers before persisting them to the queue.
         let event = serde_json::json!({
-            "path": payload.path,
-            "method": payload.method,
-            "headers": payload.headers,
+            "path": payload.path.clone(),
+            "method": payload.method.clone(),
+            "headers": payload.headers.clone(),
             "body": payload.body_str().unwrap_or("<binary>"),
             "received_at": payload.received_at.to_rfc3339(),
         });
@@ -530,5 +540,48 @@ mod tests {
 
         let _handle = server.subscribe(&ctx, None).await.unwrap();
         assert_eq!(server.route_count(), 1);
+    }
+
+    /// Verifies that a durable queue receives exactly one event when the
+    /// handler processes an incoming webhook request.
+    #[tokio::test]
+    async fn enqueue_called_on_incoming_request() {
+        use crate::queue::MemoryInboundQueue;
+        use axum::{
+            body::Body,
+            http::{self, Request},
+        };
+        use tower::util::ServiceExt as _;
+
+        let queue = StdArc::new(MemoryInboundQueue::new());
+        assert!(queue.is_empty());
+
+        let config = WebhookServerConfig {
+            path_prefix: "/webhooks".to_string(),
+            ..Default::default()
+        };
+        let server = WebhookServer::new_embedded(config).unwrap();
+        let server = server.with_inbound_queue(queue.clone());
+
+        let app = server.router();
+
+        // Register a route so the dispatch doesn't 404.
+        let route_path = "/webhooks/test-enqueue";
+        server.routes.register(route_path, None).unwrap();
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri(route_path)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"event":"ping"}"#))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The queue must have received exactly one event.
+        assert_eq!(queue.len(), 1, "expected one item enqueued");
+        let items = queue.drain();
+        assert_eq!(items[0]["path"], "/webhooks/test-enqueue");
     }
 }
