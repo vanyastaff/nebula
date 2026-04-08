@@ -32,6 +32,13 @@ pub struct ApiConfig {
 
     /// Rate limiting: requests per second per IP
     pub rate_limit_per_second: u32,
+
+    /// Static API keys accepted via `X-API-Key` header.
+    ///
+    /// Each key must have the `nbl_sk_` prefix. Keys are compared in constant
+    /// time to prevent timing attacks. An empty list disables API key auth.
+    #[serde(default)]
+    pub api_keys: Vec<String>,
 }
 
 impl Default for ApiConfig {
@@ -45,6 +52,7 @@ impl Default for ApiConfig {
             enable_tracing: true,
             jwt_secret: "dev-secret-change-in-production".to_string(),
             rate_limit_per_second: 100,
+            api_keys: Vec::new(),
         }
     }
 }
@@ -86,6 +94,15 @@ impl ApiConfig {
             .unwrap_or_else(|_| "100".to_string())
             .parse()?;
 
+        // API keys: comma-separated list in `API_KEYS` env var.
+        let api_keys = std::env::var("API_KEYS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+
         Ok(Self {
             bind_address,
             request_timeout,
@@ -95,6 +112,7 @@ impl ApiConfig {
             enable_tracing,
             jwt_secret,
             rate_limit_per_second,
+            api_keys,
         })
     }
 }
