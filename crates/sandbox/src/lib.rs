@@ -9,8 +9,8 @@
 //! - [`ProcessSandbox`] — isolated child process execution (community plugins)
 //! - [`PluginPermissions`](permissions::PluginPermissions) — per-plugin access control
 
+pub mod capabilities;
 mod in_process;
-pub mod permissions;
 mod process;
 mod runner;
 
