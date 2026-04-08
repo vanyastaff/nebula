@@ -26,11 +26,13 @@ pub async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCode> {
     let registry = Arc::new(ActionRegistry::new());
     crate::actions::register_builtins(&registry);
 
-    // Load external plugins from ~/.nebula/plugins/ and ./plugins/
-    let mut plugin_registry = nebula_plugin::PluginRegistry::new();
-    let plugin_count = crate::plugins::load_plugins(&mut plugin_registry);
-    if plugin_count > 0 {
-        tracing::info!(count = plugin_count, "loaded external plugins");
+    // Discover and register community plugins from plugins/ directories.
+    let community_count = crate::plugins::discover_and_register(&registry).await;
+    if community_count > 0 {
+        tracing::info!(
+            count = community_count,
+            "registered community plugin actions"
+        );
     }
 
     let metrics = MetricsRegistry::new();

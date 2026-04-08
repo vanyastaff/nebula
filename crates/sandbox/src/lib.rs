@@ -7,13 +7,18 @@
 //!
 //! - [`InProcessSandbox`] — trusted in-process execution (built-in actions)
 //! - [`ProcessSandbox`] — isolated child process execution (community plugins)
-//! - [`PluginPermissions`](permissions::PluginPermissions) — per-plugin access control
+//! - [`ProcessSandboxHandler`] — bridges ProcessSandbox into ActionRegistry
+//! - [`capabilities`] — iOS-style per-plugin capability model
+//! - [`discovery`] — scan directories for plugin binaries
 
 pub mod capabilities;
+pub mod discovery;
+mod handler;
 mod in_process;
 mod process;
 mod runner;
 
+pub use handler::ProcessSandboxHandler;
 pub use in_process::InProcessSandbox;
 pub use process::ProcessSandbox;
 pub use runner::{ActionExecutor, ActionExecutorFuture, SandboxRunner, SandboxedContext};

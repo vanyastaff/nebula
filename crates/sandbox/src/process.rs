@@ -38,7 +38,11 @@ impl ProcessSandbox {
     }
 
     /// Execute an action via the child process.
-    async fn call(&self, action_key: &str, input_json: &str) -> Result<String, ActionError> {
+    pub(crate) async fn call(
+        &self,
+        action_key: &str,
+        input_json: &str,
+    ) -> Result<String, ActionError> {
         let request = serde_json::json!({
             "action_key": action_key,
             "input": serde_json::from_str::<serde_json::Value>(input_json)

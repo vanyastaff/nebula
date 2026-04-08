@@ -3486,6 +3486,7 @@ dependencies = [
  "nebula-log",
  "nebula-plugin",
  "nebula-runtime",
+ "nebula-sandbox",
  "nebula-telemetry",
  "nebula-workflow",
  "ratatui",
@@ -3788,6 +3789,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-plugin-test-echo"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nebula-resilience"
 version = "0.1.0"
 dependencies = [
@@ -3864,6 +3873,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "nebula-action",
+ "nebula-core",
  "serde",
  "serde_json",
  "tokio",

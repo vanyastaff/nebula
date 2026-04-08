@@ -50,6 +50,7 @@ nebula-config = { path = "../../crates/config", features = ["toml", "env"] }
 nebula-core = { path = "../../crates/core" }
 nebula-engine = { path = "../../crates/engine" }
 nebula-plugin = { path = "../../crates/plugin" }
+nebula-sandbox = { path = "../../crates/sandbox" }
 nebula-execution = { path = "../../crates/execution" }
 nebula-runtime = { path = "../../crates/runtime" }
 nebula-workflow = { path = "../../crates/workflow" }

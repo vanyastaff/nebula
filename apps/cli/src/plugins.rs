@@ -1,6 +1,8 @@
 //! Plugin discovery for the CLI.
 //!
-//! Scans standard directories for plugin files and loads them.
+//! Scans standard directories for community plugin binaries.
+//! Each binary is queried for metadata, then actions are registered
+//! in the ActionRegistry via ProcessSandboxHandler.
 //!
 //! Search order:
 //! 1. `./plugins/` (project-local)
@@ -8,20 +10,41 @@
 //!    - Linux:   `~/.local/share/nebula/plugins/`
 //!    - macOS:   `~/Library/Application Support/nebula/plugins/`
 //!    - Windows: `C:\Users\<user>\AppData\Roaming\nebula\plugins\`
-//!
-//! Currently a stub — WASM plugin loading via `nebula-sandbox` is planned.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
-use nebula_plugin::PluginRegistry;
+use nebula_runtime::ActionRegistry;
+use nebula_sandbox::discovery;
 
-/// Load plugins from standard directories and register into the given registry.
+/// Default timeout for plugin actions.
+const DEFAULT_PLUGIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Discover and register community plugins from standard directories.
 ///
-/// Returns the number of plugins loaded.
-pub fn load_plugins(_registry: &mut PluginRegistry) -> usize {
-    // TODO: WASM plugin loading via nebula-sandbox.
-    // For now, all actions are built-in (registered in actions.rs).
-    0
+/// Returns the number of actions registered.
+pub async fn discover_and_register(registry: &ActionRegistry) -> usize {
+    let dirs = plugin_directories();
+    let mut total = 0;
+
+    for dir in &dirs {
+        if !dir.exists() {
+            continue;
+        }
+
+        let plugins = discovery::discover_directory(dir, DEFAULT_PLUGIN_TIMEOUT).await;
+
+        for (plugin_name, handlers) in plugins {
+            for handler in handlers {
+                let key = handler.metadata().key.as_str().to_owned();
+                registry.register(handler);
+                tracing::info!(action = %key, plugin = %plugin_name, "registered community action");
+                total += 1;
+            }
+        }
+    }
+
+    total
 }
 
 /// List the directories that would be scanned for plugins.

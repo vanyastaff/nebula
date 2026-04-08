@@ -73,7 +73,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Plugin { command } => {
             match command {
-                PluginCommand::List => commands::plugin::list(),
+                PluginCommand::List => commands::plugin::list().await,
             }
             Ok(ExitCode::SUCCESS)
         }
