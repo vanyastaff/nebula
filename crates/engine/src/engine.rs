@@ -6,12 +6,17 @@
 //! skip propagation, error routing, and conditional edges.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use dashmap::DashMap;
 // TODO: ExecutionBudget moved to nebula-execution
+use nebula_action::capability::{
+    CredentialAccessor, ResourceAccessor, default_credential_accessor, default_resource_accessor,
+};
 use nebula_action::{ActionContext, ActionResult};
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 // ScopeLevel removed from ActionContext
@@ -39,7 +44,60 @@ use nebula_plugin::PluginRegistry;
 
 use crate::error::EngineError;
 use crate::resolver::ParamResolver;
+use crate::resource_accessor::EngineResourceAccessor;
 use crate::result::ExecutionResult;
+
+/// Type alias for the boxed async credential-resolution function stored on the engine.
+type CredentialResolveFn = Arc<
+    dyn Fn(
+            &str,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            nebula_credential::CredentialSnapshot,
+                            nebula_action::error::ActionError,
+                        >,
+                    > + Send,
+            >,
+        > + Send
+        + Sync,
+>;
+
+/// Passthrough [`CredentialAccessor`] that delegates directly to the engine's resolver
+/// function without enforcing an allowlist.
+///
+/// Used during node dispatch when per-node declared credential keys are not yet
+/// tracked. The [`crate::credential_accessor::EngineCredentialAccessor`] enforces an
+/// allowlist and will be used in a future task when node-level credential declarations
+/// are wired in.
+struct ResolverCredentialAccessor {
+    resolve_fn: CredentialResolveFn,
+}
+
+impl std::fmt::Debug for ResolverCredentialAccessor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolverCredentialAccessor")
+            .field("resolve_fn", &"<fn>")
+            .finish()
+    }
+}
+
+#[async_trait::async_trait]
+impl CredentialAccessor for ResolverCredentialAccessor {
+    async fn get(
+        &self,
+        id: &str,
+    ) -> Result<nebula_credential::CredentialSnapshot, nebula_action::error::ActionError> {
+        (self.resolve_fn)(id).await
+    }
+
+    async fn has(&self, _id: &str) -> bool {
+        // Without a store reference we cannot check existence without a full resolve.
+        // Callers should use `get` and handle the error case.
+        true
+    }
+}
 
 /// The workflow execution engine.
 ///
@@ -65,6 +123,8 @@ pub struct WorkflowEngine {
     resource_manager: Option<Arc<nebula_resource::Manager>>,
     /// Optional execution repository for persistent state storage.
     execution_repo: Option<Arc<dyn nebula_storage::ExecutionRepo>>,
+    /// Optional credential resolver function for providing credentials to actions.
+    credential_resolver: Option<CredentialResolveFn>,
 }
 
 impl WorkflowEngine {
@@ -79,6 +139,7 @@ impl WorkflowEngine {
             expression_engine,
             resource_manager: None,
             execution_repo: None,
+            credential_resolver: None,
         }
     }
 
@@ -96,6 +157,61 @@ impl WorkflowEngine {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_resource_manager(mut self, manager: Arc<nebula_resource::Manager>) -> Self {
         self.resource_manager = Some(manager);
+        self
+    }
+
+    /// Attach a credential resolver for providing credentials to actions.
+    ///
+    /// The resolver is a type-erased async function that maps a credential ID
+    /// to a [`nebula_credential::CredentialSnapshot`]. When not set, actions
+    /// receive the default no-op accessor (which denies all credential access).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use std::sync::Arc;
+    /// use nebula_engine::WorkflowEngine;
+    /// use nebula_credential::{CredentialResolver, InMemoryStore};
+    /// use nebula_action::error::ActionError;
+    ///
+    /// let store = Arc::new(InMemoryStore::new());
+    /// let resolver = Arc::new(CredentialResolver::new(store));
+    ///
+    /// let engine = WorkflowEngine::new(runtime, metrics)
+    ///     .with_credential_resolver(move |id: &str| {
+    ///         let resolver = Arc::clone(&resolver);
+    ///         let id = id.to_owned();
+    ///         Box::pin(async move {
+    ///             resolver.resolve_snapshot(&id).await
+    ///                 .map_err(|e| ActionError::fatal(e.to_string()))
+    ///         })
+    ///     });
+    /// ```
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_credential_resolver<F, Fut>(mut self, resolver: F) -> Self
+    where
+        F: Fn(&str) -> Fut + Send + Sync + 'static,
+        Fut: Future<
+                Output = Result<
+                    nebula_credential::CredentialSnapshot,
+                    nebula_action::error::ActionError,
+                >,
+            > + Send
+            + 'static,
+    {
+        self.credential_resolver = Some(Arc::new(move |id: &str| {
+            Box::pin(resolver(id))
+                as Pin<
+                    Box<
+                        dyn Future<
+                                Output = Result<
+                                    nebula_credential::CredentialSnapshot,
+                                    nebula_action::error::ActionError,
+                                >,
+                            > + Send,
+                    >,
+                >
+        }));
         self
     }
 
@@ -262,6 +378,7 @@ impl WorkflowEngine {
         error_strategy: nebula_workflow::ErrorStrategy,
     ) -> Option<(NodeId, String)> {
         let total_output_bytes = Arc::new(AtomicU64::new(0));
+        let total_retries = Arc::new(AtomicU32::new(0));
         // Precompute how many incoming edges each node has
         let required_count: HashMap<NodeId, usize> = node_map
             .keys()
@@ -293,9 +410,29 @@ impl WorkflowEngine {
                 }
 
                 // Check budget limits before dispatching
-                if let Some(violation) = check_budget(budget, started, &total_output_bytes) {
+                if let Some(violation) =
+                    check_budget(budget, started, &total_output_bytes, &total_retries)
+                {
                     cancel_token.cancel();
                     return Some((node_id, violation));
+                }
+
+                // Skip disabled nodes: mark as Skipped and activate outgoing edges
+                // with null output so successors continue normally.
+                if node_map.get(&node_id).is_some_and(|nd| !nd.enabled) {
+                    mark_node_skipped(exec_state, node_id);
+                    process_outgoing_edges(
+                        node_id,
+                        None, // null output — Always edges activate
+                        None, // not failed
+                        graph,
+                        &mut activated_edges,
+                        &mut resolved_edges,
+                        &required_count,
+                        &mut ready_queue,
+                        exec_state,
+                    );
+                    continue;
                 }
 
                 let spawned = self.spawn_node(
@@ -353,6 +490,14 @@ impl WorkflowEngine {
             match join_result {
                 Ok((node_id, Ok(action_result))) => {
                     // Node ran and produced a result
+
+                    // Track retry attempts for budget enforcement.
+                    // ActionResult::Retry signals the action requested a retry;
+                    // count it before any retry mechanism re-enqueues the node.
+                    if matches!(action_result, ActionResult::Retry { .. }) {
+                        total_retries.fetch_add(1, Ordering::Relaxed);
+                    }
+
                     mark_node_completed(exec_state, node_id);
 
                     // Track output size for budget enforcement
@@ -480,15 +625,22 @@ impl WorkflowEngine {
         let sem = semaphore.clone();
         let outputs_ref = outputs.clone();
 
-        // TODO: Restore resource provider once ResourceProvider trait is available
-        // let resource_provider = self.resource_manager.as_ref().map(|mgr| {
-        //     Arc::new(crate::resource::Resources::new(
-        //         mgr.clone(),
-        //         workflow_id.to_string(),
-        //         execution_id.to_string(),
-        //         cancel_token.child_token(),
-        //     )) as Arc<dyn nebula_action::provider::ResourceProvider>
-        // });
+        // Build credential accessor: use the resolver if configured, else noop.
+        let credentials: Arc<dyn CredentialAccessor> =
+            if let Some(resolver_fn) = &self.credential_resolver {
+                Arc::new(ResolverCredentialAccessor {
+                    resolve_fn: Arc::clone(resolver_fn),
+                })
+            } else {
+                default_credential_accessor()
+            };
+
+        // Build resource accessor: use the manager if configured, else noop.
+        let resources: Arc<dyn ResourceAccessor> = if let Some(manager) = &self.resource_manager {
+            Arc::new(EngineResourceAccessor::new(Arc::clone(manager)))
+        } else {
+            default_resource_accessor()
+        };
 
         join_set.spawn(
             NodeTask {
@@ -502,7 +654,8 @@ impl WorkflowEngine {
                 action_key,
                 input: action_input,
                 support_inputs,
-                // resource_provider,
+                credentials,
+                resources,
             }
             .run(),
         );
@@ -611,8 +764,10 @@ struct NodeTask {
     /// Data for support input ports, keyed by port name.
     #[allow(dead_code)] // reserved for multi-input actions
     support_inputs: HashMap<String, Vec<serde_json::Value>>,
-    // /// Optional resource provider for this execution.
-    // resource_provider: Option<Arc<dyn nebula_action::provider::ResourceProvider>>,
+    /// Credential accessor injected into the action context.
+    credentials: Arc<dyn CredentialAccessor>,
+    /// Resource accessor injected into the action context.
+    resources: Arc<dyn ResourceAccessor>,
 }
 
 impl NodeTask {
@@ -632,15 +787,9 @@ impl NodeTask {
             self.node_id,
             self.workflow_id,
             self.cancel.child_token(),
-        );
-
-        // TODO: support_inputs and resource_provider removed from ActionContext
-        // if !self.support_inputs.is_empty() {
-        //     action_ctx = action_ctx.with_support_inputs(self.support_inputs);
-        // }
-        // if let Some(resources) = self.resource_provider {
-        //     action_ctx = action_ctx.with_resources(resources);
-        // }
+        )
+        .with_credentials(self.credentials.clone())
+        .with_resources(self.resources.clone());
 
         let result = self
             .runtime
@@ -895,6 +1044,7 @@ fn check_budget(
     budget: &ExecutionBudget,
     started: &Instant,
     total_output_bytes: &AtomicU64,
+    total_retries: &AtomicU32,
 ) -> Option<String> {
     if let Some(max_dur) = budget.max_duration
         && started.elapsed() > max_dur
@@ -905,6 +1055,11 @@ fn check_budget(
         && total_output_bytes.load(Ordering::Relaxed) > max_bytes
     {
         return Some("execution budget exceeded: max_output_bytes".into());
+    }
+    if let Some(max_retries) = budget.max_total_retries
+        && total_retries.load(Ordering::Relaxed) > max_retries
+    {
+        return Some("execution budget exceeded: max_total_retries".into());
     }
     None
 }
@@ -984,6 +1139,13 @@ fn handle_node_failure(
         }
         // FailFast and future variants
         _ => Some(error_msg.to_owned()),
+    }
+}
+
+/// Mark a node as skipped in the execution state.
+fn mark_node_skipped(exec_state: &mut ExecutionState, node_id: NodeId) {
+    if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
+        let _ = ns.transition_to(NodeState::Skipped);
     }
 }
 
@@ -1983,6 +2145,46 @@ mod tests {
 
         // A's output exceeds 5 bytes → budget violation before B runs
         assert!(result.is_failure());
+    }
+
+    #[test]
+    fn budget_max_total_retries_exceeded() {
+        let budget = ExecutionBudget::default().with_max_total_retries(2);
+        let started = Instant::now();
+        let total_output_bytes = AtomicU64::new(0);
+
+        // Under the limit: 2 retries allowed, 2 used — not exceeded yet
+        let total_retries = AtomicU32::new(2);
+        assert!(
+            check_budget(&budget, &started, &total_output_bytes, &total_retries).is_none(),
+            "2 retries with limit 2 should not trigger budget"
+        );
+
+        // Over the limit: 3 retries used, limit is 2
+        total_retries.store(3, Ordering::Relaxed);
+        let violation = check_budget(&budget, &started, &total_output_bytes, &total_retries);
+        assert!(
+            violation.is_some(),
+            "3 retries with limit 2 should trigger budget"
+        );
+        assert!(
+            violation.unwrap().contains("max_total_retries"),
+            "violation message should name the exceeded budget"
+        );
+    }
+
+    #[test]
+    fn budget_max_total_retries_unlimited_when_none() {
+        let budget = ExecutionBudget::default(); // max_total_retries = None
+        let started = Instant::now();
+        let total_output_bytes = AtomicU64::new(0);
+        let total_retries = AtomicU32::new(u32::MAX);
+
+        // No limit set — even a saturated counter should not trigger
+        assert!(
+            check_budget(&budget, &started, &total_output_bytes, &total_retries).is_none(),
+            "unlimited retries: u32::MAX retries should not trigger budget when None"
+        );
     }
 
     // -- Error strategy tests --

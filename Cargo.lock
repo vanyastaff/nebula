@@ -3344,6 +3344,7 @@ dependencies = [
  "dashmap",
  "nebula-action",
  "nebula-core",
+ "nebula-credential",
  "nebula-error",
  "nebula-execution",
  "nebula-expression",
