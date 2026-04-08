@@ -287,6 +287,135 @@ impl WorkflowEngine {
         }
     }
 
+    /// Replay a workflow execution from a specific node.
+    ///
+    /// Nodes upstream of `replay_from` use pinned (stored) outputs.
+    /// Nodes at and downstream are re-executed.
+    pub async fn replay_execution(
+        &self,
+        workflow: &WorkflowDefinition,
+        plan: nebula_execution::ReplayPlan,
+        budget: ExecutionBudget,
+    ) -> Result<ExecutionResult, EngineError> {
+        let execution_id = ExecutionId::new();
+        let started = Instant::now();
+
+        // Build graph and node map.
+        let graph = DependencyGraph::from_definition(workflow)
+            .map_err(|e| EngineError::PlanningFailed(e.to_string()))?;
+        let node_ids: Vec<NodeId> = workflow.nodes.iter().map(|n| n.id).collect();
+        let node_map: HashMap<NodeId, &nebula_workflow::NodeDefinition> =
+            workflow.nodes.iter().map(|n| (n.id, n)).collect();
+
+        // Build predecessor map for partitioning.
+        let mut predecessors: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        for conn in &workflow.connections {
+            predecessors
+                .entry(conn.to_node)
+                .or_default()
+                .push(conn.from_node);
+        }
+
+        // Partition nodes into pinned (use stored outputs) and rerun.
+        let (pinned, _rerun) = plan.partition_nodes(&node_ids, &predecessors);
+
+        // Pre-populate outputs with pinned values.
+        let outputs: Arc<DashMap<NodeId, serde_json::Value>> = Arc::new(DashMap::new());
+        for (node_id, output) in &plan.pinned_outputs {
+            if pinned.contains(node_id) {
+                outputs.insert(*node_id, output.clone());
+            }
+        }
+
+        // Build execution state — mark pinned nodes as Completed.
+        let mut exec_state = ExecutionState::new(execution_id, workflow.id, &node_ids);
+        exec_state.transition_status(ExecutionStatus::Running)?;
+        for &node_id in &pinned {
+            if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
+                let _ = ns.transition_to(NodeState::Ready);
+                let _ = ns.transition_to(NodeState::Running);
+                let _ = ns.transition_to(NodeState::Completed);
+            }
+        }
+
+        let semaphore = Arc::new(Semaphore::new(budget.max_concurrent_nodes));
+        let cancel_token = CancellationToken::new();
+        let mut repo_version = 0u64;
+
+        // Determine seed nodes: nodes in rerun set whose predecessors are all pinned.
+        let seed_nodes: Vec<NodeId> = node_ids
+            .iter()
+            .copied()
+            .filter(|n| !pinned.contains(n))
+            .filter(|n| {
+                predecessors
+                    .get(n)
+                    .map(|preds| preds.iter().all(|p| pinned.contains(p)))
+                    .unwrap_or(true) // no predecessors = entry node
+            })
+            .collect();
+
+        // Use override inputs if provided.
+        let input = plan
+            .input_overrides
+            .get(&plan.replay_from)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+
+        let error_strategy = workflow.config.error_strategy;
+
+        // Run the frontier loop — same as execute_workflow, just different seed + pre-populated outputs.
+        let failed_node = self
+            .run_frontier(
+                &graph,
+                &node_map,
+                &outputs,
+                &semaphore,
+                &cancel_token,
+                &mut exec_state,
+                execution_id,
+                workflow.id,
+                &input,
+                &mut repo_version,
+                &budget,
+                &started,
+                error_strategy,
+                seed_nodes,
+                HashMap::new(),
+                HashMap::new(),
+            )
+            .await;
+
+        let elapsed = started.elapsed();
+        let final_status = determine_final_status(&failed_node, &cancel_token);
+        let _ = exec_state.transition_status(final_status);
+
+        self.emit_event(ExecutionEvent::ExecutionFinished {
+            execution_id,
+            success: final_status == ExecutionStatus::Completed,
+            elapsed,
+        });
+
+        let node_outputs: HashMap<NodeId, serde_json::Value> = outputs
+            .iter()
+            .map(|r| (*r.key(), r.value().clone()))
+            .collect();
+
+        let node_errors: HashMap<NodeId, String> = exec_state
+            .node_states
+            .iter()
+            .filter_map(|(&id, ns)| ns.error_message.as_ref().map(|msg| (id, msg.clone())))
+            .collect();
+
+        Ok(ExecutionResult {
+            execution_id,
+            status: final_status,
+            node_outputs,
+            node_errors,
+            duration: elapsed,
+        })
+    }
+
     /// Execute a workflow from start to finish.
     ///
     /// Builds an execution plan for validation, then processes nodes

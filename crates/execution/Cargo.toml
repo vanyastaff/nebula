@@ -20,5 +20,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 
+[dev-dependencies]
+uuid = { workspace = true }
+
 [lib]
 doctest = false

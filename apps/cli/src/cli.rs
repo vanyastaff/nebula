@@ -30,6 +30,9 @@ pub enum Command {
     /// Validate a workflow definition without executing it.
     Validate(ValidateArgs),
 
+    /// Replay a previous execution from a specific node.
+    Replay(ReplayArgs),
+
     /// List and inspect available actions.
     Actions {
         #[command(subcommand)]
@@ -220,6 +223,29 @@ pub struct RunArgs {
     pub tui: bool,
 
     /// Output format (auto-detects: text for terminal, json for pipes).
+    #[arg(long)]
+    pub format: Option<OutputFormat>,
+}
+
+/// Arguments for the `replay` command.
+#[derive(Parser)]
+pub struct ReplayArgs {
+    /// Path to the workflow file (YAML or JSON).
+    pub workflow: PathBuf,
+
+    /// Node name to replay from (re-execute this node and all downstream).
+    #[arg(long)]
+    pub from: String,
+
+    /// JSON file with stored outputs from previous execution (pinned nodes).
+    #[arg(long)]
+    pub outputs_file: Option<PathBuf>,
+
+    /// Override input for the replay-from node.
+    #[arg(short, long, default_value = "{}")]
+    pub input: String,
+
+    /// Output format.
     #[arg(long)]
     pub format: Option<OutputFormat>,
 }
