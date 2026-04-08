@@ -253,30 +253,95 @@ impl PluginMetadataBuilder {
     }
 
     /// Set the author or organization name.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_plugin::PluginMetadata;
+    ///
+    /// let meta = PluginMetadata::builder("slack", "Slack")
+    ///     .author("Acme Corp")
+    ///     .build()
+    ///     .unwrap();
+    ///
+    /// assert_eq!(meta.author(), Some("Acme Corp"));
+    /// ```
     pub fn author(mut self, author: impl Into<String>) -> Self {
         self.author = Some(author.into());
         self
     }
 
     /// Set the SPDX license identifier (e.g. `"MIT"`, `"Apache-2.0"`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_plugin::PluginMetadata;
+    ///
+    /// let meta = PluginMetadata::builder("slack", "Slack")
+    ///     .license("Apache-2.0")
+    ///     .build()
+    ///     .unwrap();
+    ///
+    /// assert_eq!(meta.license(), Some("Apache-2.0"));
+    /// ```
     pub fn license(mut self, license: impl Into<String>) -> Self {
         self.license = Some(license.into());
         self
     }
 
     /// Set the homepage URL.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_plugin::PluginMetadata;
+    ///
+    /// let meta = PluginMetadata::builder("slack", "Slack")
+    ///     .homepage("https://example.com")
+    ///     .build()
+    ///     .unwrap();
+    ///
+    /// assert_eq!(meta.homepage(), Some("https://example.com"));
+    /// ```
     pub fn homepage(mut self, url: impl Into<String>) -> Self {
         self.homepage = Some(url.into());
         self
     }
 
     /// Set the source repository URL.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_plugin::PluginMetadata;
+    ///
+    /// let meta = PluginMetadata::builder("slack", "Slack")
+    ///     .repository("https://github.com/example/slack-plugin")
+    ///     .build()
+    ///     .unwrap();
+    ///
+    /// assert_eq!(meta.repository(), Some("https://github.com/example/slack-plugin"));
+    /// ```
     pub fn repository(mut self, url: impl Into<String>) -> Self {
         self.repository = Some(url.into());
         self
     }
 
     /// Set the minimum required Nebula engine version (semver string).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_plugin::PluginMetadata;
+    ///
+    /// let meta = PluginMetadata::builder("slack", "Slack")
+    ///     .nebula_version("0.5.0")
+    ///     .build()
+    ///     .unwrap();
+    ///
+    /// assert_eq!(meta.nebula_version(), Some("0.5.0"));
+    /// ```
     pub fn nebula_version(mut self, version: impl Into<String>) -> Self {
         self.nebula_version = Some(version.into());
         self
@@ -429,10 +494,12 @@ mod tests {
         let meta = PluginMetadata::builder("slack", "Slack").build().unwrap();
         let json = serde_json::to_string(&meta).unwrap();
         // None fields should be skipped entirely (skip_serializing_if = "Option::is_none")
-        assert!(!json.contains("author"));
-        assert!(!json.contains("license"));
-        assert!(!json.contains("homepage"));
-        assert!(!json.contains("repository"));
-        assert!(!json.contains("nebula_version"));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let obj = value.as_object().unwrap();
+        assert!(!obj.contains_key("author"));
+        assert!(!obj.contains_key("license"));
+        assert!(!obj.contains_key("homepage"));
+        assert!(!obj.contains_key("repository"));
+        assert!(!obj.contains_key("nebula_version"));
     }
 }

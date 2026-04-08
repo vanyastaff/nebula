@@ -41,6 +41,32 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///
     /// The engine calls this once at plugin-load time to register available
     /// actions. Returns an empty list by default.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_core::{ActionKey, InterfaceVersion};
+    /// use nebula_plugin::{Plugin, PluginMetadata, descriptor::ActionDescriptor};
+    ///
+    /// #[derive(Debug)]
+    /// struct MyPlugin { meta: PluginMetadata }
+    ///
+    /// impl Plugin for MyPlugin {
+    ///     fn metadata(&self) -> &PluginMetadata { &self.meta }
+    ///
+    ///     fn actions(&self) -> Vec<ActionDescriptor> {
+    ///         vec![ActionDescriptor {
+    ///             key: ActionKey::new("send_message").unwrap(),
+    ///             name: "Send Message".into(),
+    ///             description: "Sends a message.".into(),
+    ///             version: InterfaceVersion::new(1, 0),
+    ///         }]
+    ///     }
+    /// }
+    ///
+    /// let plugin = MyPlugin { meta: PluginMetadata::builder("my", "My").build().unwrap() };
+    /// assert_eq!(plugin.actions().len(), 1);
+    /// ```
     fn actions(&self) -> Vec<ActionDescriptor> {
         vec![]
     }
@@ -49,6 +75,31 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///
     /// The engine calls this once at plugin-load time to register available
     /// credential schemas. Returns an empty list by default.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_core::CredentialKey;
+    /// use nebula_plugin::{Plugin, PluginMetadata, descriptor::CredentialDescriptor};
+    ///
+    /// #[derive(Debug)]
+    /// struct MyPlugin { meta: PluginMetadata }
+    ///
+    /// impl Plugin for MyPlugin {
+    ///     fn metadata(&self) -> &PluginMetadata { &self.meta }
+    ///
+    ///     fn credentials(&self) -> Vec<CredentialDescriptor> {
+    ///         vec![CredentialDescriptor {
+    ///             key: CredentialKey::new("my_oauth2").unwrap(),
+    ///             name: "My OAuth2".into(),
+    ///             description: "OAuth2 credentials.".into(),
+    ///         }]
+    ///     }
+    /// }
+    ///
+    /// let plugin = MyPlugin { meta: PluginMetadata::builder("my", "My").build().unwrap() };
+    /// assert_eq!(plugin.credentials().len(), 1);
+    /// ```
     fn credentials(&self) -> Vec<CredentialDescriptor> {
         vec![]
     }
@@ -56,7 +107,32 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// Resource types this plugin provides.
     ///
     /// The engine calls this once at plugin-load time to register available
-    /// resource factories. Returns an empty list by default.
+    /// resource types. Returns an empty list by default.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_core::ResourceKey;
+    /// use nebula_plugin::{Plugin, PluginMetadata, descriptor::ResourceDescriptor};
+    ///
+    /// #[derive(Debug)]
+    /// struct MyPlugin { meta: PluginMetadata }
+    ///
+    /// impl Plugin for MyPlugin {
+    ///     fn metadata(&self) -> &PluginMetadata { &self.meta }
+    ///
+    ///     fn resources(&self) -> Vec<ResourceDescriptor> {
+    ///         vec![ResourceDescriptor {
+    ///             key: ResourceKey::new("my_client").unwrap(),
+    ///             name: "My Client".into(),
+    ///             description: "HTTP client.".into(),
+    ///         }]
+    ///     }
+    /// }
+    ///
+    /// let plugin = MyPlugin { meta: PluginMetadata::builder("my", "My").build().unwrap() };
+    /// assert_eq!(plugin.resources().len(), 1);
+    /// ```
     fn resources(&self) -> Vec<ResourceDescriptor> {
         vec![]
     }
@@ -71,6 +147,27 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///
     /// Returns [`PluginError`] if initialization fails. The engine will refuse
     /// to register the plugin and surface the error to the caller.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_plugin::{Plugin, PluginError, PluginMetadata};
+    ///
+    /// #[derive(Debug)]
+    /// struct MyPlugin { meta: PluginMetadata }
+    ///
+    /// impl Plugin for MyPlugin {
+    ///     fn metadata(&self) -> &PluginMetadata { &self.meta }
+    ///
+    ///     fn on_load(&self) -> Result<(), PluginError> {
+    ///         // Perform initialization here.
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// let plugin = MyPlugin { meta: PluginMetadata::builder("my", "My").build().unwrap() };
+    /// assert!(plugin.on_load().is_ok());
+    /// ```
     fn on_load(&self) -> Result<(), PluginError> {
         Ok(())
     }
@@ -84,6 +181,27 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///
     /// Returns [`PluginError`] if cleanup fails. The engine logs the error but
     /// continues unloading regardless.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_plugin::{Plugin, PluginError, PluginMetadata};
+    ///
+    /// #[derive(Debug)]
+    /// struct MyPlugin { meta: PluginMetadata }
+    ///
+    /// impl Plugin for MyPlugin {
+    ///     fn metadata(&self) -> &PluginMetadata { &self.meta }
+    ///
+    ///     fn on_unload(&self) -> Result<(), PluginError> {
+    ///         // Flush buffers, close connections, etc.
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// let plugin = MyPlugin { meta: PluginMetadata::builder("my", "My").build().unwrap() };
+    /// assert!(plugin.on_unload().is_ok());
+    /// ```
     fn on_unload(&self) -> Result<(), PluginError> {
         Ok(())
     }

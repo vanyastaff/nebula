@@ -6,11 +6,14 @@
 //! example "Slack", "HTTP Request", or "PostgreSQL". Each plugin bundles:
 //!
 //! - [`PluginMetadata`] — key, name, version, group, icon, docs URL
-//! - Component registration is done directly in the engine via `register_credential`, `register_resource`, `register_action`
+//! - [`ActionDescriptor`], [`CredentialDescriptor`], [`ResourceDescriptor`] — lightweight
+//!   descriptors declaring what the plugin provides, returned by the [`Plugin`] trait methods
+//!   `actions()`, `credentials()`, and `resources()` respectively
 //!
 //! ## Core Types
 //!
-//! - [`Plugin`] — base trait every plugin implements
+//! - [`Plugin`] — base trait every plugin implements; provides `actions()`, `credentials()`,
+//!   `resources()`, `on_load()`, and `on_unload()` with default no-op implementations
 //! - [`PluginMetadata`] — static descriptor with builder API
 //! - [`PluginType`] — enum wrapping a single plugin or a versioned set
 //! - [`PluginVersions`] — multi-version container keyed by `u32`

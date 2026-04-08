@@ -24,3 +24,5 @@ Plugin packaging unit — the user-visible integration bundle (e.g., Slack, HTTP
 <!-- reviewed: 2026-04-02 -->
 
 <!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
+
+<!-- reviewed: 2026-04-07 — PR #232 doc fixes: wording, lib.rs crate docs, JSON test robustness, # Examples on new builder/trait methods -->
