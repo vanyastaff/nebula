@@ -56,6 +56,7 @@
 #![warn(clippy::all)]
 
 mod context;
+pub mod deliverer;
 mod environment;
 mod error;
 mod handle;
@@ -71,6 +72,7 @@ mod traits;
 pub mod verifier;
 
 pub use context::TriggerCtx;
+pub use deliverer::{WebhookDeliverer, WebhookEndpoint};
 pub use environment::Environment;
 pub use error::{Error, Result};
 pub use handle::TriggerHandle;

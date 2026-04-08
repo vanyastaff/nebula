@@ -41,6 +41,9 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 
+# HTTP client (outbound webhook delivery)
+reqwest = { workspace = true, features = ["json", "rustls"] }
+
 # Logging
 tracing = { workspace = true }
 
