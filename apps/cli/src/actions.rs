@@ -22,6 +22,8 @@ pub fn register_builtins(registry: &ActionRegistry) {
     registry.register_stateless(FilterAction::new());
     registry.register_stateless(FailAction::new());
     registry.register_stateless(DelayAction::new());
+    registry.register_stateless(HttpGetAction::new());
+    registry.register_stateless(HttpPostAction::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -378,5 +380,156 @@ impl StatelessAction for DelayAction {
         let ms = input.get("ms").and_then(|v| v.as_u64()).unwrap_or(100);
         tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
         Ok(ActionResult::success(input))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// http.get — perform an HTTP GET request
+// ---------------------------------------------------------------------------
+
+struct HttpGetAction {
+    meta: ActionMetadata,
+}
+
+impl HttpGetAction {
+    fn new() -> Self {
+        Self {
+            meta: ActionMetadata::new(
+                action_key!("http.get"),
+                "HTTP GET",
+                "Perform an HTTP GET request",
+            ),
+        }
+    }
+}
+
+impl ActionDependencies for HttpGetAction {}
+impl Action for HttpGetAction {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl StatelessAction for HttpGetAction {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    async fn execute(
+        &self,
+        input: Self::Input,
+        _ctx: &impl Context,
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
+        let url = input
+            .get("url")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ActionError::validation("missing required field: url"))?;
+
+        let client = reqwest::Client::new();
+        let mut request = client.get(url);
+
+        if let Some(headers) = input.get("headers").and_then(|v| v.as_object()) {
+            for (key, value) in headers {
+                if let Some(val) = value.as_str() {
+                    request = request.header(key.as_str(), val);
+                }
+            }
+        }
+
+        let response = request.send().await.map_err(|e| {
+            if e.is_timeout() {
+                ActionError::retryable(format!("HTTP timeout: {e}"))
+            } else if e.is_connect() {
+                ActionError::retryable(format!("connection failed: {e}"))
+            } else {
+                ActionError::fatal(format!("HTTP request failed: {e}"))
+            }
+        })?;
+
+        let status = response.status().as_u16();
+        let body = response
+            .text()
+            .await
+            .map_err(|e| ActionError::fatal(format!("failed to read body: {e}")))?;
+
+        Ok(ActionResult::success(serde_json::json!({
+            "status": status,
+            "body": body,
+        })))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// http.post — perform an HTTP POST request
+// ---------------------------------------------------------------------------
+
+struct HttpPostAction {
+    meta: ActionMetadata,
+}
+
+impl HttpPostAction {
+    fn new() -> Self {
+        Self {
+            meta: ActionMetadata::new(
+                action_key!("http.post"),
+                "HTTP POST",
+                "Perform an HTTP POST request with JSON body",
+            ),
+        }
+    }
+}
+
+impl ActionDependencies for HttpPostAction {}
+impl Action for HttpPostAction {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl StatelessAction for HttpPostAction {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    async fn execute(
+        &self,
+        input: Self::Input,
+        _ctx: &impl Context,
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
+        let url = input
+            .get("url")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ActionError::validation("missing required field: url"))?;
+
+        let body = input.get("body").cloned().unwrap_or(serde_json::json!({}));
+        let client = reqwest::Client::new();
+        let mut request = client.post(url).json(&body);
+
+        if let Some(headers) = input.get("headers").and_then(|v| v.as_object()) {
+            for (key, value) in headers {
+                if let Some(val) = value.as_str() {
+                    request = request.header(key.as_str(), val);
+                }
+            }
+        }
+
+        let response = request.send().await.map_err(|e| {
+            if e.is_timeout() {
+                ActionError::retryable(format!("HTTP timeout: {e}"))
+            } else if e.is_connect() {
+                ActionError::retryable(format!("connection failed: {e}"))
+            } else {
+                ActionError::fatal(format!("HTTP request failed: {e}"))
+            }
+        })?;
+
+        let status = response.status().as_u16();
+        let body = response
+            .text()
+            .await
+            .map_err(|e| ActionError::fatal(format!("failed to read body: {e}")))?;
+
+        Ok(ActionResult::success(serde_json::json!({
+            "status": status,
+            "body": body,
+        })))
     }
 }

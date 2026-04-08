@@ -1,28 +1,30 @@
 [package]
-name = "nebula-plugin"
+name = "nebula-sandbox"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 keywords.workspace = true
 authors.workspace = true
-description = "Plugin system with versioning, registry, and dynamic loading"
+description = "Plugin sandbox and isolation for the Nebula workflow engine"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+publish = false
 
 [features]
 default = []
+# wasm = ["dep:wasmtime"]  # future: WASM sandbox via wasmtime
 
 [dependencies]
-nebula-plugin-macros = { path = "macros" }
-nebula-core = { path = "../core" }
-nebula-error = { workspace = true, features = ["derive"] }
+nebula-action = { path = "../action" }
 
-serde = { workspace = true }
+async-trait = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 
+# Future: WASM runtime
+# wasmtime = { version = "...", optional = true }
 
-[dev-dependencies]
+[lib]
+doctest = false

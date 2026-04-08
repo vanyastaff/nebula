@@ -1,26 +1,22 @@
 # nebula-runtime
-Action execution layer — ActionRegistry, InProcessSandbox, data policies, and MemoryQueue.
+Action execution layer — ActionRegistry, data policies, and MemoryQueue.
 
 ## Invariants
-- **`InProcessSandbox` only** — Phase 2. No OS-process isolation, no WASM sandbox. Adding either is Phase 3 (ADR 008). Do not implement process/WASM isolation here.
-- Actions run in-process inside `SandboxedContext`. The engine calls `ActionRuntime`, which calls `InProcessSandbox`, which calls the action handler.
+- Actions run in-process inside `SandboxedContext`. The engine calls `ActionRuntime`, which calls the sandbox, which calls the action handler.
+- **Sandbox types re-exported from `nebula-sandbox`** for backward compatibility. New code should depend on `nebula-sandbox` directly.
 
 ## Key Decisions
 - `ActionRegistry` maps `ActionKey → InternalHandler` with version index. `get()` returns latest; `get_versioned()` returns specific version.
 - `DataPassingPolicy` / `LargeDataStrategy` enforce output size limits — oversized outputs can be redirected to blob storage.
 - `MemoryQueue` / `TaskQueue` for async task dispatch. `BoundedStreamBuffer` / `PushOutcome` for streaming backpressure.
-- `SandboxedContext` wraps `ActionContext` with the sandbox boundary — implements the `Context` trait.
-- `ActionRuntime::new(registry, sandbox, data_policy, metrics)` — no EventBus. Execution events removed (2026-04-04); runtime records metrics only.
+- `SandboxRunner` trait, `InProcessSandbox`, `SandboxedContext` — **moved to `nebula-sandbox`**, re-exported here.
+- `ActionRuntime::new(registry, sandbox, data_policy, metrics)` — no EventBus. Runtime records metrics only.
 
 ## Traps
-- Phase 3 will add OS-process sandbox. When that happens, `InProcessSandbox` → `SandboxRunner` trait split is planned. Don't tightly couple to `InProcessSandbox` concrete type.
-- `ActionExecutor` is the trait; `InProcessSandbox` is the Phase 2 impl. Use the trait in test mocks.
+- `sandbox.rs` is now a re-export module. Actual implementation lives in `nebula-sandbox`.
+- `ActionExecutor` type alias also from `nebula-sandbox`.
 
 ## Relations
-- Depends on nebula-action, nebula-core. Used by nebula-engine. Sits between engine (scheduling) and action (business logic).
+- Depends on nebula-action, nebula-core, **nebula-sandbox**. Used by nebula-engine.
 
-<!-- reviewed: 2026-03-30 — derive Classify migration -->
-
-<!-- reviewed: 2026-04-02 -->
-
-<!-- reviewed: 2026-04-06 — added version-aware ActionRegistry (get_versioned, versions); fixed version index dedup on re-register and cleanup on remove -->
+<!-- reviewed: 2026-04-08 — sandbox types moved to nebula-sandbox crate, runtime re-exports for compat -->

@@ -20,19 +20,16 @@
 //! - [`PluginRegistry`] — in-memory registry mapping [`PluginKey`] → [`PluginType`]
 //! - [`PluginError`] — error type for plugin operations
 //!
-//! ## Dynamic Loading (feature-gated)
+//! ## Plugin Loading
 //!
-//! With the `dynamic-loading` feature enabled, `PluginLoader` can load
-//! plugins from shared libraries (`.dll` / `.so` / `.dylib`).
+//! Plugin loading (WASM sandbox) is handled by the `nebula-sandbox` crate.
+//! This crate provides only the trait, metadata, and registry — no I/O or FFI.
 
-// `deny` instead of `forbid` so the `loader` module can use `allow(unsafe_code)` for FFI.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod descriptor;
 mod error;
-#[cfg(feature = "dynamic-loading")]
-mod loader;
 mod metadata;
 mod plugin;
 mod plugin_type;
@@ -46,8 +43,6 @@ pub use nebula_plugin_macros::Plugin;
 pub use descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor};
 
 pub use error::PluginError;
-#[cfg(feature = "dynamic-loading")]
-pub use loader::{PluginLoadError, PluginLoader};
 pub use metadata::PluginMetadata;
 pub use plugin::Plugin;
 pub use plugin_type::PluginType;
