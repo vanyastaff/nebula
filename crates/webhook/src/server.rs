@@ -2,6 +2,7 @@
 
 use crate::{
     Error, Result, TriggerCtx, TriggerHandle, WebhookPayload,
+    queue::InboundQueue,
     route_map::{RouteMap, SharedRouteMap},
 };
 use axum::{
@@ -62,6 +63,8 @@ impl Default for WebhookServerConfig {
 pub(crate) struct ServerState {
     pub(crate) routes: SharedRouteMap,
     pub(crate) config: Arc<WebhookServerConfig>,
+    /// Optional durable queue: events are enqueued before HTTP 200 is sent.
+    pub(crate) inbound_queue: Option<Arc<dyn InboundQueue>>,
 }
 
 /// Singleton HTTP webhook server
@@ -73,10 +76,12 @@ pub struct WebhookServer {
     routes: SharedRouteMap,
     server_handle: Arc<Mutex<Option<JoinHandle<Result<()>>>>>,
     shutdown: CancellationToken,
+    /// Optional durable queue wired in via [`with_inbound_queue`](WebhookServer::with_inbound_queue).
+    inbound_queue: Option<Arc<dyn InboundQueue>>,
 }
 
 impl WebhookServer {
-    /// Create a new webhook server
+    /// Create a new webhook server.
     ///
     /// This starts the HTTP server immediately.
     pub async fn new(config: WebhookServerConfig) -> Result<Arc<Self>> {
@@ -96,10 +101,11 @@ impl WebhookServer {
             routes: routes.clone(),
             server_handle: Arc::new(Mutex::new(None)),
             shutdown: shutdown.clone(),
+            inbound_queue: None,
         });
 
         // Start the HTTP server
-        let handle = Self::start_server(config, routes, shutdown).await?;
+        let handle = Self::start_server(config, routes, None, shutdown).await?;
 
         // Store the handle
         *server.server_handle.lock().await = Some(handle);
@@ -125,7 +131,50 @@ impl WebhookServer {
             routes: routes.clone(),
             server_handle: Arc::new(Mutex::new(None)),
             shutdown: CancellationToken::new(),
+            inbound_queue: None,
         }))
+    }
+
+    /// Attach a durable inbound queue.
+    ///
+    /// When configured, each accepted webhook event is enqueued **before** the
+    /// HTTP 200 response is sent to the caller.  If the queue call fails the
+    /// server responds with HTTP 500 instead, ensuring the sender retries.
+    ///
+    /// The queue field is `Option` so existing users are unaffected.
+    ///
+    /// # Timing constraint
+    ///
+    /// This method **must** be called before the server starts accepting requests.
+    /// It returns a **new** `Arc<WebhookServer>` — requests dispatched through
+    /// the original `Arc` will not see the queue.  Prefer calling this
+    /// immediately after construction and discarding the original handle:
+    ///
+    /// ```no_run
+    /// use std::sync::Arc;
+    /// use nebula_webhook::{WebhookServer, WebhookServerConfig, queue::MemoryInboundQueue};
+    ///
+    /// # async fn run() -> nebula_webhook::Result<()> {
+    /// let queue = Arc::new(MemoryInboundQueue::new());
+    /// // Use new_embedded so no server is bound yet, then attach the queue.
+    /// let server = WebhookServer::new_embedded(WebhookServerConfig::default())?;
+    /// let server = server.with_inbound_queue(queue);
+    /// // `server` now has the queue wired in; mount server.router() into your app.
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_inbound_queue(self: Arc<Self>, queue: Arc<dyn InboundQueue>) -> Arc<Self> {
+        // SAFETY: We are the only Arc holder at construction time when this is
+        // called immediately after `new_embedded`. For the general case we need
+        // to reconstruct. We do it via a new Arc wrapping a fresh struct because
+        // WebhookServer is meant to be constructed once.
+        Arc::new(Self {
+            config: self.config.clone(),
+            routes: self.routes.clone(),
+            server_handle: self.server_handle.clone(),
+            shutdown: self.shutdown.clone(),
+            inbound_queue: Some(queue),
+        })
     }
 
     /// Build the webhook HTTP router for embedding into another server.
@@ -136,6 +185,7 @@ impl WebhookServer {
         let state = ServerState {
             routes: self.routes.clone(),
             config: self.config.clone(),
+            inbound_queue: self.inbound_queue.clone(),
         };
         let app = Router::new()
             .route(
@@ -164,11 +214,13 @@ impl WebhookServer {
     async fn start_server(
         config: Arc<WebhookServerConfig>,
         routes: SharedRouteMap,
+        inbound_queue: Option<Arc<dyn InboundQueue>>,
         shutdown: CancellationToken,
     ) -> Result<JoinHandle<Result<()>>> {
         let state = ServerState {
             routes: routes.clone(),
             config: config.clone(),
+            inbound_queue,
         };
 
         let app = Router::new()
@@ -358,6 +410,33 @@ async fn webhook_handler(
     // Create payload
     let payload = WebhookPayload::new(full_path.clone(), method.to_string(), headers_map, body);
 
+    // --- Durable inbound queue ---
+    // Enqueue BEFORE sending HTTP 200 so the event is persisted even if the
+    // process crashes immediately after.  If the queue call fails we return
+    // HTTP 500 so the sender retries.
+    if let Some(ref queue) = state.inbound_queue {
+        // TODO(security): `payload.headers` may contain sensitive values such as
+        // `Authorization` or `X-Hub-Signature`.  A follow-up should strip or
+        // redact secret headers before persisting them to the queue.
+        let event = serde_json::json!({
+            "path": payload.path.clone(),
+            "method": payload.method.clone(),
+            "headers": payload.headers.clone(),
+            "body": payload.body_str().unwrap_or("<binary>"),
+            "received_at": payload.received_at.to_rfc3339(),
+        });
+        match queue.enqueue(event).await {
+            Ok(task_id) => {
+                debug!(path = %full_path, task_id = %task_id, "Event enqueued to durable queue");
+            }
+            Err(e) => {
+                error!(path = %full_path, error = %e, "Failed to enqueue webhook event");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to enqueue event")
+                    .into_response();
+            }
+        }
+    }
+
     // Dispatch to registered route
     match state.routes.dispatch(&full_path, payload) {
         Ok(()) => {
@@ -461,5 +540,48 @@ mod tests {
 
         let _handle = server.subscribe(&ctx, None).await.unwrap();
         assert_eq!(server.route_count(), 1);
+    }
+
+    /// Verifies that a durable queue receives exactly one event when the
+    /// handler processes an incoming webhook request.
+    #[tokio::test]
+    async fn enqueue_called_on_incoming_request() {
+        use crate::queue::MemoryInboundQueue;
+        use axum::{
+            body::Body,
+            http::{self, Request},
+        };
+        use tower::util::ServiceExt as _;
+
+        let queue = StdArc::new(MemoryInboundQueue::new());
+        assert!(queue.is_empty());
+
+        let config = WebhookServerConfig {
+            path_prefix: "/webhooks".to_string(),
+            ..Default::default()
+        };
+        let server = WebhookServer::new_embedded(config).unwrap();
+        let server = server.with_inbound_queue(queue.clone());
+
+        let app = server.router();
+
+        // Register a route so the dispatch doesn't 404.
+        let route_path = "/webhooks/test-enqueue";
+        server.routes.register(route_path, None).unwrap();
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri(route_path)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"event":"ping"}"#))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The queue must have received exactly one event.
+        assert_eq!(queue.len(), 1, "expected one item enqueued");
+        let items = queue.drain();
+        assert_eq!(items[0]["path"], "/webhooks/test-enqueue");
     }
 }
