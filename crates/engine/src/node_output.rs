@@ -3,8 +3,8 @@
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use serde_json::value::RawValue;
 use serde_json::Value;
+use serde_json::value::RawValue;
 
 /// Lazy-parsed output via Box<RawValue>, cached after first parse.
 #[derive(Debug, Clone)]
@@ -16,10 +16,10 @@ pub struct NodeOutput {
 impl NodeOutput {
     /// Create from `Value`.
     pub fn from_value(value: &Value) -> Self {
-        let json_str = serde_json::to_string(value)
-            .expect("Value serialization to JSON should not fail");
-        let raw_box = RawValue::from_string(json_str)
-            .expect("RawValue construction should not fail");
+        let json_str =
+            serde_json::to_string(value).expect("Value serialization to JSON should not fail");
+        let raw_box =
+            RawValue::from_string(json_str).expect("RawValue construction should not fail");
         Self {
             raw: Arc::new(raw_box),
             parsed: OnceLock::new(),
@@ -36,8 +36,7 @@ impl NodeOutput {
     #[must_use]
     pub fn as_value(&self) -> &Value {
         self.parsed.get_or_init(|| {
-            serde_json::from_str(self.raw.get())
-                .expect("RawValue deserialization should not fail")
+            serde_json::from_str(self.raw.get()).expect("RawValue deserialization should not fail")
         })
     }
 }
