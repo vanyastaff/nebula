@@ -9,7 +9,7 @@ use nebula_core::{ActionKey, CredentialKey, InterfaceVersion, ResourceKey};
 
 /// Describes an action provided by a plugin without constructing the handler.
 ///
-/// A descriptor is returned by [`Plugin::actions`] and lets the engine
+/// A descriptor is returned by [`Plugin::actions()`](crate::plugin::Plugin::actions) and lets the engine
 /// enumerate available actions at startup or on-demand without calling into
 /// external systems.
 ///
@@ -42,7 +42,7 @@ pub struct ActionDescriptor {
 
 /// Describes a credential type provided by a plugin.
 ///
-/// Returned by [`Plugin::credentials`]. The engine uses these descriptors to
+/// Returned by [`Plugin::credentials()`](crate::plugin::Plugin::credentials). The engine uses these descriptors to
 /// know which credential schemas are available without loading actual credentials.
 ///
 /// # Examples
@@ -71,7 +71,7 @@ pub struct CredentialDescriptor {
 
 /// Describes a resource type provided by a plugin.
 ///
-/// Returned by [`Plugin::resources`]. Resources are long-lived objects (connection
+/// Returned by [`Plugin::resources()`](crate::plugin::Plugin::resources). Resources are long-lived objects (connection
 /// pools, HTTP clients) that actions share within a workflow run.
 ///
 /// # Examples
