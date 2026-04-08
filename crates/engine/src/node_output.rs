@@ -16,10 +16,12 @@ pub struct NodeOutput {
 impl NodeOutput {
     /// Create from `Value`.
     pub fn from_value(value: &Value) -> Self {
+        // Reason: serde_json::Value is always serializable to a JSON string.
         let json_str =
-            serde_json::to_string(value).expect("Value serialization to JSON should not fail");
-        let raw_box =
-            RawValue::from_string(json_str).expect("RawValue construction should not fail");
+            serde_json::to_string(value).expect("serde_json::Value is always valid JSON");
+        // Reason: the string was just produced by serde_json — always valid.
+        let raw_box = RawValue::from_string(json_str)
+            .expect("string from serde_json::to_string is valid JSON");
         Self {
             raw: Arc::new(raw_box),
             parsed: OnceLock::new(),
@@ -36,7 +38,8 @@ impl NodeOutput {
     #[must_use]
     pub fn as_value(&self) -> &Value {
         self.parsed.get_or_init(|| {
-            serde_json::from_str(self.raw.get()).expect("RawValue deserialization should not fail")
+            // Reason: RawValue guarantees its content is valid JSON.
+            serde_json::from_str(self.raw.get()).expect("RawValue content is guaranteed valid JSON")
         })
     }
 }

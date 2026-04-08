@@ -1,7 +1,6 @@
 //! Blob storage for oversized action outputs.
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::error::RuntimeError;
