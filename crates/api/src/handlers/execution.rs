@@ -70,8 +70,9 @@ pub async fn list_executions(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to count executions: {}", e)))?;
 
-    // list_running gives us running IDs — for workflow-scoped list we return running
-    // executions only (full history requires a future list() trait method).
+    // TODO: list_running() returns ALL running execution IDs with no workflow filter.
+    // Replace with a workflow-scoped query once ExecutionRepo gains a list(workflow_id)
+    // method. The `workflow_id` parameter is validated above but not yet applied.
     let running_ids = state
         .execution_repo
         .list_running()

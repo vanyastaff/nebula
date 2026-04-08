@@ -505,11 +505,18 @@ pub async fn execute_workflow(
 /// Loads the stored workflow, deserializes it as a
 /// [`nebula_workflow::WorkflowDefinition`], and runs structural validation
 /// (DAG cycle check, node references, schema version, etc.).
-/// Returns 200 OK when valid, or a 422 with a list of validation errors when not.
+///
+/// Always returns **200 OK**. The response body indicates the outcome:
+/// - `{valid: true, errors: []}` — definition is structurally valid.
+/// - `{valid: false, errors: ["…"]}` — definition has validation errors.
+///
+/// A 422 is only returned when the stored JSON cannot be parsed at all (i.e.
+/// the blob is not a `WorkflowDefinition`), which is treated as a validation
+/// error rather than a not-found condition.
 ///
 /// # Errors
 ///
-/// - [`ApiError::Validation`] if `id` is not a valid workflow ID or the definition is invalid.
+/// - [`ApiError::Validation`] if `id` is not a valid workflow ID or the definition cannot be parsed.
 /// - [`ApiError::NotFound`] if the workflow does not exist.
 /// - [`ApiError::Internal`] if the repository is unavailable.
 pub async fn validate_workflow_handler(

@@ -68,12 +68,11 @@ pub async fn auth_middleware(
             return Err(StatusCode::UNAUTHORIZED);
         }
 
-        // Constant-time comparison over all configured keys.
-        // `any()` stops early but the comparison itself is O(len) so no timing leak.
-        let matched = state
-            .api_keys
-            .iter()
-            .any(|k| constant_time_eq(k.as_bytes(), provided.as_bytes()));
+        // Fold over ALL keys without short-circuiting so the number of keys and
+        // which key matched cannot be inferred from elapsed time (timing oracle).
+        let matched = state.api_keys.iter().fold(false, |found, k| {
+            found | constant_time_eq(k.as_bytes(), provided.as_bytes())
+        });
 
         if !matched {
             return Err(StatusCode::UNAUTHORIZED);

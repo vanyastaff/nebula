@@ -15,15 +15,14 @@ Thin axum REST + WebSocket server — entry point for external clients.
 ## Traps
 - lib.rs and key modules are in Russian (consistent with early project docs). Don't translate.
 - `build_app()` returns the axum Router — compose middlewares here, not in individual route modules.
-- WebSocket message types are defined in `models` — changing them is a breaking API change.
+- WebSocket message types in `models` are a breaking API change.
+- Catalog registries on `AppState` are `Option` — absent → 503, not panic.
+- `validate_workflow_handler` always returns 200 OK — negative result is `{valid: false, errors}`, not 422.
+- `X-API-Key` prefix `nbl_sk_` required; wrong prefix → 401 no JWT fallback. Auth folds over ALL keys (no `.any()` early-exit — timing oracle).
+- Execution list uses `list_running()` only; workflow-scoped view filters in-memory.
+- `ApiConfig` has manual `Debug` redacting `jwt_secret`/`api_keys` — never add `#[derive(Debug)]`.
 
 ## Relations
 - Depends on nebula-storage, nebula-workflow, nebula-action, nebula-plugin. Highest layer.
-
-## Traps
-- Catalog registries (`action_registry`, `plugin_registry`) on `AppState` are `Option` — absent → 503, not panic. Wire via `with_action_registry()` / `with_plugin_registry()` at startup.
-- `validate_workflow_handler` deserialises stored flat JSON as `WorkflowDefinition` — unparseable blob → 422, not 404.
-- `X-API-Key` requires `nbl_sk_` prefix; wrong prefix → 401 with no JWT fallback. Keys: `ApiConfig.api_keys` (env `API_KEYS`) → `AppState.api_keys` via `with_api_keys()`. Constant-time compare.
-- Execution list uses `list_running()` only — no full history until `ExecutionRepo::list()` exists.
 
 <!-- reviewed: 2026-04-07 -->

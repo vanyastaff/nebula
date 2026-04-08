@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 /// API Server Configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ApiConfig {
     /// Host and port to bind (e.g. "0.0.0.0:8080")
     pub bind_address: SocketAddr,
@@ -54,6 +54,22 @@ impl Default for ApiConfig {
             rate_limit_per_second: 100,
             api_keys: Vec::new(),
         }
+    }
+}
+
+impl std::fmt::Debug for ApiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiConfig")
+            .field("bind_address", &self.bind_address)
+            .field("request_timeout", &self.request_timeout)
+            .field("max_body_size", &self.max_body_size)
+            .field("cors_allowed_origins", &self.cors_allowed_origins)
+            .field("enable_compression", &self.enable_compression)
+            .field("enable_tracing", &self.enable_tracing)
+            .field("jwt_secret", &"[REDACTED]")
+            .field("rate_limit_per_second", &self.rate_limit_per_second)
+            .field("api_keys", &"[REDACTED]")
+            .finish()
     }
 }
 

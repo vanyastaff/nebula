@@ -80,6 +80,7 @@ pub async fn get_action(
         name: meta.name.clone(),
         description: meta.description.clone(),
         version: format!("{}.{}", meta.version.major, meta.version.minor),
+        // IsolationLevel does not implement Display; {:?} produces the variant name.
         isolation_level: format!("{:?}", meta.isolation_level),
     }))
 }
@@ -104,21 +105,22 @@ pub async fn list_plugins(State(state): State<AppState>) -> ApiResult<Json<ListP
     let plugins: Vec<PluginSummary> = registry
         .keys()
         .into_iter()
-        .filter_map(|key| {
-            registry.get(&key).ok().map(|pt| {
-                let plugin = pt.latest().ok();
-                let (name, version) = plugin
-                    .as_ref()
-                    .map(|p| (p.name().to_string(), p.version()))
-                    .unwrap_or_else(|| (key.as_str().to_string(), 1));
-                PluginSummary {
-                    key: key.as_str().to_string(),
-                    name,
-                    version,
-                }
+        .map(|key| {
+            let pt = registry.get(&key).map_err(|e| {
+                ApiError::Internal(format!("Failed to get plugin '{}': {}", key.as_str(), e))
+            })?;
+            let plugin = pt.latest().ok();
+            let (name, version) = plugin
+                .as_ref()
+                .map(|p| (p.name().to_string(), p.version()))
+                .unwrap_or_else(|| (key.as_str().to_string(), 1));
+            Ok(PluginSummary {
+                key: key.as_str().to_string(),
+                name,
+                version,
             })
         })
-        .collect();
+        .collect::<Result<Vec<_>, ApiError>>()?;
 
     Ok(Json(ListPluginsResponse { plugins }))
 }
