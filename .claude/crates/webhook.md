@@ -12,12 +12,17 @@ Inbound webhook server — UUID-isolated endpoints per trigger, single server pe
 - `WebhookAction` trait: implement `on_subscribe` (register with external service), `on_webhook` (handle incoming), `on_unsubscribe` (cleanup), `test` (verify connection).
 
 ## Traps
-- Don't start multiple `WebhookServer` instances in one process — only one port is expected.
-- `TriggerCtx::webhook_url()` returns the full URL including the UUID. Use this when registering with the external provider in `on_subscribe`.
-- `on_webhook` returns `Option<Event>` — returning `None` acknowledges the webhook but emits no event (useful for filtering).
+- One `WebhookServer` per process — all triggers share one port.
+- `on_webhook` returning `None` acks the request but emits no event (used for filtering).
+- **Layer rule**: `webhook` is API layer — cannot import `nebula-runtime` (Exec). `InboundQueue` lives in `webhook::queue`; adapt to `nebula_runtime::TaskQueue` in the embedding app.
+- `with_inbound_queue` builds a new `Arc` — call before cloning the server Arc.
+- Enqueue failure → HTTP 500 so the sender retries (at-least-once).
+- `WebhookDeliverer`: 4xx = permanent failure; 5xx/conn errors retry. `max_retries=0` clamped to 1.
+- `metrics` constants are strings only — registry wiring is a TODO for nebula-telemetry.
+- `reqwest` is a regular dep (not dev-only) since 2026-04-07.
 
 ## Relations
-- Depends on nebula-resource (for `Context`). Used by nebula-runtime for webhook trigger management.
+- Depends on nebula-resource. Used by nebula-runtime for trigger management.
 
 <\!-- reviewed: 2026-03-25 -->
 
