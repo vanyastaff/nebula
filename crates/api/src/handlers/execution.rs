@@ -104,6 +104,7 @@ pub async fn list_executions(
 /// # Errors
 ///
 /// - [`ApiError::Validation`] if `id` is not a valid execution ID.
+/// - [`ApiError::NotFound`] if no execution with that ID exists.
 /// - [`ApiError::Internal`] if the execution repository is unavailable.
 pub async fn get_execution_outputs(
     State(state): State<AppState>,
@@ -111,6 +112,14 @@ pub async fn get_execution_outputs(
 ) -> ApiResult<Json<ExecutionOutputsResponse>> {
     let execution_id = ExecutionId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {}", e)))?;
+
+    // Verify the execution exists before loading outputs.
+    state
+        .execution_repo
+        .get_state(execution_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to check execution: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Execution {} not found", id)))?;
 
     let outputs = state
         .execution_repo
@@ -358,6 +367,7 @@ pub async fn cancel_execution(
 /// # Errors
 ///
 /// - [`ApiError::Validation`] if `id` is not a valid execution ID.
+/// - [`ApiError::NotFound`] if no execution with that ID exists.
 /// - [`ApiError::Internal`] if the execution repository is unavailable.
 pub async fn get_execution_logs(
     State(state): State<AppState>,
@@ -365,6 +375,14 @@ pub async fn get_execution_logs(
 ) -> ApiResult<Json<ExecutionLogsResponse>> {
     let execution_id = ExecutionId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {}", e)))?;
+
+    // Verify the execution exists before loading the journal.
+    state
+        .execution_repo
+        .get_state(execution_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to check execution: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Execution {} not found", id)))?;
 
     let logs = state
         .execution_repo

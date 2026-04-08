@@ -31,14 +31,14 @@ pub async fn list_actions(State(state): State<AppState>) -> ApiResult<Json<ListA
     let actions: Vec<ActionSummary> = registry
         .keys()
         .map(|key| {
-            let version = registry
-                .get(key)
-                .map(|(meta, _)| format!("{}.{}", meta.version.major, meta.version.minor))
-                .unwrap_or_else(|| "1.0".to_string());
-            let name = registry
-                .get(key)
+            let entry = registry.get(key);
+            let name = entry
+                .as_ref()
                 .map(|(meta, _)| meta.name.clone())
                 .unwrap_or_else(|| key.as_str().to_string());
+            let version = entry
+                .map(|(meta, _)| format!("{}.{}", meta.version.major, meta.version.minor))
+                .unwrap_or_else(|| "1.0".to_string());
             ActionSummary {
                 key: key.as_str().to_string(),
                 name,

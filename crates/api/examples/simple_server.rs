@@ -20,12 +20,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
     let api_config = ApiConfig::default();
 
+    // Wire api_keys from ApiConfig so X-API-Key auth is honoured.
     let state = AppState::new(
         config,
         workflow_repo,
         execution_repo,
         api_config.jwt_secret.clone(),
-    );
+    )
+    .with_api_keys(api_config.api_keys.clone());
     let app = app::build_app(state, &api_config);
 
     app::serve(app, api_config.bind_address).await

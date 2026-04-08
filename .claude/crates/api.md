@@ -18,9 +18,11 @@ Thin axum REST + WebSocket server — entry point for external clients.
 - WebSocket message types in `models` are a breaking API change.
 - Catalog registries on `AppState` are `Option` — absent → 503, not panic.
 - `validate_workflow_handler` always returns 200 OK — negative result is `{valid: false, errors}`, not 422.
-- `X-API-Key` prefix `nbl_sk_` required; wrong prefix → 401 no JWT fallback. Auth folds over ALL keys (no `.any()` early-exit — timing oracle).
-- Execution list uses `list_running()` only; workflow-scoped view filters in-memory.
-- `ApiConfig` has manual `Debug` redacting `jwt_secret`/`api_keys` — never add `#[derive(Debug)]`.
+- Auth folds over ALL keys without short-circuit (timing oracle). `.fold()` is intentional — do not replace with `.any()`.
+- `api_keys` from `ApiConfig` must be passed to `.with_api_keys()` after `AppState::new()`. `build_app` does not wire this automatically.
+- `get_execution_outputs` and `get_execution_logs` call `get_state` first — return 404 for unknown IDs.
+- Execution list uses `list_running()` only; workflow-scoped filter is in-memory (TODO).
+- `ApiConfig` has manual `Debug` redacting secrets — never add `#[derive(Debug)]`.
 
 ## Relations
 - Depends on nebula-storage, nebula-workflow, nebula-action, nebula-plugin. Highest layer.
