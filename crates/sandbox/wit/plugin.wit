@@ -1,0 +1,50 @@
+package nebula:plugin@0.1.0;
+
+/// Metadata returned by the plugin on load.
+record plugin-metadata {
+    /// Unique plugin key (e.g. "slack", "http-request").
+    key: string,
+    /// Human-readable name.
+    name: string,
+    /// Plugin version (1-based).
+    version: u32,
+    /// Description of the plugin.
+    description: string,
+    /// Actions this plugin provides.
+    actions: list<action-descriptor>,
+}
+
+/// Describes an action provided by the plugin.
+record action-descriptor {
+    /// Unique action key within this plugin.
+    key: string,
+    /// Human-readable action name.
+    name: string,
+    /// Description of what the action does.
+    description: string,
+}
+
+/// Error returned by execute.
+record execute-error {
+    /// Error code (e.g. "VALIDATION", "TIMEOUT", "FATAL").
+    code: string,
+    /// Human-readable error message.
+    message: string,
+    /// Whether the error is retryable.
+    retryable: bool,
+}
+
+/// The world that every Nebula plugin component must target.
+world nebula-plugin {
+    /// Host provides HTTP capability to the plugin.
+    import host-http-request: func(method: string, url: string, headers-json: string, body: string) -> result<string, string>;
+
+    /// Host provides logging.
+    import host-log: func(level: string, message: string);
+
+    /// Return plugin metadata and action descriptors.
+    export metadata: func() -> plugin-metadata;
+
+    /// Execute an action. Takes action key + JSON input, returns JSON output.
+    export execute: func(action-key: string, input-json: string) -> result<string, execute-error>;
+}

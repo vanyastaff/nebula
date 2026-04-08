@@ -14,17 +14,19 @@ publish = false
 
 [features]
 default = []
-# wasm = ["dep:wasmtime"]  # future: WASM sandbox via wasmtime
+wasm = ["dep:extism"]
 
 [dependencies]
 nebula-action = { path = "../action" }
 
 async-trait = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true }
 
-# Future: WASM runtime
-# wasmtime = { version = "...", optional = true }
+# WASM sandbox via extism (wraps wasmtime)
+extism = { version = "1.21", optional = true }
 
 [lib]
 doctest = false
