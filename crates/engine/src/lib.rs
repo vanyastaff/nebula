@@ -17,6 +17,7 @@
 pub mod credential_accessor;
 pub mod engine;
 pub mod error;
+pub mod node_output;
 pub(crate) mod resolver;
 // pub(crate) mod resource;
 pub mod resource_accessor;
@@ -25,6 +26,7 @@ pub mod result;
 pub use credential_accessor::EngineCredentialAccessor;
 pub use engine::WorkflowEngine;
 pub use error::EngineError;
+pub use node_output::NodeOutput;
 pub use resource_accessor::EngineResourceAccessor;
 pub use result::ExecutionResult;
 

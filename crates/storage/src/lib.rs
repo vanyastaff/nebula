@@ -17,6 +17,8 @@
 mod backend;
 mod error;
 mod execution_repo;
+/// Serialization format abstraction (JSON / MessagePack).
+pub mod format;
 mod workflow_repo;
 
 pub use backend::{MemoryStorage, MemoryStorageTyped};
@@ -24,6 +26,7 @@ pub use backend::{MemoryStorage, MemoryStorageTyped};
 pub use backend::{PgExecutionRepo, PgWorkflowRepo, PostgresStorage, PostgresStorageConfig};
 pub use error::StorageError;
 pub use execution_repo::{ExecutionRepo, ExecutionRepoError, InMemoryExecutionRepo};
+pub use format::StorageFormat;
 pub use storage::Storage;
 pub use workflow_repo::{InMemoryWorkflowRepo, WorkflowRepo, WorkflowRepoError};
 

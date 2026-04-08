@@ -1,24 +1,18 @@
-//! Blob storage for large action outputs.
-//!
-//! When a node output exceeds the configured max-node-output-bytes threshold,
-//! the runtime can spill data to external blob storage instead of rejecting it.
+//! Blob storage for oversized action outputs.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::error::RuntimeError;
 
-/// Reference to data stored in external blob storage.
-///
-/// Created when oversized node output is spilled via [`BlobStorage::write`].
-/// The engine can later retrieve the data using [`BlobStorage::read`].
+/// Reference to stored blob data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlobRef {
-    /// URI identifying the blob (e.g., `"s3://bucket/key"`, `"file:///tmp/blob-123"`).
+    /// Blob URI (e.g., `"s3://bucket/key"`).
     pub uri: String,
-    /// Size of the stored data in bytes.
+    /// Size in bytes.
     pub size_bytes: u64,
-    /// MIME content type.
+    /// MIME type.
     pub content_type: String,
 }
 
