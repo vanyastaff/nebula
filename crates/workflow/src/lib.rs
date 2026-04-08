@@ -33,7 +33,7 @@ pub use definition::{
 };
 pub use error::WorkflowError;
 pub use graph::DependencyGraph;
-pub use node::{NodeDefinition, ParamValue};
+pub use node::{NodeDefinition, ParamValue, RateLimit};
 pub use state::NodeState;
 pub use validate::validate_workflow;
 

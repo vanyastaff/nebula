@@ -37,6 +37,30 @@ pub struct NodeDefinition {
     /// Useful for debugging workflows without removing nodes from the graph.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Optional rate limit for this node's action.
+    /// Engine throttles execution to stay within the limit.
+    #[serde(default)]
+    pub rate_limit: Option<RateLimit>,
+}
+
+/// Rate limit configuration for an action.
+///
+/// Engine enforces this before dispatching the node — queuing requests
+/// that exceed the limit.
+///
+/// # Examples
+///
+/// ```yaml
+/// rate_limit:
+///   max_requests: 60
+///   window_secs: 60
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RateLimit {
+    /// Maximum requests allowed within the window.
+    pub max_requests: u32,
+    /// Window duration in seconds.
+    pub window_secs: u64,
 }
 
 fn default_true() -> bool {
@@ -73,6 +97,7 @@ impl NodeDefinition {
             timeout: None,
             description: None,
             enabled: true,
+            rate_limit: None,
         })
     }
 

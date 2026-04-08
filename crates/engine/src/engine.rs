@@ -1049,6 +1049,14 @@ impl WorkflowEngine {
             None
         };
 
+        // Build rate limiter from node definition if configured.
+        let rate_limiter = node_def.rate_limit.as_ref().and_then(|rl| {
+            let refill_rate = rl.max_requests as f64 / rl.window_secs.max(1) as f64;
+            nebula_resilience::rate_limiter::TokenBucket::new(rl.max_requests as usize, refill_rate)
+                .ok()
+                .map(Arc::new)
+        });
+
         join_set.spawn(
             NodeTask {
                 runtime,
@@ -1065,6 +1073,7 @@ impl WorkflowEngine {
                 credentials,
                 resources,
                 credential_refresh,
+                rate_limiter,
             }
             .run(),
         );
@@ -1298,6 +1307,8 @@ struct NodeTask {
     /// TODO: when per-node credential declarations are populated from action
     /// dependency metadata, pass the actual credential ID(s) instead.
     credential_refresh: Option<CredentialRefreshFn>,
+    /// Optional rate limiter shared with other nodes using the same ActionKey.
+    rate_limiter: Option<Arc<nebula_resilience::rate_limiter::TokenBucket>>,
 }
 
 impl NodeTask {
@@ -1335,6 +1346,18 @@ impl NodeTask {
         )
         .with_credentials(self.credentials.clone())
         .with_resources(self.resources.clone());
+
+        // Acquire rate limit permit if configured.
+        if let Some(ref limiter) = self.rate_limiter {
+            use nebula_resilience::rate_limiter::RateLimiter;
+            if limiter.acquire().await.is_err() {
+                tracing::warn!(
+                    node_id = %self.node_id,
+                    action_key = %self.action_key,
+                    "rate limit exceeded, request queued"
+                );
+            }
+        }
 
         // Use versioned action lookup when the node definition pins a version;
         // fall back to the latest registered handler otherwise.

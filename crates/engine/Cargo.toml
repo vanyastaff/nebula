@@ -22,6 +22,7 @@ nebula-execution = { path = "../execution" }
 nebula-credential = { path = "../credential" }
 nebula-resource = { path = "../resource" }
 nebula-runtime = { path = "../runtime" }
+nebula-resilience = { path = "../resilience" }
 nebula-storage = { path = "../storage" }
 nebula-metrics = { path = "../metrics" }
 nebula-telemetry = { path = "../telemetry" }

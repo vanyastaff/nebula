@@ -3649,6 +3649,7 @@ dependencies = [
  "nebula-expression",
  "nebula-metrics",
  "nebula-plugin",
+ "nebula-resilience",
  "nebula-resource",
  "nebula-runtime",
  "nebula-storage",

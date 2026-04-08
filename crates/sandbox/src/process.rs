@@ -101,13 +101,10 @@ impl ProcessSandbox {
             #[allow(unsafe_code)]
             unsafe {
                 cmd.pre_exec(move || {
-                    let caps: PluginCapabilities =
-                        serde_json::from_str(&caps_json).map_err(|e| {
-                            std::io::Error::other(format!("capability parse: {e}"))
-                        })?;
-                    crate::os_sandbox::apply_sandbox(&caps).map_err(|e| {
-                        std::io::Error::other(format!("sandbox setup: {e}"))
-                    })
+                    let caps: PluginCapabilities = serde_json::from_str(&caps_json)
+                        .map_err(|e| std::io::Error::other(format!("capability parse: {e}")))?;
+                    crate::os_sandbox::apply_sandbox(&caps)
+                        .map_err(|e| std::io::Error::other(format!("sandbox setup: {e}")))
                 });
             }
         }

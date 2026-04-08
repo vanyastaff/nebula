@@ -218,6 +218,7 @@ impl WorkflowBuilder {
                     timeout: None,
                     description: None,
                     enabled: true,
+                    rate_limit: None,
                 })
             })
             .collect::<crate::Result<Vec<_>>>()?;
