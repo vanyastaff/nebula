@@ -2,21 +2,21 @@
 Plugin isolation and sandboxing — SandboxRunner trait and implementations.
 
 ## Invariants
-- `SandboxRunner` is the common interface for action execution within isolation boundaries.
-- `InProcessSandbox` — trusted, in-process execution for built-in actions. No real isolation.
-- All sandbox types are `Send + Sync`. Async via `async_trait`.
+- `SandboxRunner` is the common interface for all action execution.
+- `InProcessSandbox` — trusted, in-process. For built-in actions.
+- `ProcessSandbox` — child process, stdin/stdout JSON. For community plugins. Timeout + kill_on_drop.
 
 ## Key Decisions
-- Extracted from `nebula-runtime` to isolate sandbox concerns. Runtime re-exports for backward compat.
-- Two planned implementations: `InProcessSandbox` (built-in, trusted) and `WasmSandbox` (community, wasmtime, feature-gated `wasm`).
-- WASM chosen over native FFI (stabby/libloading) — sandboxing built-in, portable `.wasm` files, no ABI issues.
-- `SandboxedContext` wraps `ActionContext` with capability checks (cancellation).
+- **Process isolation over WASM.** WASM rejected: most Rust I/O libs (tokio/reqwest/teloxide) don't compile to WASM. Process isolation lets plugins use any library.
+- Plugin response protocol: `{"output": {...}}` or `{"error": "...", "code": "...", "retryable": bool}`.
+- Permissions model in `permissions.rs`: network (domain allowlist), fs, env, credentials. OS enforcement (seccomp) planned.
 
 ## Traps
-- `ActionExecutor` is a type alias for a boxed closure, not a trait — used by `InProcessSandbox` only.
-- WASM feature not yet implemented — `wasm` feature gate reserved in Cargo.toml.
+- `ProcessSandbox` spawns a new process per execution call. Pooling not implemented.
+- `PluginResponse` uses `#[serde(untagged)]` — order of variants matters for deserialization.
+- Permissions are defined but not yet enforced at OS level (seccomp). Currently advisory.
 
 ## Relations
 - Depends on nebula-action. Used by nebula-runtime (re-export), nebula-engine (via runtime).
 
-<!-- created: 2026-04-08 -->
+<!-- reviewed: 2026-04-08 — replaced WASM/extism with process isolation -->

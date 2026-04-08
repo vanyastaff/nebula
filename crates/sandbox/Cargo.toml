@@ -12,10 +12,6 @@ homepage.workspace = true
 documentation.workspace = true
 publish = false
 
-[features]
-default = []
-wasm = ["dep:extism"]
-
 [dependencies]
 nebula-action = { path = "../action" }
 
@@ -23,10 +19,7 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true }
-
-# WASM sandbox via extism (wraps wasmtime)
-extism = { version = "1.21", optional = true }
+tokio = { workspace = true, features = ["process", "io-util"] }
 
 [lib]
 doctest = false

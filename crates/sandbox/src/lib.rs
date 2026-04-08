@@ -5,18 +5,15 @@
 //!
 //! Plugin isolation and sandboxing for the Nebula workflow engine.
 //!
-//! This crate provides:
-//! - [`SandboxRunner`] trait — common interface for action execution within isolation
-//! - [`InProcessSandbox`] — trusted in-process execution (for built-in actions)
-//!
-//! With the `wasm` feature:
-//! - [`WasmSandbox`](wasm::WasmSandbox) — WASM-based sandbox via wasmtime (for community plugins)
-//! - [`WasmPluginLoader`](wasm::WasmPluginLoader) — loads and caches `.wasm` components
+//! - [`InProcessSandbox`] — trusted in-process execution (built-in actions)
+//! - [`ProcessSandbox`] — isolated child process execution (community plugins)
+//! - [`PluginPermissions`](permissions::PluginPermissions) — per-plugin access control
 
 mod in_process;
+pub mod permissions;
+mod process;
 mod runner;
-#[cfg(feature = "wasm")]
-pub mod wasm;
 
 pub use in_process::InProcessSandbox;
+pub use process::ProcessSandbox;
 pub use runner::{ActionExecutor, ActionExecutorFuture, SandboxRunner, SandboxedContext};
