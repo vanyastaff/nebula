@@ -15,6 +15,7 @@ pub mod capabilities;
 pub mod discovery;
 mod handler;
 mod in_process;
+pub mod os_sandbox;
 mod process;
 mod runner;
 
