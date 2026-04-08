@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
+use nebula_action::ActionContext;
+use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 use nebula_runtime::ActionRegistry;
+use tokio_util::sync::CancellationToken;
 
-use crate::cli::{ActionsInfoArgs, ActionsListArgs, OutputFormat, resolve_format};
+use crate::cli::{ActionsInfoArgs, ActionsListArgs, ActionsTestArgs, OutputFormat, resolve_format};
 
 fn build_registry() -> Arc<ActionRegistry> {
     let registry = Arc::new(ActionRegistry::new());
@@ -101,6 +104,92 @@ pub fn info(args: ActionsInfoArgs) {
                 eprintln!("  {key}");
             }
             std::process::exit(1);
+        }
+    }
+}
+
+/// Execute the `actions test` command.
+pub async fn test(args: ActionsTestArgs) {
+    let registry = build_registry();
+    let format = resolve_format(args.format);
+
+    let handler = match registry.get(&args.key) {
+        Ok(h) => h,
+        Err(_) => {
+            eprintln!("error: action '{}' not found", args.key);
+            let mut keys = registry.keys();
+            keys.sort();
+            eprintln!("Available: {}", keys.join(", "));
+            std::process::exit(1);
+        }
+    };
+
+    let input: serde_json::Value = match serde_json::from_str(&args.input) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: invalid --input JSON: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Build a minimal ActionContext.
+    let ctx = ActionContext::new(
+        ExecutionId::new(),
+        NodeId::new(),
+        WorkflowId::new(),
+        CancellationToken::new(),
+    );
+
+    let meta = handler.metadata();
+    eprintln!("Testing: {} ({})", meta.name, meta.key);
+    eprintln!(
+        "Input:   {}",
+        serde_json::to_string(&input).unwrap_or_default()
+    );
+    eprintln!();
+
+    let start = std::time::Instant::now();
+    let result = handler.execute(input, &ctx).await;
+    let elapsed = start.elapsed();
+
+    match result {
+        Ok(action_result) => {
+            // Extract primary output from the result.
+            let output = match &action_result {
+                nebula_action::ActionResult::Success { output } => output
+                    .as_value()
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+                other => serde_json::json!(format!("{other:?}")),
+            };
+
+            match format {
+                OutputFormat::Json => {
+                    let json = serde_json::json!({
+                        "status": "ok",
+                        "output": output,
+                        "duration_ms": elapsed.as_millis(),
+                    });
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json).unwrap_or_else(|_| "{}".to_owned())
+                    );
+                }
+                OutputFormat::Text => {
+                    println!("Status:   ok");
+                    println!("Duration: {elapsed:?}");
+                    println!(
+                        "Output:   {}",
+                        serde_json::to_string_pretty(&output).unwrap_or_else(|_| "null".to_owned())
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Status:   FAILED");
+            eprintln!("Duration: {elapsed:?}");
+            eprintln!("Error:    {e}");
+            std::process::exit(2);
         }
     }
 }

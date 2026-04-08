@@ -70,6 +70,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
             match command {
                 ActionsCommand::List(args) => commands::actions::list(args),
                 ActionsCommand::Info(args) => commands::actions::info(args),
+                ActionsCommand::Test(args) => commands::actions::test(args).await,
             }
             Ok(ExitCode::SUCCESS)
         }

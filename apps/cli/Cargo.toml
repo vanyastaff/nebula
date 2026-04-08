@@ -21,6 +21,7 @@ clap_complete = "4"
 
 # Async runtime
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+tokio-util = { workspace = true }
 
 # Serialization
 serde = { workspace = true }

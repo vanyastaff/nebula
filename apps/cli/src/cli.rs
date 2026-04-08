@@ -86,6 +86,22 @@ pub enum ActionsCommand {
     List(ActionsListArgs),
     /// Show detailed info about an action.
     Info(ActionsInfoArgs),
+    /// Test a single action with sample input.
+    Test(ActionsTestArgs),
+}
+
+#[derive(Parser)]
+pub struct ActionsTestArgs {
+    /// Action key to test (e.g. "echo", "http.get").
+    pub key: String,
+
+    /// Input data as JSON string.
+    #[arg(short, long, default_value = "{}")]
+    pub input: String,
+
+    /// Output format.
+    #[arg(long)]
+    pub format: Option<OutputFormat>,
 }
 
 #[derive(Parser)]
