@@ -19,10 +19,13 @@ Workflow execution orchestrator — frontier-based DAG scheduler, node dispatch.
 - Rejects terminal executions. Running nodes reset to Pending.
 - Frontier = non-terminal nodes with all predecessors terminal.
 
-## Traps
-- `pub(crate) resolver` — internal.
-- `ExecutionResult` (engine) ≠ `ExecutionState` (persistent).
-- `nebula-credential` direct dep (for `CredentialSnapshot`).
-- `from_value::<WorkflowDefinition>()` fails — `ActionKey` has `#[serde(borrow)]`. Use `from_str(&to_string(&val))`.
+## EF2–4 decisions
+- Idempotency key: `"{execution_id}:{node_id}:1"`. Only active with `execution_repo`. `check_and_apply_idempotency` short-circuits; `record_idempotency` fires post-success.
+- Version pinning: `NodeTask.interface_version` → `execute_action_versioned`. `None` = latest.
+- Credential refresh hook: called in `NodeTask::run` before dispatch; errors logged, not fatal.
 
-<!-- updated: 2026-04-07 — EF1: workflow_repo, resume_execution(), run_frontier refactored -->
+## Traps
+- `from_value::<WorkflowDefinition>()` fails — use `from_str(&to_string(&val))` (`ActionKey` has `#[serde(borrow)]`).
+- Idempotency scope is per `execution_id` — not portable across executions.
+
+<!-- updated: 2026-04-07 — EF2: idempotency, EF3: version pinning, EF4: credential refresh -->

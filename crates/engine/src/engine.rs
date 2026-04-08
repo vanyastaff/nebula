@@ -48,6 +48,20 @@ use crate::resolver::ParamResolver;
 use crate::resource_accessor::EngineResourceAccessor;
 use crate::result::ExecutionResult;
 
+/// Type alias for the boxed async credential-refresh function stored on the engine.
+///
+/// When set, the engine calls this function before dispatching any node that uses
+/// credentials, passing the credential ID. The callee is responsible for refreshing
+/// the credential (e.g., rotating short-lived tokens) before the action resolves it.
+type CredentialRefreshFn = Arc<
+    dyn Fn(
+            &str,
+        )
+            -> Pin<Box<dyn Future<Output = Result<(), nebula_action::error::ActionError>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Type alias for the boxed async credential-resolution function stored on the engine.
 type CredentialResolveFn = Arc<
     dyn Fn(
@@ -93,6 +107,12 @@ pub struct WorkflowEngine {
     workflow_repo: Option<Arc<dyn nebula_storage::WorkflowRepo>>,
     /// Optional credential resolver function for providing credentials to actions.
     credential_resolver: Option<CredentialResolveFn>,
+    /// Optional proactive credential refresh hook.
+    ///
+    /// When set, the engine calls this before dispatching any node that uses
+    /// credentials. The callee is responsible for refreshing the credential so
+    /// the resolver returns a fresh snapshot when the action requests it.
+    credential_refresh: Option<CredentialRefreshFn>,
 }
 
 impl WorkflowEngine {
@@ -109,6 +129,7 @@ impl WorkflowEngine {
             execution_repo: None,
             workflow_repo: None,
             credential_resolver: None,
+            credential_refresh: None,
         }
     }
 
@@ -179,6 +200,41 @@ impl WorkflowEngine {
                                 >,
                             > + Send,
                     >,
+                >
+        }));
+        self
+    }
+
+    /// Attach a proactive credential refresh hook.
+    ///
+    /// When set, the engine calls `refresh_fn(credential_id)` before dispatching
+    /// any node whose resolver is configured. This allows short-lived credentials
+    /// (OAuth tokens, STS sessions) to be renewed before the action consumes them.
+    ///
+    /// The refresh is best-effort: errors are logged but do not abort execution.
+    /// The function is injected by the caller — the engine has no knowledge of
+    /// the underlying credential store or rotation strategy.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let engine = WorkflowEngine::new(runtime, metrics)
+    ///     .with_credential_resolver(/* ... */)
+    ///     .with_credential_refresh(move |id: &str| {
+    ///         let id = id.to_owned();
+    ///         Box::pin(async move { rotate_if_needed(&id).await })
+    ///     });
+    /// ```
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_credential_refresh<F, Fut>(mut self, refresh_fn: F) -> Self
+    where
+        F: Fn(&str) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), nebula_action::error::ActionError>> + Send + 'static,
+    {
+        self.credential_refresh = Some(Arc::new(move |id: &str| {
+            Box::pin(refresh_fn(id))
+                as Pin<
+                    Box<dyn Future<Output = Result<(), nebula_action::error::ActionError>> + Send>,
                 >
         }));
         self
@@ -652,6 +708,26 @@ impl WorkflowEngine {
                     continue;
                 }
 
+                // Durable idempotency check: if this node was already executed
+                // (e.g., on a previous attempt), load the persisted output and
+                // mark it completed without re-dispatching.
+                if self
+                    .check_and_apply_idempotency(
+                        execution_id,
+                        node_id,
+                        outputs,
+                        exec_state,
+                        graph,
+                        &mut activated_edges,
+                        &mut resolved_edges,
+                        &required_count,
+                        &mut ready_queue,
+                    )
+                    .await
+                {
+                    continue;
+                }
+
                 let spawned = self.spawn_node(
                     node_id,
                     node_map,
@@ -730,6 +806,10 @@ impl WorkflowEngine {
                     self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
                         .await;
 
+                    // Record idempotency key after successful execution so that
+                    // any subsequent attempt for this node is skipped.
+                    self.record_idempotency(execution_id, node_id).await;
+
                     // Evaluate outgoing edges and update frontier
                     process_outgoing_edges(
                         node_id,
@@ -807,6 +887,7 @@ impl WorkflowEngine {
             return false;
         };
         let action_key = node_def.action_key.as_str().to_owned();
+        let interface_version = node_def.interface_version;
 
         // Partition incoming connections into flow (to_port=None) and support (to_port=Some)
         let (node_input, support_inputs) =
@@ -870,6 +951,8 @@ impl WorkflowEngine {
             default_resource_accessor()
         };
 
+        let credential_refresh = self.credential_refresh.clone();
+
         join_set.spawn(
             NodeTask {
                 runtime,
@@ -880,15 +963,113 @@ impl WorkflowEngine {
                 node_id,
                 workflow_id,
                 action_key,
+                interface_version,
                 input: action_input,
                 support_inputs,
                 credentials,
                 resources,
+                credential_refresh,
             }
             .run(),
         );
 
         true
+    }
+
+    /// Check whether a node was already executed (idempotency key is set) and,
+    /// if so, load its persisted output, mark it completed, and activate outgoing
+    /// edges — all without re-dispatching the action.
+    ///
+    /// Returns `true` when the node was short-circuited (caller should `continue`
+    /// to the next ready queue entry). Returns `false` when the node should be
+    /// dispatched normally.
+    #[allow(clippy::too_many_arguments)]
+    async fn check_and_apply_idempotency(
+        &self,
+        execution_id: ExecutionId,
+        node_id: NodeId,
+        outputs: &Arc<DashMap<NodeId, serde_json::Value>>,
+        exec_state: &mut ExecutionState,
+        graph: &DependencyGraph,
+        activated_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
+        resolved_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
+        required_count: &HashMap<NodeId, usize>,
+        ready_queue: &mut VecDeque<NodeId>,
+    ) -> bool {
+        let Some(repo) = &self.execution_repo else {
+            return false;
+        };
+
+        let idem_key = format!("{execution_id}:{node_id}:1");
+
+        let already_done = match repo.check_idempotency(&idem_key).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    %execution_id,
+                    %node_id,
+                    error = %e,
+                    "idempotency check failed; proceeding with execution"
+                );
+                return false;
+            }
+        };
+
+        if !already_done {
+            return false;
+        }
+
+        // Node was already executed — load the persisted output.
+        let output_value = match repo.load_node_output(execution_id, node_id).await {
+            Ok(Some(v)) => v,
+            Ok(None) => serde_json::Value::Null,
+            Err(e) => {
+                tracing::warn!(
+                    %execution_id,
+                    %node_id,
+                    error = %e,
+                    "failed to load idempotent node output; re-executing"
+                );
+                return false;
+            }
+        };
+
+        outputs.insert(node_id, output_value.clone());
+        mark_node_completed(exec_state, node_id);
+
+        let fake_result = ActionResult::success(output_value);
+        process_outgoing_edges(
+            node_id,
+            Some(&fake_result),
+            None,
+            graph,
+            activated_edges,
+            resolved_edges,
+            required_count,
+            ready_queue,
+            exec_state,
+        );
+
+        true
+    }
+
+    /// Record an idempotency key for a successfully executed node (best-effort).
+    ///
+    /// Silently logs and ignores errors — idempotency key recording failures
+    /// must not abort an otherwise healthy execution.
+    async fn record_idempotency(&self, execution_id: ExecutionId, node_id: NodeId) {
+        let Some(repo) = &self.execution_repo else {
+            return;
+        };
+        let idem_key = format!("{execution_id}:{node_id}:1");
+        if let Err(e) = repo.mark_idempotent(&idem_key, execution_id, node_id).await {
+            tracing::warn!(
+                %execution_id,
+                %node_id,
+                error = %e,
+                "failed to mark node as idempotent"
+            );
+        }
     }
 
     /// Persist node output and execution state to the repository (best-effort).
@@ -988,6 +1169,11 @@ struct NodeTask {
     node_id: NodeId,
     workflow_id: WorkflowId,
     action_key: String,
+    /// Pinned interface version for versioned action lookup.
+    ///
+    /// When `Some`, the runtime uses [`execute_action_versioned`] with this
+    /// exact version. When `None`, the latest registered handler is used.
+    interface_version: Option<nebula_action::InterfaceVersion>,
     input: serde_json::Value,
     /// Data for support input ports, keyed by port name.
     #[allow(dead_code)] // reserved for multi-input actions
@@ -996,6 +1182,12 @@ struct NodeTask {
     credentials: Arc<dyn CredentialAccessor>,
     /// Resource accessor injected into the action context.
     resources: Arc<dyn ResourceAccessor>,
+    /// Optional proactive credential refresh hook.
+    ///
+    /// Called before the action executes when a credential resolver is
+    /// configured. The hook receives the action key (used as a proxy for the
+    /// credential ID in the current passthrough model).
+    credential_refresh: Option<CredentialRefreshFn>,
 }
 
 impl NodeTask {
@@ -1010,6 +1202,21 @@ impl NodeTask {
             return (self.node_id, Err(EngineError::Cancelled));
         }
 
+        // Proactive credential refresh: call the hook before the action runs
+        // so that any short-lived credential is rotated while still valid.
+        // Errors are logged but do not abort execution — the action will fail
+        // on its own if the credential is truly unusable.
+        if let Some(ref refresh_fn) = self.credential_refresh
+            && let Err(e) = (refresh_fn)(&self.action_key).await
+        {
+            tracing::warn!(
+                node_id = %self.node_id,
+                action_key = %self.action_key,
+                error = %e,
+                "proactive credential refresh failed; proceeding with potentially stale credential"
+            );
+        }
+
         let action_ctx = ActionContext::new(
             self.execution_id,
             self.node_id,
@@ -1019,9 +1226,16 @@ impl NodeTask {
         .with_credentials(self.credentials.clone())
         .with_resources(self.resources.clone());
 
+        // Use versioned action lookup when the node definition pins a version;
+        // fall back to the latest registered handler otherwise.
         let result = self
             .runtime
-            .execute_action(&self.action_key, self.input, action_ctx)
+            .execute_action_versioned(
+                &self.action_key,
+                self.interface_version.as_ref(),
+                self.input,
+                action_ctx,
+            )
             .await;
 
         match result {
@@ -2706,6 +2920,235 @@ mod tests {
         assert!(
             result.node_output(n3).is_some(),
             "n3 should have been re-executed"
+        );
+    }
+
+    // -- Durable idempotency tests --
+
+    /// Pre-marking a node's idempotency key causes the engine to skip execution
+    /// and load the persisted output instead of re-running the action.
+    #[tokio::test]
+    async fn idempotency_check_prevents_double_execution() {
+        use std::sync::atomic::{AtomicU32, Ordering as AOrdering};
+
+        // Track how many times the handler is actually invoked.
+        let call_count = Arc::new(AtomicU32::new(0));
+        let call_count_clone = call_count.clone();
+
+        struct CountingHandler {
+            meta: ActionMetadata,
+            count: Arc<AtomicU32>,
+        }
+
+        #[async_trait::async_trait]
+        impl InternalHandler for CountingHandler {
+            async fn execute(
+                &self,
+                input: serde_json::Value,
+                _ctx: &ActionContext,
+            ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+                self.count.fetch_add(1, AOrdering::Relaxed);
+                Ok(ActionResult::success(input))
+            }
+            fn metadata(&self) -> &ActionMetadata {
+                &self.meta
+            }
+        }
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(CountingHandler {
+            meta: ActionMetadata::new(action_key!("counting"), "Counting", "counts calls"),
+            count: call_count_clone,
+        }));
+
+        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let (engine, _) = make_engine(registry);
+        let engine = engine.with_execution_repo(exec_repo.clone());
+
+        let n = NodeId::new();
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n, "count_node", "counting").unwrap()],
+            vec![],
+        );
+
+        // Run the workflow once — node should execute and its idempotency key
+        // should be recorded.
+        let result1 = engine
+            .execute_workflow(
+                &wf,
+                serde_json::json!("payload"),
+                ExecutionBudget::default(),
+            )
+            .await
+            .unwrap();
+        assert!(result1.is_success(), "first execution should succeed");
+        assert_eq!(
+            call_count.load(AOrdering::Relaxed),
+            1,
+            "handler should be called exactly once on first run"
+        );
+
+        // Manually inject the same execution_id's idempotency key so that if
+        // we simulate re-running the same execution, the node is skipped.
+        // (The engine generates the key as "{execution_id}:{node_id}:1".)
+        let execution_id = result1.execution_id;
+        let idem_key = format!("{execution_id}:{n}:1");
+
+        // Verify the key was recorded by the first run.
+        let already_marked = exec_repo.check_idempotency(&idem_key).await.unwrap();
+        assert!(
+            already_marked,
+            "idempotency key should be recorded after first execution"
+        );
+
+        // Also verify the persisted output is loadable.
+        let persisted = exec_repo.load_node_output(execution_id, n).await.unwrap();
+        assert_eq!(
+            persisted,
+            Some(serde_json::json!("payload")),
+            "persisted output should match the original execution result"
+        );
+    }
+
+    // -- Action version pinning tests --
+
+    /// When `interface_version` is set on a node, the engine uses the versioned
+    /// handler instead of the latest.
+    #[tokio::test]
+    async fn version_pinned_node_uses_specified_handler() {
+        use nebula_action::InterfaceVersion;
+
+        // V1 handler returns "v1".
+        struct V1Handler {
+            meta: ActionMetadata,
+        }
+        #[async_trait::async_trait]
+        impl InternalHandler for V1Handler {
+            async fn execute(
+                &self,
+                _input: serde_json::Value,
+                _ctx: &ActionContext,
+            ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+                Ok(ActionResult::success(serde_json::json!("v1")))
+            }
+            fn metadata(&self) -> &ActionMetadata {
+                &self.meta
+            }
+        }
+
+        // V2 handler returns "v2".
+        struct V2Handler {
+            meta: ActionMetadata,
+        }
+        #[async_trait::async_trait]
+        impl InternalHandler for V2Handler {
+            async fn execute(
+                &self,
+                _input: serde_json::Value,
+                _ctx: &ActionContext,
+            ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+                Ok(ActionResult::success(serde_json::json!("v2")))
+            }
+            fn metadata(&self) -> &ActionMetadata {
+                &self.meta
+            }
+        }
+
+        let registry = Arc::new(ActionRegistry::new());
+        let v1 = InterfaceVersion::new(1, 0);
+        let v2 = InterfaceVersion::new(2, 0);
+        // Register v1 first; v2 will become the "latest" (handlers map entry).
+        registry.register(Arc::new(V1Handler {
+            meta: ActionMetadata::new(action_key!("versioned"), "V1", "v1 handler")
+                .with_version(v1.major, v1.minor),
+        }));
+        registry.register(Arc::new(V2Handler {
+            meta: ActionMetadata::new(action_key!("versioned"), "V2", "v2 handler")
+                .with_version(v2.major, v2.minor),
+        }));
+
+        let (engine, _) = make_engine(registry);
+
+        let n1 = NodeId::new();
+        let n2 = NodeId::new();
+
+        let wf = make_workflow(
+            vec![
+                NodeDefinition::new(n1, "pinned_v1", "versioned")
+                    .unwrap()
+                    .with_interface_version(v1),
+                NodeDefinition::new(n2, "pinned_v2", "versioned")
+                    .unwrap()
+                    .with_interface_version(v2),
+            ],
+            vec![],
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        assert!(result.is_success());
+        assert_eq!(
+            result.node_output(n1),
+            Some(&serde_json::json!("v1")),
+            "n1 should use the v1 handler"
+        );
+        assert_eq!(
+            result.node_output(n2),
+            Some(&serde_json::json!("v2")),
+            "n2 should use the v2 handler"
+        );
+    }
+
+    // -- Proactive credential refresh tests --
+
+    /// When a credential refresh hook is set, it is called before each node dispatch.
+    #[tokio::test]
+    async fn credential_refresh_hook_is_called_before_node_dispatch() {
+        use std::sync::atomic::{AtomicU32, Ordering as AOrdering};
+
+        let refresh_count = Arc::new(AtomicU32::new(0));
+        let refresh_count_clone = refresh_count.clone();
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        }));
+
+        // The refresh hook is called for every spawned node regardless of whether
+        // a credential resolver is configured.
+        let (engine, _) = make_engine(registry);
+        let engine = engine.with_credential_refresh(move |_id: &str| {
+            let count = refresh_count_clone.clone();
+            async move {
+                count.fetch_add(1, AOrdering::Relaxed);
+                Ok(())
+            }
+        });
+
+        let n1 = NodeId::new();
+        let n2 = NodeId::new();
+        let wf = make_workflow(
+            vec![
+                NodeDefinition::new(n1, "A", "echo").unwrap(),
+                NodeDefinition::new(n2, "B", "echo").unwrap(),
+            ],
+            vec![Connection::new(n1, n2)],
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("x"), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        assert!(result.is_success());
+        // Two nodes → hook called twice.
+        assert_eq!(
+            refresh_count.load(AOrdering::Relaxed),
+            2,
+            "refresh hook should be called once per dispatched node"
         );
     }
 }

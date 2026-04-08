@@ -77,6 +77,30 @@ impl ActionRuntime {
         &self.data_policy
     }
 
+    /// Execute an action by key, optionally pinned to a specific interface version.
+    ///
+    /// When `version` is `Some`, the registry resolves the handler registered for
+    /// that exact version. When `version` is `None`, the latest registered handler
+    /// is used (same behaviour as [`execute_action`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::ActionNotFound`] if no handler is registered for the
+    /// key (and version, if supplied).
+    pub async fn execute_action_versioned(
+        &self,
+        action_key: &str,
+        version: Option<&nebula_action::InterfaceVersion>,
+        input: serde_json::Value,
+        context: ActionContext,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        let handler = match version {
+            Some(v) => self.registry.get_versioned(action_key, v)?,
+            None => self.registry.get(action_key)?,
+        };
+        self.run_handler(action_key, handler, input, context).await
+    }
+
     /// Execute an action by key.
     ///
     /// # Flow
@@ -95,7 +119,17 @@ impl ActionRuntime {
         context: ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let handler = self.registry.get(action_key)?;
+        self.run_handler(action_key, handler, input, context).await
+    }
 
+    /// Internal: run a resolved handler through the sandbox and data policy.
+    async fn run_handler(
+        &self,
+        action_key: &str,
+        handler: Arc<dyn nebula_action::InternalHandler>,
+        input: serde_json::Value,
+        context: ActionContext,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let started = Instant::now();
         let action_counter = self.metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL);
         let error_counter = self.metrics.counter(NEBULA_ACTION_FAILURES_TOTAL);
