@@ -636,3 +636,59 @@ async fn metrics_accurate_on_failure() {
         0
     );
 }
+
+/// Three-node linear workflow A → B → C where B is disabled.
+///
+/// Expected: A executes normally; B is skipped (no output);
+/// C executes because disabled-node skip activates outgoing edges,
+/// but C receives null (B produced no output).
+#[tokio::test]
+async fn disabled_node_is_skipped_and_successor_executes() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register(Arc::new(EchoHandler {
+        meta: meta(action_key!("echo")),
+    }));
+
+    let (engine, _) = make_engine(registry);
+
+    let a = NodeId::new();
+    let b = NodeId::new();
+    let c = NodeId::new();
+
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(a, "A", "echo").unwrap(),
+            NodeDefinition::new(b, "B", "echo").unwrap().disabled(),
+            NodeDefinition::new(c, "C", "echo").unwrap(),
+        ],
+        vec![Connection::new(a, b), Connection::new(b, c)],
+    );
+
+    let result = engine
+        .execute_workflow(&wf, serde_json::json!("hello"), ExecutionBudget::default())
+        .await
+        .unwrap();
+
+    assert!(
+        result.is_success(),
+        "workflow should succeed when B is disabled"
+    );
+    // A executed and produced its output
+    assert_eq!(
+        result.node_output(a),
+        Some(&serde_json::json!("hello")),
+        "A should execute normally"
+    );
+    // B was skipped — no output entry
+    assert!(
+        result.node_output(b).is_none(),
+        "B should be skipped (no output)"
+    );
+    // C executed — B's disabled-skip activated the B→C edge so C entered the frontier.
+    // C receives null because B produced no output.
+    assert_eq!(
+        result.node_output(c),
+        Some(&serde_json::json!(null)),
+        "C should execute after B is skipped, receiving null (B produced no output)"
+    );
+}

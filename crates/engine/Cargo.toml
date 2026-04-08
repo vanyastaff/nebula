@@ -19,6 +19,7 @@ nebula-expression = { path = "../expression" }
 nebula-plugin = { path = "../plugin" }
 nebula-workflow = { path = "../workflow" }
 nebula-execution = { path = "../execution" }
+nebula-credential = { path = "../credential" }
 nebula-resource = { path = "../resource" }
 nebula-runtime = { path = "../runtime" }
 nebula-storage = { path = "../storage" }
