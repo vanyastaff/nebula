@@ -2,12 +2,23 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, bail};
+use nebula_core::{ActionKey, PluginKey};
 
 use crate::cli::PluginNewArgs;
 
 /// Execute the `plugin new` command.
 pub fn execute(args: PluginNewArgs) -> anyhow::Result<()> {
     let name = &args.name;
+
+    // Validate plugin name as a valid PluginKey.
+    let plugin_key = name.replace('-', "_");
+    PluginKey::new(&plugin_key).map_err(|e| {
+        anyhow::anyhow!(
+            "invalid plugin name \"{name}\": {e}\n\
+             Allowed: a-z, 0-9, underscore, dot, dash. Must end with alphanumeric."
+        )
+    })?;
+
     let dir = args
         .path
         .unwrap_or_else(|| format!("nebula-plugin-{name}").into());
@@ -17,19 +28,25 @@ pub fn execute(args: PluginNewArgs) -> anyhow::Result<()> {
     }
 
     let crate_name = format!("nebula-plugin-{name}");
-    let plugin_key = name.replace('-', "_");
     let struct_name = to_pascal_case(name);
 
     // Create directories.
     fs::create_dir_all(dir.join("src"))
         .with_context(|| format!("failed to create {}/src", dir.display()))?;
 
-    // Generate action names.
+    // Generate and validate action names.
     let action_names: Vec<String> = if args.actions == 1 {
         vec!["execute".to_owned()]
     } else {
         (1..=args.actions).map(|i| format!("action_{i}")).collect()
     };
+
+    // Validate each full action key (plugin_key.action_name).
+    for action in &action_names {
+        let full_key = format!("{plugin_key}.{action}");
+        ActionKey::new(&full_key)
+            .map_err(|e| anyhow::anyhow!("invalid action key \"{full_key}\": {e}"))?;
+    }
 
     // Write files.
     write_file(&dir.join("Cargo.toml"), &cargo_toml(&crate_name, name))?;
