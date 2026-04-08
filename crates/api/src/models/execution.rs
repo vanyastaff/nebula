@@ -1,5 +1,7 @@
 //! Execution DTOs
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Start workflow execution request
@@ -38,18 +40,53 @@ pub struct ExecutionResponse {
     pub output: Option<serde_json::Value>,
 }
 
+/// Minimal summary returned inside a list of running executions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunningExecutionSummary {
+    /// Execution ID
+    pub id: String,
+}
+
 /// List executions response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListExecutionsResponse {
-    /// Executions
-    pub executions: Vec<ExecutionResponse>,
+    /// Running executions (summary)
+    pub executions: Vec<RunningExecutionSummary>,
 
-    /// Total count
+    /// Total count (across all pages)
     pub total: usize,
 
-    /// Page number
+    /// Page number (1-indexed)
     pub page: usize,
 
     /// Page size
     pub page_size: usize,
+}
+
+/// All node outputs for an execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionOutputsResponse {
+    /// Execution ID
+    pub execution_id: String,
+
+    /// Map of node_id (string) → latest output value
+    pub outputs: HashMap<String, serde_json::Value>,
+}
+
+/// Execution log entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionLogEntry {
+    /// Raw journal entry value
+    #[serde(flatten)]
+    pub data: serde_json::Value,
+}
+
+/// Execution logs response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionLogsResponse {
+    /// Execution ID
+    pub execution_id: String,
+
+    /// Ordered journal entries
+    pub logs: Vec<serde_json::Value>,
 }

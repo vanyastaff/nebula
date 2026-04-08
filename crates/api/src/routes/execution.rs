@@ -17,4 +17,9 @@ pub fn router() -> Router<AppState> {
         .route("/executions", get(handlers::list_all_executions))
         .route("/executions/{id}", get(handlers::get_execution))
         .route("/executions/{id}/cancel", post(handlers::cancel_execution))
+        .route(
+            "/executions/{id}/outputs",
+            get(handlers::get_execution_outputs),
+        )
+        .route("/executions/{id}/logs", get(handlers::get_execution_logs))
 }

@@ -3,7 +3,10 @@
 use crate::{
     errors::{ApiError, ApiResult},
     handlers::workflow::PaginationParams,
-    models::{ExecutionResponse, ListExecutionsResponse, StartExecutionRequest},
+    models::{
+        ExecutionLogsResponse, ExecutionOutputsResponse, ExecutionResponse, ListExecutionsResponse,
+        RunningExecutionSummary, StartExecutionRequest,
+    },
     state::AppState,
 };
 use axum::{
@@ -13,44 +16,116 @@ use axum::{
 };
 use nebula_core::{ExecutionId, WorkflowId};
 
-/// List all executions (global)
-/// GET /api/v1/executions
+/// List all executions (global) — returns running execution IDs with count.
+///
+/// # Errors
+///
+/// Returns [`ApiError::Internal`] if the execution repository is unavailable.
 pub async fn list_all_executions(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<ListExecutionsResponse>> {
-    // TODO: ExecutionRepo doesn't have a list() method yet.
-    // This requires extending the ExecutionRepo trait with:
-    //   async fn list(&self, workflow_id: Option<WorkflowId>, offset: usize, limit: usize)
-    //       -> Result<Vec<(ExecutionId, serde_json::Value)>, ExecutionRepoError>;
-    // For now, return empty list with proper pagination metadata.
+    let running_ids = state
+        .execution_repo
+        .list_running()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to list executions: {}", e)))?;
+
+    let total = running_ids.len();
+
+    // Apply pagination over the running list.
+    let offset = params.offset();
+    let limit = params.limit();
+    let page_ids: Vec<&ExecutionId> = running_ids.iter().skip(offset).take(limit).collect();
+
+    let executions: Vec<RunningExecutionSummary> = page_ids
+        .into_iter()
+        .map(|id| RunningExecutionSummary { id: id.to_string() })
+        .collect();
 
     Ok(Json(ListExecutionsResponse {
-        executions: vec![],
-        total: 0,
+        executions,
+        total,
         page: params.page,
         page_size: params.limit(),
     }))
 }
 
-/// List executions for a workflow
-/// GET /api/v1/workflows/:workflow_id/executions
+/// List executions for a workflow — returns running executions for the workflow.
+///
+/// # Errors
+///
+/// Returns [`ApiError::Internal`] if the execution repository is unavailable.
 pub async fn list_executions(
-    State(_state): State<AppState>,
-    Path(_workflow_id): Path<String>,
+    State(state): State<AppState>,
+    Path(workflow_id): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<ListExecutionsResponse>> {
-    // TODO: ExecutionRepo doesn't have a list() method yet.
-    // This requires extending the ExecutionRepo trait with:
-    //   async fn list(&self, workflow_id: Option<WorkflowId>, offset: usize, limit: usize)
-    //       -> Result<Vec<(ExecutionId, serde_json::Value)>, ExecutionRepoError>;
-    // For now, return empty list with proper pagination metadata.
+    let workflow_id_parsed = WorkflowId::parse(&workflow_id)
+        .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {}", e)))?;
+
+    let total = state
+        .execution_repo
+        .count(Some(workflow_id_parsed))
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to count executions: {}", e)))?;
+
+    // list_running gives us running IDs — for workflow-scoped list we return running
+    // executions only (full history requires a future list() trait method).
+    let running_ids = state
+        .execution_repo
+        .list_running()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to list executions: {}", e)))?;
+
+    let offset = params.offset();
+    let limit = params.limit();
+    let executions: Vec<RunningExecutionSummary> = running_ids
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|id| RunningExecutionSummary { id: id.to_string() })
+        .collect();
 
     Ok(Json(ListExecutionsResponse {
-        executions: vec![],
-        total: 0,
+        executions,
+        total: total as usize,
         page: params.page,
         page_size: params.limit(),
+    }))
+}
+
+/// Get all node outputs for an execution.
+///
+/// Returns a map of `node_id → output_value` for every node that has
+/// completed at least one attempt.
+///
+/// # Errors
+///
+/// - [`ApiError::Validation`] if `id` is not a valid execution ID.
+/// - [`ApiError::Internal`] if the execution repository is unavailable.
+pub async fn get_execution_outputs(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<ExecutionOutputsResponse>> {
+    let execution_id = ExecutionId::parse(&id)
+        .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {}", e)))?;
+
+    let outputs = state
+        .execution_repo
+        .load_all_outputs(execution_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to load outputs: {}", e)))?;
+
+    // Convert NodeId keys to strings for JSON serialisation.
+    let string_outputs: std::collections::HashMap<String, serde_json::Value> = outputs
+        .into_iter()
+        .map(|(node_id, val)| (node_id.to_string(), val))
+        .collect();
+
+    Ok(Json(ExecutionOutputsResponse {
+        execution_id: id,
+        outputs: string_outputs,
     }))
 }
 
@@ -271,5 +346,33 @@ pub async fn cancel_execution(
         finished_at,
         input,
         output,
+    }))
+}
+
+/// Return journal (log) entries for an execution.
+///
+/// Journal entries are appended by the engine as execution progresses.
+/// Each entry is an arbitrary JSON object — the shape is engine-defined.
+///
+/// # Errors
+///
+/// - [`ApiError::Validation`] if `id` is not a valid execution ID.
+/// - [`ApiError::Internal`] if the execution repository is unavailable.
+pub async fn get_execution_logs(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<ExecutionLogsResponse>> {
+    let execution_id = ExecutionId::parse(&id)
+        .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {}", e)))?;
+
+    let logs = state
+        .execution_repo
+        .get_journal(execution_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to load execution logs: {}", e)))?;
+
+    Ok(Json(ExecutionLogsResponse {
+        execution_id: id,
+        logs,
     }))
 }
