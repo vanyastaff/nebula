@@ -89,6 +89,8 @@ pub struct WorkflowEngine {
     resource_manager: Option<Arc<nebula_resource::Manager>>,
     /// Optional execution repository for persistent state storage.
     execution_repo: Option<Arc<dyn nebula_storage::ExecutionRepo>>,
+    /// Optional workflow repository for loading workflow definitions during resume.
+    workflow_repo: Option<Arc<dyn nebula_storage::WorkflowRepo>>,
     /// Optional credential resolver function for providing credentials to actions.
     credential_resolver: Option<CredentialResolveFn>,
 }
@@ -105,6 +107,7 @@ impl WorkflowEngine {
             expression_engine,
             resource_manager: None,
             execution_repo: None,
+            workflow_repo: None,
             credential_resolver: None,
         }
     }
@@ -192,6 +195,17 @@ impl WorkflowEngine {
         self
     }
 
+    /// Set the workflow repository for loading workflow definitions during resume.
+    ///
+    /// Required for [`resume_execution`]. When not set, `resume_execution` returns an error.
+    ///
+    /// [`resume_execution`]: Self::resume_execution
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_workflow_repo(mut self, repo: Arc<dyn nebula_storage::WorkflowRepo>) -> Self {
+        self.workflow_repo = Some(repo);
+        self
+    }
+
     /// Execute a workflow from start to finish.
     ///
     /// Builds an execution plan for validation, then processes nodes
@@ -253,6 +267,7 @@ impl WorkflowEngine {
 
         // 9. Execute using frontier-based loop
         let error_strategy = workflow.config.error_strategy;
+        let seed_nodes: Vec<NodeId> = graph.entry_nodes();
         let failed_node = self
             .run_frontier(
                 &graph,
@@ -268,6 +283,9 @@ impl WorkflowEngine {
                 &budget,
                 &started,
                 error_strategy,
+                seed_nodes,
+                HashMap::new(),
+                HashMap::new(),
             )
             .await;
 
@@ -318,11 +336,241 @@ impl WorkflowEngine {
         })
     }
 
+    /// Resume an incomplete execution after process restart.
+    ///
+    /// Loads execution state and workflow definition from storage, identifies
+    /// which nodes are already complete, and re-executes from the frontier of
+    /// ready-but-not-yet-executed nodes (nodes whose predecessors are all
+    /// terminal but which are not yet terminal themselves).
+    ///
+    /// Persisted outputs are pre-loaded into the shared output map so that
+    /// resumed nodes receive the correct predecessor data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::PlanningFailed`] if:
+    /// - `execution_repo` or `workflow_repo` is not configured on this engine
+    /// - The execution or workflow is not found in storage
+    /// - The execution is already in a terminal state
+    /// - The persisted state cannot be deserialized
+    pub async fn resume_execution(
+        &self,
+        execution_id: ExecutionId,
+    ) -> Result<ExecutionResult, EngineError> {
+        let started = Instant::now();
+
+        // 1. Require both repos.
+        let exec_repo = self
+            .execution_repo
+            .as_ref()
+            .ok_or_else(|| EngineError::PlanningFailed("no execution_repo configured".into()))?;
+        let workflow_repo = self
+            .workflow_repo
+            .as_ref()
+            .ok_or_else(|| EngineError::PlanningFailed("no workflow_repo configured".into()))?;
+
+        // 2. Load persisted execution state.
+        let (repo_version_loaded, state_json) = exec_repo
+            .get_state(execution_id)
+            .await
+            .map_err(|e| EngineError::PlanningFailed(format!("load state: {e}")))?
+            .ok_or_else(|| {
+                EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
+            })?;
+
+        let exec_state: ExecutionState = serde_json::from_str(
+            &serde_json::to_string(&state_json)
+                .map_err(|e| EngineError::PlanningFailed(format!("serialize state: {e}")))?,
+        )
+        .map_err(|e| EngineError::PlanningFailed(format!("deserialize state: {e}")))?;
+
+        // 3. Guard against resuming a terminal execution.
+        if exec_state.status.is_terminal() {
+            return Err(EngineError::PlanningFailed(format!(
+                "execution {execution_id} is already terminal ({})",
+                exec_state.status
+            )));
+        }
+
+        let workflow_id = exec_state.workflow_id;
+
+        // 4. Load workflow definition.
+        let workflow_json = workflow_repo
+            .get(workflow_id)
+            .await
+            .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
+            .ok_or_else(|| {
+                EngineError::PlanningFailed(format!("workflow not found: {workflow_id}"))
+            })?;
+
+        // Deserialize via JSON string to avoid `serde_json::from_value` issues
+        // with borrowed key types (e.g. `ActionKey` uses `#[serde(borrow)]`).
+        let workflow_str = serde_json::to_string(&workflow_json)
+            .map_err(|e| EngineError::PlanningFailed(format!("serialize workflow: {e}")))?;
+        let workflow: WorkflowDefinition = serde_json::from_str(&workflow_str)
+            .map_err(|e| EngineError::PlanningFailed(format!("deserialize workflow: {e}")))?;
+
+        // 5. Load persisted node outputs.
+        let persisted_outputs = exec_repo
+            .load_all_outputs(execution_id)
+            .await
+            .map_err(|e| EngineError::PlanningFailed(format!("load outputs: {e}")))?;
+
+        // 6. Build dependency graph.
+        let graph = DependencyGraph::from_definition(&workflow)
+            .map_err(|e| EngineError::PlanningFailed(e.to_string()))?;
+
+        // 7. Reconstruct the execution state, resetting non-terminal nodes.
+        //    Nodes that were Running at crash time need to be re-executed.
+        let mut exec_state = exec_state;
+        for ns in exec_state.node_states.values_mut() {
+            if !ns.state.is_terminal() {
+                ns.state = NodeState::Pending;
+            }
+        }
+        // Transition back to Running so the frontier loop can proceed.
+        // The persisted state may be Created or Running; normalise to Running.
+        if !exec_state.status.is_terminal() {
+            // Force the status to Running regardless of its current non-terminal value.
+            exec_state.status = ExecutionStatus::Running;
+        }
+
+        // 8. Populate shared output map from persisted outputs.
+        let outputs: Arc<DashMap<NodeId, serde_json::Value>> = Arc::new(DashMap::new());
+        for (node_id, value) in persisted_outputs {
+            outputs.insert(node_id, value);
+        }
+
+        // 9. Compute the resume frontier and pre-populate edge-tracking maps.
+        //
+        //    A node is on the frontier if:
+        //    - it is not yet terminal (Pending after the reset above), AND
+        //    - all its predecessor nodes are terminal in the loaded state.
+        //
+        //    We also rebuild `activated_edges` and `resolved_edges` for terminal
+        //    nodes so that `run_frontier`'s bookkeeping stays consistent when
+        //    it evaluates edges from the frontier.
+        let node_map: HashMap<NodeId, &nebula_workflow::NodeDefinition> =
+            workflow.nodes.iter().map(|n| (n.id, n)).collect();
+
+        let mut activated_edges: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
+        let mut resolved_edges: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
+        let mut seed_nodes: Vec<NodeId> = Vec::new();
+
+        // Mark edges from terminal nodes as resolved (and activated, since they
+        // completed successfully or were skipped).
+        for (&node_id, ns) in &exec_state.node_states {
+            if !ns.state.is_terminal() {
+                continue;
+            }
+            for conn in graph.outgoing_connections(node_id) {
+                let target = conn.to_node;
+                resolved_edges.entry(target).or_default().insert(node_id);
+                // Completed and Skipped nodes activate their outgoing edges so
+                // that downstream nodes see a resolved predecessor.
+                if matches!(ns.state, NodeState::Completed | NodeState::Skipped) {
+                    activated_edges.entry(target).or_default().insert(node_id);
+                }
+            }
+        }
+
+        // Identify frontier nodes: non-terminal nodes whose incoming edges are
+        // all resolved (i.e., all predecessors are terminal).
+        for (&node_id, ns) in &exec_state.node_states {
+            if ns.state.is_terminal() {
+                continue;
+            }
+            let incoming = graph.incoming_connections(node_id);
+            let required = incoming.len();
+            let resolved = resolved_edges.get(&node_id).map_or(0, |s| s.len());
+
+            if required == 0 || resolved == required {
+                seed_nodes.push(node_id);
+            }
+        }
+
+        // 10. Build remaining infrastructure for the frontier loop.
+        let budget = ExecutionBudget::default();
+        let semaphore = Arc::new(Semaphore::new(budget.max_concurrent_nodes));
+        let cancel_token = CancellationToken::new();
+        let mut repo_version = repo_version_loaded;
+
+        self.metrics
+            .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
+            .inc();
+
+        let error_strategy = workflow.config.error_strategy;
+        let workflow_input = serde_json::Value::Null;
+        let failed_node = self
+            .run_frontier(
+                &graph,
+                &node_map,
+                &outputs,
+                &semaphore,
+                &cancel_token,
+                &mut exec_state,
+                execution_id,
+                workflow_id,
+                &workflow_input,
+                &mut repo_version,
+                &budget,
+                &started,
+                error_strategy,
+                seed_nodes,
+                activated_edges,
+                resolved_edges,
+            )
+            .await;
+
+        let elapsed = started.elapsed();
+
+        let final_status = determine_final_status(&failed_node, &cancel_token);
+        exec_state.status = final_status;
+
+        // Persist final state (best-effort).
+        if let Ok(state_json) = serde_json::to_value(&exec_state) {
+            match exec_repo
+                .transition(execution_id, repo_version, state_json)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::warn!(%execution_id, "resume: final state checkpoint CAS mismatch");
+                }
+                Err(e) => {
+                    tracing::warn!(%execution_id, error = %e, "resume: final state checkpoint failed");
+                }
+            }
+        }
+
+        self.emit_final_event(execution_id, final_status, elapsed, &failed_node);
+
+        let node_outputs: HashMap<NodeId, serde_json::Value> = outputs
+            .iter()
+            .map(|r| (*r.key(), r.value().clone()))
+            .collect();
+
+        Ok(ExecutionResult {
+            execution_id,
+            status: final_status,
+            node_outputs,
+            duration: elapsed,
+        })
+    }
+
     /// Execute all reachable nodes using a frontier-based approach.
     ///
     /// Nodes are spawned as soon as all their incoming edges have been resolved
     /// and at least one edge has been activated. This supports branching, skip
     /// propagation, and error routing.
+    ///
+    /// `seed_nodes` is the initial set of nodes to place on the ready queue.
+    /// For a fresh execution this is the graph's entry nodes; for resumed
+    /// executions it is the computed resume frontier.
+    ///
+    /// `initial_activated` and `initial_resolved` carry the edge-tracking
+    /// state derived from already-completed nodes (populated for resume; empty
+    /// for fresh executions).
     ///
     /// Returns `Some((node_id, error))` if a node failed without an error handler,
     /// `None` if all reachable nodes completed (or were skipped).
@@ -342,6 +590,9 @@ impl WorkflowEngine {
         budget: &ExecutionBudget,
         started: &Instant,
         error_strategy: nebula_workflow::ErrorStrategy,
+        seed_nodes: Vec<NodeId>,
+        initial_activated: HashMap<NodeId, HashSet<NodeId>>,
+        initial_resolved: HashMap<NodeId, HashSet<NodeId>>,
     ) -> Option<(NodeId, String)> {
         let total_output_bytes = Arc::new(AtomicU64::new(0));
         let total_retries = Arc::new(AtomicU32::new(0));
@@ -351,16 +602,16 @@ impl WorkflowEngine {
             .map(|&nid| (nid, graph.incoming_connections(nid).len()))
             .collect();
 
-        // Track edge resolution state
-        let mut activated_edges: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
-        let mut resolved_edges: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
+        // Track edge resolution state (pre-populated for resume)
+        let mut activated_edges = initial_activated;
+        let mut resolved_edges = initial_resolved;
 
         // Queue of nodes ready to execute
         let mut ready_queue: VecDeque<NodeId> = VecDeque::new();
 
-        // Seed with entry nodes (no incoming edges)
-        for entry_id in graph.entry_nodes() {
-            ready_queue.push_back(entry_id);
+        // Seed with the provided nodes (entry nodes for fresh; frontier for resume)
+        for node_id in seed_nodes {
+            ready_queue.push_back(node_id);
         }
 
         // In-flight tasks
@@ -1257,7 +1508,7 @@ mod tests {
     use nebula_runtime::DataPassingPolicy;
     use nebula_runtime::registry::ActionRegistry;
     use nebula_runtime::{ActionExecutor, InProcessSandbox};
-    use nebula_storage::ExecutionRepo;
+    use nebula_storage::{ExecutionRepo, WorkflowRepo};
     use nebula_workflow::{
         Connection, ErrorStrategy, NodeDefinition, WorkflowConfig, WorkflowDefinition,
     };
@@ -2264,5 +2515,197 @@ mod tests {
         // B ran and received null as input
         assert!(result.node_output(b).is_some());
         assert_eq!(result.node_output(b), Some(&serde_json::json!(null)));
+    }
+
+    // -- resume_execution tests --
+
+    /// Helper: build an InMemoryWorkflowRepo and save a workflow definition.
+    async fn save_workflow_to_repo(
+        wf: &WorkflowDefinition,
+    ) -> Arc<nebula_storage::InMemoryWorkflowRepo> {
+        let repo = Arc::new(nebula_storage::InMemoryWorkflowRepo::new());
+        let json = serde_json::to_value(wf).unwrap();
+        repo.save(wf.id, 0, json).await.unwrap();
+        repo
+    }
+
+    #[tokio::test]
+    async fn resume_requires_execution_repo() {
+        let registry = Arc::new(ActionRegistry::new());
+        let (engine, _) = make_engine(registry);
+        // No execution_repo or workflow_repo attached.
+        let err = engine
+            .resume_execution(ExecutionId::new())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, EngineError::PlanningFailed(ref msg) if msg.contains("execution_repo")),
+            "expected no-execution_repo error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_requires_workflow_repo() {
+        let registry = Arc::new(ActionRegistry::new());
+        let (engine, _) = make_engine(registry);
+        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let engine = engine.with_execution_repo(exec_repo);
+        // No workflow_repo attached.
+        let err = engine
+            .resume_execution(ExecutionId::new())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, EngineError::PlanningFailed(ref msg) if msg.contains("workflow_repo")),
+            "expected no-workflow_repo error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_returns_error_for_missing_execution() {
+        let registry = Arc::new(ActionRegistry::new());
+        let (engine, _) = make_engine(registry);
+        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let n = NodeId::new();
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
+            vec![],
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+        let engine = engine
+            .with_execution_repo(exec_repo)
+            .with_workflow_repo(workflow_repo);
+
+        let err = engine
+            .resume_execution(ExecutionId::new())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, EngineError::PlanningFailed(ref msg) if msg.contains("not found")),
+            "expected not-found error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_returns_error_for_terminal_execution() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        }));
+        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let (engine, _) = make_engine(registry);
+        let n = NodeId::new();
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
+            vec![],
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+        let engine = engine
+            .with_execution_repo(exec_repo.clone())
+            .with_workflow_repo(workflow_repo);
+
+        // Run to completion first.
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("hi"), ExecutionBudget::default())
+            .await
+            .unwrap();
+        assert!(result.is_success());
+
+        // Now resume the completed execution — should fail.
+        let err = engine
+            .resume_execution(result.execution_id)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, EngineError::PlanningFailed(ref msg) if msg.contains("terminal")),
+            "expected terminal-state error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_executes_remaining_nodes_after_crash() {
+        // Simulate a 3-node linear workflow (n1 → n2 → n3) where n1 completed
+        // before the crash. We manually inject the partially completed state into
+        // the repos and verify that resume runs n2 and n3.
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        }));
+
+        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let (engine, _) = make_engine(registry);
+
+        let n1 = NodeId::new();
+        let n2 = NodeId::new();
+        let n3 = NodeId::new();
+        let wf = make_workflow(
+            vec![
+                NodeDefinition::new(n1, "A", "echo").unwrap(),
+                NodeDefinition::new(n2, "B", "echo").unwrap(),
+                NodeDefinition::new(n3, "C", "echo").unwrap(),
+            ],
+            vec![Connection::new(n1, n2), Connection::new(n2, n3)],
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+
+        // Manually build a partial execution state where n1 is Completed but
+        // n2 and n3 are still Pending (simulating a crash after n1 finished).
+        let execution_id = ExecutionId::new();
+        let node_ids = vec![n1, n2, n3];
+        let mut exec_state = ExecutionState::new(execution_id, wf.id, &node_ids);
+        exec_state
+            .transition_status(ExecutionStatus::Running)
+            .unwrap();
+        // Mark n1 as completed.
+        exec_state
+            .node_states
+            .get_mut(&n1)
+            .unwrap()
+            .transition_to(NodeState::Ready)
+            .unwrap();
+        exec_state
+            .node_states
+            .get_mut(&n1)
+            .unwrap()
+            .transition_to(NodeState::Running)
+            .unwrap();
+        exec_state
+            .node_states
+            .get_mut(&n1)
+            .unwrap()
+            .transition_to(NodeState::Completed)
+            .unwrap();
+
+        let state_json = serde_json::to_value(&exec_state).unwrap();
+        exec_repo
+            .create(execution_id, wf.id, state_json)
+            .await
+            .unwrap();
+
+        // Persist n1's output.
+        exec_repo
+            .save_node_output(execution_id, n1, 1, serde_json::json!("from_n1"))
+            .await
+            .unwrap();
+
+        let engine = engine
+            .with_execution_repo(exec_repo.clone())
+            .with_workflow_repo(workflow_repo);
+
+        let result = engine.resume_execution(execution_id).await.unwrap();
+
+        assert!(result.is_success(), "resume should complete successfully");
+        assert_eq!(result.execution_id, execution_id);
+        // n1's output comes from the persisted outputs
+        assert_eq!(result.node_output(n1), Some(&serde_json::json!("from_n1")));
+        // n2 and n3 should have been executed and produced outputs
+        assert!(
+            result.node_output(n2).is_some(),
+            "n2 should have been re-executed"
+        );
+        assert!(
+            result.node_output(n3).is_some(),
+            "n3 should have been re-executed"
+        );
     }
 }
