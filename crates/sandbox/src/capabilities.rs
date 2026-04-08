@@ -176,8 +176,17 @@ impl PluginCapabilities {
 /// Supports wildcard prefix: "*.example.com" matches "api.example.com".
 /// Check if `path` is under `base` directory.
 /// "/tmp/foo" is under "/tmp", but "/tmp_evil" is NOT under "/tmp".
+/// Canonicalizes both paths to prevent traversal attacks (e.g., "/tmp/../etc").
 fn path_under(path: &str, base: &str) -> bool {
-    path == base || path.starts_with(&format!("{base}/"))
+    // Try to canonicalize; fall back to string comparison if path doesn't exist.
+    let canon_path = std::fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_owned());
+    let canon_base = std::fs::canonicalize(base)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| base.to_owned());
+
+    canon_path == canon_base || canon_path.starts_with(&format!("{canon_base}/"))
 }
 
 fn match_domain(host: &str, pattern: &str) -> bool {

@@ -142,7 +142,15 @@ mod linux {
         setrlimit(Resource::RLIMIT_CORE, 0, 0)
             .map_err(|e| SandboxError::Rlimit(format!("RLIMIT_CORE: {e}")))?;
 
-        tracing::debug!("rlimits applied: 512MB mem, 256 fds, no core dumps");
+        // CPU time limit (30 seconds hard cap).
+        setrlimit(Resource::RLIMIT_CPU, 30, 30)
+            .map_err(|e| SandboxError::Rlimit(format!("RLIMIT_CPU: {e}")))?;
+
+        // Prevent fork bombs — plugin cannot spawn child processes.
+        setrlimit(Resource::RLIMIT_NPROC, 1, 1)
+            .map_err(|e| SandboxError::Rlimit(format!("RLIMIT_NPROC: {e}")))?;
+
+        tracing::debug!("rlimits applied: 512MB mem, 256 fds, 30s CPU, no fork, no core dumps");
         Ok(())
     }
 

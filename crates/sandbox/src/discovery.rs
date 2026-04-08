@@ -9,12 +9,17 @@ use nebula_action::metadata::ActionMetadata;
 use nebula_core::ActionKey;
 use nebula_plugin_protocol::{PROTOCOL_VERSION, PluginMetadata, PluginResponse};
 
+use crate::capabilities::PluginCapabilities;
 use crate::handler::ProcessSandboxHandler;
 use crate::process::ProcessSandbox;
 
 /// Discover a plugin by running its binary and asking for metadata.
 pub async fn discover_plugin(binary: &Path) -> Result<PluginMetadata, String> {
-    let sandbox = ProcessSandbox::new(binary.to_path_buf(), Duration::from_secs(5));
+    let sandbox = ProcessSandbox::new(
+        binary.to_path_buf(),
+        Duration::from_secs(5),
+        PluginCapabilities::none(),
+    );
 
     let output = sandbox
         .call("__metadata__", serde_json::Value::Null)
@@ -79,7 +84,11 @@ pub async fn discover_directory(
 
         match discover_plugin(&path).await {
             Ok(meta) => {
-                let sandbox = Arc::new(ProcessSandbox::new(path.clone(), default_timeout));
+                let sandbox = Arc::new(ProcessSandbox::new(
+                    path.clone(),
+                    default_timeout,
+                    PluginCapabilities::none(), // TODO: load from config
+                ));
                 let handlers = create_handlers(&meta, sandbox);
 
                 tracing::info!(
