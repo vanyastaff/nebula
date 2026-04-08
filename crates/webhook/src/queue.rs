@@ -88,11 +88,7 @@ impl Default for MemoryInboundQueue {
 
 impl std::fmt::Debug for MemoryInboundQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let len = self
-            .items
-            .lock()
-            .map(|g| g.len())
-            .unwrap_or(0);
+        let len = self.items.lock().map(|g| g.len()).unwrap_or(0);
         f.debug_struct("MemoryInboundQueue")
             .field("len", &len)
             .finish()

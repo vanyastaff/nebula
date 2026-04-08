@@ -91,11 +91,7 @@ impl WebhookDeliverer {
     /// This method is **not** cancel-safe: if the future is dropped while a
     /// request is in flight the retry loop terminates and the delivery may be
     /// incomplete.
-    pub async fn deliver(
-        &self,
-        endpoint: &WebhookEndpoint,
-        payload: &[u8],
-    ) -> Result<(), Error> {
+    pub async fn deliver(&self, endpoint: &WebhookEndpoint, payload: &[u8]) -> Result<(), Error> {
         if !endpoint.enabled {
             debug!(url = %endpoint.url, "Endpoint disabled, skipping delivery");
             return Ok(());
@@ -148,8 +144,11 @@ impl WebhookDeliverer {
                     }
 
                     // 5xx: transient, retry
-                    let msg =
-                        format!("Server error from {}: HTTP {}", endpoint.url, status.as_u16());
+                    let msg = format!(
+                        "Server error from {}: HTTP {}",
+                        endpoint.url,
+                        status.as_u16()
+                    );
                     warn!(url = %endpoint.url, status = status.as_u16(), attempt, "{}", msg);
                     last_error = Some(msg);
                 }
