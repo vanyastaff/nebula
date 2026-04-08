@@ -1,4 +1,4 @@
-//! Lazy-parsed output: Arc<RawValue> + cached Value.
+//! Lazy-parsed node output with zero-copy sharing and cached Value.
 
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use serde_json::Value;
 use serde_json::value::RawValue;
 
-/// Lazy-parsed output via Box<RawValue>, cached after first parse.
+/// Lazy-parsed node output — raw JSON shared via Arc, parsed on demand.
 #[derive(Debug, Clone)]
 pub struct NodeOutput {
     raw: Arc<Box<RawValue>>,
