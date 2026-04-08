@@ -15,6 +15,8 @@ pub struct ExecutionResult {
     pub status: ExecutionStatus,
     /// Per-node output values (only for successfully completed nodes).
     pub node_outputs: HashMap<NodeId, serde_json::Value>,
+    /// Per-node error messages (only for failed nodes).
+    pub node_errors: HashMap<NodeId, String>,
     /// Wall-clock duration of the execution.
     pub duration: Duration,
 }
@@ -49,6 +51,7 @@ mod tests {
             execution_id: ExecutionId::new(),
             status: ExecutionStatus::Completed,
             node_outputs: HashMap::new(),
+            node_errors: HashMap::new(),
             duration: Duration::from_millis(100),
         };
         assert!(result.is_success());
@@ -61,6 +64,7 @@ mod tests {
             execution_id: ExecutionId::new(),
             status: ExecutionStatus::Failed,
             node_outputs: HashMap::new(),
+            node_errors: HashMap::new(),
             duration: Duration::from_millis(50),
         };
         assert!(result.is_failure());
@@ -77,6 +81,7 @@ mod tests {
             execution_id: ExecutionId::new(),
             status: ExecutionStatus::Completed,
             node_outputs: outputs,
+            node_errors: HashMap::new(),
             duration: Duration::from_millis(10),
         };
 

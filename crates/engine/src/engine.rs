@@ -378,16 +378,23 @@ impl WorkflowEngine {
 
         self.emit_final_event(execution_id, final_status, elapsed, &failed_node);
 
-        // 11. Collect outputs
+        // 11. Collect outputs and errors
         let node_outputs: HashMap<NodeId, serde_json::Value> = outputs
             .iter()
             .map(|r| (*r.key(), r.value().clone()))
+            .collect();
+
+        let node_errors: HashMap<NodeId, String> = exec_state
+            .node_states
+            .iter()
+            .filter_map(|(&id, ns)| ns.error_message.as_ref().map(|msg| (id, msg.clone())))
             .collect();
 
         Ok(ExecutionResult {
             execution_id,
             status: final_status,
             node_outputs,
+            node_errors,
             duration: elapsed,
         })
     }
@@ -626,10 +633,17 @@ impl WorkflowEngine {
             .map(|r| (*r.key(), r.value().clone()))
             .collect();
 
+        let node_errors: HashMap<NodeId, String> = exec_state
+            .node_states
+            .iter()
+            .filter_map(|(&id, ns)| ns.error_message.as_ref().map(|msg| (id, msg.clone())))
+            .collect();
+
         Ok(ExecutionResult {
             execution_id,
             status: final_status,
             node_outputs,
+            node_errors,
             duration: elapsed,
         })
     }

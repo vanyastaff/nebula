@@ -33,6 +33,7 @@ members = [
     "crates/parameter/macros",
     "crates/validator/macros",
     "crates/config/macros",
+    "apps/cli",
 ]
 exclude = [
     "crates/*/fuzz",

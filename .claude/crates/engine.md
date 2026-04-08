@@ -8,6 +8,7 @@ Workflow execution orchestrator — frontier-based DAG scheduler, node dispatch.
 - `with_credential_resolver()` type-erases the resolver fn.
 
 ## Key Decisions
+- `ExecutionResult` has `node_errors` (per-node failure messages) alongside `node_outputs`.
 - Frontier-based: nodes spawn when all incoming edges resolve.
 - Budget in `check_budget()`: `max_duration`, `max_output_bytes`, `max_total_retries`.
 - Error strategy via `handle_node_failure()`: FailFast cancels, ContinueOnError skips dependents, IgnoreErrors = null success.
@@ -27,4 +28,4 @@ Workflow execution orchestrator — frontier-based DAG scheduler, node dispatch.
 - Resume budget/input not persisted — defaults used on resume (TODO).
 - Idempotency: missing output on key hit → re-execute (partial write). Scope is per `execution_id`.
 
-<!-- updated: 2026-04-07 — PR #230 review fixes -->
+<!-- reviewed: 2026-04-08 — added node_errors to ExecutionResult -->

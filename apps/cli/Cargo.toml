@@ -1,0 +1,59 @@
+[package]
+name = "nebula-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Command-line interface for the Nebula workflow engine"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[[bin]]
+name = "nebula"
+path = "src/main.rs"
+
+[dependencies]
+# CLI framework
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4"
+
+# Async runtime
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+toml = "1.1"
+
+# Logging
+tracing = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Directories
+dirs = "6"
+
+# TUI (optional)
+ratatui = { version = "0.29", optional = true }
+crossterm = { version = "0.28", optional = true }
+
+# Nebula crates
+nebula-config = { path = "../../crates/config", features = ["toml", "env"] }
+nebula-core = { path = "../../crates/core" }
+nebula-engine = { path = "../../crates/engine" }
+nebula-plugin = { path = "../../crates/plugin", features = ["dynamic-loading"] }
+nebula-execution = { path = "../../crates/execution" }
+nebula-runtime = { path = "../../crates/runtime" }
+nebula-workflow = { path = "../../crates/workflow" }
+nebula-log = { path = "../../crates/log" }
+nebula-telemetry = { path = "../../crates/telemetry" }
+nebula-action = { path = "../../crates/action" }
+
+[features]
+default = ["tui"]
+tui = ["dep:ratatui", "dep:crossterm"]
