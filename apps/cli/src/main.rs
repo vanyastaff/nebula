@@ -74,6 +74,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Plugin { command } => {
             match command {
                 PluginCommand::List => commands::plugin::list().await,
+                PluginCommand::New(args) => commands::plugin_new::execute(args)?,
             }
             Ok(ExitCode::SUCCESS)
         }

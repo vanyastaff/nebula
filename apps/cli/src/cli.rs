@@ -108,6 +108,23 @@ pub struct ActionsInfoArgs {
 pub enum PluginCommand {
     /// List loaded plugins (built-in + external from plugins/ dir).
     List,
+    /// Create a new plugin project.
+    New(PluginNewArgs),
+}
+
+/// Arguments for the `plugin new` command.
+#[derive(Parser)]
+pub struct PluginNewArgs {
+    /// Plugin name (e.g. "telegram", "slack", "csv-parser").
+    pub name: String,
+
+    /// Number of actions to scaffold.
+    #[arg(long, default_value = "1")]
+    pub actions: usize,
+
+    /// Target directory (defaults to nebula-plugin-<name>).
+    #[arg(short, long)]
+    pub path: Option<PathBuf>,
 }
 
 // ── Dev ──────────────────────────────────────────────────────────────────

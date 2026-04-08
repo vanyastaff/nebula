@@ -3,6 +3,7 @@ pub mod completion;
 pub mod config;
 pub mod dev;
 pub mod plugin;
+pub mod plugin_new;
 pub mod run;
 pub mod validate;
 
