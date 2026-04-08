@@ -434,11 +434,8 @@ impl WorkflowEngine {
                 EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
             })?;
 
-        let exec_state: ExecutionState = serde_json::from_str(
-            &serde_json::to_string(&state_json)
-                .map_err(|e| EngineError::PlanningFailed(format!("serialize state: {e}")))?,
-        )
-        .map_err(|e| EngineError::PlanningFailed(format!("deserialize state: {e}")))?;
+        let exec_state: ExecutionState = serde_json::from_value(state_json)
+            .map_err(|e| EngineError::PlanningFailed(format!("deserialize state: {e}")))?;
 
         // 3. Guard against resuming a terminal execution.
         if exec_state.status.is_terminal() {
@@ -485,10 +482,12 @@ impl WorkflowEngine {
             }
         }
         // Transition back to Running so the frontier loop can proceed.
-        // The persisted state may be Created or Running; normalise to Running.
-        if !exec_state.status.is_terminal() {
-            // Force the status to Running regardless of its current non-terminal value.
-            exec_state.status = ExecutionStatus::Running;
+        // The persisted state may be Created, Paused, or already Running after a crash.
+        // Use transition_status when the transition is valid; skip if already Running.
+        if !exec_state.status.is_terminal() && exec_state.status != ExecutionStatus::Running {
+            // Ignoring the result is intentional: if this fails the status is left
+            // as-is (e.g. Paused), which is still non-terminal and the loop will proceed.
+            let _ = exec_state.transition_status(ExecutionStatus::Running);
         }
 
         // 8. Populate shared output map from persisted outputs.
@@ -532,6 +531,15 @@ impl WorkflowEngine {
 
         // Identify frontier nodes: non-terminal nodes whose incoming edges are
         // all resolved (i.e., all predecessors are terminal).
+        //
+        // Note: we do NOT require that at least one edge is activated here.
+        // During crash recovery we cannot know which edges were activated — that
+        // state is not persisted separately. The conservative check (all
+        // predecessors terminal → node is eligible) is correct for crash recovery:
+        // the node may have been waiting for an edge that was never activated, but
+        // the activated_edges map reconstructed above from Completed/Skipped
+        // predecessors gives run_frontier the correct activation context to
+        // evaluate edge conditions normally once the node is dispatched.
         for (&node_id, ns) in &exec_state.node_states {
             if ns.state.is_terminal() {
                 continue;
@@ -546,6 +554,9 @@ impl WorkflowEngine {
         }
 
         // 10. Build remaining infrastructure for the frontier loop.
+        // TODO: the original ExecutionBudget is not persisted in ExecutionState.
+        // For now, resume uses the default budget. To fix, add `budget` to
+        // ExecutionState and restore it here.
         let budget = ExecutionBudget::default();
         let semaphore = Arc::new(Semaphore::new(budget.max_concurrent_nodes));
         let cancel_token = CancellationToken::new();
@@ -556,6 +567,12 @@ impl WorkflowEngine {
             .inc();
 
         let error_strategy = workflow.config.error_strategy;
+        // TODO: the original workflow input is not persisted in ExecutionState.
+        // Resume passes Null, which means re-running entry nodes will not receive
+        // the original trigger data. Entry nodes that have already completed are
+        // skipped via idempotency, so this only affects entry nodes that crashed
+        // mid-execution without completing. To fix, persist `workflow_input` in
+        // ExecutionState alongside the execution ID.
         let workflow_input = serde_json::Value::Null;
         let failed_node = self
             .run_frontier(
@@ -581,7 +598,10 @@ impl WorkflowEngine {
         let elapsed = started.elapsed();
 
         let final_status = determine_final_status(&failed_node, &cancel_token);
-        exec_state.status = final_status;
+        // Use the validated transition path. Ignoring the result is intentional:
+        // if the current status is already terminal (e.g. the execution was
+        // cancelled during the frontier loop), we do not overwrite it.
+        let _ = exec_state.transition_status(final_status);
 
         // Persist final state (best-effort).
         if let Ok(state_json) = serde_json::to_value(&exec_state) {
@@ -951,7 +971,15 @@ impl WorkflowEngine {
             default_resource_accessor()
         };
 
-        let credential_refresh = self.credential_refresh.clone();
+        // Only forward the refresh hook when a credential resolver is configured.
+        // Without a resolver there are no credentials to refresh, so the hook
+        // would fire unconditionally on every node — even actions that do not use
+        // credentials at all.
+        let credential_refresh = if self.credential_resolver.is_some() {
+            self.credential_refresh.clone()
+        } else {
+            None
+        };
 
         join_set.spawn(
             NodeTask {
@@ -1022,7 +1050,17 @@ impl WorkflowEngine {
         // Node was already executed — load the persisted output.
         let output_value = match repo.load_node_output(execution_id, node_id).await {
             Ok(Some(v)) => v,
-            Ok(None) => serde_json::Value::Null,
+            Ok(None) => {
+                // Idempotency key exists but no output was persisted. This indicates
+                // a partial write (e.g. the process crashed after marking idempotent
+                // but before saving the output). Re-execute to produce a clean result.
+                tracing::warn!(
+                    %execution_id,
+                    %node_id,
+                    "idempotency key present but output missing; re-executing node"
+                );
+                return false;
+            }
             Err(e) => {
                 tracing::warn!(
                     %execution_id,
@@ -1185,8 +1223,12 @@ struct NodeTask {
     /// Optional proactive credential refresh hook.
     ///
     /// Called before the action executes when a credential resolver is
-    /// configured. The hook receives the action key (used as a proxy for the
-    /// credential ID in the current passthrough model).
+    /// configured. The argument passed to the hook is the **action key**, not a
+    /// credential ID. The caller (engine builder) controls the mapping from
+    /// action key to credential IDs — this is a best-effort pre-dispatch hint.
+    ///
+    /// TODO: when per-node credential declarations are populated from action
+    /// dependency metadata, pass the actual credential ID(s) instead.
     credential_refresh: Option<CredentialRefreshFn>,
 }
 
@@ -3117,16 +3159,19 @@ mod tests {
             meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         }));
 
-        // The refresh hook is called for every spawned node regardless of whether
-        // a credential resolver is configured.
+        // The refresh hook is only called when a credential resolver is also set.
         let (engine, _) = make_engine(registry);
-        let engine = engine.with_credential_refresh(move |_id: &str| {
-            let count = refresh_count_clone.clone();
-            async move {
-                count.fetch_add(1, AOrdering::Relaxed);
-                Ok(())
-            }
-        });
+        let engine = engine
+            .with_credential_resolver(|_id: &str| async move {
+                Err(nebula_action::error::ActionError::fatal("no credentials"))
+            })
+            .with_credential_refresh(move |_id: &str| {
+                let count = refresh_count_clone.clone();
+                async move {
+                    count.fetch_add(1, AOrdering::Relaxed);
+                    Ok(())
+                }
+            });
 
         let n1 = NodeId::new();
         let n2 = NodeId::new();

@@ -81,7 +81,7 @@ impl ActionRuntime {
     ///
     /// When `version` is `Some`, the registry resolves the handler registered for
     /// that exact version. When `version` is `None`, the latest registered handler
-    /// is used (same behaviour as [`execute_action`]).
+    /// is used (same behaviour as `execute_action`).
     ///
     /// # Errors
     ///

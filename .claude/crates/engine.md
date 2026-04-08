@@ -19,13 +19,12 @@ Workflow execution orchestrator — frontier-based DAG scheduler, node dispatch.
 - Rejects terminal executions. Running nodes reset to Pending.
 - Frontier = non-terminal nodes with all predecessors terminal.
 
-## EF2–4 decisions
-- Idempotency key: `"{execution_id}:{node_id}:1"`. Only active with `execution_repo`. `check_and_apply_idempotency` short-circuits; `record_idempotency` fires post-success.
-- Version pinning: `NodeTask.interface_version` → `execute_action_versioned`. `None` = latest.
-- Credential refresh hook: called in `NodeTask::run` before dispatch; errors logged, not fatal.
-
 ## Traps
-- `from_value::<WorkflowDefinition>()` fails — use `from_str(&to_string(&val))` (`ActionKey` has `#[serde(borrow)]`).
-- Idempotency scope is per `execution_id` — not portable across executions.
+- `from_value::<WorkflowDefinition>()` fails — use `from_str(&to_string(&val))` (`ActionKey` has `#[serde(borrow)]`). `ExecutionState` is fine with `from_value`.
+- `transition_status(Running)` fails if already Running — guard with `status != Running` before calling in resume.
+- Credential refresh only fires when `credential_resolver` is also Some.
+- Resume frontier is conservative (all predecessors terminal → eligible); activated-edge state not persisted.
+- Resume budget/input not persisted — defaults used on resume (TODO).
+- Idempotency: missing output on key hit → re-execute (partial write). Scope is per `execution_id`.
 
-<!-- updated: 2026-04-07 — EF2: idempotency, EF3: version pinning, EF4: credential refresh -->
+<!-- updated: 2026-04-07 — PR #230 review fixes -->
