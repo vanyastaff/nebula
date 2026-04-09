@@ -3445,6 +3445,7 @@ dependencies = [
 name = "nebula-action"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chrono",
  "nebula-action-macros",

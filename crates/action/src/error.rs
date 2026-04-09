@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -52,8 +53,10 @@ pub enum ActionError {
     /// may ignore it in favor of its own retry configuration.
     #[error("retryable: {error}")]
     Retryable {
-        /// Human-readable error message.
-        error: String,
+        /// Full error chain wrapped in `Arc` for `Clone` support.
+        error: Arc<anyhow::Error>,
+        /// Machine-readable error code for engine decisions.
+        code: Option<ErrorCode>,
         /// Suggested delay before retry (engine may override).
         backoff_hint: Option<Duration>,
         /// Partial result produced before failure.
@@ -65,8 +68,10 @@ pub enum ActionError {
     /// Invalid credentials, schema mismatch, business logic rejection.
     #[error("fatal: {error}")]
     Fatal {
-        /// Human-readable error message.
-        error: String,
+        /// Full error chain wrapped in `Arc` for `Clone` support.
+        error: Arc<anyhow::Error>,
+        /// Machine-readable error code for engine decisions.
+        code: Option<ErrorCode>,
         /// Optional structured details about the failure.
         details: Option<serde_json::Value>,
     },
@@ -132,45 +137,119 @@ impl nebula_error::Classify for ActionError {
 
 impl ActionError {
     /// Create a retryable error with no backoff hint.
-    pub fn retryable(msg: impl Into<String>) -> Self {
+    ///
+    /// Accepts any type that implements `Display + Debug + Send + Sync`.
+    /// For typed errors, use [`retryable_from`] to preserve the error chain.
+    pub fn retryable(
+        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
+    ) -> Self {
         Self::Retryable {
-            error: msg.into(),
+            error: Arc::new(anyhow::anyhow!("{error}")),
+            code: None,
+            backoff_hint: None,
+            partial_output: None,
+        }
+    }
+
+    /// Create a retryable error from a typed error, preserving the full chain.
+    pub fn retryable_from(error: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Retryable {
+            error: Arc::new(error.into()),
+            code: None,
             backoff_hint: None,
             partial_output: None,
         }
     }
 
     /// Create a retryable error with a suggested backoff duration.
-    pub fn retryable_with_backoff(msg: impl Into<String>, backoff: Duration) -> Self {
+    pub fn retryable_with_backoff(
+        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
+        backoff: Duration,
+    ) -> Self {
         Self::Retryable {
-            error: msg.into(),
+            error: Arc::new(anyhow::anyhow!("{error}")),
+            code: None,
             backoff_hint: Some(backoff),
             partial_output: None,
         }
     }
 
-    /// Create a retryable error carrying a partial result.
-    pub fn retryable_with_partial(msg: impl Into<String>, partial: serde_json::Value) -> Self {
+    /// Create a retryable error with a machine-readable error code.
+    pub fn retryable_with_code(
+        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
+        code: ErrorCode,
+    ) -> Self {
         Self::Retryable {
-            error: msg.into(),
+            error: Arc::new(anyhow::anyhow!("{error}")),
+            code: Some(code),
+            backoff_hint: None,
+            partial_output: None,
+        }
+    }
+
+    /// Create a retryable error carrying a partial result.
+    pub fn retryable_with_partial(
+        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
+        partial: serde_json::Value,
+    ) -> Self {
+        Self::Retryable {
+            error: Arc::new(anyhow::anyhow!("{error}")),
+            code: None,
             backoff_hint: None,
             partial_output: Some(partial),
         }
     }
 
     /// Create a fatal (non-retryable) error.
-    pub fn fatal(msg: impl Into<String>) -> Self {
+    ///
+    /// Accepts any type that implements `Display + Debug + Send + Sync`.
+    /// For typed errors, use [`fatal_from`] to preserve the error chain.
+    pub fn fatal(error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static) -> Self {
         Self::Fatal {
-            error: msg.into(),
+            error: Arc::new(anyhow::anyhow!("{error}")),
+            code: None,
+            details: None,
+        }
+    }
+
+    /// Create a fatal error from a typed error, preserving the full chain.
+    pub fn fatal_from(error: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Fatal {
+            error: Arc::new(error.into()),
+            code: None,
             details: None,
         }
     }
 
     /// Create a fatal error with structured details.
-    pub fn fatal_with_details(msg: impl Into<String>, details: serde_json::Value) -> Self {
+    pub fn fatal_with_details(
+        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
+        details: serde_json::Value,
+    ) -> Self {
         Self::Fatal {
-            error: msg.into(),
+            error: Arc::new(anyhow::anyhow!("{error}")),
+            code: None,
             details: Some(details),
+        }
+    }
+
+    /// Create a fatal error with a machine-readable error code.
+    pub fn fatal_with_code(
+        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
+        code: ErrorCode,
+    ) -> Self {
+        Self::Fatal {
+            error: Arc::new(anyhow::anyhow!("{error}")),
+            code: Some(code),
+            details: None,
+        }
+    }
+
+    /// Get the machine-readable error code, if any.
+    pub fn error_code(&self) -> Option<&ErrorCode> {
+        match self {
+            Self::Retryable { code, .. } | Self::Fatal { code, .. } => code.as_ref(),
+            _ => None,
         }
     }
 
@@ -331,5 +410,39 @@ mod tests {
 
         let err = ActionError::Cancelled;
         assert_eq!(err.to_string(), "cancelled");
+    }
+
+    #[test]
+    fn retryable_with_code() {
+        let err = ActionError::retryable_with_code("rate limited", ErrorCode::RateLimited);
+        assert_eq!(err.error_code(), Some(&ErrorCode::RateLimited));
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn fatal_with_code() {
+        let err = ActionError::fatal_with_code("expired", ErrorCode::AuthExpired);
+        assert_eq!(err.error_code(), Some(&ErrorCode::AuthExpired));
+        assert!(err.is_fatal());
+    }
+
+    #[test]
+    fn error_preserves_chain() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout");
+        let err = ActionError::retryable(io_err);
+        assert!(err.to_string().contains("timeout"));
+    }
+
+    #[test]
+    fn clone_preserves_error() {
+        let err = ActionError::retryable("test");
+        let cloned = err.clone();
+        assert_eq!(err.to_string(), cloned.to_string());
+    }
+
+    #[test]
+    fn default_code_is_none() {
+        let err = ActionError::retryable("no code");
+        assert!(err.error_code().is_none());
     }
 }
