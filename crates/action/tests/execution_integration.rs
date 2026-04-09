@@ -81,6 +81,10 @@ impl StatefulAction for CounterAction {
     type Output = u32;
     type State = u32;
 
+    fn init_state(&self) -> Self::State {
+        0
+    }
+
     async fn execute(
         &self,
         _input: Self::Input,
