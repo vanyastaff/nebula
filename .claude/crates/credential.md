@@ -3,6 +3,7 @@ Universal credential management: 12 auth scheme types, open AuthScheme trait, co
 
 ## Invariants
 - Encrypted at rest (AES-256-GCM). `SecretString` zeroizes on drop.
+- `CredentialGuard<S: Zeroize>` — Deref + Zeroize on drop + !Serialize. `new()` is `pub` — action crate constructs guards in context methods. Re-exported from nebula-action for backward compat.
 - No direct import with nebula-resource — use EventBus.
 - All `AuthScheme` `Debug` impls redact secrets.
 - `identity_state!` calls live in scheme files, not `credentials/mod.rs`.
@@ -26,4 +27,4 @@ Universal credential management: 12 auth scheme types, open AuthScheme trait, co
 - RT-4: ScopeLayer TOCTOU on delete/put — requires trait-level conditional ops.
 - RT-3: rkyv cache zeroization — not applicable yet (cache uses moka ciphertext).
 
-<!-- reviewed: 2026-04-07 -->
+<!-- reviewed: 2026-04-08 -->
