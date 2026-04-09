@@ -125,7 +125,7 @@ impl ActionContext {
     }
 
     /// Retrieve a credential snapshot by id through the configured accessor.
-    pub async fn credential(&self, id: &str) -> Result<CredentialSnapshot, ActionError> {
+    pub async fn credential_by_id(&self, id: &str) -> Result<CredentialSnapshot, ActionError> {
         self.credentials.get(id).await.map_err(ActionError::from)
     }
 
@@ -164,7 +164,7 @@ impl ActionContext {
     ///
     /// - [`ActionError::Fatal`] if no credential of type `S` is configured
     /// - [`ActionError::Fatal`] if the stored scheme does not match `S`
-    pub async fn credential_by_type<S>(&self) -> Result<CredentialGuard<S>, ActionError>
+    pub async fn credential<S>(&self) -> Result<CredentialGuard<S>, ActionError>
     where
         S: AuthScheme + zeroize::Zeroize,
     {
@@ -181,9 +181,24 @@ impl ActionContext {
         Ok(CredentialGuard::new(scheme))
     }
 
-    /// Check whether a credential exists.
-    pub async fn has_credential(&self, id: &str) -> bool {
+    /// Retrieve a typed credential by [`AuthScheme`] type.
+    #[deprecated(since = "0.1.0", note = "use `credential::<S>()`")]
+    pub async fn credential_by_type<S>(&self) -> Result<CredentialGuard<S>, ActionError>
+    where
+        S: AuthScheme + zeroize::Zeroize,
+    {
+        self.credential::<S>().await
+    }
+
+    /// Check whether a credential exists by id.
+    pub async fn has_credential_id(&self, id: &str) -> bool {
         self.credentials.has(id).await
+    }
+
+    /// Check whether a credential exists by id.
+    #[deprecated(since = "0.1.0", note = "use `has_credential_id`")]
+    pub async fn has_credential(&self, id: &str) -> bool {
+        self.has_credential_id(id).await
     }
 }
 
@@ -285,7 +300,7 @@ impl TriggerContext {
     }
 
     /// Retrieve a credential snapshot by id through the configured accessor.
-    pub async fn credential(&self, id: &str) -> Result<CredentialSnapshot, ActionError> {
+    pub async fn credential_by_id(&self, id: &str) -> Result<CredentialSnapshot, ActionError> {
         self.credentials.get(id).await.map_err(ActionError::from)
     }
 
@@ -308,7 +323,7 @@ impl TriggerContext {
 
     /// Retrieve a typed credential by [`AuthScheme`] type.
     ///
-    /// Identical to [`ActionContext::credential_by_type`] but for trigger
+    /// Identical to [`ActionContext::credential`] but for trigger
     /// contexts. Returns [`CredentialGuard<S>`] that derefs to `S`, zeroizes
     /// on drop, and cannot be serialized.
     ///
@@ -316,7 +331,7 @@ impl TriggerContext {
     ///
     /// - [`ActionError::Fatal`] if no credential of type `S` is configured
     /// - [`ActionError::Fatal`] if the stored scheme does not match `S`
-    pub async fn credential_by_type<S>(&self) -> Result<CredentialGuard<S>, ActionError>
+    pub async fn credential<S>(&self) -> Result<CredentialGuard<S>, ActionError>
     where
         S: AuthScheme + zeroize::Zeroize,
     {
@@ -333,9 +348,24 @@ impl TriggerContext {
         Ok(CredentialGuard::new(scheme))
     }
 
-    /// Check whether a credential exists.
-    pub async fn has_credential(&self, id: &str) -> bool {
+    /// Retrieve a typed credential by [`AuthScheme`] type.
+    #[deprecated(since = "0.1.0", note = "use `credential::<S>()`")]
+    pub async fn credential_by_type<S>(&self) -> Result<CredentialGuard<S>, ActionError>
+    where
+        S: AuthScheme + zeroize::Zeroize,
+    {
+        self.credential::<S>().await
+    }
+
+    /// Check whether a credential exists by id.
+    pub async fn has_credential_id(&self, id: &str) -> bool {
         self.credentials.has(id).await
+    }
+
+    /// Check whether a credential exists by id.
+    #[deprecated(since = "0.1.0", note = "use `has_credential_id`")]
+    pub async fn has_credential(&self, id: &str) -> bool {
+        self.has_credential_id(id).await
     }
 }
 
@@ -408,9 +438,9 @@ mod tests {
         );
 
         assert!(!ctx.has_resource("missing").await);
-        assert!(!ctx.has_credential("missing").await);
+        assert!(!ctx.has_credential_id("missing").await);
         assert!(ctx.resource("missing").await.is_err());
-        assert!(ctx.credential("missing").await.is_err());
+        assert!(ctx.credential_by_id("missing").await.is_err());
     }
 
     struct TestScheduler;
@@ -468,8 +498,8 @@ mod tests {
                 .await
                 .is_ok()
         );
-        assert!(ctx.has_credential("cred").await);
-        assert!(ctx.credential("cred").await.is_ok());
+        assert!(ctx.has_credential_id("cred").await);
+        assert!(ctx.credential_by_id("cred").await.is_ok());
     }
 
     #[tokio::test]
@@ -587,7 +617,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn action_context_credential_by_type_returns_guard() {
+    async fn action_context_credential_returns_guard() {
         let ctx = ActionContext::new(
             ExecutionId::new(),
             NodeId::new(),
@@ -596,28 +626,28 @@ mod tests {
         )
         .with_credentials(Arc::new(TypedCredentialAccessor));
 
-        let guard = ctx.credential_by_type::<ZeroizableToken>().await.unwrap();
+        let guard = ctx.credential::<ZeroizableToken>().await.unwrap();
         assert_eq!(guard.value, "secret-42");
     }
 
     #[tokio::test]
-    async fn trigger_context_credential_by_type_returns_guard() {
+    async fn trigger_context_credential_returns_guard() {
         let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new())
             .with_credentials(Arc::new(TypedCredentialAccessor));
 
-        let guard = ctx.credential_by_type::<ZeroizableToken>().await.unwrap();
+        let guard = ctx.credential::<ZeroizableToken>().await.unwrap();
         assert_eq!(guard.value, "secret-42");
     }
 
     #[tokio::test]
-    async fn credential_by_type_noop_accessor_returns_not_supported() {
+    async fn credential_noop_accessor_returns_not_supported() {
         let ctx = ActionContext::new(
             ExecutionId::new(),
             NodeId::new(),
             WorkflowId::new(),
             CancellationToken::new(),
         );
-        let result = ctx.credential_by_type::<ZeroizableToken>().await;
+        let result = ctx.credential::<ZeroizableToken>().await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.is_fatal());

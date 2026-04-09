@@ -2360,7 +2360,7 @@ mod tests {
             NodeId::new(),
             tokio_util::sync::CancellationToken::new(),
         );
-        assert!(!ctx.has_credential("missing").await);
+        assert!(!ctx.has_credential_id("missing").await);
         assert!(
             ctx.schedule_after(std::time::Duration::from_millis(1))
                 .await

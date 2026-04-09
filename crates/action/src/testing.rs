@@ -89,7 +89,7 @@ impl TestContextBuilder {
     /// Add a type-based credential for testing.
     ///
     /// The scheme is stored by [`TypeId`] and returned when
-    /// [`ActionContext::credential_by_type`] is called with the same type.
+    /// [`ActionContext::credential`] is called with the same type.
     #[must_use]
     pub fn with_credential<S>(mut self, scheme: S) -> Self
     where
@@ -650,17 +650,17 @@ mod tests {
             .with_credential_snapshot("my_cred", snapshot)
             .build();
 
-        assert!(ctx.has_credential("my_cred").await);
-        assert!(!ctx.has_credential("other").await);
+        assert!(ctx.has_credential_id("my_cred").await);
+        assert!(!ctx.has_credential_id("other").await);
 
-        let snap = ctx.credential("my_cred").await.unwrap();
+        let snap = ctx.credential_by_id("my_cred").await.unwrap();
         assert_eq!(snap.scheme_pattern(), "SecretToken");
     }
 
     #[tokio::test]
     async fn test_context_builder_missing_credential_returns_error() {
         let ctx = TestContextBuilder::new().build();
-        let result = ctx.credential("missing").await;
+        let result = ctx.credential_by_id("missing").await;
         assert!(result.is_err());
     }
 
@@ -745,14 +745,14 @@ mod tests {
             })
             .build();
 
-        let guard = ctx.credential_by_type::<TestApiKey>().await.unwrap();
+        let guard = ctx.credential::<TestApiKey>().await.unwrap();
         assert_eq!(guard.key, "my-key");
     }
 
     #[tokio::test]
     async fn typed_credential_missing_returns_error() {
         let ctx = TestContextBuilder::minimal().build();
-        let result = ctx.credential_by_type::<TestApiKey>().await;
+        let result = ctx.credential::<TestApiKey>().await;
         assert!(result.is_err());
     }
 

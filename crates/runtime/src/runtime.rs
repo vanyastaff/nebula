@@ -468,7 +468,7 @@ mod tests {
     #[tokio::test]
     async fn trigger_context_construction_is_usable_in_runtime() {
         let ctx = test_trigger_context();
-        assert!(!ctx.has_credential("missing").await);
+        assert!(!ctx.has_credential_id("missing").await);
         assert!(
             ctx.schedule_after(std::time::Duration::from_millis(1))
                 .await
