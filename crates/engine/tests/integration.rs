@@ -2,6 +2,8 @@
 //!
 //! These tests exercise the full stack: workflow → engine → runtime → sandbox → handler.
 
+#![allow(deprecated)] // Reason: tests still use InternalHandler during migration
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

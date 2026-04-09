@@ -35,6 +35,7 @@ use crate::result::ActionResult;
 /// This is the *internal* contract between registry and runtime. Action authors
 /// implement typed traits ([`StatelessAction`] etc.) and use adapters to
 /// convert to `dyn InternalHandler`.
+#[deprecated(since = "0.1.0", note = "use ActionHandler enum instead")]
 #[async_trait]
 pub trait InternalHandler: Send + Sync {
     /// Get action metadata.
@@ -91,6 +92,7 @@ impl<A> StatelessActionAdapter<A> {
     }
 }
 
+#[allow(deprecated)] // Reason: backward-compat bridge — InternalHandler is deprecated but still implemented
 #[async_trait]
 impl<A> InternalHandler for StatelessActionAdapter<A>
 where
@@ -597,6 +599,7 @@ impl fmt::Debug for ActionHandler {
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // Reason: tests exercise both old InternalHandler and new handler traits
 mod tests {
     use std::sync::Arc;
 

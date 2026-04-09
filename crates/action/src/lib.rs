@@ -109,10 +109,13 @@ pub use error::{ActionError, ErrorCode};
 pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 pub use ext::ActionResultExt;
 pub use guard::CredentialGuard;
+#[allow(deprecated)]
+// Reason: InternalHandler re-exported for backward compat during migration
+pub use handler::InternalHandler;
 pub use handler::{
-    ActionHandler, AgentHandler, InternalHandler, ResourceActionAdapter, ResourceHandler,
-    StatefulActionAdapter, StatefulHandler, StatelessActionAdapter, StatelessHandler,
-    TriggerActionAdapter, TriggerHandler,
+    ActionHandler, AgentHandler, ResourceActionAdapter, ResourceHandler, StatefulActionAdapter,
+    StatefulHandler, StatelessActionAdapter, StatelessHandler, TriggerActionAdapter,
+    TriggerHandler,
 };
 pub use metadata::{ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError};
 pub use output::{
