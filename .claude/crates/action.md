@@ -35,14 +35,21 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - `SpyEmitter` / `SpyScheduler`: test doubles capturing `emit()` and `schedule_after()` calls.
 - `TestResourceAccessor` uses `remove()` — a resource can only be acquired once per test (mirrors real acquire semantics).
 
+- `stateful.rs`: core `StatefulAction` (moved from `execution.rs`) + DX traits (`PaginatedAction`, `BatchAction`, `TransactionalAction`) + `macro_rules!` macros (`impl_paginated_action!`, `impl_batch_action!`, `impl_transactional_action!`). Macros generate `impl StatefulAction for $ty` — no blanket impls (Rust coherence forbids multiple). Engine never sees DX types. `execution.rs` re-exports `StatefulAction` for backward compat.
+- `migrate_state(old: Value) -> Option<Self::State>` — default method on `StatefulAction`. Adapter calls on state deser failure. Returns `None` by default (error propagated).
+- `ActionResult::continue_with()`, `break_completed()`, `break_with_reason()`, `continue_with_delay()` — convenience constructors for stateful iteration results.
+
 ## Traps
 - `ActionError::retryable(...)` vs `ActionError::fatal(...)` — engine uses this to decide retry. Use `ActionResultExt` for ergonomic `.retryable()?` / `.fatal()?`.
 - `FnStatelessAction` / `stateless_fn()` for closure-based actions (testing and one-off use). `FnStatelessCtxAction` / `stateless_ctx_fn()` for closures that need `ActionContext` (credentials, resources, logger). Use `.with_context(ctx)` to inject capabilities.
 - `CredentialGuard` does NOT impl Serialize — compile error if put in Output/State types. By design.
 - `InternalHandler` is deprecated — use `ActionHandler` enum. Downstream crates use `#![allow(deprecated)]` during migration.
 - `ResourceActionAdapter::cleanup` downcasts `Box<dyn Any>` — returns `ActionError::Fatal` on type mismatch during cleanup downcast.
+- Must call `impl_paginated_action!(MyType)` after `impl PaginatedAction for MyType` — the macro generates the `StatefulAction` impl. Forgetting the macro = type won't work with `register_stateful()`.
+- A type cannot use two DX macros (e.g., both `impl_paginated_action!` and `impl_batch_action!`) — duplicate `StatefulAction` impl error. Choose one pattern per type.
+- `BatchAction::process_item` returning `ActionError::Fatal` aborts the entire batch. Use `ActionError::Retryable` for per-item errors that should be captured and continued.
 
 ## Relations
 - Depends on nebula-core, nebula-parameter, nebula-credential. Used by nebula-engine, nebula-runtime, nebula-sdk.
 
-<!-- reviewed: 2026-04-08 — Phase 2b credential renames, combined derive, stateless_ctx_fn -->
+<!-- reviewed: 2026-04-09 — Phase 6 DX stateful types, migrate_state, ActionResult constructors -->

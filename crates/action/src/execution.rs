@@ -2,6 +2,7 @@
 //!
 //! - [`StatelessAction`] — pure function, no state between calls.
 //! - [`StatefulAction`] — iterative execution with persistent state (`Continue`/`Break`).
+//!   Re-exported from [`crate::stateful`].
 //! - [`TriggerAction`] — workflow starter: `start`/`stop`, lives outside execution graph.
 //! - [`ResourceAction`] — graph-level DI: `configure` runs before downstream, `cleanup` on scope drop.
 //!
@@ -17,6 +18,8 @@ use crate::action::Action;
 use crate::context::{Context, TriggerContext};
 use crate::error::ActionError;
 use crate::result::ActionResult;
+
+pub use crate::stateful::StatefulAction;
 
 /// Stateless action: pure function from input to result.
 ///
@@ -64,46 +67,6 @@ pub trait StatelessAction: Action {
     fn execute(
         &self,
         input: Self::Input,
-        ctx: &impl Context,
-    ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send;
-}
-
-/// Stateful action: iterative execution with persistent state.
-///
-/// The engine calls `execute` repeatedly. Return [`ActionResult::Continue`] to
-/// request another iteration (state is saved); return [`ActionResult::Break`]
-/// when done. Use for pagination, long-running loops, or multi-step processing.
-///
-/// State must be serializable (`Serialize + DeserializeOwned`) so the engine can
-/// checkpoint it between iterations, and `Clone` so it can snapshot before
-/// executing (rollback on failure).
-///
-/// Cancellation is enforced by the runtime (same as [`StatelessAction`]).
-pub trait StatefulAction: Action {
-    /// Input type for each iteration.
-    type Input: Send + Sync;
-    /// Output type (wrapped in [`ActionResult`]); `Continue` and `Break` carry output.
-    type Output: Send + Sync;
-    /// Persistent state type (saved between iterations by the engine).
-    ///
-    /// Must be serializable for engine checkpointing and cloneable for
-    /// pre-execution snapshots.
-    type State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync;
-
-    /// Create initial state for the first iteration.
-    ///
-    /// Called once when the engine starts executing this action. Subsequent
-    /// iterations receive the state mutated by the previous `execute` call.
-    fn init_state(&self) -> Self::State;
-
-    /// Execute one iteration with the given input, mutable state, and context.
-    ///
-    /// Return `Continue { output, progress, delay }` for another iteration,
-    /// or `Break { output, reason }` when finished.
-    fn execute(
-        &self,
-        input: Self::Input,
-        state: &mut Self::State,
         ctx: &impl Context,
     ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send;
 }

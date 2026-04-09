@@ -15,11 +15,9 @@
 //! - [`StatefulAction`] — iterative action with persistent state (Continue/Break)
 //! - [`TriggerAction`] — workflow starter (start/stop), outside execution graph
 //! - [`ResourceAction`] — graph-level DI (configure/cleanup), scoped to downstream branch
-//! - [`StatefulAction`] — iterative action with persistent state
-//! - [`TriggerAction`] — event source that starts workflows
-//! - `StreamingAction` — continuous stream producer
-//! - `TransactionalAction` — distributed transaction participant (saga)
-//! - `InteractiveAction` — human-in-the-loop interaction
+//! - [`PaginatedAction`] — cursor-driven pagination (DX over StatefulAction)
+//! - [`BatchAction`] — fixed-size chunk processing (DX over StatefulAction)
+//! - [`TransactionalAction`] — saga pattern with compensation (DX over StatefulAction)
 //! - [`ActionResult`] — execution result carrying data and flow-control intent
 //! - [`ActionOutput`] — first-class output type (value, binary, reference, stream)
 //! - [`ActionError`] — error type distinguishing retryable from fatal failures
@@ -92,6 +90,8 @@ pub mod registry;
 pub mod result;
 /// Scoped credential accessor — enforces type-based access control.
 pub mod scoped;
+/// Core StatefulAction trait and DX convenience patterns.
+pub mod stateful;
 /// Test utilities for action authors.
 pub mod testing;
 /// Action package validation utilities.
@@ -110,7 +110,7 @@ pub use capability::{
 pub use context::{ActionContext, Context, TriggerContext};
 pub use dependency::ActionDependencies;
 pub use error::{ActionError, ErrorCode};
-pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
+pub use execution::{ResourceAction, StatelessAction, TriggerAction};
 pub use ext::ActionResultExt;
 #[allow(deprecated)]
 // Reason: InternalHandler re-exported for backward compat during migration
@@ -132,6 +132,10 @@ pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, S
 pub use registry::ActionRegistry;
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
 pub use scoped::ScopedCredentialAccessor;
+pub use stateful::{
+    BatchAction, BatchItemResult, BatchState, PageResult, PaginatedAction, PaginationState,
+    StatefulAction, TransactionPhase, TransactionState, TransactionalAction,
+};
 pub use testing::{
     SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
     TriggerTestHarness,
