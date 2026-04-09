@@ -88,9 +88,11 @@ pub fn stateless_fn<F, Input, Output>(
 /// The context is cloned before each call (cheap — all capabilities are
 /// behind `Arc`).
 ///
-/// **Important:** This action must be executed with an [`ActionContext`]
-/// (the runtime always does this). Calling `execute` with a non-`ActionContext`
-/// type will produce a context with only noop capabilities.
+/// **Important:** Without [`with_context`](FnStatelessCtxAction::with_context),
+/// `execute` builds a minimal context from the [`Context`] trait methods
+/// (noop capabilities). Call `with_context` to inject a base
+/// [`ActionContext`] whose credentials, resources, and logger are cloned
+/// into each invocation.
 pub struct FnStatelessCtxAction<F, Input, Output> {
     metadata: ActionMetadata,
     func: F,
@@ -161,15 +163,15 @@ where
         let action_ctx = match &self.base_ctx {
             Some(base) => {
                 // Use capabilities from the base context, identity from runtime.
-                ActionContext {
-                    execution_id: ctx.execution_id(),
-                    node_id: ctx.node_id(),
-                    workflow_id: ctx.workflow_id(),
-                    cancellation: ctx.cancellation().clone(),
-                    resources: Arc::clone(&base.resources),
-                    credentials: Arc::clone(&base.credentials),
-                    logger: Arc::clone(&base.logger),
-                }
+                ActionContext::new(
+                    ctx.execution_id(),
+                    ctx.node_id(),
+                    ctx.workflow_id(),
+                    ctx.cancellation().clone(),
+                )
+                .with_resources(Arc::clone(&base.resources))
+                .with_credentials(Arc::clone(&base.credentials))
+                .with_logger(Arc::clone(&base.logger))
             }
             None => ActionContext::new(
                 ctx.execution_id(),
