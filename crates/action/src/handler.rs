@@ -325,6 +325,12 @@ impl<A> ResourceActionAdapter<A> {
     }
 }
 
+/// # Note on Config vs Instance
+///
+/// `ResourceAction` has separate `Config` and `Instance` types. This adapter
+/// boxes `Config` in `configure()` and downcasts `Config` in `cleanup()`,
+/// so it requires `Instance == Config`. For resource actions where these
+/// types differ, implement `ResourceHandler` directly.
 #[async_trait]
 impl<A> ResourceHandler for ResourceActionAdapter<A>
 where
@@ -350,8 +356,11 @@ where
         _config: Value,
         ctx: &ActionContext,
     ) -> Result<Box<dyn std::any::Any + Send + Sync>, ActionError> {
-        let config = self.action.configure(ctx).await?;
-        Ok(Box::new(config))
+        let instance = self.action.configure(ctx).await?;
+        // We box Config here. cleanup() downcasts to Instance.
+        // When Config == Instance (the common case), this works.
+        // When they differ, the downcast in cleanup() returns ActionError::Fatal.
+        Ok(Box::new(instance) as Box<dyn std::any::Any + Send + Sync>)
     }
 
     /// Clean up the resource by downcasting the instance and delegating.
