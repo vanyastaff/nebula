@@ -11,13 +11,13 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - `ActionDependencies` has two complementary pairs: `credential`/`resources` (trait-object, runtime injection) and `credential_keys`/`resource_keys` (typed keys, engine validation at registration). Plus `credential_types()` → `Vec<TypeId>` for `ScopedCredentialAccessor` sandboxing. All five default to empty — no migration needed.
 - `#[derive(Action)]` with `#[action(credential = T)]` or `#[action(credentials = [T1, T2])]` generates both `credential()` and `credential_types()`. Duplicate credential types in the attribute produce a compile error.
 - `ActionRegistry` (`registry.rs`): keyed by `ActionKey`, supports multiple versions per key. `get()` → latest, `get_versioned(&InterfaceVersion)` → specific. `Send + Sync` — use `Arc<ActionRegistry>` for read-only sharing, `Arc<RwLock<_>>` for mutation after sharing.
-- `credential_by_type::<S>()` is the primary typed credential access path (returns `CredentialGuard<S>`). Legacy `credential_typed::<S>(id)` (string-based, consumes snapshot via `into_project::<S>()`, maps `SnapshotError` → `ActionError::Fatal`) preserved for backward compat.
+- `credential::<S>()` is the primary typed credential access path (returns `CredentialGuard<S>`). Renamed from `credential_by_type::<S>()` in Phase 2b (deprecated alias kept). `credential_by_id(id)` for string-based access (old `credential(id)` removed — name clash). `has_credential_id(id)` replaces `has_credential(id)` (deprecated alias kept). Legacy `credential_typed::<S>(id)` (string-based, consumes snapshot via `into_project::<S>()`, maps `SnapshotError` → `ActionError::Fatal`) preserved for backward compat.
 - `ErrorCode` enum (8 variants, `#[non_exhaustive]`) on `ActionError::Retryable` and `Fatal` — machine-readable classification for engine retry decisions (RateLimited, AuthExpired, UpstreamTimeout, etc.).
 - `ActionResultExt` trait — `.retryable()?` and `.fatal()?` ergonomic conversion on any `Result<T, E>`. Also `_with_code()` variants for ErrorCode attachment.
 - Error field: `Arc<anyhow::Error>` — preserves full error chain, Clone via Arc. Factory methods accept `impl Display + Debug + Send + Sync + 'static`.
 
 - `CredentialGuard<S: Zeroize>` — re-exported from `nebula-credential`. Deref + Zeroize on drop + !Serialize. Constructed in context methods via `CredentialGuard::new()`.
-- `credential_by_type::<S>()` on `ActionContext`/`TriggerContext` — type-based credential access via TypeId. Returns `CredentialGuard<S>`. Existing `credential_typed()` (string-based) kept for backward compat.
+- `credential::<S>()` on `ActionContext`/`TriggerContext` — type-based credential access via TypeId. Returns `CredentialGuard<S>`. Existing `credential_typed()` (string-based) and deprecated `credential_by_type()` kept for backward compat.
 - `CredentialAccessor`, `ScopedCredentialAccessor`, `NoopCredentialAccessor`, `CredentialAccessError` — canonical home is `nebula-credential`; re-exported from `nebula-action::capability` for backward compat. `From<CredentialAccessError> for ActionError` maps `AccessDenied` to `SandboxViolation`, others to `Fatal`.
 - `#[derive(Action)]` now works on structs with fields (not just unit structs) — enables `type Input = Self` pattern.
 
@@ -37,7 +37,7 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 
 ## Traps
 - `ActionError::retryable(...)` vs `ActionError::fatal(...)` — engine uses this to decide retry. Use `ActionResultExt` for ergonomic `.retryable()?` / `.fatal()?`.
-- `FnStatelessAction` / `stateless_fn()` for closure-based actions (testing and one-off use).
+- `FnStatelessAction` / `stateless_fn()` for closure-based actions (testing and one-off use). `FnStatelessCtxAction` / `stateless_ctx_fn()` for closures that need `ActionContext` (credentials, resources, logger). Use `.with_context(ctx)` to inject capabilities.
 - `CredentialGuard` does NOT impl Serialize — compile error if put in Output/State types. By design.
 - `InternalHandler` is deprecated — use `ActionHandler` enum. Downstream crates use `#![allow(deprecated)]` during migration.
 - `ResourceActionAdapter::cleanup` downcasts `Box<dyn Any>` — returns `ActionError::Fatal` on type mismatch during cleanup downcast.
@@ -45,4 +45,4 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 ## Relations
 - Depends on nebula-core, nebula-parameter, nebula-credential. Used by nebula-engine, nebula-runtime, nebula-sdk.
 
-<!-- reviewed: 2026-04-09 — CredentialGuard, CredentialAccessor, ScopedCredentialAccessor moved to nebula-credential -->
+<!-- reviewed: 2026-04-08 — Phase 2b credential renames, combined derive, stateless_ctx_fn -->
