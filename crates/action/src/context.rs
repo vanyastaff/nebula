@@ -18,6 +18,7 @@ use crate::capability::{
     default_resource_accessor, default_trigger_scheduler,
 };
 use crate::error::ActionError;
+use crate::guard::CredentialGuard;
 use nebula_credential::CredentialSnapshot;
 
 /// Base trait for action execution contexts.
@@ -153,6 +154,29 @@ impl ActionContext {
             .map_err(|e| ActionError::fatal(format!("credential `{id}`: {e}")))
     }
 
+    /// Retrieve a typed credential by [`AuthScheme`] type.
+    ///
+    /// Type IS the key — no string identifier needed. Returns
+    /// [`CredentialGuard<S>`] that derefs to `S`, zeroizes on drop,
+    /// and cannot be serialized.
+    ///
+    /// # Errors
+    ///
+    /// - [`ActionError::Fatal`] if no credential of type `S` is configured
+    /// - [`ActionError::Fatal`] if the stored scheme does not match `S`
+    pub async fn credential_by_type<S>(&self) -> Result<CredentialGuard<S>, ActionError>
+    where
+        S: AuthScheme + zeroize::Zeroize,
+    {
+        let type_id = std::any::TypeId::of::<S>();
+        let type_name = std::any::type_name::<S>();
+        let snapshot = self.credentials.get_by_type(type_id, type_name).await?;
+        let scheme = snapshot.into_project::<S>().map_err(|e| {
+            ActionError::fatal(format!("credential type mismatch for `{type_name}`: {e}"))
+        })?;
+        Ok(CredentialGuard::new(scheme))
+    }
+
     /// Check whether a credential exists.
     pub async fn has_credential(&self, id: &str) -> bool {
         self.credentials.has(id).await
@@ -276,6 +300,29 @@ impl TriggerContext {
         snapshot
             .into_project::<S>()
             .map_err(|e| ActionError::fatal(format!("credential `{id}`: {e}")))
+    }
+
+    /// Retrieve a typed credential by [`AuthScheme`] type.
+    ///
+    /// Identical to [`ActionContext::credential_by_type`] but for trigger
+    /// contexts. Returns [`CredentialGuard<S>`] that derefs to `S`, zeroizes
+    /// on drop, and cannot be serialized.
+    ///
+    /// # Errors
+    ///
+    /// - [`ActionError::Fatal`] if no credential of type `S` is configured
+    /// - [`ActionError::Fatal`] if the stored scheme does not match `S`
+    pub async fn credential_by_type<S>(&self) -> Result<CredentialGuard<S>, ActionError>
+    where
+        S: AuthScheme + zeroize::Zeroize,
+    {
+        let type_id = std::any::TypeId::of::<S>();
+        let type_name = std::any::type_name::<S>();
+        let snapshot = self.credentials.get_by_type(type_id, type_name).await?;
+        let scheme = snapshot.into_project::<S>().map_err(|e| {
+            ActionError::fatal(format!("credential type mismatch for `{type_name}`: {e}"))
+        })?;
+        Ok(CredentialGuard::new(scheme))
     }
 
     /// Check whether a credential exists.
@@ -471,5 +518,97 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.is_fatal());
         assert!(err.to_string().contains("scheme mismatch"));
+    }
+
+    // ── Type-based credential access tests ──────────────────────────────
+
+    /// Test credential type implementing both AuthScheme and Zeroize.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct ZeroizableToken {
+        value: String,
+    }
+
+    impl nebula_core::AuthScheme for ZeroizableToken {
+        fn pattern() -> nebula_core::AuthPattern {
+            nebula_core::AuthPattern::SecretToken
+        }
+    }
+
+    impl zeroize::Zeroize for ZeroizableToken {
+        fn zeroize(&mut self) {
+            self.value.zeroize();
+        }
+    }
+
+    /// Accessor that supports `get_by_type` for `ZeroizableToken`.
+    struct TypedCredentialAccessor;
+
+    #[async_trait]
+    impl CredentialAccessor for TypedCredentialAccessor {
+        async fn get(&self, _id: &str) -> Result<CredentialSnapshot, ActionError> {
+            Err(ActionError::fatal("use get_by_type"))
+        }
+
+        async fn has(&self, _id: &str) -> bool {
+            false
+        }
+
+        async fn get_by_type(
+            &self,
+            type_id: std::any::TypeId,
+            type_name: &str,
+        ) -> Result<CredentialSnapshot, ActionError> {
+            if type_id == std::any::TypeId::of::<ZeroizableToken>() {
+                Ok(CredentialSnapshot::new(
+                    "typed",
+                    CredentialMetadata::new(),
+                    ZeroizableToken {
+                        value: "secret-42".to_owned(),
+                    },
+                ))
+            } else {
+                Err(ActionError::fatal(format!(
+                    "no credential for `{type_name}`"
+                )))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn action_context_credential_by_type_returns_guard() {
+        let ctx = ActionContext::new(
+            ExecutionId::new(),
+            NodeId::new(),
+            WorkflowId::new(),
+            CancellationToken::new(),
+        )
+        .with_credentials(Arc::new(TypedCredentialAccessor));
+
+        let guard = ctx.credential_by_type::<ZeroizableToken>().await.unwrap();
+        assert_eq!(guard.value, "secret-42");
+    }
+
+    #[tokio::test]
+    async fn trigger_context_credential_by_type_returns_guard() {
+        let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new())
+            .with_credentials(Arc::new(TypedCredentialAccessor));
+
+        let guard = ctx.credential_by_type::<ZeroizableToken>().await.unwrap();
+        assert_eq!(guard.value, "secret-42");
+    }
+
+    #[tokio::test]
+    async fn credential_by_type_noop_accessor_returns_not_supported() {
+        let ctx = ActionContext::new(
+            ExecutionId::new(),
+            NodeId::new(),
+            WorkflowId::new(),
+            CancellationToken::new(),
+        );
+        let result = ctx.credential_by_type::<ZeroizableToken>().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.is_fatal());
+        assert!(err.to_string().contains("not supported"));
     }
 }

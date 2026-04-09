@@ -70,6 +70,8 @@ pub mod error;
 pub mod execution;
 /// Extension traits for ergonomic error conversion in actions.
 pub mod ext;
+/// Credential guard — secure wrapper for credential access.
+pub mod guard;
 /// Dynamic handler contract for runtime (registry key → execute).
 pub mod handler;
 /// Static metadata, versioning, and execution mode descriptors.
@@ -104,6 +106,7 @@ pub use dependency::ActionDependencies;
 pub use error::{ActionError, ErrorCode};
 pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 pub use ext::ActionResultExt;
+pub use guard::CredentialGuard;
 pub use handler::{InternalHandler, StatelessActionAdapter};
 pub use metadata::{ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError};
 pub use output::{
