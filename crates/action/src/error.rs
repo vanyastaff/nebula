@@ -139,7 +139,7 @@ impl ActionError {
     /// Create a retryable error with no backoff hint.
     ///
     /// Accepts any type that implements `Display + Debug + Send + Sync`.
-    /// For typed errors, use [`retryable_from`] to preserve the error chain.
+    /// For typed errors, use [`Self::retryable_from`] to preserve the error chain.
     pub fn retryable(
         error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
     ) -> Self {
@@ -203,7 +203,7 @@ impl ActionError {
     /// Create a fatal (non-retryable) error.
     ///
     /// Accepts any type that implements `Display + Debug + Send + Sync`.
-    /// For typed errors, use [`fatal_from`] to preserve the error chain.
+    /// For typed errors, use [`Self::fatal_from`] to preserve the error chain.
     pub fn fatal(error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static) -> Self {
         Self::Fatal {
             error: Arc::new(anyhow::anyhow!("{error}")),

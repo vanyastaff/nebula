@@ -144,7 +144,7 @@ pub struct PluginNewArgs {
     #[arg(long, default_value = "1")]
     pub actions: usize,
 
-    /// Target directory (defaults to nebula-plugin-<name>).
+    /// Target directory (defaults to `nebula-plugin-{name}`).
     #[arg(short, long)]
     pub path: Option<PathBuf>,
 }
