@@ -16,12 +16,17 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - `ActionResultExt` trait — `.retryable()?` and `.fatal()?` ergonomic conversion on any `Result<T, E>`. Also `_with_code()` variants for ErrorCode attachment.
 - Error field: `Arc<anyhow::Error>` — preserves full error chain, Clone via Arc. Factory methods accept `impl Display + Debug + Send + Sync + 'static`.
 
+- `CredentialGuard<S: Zeroize>` — Deref + Zeroize on drop + !Serialize. `new()` is `pub(crate)` — only context creates guards.
+- `credential_by_type::<S>()` on `ActionContext`/`TriggerContext` — type-based credential access via TypeId. Returns `CredentialGuard<S>`. Existing `credential_typed()` (string-based) kept for backward compat.
+- `ScopedCredentialAccessor` — wraps `CredentialAccessor`, enforces `get_by_type()` against declared TypeIds from `ActionDependencies::credential_types()`. Returns `SandboxViolation` for undeclared types.
+- `#[derive(Action)]` now works on structs with fields (not just unit structs) — enables `type Input = Self` pattern.
+
 ## Traps
-- `#[derive(Action)]` requires **unit structs** (no fields). Config goes in a separate injected type.
-- `ActionError::retryable(...)` vs `ActionError::fatal(...)` — engine uses this to decide retry.
+- `ActionError::retryable(...)` vs `ActionError::fatal(...)` — engine uses this to decide retry. Use `ActionResultExt` for ergonomic `.retryable()?` / `.fatal()?`.
 - `FnStatelessAction` / `stateless_fn()` for closure-based actions (testing and one-off use).
+- `CredentialGuard` does NOT impl Serialize — compile error if put in Output/State types. By design.
 
 ## Relations
-- Depends on nebula-core, nebula-parameter. Used by nebula-engine, nebula-runtime, nebula-sdk.
+- Depends on nebula-core, nebula-parameter, nebula-credential. Used by nebula-engine, nebula-runtime, nebula-sdk.
 
-<!-- reviewed: 2026-04-09 — Phase 10: ErrorCode, Arc<anyhow::Error>, ActionResultExt. Docs cleanup: stale files removed, consolidated into docs/plans/2026-04-08-action-v2-{spec,roadmap,examples}.md -->
+<!-- reviewed: 2026-04-09 — Phase 2a: CredentialGuard, type-based credential access, ScopedCredentialAccessor, credential_types(), unit struct restriction lifted -->
