@@ -29,4 +29,4 @@ Universal credential management: 12 auth scheme types, open AuthScheme trait, co
 - RT-4: ScopeLayer TOCTOU on delete/put — requires trait-level conditional ops.
 - RT-3: rkyv cache zeroization — not applicable yet (cache uses moka ciphertext).
 
-<!-- reviewed: 2026-04-08 -->
+<!-- reviewed: 2026-04-09 — added CredentialGuard, CredentialAccessor, ScopedCredentialAccessor, CredentialAccessError -->

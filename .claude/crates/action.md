@@ -45,4 +45,4 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 ## Relations
 - Depends on nebula-core, nebula-parameter, nebula-credential. Used by nebula-engine, nebula-runtime, nebula-sdk.
 
-<!-- reviewed: 2026-04-08 — CredentialGuard moved to nebula-credential, re-exported from action -->
+<!-- reviewed: 2026-04-09 — CredentialGuard, CredentialAccessor, ScopedCredentialAccessor moved to nebula-credential -->
