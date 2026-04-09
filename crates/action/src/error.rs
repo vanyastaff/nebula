@@ -427,10 +427,11 @@ mod tests {
     }
 
     #[test]
-    fn error_preserves_chain() {
+    fn retryable_from_preserves_error_chain() {
         let io_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout");
-        let err = ActionError::retryable(io_err);
+        let err = ActionError::retryable_from(io_err);
         assert!(err.to_string().contains("timeout"));
+        assert!(err.is_retryable());
     }
 
     #[test]

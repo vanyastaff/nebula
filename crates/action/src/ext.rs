@@ -57,14 +57,14 @@ pub trait ActionResultExt<T> {
 
 impl<T, E> ActionResultExt<T> for Result<T, E>
 where
-    E: std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
+    E: std::error::Error + Send + Sync + 'static,
 {
     fn retryable(self) -> Result<T, ActionError> {
-        self.map_err(ActionError::retryable)
+        self.map_err(ActionError::retryable_from)
     }
 
     fn fatal(self) -> Result<T, ActionError> {
-        self.map_err(ActionError::fatal)
+        self.map_err(ActionError::fatal_from)
     }
 
     fn retryable_with_code(self, code: ErrorCode) -> Result<T, ActionError> {
@@ -103,7 +103,10 @@ mod tests {
 
     #[test]
     fn retryable_with_code_sets_code() {
-        let result: Result<i32, &str> = Err("rate limited");
+        let result: Result<i32, std::io::Error> = Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "rate limited",
+        ));
         let err = result
             .retryable_with_code(ErrorCode::RateLimited)
             .unwrap_err();
@@ -113,7 +116,8 @@ mod tests {
 
     #[test]
     fn fatal_with_code_sets_code() {
-        let result: Result<i32, &str> = Err("expired");
+        let result: Result<i32, std::io::Error> =
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "expired"));
         let err = result.fatal_with_code(ErrorCode::AuthExpired).unwrap_err();
         assert_eq!(err.error_code(), Some(&ErrorCode::AuthExpired));
         assert!(err.is_fatal());
@@ -126,19 +130,16 @@ mod tests {
     }
 
     #[test]
-    fn chaining_in_function() {
-        fn do_work() -> Result<String, ActionError> {
-            let value: i32 = "42".parse().fatal()?;
-            Ok(format!("result: {value}"))
+    fn chaining_preserves_error_chain() {
+        fn do_io() -> Result<Vec<u8>, std::io::Error> {
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "missing"))
         }
-        assert_eq!(do_work().unwrap(), "result: 42");
-    }
-
-    #[test]
-    fn string_error_retryable() {
-        let result: Result<(), String> = Err("something failed".to_string());
-        let err = result.retryable().unwrap_err();
+        fn do_work() -> Result<String, ActionError> {
+            let _data = do_io().retryable()?;
+            Ok("ok".into())
+        }
+        let err = do_work().unwrap_err();
         assert!(err.is_retryable());
-        assert!(err.to_string().contains("something failed"));
+        assert!(err.to_string().contains("missing"));
     }
 }
