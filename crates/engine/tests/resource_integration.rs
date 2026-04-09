@@ -7,6 +7,8 @@
 //!         -> gets ResourceHandle
 //!           -> downcasts to the concrete instance type
 
+#![allow(deprecated)] // Reason: tests still use InternalHandler during migration
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

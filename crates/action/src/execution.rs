@@ -74,6 +74,10 @@ pub trait StatelessAction: Action {
 /// request another iteration (state is saved); return [`ActionResult::Break`]
 /// when done. Use for pagination, long-running loops, or multi-step processing.
 ///
+/// State must be serializable (`Serialize + DeserializeOwned`) so the engine can
+/// checkpoint it between iterations, and `Clone` so it can snapshot before
+/// executing (rollback on failure).
+///
 /// Cancellation is enforced by the runtime (same as [`StatelessAction`]).
 pub trait StatefulAction: Action {
     /// Input type for each iteration.
@@ -81,7 +85,16 @@ pub trait StatefulAction: Action {
     /// Output type (wrapped in [`ActionResult`]); `Continue` and `Break` carry output.
     type Output: Send + Sync;
     /// Persistent state type (saved between iterations by the engine).
-    type State: Send + Sync;
+    ///
+    /// Must be serializable for engine checkpointing and cloneable for
+    /// pre-execution snapshots.
+    type State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync;
+
+    /// Create initial state for the first iteration.
+    ///
+    /// Called once when the engine starts executing this action. Subsequent
+    /// iterations receive the state mutated by the previous `execute` call.
+    fn init_state(&self) -> Self::State;
 
     /// Execute one iteration with the given input, mutable state, and context.
     ///
