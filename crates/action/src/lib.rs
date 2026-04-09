@@ -86,6 +86,8 @@ pub mod prelude;
 pub mod registry;
 /// Execution result types carrying data and flow-control intent.
 pub mod result;
+/// Scoped credential accessor — enforces type-based access control.
+pub mod scoped;
 /// Test utilities for action authors.
 pub mod testing;
 /// Action package validation utilities.
@@ -118,6 +120,7 @@ pub use output::{
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use registry::ActionRegistry;
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
+pub use scoped::ScopedCredentialAccessor;
 pub use testing::{SpyLogger, TestContextBuilder};
 pub use validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
