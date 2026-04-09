@@ -32,6 +32,7 @@ use crate::error::ActionError;
 /// let scoped = ScopedCredentialAccessor::new(
 ///     inner_accessor,
 ///     vec![TypeId::of::<MyCredential>()],
+///     "my_action",
 /// );
 /// // get_by_type for MyCredential → delegates to inner
 /// // get_by_type for OtherCredential → SandboxViolation
@@ -39,6 +40,7 @@ use crate::error::ActionError;
 pub struct ScopedCredentialAccessor {
     inner: Arc<dyn CredentialAccessor>,
     allowed_types: HashSet<TypeId>,
+    action_id: String,
 }
 
 impl ScopedCredentialAccessor {
@@ -48,10 +50,15 @@ impl ScopedCredentialAccessor {
     /// [`ActionDependencies::credential_types()`](crate::ActionDependencies::credential_types)
     /// at action registration time.
     #[must_use]
-    pub fn new(inner: Arc<dyn CredentialAccessor>, allowed_types: Vec<TypeId>) -> Self {
+    pub fn new(
+        inner: Arc<dyn CredentialAccessor>,
+        allowed_types: Vec<TypeId>,
+        action_id: impl Into<String>,
+    ) -> Self {
         Self {
             inner,
             allowed_types: allowed_types.into_iter().collect(),
+            action_id: action_id.into(),
         }
     }
 }
@@ -83,7 +90,7 @@ impl CredentialAccessor for ScopedCredentialAccessor {
         if !self.allowed_types.contains(&type_id) {
             return Err(ActionError::SandboxViolation {
                 capability: format!("credential type `{type_name}`"),
-                action_id: String::new(), // filled by engine from context
+                action_id: self.action_id.clone(),
             });
         }
         self.inner.get_by_type(type_id, type_name).await
@@ -169,7 +176,7 @@ mod tests {
         let snapshot = test_snapshot("allowed");
 
         let inner = Arc::new(MockAccessor::new().with_type(allowed_id, snapshot.clone()));
-        let scoped = ScopedCredentialAccessor::new(inner, vec![allowed_id]);
+        let scoped = ScopedCredentialAccessor::new(inner, vec![allowed_id], "test_action");
 
         let result = scoped.get_by_type(allowed_id, "AllowedCred").await;
 
@@ -183,7 +190,7 @@ mod tests {
         let disallowed_id = TypeId::of::<DisallowedCred>();
 
         let inner = Arc::new(MockAccessor::new());
-        let scoped = ScopedCredentialAccessor::new(inner, vec![allowed_id]);
+        let scoped = ScopedCredentialAccessor::new(inner, vec![allowed_id], "test_action");
 
         let result = scoped.get_by_type(disallowed_id, "DisallowedCred").await;
 
@@ -203,7 +210,7 @@ mod tests {
 
         let inner = Arc::new(MockAccessor::new().with_id("my_cred", snapshot.clone()));
         // No allowed types at all — string access should still work.
-        let scoped = ScopedCredentialAccessor::new(inner, vec![]);
+        let scoped = ScopedCredentialAccessor::new(inner, vec![], "test_action");
 
         let result = scoped.get("my_cred").await;
         assert!(result.is_ok());
@@ -213,7 +220,7 @@ mod tests {
     #[tokio::test]
     async fn has_delegates_to_inner() {
         let inner = Arc::new(MockAccessor::new().with_id("exists", test_snapshot("exists")));
-        let scoped = ScopedCredentialAccessor::new(inner, vec![]);
+        let scoped = ScopedCredentialAccessor::new(inner, vec![], "test_action");
 
         assert!(scoped.has("exists").await);
         assert!(!scoped.has("missing").await);
@@ -222,7 +229,7 @@ mod tests {
     #[test]
     fn debug_does_not_leak_inner_details() {
         let inner = Arc::new(MockAccessor::new());
-        let scoped = ScopedCredentialAccessor::new(inner, vec![]);
+        let scoped = ScopedCredentialAccessor::new(inner, vec![], "test_action");
 
         let debug = format!("{scoped:?}");
         assert!(debug.contains("ScopedCredentialAccessor"));

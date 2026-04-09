@@ -11,7 +11,7 @@ use std::ops::Deref;
 use zeroize::Zeroize;
 
 /// Secure wrapper for credential values returned by
-/// [`ActionContext::credential`](crate::ActionContext::credential).
+/// [`ActionContext::credential_by_type`](crate::ActionContext::credential_by_type).
 ///
 /// # Guarantees
 ///
@@ -22,7 +22,7 @@ use zeroize::Zeroize;
 /// # Examples
 ///
 /// ```rust,ignore
-/// let cred = ctx.credential::<BearerSecret>().await?;
+/// let cred = ctx.credential_by_type::<BearerSecret>().await?;
 /// client.bearer_auth(cred.token.expose_secret());
 /// // Dropped here — zeroized automatically
 /// ```
@@ -114,11 +114,27 @@ mod tests {
 
     #[test]
     fn drop_zeroizes_inner() {
-        let mut secret = TestSecret {
-            value: "secret-123".to_owned(),
-        };
-        // Simulate what Drop does
-        secret.zeroize();
-        assert!(secret.value.is_empty());
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// A secret type whose `Zeroize` impl sets a shared flag.
+        struct ObservableSecret {
+            zeroized: Arc<AtomicBool>,
+        }
+
+        impl Zeroize for ObservableSecret {
+            fn zeroize(&mut self) {
+                self.zeroized.store(true, Ordering::Release);
+            }
+        }
+
+        let flag = Arc::new(AtomicBool::new(false));
+        let guard = CredentialGuard::new(ObservableSecret {
+            zeroized: Arc::clone(&flag),
+        });
+
+        assert!(!flag.load(Ordering::Acquire), "should not be zeroized yet");
+        drop(guard);
+        assert!(flag.load(Ordering::Acquire), "Drop must call zeroize()");
     }
 }
