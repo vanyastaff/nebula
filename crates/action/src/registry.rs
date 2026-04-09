@@ -165,7 +165,7 @@ impl ActionRegistry {
     pub fn register_resource<A>(&mut self, action: A)
     where
         A: crate::Action + crate::ResourceAction + Send + Sync + 'static,
-        A::Config: serde::de::DeserializeOwned + Send + Sync,
+        A::Config: Send + Sync + 'static,
         A::Instance: Send + Sync + 'static,
     {
         let metadata = action.metadata().clone();

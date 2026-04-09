@@ -1,9 +1,10 @@
-//! Dynamic handler trait and typed action adapters.
+//! Dynamic handler traits and typed action adapters.
 //!
-//! The runtime stores all actions as `Arc<dyn InternalHandler>` — a JSON-erased
-//! interface. Typed action authors write `impl StatelessAction<Input=T, Output=U>`
-//! and register via [`StatelessActionAdapter`] (or the registry's helper methods),
-//! which handles (de)serialization automatically.
+//! The engine dispatches actions via [`ActionHandler`], a top-level enum whose
+//! variants wrap `Arc<dyn XxxHandler>` trait objects. Typed action authors write
+//! `impl StatelessAction<Input=T, Output=U>` and register via the registry's
+//! helper methods (e.g., [`ActionRegistry::register_stateless`]), which wraps
+//! the typed action in the corresponding adapter automatically.
 //!
 //! ## Handler traits
 //!
@@ -16,6 +17,8 @@
 //! - [`AgentHandler`] — autonomous agent (stub for Phase 9)
 //!
 //! [`ActionHandler`] is the top-level enum the engine dispatches on.
+//!
+//! [`ActionRegistry::register_stateless`]: crate::registry::ActionRegistry::register_stateless
 
 use std::fmt;
 use std::sync::Arc;
@@ -194,11 +197,9 @@ where
         self.action.metadata()
     }
 
-    fn init_state(&self) -> Value {
-        // State type is Serialize, so this should not fail for well-formed types.
-        // Use fatal error if it does — indicates a bug in the action's State type.
+    fn init_state(&self) -> Result<Value, ActionError> {
         serde_json::to_value(self.action.init_state())
-            .expect("StatefulAction::State must be serializable to JSON")
+            .map_err(|e| ActionError::fatal(format!("init_state serialization failed: {e}")))
     }
 
     /// Execute one iteration, deserializing input and state from JSON.
@@ -417,7 +418,12 @@ pub trait StatefulHandler: Send + Sync {
     fn metadata(&self) -> &ActionMetadata;
 
     /// Create initial state as JSON for the first iteration.
-    fn init_state(&self) -> Value;
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Fatal`] if the initial state cannot be produced
+    /// (e.g., serialization failure in an adapter).
+    fn init_state(&self) -> Result<Value, ActionError>;
 
     /// Execute one iteration with mutable JSON state.
     ///
@@ -529,6 +535,7 @@ pub trait AgentHandler: Send + Sync {
 ///
 /// Each variant wraps an `Arc<dyn XxxHandler>` so handlers can be shared
 /// across nodes in the workflow graph.
+#[non_exhaustive]
 pub enum ActionHandler {
     /// One-shot stateless execution.
     Stateless(Arc<dyn StatelessHandler>),
@@ -764,8 +771,8 @@ mod tests {
             &self.meta
         }
 
-        fn init_state(&self) -> Value {
-            serde_json::json!(0)
+        fn init_state(&self) -> Result<Value, ActionError> {
+            Ok(serde_json::json!(0))
         }
 
         async fn execute(
@@ -1084,7 +1091,7 @@ mod tests {
     #[tokio::test]
     async fn stateful_adapter_init_state_serializes() {
         let adapter = StatefulActionAdapter::new(CounterAction::new());
-        let state = adapter.init_state();
+        let state = adapter.init_state().unwrap();
         let cs: CounterState = serde_json::from_value(state).unwrap();
         assert_eq!(cs.count, 0);
     }
@@ -1094,7 +1101,7 @@ mod tests {
         let adapter = StatefulActionAdapter::new(CounterAction::new());
         let handler: Arc<dyn StatefulHandler> = Arc::new(adapter);
         let ctx = make_ctx();
-        let mut state = handler.init_state();
+        let mut state = handler.init_state().unwrap();
 
         // Iteration 1: count goes 0 → 1, Continue
         let result = handler
