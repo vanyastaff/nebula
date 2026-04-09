@@ -30,6 +30,10 @@ pub use crate::port::{
 };
 pub use crate::registry::ActionRegistry;
 pub use crate::result::ActionResult;
+pub use crate::testing::{
+    SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
+    TriggerTestHarness,
+};
 pub use crate::validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
 };

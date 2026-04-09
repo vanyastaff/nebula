@@ -74,6 +74,8 @@ pub mod ext;
 pub mod guard;
 /// Dynamic handler contract for runtime (registry key → execute).
 pub mod handler;
+/// Assertion macros for testing action results (`assert_success!`, etc.).
+mod macros;
 /// Static metadata, versioning, and execution mode descriptors.
 pub mod metadata;
 /// Output data representations (inline JSON and blob references).
@@ -128,7 +130,10 @@ pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, S
 pub use registry::ActionRegistry;
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
 pub use scoped::ScopedCredentialAccessor;
-pub use testing::{SpyLogger, TestContextBuilder};
+pub use testing::{
+    SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
+    TriggerTestHarness,
+};
 pub use validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
 };
