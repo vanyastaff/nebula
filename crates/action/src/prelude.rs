@@ -14,6 +14,7 @@ pub use crate::context::{ActionContext, Context, TriggerContext};
 pub use crate::dependency::ActionDependencies;
 pub use crate::error::{ActionError, ErrorCode};
 pub use crate::execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
+pub use crate::ext::ActionResultExt;
 pub use crate::metadata::{ActionMetadata, MetadataCompatibilityError};
 pub use crate::output::{
     ActionOutput, DeferredOutput, ExpectedOutput, Producer, ProducerKind, Progress, Resolution,

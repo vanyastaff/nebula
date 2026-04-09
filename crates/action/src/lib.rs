@@ -68,6 +68,8 @@ pub mod dependency;
 pub mod error;
 /// Execution sub-traits (StatelessAction, etc.).
 pub mod execution;
+/// Extension traits for ergonomic error conversion in actions.
+pub mod ext;
 /// Dynamic handler contract for runtime (registry key → execute).
 pub mod handler;
 /// Static metadata, versioning, and execution mode descriptors.
@@ -101,6 +103,7 @@ pub use context::{ActionContext, Context, TriggerContext};
 pub use dependency::ActionDependencies;
 pub use error::{ActionError, ErrorCode};
 pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
+pub use ext::ActionResultExt;
 pub use handler::{InternalHandler, StatelessActionAdapter};
 pub use metadata::{ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError};
 pub use output::{
