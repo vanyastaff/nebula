@@ -1,5 +1,43 @@
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
+/// Machine-readable error classification for engine retry decisions.
+///
+/// Engine matches on these codes for smarter retry strategies:
+/// - `RateLimited` -> respect Retry-After header
+/// - `AuthExpired` -> refresh credential before retry
+/// - `UpstreamTimeout` -> increase timeout on retry
+///
+/// # Examples
+///
+/// ```
+/// use nebula_action::ErrorCode;
+///
+/// let code = ErrorCode::RateLimited;
+/// assert_eq!(serde_json::to_string(&code).unwrap(), "\"RateLimited\"");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum ErrorCode {
+    /// Remote API returned 429 Too Many Requests.
+    RateLimited,
+    /// Concurrent modification conflict (optimistic lock failure).
+    Conflict,
+    /// Credential expired — engine may refresh and retry.
+    AuthExpired,
+    /// Remote service is down or unreachable.
+    UpstreamUnavailable,
+    /// Remote call timed out.
+    UpstreamTimeout,
+    /// Input data invalid for the remote service (not action validation).
+    InvalidInput,
+    /// Usage quota exhausted (API call limit).
+    QuotaExhausted,
+    /// Action panicked during execution (caught by runtime).
+    ActionPanicked,
+}
+
 /// Error type for all action operations.
 ///
 /// Distinguishes retryable from fatal errors so the engine can decide
@@ -250,6 +288,34 @@ mod tests {
             actual_bytes: 5_000_000,
         };
         assert!(err.is_fatal());
+    }
+
+    #[test]
+    fn error_code_serializes_to_string() {
+        let code = ErrorCode::RateLimited;
+        let json = serde_json::to_string(&code).unwrap();
+        assert_eq!(json, "\"RateLimited\"");
+    }
+
+    #[test]
+    fn error_code_deserializes_from_string() {
+        let code: ErrorCode = serde_json::from_str("\"AuthExpired\"").unwrap();
+        assert_eq!(code, ErrorCode::AuthExpired);
+    }
+
+    #[test]
+    fn error_code_is_copy() {
+        let code = ErrorCode::RateLimited;
+        let copy = code;
+        assert_eq!(code, copy); // both still valid — Copy
+    }
+
+    #[test]
+    fn error_code_debug_format() {
+        assert_eq!(
+            format!("{:?}", ErrorCode::UpstreamTimeout),
+            "UpstreamTimeout"
+        );
     }
 
     #[test]

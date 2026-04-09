@@ -99,7 +99,7 @@ pub use capability::{
 };
 pub use context::{ActionContext, Context, TriggerContext};
 pub use dependency::ActionDependencies;
-pub use error::ActionError;
+pub use error::{ActionError, ErrorCode};
 pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 pub use handler::{InternalHandler, StatelessActionAdapter};
 pub use metadata::{ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError};
