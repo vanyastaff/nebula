@@ -27,6 +27,14 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - `ActionRegistry` stores `ActionHandler`, has typed `register_stateless/stateful/trigger/resource` convenience methods.
 - `StatefulAction::State` now requires `Serialize + DeserializeOwned + Clone`. `init_state()` is required. `StatefulHandler::init_state()` returns `Result<Value, ActionError>` (fallible).
 
+## Testing Infrastructure (Phase 5)
+- Assertion macros (`assert_success!`, `assert_branch!`, etc.) via `#[macro_export]` — match on real `ActionResult`/`ActionError` variants. Import via `use crate::assert_*` in tests.
+- `TestContextBuilder`: `minimal()`, `with_credential_snapshot()`, `with_credential::<S>()` (type-based), `with_resource()`, `with_input()`, `build_trigger()`.
+- `StatefulTestHarness<A>`: wraps `StatefulAction`, serializes/deserializes state between `step()` calls, exposes `state::<S>()` and `state_json()`.
+- `TriggerTestHarness<A>`: wraps `TriggerAction` with `SpyEmitter`/`SpyScheduler`, exposes `emitted()`, `scheduled()`, `start()`/`stop()`.
+- `SpyEmitter` / `SpyScheduler`: test doubles capturing `emit()` and `schedule_after()` calls.
+- `TestResourceAccessor` uses `remove()` — a resource can only be acquired once per test (mirrors real acquire semantics).
+
 ## Traps
 - `ActionError::retryable(...)` vs `ActionError::fatal(...)` — engine uses this to decide retry. Use `ActionResultExt` for ergonomic `.retryable()?` / `.fatal()?`.
 - `FnStatelessAction` / `stateless_fn()` for closure-based actions (testing and one-off use).
@@ -37,4 +45,4 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 ## Relations
 - Depends on nebula-core, nebula-parameter, nebula-credential. Used by nebula-engine, nebula-runtime, nebula-sdk.
 
-<!-- reviewed: 2026-04-09 — Phase 3: ActionHandler enum, 5 handler traits, 4 adapters, StatefulAction bounds, registry update -->
+<!-- reviewed: 2026-04-08 — Phase 5: testing infrastructure v2 — assertion macros, builder extensions, StatefulTestHarness, TriggerTestHarness -->
