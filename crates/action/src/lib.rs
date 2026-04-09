@@ -102,7 +102,7 @@ pub mod validation;
 pub use nebula_action_macros::Action;
 
 pub use action::Action;
-pub use authoring::{FnStatelessAction, stateless_fn};
+pub use authoring::{FnStatelessAction, FnStatelessCtxAction, stateless_ctx_fn, stateless_fn};
 pub use capability::{
     ActionLogLevel, ActionLogger, CredentialAccessError, CredentialAccessor, ExecutionEmitter,
     NoopCredentialAccessor, ResourceAccessor, TriggerScheduler,
