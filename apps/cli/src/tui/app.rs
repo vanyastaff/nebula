@@ -185,15 +185,13 @@ impl App {
     fn handle_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.selected_node > 0 {
-                    self.selected_node -= 1;
-                }
+            KeyCode::Up | KeyCode::Char('k') if self.selected_node > 0 => {
+                self.selected_node -= 1;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.selected_node + 1 < self.nodes.len() {
-                    self.selected_node += 1;
-                }
+            KeyCode::Down | KeyCode::Char('j')
+                if self.selected_node + 1 < self.nodes.len() =>
+            {
+                self.selected_node += 1;
             }
             _ => {}
         }
