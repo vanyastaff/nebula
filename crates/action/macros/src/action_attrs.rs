@@ -60,6 +60,29 @@ impl ActionAttrs {
         let resource = attr_args.get_type_skip_string("resource")?;
         let resources = attr_args.get_type_list("resources")?;
 
+        // Check for duplicate credential types.
+        {
+            let mut all = Vec::new();
+            if let Some(ref t) = credential {
+                all.push(t);
+            }
+            all.extend(credentials.iter());
+
+            let mut seen = std::collections::HashSet::new();
+            for ty in &all {
+                let s = quote::quote!(#ty).to_string();
+                if !seen.insert(s.clone()) {
+                    return Err(syn::Error::new_spanned(
+                        ty,
+                        format!(
+                            "duplicate credential type `{s}` \
+                             — each type can only be declared once per action"
+                        ),
+                    ));
+                }
+            }
+        }
+
         Ok(Self {
             key,
             name,
@@ -164,10 +187,30 @@ impl ActionAttrs {
             }
         };
 
+        let credential_types_method = if all_creds.is_empty() {
+            quote! {}
+        } else {
+            let type_ids: Vec<TokenStream2> = all_creds
+                .iter()
+                .map(|ty| {
+                    quote! { ::std::any::TypeId::of::<#ty>() }
+                })
+                .collect();
+            quote! {
+                fn credential_types() -> ::std::vec::Vec<::std::any::TypeId>
+                where
+                    Self: Sized,
+                {
+                    vec![ #(#type_ids),* ]
+                }
+            }
+        };
+
         quote! {
             impl #impl_generics ::nebula_action::ActionDependencies for #struct_name #ty_generics #where_clause {
                 #credential_method
                 #resources_method
+                #credential_types_method
             }
         }
     }

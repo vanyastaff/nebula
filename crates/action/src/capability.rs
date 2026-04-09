@@ -34,6 +34,23 @@ pub trait CredentialAccessor: Send + Sync {
 
     /// Check whether a credential exists for the given id.
     async fn has(&self, id: &str) -> bool;
+
+    /// Retrieve a credential snapshot by [`TypeId`](std::any::TypeId) of the
+    /// [`AuthScheme`](nebula_core::AuthScheme).
+    ///
+    /// Used by type-based credential access: `ctx.credential_by_type::<S>().await`.
+    /// Default: returns error (implementations that support type-based access
+    /// override this).
+    async fn get_by_type(
+        &self,
+        type_id: std::any::TypeId,
+        type_name: &str,
+    ) -> Result<CredentialSnapshot, ActionError> {
+        let _ = type_id;
+        Err(ActionError::fatal(format!(
+            "type-based credential access not supported for `{type_name}`"
+        )))
+    }
 }
 
 /// Log severity for action-scoped logs.

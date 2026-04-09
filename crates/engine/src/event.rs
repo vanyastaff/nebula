@@ -1,6 +1,6 @@
 //! Execution events emitted by the engine during workflow execution.
 //!
-//! Subscribe via [`WorkflowEngine::with_event_sender`] to receive real-time
+//! Subscribe via `WorkflowEngine::with_event_sender` to receive real-time
 //! updates about node lifecycle transitions. Used by the CLI TUI for live
 //! execution monitoring.
 

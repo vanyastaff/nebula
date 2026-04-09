@@ -8,19 +8,25 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 
 ## Key Decisions
 - Action subtypes: `StatelessAction` (one-shot), `StatefulAction` (Continue/Break loop), `TriggerAction` (starts workflow), `ResourceAction` (branch-scoped DI setup/cleanup).
-- `ActionDependencies` has two complementary pairs: `credential`/`resources` (trait-object, runtime injection) and `credential_keys`/`resource_keys` (typed keys, engine validation at registration). All four default to empty — no migration needed.
+- `ActionDependencies` has two complementary pairs: `credential`/`resources` (trait-object, runtime injection) and `credential_keys`/`resource_keys` (typed keys, engine validation at registration). Plus `credential_types()` → `Vec<TypeId>` for `ScopedCredentialAccessor` sandboxing. All five default to empty — no migration needed.
+- `#[derive(Action)]` with `#[action(credential = T)]` or `#[action(credentials = [T1, T2])]` generates both `credential()` and `credential_types()`. Duplicate credential types in the attribute produce a compile error.
 - `ActionRegistry` (`registry.rs`): keyed by `ActionKey`, supports multiple versions per key. `get()` → latest, `get_versioned(&InterfaceVersion)` → specific. `Send + Sync` — use `Arc<ActionRegistry>` for read-only sharing, `Arc<RwLock<_>>` for mutation after sharing.
-- `credential_typed::<S>()` on `ActionContext`/`TriggerContext` consumes snapshot via `into_project::<S>()`, maps `SnapshotError` → `ActionError::Fatal`. Primary typed credential access path.
+- `credential_by_type::<S>()` is the primary typed credential access path (returns `CredentialGuard<S>`). Legacy `credential_typed::<S>(id)` (string-based, consumes snapshot via `into_project::<S>()`, maps `SnapshotError` → `ActionError::Fatal`) preserved for backward compat.
 - `ErrorCode` enum (8 variants, `#[non_exhaustive]`) on `ActionError::Retryable` and `Fatal` — machine-readable classification for engine retry decisions (RateLimited, AuthExpired, UpstreamTimeout, etc.).
 - `ActionResultExt` trait — `.retryable()?` and `.fatal()?` ergonomic conversion on any `Result<T, E>`. Also `_with_code()` variants for ErrorCode attachment.
 - Error field: `Arc<anyhow::Error>` — preserves full error chain, Clone via Arc. Factory methods accept `impl Display + Debug + Send + Sync + 'static`.
 
+- `CredentialGuard<S: Zeroize>` — Deref + Zeroize on drop + !Serialize. `new()` is `pub(crate)` — only context creates guards.
+- `credential_by_type::<S>()` on `ActionContext`/`TriggerContext` — type-based credential access via TypeId. Returns `CredentialGuard<S>`. Existing `credential_typed()` (string-based) kept for backward compat.
+- `ScopedCredentialAccessor` — wraps `CredentialAccessor`, enforces `get_by_type()` against declared TypeIds from `ActionDependencies::credential_types()`. Returns `SandboxViolation` for undeclared types.
+- `#[derive(Action)]` now works on structs with fields (not just unit structs) — enables `type Input = Self` pattern.
+
 ## Traps
-- `#[derive(Action)]` requires **unit structs** (no fields). Config goes in a separate injected type.
-- `ActionError::retryable(...)` vs `ActionError::fatal(...)` — engine uses this to decide retry.
+- `ActionError::retryable(...)` vs `ActionError::fatal(...)` — engine uses this to decide retry. Use `ActionResultExt` for ergonomic `.retryable()?` / `.fatal()?`.
 - `FnStatelessAction` / `stateless_fn()` for closure-based actions (testing and one-off use).
+- `CredentialGuard` does NOT impl Serialize — compile error if put in Output/State types. By design.
 
 ## Relations
-- Depends on nebula-core, nebula-parameter. Used by nebula-engine, nebula-runtime, nebula-sdk.
+- Depends on nebula-core, nebula-parameter, nebula-credential. Used by nebula-engine, nebula-runtime, nebula-sdk.
 
-<!-- reviewed: 2026-04-09 — Phase 10: ErrorCode, Arc<anyhow::Error>, ActionResultExt. Docs cleanup: stale files removed, consolidated into docs/plans/2026-04-08-action-v2-{spec,roadmap,examples}.md -->
+<!-- reviewed: 2026-04-09 — Phase 2a: CredentialGuard, type-based credential access, ScopedCredentialAccessor, credential_types(), unit struct restriction lifted -->

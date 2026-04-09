@@ -144,7 +144,7 @@ pub struct PluginNewArgs {
     #[arg(long, default_value = "1")]
     pub actions: usize,
 
-    /// Target directory (defaults to nebula-plugin-<name>).
+    /// Target directory (defaults to `nebula-plugin-{name}`).
     #[arg(short, long)]
     pub path: Option<PathBuf>,
 }
@@ -215,8 +215,8 @@ pub struct RunArgs {
     #[arg(long, conflicts_with = "input")]
     pub input_file: Option<PathBuf>,
 
-    /// Override node parameters (e.g. --set "fetch.params.url=https://staging.api.com").
-    /// Format: <node_name>.params.<param_key>=<value>
+    /// Override node parameters (e.g. `--set "fetch.params.url=https://staging.api.com"`).
+    /// Format: `node_name.params.param_key=value`
     #[arg(long = "set", value_name = "NODE.PARAMS.KEY=VALUE")]
     pub overrides: Vec<String>,
 

@@ -70,6 +70,8 @@ pub mod error;
 pub mod execution;
 /// Extension traits for ergonomic error conversion in actions.
 pub mod ext;
+/// Credential guard — secure wrapper for credential access.
+pub mod guard;
 /// Dynamic handler contract for runtime (registry key → execute).
 pub mod handler;
 /// Static metadata, versioning, and execution mode descriptors.
@@ -84,6 +86,8 @@ pub mod prelude;
 pub mod registry;
 /// Execution result types carrying data and flow-control intent.
 pub mod result;
+/// Scoped credential accessor — enforces type-based access control.
+pub mod scoped;
 /// Test utilities for action authors.
 pub mod testing;
 /// Action package validation utilities.
@@ -104,6 +108,7 @@ pub use dependency::ActionDependencies;
 pub use error::{ActionError, ErrorCode};
 pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 pub use ext::ActionResultExt;
+pub use guard::CredentialGuard;
 pub use handler::{InternalHandler, StatelessActionAdapter};
 pub use metadata::{ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError};
 pub use output::{
@@ -115,6 +120,7 @@ pub use output::{
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use registry::ActionRegistry;
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
+pub use scoped::ScopedCredentialAccessor;
 pub use testing::{SpyLogger, TestContextBuilder};
 pub use validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
