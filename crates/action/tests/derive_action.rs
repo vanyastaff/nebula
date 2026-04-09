@@ -35,6 +35,30 @@ fn metadata_key_matches_attribute() {
     assert_eq!(meta.description, "no credentials");
 }
 
+// -- Struct with fields -----------------------------------------------------
+
+#[derive(Action, Clone, serde::Deserialize)]
+#[action(
+    key = "with_fields",
+    name = "Fields Action",
+    description = "action with fields"
+)]
+struct ActionWithFields {
+    url: String,
+    timeout: u32,
+}
+
+#[test]
+fn derive_works_on_struct_with_fields() {
+    let action = ActionWithFields {
+        url: "https://example.com".into(),
+        timeout: 30,
+    };
+    let meta = action.metadata();
+    assert_eq!(meta.key.as_str(), "with_fields");
+    assert_eq!(meta.name, "Fields Action");
+}
+
 // -- Credential type IDs (compile-time verification) ------------------------
 //
 // Full integration tests with `#[action(credential = Type)]` require types

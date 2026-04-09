@@ -2,7 +2,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Fields, parse_macro_input};
+use syn::{Data, DeriveInput, parse_macro_input};
 
 use nebula_macro_support::{attrs, diag, utils};
 
@@ -21,7 +21,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let struct_name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    validate_unit_struct(&input)?;
+    validate_struct(&input)?;
 
     let attr_args = attrs::parse_attrs(&input.attrs, "action")?;
     let description_fallback = utils::doc_string(&input.attrs);
@@ -53,22 +53,12 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     Ok(expanded)
 }
 
-fn validate_unit_struct(input: &DeriveInput) -> syn::Result<()> {
-    match &input.data {
-        Data::Struct(data) => {
-            if !matches!(&data.fields, Fields::Unit) {
-                return Err(syn::Error::new(
-                    input.ident.span(),
-                    "Action derive requires a unit struct with no fields (e.g. `struct MyAction;`)",
-                ));
-            }
-        }
-        _ => {
-            return Err(syn::Error::new(
-                input.ident.span(),
-                "Action derive can only be used on structs",
-            ));
-        }
+fn validate_struct(input: &DeriveInput) -> syn::Result<()> {
+    if !matches!(&input.data, Data::Struct(_)) {
+        return Err(syn::Error::new(
+            input.ident.span(),
+            "Action derive can only be used on structs",
+        ));
     }
     Ok(())
 }
