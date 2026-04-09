@@ -20,4 +20,9 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 ## Relations
 - Depends on nebula-core, nebula-parameter. Used by nebula-engine, nebula-runtime, nebula-sdk.
 
-<!-- reviewed: 2026-04-07 — added ActionRegistry + typed credential_keys/resource_keys to ActionDependencies -->
+## Key Decisions (continued)
+- `ErrorCode` enum (8 variants, `#[non_exhaustive]`) on `ActionError::Retryable` and `Fatal` — machine-readable classification for engine retry decisions (RateLimited, AuthExpired, UpstreamTimeout, etc.).
+- `ActionResultExt` trait — `.retryable()?` and `.fatal()?` ergonomic conversion on any `Result<T, E>`. Also `_with_code()` variants for ErrorCode attachment.
+- Error field: `Arc<anyhow::Error>` — preserves full error chain, Clone via Arc. Factory methods accept `impl Display + Debug + Send + Sync + 'static`.
+
+<!-- reviewed: 2026-04-09 — Phase 10: ErrorCode, Arc<anyhow::Error>, ActionResultExt -->

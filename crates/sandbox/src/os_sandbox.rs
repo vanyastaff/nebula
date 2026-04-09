@@ -6,7 +6,9 @@
 //!
 //! On non-Linux platforms, sandbox is advisory-only (logs a warning).
 
-use crate::capabilities::{Capability, PluginCapabilities};
+use crate::capabilities::PluginCapabilities;
+#[cfg(target_os = "linux")]
+use crate::capabilities::Capability;
 
 /// Apply OS-level sandbox restrictions to the current process.
 ///

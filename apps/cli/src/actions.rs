@@ -336,7 +336,8 @@ impl StatelessAction for FailAction {
         let msg = input
             .get("message")
             .and_then(|v| v.as_str())
-            .unwrap_or("intentional failure");
+            .unwrap_or("intentional failure")
+            .to_owned();
         Err(ActionError::fatal(msg))
     }
 }
