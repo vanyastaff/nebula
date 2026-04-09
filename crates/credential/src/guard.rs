@@ -21,13 +21,13 @@ use zeroize::Zeroize;
 /// # Errors
 ///
 /// `CredentialGuard` itself is infallible once constructed. It is typically
-/// obtained via `ActionContext::credential_by_type()`, which returns an error
+/// obtained via `ActionContext::credential::<S>()`, which returns an error
 /// when the credential cannot be resolved or deserialized.
 ///
 /// # Examples
 ///
 /// ```rust,ignore
-/// let cred = ctx.credential_by_type::<BearerSecret>().await?;
+/// let cred = ctx.credential::<BearerSecret>().await?;
 /// client.bearer_auth(cred.token.expose_secret());
 /// // Dropped here — zeroized automatically
 /// ```

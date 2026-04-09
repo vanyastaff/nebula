@@ -36,7 +36,7 @@ pub trait CredentialAccessor: Send + Sync {
     /// Retrieve a credential snapshot by [`TypeId`] of the
     /// [`AuthScheme`](nebula_core::AuthScheme).
     ///
-    /// Used by type-based credential access: `ctx.credential_by_type::<S>().await`.
+    /// Used by type-based credential access: `ctx.credential::<S>().await`.
     /// Default: returns error (implementations that support type-based access
     /// override this).
     async fn get_by_type(
