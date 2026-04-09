@@ -110,8 +110,9 @@ pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerActi
 pub use ext::ActionResultExt;
 pub use guard::CredentialGuard;
 pub use handler::{
-    ActionHandler, AgentHandler, InternalHandler, ResourceHandler, StatefulHandler,
-    StatelessActionAdapter, StatelessHandler, TriggerHandler,
+    ActionHandler, AgentHandler, InternalHandler, ResourceActionAdapter, ResourceHandler,
+    StatefulActionAdapter, StatefulHandler, StatelessActionAdapter, StatelessHandler,
+    TriggerActionAdapter, TriggerHandler,
 };
 pub use metadata::{ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError};
 pub use output::{

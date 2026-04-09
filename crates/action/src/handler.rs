@@ -25,7 +25,7 @@ use serde_json::Value;
 
 use crate::context::{ActionContext, TriggerContext};
 use crate::error::ActionError;
-use crate::execution::StatelessAction;
+use crate::execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 use crate::metadata::ActionMetadata;
 use crate::result::ActionResult;
 
@@ -79,11 +79,13 @@ pub struct StatelessActionAdapter<A> {
 
 impl<A> StatelessActionAdapter<A> {
     /// Wrap a typed stateless action.
+    #[must_use]
     pub fn new(action: A) -> Self {
         Self { action }
     }
 
     /// Consume the adapter, returning the inner action.
+    #[must_use]
     pub fn into_inner(self) -> A {
         self.action
     }
@@ -114,6 +116,259 @@ where
             serde_json::to_value(output)
                 .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
         })
+    }
+}
+
+#[async_trait]
+impl<A> StatelessHandler for StatelessActionAdapter<A>
+where
+    A: StatelessAction + Send + Sync + 'static,
+    A::Input: serde::de::DeserializeOwned + Send + Sync,
+    A::Output: serde::Serialize + Send + Sync,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        self.action.metadata()
+    }
+
+    async fn execute(
+        &self,
+        input: Value,
+        ctx: &ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError> {
+        let typed_input: A::Input = serde_json::from_value(input)
+            .map_err(|e| ActionError::validation(format!("input deserialization failed: {e}")))?;
+
+        let result = self.action.execute(typed_input, ctx).await?;
+
+        result.try_map_output(|output| {
+            serde_json::to_value(output)
+                .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
+        })
+    }
+}
+
+// ── StatefulActionAdapter ──────────────────────────────────────────────────
+
+/// Wraps a [`StatefulAction`] as a [`dyn StatefulHandler`].
+///
+/// Handles JSON (de)serialization of input, output, and state so the runtime
+/// works with untyped JSON while action authors write strongly-typed Rust.
+///
+/// State is serialized to/from `serde_json::Value` between iterations for
+/// engine checkpointing.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let handler: Arc<dyn StatefulHandler> = Arc::new(StatefulActionAdapter::new(my_action));
+/// ```
+pub struct StatefulActionAdapter<A> {
+    action: A,
+}
+
+impl<A> StatefulActionAdapter<A> {
+    /// Wrap a typed stateful action.
+    #[must_use]
+    pub fn new(action: A) -> Self {
+        Self { action }
+    }
+
+    /// Consume the adapter, returning the inner action.
+    #[must_use]
+    pub fn into_inner(self) -> A {
+        self.action
+    }
+}
+
+#[async_trait]
+impl<A> StatefulHandler for StatefulActionAdapter<A>
+where
+    A: StatefulAction + Send + Sync + 'static,
+    A::Input: serde::de::DeserializeOwned + Send + Sync,
+    A::Output: serde::Serialize + Send + Sync,
+    A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        self.action.metadata()
+    }
+
+    fn init_state(&self) -> Value {
+        // State type is Serialize, so this should not fail for well-formed types.
+        // Use fatal error if it does — indicates a bug in the action's State type.
+        serde_json::to_value(self.action.init_state())
+            .expect("StatefulAction::State must be serializable to JSON")
+    }
+
+    /// Execute one iteration, deserializing input and state from JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Validation`] if input or state deserialization fails,
+    /// or propagates errors from the underlying action.
+    async fn execute(
+        &self,
+        input: Value,
+        state: &mut Value,
+        ctx: &ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError> {
+        let typed_input: A::Input = serde_json::from_value(input)
+            .map_err(|e| ActionError::validation(format!("input deserialization failed: {e}")))?;
+
+        let mut typed_state: A::State = serde_json::from_value(state.clone())
+            .map_err(|e| ActionError::validation(format!("state deserialization failed: {e}")))?;
+
+        let result = self
+            .action
+            .execute(typed_input, &mut typed_state, ctx)
+            .await?;
+
+        // Write mutated state back to JSON for engine checkpointing.
+        *state = serde_json::to_value(&typed_state)
+            .map_err(|e| ActionError::fatal(format!("state serialization failed: {e}")))?;
+
+        result.try_map_output(|output| {
+            serde_json::to_value(output)
+                .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
+        })
+    }
+}
+
+// ── TriggerActionAdapter ───────────────────────────────────────────────────
+
+/// Wraps a [`TriggerAction`] as a [`dyn TriggerHandler`].
+///
+/// Simple delegation: `start` and `stop` call through to the typed trait
+/// with [`TriggerContext`].
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let handler: Arc<dyn TriggerHandler> = Arc::new(TriggerActionAdapter::new(my_trigger));
+/// ```
+pub struct TriggerActionAdapter<A> {
+    action: A,
+}
+
+impl<A> TriggerActionAdapter<A> {
+    /// Wrap a typed trigger action.
+    #[must_use]
+    pub fn new(action: A) -> Self {
+        Self { action }
+    }
+
+    /// Consume the adapter, returning the inner action.
+    #[must_use]
+    pub fn into_inner(self) -> A {
+        self.action
+    }
+}
+
+#[async_trait]
+impl<A> TriggerHandler for TriggerActionAdapter<A>
+where
+    A: TriggerAction + Send + Sync + 'static,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        self.action.metadata()
+    }
+
+    /// Start the trigger by delegating to the typed action.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError`] if the trigger cannot be started.
+    async fn start(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
+        self.action.start(ctx).await
+    }
+
+    /// Stop the trigger by delegating to the typed action.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError`] if the trigger cannot be stopped cleanly.
+    async fn stop(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
+        self.action.stop(ctx).await
+    }
+}
+
+// ── ResourceActionAdapter ──────────────────────────────────────────────────
+
+/// Wraps a [`ResourceAction`] as a [`dyn ResourceHandler`].
+///
+/// Bridges the typed `configure`/`cleanup` lifecycle to the JSON-erased handler
+/// trait. The `configure` result is boxed as `Box<dyn Any + Send + Sync>`;
+/// `cleanup` downcasts it back to the typed `Instance`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let handler: Arc<dyn ResourceHandler> = Arc::new(ResourceActionAdapter::new(my_resource));
+/// ```
+pub struct ResourceActionAdapter<A> {
+    action: A,
+}
+
+impl<A> ResourceActionAdapter<A> {
+    /// Wrap a typed resource action.
+    #[must_use]
+    pub fn new(action: A) -> Self {
+        Self { action }
+    }
+
+    /// Consume the adapter, returning the inner action.
+    #[must_use]
+    pub fn into_inner(self) -> A {
+        self.action
+    }
+}
+
+#[async_trait]
+impl<A> ResourceHandler for ResourceActionAdapter<A>
+where
+    A: ResourceAction + Send + Sync + 'static,
+    A::Config: Send + Sync + 'static,
+    A::Instance: Send + Sync + 'static,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        self.action.metadata()
+    }
+
+    /// Configure the resource by delegating to the typed action.
+    ///
+    /// The `_config` parameter is reserved for future use; the typed
+    /// [`ResourceAction::configure`] obtains its configuration from context.
+    /// The typed `Config` result is boxed as `dyn Any`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError`] if the resource cannot be configured.
+    async fn configure(
+        &self,
+        _config: Value,
+        ctx: &ActionContext,
+    ) -> Result<Box<dyn std::any::Any + Send + Sync>, ActionError> {
+        let config = self.action.configure(ctx).await?;
+        Ok(Box::new(config))
+    }
+
+    /// Clean up the resource by downcasting the instance and delegating.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Fatal`] if the instance cannot be downcast to
+    /// the expected type, or propagates errors from the underlying action.
+    async fn cleanup(
+        &self,
+        instance: Box<dyn std::any::Any + Send + Sync>,
+        ctx: &ActionContext,
+    ) -> Result<(), ActionError> {
+        let typed_instance = instance.downcast::<A::Instance>().map_err(|_| {
+            ActionError::fatal(format!(
+                "resource instance downcast failed: expected {}",
+                std::any::type_name::<A::Instance>()
+            ))
+        })?;
+        self.action.cleanup(*typed_instance, ctx).await
     }
 }
 
@@ -426,7 +681,9 @@ mod tests {
         let ctx = make_ctx();
 
         let input = serde_json::json!({ "a": 3, "b": 7 });
-        let result = adapter.execute(input, &ctx).await.unwrap();
+        let result = InternalHandler::execute(&adapter, input, &ctx)
+            .await
+            .unwrap();
 
         match result {
             ActionResult::Success { output } => {
@@ -444,14 +701,19 @@ mod tests {
         let ctx = make_ctx();
 
         let bad_input = serde_json::json!({ "x": "not a number" });
-        let err = adapter.execute(bad_input, &ctx).await.unwrap_err();
+        let err = InternalHandler::execute(&adapter, bad_input, &ctx)
+            .await
+            .unwrap_err();
         assert!(matches!(err, ActionError::Validation(_)));
     }
 
     #[tokio::test]
     async fn adapter_exposes_metadata() {
         let adapter = StatelessActionAdapter::new(AddAction::new());
-        assert_eq!(adapter.metadata().key, nebula_core::action_key!("math.add"));
+        assert_eq!(
+            InternalHandler::metadata(&adapter).key,
+            nebula_core::action_key!("math.add")
+        );
     }
 
     #[test]
@@ -715,5 +977,361 @@ mod tests {
         let debug = format!("{handler:?}");
         assert!(debug.contains("Stateless"));
         assert!(debug.contains("test.stateless"));
+    }
+
+    // ── StatelessActionAdapter as StatelessHandler ────────────────────────────
+
+    #[test]
+    fn stateless_adapter_is_dyn_stateless_handler() {
+        let adapter = StatelessActionAdapter::new(AddAction::new());
+        let _: Arc<dyn StatelessHandler> = Arc::new(adapter);
+    }
+
+    #[tokio::test]
+    async fn stateless_adapter_implements_stateless_handler() {
+        let adapter = StatelessActionAdapter::new(AddAction::new());
+        let handler: Arc<dyn StatelessHandler> = Arc::new(adapter);
+        let ctx = make_ctx();
+
+        let input = serde_json::json!({ "a": 5, "b": 3 });
+        let result = handler.execute(input, &ctx).await.unwrap();
+
+        match result {
+            ActionResult::Success { output } => {
+                let v = output.into_value().unwrap();
+                let out: AddOutput = serde_json::from_value(v).unwrap();
+                assert_eq!(out.sum, 8);
+            }
+            _ => panic!("expected Success"),
+        }
+    }
+
+    // ── StatefulActionAdapter tests ───────────────────────────────────────────
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct CounterState {
+        count: u32,
+    }
+
+    struct CounterAction {
+        meta: ActionMetadata,
+    }
+
+    impl CounterAction {
+        fn new() -> Self {
+            Self {
+                meta: ActionMetadata::new(
+                    nebula_core::action_key!("test.counter"),
+                    "Counter",
+                    "Counts up to 3",
+                ),
+            }
+        }
+    }
+
+    impl ActionDependencies for CounterAction {}
+
+    impl Action for CounterAction {
+        fn metadata(&self) -> &ActionMetadata {
+            &self.meta
+        }
+    }
+
+    impl crate::execution::StatefulAction for CounterAction {
+        type Input = Value;
+        type Output = Value;
+        type State = CounterState;
+
+        fn init_state(&self) -> CounterState {
+            CounterState { count: 0 }
+        }
+
+        async fn execute(
+            &self,
+            _input: Self::Input,
+            state: &mut Self::State,
+            _ctx: &impl crate::context::Context,
+        ) -> Result<ActionResult<Self::Output>, ActionError> {
+            state.count += 1;
+            if state.count >= 3 {
+                Ok(ActionResult::Break {
+                    output: crate::output::ActionOutput::Value(
+                        serde_json::json!({"final": state.count}),
+                    ),
+                    reason: crate::result::BreakReason::Completed,
+                })
+            } else {
+                Ok(ActionResult::Continue {
+                    output: crate::output::ActionOutput::Value(
+                        serde_json::json!({"current": state.count}),
+                    ),
+                    progress: Some(state.count as f64 / 3.0),
+                    delay: None,
+                })
+            }
+        }
+    }
+
+    #[test]
+    fn stateful_adapter_is_dyn_compatible() {
+        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let _: Arc<dyn StatefulHandler> = Arc::new(adapter);
+    }
+
+    #[tokio::test]
+    async fn stateful_adapter_init_state_serializes() {
+        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let state = adapter.init_state();
+        let cs: CounterState = serde_json::from_value(state).unwrap();
+        assert_eq!(cs.count, 0);
+    }
+
+    #[tokio::test]
+    async fn stateful_adapter_iterates_with_state() {
+        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let handler: Arc<dyn StatefulHandler> = Arc::new(adapter);
+        let ctx = make_ctx();
+        let mut state = handler.init_state();
+
+        // Iteration 1: count goes 0 → 1, Continue
+        let result = handler
+            .execute(serde_json::json!({}), &mut state, &ctx)
+            .await
+            .unwrap();
+        assert!(matches!(result, ActionResult::Continue { .. }));
+        let cs: CounterState = serde_json::from_value(state.clone()).unwrap();
+        assert_eq!(cs.count, 1);
+
+        // Iteration 2: count goes 1 → 2, Continue
+        let result = handler
+            .execute(serde_json::json!({}), &mut state, &ctx)
+            .await
+            .unwrap();
+        assert!(matches!(result, ActionResult::Continue { .. }));
+        let cs: CounterState = serde_json::from_value(state.clone()).unwrap();
+        assert_eq!(cs.count, 2);
+
+        // Iteration 3: count goes 2 → 3, Break
+        let result = handler
+            .execute(serde_json::json!({}), &mut state, &ctx)
+            .await
+            .unwrap();
+        assert!(matches!(result, ActionResult::Break { .. }));
+        let cs: CounterState = serde_json::from_value(state.clone()).unwrap();
+        assert_eq!(cs.count, 3);
+    }
+
+    #[tokio::test]
+    async fn stateful_adapter_returns_validation_error_on_bad_state() {
+        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let ctx = make_ctx();
+        let mut bad_state = serde_json::json!("not a counter state");
+
+        let err = adapter
+            .execute(serde_json::json!({}), &mut bad_state, &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ActionError::Validation(_)));
+    }
+
+    // ── TriggerActionAdapter tests ────────────────────────────────────────────
+
+    struct MockTriggerAction {
+        meta: ActionMetadata,
+        started: std::sync::atomic::AtomicBool,
+    }
+
+    impl MockTriggerAction {
+        fn new() -> Self {
+            Self {
+                meta: ActionMetadata::new(
+                    nebula_core::action_key!("test.trigger_action"),
+                    "MockTrigger",
+                    "Tracks start/stop",
+                ),
+                started: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl ActionDependencies for MockTriggerAction {}
+
+    impl Action for MockTriggerAction {
+        fn metadata(&self) -> &ActionMetadata {
+            &self.meta
+        }
+    }
+
+    impl crate::execution::TriggerAction for MockTriggerAction {
+        async fn start(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+            self.started
+                .store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        }
+
+        async fn stop(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+            self.started
+                .store(false, std::sync::atomic::Ordering::Release);
+            Ok(())
+        }
+    }
+
+    fn make_trigger_ctx() -> TriggerContext {
+        TriggerContext::new(WorkflowId::nil(), NodeId::nil(), CancellationToken::new())
+    }
+
+    #[test]
+    fn trigger_adapter_is_dyn_compatible() {
+        let adapter = TriggerActionAdapter::new(MockTriggerAction::new());
+        let _: Arc<dyn TriggerHandler> = Arc::new(adapter);
+    }
+
+    #[tokio::test]
+    async fn trigger_adapter_delegates_start_stop() {
+        let action = MockTriggerAction::new();
+        let adapter = TriggerActionAdapter::new(action);
+        let ctx = make_trigger_ctx();
+
+        adapter.start(&ctx).await.unwrap();
+        assert!(
+            adapter
+                .action
+                .started
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+
+        adapter.stop(&ctx).await.unwrap();
+        assert!(
+            !adapter
+                .action
+                .started
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+    }
+
+    // ── ResourceActionAdapter tests ───────────────────────────────────────────
+
+    struct MockResourceAction {
+        meta: ActionMetadata,
+    }
+
+    impl MockResourceAction {
+        fn new() -> Self {
+            Self {
+                meta: ActionMetadata::new(
+                    nebula_core::action_key!("test.resource_action"),
+                    "MockResource",
+                    "Creates a string pool",
+                ),
+            }
+        }
+    }
+
+    impl ActionDependencies for MockResourceAction {}
+
+    impl Action for MockResourceAction {
+        fn metadata(&self) -> &ActionMetadata {
+            &self.meta
+        }
+    }
+
+    impl crate::execution::ResourceAction for MockResourceAction {
+        type Config = String;
+        type Instance = String;
+
+        async fn configure(
+            &self,
+            _ctx: &impl crate::context::Context,
+        ) -> Result<String, ActionError> {
+            Ok("pool-default".to_owned())
+        }
+
+        async fn cleanup(
+            &self,
+            _instance: String,
+            _ctx: &impl crate::context::Context,
+        ) -> Result<(), ActionError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn resource_adapter_is_dyn_compatible() {
+        let adapter = ResourceActionAdapter::new(MockResourceAction::new());
+        let _: Arc<dyn ResourceHandler> = Arc::new(adapter);
+    }
+
+    #[tokio::test]
+    async fn resource_adapter_configure_returns_boxed_instance() {
+        let adapter = ResourceActionAdapter::new(MockResourceAction::new());
+        let handler: Arc<dyn ResourceHandler> = Arc::new(adapter);
+        let ctx = make_ctx();
+
+        let instance = handler
+            .configure(serde_json::json!({}), &ctx)
+            .await
+            .unwrap();
+        let typed = instance.downcast::<String>().unwrap();
+        assert_eq!(*typed, "pool-default");
+    }
+
+    #[tokio::test]
+    async fn resource_adapter_cleanup_receives_typed_instance() {
+        let adapter = ResourceActionAdapter::new(MockResourceAction::new());
+        let handler: Arc<dyn ResourceHandler> = Arc::new(adapter);
+        let ctx = make_ctx();
+
+        let instance: Box<dyn std::any::Any + Send + Sync> = Box::new("pool-default".to_owned());
+        handler.cleanup(instance, &ctx).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resource_adapter_cleanup_fails_on_wrong_type() {
+        let adapter = ResourceActionAdapter::new(MockResourceAction::new());
+        let handler: Arc<dyn ResourceHandler> = Arc::new(adapter);
+        let ctx = make_ctx();
+
+        let wrong_instance: Box<dyn std::any::Any + Send + Sync> = Box::new(42u32);
+        let err = handler.cleanup(wrong_instance, &ctx).await.unwrap_err();
+        assert!(matches!(err, ActionError::Fatal { .. }));
+    }
+
+    // ── Adapter into_inner tests ──────────────────────────────────────────────
+
+    #[test]
+    fn stateless_adapter_into_inner_returns_action() {
+        let adapter = StatelessActionAdapter::new(AddAction::new());
+        let action = adapter.into_inner();
+        assert_eq!(action.metadata().key, nebula_core::action_key!("math.add"));
+    }
+
+    #[test]
+    fn stateful_adapter_into_inner_returns_action() {
+        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let action = adapter.into_inner();
+        assert_eq!(
+            action.metadata().key,
+            nebula_core::action_key!("test.counter")
+        );
+    }
+
+    #[test]
+    fn trigger_adapter_into_inner_returns_action() {
+        let adapter = TriggerActionAdapter::new(MockTriggerAction::new());
+        let action = adapter.into_inner();
+        assert_eq!(
+            action.metadata().key,
+            nebula_core::action_key!("test.trigger_action")
+        );
+    }
+
+    #[test]
+    fn resource_adapter_into_inner_returns_action() {
+        let adapter = ResourceActionAdapter::new(MockResourceAction::new());
+        let action = adapter.into_inner();
+        assert_eq!(
+            action.metadata().key,
+            nebula_core::action_key!("test.resource_action")
+        );
     }
 }
