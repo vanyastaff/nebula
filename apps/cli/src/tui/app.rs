@@ -188,9 +188,7 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') if self.selected_node > 0 => {
                 self.selected_node -= 1;
             }
-            KeyCode::Down | KeyCode::Char('j')
-                if self.selected_node + 1 < self.nodes.len() =>
-            {
+            KeyCode::Down | KeyCode::Char('j') if self.selected_node + 1 < self.nodes.len() => {
                 self.selected_node += 1;
             }
             _ => {}
