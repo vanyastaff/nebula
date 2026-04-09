@@ -13,7 +13,7 @@ pub use crate::capability::{
 pub use crate::context::{ActionContext, Context, TriggerContext};
 pub use crate::dependency::ActionDependencies;
 pub use crate::error::{ActionError, ErrorCode};
-pub use crate::execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
+pub use crate::execution::{ResourceAction, StatelessAction, TriggerAction};
 pub use crate::ext::ActionResultExt;
 pub use crate::handler::{
     ActionHandler, ResourceActionAdapter, StatefulActionAdapter, StatelessActionAdapter,
@@ -29,6 +29,9 @@ pub use crate::port::{
 };
 pub use crate::registry::ActionRegistry;
 pub use crate::result::ActionResult;
+pub use crate::stateful::{
+    BatchAction, BatchItemResult, PageResult, PaginatedAction, StatefulAction, TransactionalAction,
+};
 pub use crate::testing::{
     SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
     TriggerTestHarness,

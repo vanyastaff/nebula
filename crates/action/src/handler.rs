@@ -202,6 +202,14 @@ where
             .map_err(|e| ActionError::fatal(format!("init_state serialization failed: {e}")))
     }
 
+    fn migrate_state(&self, old: Value) -> Option<Value> {
+        // If the migrated state can't be serialized back to JSON, treat as migration failure.
+        // This is acceptable because the alternative (a different error) would be more confusing.
+        self.action
+            .migrate_state(old)
+            .and_then(|state| serde_json::to_value(state).ok())
+    }
+
     /// Execute one iteration, deserializing input and state from JSON.
     ///
     /// # Errors
@@ -217,8 +225,11 @@ where
         let typed_input: A::Input = serde_json::from_value(input)
             .map_err(|e| ActionError::validation(format!("input deserialization failed: {e}")))?;
 
-        let mut typed_state: A::State = serde_json::from_value(state.clone())
-            .map_err(|e| ActionError::validation(format!("state deserialization failed: {e}")))?;
+        let mut typed_state: A::State = serde_json::from_value(state.clone()).or_else(|e| {
+            self.action.migrate_state(state.clone()).ok_or_else(|| {
+                ActionError::validation(format!("state deserialization failed: {e}"))
+            })
+        })?;
 
         let result = self
             .action
@@ -433,6 +444,15 @@ pub trait StatefulHandler: Send + Sync {
     /// Returns [`ActionError::Fatal`] if the initial state cannot be produced
     /// (e.g., serialization failure in an adapter).
     fn init_state(&self) -> Result<Value, ActionError>;
+
+    /// Attempt to migrate state from a previous version.
+    ///
+    /// Called when state deserialization fails during `execute`. Returns
+    /// migrated state as JSON, or `None` to propagate the error.
+    fn migrate_state(&self, old: Value) -> Option<Value> {
+        let _ = old;
+        None
+    }
 
     /// Execute one iteration with mutable JSON state.
     ///

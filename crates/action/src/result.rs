@@ -263,6 +263,71 @@ impl<T> ActionResult<T> {
         }
     }
 
+    /// Create a `Continue` result for stateful action iteration.
+    ///
+    /// Wraps `output` in [`ActionOutput::Value`] with optional progress.
+    /// No delay between iterations.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// Ok(ActionResult::continue_with(page_data, Some(0.5)))
+    /// ```
+    #[must_use]
+    pub fn continue_with(output: T, progress: Option<f64>) -> Self {
+        Self::Continue {
+            output: ActionOutput::Value(output),
+            progress,
+            delay: None,
+        }
+    }
+
+    /// Create a `Continue` result with a delay before the next iteration.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// Ok(ActionResult::continue_with_delay(data, Some(0.8), Duration::from_secs(5)))
+    /// ```
+    #[must_use]
+    pub fn continue_with_delay(output: T, progress: Option<f64>, delay: Duration) -> Self {
+        Self::Continue {
+            output: ActionOutput::Value(output),
+            progress,
+            delay: Some(delay),
+        }
+    }
+
+    /// Create a `Break` result indicating natural completion.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// Ok(ActionResult::break_completed(final_output))
+    /// ```
+    #[must_use]
+    pub fn break_completed(output: T) -> Self {
+        Self::Break {
+            output: ActionOutput::Value(output),
+            reason: BreakReason::Completed,
+        }
+    }
+
+    /// Create a `Break` result with a specific reason.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// Ok(ActionResult::break_with_reason(output, BreakReason::MaxIterations))
+    /// ```
+    #[must_use]
+    pub fn break_with_reason(output: T, reason: BreakReason) -> Self {
+        Self::Break {
+            output: ActionOutput::Value(output),
+            reason,
+        }
+    }
+
     /// Returns `true` if the result indicates successful completion.
     pub fn is_success(&self) -> bool {
         matches!(self, Self::Success { .. })
@@ -1113,6 +1178,70 @@ mod tests {
                 _ => panic!("expected Collection"),
             },
             _ => panic!("expected Success"),
+        }
+    }
+
+    // ── continue/break constructor tests ────────────────────────────
+
+    #[test]
+    fn continue_with_constructor() {
+        let result = ActionResult::continue_with(42, Some(0.5));
+        assert!(result.is_continue());
+        match result {
+            ActionResult::Continue {
+                output,
+                progress,
+                delay,
+            } => {
+                assert_eq!(output.as_value(), Some(&42));
+                assert_eq!(progress, Some(0.5));
+                assert!(delay.is_none());
+            }
+            _ => panic!("expected Continue"),
+        }
+    }
+
+    #[test]
+    fn continue_with_delay_constructor() {
+        let result = ActionResult::continue_with_delay(7, Some(0.8), Duration::from_secs(5));
+        assert!(result.is_continue());
+        match result {
+            ActionResult::Continue {
+                output,
+                progress,
+                delay,
+            } => {
+                assert_eq!(output.as_value(), Some(&7));
+                assert_eq!(progress, Some(0.8));
+                assert_eq!(delay, Some(Duration::from_secs(5)));
+            }
+            _ => panic!("expected Continue"),
+        }
+    }
+
+    #[test]
+    fn break_completed_constructor() {
+        let result = ActionResult::break_completed(String::from("done"));
+        assert!(!result.is_continue());
+        match result {
+            ActionResult::Break { output, reason } => {
+                assert_eq!(output.as_value().map(|s| s.as_str()), Some("done"));
+                assert_eq!(reason, BreakReason::Completed);
+            }
+            _ => panic!("expected Break"),
+        }
+    }
+
+    #[test]
+    fn break_with_reason_constructor() {
+        let result = ActionResult::break_with_reason(99, BreakReason::MaxIterations);
+        assert!(!result.is_continue());
+        match result {
+            ActionResult::Break { output, reason } => {
+                assert_eq!(output.as_value(), Some(&99));
+                assert_eq!(reason, BreakReason::MaxIterations);
+            }
+            _ => panic!("expected Break"),
         }
     }
 }

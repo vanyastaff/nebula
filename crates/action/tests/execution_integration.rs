@@ -7,7 +7,7 @@
 use nebula_action::dependency::ActionDependencies;
 use nebula_action::{
     Action, ActionContext, ActionMetadata, ActionOutput, ActionResult, BreakReason, StatefulAction,
-    StatelessAction, TriggerAction, TriggerContext,
+    StatefulActionAdapter, StatefulHandler, StatelessAction, TriggerAction, TriggerContext,
 };
 use nebula_core::action_key;
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
@@ -186,4 +186,110 @@ async fn trigger_action_start_stop_succeed() {
     let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new());
     action.start(&ctx).await.unwrap();
     action.stop(&ctx).await.unwrap();
+}
+
+// ── migrate_state tests ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+struct MigratableState {
+    count: u32,
+    label: String,
+}
+
+struct MigratableAction {
+    meta: ActionMetadata,
+}
+
+impl ActionDependencies for MigratableAction {}
+
+impl Action for MigratableAction {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl StatefulAction for MigratableAction {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+    type State = MigratableState;
+
+    fn init_state(&self) -> Self::State {
+        MigratableState {
+            count: 0,
+            label: String::from("default"),
+        }
+    }
+
+    fn migrate_state(&self, old: serde_json::Value) -> Option<Self::State> {
+        // Handle v1 state: { "count": N } → add default label
+        let count = old.get("count")?.as_u64()? as u32;
+        Some(MigratableState {
+            count,
+            label: String::from("migrated"),
+        })
+    }
+
+    async fn execute(
+        &self,
+        _input: Self::Input,
+        state: &mut Self::State,
+        _ctx: &impl nebula_action::Context,
+    ) -> Result<ActionResult<Self::Output>, nebula_action::ActionError> {
+        state.count += 1;
+        Ok(ActionResult::Break {
+            output: ActionOutput::Value(
+                serde_json::json!({ "count": state.count, "label": state.label }),
+            ),
+            reason: BreakReason::Completed,
+        })
+    }
+}
+
+#[tokio::test]
+async fn migrate_state_succeeds_from_v1() {
+    let action = MigratableAction {
+        meta: ActionMetadata::new(
+            action_key!("test.migratable"),
+            "Migratable",
+            "Migrates v1 state",
+        ),
+    };
+    let adapter = StatefulActionAdapter::new(action);
+    let ctx = ActionContext::new(
+        ExecutionId::new(),
+        NodeId::new(),
+        WorkflowId::new(),
+        CancellationToken::new(),
+    );
+
+    // v1 state — missing the `label` field, so direct deser into MigratableState fails.
+    // migrate_state should kick in and supply default label.
+    let mut state = serde_json::json!({ "count": 5 });
+    let result = adapter
+        .execute(serde_json::json!({}), &mut state, &ctx)
+        .await;
+
+    nebula_action::assert_break!(result);
+}
+
+#[tokio::test]
+async fn migrate_state_propagates_error_when_none() {
+    let action = CounterAction {
+        meta: ActionMetadata::new(action_key!("test.counter"), "Counter", "Count then break"),
+    };
+    let adapter = StatefulActionAdapter::new(action);
+    let ctx = ActionContext::new(
+        ExecutionId::new(),
+        NodeId::new(),
+        WorkflowId::new(),
+        CancellationToken::new(),
+    );
+
+    // Completely invalid state — CounterAction does not override migrate_state (returns None).
+    let mut state = serde_json::json!("not_an_object");
+    let result = adapter
+        .execute(serde_json::Value::Null, &mut state, &ctx)
+        .await;
+
+    nebula_action::assert_validation_error!(result);
 }
