@@ -1,12 +1,12 @@
 //! Error type for credential access operations.
 //!
-//! [`CredentialAccessError`] is the error returned by [`CredentialAccessor`](super::CredentialAccessor)
+//! [`CredentialAccessError`] is the error returned by [`CredentialAccessor`](crate::CredentialAccessor)
 //! methods. It covers lookup failures, type mismatches, sandbox violations,
 //! and missing configuration.
 
 /// Error type for credential access operations.
 ///
-/// Returned by [`CredentialAccessor`](super::CredentialAccessor) trait methods.
+/// Returned by [`CredentialAccessor`](crate::CredentialAccessor) trait methods.
 /// Each variant represents a distinct failure mode during credential access.
 ///
 /// # Examples
