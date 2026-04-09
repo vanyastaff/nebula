@@ -27,6 +27,9 @@ use crate::result::ActionResult;
 
 /// Builder for creating test [`ActionContext`] instances.
 ///
+/// Supports credential snapshots (string-keyed), type-based credentials,
+/// resources, input data, and spy logging.
+///
 /// # Examples
 ///
 /// ```rust,no_run
@@ -36,16 +39,8 @@ use crate::result::ActionResult;
 /// let ctx = TestContextBuilder::new()
 ///     .with_credential_snapshot("api_key", snapshot)
 ///     .build();
-/// ```
-/// Builder for creating test [`ActionContext`] instances.
 ///
-/// Supports credential snapshots (string-keyed), type-based credentials,
-/// resources, input data, and spy logging.
-///
-/// # Examples
-///
-/// ```rust,no_run
-/// # use nebula_action::testing::TestContextBuilder;
+/// // Minimal context with no configuration:
 /// let ctx = TestContextBuilder::minimal().build();
 /// ```
 pub struct TestContextBuilder {
@@ -126,8 +121,10 @@ impl TestContextBuilder {
 
     /// Set input data for the test.
     ///
-    /// The input is available via [`TestContextBuilder::input`] after building;
-    /// pass it to the action's `execute` method.
+    /// Input is stored on the builder and available via [`Self::input()`].
+    /// Call this before [`Self::build()`], then pass the input separately
+    /// to the action's `execute` method — input is **not** embedded in the
+    /// built [`ActionContext`].
     #[must_use]
     pub fn with_input(mut self, input: serde_json::Value) -> Self {
         self.input = Some(input);
@@ -413,7 +410,7 @@ impl TriggerScheduler for SpyScheduler {
 /// # Examples
 ///
 /// ```rust,ignore
-/// let harness = StatefulTestHarness::new(my_action, ctx);
+/// let harness = StatefulTestHarness::new(my_action, ctx)?;
 /// let result = harness.step(input).await?;
 /// assert_eq!(harness.iterations(), 1);
 /// ```
@@ -428,23 +425,24 @@ impl<A> StatefulTestHarness<A>
 where
     A: StatefulAction + Send + Sync + 'static,
     A::Input: Send + Sync,
-    A::Output: Send + Sync + std::fmt::Debug,
+    A::Output: Send + Sync,
     A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
 {
     /// Create a new harness with initial state from the action.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `init_state()` produces a value that cannot be serialized.
-    pub fn new(action: A, ctx: ActionContext) -> Self {
-        let state =
-            serde_json::to_value(action.init_state()).expect("init_state must be serializable");
-        Self {
+    /// Returns [`ActionError::Fatal`] if `init_state()` produces a value
+    /// that cannot be serialized to JSON.
+    pub fn new(action: A, ctx: ActionContext) -> Result<Self, ActionError> {
+        let state = serde_json::to_value(action.init_state())
+            .map_err(|e| ActionError::fatal(format!("init_state serialize: {e}")))?;
+        Ok(Self {
             action,
             state,
             ctx,
             iterations: 0,
-        }
+        })
     }
 
     /// Run one iteration. Returns the result and updates internal state.
@@ -468,12 +466,12 @@ where
 
     /// Get current state as a typed value.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the internal JSON state cannot be deserialized into `S`.
-    #[must_use]
-    pub fn state<S: serde::de::DeserializeOwned>(&self) -> S {
-        serde_json::from_value(self.state.clone()).expect("state must be deserializable")
+    /// Returns `serde_json::Error` if the internal JSON state cannot be
+    /// deserialized into `S`.
+    pub fn state<S: serde::de::DeserializeOwned>(&self) -> Result<S, serde_json::Error> {
+        serde_json::from_value(self.state.clone())
     }
 
     /// Get current state as raw JSON.
@@ -978,14 +976,14 @@ mod tests {
             max: 3,
         };
         let ctx = TestContextBuilder::minimal().build();
-        let mut harness = StatefulTestHarness::new(action, ctx);
+        let mut harness = StatefulTestHarness::new(action, ctx).unwrap();
 
         assert_eq!(harness.iterations(), 0);
 
         let r1 = harness.step(()).await.unwrap();
         assert!(r1.is_continue());
         assert_eq!(harness.iterations(), 1);
-        let s: CounterState = harness.state();
+        let s: CounterState = harness.state().unwrap();
         assert_eq!(s.count, 1);
 
         let r2 = harness.step(()).await.unwrap();
@@ -995,7 +993,7 @@ mod tests {
         let r3 = harness.step(()).await.unwrap();
         assert!(!r3.is_continue());
         assert_eq!(harness.iterations(), 3);
-        let s: CounterState = harness.state();
+        let s: CounterState = harness.state().unwrap();
         assert_eq!(s.count, 3);
     }
 
@@ -1006,7 +1004,7 @@ mod tests {
             max: 10,
         };
         let ctx = TestContextBuilder::minimal().build();
-        let mut harness = StatefulTestHarness::new(action, ctx);
+        let mut harness = StatefulTestHarness::new(action, ctx).unwrap();
 
         harness.step(()).await.unwrap();
         let json = harness.state_json();

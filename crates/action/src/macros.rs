@@ -3,6 +3,9 @@
 //! These macros simplify asserting on [`ActionResult`](crate::ActionResult) and
 //! [`ActionError`](crate::ActionError) variants in tests. They are exported via
 //! `#[macro_export]` so they are available at the crate root.
+//!
+//! **Note:** These macros require `Debug` on the result type for error
+//! formatting in panic messages. This is standard for test assertions.
 
 /// Assert that the result is `Ok(ActionResult::Success { .. })`.
 ///
