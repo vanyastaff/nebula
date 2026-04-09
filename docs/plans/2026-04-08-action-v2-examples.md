@@ -907,12 +907,12 @@ async fn test_paginated_fetch() {
         })
         .build();
 
-    let mut harness = StatefulTestHarness::new(action, ctx);
+    let mut harness = StatefulTestHarness::new(action, ctx).unwrap();
 
     // Step 1: first page
     let result = harness.step(action.clone()).await.unwrap();
     assert_continue!(result);
-    assert_eq!(harness.state().pages_fetched, 1);
+    assert_eq!(harness.state::<PaginationState>().unwrap().pages_fetched, 1);
 
     // Step 2: second page
     let result = harness.step(action.clone()).await.unwrap();
