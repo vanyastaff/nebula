@@ -18,7 +18,7 @@ use crate::capability::{
     default_resource_accessor, default_trigger_scheduler,
 };
 use crate::error::ActionError;
-use crate::guard::CredentialGuard;
+use nebula_credential::CredentialGuard;
 use nebula_credential::CredentialSnapshot;
 
 /// Base trait for action execution contexts.

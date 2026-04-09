@@ -10,8 +10,7 @@ use std::ops::Deref;
 
 use zeroize::Zeroize;
 
-/// Secure wrapper for credential values returned by
-/// [`ActionContext::credential_by_type`](crate::ActionContext::credential_by_type).
+/// Secure wrapper for credential values returned by action contexts.
 ///
 /// # Guarantees
 ///
@@ -21,10 +20,9 @@ use zeroize::Zeroize;
 ///
 /// # Errors
 ///
-/// `CredentialGuard` itself is infallible once constructed. It is obtained via
-/// [`ActionContext::credential_by_type()`](crate::ActionContext::credential_by_type),
-/// which returns [`ActionError`](crate::ActionError) when the credential cannot
-/// be resolved or deserialized.
+/// `CredentialGuard` itself is infallible once constructed. It is typically
+/// obtained via `ActionContext::credential_by_type()`, which returns an error
+/// when the credential cannot be resolved or deserialized.
 ///
 /// # Examples
 ///
@@ -39,7 +37,7 @@ pub struct CredentialGuard<S: Zeroize> {
 
 impl<S: Zeroize> CredentialGuard<S> {
     /// Wrap a credential value in a guard.
-    pub(crate) fn new(inner: S) -> Self {
+    pub fn new(inner: S) -> Self {
         Self { inner }
     }
 }

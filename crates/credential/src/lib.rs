@@ -46,6 +46,8 @@ pub mod crypto;
 pub mod description;
 /// Error types for credential operations.
 pub mod error;
+/// Credential guard — secure wrapper with Deref + Zeroize on drop.
+pub mod guard;
 /// Typed credential handle returned by the resolver.
 pub mod handle;
 /// Newtype for credential type keys.
@@ -172,6 +174,9 @@ pub use registry::{CredentialRegistry, RegistryError};
 
 // Resolver
 pub use resolver::{CredentialResolver, ResolveError};
+
+// Credential guard
+pub use guard::CredentialGuard;
 
 // Refresh coordination
 pub use refresh::{RefreshAttempt, RefreshCoordinator};

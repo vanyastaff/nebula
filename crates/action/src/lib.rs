@@ -70,8 +70,10 @@ pub mod error;
 pub mod execution;
 /// Extension traits for ergonomic error conversion in actions.
 pub mod ext;
-/// Credential guard — secure wrapper for credential access.
-pub mod guard;
+/// Credential guard — re-exported from [`nebula_credential`].
+pub mod guard {
+    pub use nebula_credential::CredentialGuard;
+}
 /// Dynamic handler contract for runtime (registry key → execute).
 pub mod handler;
 /// Assertion macros for testing action results (`assert_success!`, etc.).
@@ -110,7 +112,6 @@ pub use dependency::ActionDependencies;
 pub use error::{ActionError, ErrorCode};
 pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 pub use ext::ActionResultExt;
-pub use guard::CredentialGuard;
 #[allow(deprecated)]
 // Reason: InternalHandler re-exported for backward compat during migration
 pub use handler::InternalHandler;
@@ -120,6 +121,7 @@ pub use handler::{
     TriggerHandler,
 };
 pub use metadata::{ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError};
+pub use nebula_credential::CredentialGuard;
 pub use output::{
     ActionOutput, BinaryData, BinaryStorage, BufferConfig, CacheInfo, Cost, DataReference,
     DeferredOutput, DeferredRetryConfig, DeltaFormat, ExpectedOutput, OutputEnvelope, OutputMeta,
