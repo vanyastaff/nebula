@@ -16,7 +16,9 @@ use nebula_core::id::ExecutionId;
 
 use crate::ActionError;
 
-// Re-export credential accessor types from their canonical home in nebula-credential.
+/// Re-exported from [`nebula_credential`]. Methods now return
+/// [`CredentialAccessError`] instead of `ActionError`.
+/// Use `From<CredentialAccessError> for ActionError` for conversion.
 pub use nebula_credential::{
     CredentialAccessError, CredentialAccessor, NoopCredentialAccessor, ScopedCredentialAccessor,
     default_credential_accessor,

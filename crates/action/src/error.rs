@@ -145,7 +145,7 @@ impl From<nebula_credential::CredentialAccessError> for ActionError {
                 capability,
                 action_id,
             },
-            other => ActionError::fatal(other),
+            other => ActionError::fatal_from(other),
         }
     }
 }

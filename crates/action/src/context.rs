@@ -126,7 +126,7 @@ impl ActionContext {
 
     /// Retrieve a credential snapshot by id through the configured accessor.
     pub async fn credential(&self, id: &str) -> Result<CredentialSnapshot, ActionError> {
-        Ok(self.credentials.get(id).await?)
+        self.credentials.get(id).await.map_err(ActionError::from)
     }
 
     /// Retrieve a credential and project it to the concrete [`AuthScheme`] type.
@@ -286,7 +286,7 @@ impl TriggerContext {
 
     /// Retrieve a credential snapshot by id through the configured accessor.
     pub async fn credential(&self, id: &str) -> Result<CredentialSnapshot, ActionError> {
-        Ok(self.credentials.get(id).await?)
+        self.credentials.get(id).await.map_err(ActionError::from)
     }
 
     /// Retrieve a credential and project it to the concrete [`AuthScheme`] type.

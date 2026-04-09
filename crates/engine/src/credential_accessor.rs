@@ -93,9 +93,9 @@ impl EngineCredentialAccessor {
     ///   Pass an empty set to allow all credential access (open/passthrough mode, used when
     ///   per-node declarations are not yet populated).
     /// - `resolve_fn` — async closure that resolves a credential ID to a
-    ///   [`CredentialSnapshot`] or an [`ActionError`].
+    ///   [`CredentialSnapshot`] or a [`CredentialAccessError`].
     /// - `action_id` — the action key or node identifier for security attribution in
-    ///   [`ActionError::SandboxViolation`] events.
+    ///   [`CredentialAccessError::AccessDenied`] events.
     pub fn new<F, Fut>(allowed_keys: HashSet<String>, resolve_fn: F, action_id: String) -> Self
     where
         F: Fn(&str) -> Fut + Send + Sync + 'static,
