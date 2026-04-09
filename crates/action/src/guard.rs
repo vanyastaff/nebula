@@ -19,6 +19,13 @@ use zeroize::Zeroize;
 /// - `Drop` calls `zeroize()` — secret material wiped from memory
 /// - Does NOT implement `Serialize` — compile error if placed in output/state types
 ///
+/// # Errors
+///
+/// `CredentialGuard` itself is infallible once constructed. It is obtained via
+/// [`ActionContext::credential_by_type()`](crate::ActionContext::credential_by_type),
+/// which returns [`ActionError`](crate::ActionError) when the credential cannot
+/// be resolved or deserialized.
+///
 /// # Examples
 ///
 /// ```rust,ignore

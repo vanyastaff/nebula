@@ -23,6 +23,15 @@ use crate::error::ActionError;
 /// Any [`get_by_type()`](CredentialAccessor::get_by_type) call for a `TypeId` not in
 /// the set returns [`ActionError::SandboxViolation`].
 ///
+/// # Errors
+///
+/// [`get_by_type()`](CredentialAccessor::get_by_type) returns
+/// [`ActionError::SandboxViolation`] when the requested credential `TypeId`
+/// was not declared in the action's
+/// [`ActionDependencies::credential_types()`](crate::ActionDependencies::credential_types).
+/// String-based [`get()`](CredentialAccessor::get) delegates without type checking
+/// and forwards any error from the inner accessor.
+///
 /// # Examples
 ///
 /// ```rust,ignore
