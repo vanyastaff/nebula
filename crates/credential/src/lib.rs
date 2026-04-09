@@ -32,6 +32,10 @@
 #![deny(unsafe_code)]
 #![forbid(unsafe_code)]
 
+/// Error type for credential access operations.
+pub mod access_error;
+/// Credential accessor trait and implementations (Noop, Scoped).
+pub mod accessor;
 /// Object-safe supertrait for credential dependency declaration.
 pub mod any;
 /// Credential operation context.
@@ -177,6 +181,15 @@ pub use resolver::{CredentialResolver, ResolveError};
 
 // Credential guard
 pub use guard::CredentialGuard;
+
+// Credential access error
+pub use access_error::CredentialAccessError;
+
+// Credential accessor trait + implementations
+pub use accessor::{
+    CredentialAccessor, NoopCredentialAccessor, ScopedCredentialAccessor,
+    default_credential_accessor,
+};
 
 // Refresh coordination
 pub use refresh::{RefreshAttempt, RefreshCoordinator};

@@ -14,11 +14,10 @@ use std::time::Instant;
 
 use dashmap::DashMap;
 // TODO: ExecutionBudget moved to nebula-execution
-use nebula_action::capability::{
-    CredentialAccessor, ResourceAccessor, default_credential_accessor, default_resource_accessor,
-};
+use nebula_action::capability::{ResourceAccessor, default_resource_accessor};
 use nebula_action::{ActionContext, ActionResult};
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
+use nebula_credential::{CredentialAccessor, default_credential_accessor};
 // ScopeLevel removed from ActionContext
 // use nebula_core::scope::ScopeLevel;
 use nebula_execution::ExecutionStatus;
@@ -75,7 +74,7 @@ type CredentialResolveFn = Arc<
                 dyn Future<
                         Output = Result<
                             nebula_credential::CredentialSnapshot,
-                            nebula_action::error::ActionError,
+                            nebula_credential::CredentialAccessError,
                         >,
                     > + Send,
             >,
@@ -180,7 +179,7 @@ impl WorkflowEngine {
     ///         let id = id.to_owned();
     ///         Box::pin(async move {
     ///             resolver.resolve_snapshot(&id).await
-    ///                 .map_err(|e| ActionError::fatal(e.to_string()))
+    ///                 .map_err(|e| CredentialAccessError::NotFound(e.to_string()))
     ///         })
     ///     });
     /// ```
@@ -191,7 +190,7 @@ impl WorkflowEngine {
         Fut: Future<
                 Output = Result<
                     nebula_credential::CredentialSnapshot,
-                    nebula_action::error::ActionError,
+                    nebula_credential::CredentialAccessError,
                 >,
             > + Send
             + 'static,
@@ -203,7 +202,7 @@ impl WorkflowEngine {
                         dyn Future<
                                 Output = Result<
                                     nebula_credential::CredentialSnapshot,
-                                    nebula_action::error::ActionError,
+                                    nebula_credential::CredentialAccessError,
                                 >,
                             > + Send,
                     >,
@@ -3383,7 +3382,9 @@ mod tests {
         let (engine, _) = make_engine(registry);
         let engine = engine
             .with_credential_resolver(|_id: &str| async move {
-                Err(nebula_action::error::ActionError::fatal("no credentials"))
+                Err(nebula_credential::CredentialAccessError::NotFound(
+                    "no credentials".to_owned(),
+                ))
             })
             .with_credential_refresh(move |_id: &str| {
                 let count = refresh_count_clone.clone();

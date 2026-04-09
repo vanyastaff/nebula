@@ -135,6 +135,21 @@ impl nebula_error::Classify for ActionError {
     }
 }
 
+impl From<nebula_credential::CredentialAccessError> for ActionError {
+    fn from(err: nebula_credential::CredentialAccessError) -> Self {
+        match err {
+            nebula_credential::CredentialAccessError::AccessDenied {
+                capability,
+                action_id,
+            } => ActionError::SandboxViolation {
+                capability,
+                action_id,
+            },
+            other => ActionError::fatal(other),
+        }
+    }
+}
+
 impl ActionError {
     /// Create a retryable error with no backoff hint.
     ///

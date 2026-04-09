@@ -21,7 +21,7 @@
 //!   mode). This is the current default until per-node credential declarations are
 //!   wired in from action dependency metadata.
 //! - A **non-empty** allowlist only permits the keys in the set. Requests for
-//!   undeclared keys are rejected with [`ActionError::SandboxViolation`].
+//!   undeclared keys are rejected with [`CredentialAccessError::AccessDenied`].
 
 use std::collections::HashSet;
 use std::fmt;
@@ -30,14 +30,15 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nebula_action::capability::CredentialAccessor;
-use nebula_action::error::ActionError;
-use nebula_credential::CredentialSnapshot;
+use nebula_credential::{CredentialAccessError, CredentialAccessor, CredentialSnapshot};
 
 /// Type alias for the boxed async credential-resolution function.
 type ResolveFn = Arc<
-    dyn Fn(&str) -> Pin<Box<dyn Future<Output = Result<CredentialSnapshot, ActionError>> + Send>>
-        + Send
+    dyn Fn(
+            &str,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<CredentialSnapshot, CredentialAccessError>> + Send>,
+        > + Send
         + Sync,
 >;
 
@@ -98,13 +99,18 @@ impl EngineCredentialAccessor {
     pub fn new<F, Fut>(allowed_keys: HashSet<String>, resolve_fn: F, action_id: String) -> Self
     where
         F: Fn(&str) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<CredentialSnapshot, ActionError>> + Send + 'static,
+        Fut: Future<Output = Result<CredentialSnapshot, CredentialAccessError>> + Send + 'static,
     {
         Self {
             allowed_keys,
             resolve_fn: Arc::new(move |id: &str| {
                 Box::pin(resolve_fn(id))
-                    as Pin<Box<dyn Future<Output = Result<CredentialSnapshot, ActionError>> + Send>>
+                    as Pin<
+                        Box<
+                            dyn Future<Output = Result<CredentialSnapshot, CredentialAccessError>>
+                                + Send,
+                        >,
+                    >
             }),
             action_id,
         }
@@ -135,17 +141,17 @@ impl CredentialAccessor for EngineCredentialAccessor {
     ///
     /// # Errors
     ///
-    /// - [`ActionError::SandboxViolation`] — if `id` is not in the allowlist (when the
-    ///   allowlist is non-empty and `id` is not listed).
+    /// - [`CredentialAccessError::AccessDenied`] — if `id` is not in the allowlist
+    ///   (when the allowlist is non-empty and `id` is not listed).
     /// - Any error returned by the underlying resolver function.
     ///
     /// # Cancel safety
     ///
     /// This method is cancel-safe. If the future is dropped before completion,
     /// no state is modified.
-    async fn get(&self, id: &str) -> Result<CredentialSnapshot, ActionError> {
+    async fn get(&self, id: &str) -> Result<CredentialSnapshot, CredentialAccessError> {
         if !self.is_allowed(id) {
-            return Err(ActionError::SandboxViolation {
+            return Err(CredentialAccessError::AccessDenied {
                 capability: format!("credential:{id}"),
                 action_id: self.action_id.clone(),
             });
@@ -181,7 +187,11 @@ mod tests {
         let allowed_keys: HashSet<String> = allowed.into_iter().map(str::to_owned).collect();
         EngineCredentialAccessor::new(
             allowed_keys,
-            |_id: &str| async { Err(ActionError::fatal("not implemented in stub")) },
+            |_id: &str| async {
+                Err(CredentialAccessError::NotConfigured(
+                    "not implemented in stub".to_owned(),
+                ))
+            },
             "test_action".to_owned(),
         )
     }
@@ -189,7 +199,7 @@ mod tests {
     /// Builds an accessor whose resolver always returns the given error.
     fn make_failing_accessor(
         allowed: impl IntoIterator<Item = &'static str>,
-        err: ActionError,
+        err: CredentialAccessError,
     ) -> EngineCredentialAccessor {
         let allowed_keys: HashSet<String> = allowed.into_iter().map(str::to_owned).collect();
         EngineCredentialAccessor::new(
@@ -207,8 +217,8 @@ mod tests {
         let accessor = make_accessor(["declared_key"]);
         let result = accessor.get("undeclared_key").await;
         assert!(
-            matches!(result, Err(ActionError::SandboxViolation { .. })),
-            "expected SandboxViolation, got {result:?}"
+            matches!(result, Err(CredentialAccessError::AccessDenied { .. })),
+            "expected AccessDenied, got {result:?}"
         );
     }
 
@@ -219,75 +229,81 @@ mod tests {
 
         let accessor = EngineCredentialAccessor::new(
             allowed_keys,
-            |_id: &str| async { Err(ActionError::fatal("resolver reached")) },
+            |_id: &str| async {
+                Err(CredentialAccessError::NotFound(
+                    "resolver reached".to_owned(),
+                ))
+            },
             "test_action".to_owned(),
         );
 
         let result = accessor.get("my_credential").await;
-        // The resolver was called — we get a fatal error, not a sandbox violation.
+        // The resolver was called — we get NotFound, not AccessDenied.
         assert!(
-            matches!(result, Err(ActionError::Fatal { .. })),
-            "expected Fatal from resolver, got {result:?}"
+            matches!(result, Err(CredentialAccessError::NotFound(_))),
+            "expected NotFound from resolver, got {result:?}"
         );
     }
 
     #[tokio::test]
     async fn has_returns_false_for_allowed_key_not_in_store() {
-        // Resolver fails → key is in allowlist but not resolvable → has() = false.
+        // Resolver fails -> key is in allowlist but not resolvable -> has() = false.
         let accessor = make_accessor(["allowed"]);
         assert!(!accessor.has("allowed").await);
     }
 
     #[tokio::test]
     async fn has_returns_false_for_undeclared_key() {
-        // Key is not in (non-empty) allowlist → rejected before resolver call.
+        // Key is not in (non-empty) allowlist -> rejected before resolver call.
         let accessor = make_accessor(["allowed"]);
         assert!(!accessor.has("not_allowed").await);
     }
 
     #[tokio::test]
     async fn has_returns_false_for_empty_allowlist_when_resolver_fails() {
-        // Empty allowlist = allow all, but resolver still fails → has() = false.
+        // Empty allowlist = allow all, but resolver still fails -> has() = false.
         let accessor = make_accessor([]);
         assert!(!accessor.has("anything").await);
     }
 
     #[tokio::test]
     async fn get_allows_any_key_when_allowlist_is_empty() {
-        // Empty allowlist = open/passthrough mode: no SandboxViolation, resolver is called.
+        // Empty allowlist = open/passthrough mode: no AccessDenied, resolver is called.
         let accessor = make_accessor([]);
         let result = accessor.get("any_key").await;
-        // Stub resolver returns Fatal, not SandboxViolation — resolver was reached.
+        // Stub resolver returns NotConfigured, not AccessDenied — resolver was reached.
         assert!(
-            matches!(result, Err(ActionError::Fatal { .. })),
-            "expected Fatal from resolver (not SandboxViolation), got {result:?}"
+            matches!(result, Err(CredentialAccessError::NotConfigured(_))),
+            "expected NotConfigured from resolver (not AccessDenied), got {result:?}"
         );
     }
 
     #[tokio::test]
-    async fn sandbox_violation_contains_credential_capability_name_and_action_id() {
+    async fn access_denied_contains_credential_capability_name_and_action_id() {
         let accessor = make_accessor(["allowed"]);
         let err = accessor.get("secret_key").await.unwrap_err();
         match err {
-            ActionError::SandboxViolation {
+            CredentialAccessError::AccessDenied {
                 capability,
                 action_id,
             } => {
                 assert_eq!(capability, "credential:secret_key");
                 assert_eq!(action_id, "test_action");
             }
-            other => panic!("expected SandboxViolation, got {other:?}"),
+            other => panic!("expected AccessDenied, got {other:?}"),
         }
     }
 
     #[tokio::test]
     async fn resolver_error_propagates_for_allowed_key() {
-        let accessor =
-            make_failing_accessor(["my_key"], ActionError::retryable("transient failure"));
+        let accessor = make_failing_accessor(
+            ["my_key"],
+            CredentialAccessError::NotFound("transient failure".to_owned()),
+        );
         let result = accessor.get("my_key").await;
         assert!(
-            matches!(result, Err(ActionError::Retryable { .. })),
-            "expected Retryable, got {result:?}"
+            matches!(result, Err(CredentialAccessError::NotFound(_))),
+            "expected NotFound, got {result:?}"
         );
     }
 

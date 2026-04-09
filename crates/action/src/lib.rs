@@ -104,8 +104,8 @@ pub use nebula_action_macros::Action;
 pub use action::Action;
 pub use authoring::{FnStatelessAction, stateless_fn};
 pub use capability::{
-    ActionLogLevel, ActionLogger, CredentialAccessor, ExecutionEmitter, ResourceAccessor,
-    TriggerScheduler,
+    ActionLogLevel, ActionLogger, CredentialAccessError, CredentialAccessor, ExecutionEmitter,
+    NoopCredentialAccessor, ResourceAccessor, TriggerScheduler,
 };
 pub use context::{ActionContext, Context, TriggerContext};
 pub use dependency::ActionDependencies;

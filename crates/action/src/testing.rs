@@ -17,8 +17,8 @@ use nebula_credential::CredentialSnapshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::capability::{
-    ActionLogLevel, ActionLogger, CredentialAccessor, ExecutionEmitter, ResourceAccessor,
-    TriggerScheduler,
+    ActionLogLevel, ActionLogger, CredentialAccessError, CredentialAccessor, ExecutionEmitter,
+    ResourceAccessor, TriggerScheduler,
 };
 use crate::context::{ActionContext, TriggerContext};
 use crate::error::ActionError;
@@ -257,9 +257,9 @@ struct TestCredentialAccessor {
 
 #[async_trait]
 impl CredentialAccessor for TestCredentialAccessor {
-    async fn get(&self, id: &str) -> Result<CredentialSnapshot, ActionError> {
+    async fn get(&self, id: &str) -> Result<CredentialSnapshot, CredentialAccessError> {
         self.credentials.get(id).cloned().ok_or_else(|| {
-            ActionError::fatal(format!("credential `{id}` not found in test context"))
+            CredentialAccessError::NotFound(format!("credential `{id}` not found in test context"))
         })
     }
 
@@ -271,12 +271,12 @@ impl CredentialAccessor for TestCredentialAccessor {
         &self,
         type_id: TypeId,
         type_name: &str,
-    ) -> Result<CredentialSnapshot, ActionError> {
+    ) -> Result<CredentialSnapshot, CredentialAccessError> {
         self.typed_credentials
             .get(&type_id)
             .cloned()
             .ok_or_else(|| {
-                ActionError::fatal(format!(
+                CredentialAccessError::NotFound(format!(
                     "no typed credential for `{type_name}` in test context"
                 ))
             })

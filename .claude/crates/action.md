@@ -18,7 +18,7 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 
 - `CredentialGuard<S: Zeroize>` — re-exported from `nebula-credential`. Deref + Zeroize on drop + !Serialize. Constructed in context methods via `CredentialGuard::new()`.
 - `credential_by_type::<S>()` on `ActionContext`/`TriggerContext` — type-based credential access via TypeId. Returns `CredentialGuard<S>`. Existing `credential_typed()` (string-based) kept for backward compat.
-- `ScopedCredentialAccessor` — wraps `CredentialAccessor`, enforces `get_by_type()` against declared TypeIds from `ActionDependencies::credential_types()`. Returns `SandboxViolation` for undeclared types.
+- `CredentialAccessor`, `ScopedCredentialAccessor`, `NoopCredentialAccessor`, `CredentialAccessError` — canonical home is `nebula-credential`; re-exported from `nebula-action::capability` for backward compat. `From<CredentialAccessError> for ActionError` maps `AccessDenied` to `SandboxViolation`, others to `Fatal`.
 - `#[derive(Action)]` now works on structs with fields (not just unit structs) — enables `type Input = Self` pattern.
 
 - `ActionHandler` enum (5 variants: Stateless, Stateful, Trigger, Resource, Agent, `#[non_exhaustive]`) — engine match-dispatches. Replaces deprecated `InternalHandler`.

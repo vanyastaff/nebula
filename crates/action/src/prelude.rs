@@ -7,8 +7,8 @@
 pub use crate::action::Action;
 pub use crate::authoring::{FnStatelessAction, stateless_fn};
 pub use crate::capability::{
-    ActionLogLevel, ActionLogger, CredentialAccessor, ExecutionEmitter, ResourceAccessor,
-    TriggerScheduler,
+    ActionLogLevel, ActionLogger, CredentialAccessError, CredentialAccessor, ExecutionEmitter,
+    ResourceAccessor, TriggerScheduler,
 };
 pub use crate::context::{ActionContext, Context, TriggerContext};
 pub use crate::dependency::ActionDependencies;
