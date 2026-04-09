@@ -7,15 +7,14 @@
 pub use crate::action::Action;
 pub use crate::authoring::{FnStatelessAction, stateless_fn};
 pub use crate::capability::{
-    ActionLogLevel, ActionLogger, CredentialAccessor, ExecutionEmitter, ResourceAccessor,
-    TriggerScheduler,
+    ActionLogLevel, ActionLogger, CredentialAccessError, CredentialAccessor, ExecutionEmitter,
+    ResourceAccessor, TriggerScheduler,
 };
 pub use crate::context::{ActionContext, Context, TriggerContext};
 pub use crate::dependency::ActionDependencies;
 pub use crate::error::{ActionError, ErrorCode};
 pub use crate::execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 pub use crate::ext::ActionResultExt;
-pub use crate::guard::CredentialGuard;
 pub use crate::handler::{
     ActionHandler, ResourceActionAdapter, StatefulActionAdapter, StatelessActionAdapter,
     TriggerActionAdapter,
@@ -37,5 +36,6 @@ pub use crate::testing::{
 pub use crate::validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
 };
+pub use nebula_credential::CredentialGuard;
 
 pub use nebula_parameter::{Parameter, ParameterCollection};

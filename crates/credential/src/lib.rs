@@ -32,6 +32,10 @@
 #![deny(unsafe_code)]
 #![forbid(unsafe_code)]
 
+/// Error type for credential access operations.
+pub mod access_error;
+/// Credential accessor trait and implementations (Noop, Scoped).
+pub mod accessor;
 /// Object-safe supertrait for credential dependency declaration.
 pub mod any;
 /// Credential operation context.
@@ -46,6 +50,8 @@ pub mod crypto;
 pub mod description;
 /// Error types for credential operations.
 pub mod error;
+/// Credential guard — secure wrapper with Deref + Zeroize on drop.
+pub mod guard;
 /// Typed credential handle returned by the resolver.
 pub mod handle;
 /// Newtype for credential type keys.
@@ -172,6 +178,18 @@ pub use registry::{CredentialRegistry, RegistryError};
 
 // Resolver
 pub use resolver::{CredentialResolver, ResolveError};
+
+// Credential guard
+pub use guard::CredentialGuard;
+
+// Credential access error
+pub use access_error::CredentialAccessError;
+
+// Credential accessor trait + implementations
+pub use accessor::{
+    CredentialAccessor, NoopCredentialAccessor, ScopedCredentialAccessor,
+    default_credential_accessor,
+};
 
 // Refresh coordination
 pub use refresh::{RefreshAttempt, RefreshCoordinator};

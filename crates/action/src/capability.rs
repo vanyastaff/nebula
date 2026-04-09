@@ -3,6 +3,9 @@
 //! These traits are object-safe boundaries injected by runtime/engine so
 //! action code can access resources, credentials, and logging without
 //! coupling to concrete manager implementations.
+//!
+//! Credential accessor types live in [`nebula_credential`] and are re-exported
+//! here for backward compatibility.
 
 use std::any::Any;
 use std::sync::Arc;
@@ -10,9 +13,16 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use nebula_core::id::ExecutionId;
-use nebula_credential::CredentialSnapshot;
 
 use crate::ActionError;
+
+/// Re-exported from [`nebula_credential`]. Methods now return
+/// [`CredentialAccessError`] instead of `ActionError`.
+/// Use `From<CredentialAccessError> for ActionError` for conversion.
+pub use nebula_credential::{
+    CredentialAccessError, CredentialAccessor, NoopCredentialAccessor, ScopedCredentialAccessor,
+    default_credential_accessor,
+};
 
 /// Object-safe resource accessor injected into [`crate::ActionContext`].
 #[async_trait]
@@ -24,33 +34,6 @@ pub trait ResourceAccessor: Send + Sync {
 
     /// Check whether a resource exists for the given key.
     async fn exists(&self, key: &str) -> bool;
-}
-
-/// Object-safe credential accessor injected into [`crate::ActionContext`].
-#[async_trait]
-pub trait CredentialAccessor: Send + Sync {
-    /// Retrieve a credential snapshot by id.
-    async fn get(&self, id: &str) -> Result<CredentialSnapshot, ActionError>;
-
-    /// Check whether a credential exists for the given id.
-    async fn has(&self, id: &str) -> bool;
-
-    /// Retrieve a credential snapshot by [`TypeId`](std::any::TypeId) of the
-    /// [`AuthScheme`](nebula_core::AuthScheme).
-    ///
-    /// Used by type-based credential access: `ctx.credential_by_type::<S>().await`.
-    /// Default: returns error (implementations that support type-based access
-    /// override this).
-    async fn get_by_type(
-        &self,
-        type_id: std::any::TypeId,
-        type_name: &str,
-    ) -> Result<CredentialSnapshot, ActionError> {
-        let _ = type_id;
-        Err(ActionError::fatal(format!(
-            "type-based credential access not supported for `{type_name}`"
-        )))
-    }
 }
 
 /// Log severity for action-scoped logs.
@@ -139,33 +122,10 @@ impl ResourceAccessor for NoopResourceAccessor {
     }
 }
 
-/// No-op credential accessor used when runtime does not inject credentials.
-#[derive(Debug, Default)]
-pub struct NoopCredentialAccessor;
-
-#[async_trait]
-impl CredentialAccessor for NoopCredentialAccessor {
-    async fn get(&self, _id: &str) -> Result<CredentialSnapshot, ActionError> {
-        Err(ActionError::fatal(
-            "credential capability is not configured in ActionContext",
-        ))
-    }
-
-    async fn has(&self, _id: &str) -> bool {
-        false
-    }
-}
-
 /// Default resource accessor capability.
 #[must_use]
 pub fn default_resource_accessor() -> Arc<dyn ResourceAccessor> {
     Arc::new(NoopResourceAccessor)
-}
-
-/// Default credential accessor capability.
-#[must_use]
-pub fn default_credential_accessor() -> Arc<dyn CredentialAccessor> {
-    Arc::new(NoopCredentialAccessor)
 }
 
 /// Default action logger capability.

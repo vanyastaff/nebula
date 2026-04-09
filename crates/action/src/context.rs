@@ -18,7 +18,7 @@ use crate::capability::{
     default_resource_accessor, default_trigger_scheduler,
 };
 use crate::error::ActionError;
-use crate::guard::CredentialGuard;
+use nebula_credential::CredentialGuard;
 use nebula_credential::CredentialSnapshot;
 
 /// Base trait for action execution contexts.
@@ -126,7 +126,7 @@ impl ActionContext {
 
     /// Retrieve a credential snapshot by id through the configured accessor.
     pub async fn credential(&self, id: &str) -> Result<CredentialSnapshot, ActionError> {
-        self.credentials.get(id).await
+        self.credentials.get(id).await.map_err(ActionError::from)
     }
 
     /// Retrieve a credential and project it to the concrete [`AuthScheme`] type.
@@ -148,7 +148,7 @@ impl ActionContext {
     /// let token: SecretToken = ctx.credential_typed::<SecretToken>("api_key").await?;
     /// ```
     pub async fn credential_typed<S: AuthScheme>(&self, id: &str) -> Result<S, ActionError> {
-        let snapshot = self.credentials.get(id).await?;
+        let snapshot = self.credentials.get(id).await.map_err(ActionError::from)?;
         snapshot
             .into_project::<S>()
             .map_err(|e| ActionError::fatal(format!("credential `{id}`: {e}")))
@@ -170,7 +170,11 @@ impl ActionContext {
     {
         let type_id = std::any::TypeId::of::<S>();
         let type_name = std::any::type_name::<S>();
-        let snapshot = self.credentials.get_by_type(type_id, type_name).await?;
+        let snapshot = self
+            .credentials
+            .get_by_type(type_id, type_name)
+            .await
+            .map_err(ActionError::from)?;
         let scheme = snapshot.into_project::<S>().map_err(|e| {
             ActionError::fatal(format!("credential type mismatch for `{type_name}`: {e}"))
         })?;
@@ -282,7 +286,7 @@ impl TriggerContext {
 
     /// Retrieve a credential snapshot by id through the configured accessor.
     pub async fn credential(&self, id: &str) -> Result<CredentialSnapshot, ActionError> {
-        self.credentials.get(id).await
+        self.credentials.get(id).await.map_err(ActionError::from)
     }
 
     /// Retrieve a credential and project it to the concrete [`AuthScheme`] type.
@@ -296,7 +300,7 @@ impl TriggerContext {
     /// - Returns [`ActionError::Fatal`] if the stored scheme type does not match
     ///   `S` (scheme mismatch).
     pub async fn credential_typed<S: AuthScheme>(&self, id: &str) -> Result<S, ActionError> {
-        let snapshot = self.credentials.get(id).await?;
+        let snapshot = self.credentials.get(id).await.map_err(ActionError::from)?;
         snapshot
             .into_project::<S>()
             .map_err(|e| ActionError::fatal(format!("credential `{id}`: {e}")))
@@ -318,7 +322,11 @@ impl TriggerContext {
     {
         let type_id = std::any::TypeId::of::<S>();
         let type_name = std::any::type_name::<S>();
-        let snapshot = self.credentials.get_by_type(type_id, type_name).await?;
+        let snapshot = self
+            .credentials
+            .get_by_type(type_id, type_name)
+            .await
+            .map_err(ActionError::from)?;
         let scheme = snapshot.into_project::<S>().map_err(|e| {
             ActionError::fatal(format!("credential type mismatch for `{type_name}`: {e}"))
         })?;
@@ -355,7 +363,9 @@ mod tests {
         CredentialMetadata, CredentialSnapshot, SecretString, SecretToken, scheme::ConnectionUri,
     };
 
-    use crate::capability::{ActionLogLevel, ActionLogger, ExecutionEmitter, TriggerScheduler};
+    use crate::capability::{
+        ActionLogLevel, ActionLogger, CredentialAccessError, ExecutionEmitter, TriggerScheduler,
+    };
 
     struct MockContext {
         token: CancellationToken,
@@ -425,7 +435,7 @@ mod tests {
 
     #[async_trait]
     impl CredentialAccessor for TestCredentialAccessor {
-        async fn get(&self, _id: &str) -> Result<CredentialSnapshot, ActionError> {
+        async fn get(&self, _id: &str) -> Result<CredentialSnapshot, CredentialAccessError> {
             Ok(CredentialSnapshot::new(
                 "api_key",
                 CredentialMetadata::new(),
@@ -545,8 +555,10 @@ mod tests {
 
     #[async_trait]
     impl CredentialAccessor for TypedCredentialAccessor {
-        async fn get(&self, _id: &str) -> Result<CredentialSnapshot, ActionError> {
-            Err(ActionError::fatal("use get_by_type"))
+        async fn get(&self, _id: &str) -> Result<CredentialSnapshot, CredentialAccessError> {
+            Err(CredentialAccessError::NotConfigured(
+                "use get_by_type".to_owned(),
+            ))
         }
 
         async fn has(&self, _id: &str) -> bool {
@@ -557,7 +569,7 @@ mod tests {
             &self,
             type_id: std::any::TypeId,
             type_name: &str,
-        ) -> Result<CredentialSnapshot, ActionError> {
+        ) -> Result<CredentialSnapshot, CredentialAccessError> {
             if type_id == std::any::TypeId::of::<ZeroizableToken>() {
                 Ok(CredentialSnapshot::new(
                     "typed",
@@ -567,7 +579,7 @@ mod tests {
                     },
                 ))
             } else {
-                Err(ActionError::fatal(format!(
+                Err(CredentialAccessError::NotFound(format!(
                     "no credential for `{type_name}`"
                 )))
             }
