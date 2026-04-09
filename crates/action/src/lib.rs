@@ -109,7 +109,10 @@ pub use error::{ActionError, ErrorCode};
 pub use execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 pub use ext::ActionResultExt;
 pub use guard::CredentialGuard;
-pub use handler::{InternalHandler, StatelessActionAdapter};
+pub use handler::{
+    ActionHandler, AgentHandler, InternalHandler, ResourceHandler, StatefulHandler,
+    StatelessActionAdapter, StatelessHandler, TriggerHandler,
+};
 pub use metadata::{ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError};
 pub use output::{
     ActionOutput, BinaryData, BinaryStorage, BufferConfig, CacheInfo, Cost, DataReference,
