@@ -433,7 +433,7 @@ mod tests {
     use super::*;
     use crate::sandbox::{ActionExecutor, InProcessSandbox};
     use nebula_action::action::Action;
-    use nebula_action::context::Context;
+    use nebula_action::context::{Context, CredentialContextExt};
     use nebula_action::dependency::ActionDependencies;
     use nebula_action::error::ActionError;
     use nebula_action::metadata::ActionMetadata;

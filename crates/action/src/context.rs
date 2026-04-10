@@ -123,83 +123,6 @@ impl ActionContext {
     pub async fn has_resource(&self, key: &str) -> bool {
         self.resources.exists(key).await
     }
-
-    /// Retrieve a credential snapshot by id through the configured accessor.
-    pub async fn credential_by_id(&self, id: &str) -> Result<CredentialSnapshot, ActionError> {
-        self.credentials.get(id).await.map_err(ActionError::from)
-    }
-
-    /// Retrieve a credential and project it to the concrete [`AuthScheme`] type.
-    ///
-    /// This is the primary typed credential access method for action authors.
-    /// It fetches the snapshot and consumes it via
-    /// [`CredentialSnapshot::into_project`], returning the concrete scheme type.
-    ///
-    /// # Errors
-    ///
-    /// - Returns [`ActionError::Fatal`] if the credential does not exist or the
-    ///   accessor is not configured.
-    /// - Returns [`ActionError::Fatal`] if the stored scheme type does not match
-    ///   `S` (scheme mismatch).
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// let token: SecretToken = ctx.credential_typed::<SecretToken>("api_key").await?;
-    /// ```
-    pub async fn credential_typed<S: AuthScheme>(&self, id: &str) -> Result<S, ActionError> {
-        let snapshot = self.credentials.get(id).await.map_err(ActionError::from)?;
-        snapshot
-            .into_project::<S>()
-            .map_err(|e| ActionError::fatal(format!("credential `{id}`: {e}")))
-    }
-
-    /// Retrieve a typed credential by [`AuthScheme`] type.
-    ///
-    /// Type IS the key — no string identifier needed. Returns
-    /// [`CredentialGuard<S>`] that derefs to `S`, zeroizes on drop,
-    /// and cannot be serialized.
-    ///
-    /// # Errors
-    ///
-    /// - [`ActionError::Fatal`] if no credential of type `S` is configured
-    /// - [`ActionError::Fatal`] if the stored scheme does not match `S`
-    pub async fn credential<S>(&self) -> Result<CredentialGuard<S>, ActionError>
-    where
-        S: AuthScheme + zeroize::Zeroize,
-    {
-        let type_id = std::any::TypeId::of::<S>();
-        let type_name = std::any::type_name::<S>();
-        let snapshot = self
-            .credentials
-            .get_by_type(type_id, type_name)
-            .await
-            .map_err(ActionError::from)?;
-        let scheme = snapshot.into_project::<S>().map_err(|e| {
-            ActionError::fatal(format!("credential type mismatch for `{type_name}`: {e}"))
-        })?;
-        Ok(CredentialGuard::new(scheme))
-    }
-
-    /// Retrieve a typed credential by [`AuthScheme`] type.
-    #[deprecated(since = "0.1.0", note = "use `credential::<S>()`")]
-    pub async fn credential_by_type<S>(&self) -> Result<CredentialGuard<S>, ActionError>
-    where
-        S: AuthScheme + zeroize::Zeroize,
-    {
-        self.credential::<S>().await
-    }
-
-    /// Check whether a credential exists by id.
-    pub async fn has_credential_id(&self, id: &str) -> bool {
-        self.credentials.has(id).await
-    }
-
-    /// Check whether a credential exists by id.
-    #[deprecated(since = "0.1.0", note = "use `has_credential_id`")]
-    pub async fn has_credential(&self, id: &str) -> bool {
-        self.has_credential_id(id).await
-    }
 }
 
 impl fmt::Debug for ActionContext {
@@ -298,15 +221,54 @@ impl TriggerContext {
     ) -> Result<ExecutionId, ActionError> {
         self.emitter.emit(input).await
     }
+}
+
+/// Shared credential-access API for contexts that hold a
+/// [`CredentialAccessor`].
+///
+/// Implemented for both [`ActionContext`] and [`TriggerContext`].
+/// This trait exists purely to eliminate the copy-paste of ~100
+/// lines of `credential_by_id` / `credential_typed` / `credential` /
+/// `has_credential_id` between the two context types — the method
+/// bodies were identical except for the `self` type, and had
+/// already diverged in minor ways (one had deprecation attributes,
+/// the other did not).
+///
+/// The single required method [`Self::credentials`] yields the
+/// underlying accessor; everything else is a default method
+/// implementation using that accessor.
+///
+/// Callers must have this trait in scope:
+///
+/// ```rust,ignore
+/// use nebula_action::CredentialContextExt;
+/// // or, equivalently:
+/// use nebula_action::prelude::*;
+///
+/// let token: CredentialGuard<MyScheme> = ctx.credential::<MyScheme>().await?;
+/// ```
+pub trait CredentialContextExt {
+    /// Access the underlying credential accessor.
+    ///
+    /// Implementors return a reference to their `credentials` field.
+    fn credentials(&self) -> &Arc<dyn CredentialAccessor>;
 
     /// Retrieve a credential snapshot by id through the configured accessor.
-    pub async fn credential_by_id(&self, id: &str) -> Result<CredentialSnapshot, ActionError> {
-        self.credentials.get(id).await.map_err(ActionError::from)
+    fn credential_by_id(
+        &self,
+        id: &str,
+    ) -> impl std::future::Future<Output = Result<CredentialSnapshot, ActionError>> + Send
+    where
+        Self: Sync,
+    {
+        async move { self.credentials().get(id).await.map_err(ActionError::from) }
     }
 
     /// Retrieve a credential and project it to the concrete [`AuthScheme`] type.
     ///
-    /// Identical to [`ActionContext::credential_typed`] but for trigger contexts.
+    /// Fetches the snapshot and consumes it via
+    /// [`CredentialSnapshot::into_project`], returning the concrete
+    /// scheme type.
     ///
     /// # Errors
     ///
@@ -314,58 +276,81 @@ impl TriggerContext {
     ///   accessor is not configured.
     /// - Returns [`ActionError::Fatal`] if the stored scheme type does not match
     ///   `S` (scheme mismatch).
-    pub async fn credential_typed<S: AuthScheme>(&self, id: &str) -> Result<S, ActionError> {
-        let snapshot = self.credentials.get(id).await.map_err(ActionError::from)?;
-        snapshot
-            .into_project::<S>()
-            .map_err(|e| ActionError::fatal(format!("credential `{id}`: {e}")))
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let token: SecretToken = ctx.credential_typed::<SecretToken>("api_key").await?;
+    /// ```
+    fn credential_typed<S: AuthScheme>(
+        &self,
+        id: &str,
+    ) -> impl std::future::Future<Output = Result<S, ActionError>> + Send
+    where
+        Self: Sync,
+    {
+        async move {
+            let snapshot = self
+                .credentials()
+                .get(id)
+                .await
+                .map_err(ActionError::from)?;
+            snapshot
+                .into_project::<S>()
+                .map_err(|e| ActionError::fatal(format!("credential `{id}`: {e}")))
+        }
     }
 
     /// Retrieve a typed credential by [`AuthScheme`] type.
     ///
-    /// Identical to [`ActionContext::credential`] but for trigger
-    /// contexts. Returns [`CredentialGuard<S>`] that derefs to `S`, zeroizes
-    /// on drop, and cannot be serialized.
+    /// Type IS the key — no string identifier needed. Returns
+    /// [`CredentialGuard<S>`] that derefs to `S`, zeroizes on drop,
+    /// and cannot be serialized.
     ///
     /// # Errors
     ///
     /// - [`ActionError::Fatal`] if no credential of type `S` is configured
     /// - [`ActionError::Fatal`] if the stored scheme does not match `S`
-    pub async fn credential<S>(&self) -> Result<CredentialGuard<S>, ActionError>
+    fn credential<S>(
+        &self,
+    ) -> impl std::future::Future<Output = Result<CredentialGuard<S>, ActionError>> + Send
     where
         S: AuthScheme + zeroize::Zeroize,
+        Self: Sync,
     {
-        let type_id = std::any::TypeId::of::<S>();
-        let type_name = std::any::type_name::<S>();
-        let snapshot = self
-            .credentials
-            .get_by_type(type_id, type_name)
-            .await
-            .map_err(ActionError::from)?;
-        let scheme = snapshot.into_project::<S>().map_err(|e| {
-            ActionError::fatal(format!("credential type mismatch for `{type_name}`: {e}"))
-        })?;
-        Ok(CredentialGuard::new(scheme))
-    }
-
-    /// Retrieve a typed credential by [`AuthScheme`] type.
-    #[deprecated(since = "0.1.0", note = "use `credential::<S>()`")]
-    pub async fn credential_by_type<S>(&self) -> Result<CredentialGuard<S>, ActionError>
-    where
-        S: AuthScheme + zeroize::Zeroize,
-    {
-        self.credential::<S>().await
+        async move {
+            let type_id = std::any::TypeId::of::<S>();
+            let type_name = std::any::type_name::<S>();
+            let snapshot = self
+                .credentials()
+                .get_by_type(type_id, type_name)
+                .await
+                .map_err(ActionError::from)?;
+            let scheme = snapshot.into_project::<S>().map_err(|e| {
+                ActionError::fatal(format!("credential type mismatch for `{type_name}`: {e}"))
+            })?;
+            Ok(CredentialGuard::new(scheme))
+        }
     }
 
     /// Check whether a credential exists by id.
-    pub async fn has_credential_id(&self, id: &str) -> bool {
-        self.credentials.has(id).await
+    fn has_credential_id(&self, id: &str) -> impl std::future::Future<Output = bool> + Send
+    where
+        Self: Sync,
+    {
+        async move { self.credentials().has(id).await }
     }
+}
 
-    /// Check whether a credential exists by id.
-    #[deprecated(since = "0.1.0", note = "use `has_credential_id`")]
-    pub async fn has_credential(&self, id: &str) -> bool {
-        self.has_credential_id(id).await
+impl CredentialContextExt for ActionContext {
+    fn credentials(&self) -> &Arc<dyn CredentialAccessor> {
+        &self.credentials
+    }
+}
+
+impl CredentialContextExt for TriggerContext {
+    fn credentials(&self) -> &Arc<dyn CredentialAccessor> {
+        &self.credentials
     }
 }
 

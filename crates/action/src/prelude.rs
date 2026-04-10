@@ -8,7 +8,7 @@ pub use crate::action::Action;
 pub use crate::capability::{
     ActionLogLevel, ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerScheduler,
 };
-pub use crate::context::{ActionContext, Context, TriggerContext};
+pub use crate::context::{ActionContext, Context, CredentialContextExt, TriggerContext};
 pub use crate::dependency::ActionDependencies;
 pub use crate::error::{ActionError, ActionErrorExt, RetryHintCode, ValidationReason};
 pub use crate::handler::{

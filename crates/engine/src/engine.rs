@@ -1975,7 +1975,7 @@ mod tests {
     use nebula_action::ActionError;
     use nebula_action::TriggerContext;
     use nebula_action::action::Action;
-    use nebula_action::context::Context;
+    use nebula_action::context::{Context, CredentialContextExt};
     use nebula_action::dependency::ActionDependencies;
     use nebula_action::metadata::ActionMetadata;
     use nebula_action::result::ActionResult;

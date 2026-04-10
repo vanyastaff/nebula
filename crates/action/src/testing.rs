@@ -635,7 +635,7 @@ mod tests {
 
     use super::*;
     use crate::action::Action;
-    use crate::context::Context;
+    use crate::context::{Context, CredentialContextExt};
     use crate::dependency::ActionDependencies;
     use crate::metadata::ActionMetadata;
     use crate::output::ActionOutput;

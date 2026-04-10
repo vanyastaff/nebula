@@ -101,7 +101,7 @@ pub use action::Action;
 pub use capability::{
     ActionLogLevel, ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerScheduler,
 };
-pub use context::{ActionContext, Context, TriggerContext};
+pub use context::{ActionContext, Context, CredentialContextExt, TriggerContext};
 pub use dependency::ActionDependencies;
 pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
