@@ -599,19 +599,17 @@ struct Pool {
 }
 
 impl ResourceAction for PostgresPool {
-    type Config = PoolConfig;
-    type Instance = Pool;
+    type Resource = Pool;
 
     async fn configure(
         &self,
-        config: PoolConfig,
         ctx: &ActionContext,
     ) -> Result<Pool, ActionError> {
         let cred = ctx.credential::<PostgresCredential>()?;
 
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(config.max_connections)
-            .idle_timeout(Duration::from_secs(config.idle_timeout_secs))
+            .max_connections(self.max_connections)
+            .idle_timeout(Duration::from_secs(self.idle_timeout_secs))
             .connect(&cred.connection_string())
             .await
             .map_err(ActionError::retryable)?;
@@ -621,10 +619,10 @@ impl ResourceAction for PostgresPool {
 
     async fn cleanup(
         &self,
-        instance: Pool,
+        resource: Pool,
         _ctx: &ActionContext,
     ) -> Result<(), ActionError> {
-        instance.inner.close().await;
+        resource.inner.close().await;
         Ok(())
     }
 }

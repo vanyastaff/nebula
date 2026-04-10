@@ -7,7 +7,7 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - `Context` is always injected — never construct `ActionContext` directly inside an action.
 
 ## Key Decisions
-- Action subtypes: `StatelessAction` (one-shot), `StatefulAction` (Continue/Break loop), `TriggerAction` (starts workflow), `ResourceAction` (branch-scoped DI setup/cleanup).
+- Action subtypes: `StatelessAction` (one-shot), `StatefulAction` (Continue/Break loop), `TriggerAction` (starts workflow), `ResourceAction` (branch-scoped DI setup/cleanup, single associated `type Resource`).
 - `ActionDependencies` has two complementary pairs: `credential`/`resources` (trait-object, runtime injection) and `credential_keys`/`resource_keys` (typed keys, engine validation at registration). Plus `credential_types()` → `Vec<TypeId>` for `ScopedCredentialAccessor` sandboxing. All five default to empty — no migration needed.
 - `#[derive(Action)]` with `#[action(credential = T)]` or `#[action(credentials = [T1, T2])]` generates both `credential()` and `credential_types()`. Duplicate credential types in the attribute produce a compile error.
 - `ActionRegistry` lives in **`nebula-runtime`** (Phase 7.5), not in `nebula-action`. The protocol crate stays free of execution concerns.
@@ -88,3 +88,4 @@ Every action family lives in one file containing both the core trait and its DX 
 <!-- reviewed: 2026-04-10 — A1: StatefulActionAdapter::execute checkpoints state on both Ok and Err paths; serde failure on error path logs via tracing and propagates original action error. StatefulHandler::execute doc updated with "State checkpointing" invariant. Added tracing as direct dep. -->
 <!-- reviewed: 2026-04-10 — A2: WebhookTriggerAdapter::start rejects double-start with Fatal (read-lock pre-check + write-lock re-check with orphan deactivation). PollTriggerAdapter::start uses AtomicBool sentinel + StartedGuard RAII (defused pattern). TriggerHandler::start doc rewritten to declare dual contract (setup-and-return vs run-until-cancelled) and mandate task spawning. -->
 <!-- reviewed: 2026-04-10 — A3: POLL_INTERVAL_FLOOR (100 ms) clamps configured poll_interval; busy-loop prevention. Silent error drops in PollTriggerAdapter replaced with tracing::warn!/debug! (temporary — Phase 5 migrates to ctx.logger + WarnThrottle). -->
+<!-- reviewed: 2026-04-10 — A4: ResourceAction collapsed to single associated `type Resource` (was Config + Instance). ResourceActionAdapter downcast is now a true invariant — mismatch is an engine bug, not a user footgun. `nebula_runtime::ActionRegistry::register_resource` lost its redundant A::Config/A::Instance bounds. New integration test: resource_roundtrip. -->

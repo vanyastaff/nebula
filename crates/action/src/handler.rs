@@ -599,7 +599,7 @@ impl<A: PollAction> fmt::Debug for PollTriggerAdapter<A> {
 ///
 /// Bridges the typed `configure`/`cleanup` lifecycle to the JSON-erased handler
 /// trait. The `configure` result is boxed as `Box<dyn Any + Send + Sync>`;
-/// `cleanup` downcasts it back to the typed `Instance`.
+/// `cleanup` downcasts it back to the typed `Resource`.
 ///
 /// # Example
 ///
@@ -624,18 +624,10 @@ impl<A> ResourceActionAdapter<A> {
     }
 }
 
-/// # Note on Config vs Instance
-///
-/// `ResourceAction` has separate `Config` and `Instance` types. This adapter
-/// boxes `Config` in `configure()` and downcasts `Config` in `cleanup()`,
-/// so it requires `Instance == Config`. For resource actions where these
-/// types differ, implement `ResourceHandler` directly.
 #[async_trait]
 impl<A> ResourceHandler for ResourceActionAdapter<A>
 where
     A: ResourceAction + Send + Sync + 'static,
-    A::Config: Send + Sync + 'static,
-    A::Instance: Send + Sync + 'static,
 {
     fn metadata(&self) -> &ActionMetadata {
         self.action.metadata()
@@ -645,7 +637,6 @@ where
     ///
     /// The `_config` parameter is reserved for future use; the typed
     /// [`ResourceAction::configure`] obtains its configuration from context.
-    /// The typed `Config` result is boxed as `dyn Any`.
     ///
     /// # Errors
     ///
@@ -655,31 +646,33 @@ where
         _config: Value,
         ctx: &ActionContext,
     ) -> Result<Box<dyn std::any::Any + Send + Sync>, ActionError> {
-        let instance = self.action.configure(ctx).await?;
-        // We box Config here. cleanup() downcasts to Instance.
-        // When Config == Instance (the common case), this works.
-        // When they differ, the downcast in cleanup() returns ActionError::Fatal.
-        Ok(Box::new(instance) as Box<dyn std::any::Any + Send + Sync>)
+        let resource = self.action.configure(ctx).await?;
+        Ok(Box::new(resource))
     }
 
-    /// Clean up the resource by downcasting the instance and delegating.
+    /// Clean up the resource by downcasting and delegating.
     ///
     /// # Errors
     ///
-    /// Returns [`ActionError::Fatal`] if the instance cannot be downcast to
-    /// the expected type, or propagates errors from the underlying action.
+    /// Returns [`ActionError::Fatal`] if the downcast invariant is violated
+    /// (engine bug — the box we returned from `configure` was routed to a
+    /// different adapter), or propagates errors from the underlying action.
     async fn cleanup(
         &self,
-        instance: Box<dyn std::any::Any + Send + Sync>,
+        resource: Box<dyn std::any::Any + Send + Sync>,
         ctx: &ActionContext,
     ) -> Result<(), ActionError> {
-        let typed_instance = instance.downcast::<A::Instance>().map_err(|_| {
+        // The downcast is an engine-level invariant check: we box
+        // `A::Resource` in `configure` above and the engine routes the
+        // same box back here. A mismatch is an engine bug, not a user
+        // footgun — there is no `Config`/`Instance` split to bridge.
+        let typed = resource.downcast::<A::Resource>().map_err(|_| {
             ActionError::fatal(format!(
-                "resource instance downcast failed: expected {}",
-                std::any::type_name::<A::Instance>()
+                "ResourceActionAdapter: downcast invariant violated for {}",
+                std::any::type_name::<A::Resource>()
             ))
         })?;
-        self.action.cleanup(*typed_instance, ctx).await
+        self.action.cleanup(*typed, ctx).await
     }
 }
 
@@ -1866,8 +1859,7 @@ mod tests {
     }
 
     impl crate::resource::ResourceAction for MockResourceAction {
-        type Config = String;
-        type Instance = String;
+        type Resource = String;
 
         async fn configure(
             &self,
@@ -1878,7 +1870,7 @@ mod tests {
 
         async fn cleanup(
             &self,
-            _instance: String,
+            _resource: String,
             _ctx: &impl crate::context::Context,
         ) -> Result<(), ActionError> {
             Ok(())

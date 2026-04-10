@@ -212,8 +212,6 @@ impl ActionRegistry {
     pub fn register_resource<A>(&self, action: A)
     where
         A: Action + ResourceAction + Send + Sync + 'static,
-        A::Config: Send + Sync + 'static,
-        A::Instance: Send + Sync + 'static,
     {
         let metadata = action.metadata().clone();
         let handler = ActionHandler::Resource(Arc::new(ResourceActionAdapter::new(action)));

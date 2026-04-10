@@ -34,3 +34,4 @@ Action execution layer — ActionRegistry, data policies, and MemoryQueue.
 
 <!-- reviewed: 2026-04-09 — Phase 7.5 ActionRegistry unification, ActionHandler enum dispatch, InternalHandler deleted -->
 <!-- reviewed: 2026-04-10 — mechanical import path update: nebula_action::execution::StatelessAction → nebula_action::stateless::StatelessAction (action crate module layout cleanup) -->
+<!-- reviewed: 2026-04-10 — A4: ActionRegistry::register_resource dropped A::Config/A::Instance bounds (ResourceAction now has a single associated Resource type). -->
