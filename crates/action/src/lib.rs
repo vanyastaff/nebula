@@ -102,7 +102,7 @@ pub use capability::{
 };
 pub use context::{ActionContext, Context, TriggerContext};
 pub use dependency::ActionDependencies;
-pub use error::{ActionError, ActionErrorExt, ErrorCode};
+pub use error::{ActionError, ActionErrorExt, RetryHintCode};
 pub use handler::{
     ActionHandler, AgentHandler, IncomingEvent, PollTriggerAdapter, ResourceActionAdapter,
     ResourceHandler, StatefulActionAdapter, StatefulHandler, StatelessActionAdapter,

@@ -561,7 +561,7 @@ impl Action for LoggingAction {
                     "Action execution failed",
                     &[
                         ("error_type", e.error_type()),
-                        ("error_code", e.error_code()),
+                        ("retry_hint", e.retry_hint_code().map(|h| format!("{h:?}"))),
                         ("action_id", self.metadata().id),
                         ("input_size", &input.size().to_string()),
                     ],

@@ -3,24 +3,33 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// Machine-readable error classification for engine retry decisions.
+/// Retry-strategy hint attached by the action body to a failing
+/// `Retryable` or `Fatal` error.
 ///
-/// Engine matches on these codes for smarter retry strategies:
-/// - `RateLimited` -> respect Retry-After header
-/// - `AuthExpired` -> refresh credential before retry
-/// - `UpstreamTimeout` -> increase timeout on retry
+/// This is a **user-supplied** hint about *how* the engine should retry,
+/// not a framework-level error classifier. For the cross-crate taxonomy
+/// tag (`ACTION:VALIDATION`, `ACTION:CANCELLED`, ...), use
+/// `<ActionError as nebula_error::Classify>::code()`.
+///
+/// The two concepts used to collide under the name `ErrorCode` — the
+/// rename to `RetryHintCode` disambiguates them at the type level.
+///
+/// Engine matches on these hints for smarter retry strategies:
+/// - `RateLimited` → respect Retry-After header
+/// - `AuthExpired` → refresh credential before retry
+/// - `UpstreamTimeout` → increase timeout on retry
 ///
 /// # Examples
 ///
 /// ```
-/// use nebula_action::ErrorCode;
+/// use nebula_action::RetryHintCode;
 ///
-/// let code = ErrorCode::RateLimited;
-/// assert_eq!(serde_json::to_string(&code).unwrap(), "\"RateLimited\"");
+/// let hint = RetryHintCode::RateLimited;
+/// assert_eq!(serde_json::to_string(&hint).unwrap(), "\"RateLimited\"");
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
-pub enum ErrorCode {
+pub enum RetryHintCode {
     /// Remote API returned 429 Too Many Requests.
     RateLimited,
     /// Concurrent modification conflict (optimistic lock failure).
@@ -56,7 +65,7 @@ pub enum ActionError {
         /// Full error chain wrapped in `Arc` for `Clone` support.
         error: Arc<anyhow::Error>,
         /// Machine-readable error code for engine decisions.
-        code: Option<ErrorCode>,
+        code: Option<RetryHintCode>,
         /// Suggested delay before retry (engine may override).
         backoff_hint: Option<Duration>,
         /// Partial result produced before failure.
@@ -71,7 +80,7 @@ pub enum ActionError {
         /// Full error chain wrapped in `Arc` for `Clone` support.
         error: Arc<anyhow::Error>,
         /// Machine-readable error code for engine decisions.
-        code: Option<ErrorCode>,
+        code: Option<RetryHintCode>,
         /// Optional structured details about the failure.
         details: Option<serde_json::Value>,
     },
@@ -189,14 +198,14 @@ impl ActionError {
         }
     }
 
-    /// Create a retryable error with a machine-readable error code.
-    pub fn retryable_with_code(
+    /// Create a retryable error with a retry-strategy hint.
+    pub fn retryable_with_hint(
         error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
-        code: ErrorCode,
+        hint: RetryHintCode,
     ) -> Self {
         Self::Retryable {
             error: Arc::new(anyhow::anyhow!("{error}")),
-            code: Some(code),
+            code: Some(hint),
             backoff_hint: None,
             partial_output: None,
         }
@@ -248,22 +257,33 @@ impl ActionError {
         }
     }
 
-    /// Create a fatal error with a machine-readable error code.
-    pub fn fatal_with_code(
+    /// Create a fatal error with a retry-strategy hint.
+    ///
+    /// Fatal errors are not retried, but the hint is preserved for
+    /// observability and metrics (e.g., `QuotaExhausted` vs
+    /// `InvalidInput` in an error dashboard).
+    pub fn fatal_with_hint(
         error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
-        code: ErrorCode,
+        hint: RetryHintCode,
     ) -> Self {
         Self::Fatal {
             error: Arc::new(anyhow::anyhow!("{error}")),
-            code: Some(code),
+            code: Some(hint),
             details: None,
         }
     }
 
-    /// Get the machine-readable error code, if any.
-    pub fn error_code(&self) -> Option<&ErrorCode> {
+    /// Retry-strategy hint attached by the action body, if any.
+    ///
+    /// Returns `Some` only for `Retryable` and `Fatal` variants where
+    /// the action explicitly attached a [`RetryHintCode`]. For the
+    /// cross-crate classifier tag covering every variant, use
+    /// `<ActionError as nebula_error::Classify>::code()`.
+    ///
+    /// Returned by value because [`RetryHintCode`] is `Copy`.
+    pub fn retry_hint_code(&self) -> Option<RetryHintCode> {
         match self {
-            Self::Retryable { code, .. } | Self::Fatal { code, .. } => code.as_ref(),
+            Self::Retryable { code, .. } | Self::Fatal { code, .. } => *code,
             _ => None,
         }
     }
@@ -335,17 +355,17 @@ pub trait ActionErrorExt<T> {
     /// failures where retrying would produce the same error.
     fn fatal(self) -> Result<T, ActionError>;
 
-    /// Convert error to retryable [`ActionError`] with a specific [`ErrorCode`].
+    /// Convert error to retryable [`ActionError`] with a retry-strategy hint.
     ///
-    /// The error code enables the engine to apply smarter retry strategies
-    /// (e.g., refresh credentials on [`ErrorCode::AuthExpired`]).
-    fn retryable_with_code(self, code: ErrorCode) -> Result<T, ActionError>;
+    /// The hint enables the engine to apply smarter retry strategies
+    /// (e.g., refresh credentials on [`RetryHintCode::AuthExpired`]).
+    fn retryable_with_hint(self, hint: RetryHintCode) -> Result<T, ActionError>;
 
-    /// Convert error to fatal [`ActionError`] with a specific [`ErrorCode`].
+    /// Convert error to fatal [`ActionError`] with a retry-strategy hint.
     ///
-    /// The error code provides machine-readable classification for
-    /// error reporting and monitoring.
-    fn fatal_with_code(self, code: ErrorCode) -> Result<T, ActionError>;
+    /// Fatal errors are not retried, but the hint is preserved for
+    /// observability (e.g., `QuotaExhausted` vs `InvalidInput`).
+    fn fatal_with_hint(self, hint: RetryHintCode) -> Result<T, ActionError>;
 }
 
 impl<T, E> ActionErrorExt<T> for Result<T, E>
@@ -360,12 +380,12 @@ where
         self.map_err(ActionError::fatal_from)
     }
 
-    fn retryable_with_code(self, code: ErrorCode) -> Result<T, ActionError> {
-        self.map_err(|e| ActionError::retryable_with_code(e, code))
+    fn retryable_with_hint(self, hint: RetryHintCode) -> Result<T, ActionError> {
+        self.map_err(|e| ActionError::retryable_with_hint(e, hint))
     }
 
-    fn fatal_with_code(self, code: ErrorCode) -> Result<T, ActionError> {
-        self.map_err(|e| ActionError::fatal_with_code(e, code))
+    fn fatal_with_hint(self, hint: RetryHintCode) -> Result<T, ActionError> {
+        self.map_err(|e| ActionError::fatal_with_hint(e, hint))
     }
 }
 
@@ -448,29 +468,29 @@ mod tests {
     }
 
     #[test]
-    fn error_code_serializes_to_string() {
-        let code = ErrorCode::RateLimited;
-        let json = serde_json::to_string(&code).unwrap();
+    fn retry_hint_code_serializes_to_string() {
+        let hint = RetryHintCode::RateLimited;
+        let json = serde_json::to_string(&hint).unwrap();
         assert_eq!(json, "\"RateLimited\"");
     }
 
     #[test]
-    fn error_code_deserializes_from_string() {
-        let code: ErrorCode = serde_json::from_str("\"AuthExpired\"").unwrap();
-        assert_eq!(code, ErrorCode::AuthExpired);
+    fn retry_hint_code_deserializes_from_string() {
+        let hint: RetryHintCode = serde_json::from_str("\"AuthExpired\"").unwrap();
+        assert_eq!(hint, RetryHintCode::AuthExpired);
     }
 
     #[test]
-    fn error_code_is_copy() {
-        let code = ErrorCode::RateLimited;
-        let copy = code;
-        assert_eq!(code, copy); // both still valid — Copy
+    fn retry_hint_code_is_copy() {
+        let hint = RetryHintCode::RateLimited;
+        let copy = hint;
+        assert_eq!(hint, copy); // both still valid — Copy
     }
 
     #[test]
-    fn error_code_debug_format() {
+    fn retry_hint_code_debug_format() {
         assert_eq!(
-            format!("{:?}", ErrorCode::UpstreamTimeout),
+            format!("{:?}", RetryHintCode::UpstreamTimeout),
             "UpstreamTimeout"
         );
     }
@@ -491,16 +511,16 @@ mod tests {
     }
 
     #[test]
-    fn retryable_with_code() {
-        let err = ActionError::retryable_with_code("rate limited", ErrorCode::RateLimited);
-        assert_eq!(err.error_code(), Some(&ErrorCode::RateLimited));
+    fn retryable_with_hint_attaches_hint() {
+        let err = ActionError::retryable_with_hint("rate limited", RetryHintCode::RateLimited);
+        assert_eq!(err.retry_hint_code(), Some(RetryHintCode::RateLimited));
         assert!(err.is_retryable());
     }
 
     #[test]
-    fn fatal_with_code() {
-        let err = ActionError::fatal_with_code("expired", ErrorCode::AuthExpired);
-        assert_eq!(err.error_code(), Some(&ErrorCode::AuthExpired));
+    fn fatal_with_hint_attaches_hint() {
+        let err = ActionError::fatal_with_hint("expired", RetryHintCode::AuthExpired);
+        assert_eq!(err.retry_hint_code(), Some(RetryHintCode::AuthExpired));
         assert!(err.is_fatal());
     }
 
@@ -520,9 +540,25 @@ mod tests {
     }
 
     #[test]
-    fn default_code_is_none() {
-        let err = ActionError::retryable("no code");
-        assert!(err.error_code().is_none());
+    fn retry_hint_code_is_none_when_not_supplied() {
+        let err = ActionError::retryable("no hint");
+        assert!(err.retry_hint_code().is_none());
+    }
+
+    #[test]
+    fn retry_hint_code_is_none_for_non_retryable_fatal_variants() {
+        // Variants other than Retryable/Fatal never carry a user hint —
+        // use Classify::code() for the framework tag instead.
+        assert!(ActionError::validation("x").retry_hint_code().is_none());
+        assert!(ActionError::Cancelled.retry_hint_code().is_none());
+        assert!(
+            ActionError::DataLimitExceeded {
+                limit_bytes: 1,
+                actual_bytes: 2,
+            }
+            .retry_hint_code()
+            .is_none()
+        );
     }
 
     // ── ActionErrorExt ──────────────────────────────────────────────────────
@@ -549,24 +585,26 @@ mod tests {
     }
 
     #[test]
-    fn ext_retryable_with_code_sets_code() {
+    fn ext_retryable_with_hint_sets_hint() {
         let result: Result<i32, std::io::Error> = Err(std::io::Error::new(
             std::io::ErrorKind::Other,
             "rate limited",
         ));
         let err = result
-            .retryable_with_code(ErrorCode::RateLimited)
+            .retryable_with_hint(RetryHintCode::RateLimited)
             .unwrap_err();
-        assert_eq!(err.error_code(), Some(&ErrorCode::RateLimited));
+        assert_eq!(err.retry_hint_code(), Some(RetryHintCode::RateLimited));
         assert!(err.is_retryable());
     }
 
     #[test]
-    fn ext_fatal_with_code_sets_code() {
+    fn ext_fatal_with_hint_sets_hint() {
         let result: Result<i32, std::io::Error> =
             Err(std::io::Error::new(std::io::ErrorKind::Other, "expired"));
-        let err = result.fatal_with_code(ErrorCode::AuthExpired).unwrap_err();
-        assert_eq!(err.error_code(), Some(&ErrorCode::AuthExpired));
+        let err = result
+            .fatal_with_hint(RetryHintCode::AuthExpired)
+            .unwrap_err();
+        assert_eq!(err.retry_hint_code(), Some(RetryHintCode::AuthExpired));
         assert!(err.is_fatal());
     }
 
