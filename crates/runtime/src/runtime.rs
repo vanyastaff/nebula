@@ -96,10 +96,12 @@ impl ActionRuntime {
         input: serde_json::Value,
         context: ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        let key =
-            nebula_core::ActionKey::new(action_key).map_err(|_| RuntimeError::ActionNotFound {
+        let key = nebula_core::ActionKey::new(action_key).map_err(|e| {
+            RuntimeError::InvalidActionKey {
                 key: action_key.to_owned(),
-            })?;
+                reason: e.to_string(),
+            }
+        })?;
 
         let (metadata, handler) = match version {
             Some(v) => self.registry.get_versioned(&key, v),
@@ -130,9 +132,18 @@ impl ActionRuntime {
         input: serde_json::Value,
         context: ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        // Parse the key explicitly so we can distinguish "invalid format" from
+        // "valid format but not registered". `get_by_str` collapses both into None.
+        let key = nebula_core::ActionKey::new(action_key).map_err(|e| {
+            RuntimeError::InvalidActionKey {
+                key: action_key.to_owned(),
+                reason: e.to_string(),
+            }
+        })?;
+
         let (metadata, handler) =
             self.registry
-                .get_by_str(action_key)
+                .get(&key)
                 .ok_or_else(|| RuntimeError::ActionNotFound {
                     key: action_key.to_owned(),
                 })?;
@@ -218,9 +229,12 @@ impl ActionRuntime {
 
     /// Execute a stateless handler.
     ///
-    /// Sandboxed isolation dispatch through [`SandboxRunner`] is a follow-up
-    /// (Phase 7.6). For now stateless handlers run directly regardless of the
-    /// metadata's [`IsolationLevel`].
+    /// Execute a stateless handler.
+    ///
+    /// Only `IsolationLevel::None` is supported in Phase 7.5. Non-`None`
+    /// isolation levels return `ActionError::Fatal` to prevent silent
+    /// bypassing of capability checks. Sandbox dispatch through
+    /// [`SandboxRunner`] is Phase 7.6 work.
     async fn execute_stateless(
         &self,
         metadata: &ActionMetadata,
@@ -228,7 +242,12 @@ impl ActionRuntime {
         input: serde_json::Value,
         context: ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
-        let _ = metadata; // reserved for sandbox routing in Phase 7.6
+        if !matches!(metadata.isolation_level, IsolationLevel::None) {
+            return Err(ActionError::fatal(
+                "sandboxed stateless execution is not yet supported (Phase 7.6) — \
+                 refusing to silently bypass isolation/capability checks",
+            ));
+        }
         handler.execute(input, &context).await
     }
 

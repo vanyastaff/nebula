@@ -11,6 +11,20 @@ pub enum RuntimeError {
         key: String,
     },
 
+    /// The action key string failed to parse into a valid `ActionKey`.
+    #[classify(
+        category = "validation",
+        code = "RUNTIME:INVALID_ACTION_KEY",
+        retryable = false
+    )]
+    #[error("invalid action key '{key}': {reason}")]
+    InvalidActionKey {
+        /// The raw key string that failed to parse.
+        key: String,
+        /// The parse error reason.
+        reason: String,
+    },
+
     /// Action execution failed.
     #[classify(
         category = "external",

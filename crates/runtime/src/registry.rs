@@ -86,6 +86,12 @@ impl ActionRegistry {
     }
 
     /// Look up an action by string key (parses into `ActionKey` first).
+    ///
+    /// Returns `None` for both unregistered actions AND invalid key strings.
+    /// Callers that need to distinguish should use [`ActionKey::new`] explicitly
+    /// before calling [`get`](Self::get), or use a higher-level wrapper like
+    /// `ActionRuntime::execute_action` which surfaces parse errors as
+    /// `RuntimeError::InvalidActionKey`.
     pub fn get_by_str(&self, key: &str) -> Option<(ActionMetadata, ActionHandler)> {
         ActionKey::new(key).ok().and_then(|k| self.get(&k))
     }
