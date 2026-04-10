@@ -27,6 +27,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::action::Action;
 use crate::capability::ActionLogLevel;
 use crate::context::{ActionContext, TriggerContext};
 use crate::error::{ActionError, ValidationReason};
@@ -111,6 +112,14 @@ where
             serde_json::to_value(output)
                 .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
         })
+    }
+}
+
+impl<A: Action> fmt::Debug for StatelessActionAdapter<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StatelessActionAdapter")
+            .field("action", &self.action.metadata().key)
+            .finish_non_exhaustive()
     }
 }
 
@@ -260,6 +269,14 @@ where
     }
 }
 
+impl<A: Action> fmt::Debug for StatefulActionAdapter<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StatefulActionAdapter")
+            .field("action", &self.action.metadata().key)
+            .finish_non_exhaustive()
+    }
+}
+
 // ── TriggerActionAdapter ───────────────────────────────────────────────────
 
 /// Wraps a [`TriggerAction`] as a [`dyn TriggerHandler`].
@@ -315,6 +332,14 @@ where
     /// Returns [`ActionError`] if the trigger cannot be stopped cleanly.
     async fn stop(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
         self.action.stop(ctx).await
+    }
+}
+
+impl<A: Action> fmt::Debug for TriggerActionAdapter<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TriggerActionAdapter")
+            .field("action", &self.action.metadata().key)
+            .finish_non_exhaustive()
     }
 }
 
@@ -389,7 +414,20 @@ where
         };
 
         if let Some(orphan) = rollback_state {
-            let _ = self.action.on_deactivate(orphan, ctx).await;
+            // Tear down the state we just created on the lost-race
+            // branch. We are already returning a Fatal to the caller,
+            // so we must not mask that by propagating the rollback's
+            // own error — but silently dropping it would hide a leaked
+            // external webhook registration. Log and continue to
+            // surface the original double-start error.
+            if let Err(e) = self.action.on_deactivate(orphan, ctx).await {
+                tracing::warn!(
+                    action = %self.action.metadata().key,
+                    error = %e,
+                    "webhook rollback on_deactivate failed after double-start race; \
+                     external hook may leak"
+                );
+            }
             return Err(ActionError::fatal(
                 "webhook trigger already started; call stop() before start() again",
             ));
@@ -401,8 +439,10 @@ where
         let stored = self.state.write().take();
         match stored {
             Some(arc_state) => {
-                // Consume Arc — in normal flow no concurrent handle_event holds it.
-                let owned = Arc::try_unwrap(arc_state).unwrap_or_else(|arc| (*arc).clone());
+                // In normal flow no concurrent handle_event holds the Arc,
+                // so `unwrap_or_clone` takes the cheap path; on a lost
+                // race with an in-flight event it clones once.
+                let owned = Arc::unwrap_or_clone(arc_state);
                 self.action.on_deactivate(owned, ctx).await
             }
             // stop() without prior start() — no-op, nothing to deactivate.
@@ -773,6 +813,14 @@ where
             ))
         })?;
         self.action.cleanup(*typed, ctx).await
+    }
+}
+
+impl<A: Action> fmt::Debug for ResourceActionAdapter<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResourceActionAdapter")
+            .field("action", &self.action.metadata().key)
+            .finish_non_exhaustive()
     }
 }
 

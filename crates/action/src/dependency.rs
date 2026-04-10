@@ -64,8 +64,8 @@ pub trait ActionDependencies {
 
     /// `TypeId`s of credential types this action requires.
     ///
-    /// Used by [`ScopedCredentialAccessor`](crate::ScopedCredentialAccessor)
-    /// to enforce that actions can only access credentials they declared.
+    /// Used by [`nebula_credential::ScopedCredentialAccessor`] to enforce
+    /// that actions can only access credentials they declared.
     /// Populated by `#[derive(Action)]` from `#[action(credential = Type)]`.
     ///
     /// Returns an empty `Vec` by default (no credentials required).

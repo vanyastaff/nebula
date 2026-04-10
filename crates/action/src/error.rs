@@ -260,6 +260,7 @@ impl ActionError {
     ///
     /// Accepts any type that implements `Display + Debug + Send + Sync`.
     /// For typed errors, use [`Self::retryable_from`] to preserve the error chain.
+    #[must_use]
     pub fn retryable(
         error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
     ) -> Self {
@@ -272,6 +273,7 @@ impl ActionError {
     }
 
     /// Create a retryable error from a typed error, preserving the full chain.
+    #[must_use]
     pub fn retryable_from(error: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self::Retryable {
             error: Arc::new(error.into()),
@@ -282,6 +284,7 @@ impl ActionError {
     }
 
     /// Create a retryable error with a suggested backoff duration.
+    #[must_use]
     pub fn retryable_with_backoff(
         error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
         backoff: Duration,
@@ -295,6 +298,7 @@ impl ActionError {
     }
 
     /// Create a retryable error with a retry-strategy hint.
+    #[must_use]
     pub fn retryable_with_hint(
         error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
         hint: RetryHintCode,
@@ -308,6 +312,7 @@ impl ActionError {
     }
 
     /// Create a retryable error carrying a partial result.
+    #[must_use]
     pub fn retryable_with_partial(
         error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
         partial: serde_json::Value,
@@ -324,6 +329,7 @@ impl ActionError {
     ///
     /// Accepts any type that implements `Display + Debug + Send + Sync`.
     /// For typed errors, use [`Self::fatal_from`] to preserve the error chain.
+    #[must_use]
     pub fn fatal(error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static) -> Self {
         Self::Fatal {
             error: Arc::new(anyhow::anyhow!("{error}")),
@@ -333,6 +339,7 @@ impl ActionError {
     }
 
     /// Create a fatal error from a typed error, preserving the full chain.
+    #[must_use]
     pub fn fatal_from(error: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self::Fatal {
             error: Arc::new(error.into()),
@@ -342,6 +349,7 @@ impl ActionError {
     }
 
     /// Create a fatal error with structured details.
+    #[must_use]
     pub fn fatal_with_details(
         error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
         details: serde_json::Value,
@@ -358,6 +366,7 @@ impl ActionError {
     /// Fatal errors are not retried, but the hint is preserved for
     /// observability and metrics (e.g., `QuotaExhausted` vs
     /// `InvalidInput` in an error dashboard).
+    #[must_use]
     pub fn fatal_with_hint(
         error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
         hint: RetryHintCode,
@@ -377,6 +386,7 @@ impl ActionError {
     /// `<ActionError as nebula_error::Classify>::code()`.
     ///
     /// Returned by value because [`RetryHintCode`] is `Copy`.
+    #[must_use]
     pub fn retry_hint_code(&self) -> Option<RetryHintCode> {
         match self {
             Self::Retryable { code, .. } | Self::Fatal { code, .. } => *code,
@@ -408,6 +418,7 @@ impl ActionError {
     /// let err = ActionError::validation("email", ValidationReason::MissingField, None::<String>);
     /// assert!(err.is_fatal());
     /// ```
+    #[must_use]
     pub fn validation(
         field: &'static str,
         reason: ValidationReason,
@@ -421,11 +432,13 @@ impl ActionError {
     }
 
     /// Returns `true` if the engine should consider retrying this error.
+    #[must_use]
     pub fn is_retryable(&self) -> bool {
         matches!(self, Self::Retryable { .. })
     }
 
     /// Returns `true` if this error is permanent and should never be retried.
+    #[must_use]
     pub fn is_fatal(&self) -> bool {
         matches!(
             self,
@@ -437,6 +450,7 @@ impl ActionError {
     }
 
     /// Extract the backoff hint, if present.
+    #[must_use]
     pub fn backoff_hint(&self) -> Option<Duration> {
         match self {
             Self::Retryable { backoff_hint, .. } => *backoff_hint,
@@ -445,6 +459,7 @@ impl ActionError {
     }
 
     /// Extract the partial output, if present.
+    #[must_use]
     pub fn partial_output(&self) -> Option<&serde_json::Value> {
         match self {
             Self::Retryable { partial_output, .. } => partial_output.as_ref(),

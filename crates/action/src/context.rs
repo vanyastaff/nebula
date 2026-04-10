@@ -247,6 +247,22 @@ impl TriggerContext {
 ///
 /// let token: CredentialGuard<MyScheme> = ctx.credential::<MyScheme>().await?;
 /// ```
+///
+/// # Implementing
+///
+/// Only the crate types `ActionContext` and `TriggerContext` are
+/// expected to implement this trait. Downstream crates can
+/// implement it on their own context types; the crate's forward-
+/// compatibility contract is:
+///
+/// - New credential helpers added to this trait will **always** ship
+///   with a default implementation built on top of
+///   [`Self::credentials`]. Downstream impls will not need to add
+///   new methods to stay compatible with new crate versions.
+/// - The required method [`Self::credentials`] will not change
+///   signature without a major version bump of `nebula-action`.
+/// - The trait itself may gain new default methods in minor versions;
+///   those default methods are non-breaking additions for implementors.
 pub trait CredentialContextExt {
     /// Access the underlying credential accessor.
     ///

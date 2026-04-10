@@ -7,6 +7,7 @@ use crate::port::{InputPort, OutputPort};
 
 /// Validation error for action package integrity checks.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ActionPackageValidationError {
     /// Required metadata field is empty.
     #[error("metadata field `{field}` must not be empty")]
@@ -47,11 +48,24 @@ pub enum ActionPackageValidationError {
 }
 
 /// Collection of package validation failures.
+///
+/// Construct via [`validate_action_package`]; inspect via
+/// [`ActionPackageValidationErrors::errors`]. The error list is stored
+/// privately so new fields (severity, suggestions, source spans) can
+/// be added without breaking downstream pattern-matching.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("action package validation failed with {errors:?}")]
+#[non_exhaustive]
 pub struct ActionPackageValidationErrors {
-    /// Collected validation errors.
-    pub errors: Vec<ActionPackageValidationError>,
+    errors: Vec<ActionPackageValidationError>,
+}
+
+impl ActionPackageValidationErrors {
+    /// Read-only access to the collected validation errors.
+    #[must_use]
+    pub fn errors(&self) -> &[ActionPackageValidationError] {
+        &self.errors
+    }
 }
 
 /// Validate action package structure and declarations.
@@ -139,11 +153,11 @@ mod tests {
             .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("out")]);
 
         let err = validate_action_package(&meta).unwrap_err();
-        assert!(err.errors.iter().any(|e| matches!(
+        assert!(err.errors().iter().any(|e| matches!(
             e,
             ActionPackageValidationError::DuplicateInputPortKey { .. }
         )));
-        assert!(err.errors.iter().any(|e| matches!(
+        assert!(err.errors().iter().any(|e| matches!(
             e,
             ActionPackageValidationError::DuplicateOutputPortKey { .. }
         )));
@@ -169,12 +183,12 @@ mod tests {
 
         let err = validate_action_package(&meta).unwrap_err();
         assert!(
-            err.errors
+            err.errors()
                 .iter()
                 .any(|e| matches!(e, ActionPackageValidationError::InvalidSupportPort { .. }))
         );
         assert!(
-            err.errors
+            err.errors()
                 .iter()
                 .any(|e| matches!(e, ActionPackageValidationError::InvalidDynamicPort { .. }))
         );

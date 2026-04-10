@@ -232,6 +232,7 @@ mod duration_opt_ms {
 
 impl<T> ActionResult<T> {
     /// Create a successful result wrapping the output in [`ActionOutput::Value`].
+    #[must_use]
     pub fn success(output: T) -> Self {
         Self::Success {
             output: ActionOutput::Value(output),
@@ -239,6 +240,7 @@ impl<T> ActionResult<T> {
     }
 
     /// Create a successful result with binary data.
+    #[must_use]
     pub fn success_binary(data: BinaryData) -> Self {
         Self::Success {
             output: ActionOutput::Binary(data),
@@ -246,6 +248,7 @@ impl<T> ActionResult<T> {
     }
 
     /// Create a successful result with a data reference.
+    #[must_use]
     pub fn success_reference(reference: DataReference) -> Self {
         Self::Success {
             output: ActionOutput::Reference(reference),
@@ -253,6 +256,7 @@ impl<T> ActionResult<T> {
     }
 
     /// Create a successful result with no output.
+    #[must_use]
     pub fn success_empty() -> Self {
         Self::Success {
             output: ActionOutput::Empty,
@@ -260,11 +264,13 @@ impl<T> ActionResult<T> {
     }
 
     /// Create a successful result with a pre-built `ActionOutput`.
+    #[must_use]
     pub fn success_output(output: ActionOutput<T>) -> Self {
         Self::Success { output }
     }
 
     /// Create a successful result with a deferred output.
+    #[must_use]
     pub fn success_deferred(deferred: DeferredOutput) -> Self {
         Self::Success {
             output: ActionOutput::Deferred(Box::new(deferred)),
@@ -272,6 +278,7 @@ impl<T> ActionResult<T> {
     }
 
     /// Create a skip result.
+    #[must_use]
     pub fn skip(reason: impl Into<String>) -> Self {
         Self::Skip {
             reason: reason.into(),
@@ -280,6 +287,7 @@ impl<T> ActionResult<T> {
     }
 
     /// Create a skip result carrying a value output.
+    #[must_use]
     pub fn skip_with_output(reason: impl Into<String>, output: T) -> Self {
         Self::Skip {
             reason: reason.into(),
@@ -353,21 +361,25 @@ impl<T> ActionResult<T> {
     }
 
     /// Returns `true` if the result indicates successful completion.
+    #[must_use]
     pub fn is_success(&self) -> bool {
         matches!(self, Self::Success { .. })
     }
 
     /// Returns `true` if the action wants to continue iterating.
+    #[must_use]
     pub fn is_continue(&self) -> bool {
         matches!(self, Self::Continue { .. })
     }
 
     /// Returns `true` if the action is waiting for an external event.
+    #[must_use]
     pub fn is_waiting(&self) -> bool {
         matches!(self, Self::Wait { .. })
     }
 
     /// Returns `true` if the action is requesting a retry.
+    #[must_use]
     pub fn is_retry(&self) -> bool {
         matches!(self, Self::Retry { .. })
     }
@@ -515,6 +527,13 @@ impl<T> ActionResult<T> {
     /// Returns `Some(ActionOutput<T>)` for variants that carry a primary output.
     /// Returns `None` for `Skip` without output, `Wait` without partial
     /// output, `MultiOutput` without main output, and `Retry`.
+    ///
+    /// To extract the inner `T` directly, chain with [`ActionOutput::into_value`]:
+    ///
+    /// ```rust,ignore
+    /// let value: Option<T> = result.into_primary_output().and_then(|o| o.into_value());
+    /// ```
+    #[must_use]
     pub fn into_primary_output(self) -> Option<ActionOutput<T>> {
         match self {
             Self::Success { output } => Some(output),
@@ -527,15 +546,6 @@ impl<T> ActionResult<T> {
             Self::Wait { partial_output, .. } => partial_output,
             Self::Retry { .. } => None,
         }
-    }
-
-    /// Extract the primary value `T` from the output, consuming `self`.
-    ///
-    /// Equivalent to `self.into_primary_output().and_then(|o| o.into_value())`.
-    /// Returns `None` for non-value outputs (binary, reference, stream, empty)
-    /// and for variants with no output.
-    pub fn into_primary_value(self) -> Option<T> {
-        self.into_primary_output().and_then(|o| o.into_value())
     }
 }
 
@@ -1015,29 +1025,6 @@ mod tests {
         };
         let out = r.into_primary_output().unwrap();
         assert_eq!(out.into_value(), Some(33));
-    }
-
-    // ── into_primary_value tests ─────────────────────────────────────
-
-    #[test]
-    fn into_primary_value_success() {
-        let r = ActionResult::success(42);
-        assert_eq!(r.into_primary_value(), Some(42));
-    }
-
-    #[test]
-    fn into_primary_value_empty() {
-        let r: ActionResult<i32> = ActionResult::success_empty();
-        assert_eq!(r.into_primary_value(), None);
-    }
-
-    #[test]
-    fn into_primary_value_retry() {
-        let r: ActionResult<i32> = ActionResult::Retry {
-            after: Duration::from_secs(1),
-            reason: "wait".into(),
-        };
-        assert_eq!(r.into_primary_value(), None);
     }
 
     // ── success_binary / success_reference / success_empty tests ─────

@@ -153,6 +153,14 @@ pub fn stateless_fn<F, Input, Output>(
     FnStatelessAction::new(metadata, func)
 }
 
+impl<F, Input, Output> std::fmt::Debug for FnStatelessAction<F, Input, Output> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FnStatelessAction")
+            .field("action", &self.metadata.key)
+            .finish_non_exhaustive()
+    }
+}
+
 // ── FnStatelessCtxAction ────────────────────────────────────────────────────
 
 /// Stateless action adapter backed by a context-aware async function/closure.
@@ -283,6 +291,22 @@ pub fn stateless_ctx_fn<F, Input, Output>(
     func: F,
 ) -> FnStatelessCtxAction<F, Input, Output> {
     FnStatelessCtxAction::new(metadata, func)
+}
+
+impl<F, Input, Output> std::fmt::Debug for FnStatelessCtxAction<F, Input, Output> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FnStatelessCtxAction")
+            .field("action", &self.metadata.key)
+            .field(
+                "base_ctx",
+                if self.base_ctx.is_some() {
+                    &"<injected>"
+                } else {
+                    &"<noop>"
+                },
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(test)]

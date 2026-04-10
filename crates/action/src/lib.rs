@@ -137,3 +137,6 @@ pub use trigger::{PollAction, TriggerAction, WebhookAction};
 pub use validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
 };
+pub use webhook::{
+    SignatureOutcome, hmac_sha256_compute, verify_hmac_sha256, verify_tag_constant_time,
+};

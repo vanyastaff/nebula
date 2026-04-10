@@ -23,6 +23,7 @@ pub enum IsolationLevel {
 
 /// Compatibility validation errors for metadata evolution.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum MetadataCompatibilityError {
     /// Action key changed across versions.
     #[error("action key changed from `{previous}` to `{current}`")]
@@ -79,6 +80,7 @@ pub struct ActionMetadata {
 
 impl ActionMetadata {
     /// Create metadata with the minimum required fields.
+    #[must_use]
     pub fn new(key: ActionKey, name: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
             key,
@@ -93,31 +95,35 @@ impl ActionMetadata {
     }
 
     /// Set the interface version (major, minor).
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_version(mut self, major: u32, minor: u32) -> Self {
         self.version = InterfaceVersion::new(major, minor);
         self
     }
 
     /// Set the input port definitions for this action.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_inputs(mut self, inputs: Vec<InputPort>) -> Self {
         self.inputs = inputs;
         self
     }
 
     /// Set the output port definitions for this action.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_outputs(mut self, outputs: Vec<OutputPort>) -> Self {
         self.outputs = outputs;
         self
     }
 
     /// Set the parameter definitions for this action.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_parameters(mut self, parameters: ParameterCollection) -> Self {
         self.parameters = parameters;
         self
     }
 
     /// Set the isolation level for sandbox routing.
-    #[must_use]
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_isolation_level(mut self, level: IsolationLevel) -> Self {
         self.isolation_level = level;
         self

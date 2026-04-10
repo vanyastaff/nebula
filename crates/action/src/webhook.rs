@@ -146,11 +146,16 @@ pub fn verify_hmac_sha256(
         return Ok(SignatureOutcome::Invalid);
     };
 
-    // `new_from_slice` is infallible for HMAC — it accepts any key
-    // length, including longer-than-block-size (the implementation
-    // hashes oversize keys into block size). The empty-secret guard
-    // above is the only length check we actually need.
-    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
+    // Reason: `Hmac::new_from_slice` returns `InvalidLength` only for
+    // block-cipher MACs (CMAC etc.). For HMAC (RFC 2104) any key
+    // length is accepted — oversize keys are hashed to block size,
+    // undersize keys are zero-padded. Surfacing this as
+    // `ActionError::Fatal` would poison callers with an impossible
+    // error variant. The empty-secret guard above is the only length
+    // check HMAC actually needs.
+    #[allow(clippy::expect_used)]
+    let mut mac =
+        HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length (RFC 2104)");
     mac.update(&event.body);
 
     Ok(match mac.verify_slice(&expected) {
@@ -172,7 +177,13 @@ pub fn verify_hmac_sha256(
 /// Never — `Hmac::new_from_slice` accepts any key length for HMAC.
 #[must_use]
 pub fn hmac_sha256_compute(secret: &[u8], payload: &[u8]) -> [u8; 32] {
-    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
+    // Reason: see `verify_hmac_sha256` — HMAC construction is
+    // structurally infallible (RFC 2104). Returning `Result` from a
+    // pure primitive for an unreachable error case would force every
+    // caller to handle an impossibility.
+    #[allow(clippy::expect_used)]
+    let mut mac =
+        HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length (RFC 2104)");
     mac.update(payload);
     mac.finalize().into_bytes().into()
 }

@@ -21,6 +21,7 @@ pub type PortKey = String;
 /// Discriminant for flow output ports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum FlowKind {
     /// Primary data output.
     Main,
@@ -116,6 +117,7 @@ pub struct DynamicPort {
 /// An input port declaration on an action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum InputPort {
     /// Main data flow input.
     Flow {
@@ -179,6 +181,7 @@ impl InputPort {
 /// An output port declaration on an action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum OutputPort {
     /// Data or error flow output.
     Flow {

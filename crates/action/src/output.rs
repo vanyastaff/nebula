@@ -239,6 +239,7 @@ pub enum StreamMode {
 
 /// Delta format for streaming patches.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum DeltaFormat {
     /// RFC 7396.
     JsonMergePatch,

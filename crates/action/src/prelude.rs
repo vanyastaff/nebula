@@ -37,5 +37,8 @@ pub use crate::trigger::{PollAction, TriggerAction, WebhookAction};
 pub use crate::validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
 };
+pub use crate::webhook::{
+    SignatureOutcome, hmac_sha256_compute, verify_hmac_sha256, verify_tag_constant_time,
+};
 pub use nebula_credential::CredentialGuard;
 pub use nebula_parameter::{Parameter, ParameterCollection};
