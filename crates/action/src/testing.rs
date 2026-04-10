@@ -43,10 +43,18 @@ use crate::trigger::TriggerAction;
 /// // Minimal context with no configuration:
 /// let ctx = TestContextBuilder::minimal().build();
 /// ```
+/// Factory that produces a fresh boxed resource on each call.
+///
+/// Stored instead of a raw `Box<dyn Any>` so `acquire()` can hand out
+/// independent instances on every call without consuming the slot —
+/// matches the semantics of production resource accessors where the
+/// same key can be acquired many times.
+type ResourceFactory = Arc<dyn Fn() -> Box<dyn Any + Send + Sync> + Send + Sync>;
+
 pub struct TestContextBuilder {
     credentials: HashMap<String, CredentialSnapshot>,
     typed_credentials: HashMap<TypeId, CredentialSnapshot>,
-    resources: HashMap<String, Box<dyn Any + Send + Sync>>,
+    resources: HashMap<String, ResourceFactory>,
     input: Option<serde_json::Value>,
     logs: Arc<SpyLogger>,
 }
@@ -107,15 +115,22 @@ impl TestContextBuilder {
 
     /// Add a resource by key.
     ///
-    /// The resource is returned by [`ActionContext::resource`] when requested
-    /// with the matching key.
+    /// The resource value is stored as a cloneable factory. Each call to
+    /// [`ActionContext::resource`] for this key returns a fresh `Box<R>`
+    /// — this matches production `ResourceAccessor` semantics where the
+    /// same key can be acquired multiple times, and prevents tests from
+    /// passing against the harness then failing in production on a
+    /// second acquire.
+    ///
+    /// `R` must be `Clone + Send + Sync + 'static`.
     #[must_use]
-    pub fn with_resource(
-        mut self,
-        key: impl Into<String>,
-        resource: Box<dyn Any + Send + Sync>,
-    ) -> Self {
-        self.resources.insert(key.into(), resource);
+    pub fn with_resource<R>(mut self, key: impl Into<String>, resource: R) -> Self
+    where
+        R: Clone + Send + Sync + 'static,
+    {
+        let factory: ResourceFactory =
+            Arc::new(move || Box::new(resource.clone()) as Box<dyn Any + Send + Sync>);
+        self.resources.insert(key.into(), factory);
         self
     }
 
@@ -284,15 +299,20 @@ impl CredentialAccessor for TestCredentialAccessor {
 }
 
 struct TestResourceAccessor {
-    resources: Arc<parking_lot::Mutex<HashMap<String, Box<dyn Any + Send + Sync>>>>,
+    resources: Arc<parking_lot::Mutex<HashMap<String, ResourceFactory>>>,
 }
 
 #[async_trait]
 impl ResourceAccessor for TestResourceAccessor {
     async fn acquire(&self, key: &str) -> Result<Box<dyn Any + Send + Sync>, ActionError> {
-        self.resources.lock().remove(key).ok_or_else(|| {
+        // Factory is cloned out under the lock (cheap Arc clone) and
+        // invoked outside to keep the lock critical section tiny and
+        // side-effect-free. Multiple acquires for the same key each
+        // get a fresh Box — matches production accessor semantics.
+        let factory = self.resources.lock().get(key).cloned().ok_or_else(|| {
             ActionError::fatal(format!("resource `{key}` not found in test context"))
-        })
+        })?;
+        Ok(factory())
     }
 
     async fn exists(&self, key: &str) -> bool {
@@ -667,7 +687,7 @@ mod tests {
     #[tokio::test]
     async fn with_resource_provides_resource() {
         let ctx = TestContextBuilder::new()
-            .with_resource("db", Box::new(42_i32))
+            .with_resource("db", 42_i32)
             .build();
 
         assert!(ctx.has_resource("db").await);
@@ -676,6 +696,38 @@ mod tests {
         let resource = ctx.resource("db").await.unwrap();
         let val = resource.downcast_ref::<i32>().unwrap();
         assert_eq!(*val, 42);
+    }
+
+    #[tokio::test]
+    async fn with_resource_allows_multiple_acquires_for_same_key() {
+        // Before M3 the test accessor removed the resource on first
+        // acquire — a second call returned NotFound even though
+        // production accessors typically hand out the same handle
+        // many times. Factory-backed storage fixes this.
+        let ctx = TestContextBuilder::new()
+            .with_resource("db", 42_i32)
+            .build();
+
+        assert_eq!(
+            *ctx.resource("db")
+                .await
+                .unwrap()
+                .downcast_ref::<i32>()
+                .unwrap(),
+            42
+        );
+        assert_eq!(
+            *ctx.resource("db")
+                .await
+                .unwrap()
+                .downcast_ref::<i32>()
+                .unwrap(),
+            42
+        );
+        assert!(
+            ctx.has_resource("db").await,
+            "key must remain after first acquire"
+        );
     }
 
     #[tokio::test]

@@ -6,18 +6,64 @@ use serde::{Deserialize, Serialize};
 // ── Supporting types ────────────────────────────────────────────────────────
 
 /// Minimal retry config for deferred output resolution.
+///
+/// All fields are public for ergonomic construction. Call
+/// [`DeferredRetryConfig::validate`] before handing the config to
+/// a resolver to catch malformed values (NaN / non-finite /
+/// non-positive coefficient). The resolver uses
+/// `Duration::mul_f64(backoff_coefficient)`, which panics on NaN
+/// or overflow — the validator is the only thing between you and
+/// that panic.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeferredRetryConfig {
     /// Maximum number of attempts.
     pub max_attempts: u32,
     /// Initial delay between retries.
     pub initial_interval: Duration,
-    /// Backoff multiplier.
+    /// Backoff multiplier. MUST be finite and strictly positive —
+    /// validator rejects `NaN`, `±inf`, and values ≤ 0.
     pub backoff_coefficient: f64,
     /// Upper bound on delay.
     pub max_interval: Option<Duration>,
     /// Error type names that should NOT be retried.
     pub non_retryable_errors: Vec<String>,
+}
+
+impl DeferredRetryConfig {
+    /// Validate that the config is usable by a resolver.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::ActionError::Validation`] if:
+    /// - `max_attempts` is 0
+    /// - `backoff_coefficient` is `NaN`, `±inf`, or ≤ 0
+    ///
+    /// The resolver uses `Duration::mul_f64(backoff_coefficient)` to
+    /// scale retry intervals, and that function panics on NaN or
+    /// overflow. Validation catches those cases at config-build time
+    /// instead of at retry time.
+    pub fn validate(&self) -> Result<(), crate::ActionError> {
+        use crate::error::ValidationReason;
+
+        if self.max_attempts == 0 {
+            return Err(crate::ActionError::validation(
+                "deferred_retry.max_attempts",
+                ValidationReason::OutOfRange,
+                Some("max_attempts must be >= 1"),
+            ));
+        }
+        if !self.backoff_coefficient.is_finite() || self.backoff_coefficient <= 0.0 {
+            return Err(crate::ActionError::validation(
+                "deferred_retry.backoff_coefficient",
+                ValidationReason::OutOfRange,
+                Some(format!(
+                    "backoff_coefficient must be finite and > 0, got {}",
+                    self.backoff_coefficient
+                )),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// A not-yet-available output with instructions for the engine on how
@@ -686,10 +732,39 @@ pub struct BinaryData {
     pub content_type: String,
     /// Where the bytes live.
     pub data: BinaryStorage,
-    /// Total size in bytes.
+    /// Advertised size in bytes.
+    ///
+    /// For `BinaryStorage::Stored`, this is the authoritative size
+    /// (the bytes are not in memory to measure).
+    ///
+    /// For `BinaryStorage::Inline`, this SHOULD equal `bytes.len()`
+    /// — but the field is public and can be set out of sync.
+    /// Consumers that need an authoritative answer must use
+    /// [`BinaryData::effective_size`], which returns the actual
+    /// inline byte length for `Inline` and the advertised `size`
+    /// for `Stored`. Size-limit checks MUST use `effective_size()`
+    /// or they can be bypassed by passing oversize inline bytes
+    /// with a falsified `size`.
     pub size: u64,
     /// Optional metadata (e.g. filename, dimensions).
     pub metadata: Option<serde_json::Value>,
+}
+
+impl BinaryData {
+    /// Authoritative size in bytes.
+    ///
+    /// Returns the actual inline byte count for
+    /// [`BinaryStorage::Inline`] and the advertised `size` field for
+    /// [`BinaryStorage::Stored`]. Prefer this over reading `size`
+    /// directly when enforcing size limits — the raw field can be
+    /// out of sync with inline contents.
+    #[must_use]
+    pub fn effective_size(&self) -> u64 {
+        match &self.data {
+            BinaryStorage::Inline(bytes) => bytes.len() as u64,
+            BinaryStorage::Stored { .. } => self.size,
+        }
+    }
 }
 
 /// Storage location for binary data.

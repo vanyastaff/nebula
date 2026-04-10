@@ -113,6 +113,12 @@ pub trait PaginatedAction: Action {
     type Cursor: Serialize + DeserializeOwned + Clone + Send + Sync;
 
     /// Maximum pages before forcing a break. Default: 100.
+    ///
+    /// Must be `>= 1` — the generated `StatefulAction::execute` body
+    /// `debug_assert!`s this at runtime and silently coerces to 1 in
+    /// release mode. Returning 0 means "fetch zero pages", which is
+    /// almost certainly a bug; use a `StatelessAction` if you do not
+    /// want to iterate.
     fn max_pages(&self) -> u32 {
         100
     }
@@ -174,6 +180,13 @@ macro_rules! impl_paginated_action {
                 state.cursor.clone_from(&result.next_cursor);
                 state.pages_fetched = state.pages_fetched.saturating_add(1);
 
+                // Contract: max_pages() must return >= 1. Debug builds
+                // trip an assertion so the bug is visible in tests;
+                // release builds coerce to 1 to avoid an infinite loop.
+                debug_assert!(
+                    self.max_pages() >= 1,
+                    "PaginatedAction::max_pages() must return >= 1, got 0"
+                );
                 let max = self.max_pages().max(1);
                 if result.next_cursor.is_some() && state.pages_fetched < max {
                     let progress = state.pages_fetched as f64 / max as f64;

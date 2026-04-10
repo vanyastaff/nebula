@@ -173,12 +173,34 @@ pub enum WaitCondition {
     },
 }
 
+/// Normalize a progress fraction to the valid `0.0..=1.0` range.
+///
+/// - `NaN` → `0.0` (downstream progress bars / ETAs divide by zero
+///   or render nonsense otherwise)
+/// - negative → `0.0`
+/// - values above 1.0 → `1.0`
+///
+/// Applied inside `continue_with` / `continue_with_delay` so action
+/// authors cannot accidentally poison downstream consumers with
+/// malformed progress data.
+fn sanitize_fraction(x: f64) -> f64 {
+    if x.is_nan() { 0.0 } else { x.clamp(0.0, 1.0) }
+}
+
 mod duration_ms {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::time::Duration;
 
+    /// Saturating cast from `u128` millis to `u64`. Durations longer
+    /// than `u64::MAX` ms (~584 million years) saturate to `u64::MAX`
+    /// instead of silently wrapping via `as u64`. Not reachable with
+    /// legitimate inputs, but honest about the boundary.
+    fn millis_saturating(d: &Duration) -> u64 {
+        u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+    }
+
     pub fn serialize<S: Serializer>(duration: &Duration, s: S) -> Result<S::Ok, S::Error> {
-        (duration.as_millis() as u64).serialize(s)
+        millis_saturating(duration).serialize(s)
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
@@ -193,7 +215,9 @@ mod duration_opt_ms {
 
     pub fn serialize<S: Serializer>(duration: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
         match duration {
-            Some(d) => (d.as_millis() as u64).serialize(s),
+            Some(d) => u64::try_from(d.as_millis())
+                .unwrap_or(u64::MAX)
+                .serialize(s),
             None => s.serialize_none(),
         }
     }
@@ -277,7 +301,7 @@ impl<T> ActionResult<T> {
     pub fn continue_with(output: T, progress: Option<f64>) -> Self {
         Self::Continue {
             output: ActionOutput::Value(output),
-            progress,
+            progress: progress.map(sanitize_fraction),
             delay: None,
         }
     }
@@ -293,7 +317,7 @@ impl<T> ActionResult<T> {
     pub fn continue_with_delay(output: T, progress: Option<f64>, delay: Duration) -> Self {
         Self::Continue {
             output: ActionOutput::Value(output),
-            progress,
+            progress: progress.map(sanitize_fraction),
             delay: Some(delay),
         }
     }

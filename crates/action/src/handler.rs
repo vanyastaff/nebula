@@ -27,6 +27,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::capability::ActionLogLevel;
 use crate::context::{ActionContext, TriggerContext};
 use crate::error::{ActionError, ValidationReason};
 use crate::metadata::ActionMetadata;
@@ -413,6 +414,26 @@ where
         true
     }
 
+    /// Route an incoming event to the typed `handle_request`.
+    ///
+    /// # Stop vs in-flight event race
+    ///
+    /// `handle_event` clones the `Arc<State>` under a read lock and
+    /// releases the lock BEFORE awaiting `handle_request`. If `stop()`
+    /// wins the race, it takes the owned `Arc` and calls
+    /// `on_deactivate` on the result — meanwhile this in-flight
+    /// request still holds its independent `Arc` clone and runs
+    /// `handle_request` against it. Two observers of the same logical
+    /// state briefly exist side by side.
+    ///
+    /// This is benign for webhook authors whose `State` does not
+    /// invalidate shared substate on deactivation (the common case —
+    /// deactivation typically just unregisters an external hook).
+    /// Authors whose `on_deactivate` actively tears down shared
+    /// resources (closes a pooled connection held inside `State`,
+    /// etc.) must either wrap those resources in `Arc`-friendly
+    /// handles that tolerate being read from a stale clone, or
+    /// coordinate shutdown externally.
     async fn handle_event(
         &self,
         event: IncomingEvent,
@@ -449,6 +470,49 @@ impl<A: WebhookAction> fmt::Debug for WebhookTriggerAdapter<A> {
 /// high-frequency event sources.
 pub const POLL_INTERVAL_FLOOR: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// Minimum interval between repeated warn-level log lines for the same
+/// failure kind inside a [`PollTriggerAdapter`].
+///
+/// A stuck trigger that fails every cycle would otherwise flood logs
+/// with one line per poll — at `POLL_INTERVAL_FLOOR` = 100 ms that is
+/// 600 lines/minute per trigger. 30 s cooldown keeps the first hit
+/// visible, suppresses the following flood, and re-emits after the
+/// window so recurring failures are still observable.
+const POLL_WARN_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Rate-limits adapter warn lines to avoid log flooding.
+///
+/// Holds the timestamp of the last emitted warning. `should_log()`
+/// returns `true` the first time it is called, then `false` until
+/// `COOLDOWN` has elapsed, then `true` again. Each failure kind
+/// (poll error, serialize error, emit error) gets its own throttle
+/// so they cannot starve each other.
+struct WarnThrottle {
+    last_logged: parking_lot::Mutex<Option<std::time::Instant>>,
+}
+
+impl WarnThrottle {
+    fn new() -> Self {
+        Self {
+            last_logged: parking_lot::Mutex::new(None),
+        }
+    }
+
+    /// Returns `true` if the caller should emit a log line; updates
+    /// the last-logged timestamp on a yes. Safe to call concurrently.
+    fn should_log(&self) -> bool {
+        let mut guard = self.last_logged.lock();
+        let now = std::time::Instant::now();
+        match *guard {
+            Some(last) if now.duration_since(last) < POLL_WARN_COOLDOWN => false,
+            _ => {
+                *guard = Some(now);
+                true
+            }
+        }
+    }
+}
+
 /// Wraps a [`PollAction`] as a [`dyn TriggerHandler`].
 ///
 /// `start()` runs a blocking loop: sleep → poll → emit events.
@@ -474,6 +538,12 @@ pub struct PollTriggerAdapter<A: PollAction> {
     action: A,
     /// `true` while `start()` is running. Cleared by `StartedGuard` on exit.
     started: std::sync::atomic::AtomicBool,
+    /// Rate-limits retryable-poll-error warnings.
+    poll_warn: WarnThrottle,
+    /// Rate-limits event-serialization-failure warnings.
+    serialize_warn: WarnThrottle,
+    /// Rate-limits emitter.emit failure warnings.
+    emit_warn: WarnThrottle,
 }
 
 impl<A: PollAction> PollTriggerAdapter<A> {
@@ -483,6 +553,9 @@ impl<A: PollAction> PollTriggerAdapter<A> {
         Self {
             action,
             started: std::sync::atomic::AtomicBool::new(false),
+            poll_warn: WarnThrottle::new(),
+            serialize_warn: WarnThrottle::new(),
+            emit_warn: WarnThrottle::new(),
         }
     }
 }
@@ -548,6 +621,8 @@ where
             );
         }
 
+        let action_key = &self.action.metadata().key;
+
         loop {
             tokio::select! {
                 () = ctx.cancellation.cancelled() => {
@@ -561,31 +636,42 @@ where
                                 let payload = match serde_json::to_value(&event) {
                                     Ok(v) => v,
                                     Err(e) => {
-                                        tracing::warn!(
-                                            action = %self.action.metadata().key,
-                                            error = %e,
-                                            "poll event serialization failed; dropping"
-                                        );
+                                        if self.serialize_warn.should_log() {
+                                            ctx.logger.log(
+                                                ActionLogLevel::Warn,
+                                                &format!(
+                                                    "poll trigger {action_key}: event \
+                                                     serialization failed, dropping: {e}"
+                                                ),
+                                            );
+                                        }
                                         continue;
                                     }
                                 };
-                                // Transient emit failure — skip this event, continue polling.
                                 if let Err(e) = ctx.emitter.emit(payload).await {
-                                    tracing::warn!(
-                                        action = %self.action.metadata().key,
-                                        error = %e,
-                                        "emitter.emit failed; dropping event and continuing"
-                                    );
+                                    if self.emit_warn.should_log() {
+                                        ctx.logger.log(
+                                            ActionLogLevel::Warn,
+                                            &format!(
+                                                "poll trigger {action_key}: emitter.emit \
+                                                 failed, dropping event: {e}"
+                                            ),
+                                        );
+                                    }
                                 }
                             }
                         }
                         Err(e) if e.is_fatal() => return Err(e),
                         Err(e) => {
-                            tracing::debug!(
-                                action = %self.action.metadata().key,
-                                error = %e,
-                                "retryable poll error; skipping cycle"
-                            );
+                            if self.poll_warn.should_log() {
+                                ctx.logger.log(
+                                    ActionLogLevel::Warn,
+                                    &format!(
+                                        "poll trigger {action_key}: retryable poll error, \
+                                         will retry next cycle: {e}"
+                                    ),
+                                );
+                            }
                         }
                     }
                 }
