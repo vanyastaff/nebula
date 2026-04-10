@@ -58,12 +58,18 @@ pub async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCode> {
 
     let metrics = MetricsRegistry::new();
 
-    // The in-process sandbox executor is currently a no-op passthrough:
-    // `ActionRuntime` dispatches handlers directly via the `ActionHandler`
-    // enum (see `run_handler`). The sandbox is wired through for forward
-    // compatibility with Phase 7.6 sandboxed isolation.
-    let executor: nebula_runtime::sandbox::ActionExecutor = Arc::new(|_ctx, _metadata, input| {
-        Box::pin(async move { Ok(nebula_action::ActionResult::success(input)) })
+    // The in-process sandbox executor is unreachable in Phase 7.5:
+    // `ActionRuntime::run_handler` dispatches `IsolationLevel::None` actions
+    // directly via the `ActionHandler` enum, and non-`None` levels return
+    // `Fatal` (sandbox dispatch is Phase 7.6). This closure exists only to
+    // satisfy `InProcessSandbox::new()` until the sandbox path is rewired.
+    let executor: nebula_runtime::sandbox::ActionExecutor = Arc::new(|_ctx, _metadata, _input| {
+        Box::pin(async move {
+            Err(nebula_action::ActionError::fatal(
+                "sandbox executor invoked unexpectedly — Phase 7.5 routes all execution \
+                 through ActionHandler enum dispatch, sandbox is Phase 7.6 work",
+            ))
+        })
     });
 
     let sandbox = Arc::new(InProcessSandbox::new(executor));

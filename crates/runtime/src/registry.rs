@@ -108,6 +108,19 @@ impl ActionRegistry {
     }
 
     /// Register a stateless action — wraps in `StatelessActionAdapter` automatically.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use nebula_runtime::ActionRegistry;
+    /// let registry = ActionRegistry::new();
+    /// registry.register_stateless(my_stateless_action);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Does not return errors. If a handler with the same `(key, version)` is
+    /// already registered, it is replaced silently.
     pub fn register_stateless<A>(&self, action: A)
     where
         A: Action + StatelessAction + Send + Sync + 'static,
@@ -120,6 +133,12 @@ impl ActionRegistry {
     }
 
     /// Register a stateful action — wraps in `StatefulActionAdapter` automatically.
+    ///
+    /// See [`register_stateless`](Self::register_stateless) for usage and error semantics.
+    ///
+    /// # Errors
+    ///
+    /// Does not return errors. Same-version handlers are replaced silently.
     pub fn register_stateful<A>(&self, action: A)
     where
         A: Action + StatefulAction + Send + Sync + 'static,
@@ -133,6 +152,12 @@ impl ActionRegistry {
     }
 
     /// Register a trigger action — wraps in `TriggerActionAdapter` automatically.
+    ///
+    /// See [`register_stateless`](Self::register_stateless) for usage.
+    ///
+    /// # Errors
+    ///
+    /// Does not return errors. Same-version handlers are replaced silently.
     pub fn register_trigger<A>(&self, action: A)
     where
         A: Action + TriggerAction + Send + Sync + 'static,
@@ -143,6 +168,12 @@ impl ActionRegistry {
     }
 
     /// Register a webhook action — wraps in `WebhookTriggerAdapter` automatically.
+    ///
+    /// See [`register_stateless`](Self::register_stateless) for usage.
+    ///
+    /// # Errors
+    ///
+    /// Does not return errors. Same-version handlers are replaced silently.
     pub fn register_webhook<A>(&self, action: A)
     where
         A: WebhookAction + Send + Sync + 'static,
@@ -154,6 +185,12 @@ impl ActionRegistry {
     }
 
     /// Register a poll action — wraps in `PollTriggerAdapter` automatically.
+    ///
+    /// See [`register_stateless`](Self::register_stateless) for usage.
+    ///
+    /// # Errors
+    ///
+    /// Does not return errors. Same-version handlers are replaced silently.
     pub fn register_poll<A>(&self, action: A)
     where
         A: PollAction + Send + Sync + 'static,
@@ -166,6 +203,12 @@ impl ActionRegistry {
     }
 
     /// Register a resource action — wraps in `ResourceActionAdapter` automatically.
+    ///
+    /// See [`register_stateless`](Self::register_stateless) for usage.
+    ///
+    /// # Errors
+    ///
+    /// Does not return errors. Same-version handlers are replaced silently.
     pub fn register_resource<A>(&self, action: A)
     where
         A: Action + ResourceAction + Send + Sync + 'static,

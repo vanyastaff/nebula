@@ -10,7 +10,7 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - Action subtypes: `StatelessAction` (one-shot), `StatefulAction` (Continue/Break loop), `TriggerAction` (starts workflow), `ResourceAction` (branch-scoped DI setup/cleanup).
 - `ActionDependencies` has two complementary pairs: `credential`/`resources` (trait-object, runtime injection) and `credential_keys`/`resource_keys` (typed keys, engine validation at registration). Plus `credential_types()` → `Vec<TypeId>` for `ScopedCredentialAccessor` sandboxing. All five default to empty — no migration needed.
 - `#[derive(Action)]` with `#[action(credential = T)]` or `#[action(credentials = [T1, T2])]` generates both `credential()` and `credential_types()`. Duplicate credential types in the attribute produce a compile error.
-- `ActionRegistry` (`registry.rs`): keyed by `ActionKey`, supports multiple versions per key. `get()` → latest, `get_versioned(&InterfaceVersion)` → specific. `Send + Sync` — use `Arc<ActionRegistry>` for read-only sharing, `Arc<RwLock<_>>` for mutation after sharing.
+- `ActionRegistry` lives in **`nebula-runtime`** (Phase 7.5), not in `nebula-action`. The protocol crate stays free of execution concerns.
 - `credential::<S>()` is the primary typed credential access path (returns `CredentialGuard<S>`). Renamed from `credential_by_type::<S>()` in Phase 2b (deprecated alias kept). `credential_by_id(id)` for string-based access (old `credential(id)` removed — name clash). `has_credential_id(id)` replaces `has_credential(id)` (deprecated alias kept). Legacy `credential_typed::<S>(id)` (string-based, consumes snapshot via `into_project::<S>()`, maps `SnapshotError` → `ActionError::Fatal`) preserved for backward compat.
 - `ErrorCode` enum (8 variants, `#[non_exhaustive]`) on `ActionError::Retryable` and `Fatal` — machine-readable classification for engine retry decisions (RateLimited, AuthExpired, UpstreamTimeout, etc.).
 - `ActionResultExt` trait — `.retryable()?` and `.fatal()?` ergonomic conversion on any `Result<T, E>`. Also `_with_code()` variants for ErrorCode attachment.
@@ -21,7 +21,7 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - `CredentialAccessor`, `ScopedCredentialAccessor`, `NoopCredentialAccessor`, `CredentialAccessError` — canonical home is `nebula-credential`; re-exported from `nebula-action::capability` for backward compat. `From<CredentialAccessError> for ActionError` maps `AccessDenied` to `SandboxViolation`, others to `Fatal`.
 - `#[derive(Action)]` now works on structs with fields (not just unit structs) — enables `type Input = Self` pattern.
 
-- `ActionHandler` enum (5 variants: Stateless, Stateful, Trigger, Resource, Agent, `#[non_exhaustive]`) — engine match-dispatches. Replaces deprecated `InternalHandler`.
+- `ActionHandler` enum (5 variants: Stateless, Stateful, Trigger, Resource, Agent, `#[non_exhaustive]`) — engine match-dispatches. Replaces removed `InternalHandler`. Derives `Clone` (all variants are `Arc<dyn ...>`).
 - 5 handler traits: `StatelessHandler`, `StatefulHandler`, `TriggerHandler`, `ResourceHandler`, `AgentHandler` (stub).
 - 4 adapters: `StatelessActionAdapter`, `StatefulActionAdapter`, `TriggerActionAdapter`, `ResourceActionAdapter` — bridge typed traits to JSON-erased handlers.
 - `ActionRegistry` stores `ActionHandler`, has typed `register_stateless/stateful/trigger/resource` convenience methods.
@@ -54,7 +54,7 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - `ActionError::retryable(...)` vs `ActionError::fatal(...)` — engine uses this to decide retry. Use `ActionResultExt` for ergonomic `.retryable()?` / `.fatal()?`.
 - `FnStatelessAction` / `stateless_fn()` for closure-based actions (testing and one-off use). `FnStatelessCtxAction` / `stateless_ctx_fn()` for closures that need `ActionContext` (credentials, resources, logger). Use `.with_context(ctx)` to inject capabilities.
 - `CredentialGuard` does NOT impl Serialize — compile error if put in Output/State types. By design.
-- `InternalHandler` is deprecated — use `ActionHandler` enum. Downstream crates use `#![allow(deprecated)]` during migration.
+- `InternalHandler` was deleted in Phase 7.5. Use `ActionHandler` enum exclusively.
 - `ResourceActionAdapter::cleanup` downcasts `Box<dyn Any>` — returns `ActionError::Fatal` on type mismatch during cleanup downcast.
 - Must call `impl_paginated_action!(MyType)` after `impl PaginatedAction for MyType` — the macro generates the `StatefulAction` impl. Forgetting the macro = type won't work with `register_stateful()`.
 - A type cannot use two DX macros (e.g., both `impl_paginated_action!` and `impl_batch_action!`) — duplicate `StatefulAction` impl error. Choose one pattern per type.
