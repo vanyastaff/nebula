@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::context::{ActionContext, TriggerContext};
-use crate::error::ActionError;
+use crate::error::{ActionError, ValidationReason};
 use crate::metadata::ActionMetadata;
 use crate::resource::ResourceAction;
 use crate::result::ActionResult;
@@ -96,8 +96,13 @@ where
         input: Value,
         ctx: &ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
-        let typed_input: A::Input = serde_json::from_value(input)
-            .map_err(|e| ActionError::validation(format!("input deserialization failed: {e}")))?;
+        let typed_input: A::Input = serde_json::from_value(input).map_err(|e| {
+            ActionError::validation(
+                "input",
+                ValidationReason::MalformedJson,
+                Some(e.to_string()),
+            )
+        })?;
 
         let result = self.action.execute(typed_input, ctx).await?;
 
@@ -193,12 +198,21 @@ where
         ctx: &ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
         // Adapter clones input ONCE per iteration to deserialize into typed A::Input.
-        let typed_input: A::Input = serde_json::from_value(input.clone())
-            .map_err(|e| ActionError::validation(format!("input deserialization failed: {e}")))?;
+        let typed_input: A::Input = serde_json::from_value(input.clone()).map_err(|e| {
+            ActionError::validation(
+                "input",
+                ValidationReason::MalformedJson,
+                Some(e.to_string()),
+            )
+        })?;
 
         let mut typed_state: A::State = serde_json::from_value(state.clone()).or_else(|e| {
             self.action.migrate_state(state.clone()).ok_or_else(|| {
-                ActionError::validation(format!("state deserialization failed: {e}"))
+                ActionError::validation(
+                    "state",
+                    ValidationReason::StateDeserialization,
+                    Some(e.to_string()),
+                )
             })
         })?;
 
@@ -853,10 +867,14 @@ impl IncomingEvent {
             });
         }
         if headers.len() > max_headers {
-            return Err(ActionError::validation(format!(
-                "too many headers on incoming event: {} > {max_headers}",
-                headers.len()
-            )));
+            return Err(ActionError::validation(
+                "headers",
+                ValidationReason::OutOfRange,
+                Some(format!(
+                    "too many headers on incoming event: {} > {max_headers}",
+                    headers.len()
+                )),
+            ));
         }
 
         // Normalize keys to lowercase once so `header()` is O(1) and
@@ -1309,7 +1327,7 @@ mod tests {
         let err = StatelessHandler::execute(&adapter, bad_input, &ctx)
             .await
             .unwrap_err();
-        assert!(matches!(err, ActionError::Validation(_)));
+        assert!(matches!(err, ActionError::Validation { .. }));
     }
 
     #[tokio::test]
@@ -1736,7 +1754,7 @@ mod tests {
             .execute(&serde_json::json!({}), &mut bad_state, &ctx)
             .await
             .unwrap_err();
-        assert!(matches!(err, ActionError::Validation(_)));
+        assert!(matches!(err, ActionError::Validation { .. }));
     }
 
     /// Action that mutates state to `mark` then fails with the configured error.
@@ -1851,7 +1869,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(err, ActionError::Validation(_)));
+        assert!(matches!(err, ActionError::Validation { .. }));
         assert_eq!(state, bad, "state must be untouched on deser failure");
     }
 

@@ -54,9 +54,13 @@ impl WebhookAction for TestWebhook {
         if sig != self.secret {
             return Ok(TriggerEventOutcome::skip());
         }
-        let payload = event
-            .body_json::<serde_json::Value>()
-            .map_err(|e| ActionError::validation(format!("bad json: {e}")))?;
+        let payload = event.body_json::<serde_json::Value>().map_err(|e| {
+            ActionError::validation(
+                "body",
+                nebula_action::ValidationReason::MalformedJson,
+                Some(e.to_string()),
+            )
+        })?;
         Ok(TriggerEventOutcome::emit(payload))
     }
 

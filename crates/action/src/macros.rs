@@ -167,16 +167,16 @@ macro_rules! assert_fatal {
     };
 }
 
-/// Assert that the result is `Err(ActionError::Validation(_))`.
+/// Assert that the result is `Err(ActionError::Validation { .. })`.
 ///
 /// # Panics
 ///
-/// Panics if the result is not `Err(ActionError::Validation(_))`.
+/// Panics if the result is not `Err(ActionError::Validation { .. })`.
 #[macro_export]
 macro_rules! assert_validation_error {
     ($result:expr) => {
         match &$result {
-            Err($crate::ActionError::Validation(_)) => {}
+            Err($crate::ActionError::Validation { .. }) => {}
             other => panic!("expected ActionError::Validation, got {:?}", other),
         }
     };

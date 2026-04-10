@@ -10,7 +10,7 @@ pub use crate::capability::{
 };
 pub use crate::context::{ActionContext, Context, TriggerContext};
 pub use crate::dependency::ActionDependencies;
-pub use crate::error::{ActionError, ActionErrorExt, RetryHintCode};
+pub use crate::error::{ActionError, ActionErrorExt, RetryHintCode, ValidationReason};
 pub use crate::handler::{
     ActionHandler, IncomingEvent, ResourceActionAdapter, StatefulActionAdapter,
     StatelessActionAdapter, TriggerActionAdapter, TriggerEventOutcome,

@@ -48,6 +48,74 @@ pub enum RetryHintCode {
     ActionPanicked,
 }
 
+/// Categorized reason for an [`ActionError::Validation`] failure.
+///
+/// Separating the reason from the free-form `detail` string lets
+/// observability pipelines bucket validation failures by category
+/// without regex-parsing a message that may include sanitized
+/// attacker-supplied fragments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum ValidationReason {
+    /// Required field missing from input.
+    MissingField,
+    /// Field present but wrong type (e.g., string where `u64` expected).
+    WrongType,
+    /// Field out of allowed range or enum.
+    OutOfRange,
+    /// Input bytes are not valid JSON.
+    MalformedJson,
+    /// Persisted state failed to deserialize — likely schema drift.
+    StateDeserialization,
+    /// Generic validation failure — use only when none of the above apply.
+    Other,
+}
+
+impl ValidationReason {
+    /// Short, stable identifier suitable for logs, metrics, and dashboards.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingField => "missing_field",
+            Self::WrongType => "wrong_type",
+            Self::OutOfRange => "out_of_range",
+            Self::MalformedJson => "malformed_json",
+            Self::StateDeserialization => "state_deserialization",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Maximum byte length of the `detail` field in
+/// [`ActionError::Validation`]. Untrusted input is sanitized and
+/// truncated to this budget at construction.
+pub const MAX_VALIDATION_DETAIL: usize = 256;
+
+/// Sanitize a validation detail string for safe inclusion in logs
+/// and error reports.
+///
+/// Escapes every control character (newlines, carriage returns,
+/// tabs, nulls, ANSI escapes, etc.) as `\uXXXX`. Truncates to
+/// [`MAX_VALIDATION_DETAIL`] bytes with a trailing `…` marker so
+/// that callers can tell the output was cut.
+fn sanitize_detail(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len().min(MAX_VALIDATION_DETAIL));
+    for ch in raw.chars() {
+        // Leave room for the truncation marker ('…' is 3 bytes in UTF-8).
+        if out.len() >= MAX_VALIDATION_DETAIL.saturating_sub(3) {
+            out.push('…');
+            break;
+        }
+        if ch.is_control() {
+            // Writes "\u000a" and friends — safe for any log sink.
+            out.push_str(&format!("\\u{:04x}", ch as u32));
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// Error type for all action operations.
 ///
 /// Distinguishes retryable from fatal errors so the engine can decide
@@ -86,8 +154,36 @@ pub enum ActionError {
     },
 
     /// Input validation failed before execution began.
-    #[error("validation: {0}")]
-    Validation(String),
+    ///
+    /// # Security
+    ///
+    /// `detail` may originate from untrusted input (e.g. a
+    /// `serde_json::Error` message quoting the offending value). The
+    /// framework sanitizes it at construction via
+    /// [`ActionError::validation`]:
+    /// - control characters are escaped as `\uXXXX` (no newlines /
+    ///   carriage returns / tabs / nulls survive — this defeats log
+    ///   injection)
+    /// - length is capped at [`MAX_VALIDATION_DETAIL`] bytes
+    ///
+    /// `field` is `&'static str` by design: it is the one piece of
+    /// the error that will always appear in logs, so it MUST be a
+    /// compile-time constant chosen by the action author — never
+    /// user input.
+    #[error("validation ({}): field `{field}`{}",
+        reason.as_str(),
+        detail.as_deref().map(|d| format!(" — {d}")).unwrap_or_default()
+    )]
+    Validation {
+        /// The field or input area that failed validation. Must be a
+        /// static string (action-author constant), not user input.
+        field: &'static str,
+        /// Classification for log aggregation and metrics.
+        reason: ValidationReason,
+        /// Optional sanitized detail, capped at [`MAX_VALIDATION_DETAIL`]
+        /// bytes with control characters escaped.
+        detail: Option<String>,
+    },
 
     /// Action requested a capability it was not granted.
     #[error("sandbox violation: capability `{capability}` denied for action `{action_id}`")]
@@ -117,7 +213,7 @@ impl nebula_error::Classify for ActionError {
         match self {
             Self::Retryable { .. } => nebula_error::ErrorCategory::External,
             Self::Fatal { .. } => nebula_error::ErrorCategory::Internal,
-            Self::Validation(_) => nebula_error::ErrorCategory::Validation,
+            Self::Validation { .. } => nebula_error::ErrorCategory::Validation,
             Self::SandboxViolation { .. } => nebula_error::ErrorCategory::Authorization,
             Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
             Self::DataLimitExceeded { .. } => nebula_error::ErrorCategory::Exhausted,
@@ -128,7 +224,7 @@ impl nebula_error::Classify for ActionError {
         nebula_error::ErrorCode::new(match self {
             Self::Retryable { .. } => "ACTION:RETRYABLE",
             Self::Fatal { .. } => "ACTION:FATAL",
-            Self::Validation(_) => "ACTION:VALIDATION",
+            Self::Validation { .. } => "ACTION:VALIDATION",
             Self::SandboxViolation { .. } => "ACTION:SANDBOX_VIOLATION",
             Self::Cancelled => "ACTION:CANCELLED",
             Self::DataLimitExceeded { .. } => "ACTION:DATA_LIMIT",
@@ -288,9 +384,40 @@ impl ActionError {
         }
     }
 
-    /// Create a validation error.
-    pub fn validation(msg: impl Into<String>) -> Self {
-        Self::Validation(msg.into())
+    /// Create a validation error with a sanitized, bounded detail.
+    ///
+    /// # Arguments
+    ///
+    /// - `field` — a compile-time constant identifying the input area
+    ///   that failed. MUST NOT be user input — this is the one part of
+    ///   the error that will always appear in logs.
+    /// - `reason` — categorical classification for log aggregation and
+    ///   metrics.
+    /// - `detail` — optional free-form context. May contain fragments
+    ///   of untrusted input (e.g. a `serde_json::Error` message). The
+    ///   framework escapes control characters as `\uXXXX` and
+    ///   truncates to [`MAX_VALIDATION_DETAIL`] bytes before storing,
+    ///   so log injection via newlines/ANSI/null bytes is not possible
+    ///   through this path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_action::{ActionError, ValidationReason};
+    ///
+    /// let err = ActionError::validation("email", ValidationReason::MissingField, None::<String>);
+    /// assert!(err.is_fatal());
+    /// ```
+    pub fn validation(
+        field: &'static str,
+        reason: ValidationReason,
+        detail: Option<impl Into<String>>,
+    ) -> Self {
+        Self::Validation {
+            field,
+            reason,
+            detail: detail.map(|d| sanitize_detail(&d.into())),
+        }
     }
 
     /// Returns `true` if the engine should consider retrying this error.
@@ -303,7 +430,7 @@ impl ActionError {
         matches!(
             self,
             Self::Fatal { .. }
-                | Self::Validation(_)
+                | Self::Validation { .. }
                 | Self::SandboxViolation { .. }
                 | Self::DataLimitExceeded { .. }
         )
@@ -435,7 +562,7 @@ mod tests {
 
     #[test]
     fn validation_error_is_fatal() {
-        let err = ActionError::validation("email is required");
+        let err = ActionError::validation("email", ValidationReason::MissingField, None::<String>);
         assert!(err.is_fatal());
         assert!(!err.is_retryable());
     }
@@ -503,8 +630,18 @@ mod tests {
         let err = ActionError::fatal("bad schema");
         assert_eq!(err.to_string(), "fatal: bad schema");
 
-        let err = ActionError::validation("missing field");
-        assert_eq!(err.to_string(), "validation: missing field");
+        let err = ActionError::validation("email", ValidationReason::MissingField, None::<String>);
+        assert_eq!(err.to_string(), "validation (missing_field): field `email`");
+
+        let err = ActionError::validation(
+            "body",
+            ValidationReason::MalformedJson,
+            Some("expected object"),
+        );
+        assert_eq!(
+            err.to_string(),
+            "validation (malformed_json): field `body` — expected object"
+        );
 
         let err = ActionError::Cancelled;
         assert_eq!(err.to_string(), "cancelled");
@@ -549,7 +686,11 @@ mod tests {
     fn retry_hint_code_is_none_for_non_retryable_fatal_variants() {
         // Variants other than Retryable/Fatal never carry a user hint —
         // use Classify::code() for the framework tag instead.
-        assert!(ActionError::validation("x").retry_hint_code().is_none());
+        assert!(
+            ActionError::validation("x", ValidationReason::Other, None::<String>)
+                .retry_hint_code()
+                .is_none()
+        );
         assert!(ActionError::Cancelled.retry_hint_code().is_none());
         assert!(
             ActionError::DataLimitExceeded {
@@ -626,5 +767,98 @@ mod tests {
         let err = do_work().unwrap_err();
         assert!(err.is_retryable());
         assert!(err.to_string().contains("missing"));
+    }
+
+    // ── ValidationReason + structured Validation (L7) ──────────────────────
+
+    #[test]
+    fn validation_reason_as_str_stable() {
+        assert_eq!(ValidationReason::MissingField.as_str(), "missing_field");
+        assert_eq!(ValidationReason::WrongType.as_str(), "wrong_type");
+        assert_eq!(ValidationReason::OutOfRange.as_str(), "out_of_range");
+        assert_eq!(ValidationReason::MalformedJson.as_str(), "malformed_json");
+        assert_eq!(
+            ValidationReason::StateDeserialization.as_str(),
+            "state_deserialization"
+        );
+        assert_eq!(ValidationReason::Other.as_str(), "other");
+    }
+
+    #[test]
+    fn validation_sanitizes_newlines_and_ansi() {
+        // Log injection test: an attacker-supplied string embeds newlines
+        // and fake audit entries that would otherwise show up verbatim in
+        // JSON log sinks. Sanitize escapes them as \u000a / \u000d so the
+        // actual line break never survives.
+        let err = ActionError::validation(
+            "body",
+            ValidationReason::MalformedJson,
+            Some("line1\nline2\r\nfake audit entry"),
+        );
+        let msg = err.to_string();
+        assert!(!msg.contains('\n'), "newline must be escaped: {msg}");
+        assert!(!msg.contains('\r'), "CR must be escaped: {msg}");
+        assert!(msg.contains("\\u000a"), "expected escaped LF in {msg}");
+        assert!(msg.contains("\\u000d"), "expected escaped CR in {msg}");
+    }
+
+    #[test]
+    fn validation_sanitizes_null_byte() {
+        let err = ActionError::validation("x", ValidationReason::Other, Some("null\0here"));
+        let msg = err.to_string();
+        assert!(!msg.contains('\0'));
+        assert!(msg.contains("\\u0000"));
+    }
+
+    #[test]
+    fn validation_truncates_long_detail() {
+        let huge = "A".repeat(10_000);
+        let err = ActionError::validation("body", ValidationReason::Other, Some(huge));
+        let ActionError::Validation { detail, .. } = &err else {
+            panic!("expected Validation variant");
+        };
+        let d = detail.as_ref().expect("detail present");
+        // Budget + ellipsis marker ≤ MAX + a few bytes for '…' UTF-8.
+        assert!(
+            d.len() <= MAX_VALIDATION_DETAIL + 4,
+            "detail len {} > budget",
+            d.len()
+        );
+        assert!(
+            d.ends_with('…'),
+            "truncated detail must end with ellipsis: {d}"
+        );
+    }
+
+    #[test]
+    fn validation_no_detail_still_useful() {
+        let err = ActionError::validation("email", ValidationReason::MissingField, None::<String>);
+        let s = err.to_string();
+        assert!(s.contains("missing_field"), "{s}");
+        assert!(s.contains("email"), "{s}");
+    }
+
+    #[test]
+    fn validation_structured_fields_preserved() {
+        let err = ActionError::validation("email", ValidationReason::WrongType, Some("got number"));
+        let ActionError::Validation {
+            field,
+            reason,
+            detail,
+        } = &err
+        else {
+            panic!("expected Validation variant");
+        };
+        assert_eq!(*field, "email");
+        assert_eq!(*reason, ValidationReason::WrongType);
+        assert_eq!(detail.as_deref(), Some("got number"));
+    }
+
+    #[test]
+    fn validation_reason_serializes_to_variant_name() {
+        let json = serde_json::to_string(&ValidationReason::MalformedJson).unwrap();
+        assert_eq!(json, "\"MalformedJson\"");
+        let parsed: ValidationReason = serde_json::from_str("\"MissingField\"").unwrap();
+        assert_eq!(parsed, ValidationReason::MissingField);
     }
 }

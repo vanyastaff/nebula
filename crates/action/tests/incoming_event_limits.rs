@@ -74,8 +74,15 @@ fn try_new_rejects_too_many_headers() {
         .collect();
     let err = IncomingEvent::try_new(b"", &headers).unwrap_err();
     match err {
-        ActionError::Validation(msg) => {
-            assert!(msg.contains("too many headers"), "message was: {msg}");
+        ActionError::Validation {
+            field,
+            reason,
+            detail,
+        } => {
+            assert_eq!(field, "headers");
+            assert_eq!(reason, nebula_action::ValidationReason::OutOfRange);
+            let detail = detail.expect("header count error carries detail");
+            assert!(detail.contains("too many headers"), "detail was: {detail}");
         }
         other => panic!("expected Validation, got {other:?}"),
     }
@@ -86,7 +93,7 @@ fn try_new_with_limits_custom_header_cap() {
     let err =
         IncomingEvent::try_new_with_limits(b"", &[("a", "1"), ("b", "2"), ("c", "3")], 1024, 2)
             .unwrap_err();
-    assert!(matches!(err, ActionError::Validation(_)));
+    assert!(matches!(err, ActionError::Validation { .. }));
 }
 
 #[test]
@@ -123,7 +130,7 @@ fn header_count_cap_beats_body_cap_order() {
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
     let err = IncomingEvent::try_new(b"ok", &headers).unwrap_err();
-    assert!(matches!(err, ActionError::Validation(_)));
+    assert!(matches!(err, ActionError::Validation { .. }));
 }
 
 #[test]

@@ -117,7 +117,7 @@ fn empty_secret_is_validation_error() {
     // closed is to refuse the operation entirely.
     let event = IncomingEvent::try_new(b"body", &[("X-Signature", "deadbeef")]).unwrap();
     let err = verify_hmac_sha256(&event, b"", "X-Signature").unwrap_err();
-    assert!(matches!(err, ActionError::Validation(_)));
+    assert!(matches!(err, ActionError::Validation { .. }));
 }
 
 #[test]

@@ -901,8 +901,11 @@ mod tests {
 
     #[test]
     fn assert_validation_error_macro_ok() {
-        let result: Result<ActionResult<i32>, ActionError> =
-            Err(ActionError::validation("missing field"));
+        let result: Result<ActionResult<i32>, ActionError> = Err(ActionError::validation(
+            "email",
+            crate::error::ValidationReason::MissingField,
+            None::<String>,
+        ));
         assert_validation_error!(result);
     }
 

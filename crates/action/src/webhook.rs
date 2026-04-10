@@ -32,7 +32,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
-use crate::error::ActionError;
+use crate::error::{ActionError, ValidationReason};
 use crate::handler::IncomingEvent;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -124,7 +124,9 @@ pub fn verify_hmac_sha256(
 ) -> Result<SignatureOutcome, ActionError> {
     if secret.is_empty() {
         return Err(ActionError::validation(
-            "webhook signature verification requires a non-empty HMAC secret",
+            "webhook.secret",
+            ValidationReason::MissingField,
+            Some("webhook signature verification requires a non-empty HMAC secret".to_string()),
         ));
     }
 

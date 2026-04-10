@@ -103,7 +103,9 @@ pub use capability::{
 };
 pub use context::{ActionContext, Context, TriggerContext};
 pub use dependency::ActionDependencies;
-pub use error::{ActionError, ActionErrorExt, RetryHintCode};
+pub use error::{
+    ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
+};
 pub use handler::{
     ActionHandler, AgentHandler, IncomingEvent, PollTriggerAdapter, ResourceActionAdapter,
     ResourceHandler, StatefulActionAdapter, StatefulHandler, StatelessActionAdapter,
