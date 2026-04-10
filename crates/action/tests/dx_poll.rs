@@ -30,7 +30,10 @@ impl PollAction for TickPoller {
     type Event = serde_json::Value;
 
     fn poll_interval(&self) -> Duration {
-        Duration::from_millis(10)
+        // Match the adapter's enforced floor so the test does not fight
+        // the clamp logic. Tests below that exercise the floor directly
+        // use a separate action that returns Duration::ZERO.
+        Duration::from_millis(100)
     }
 
     async fn poll(
@@ -70,11 +73,12 @@ async fn poll_adapter_emits_events() {
     let handle = tokio::spawn(async move { adapter.start(&ctx_clone).await });
 
     // Deterministic: let the spawned task reach its first `tokio::select!`
-    // and register the sleep deadline, then advance time past the poll interval.
+    // and register the sleep deadline, then advance time past the poll
+    // interval (which is clamped to POLL_INTERVAL_FLOOR = 100 ms).
     for _ in 0..5 {
         tokio::task::yield_now().await;
     }
-    tokio::time::advance(Duration::from_millis(15)).await;
+    tokio::time::advance(Duration::from_millis(110)).await;
     for _ in 0..5 {
         tokio::task::yield_now().await;
     }
@@ -158,6 +162,91 @@ async fn poll_adapter_rejects_concurrent_start() {
     cancel.cancel();
     let result = handle.await.unwrap();
     assert!(result.is_ok());
+}
+
+// ── Interval floor (A3) ───────────────────────────────────────────────────
+
+struct ZeroIntervalPoller {
+    meta: ActionMetadata,
+    poll_count: Arc<AtomicU32>,
+}
+
+impl ActionDependencies for ZeroIntervalPoller {}
+impl Action for ZeroIntervalPoller {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl PollAction for ZeroIntervalPoller {
+    type Cursor = u32;
+    type Event = serde_json::Value;
+
+    fn poll_interval(&self) -> Duration {
+        Duration::ZERO
+    }
+
+    async fn poll(
+        &self,
+        _cursor: &mut u32,
+        _ctx: &TriggerContext,
+    ) -> Result<Vec<serde_json::Value>, ActionError> {
+        self.poll_count.fetch_add(1, Ordering::Relaxed);
+        Ok(vec![])
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn poll_adapter_clamps_zero_interval_to_floor() {
+    // An action that returns poll_interval() = Duration::ZERO must not
+    // produce a tight loop. The adapter clamps to POLL_INTERVAL_FLOOR
+    // (100 ms). Advancing virtual time by 50 ms must not trigger any
+    // polls; advancing past the floor must trigger exactly one.
+    let poll_count = Arc::new(AtomicU32::new(0));
+    let poller = ZeroIntervalPoller {
+        meta: ActionMetadata::new(
+            nebula_core::action_key!("test.tick.zero"),
+            "Zero Interval",
+            "Returns Duration::ZERO from poll_interval",
+        ),
+        poll_count: poll_count.clone(),
+    };
+    let adapter = Arc::new(PollTriggerAdapter::new(poller));
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+
+    let cancel = ctx.cancellation.clone();
+    let adapter1 = Arc::clone(&adapter);
+    let ctx1 = ctx.clone();
+    let handle = tokio::spawn(async move { adapter1.start(&ctx1).await });
+
+    // Reach the first sleep registration.
+    for _ in 0..5 {
+        tokio::task::yield_now().await;
+    }
+
+    // Below the 100 ms floor — no polls yet.
+    tokio::time::advance(Duration::from_millis(50)).await;
+    for _ in 0..5 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        poll_count.load(Ordering::Relaxed),
+        0,
+        "below the 100 ms floor — no polls yet"
+    );
+
+    // Past the floor — exactly one poll so far.
+    tokio::time::advance(Duration::from_millis(60)).await;
+    for _ in 0..5 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        poll_count.load(Ordering::Relaxed) >= 1,
+        "past the floor — at least one poll happened"
+    );
+
+    cancel.cancel();
+    handle.await.unwrap().unwrap();
 }
 
 #[tokio::test(start_paused = true)]

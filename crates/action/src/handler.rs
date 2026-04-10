@@ -425,6 +425,16 @@ impl<A: WebhookAction> fmt::Debug for WebhookTriggerAdapter<A> {
 
 // ── PollTriggerAdapter ────────────────────────────────────────────────────
 
+/// Minimum poll interval enforced by [`PollTriggerAdapter`].
+///
+/// Anything shorter is clamped to this floor and a warning is logged.
+/// Rationale: 10 Hz is the upper bound of legitimate poll-based
+/// integration with upstream APIs. Higher frequencies are either a
+/// configuration bug (e.g., `Duration::ZERO` from a missing field) or
+/// an abusive integration. Use a streaming trigger (post-v1) for real
+/// high-frequency event sources.
+pub const POLL_INTERVAL_FLOOR: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Wraps a [`PollAction`] as a [`dyn TriggerHandler`].
 ///
 /// `start()` runs a blocking loop: sleep → poll → emit events.
@@ -509,7 +519,20 @@ where
         let _guard = StartedGuard(&self.started);
 
         let mut cursor = A::Cursor::default();
-        let interval = self.action.poll_interval();
+        let raw_interval = self.action.poll_interval();
+        // Floor the interval at 100 ms. Anything shorter is a busy-loop bug
+        // or an abusive integration — Nebula is a workflow engine, not an
+        // HFT platform. Legitimate high-frequency polling should use a
+        // streaming trigger, not a poll trigger.
+        let interval = raw_interval.max(POLL_INTERVAL_FLOOR);
+        if interval != raw_interval {
+            tracing::warn!(
+                action = %self.action.metadata().key,
+                requested = ?raw_interval,
+                clamped = ?interval,
+                "poll_interval below floor; clamped to prevent busy loop"
+            );
+        }
 
         loop {
             tokio::select! {
@@ -521,16 +544,34 @@ where
                         Ok(events) => {
                             for event in events {
                                 // Bad payload from a single event must not kill the trigger.
-                                let Ok(payload) = serde_json::to_value(&event) else {
-                                    continue;
+                                let payload = match serde_json::to_value(&event) {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            action = %self.action.metadata().key,
+                                            error = %e,
+                                            "poll event serialization failed; dropping"
+                                        );
+                                        continue;
+                                    }
                                 };
                                 // Transient emit failure — skip this event, continue polling.
-                                let _ = ctx.emitter.emit(payload).await;
+                                if let Err(e) = ctx.emitter.emit(payload).await {
+                                    tracing::warn!(
+                                        action = %self.action.metadata().key,
+                                        error = %e,
+                                        "emitter.emit failed; dropping event and continuing"
+                                    );
+                                }
                             }
                         }
                         Err(e) if e.is_fatal() => return Err(e),
-                        Err(_) => {
-                            // Retryable poll error — skip this cycle, try next interval.
+                        Err(e) => {
+                            tracing::debug!(
+                                action = %self.action.metadata().key,
+                                error = %e,
+                                "retryable poll error; skipping cycle"
+                            );
                         }
                     }
                 }
