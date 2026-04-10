@@ -29,6 +29,7 @@ zeroize = { version = "1.8.2" }
 
 parking_lot = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
 nebula-core = { path = "../core" }

@@ -70,6 +70,7 @@ Every action family lives in one file containing both the core trait and its DX 
 - A type cannot use two DX macros (e.g., both `impl_paginated_action!` and `impl_batch_action!`) — duplicate `StatefulAction` impl error. Choose one pattern per type.
 - `BatchAction::process_item` returning `ActionError::Fatal` aborts the entire batch. Use `ActionError::Retryable` for per-item errors that should be captured and continued.
 - `PollTriggerAdapter::start()` blocks until cancellation — engine MUST spawn it in a task. Tests use `#[tokio::test(start_paused = true)]` + `tokio::time::advance` + `yield_now` for determinism. Requires `tokio` `test-util` feature.
+- `StatefulActionAdapter::execute` MUST checkpoint typed_state back to the JSON state on BOTH `Ok` and `Err` paths before propagating. A Retryable with mutated cursor/counter must be flushed, or the engine replays completed work on retry — duplicated API calls, double charges, double emits. The only exception is Validation raised during input/state deserialization (typed_state never existed). If state serialization itself fails on the error path, the adapter logs via `tracing::error!` and propagates the original action error — masking it would break retry classification.
 - `WebhookTriggerAdapter::handle_event` before `start()` returns `ActionError::Fatal` — webhook layer must ensure trigger is started before routing events.
 - `IncomingEvent` is in `handler.rs` not `trigger.rs` — re-exported from both for public API. Both `nebula_action::handler::IncomingEvent` and `nebula_action::trigger::IncomingEvent` work.
 - `ctx.cancellation` and `ctx.emitter` accessed as pub fields in PollTriggerAdapter — known tech debt, should be methods. Tracked for TriggerContext refactor.
@@ -80,3 +81,4 @@ Every action family lives in one file containing both the core trait and its DX 
 - Depends on nebula-core, nebula-parameter, nebula-credential. Used by nebula-engine, nebula-runtime, nebula-sdk.
 
 <!-- reviewed: 2026-04-10 — module layout cleanup: execution.rs/authoring.rs/ext.rs/scoped.rs deleted; stateless/trigger/resource split into own files; ActionResultExt → ActionErrorExt in error.rs; credential re-exports purged (only CredentialGuard remains in public API) -->
+<!-- reviewed: 2026-04-10 — A1: StatefulActionAdapter::execute checkpoints state on both Ok and Err paths; serde failure on error path logs via tracing and propagates original action error. StatefulHandler::execute doc updated with "State checkpointing" invariant. Added tracing as direct dep. -->

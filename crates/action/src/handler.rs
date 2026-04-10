@@ -172,6 +172,20 @@ where
     ///
     /// Returns [`ActionError::Validation`] if input or state deserialization fails,
     /// or propagates errors from the underlying action.
+    ///
+    /// # State checkpointing invariant
+    ///
+    /// State mutations performed by the typed action are flushed back to
+    /// `state` **before** any error from `action.execute()` is propagated.
+    /// If the typed action increments a counter or advances a cursor and
+    /// then returns [`ActionError::Retryable`], the engine checkpoints the
+    /// new state — retries resume from the mutated position instead of
+    /// replaying completed work (which would duplicate API calls, double
+    /// charges, and double emits).
+    ///
+    /// The only path that does NOT checkpoint is `Validation` raised while
+    /// deserializing input or state — in that case `typed_state` was never
+    /// created and cannot have been mutated.
     async fn execute(
         &self,
         input: &Value,
@@ -188,14 +202,41 @@ where
             })
         })?;
 
-        let result = self
+        // Run the typed action. typed_state may be mutated regardless of
+        // Ok/Err — flush it back to JSON before propagating so that a
+        // Retryable does not replay completed work on retry.
+        let action_result = self
             .action
             .execute(typed_input, &mut typed_state, ctx)
-            .await?;
+            .await;
 
-        // Write mutated state back to JSON for engine checkpointing.
-        *state = serde_json::to_value(&typed_state)
-            .map_err(|e| ActionError::fatal(format!("state serialization failed: {e}")))?;
+        match serde_json::to_value(&typed_state) {
+            Ok(new_state) => {
+                *state = new_state;
+            }
+            Err(ser_err) => match &action_result {
+                Ok(_) => {
+                    // Success path: surface the serialization failure as fatal.
+                    return Err(ActionError::fatal(format!(
+                        "state serialization failed: {ser_err}"
+                    )));
+                }
+                Err(action_err) => {
+                    // Error path: the action error is the actionable signal.
+                    // Log the serde failure forensically and let the original
+                    // error propagate — masking it would break retry classification.
+                    tracing::error!(
+                        action = %self.action.metadata().key,
+                        serialization_error = %ser_err,
+                        action_error = %action_err,
+                        "stateful adapter: state serialization failed on error path; \
+                         checkpoint lost, propagating original action error"
+                    );
+                }
+            },
+        }
+
+        let result = action_result?;
 
         result.try_map_output(|output| {
             serde_json::to_value(output)
@@ -580,6 +621,19 @@ pub trait StatefulHandler: Send + Sync {
     }
 
     /// Execute one iteration with mutable JSON state.
+    ///
+    /// # State checkpointing
+    ///
+    /// Implementations MUST flush any state mutations back to `state` before
+    /// returning, regardless of whether the iteration succeeded. Returning
+    /// `Err(Retryable)` after mutating internal typed state without
+    /// checkpointing causes the engine to re-run the iteration against a
+    /// stale snapshot — partial work is replayed and external side effects
+    /// (API calls, DB writes, emits) are duplicated.
+    ///
+    /// The only exception is when state deserialization fails at the start
+    /// of the iteration — in that case no mutations could have occurred and
+    /// there is nothing to flush.
     ///
     /// # Errors
     ///
@@ -1440,6 +1494,122 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ActionError::Validation(_)));
+    }
+
+    /// Action that mutates state to `mark` then fails with the configured error.
+    ///
+    /// Used to prove that `StatefulActionAdapter::execute` flushes state
+    /// back to JSON before propagating errors — critical for avoiding
+    /// duplicated side effects on retry.
+    struct MutateThenFailAction {
+        meta: ActionMetadata,
+        fail_with: ActionError,
+        mark: u32,
+    }
+
+    impl ActionDependencies for MutateThenFailAction {}
+
+    impl Action for MutateThenFailAction {
+        fn metadata(&self) -> &ActionMetadata {
+            &self.meta
+        }
+    }
+
+    impl crate::stateful::StatefulAction for MutateThenFailAction {
+        type Input = Value;
+        type Output = Value;
+        type State = CounterState;
+
+        fn init_state(&self) -> CounterState {
+            CounterState { count: 0 }
+        }
+
+        async fn execute(
+            &self,
+            _input: Self::Input,
+            state: &mut Self::State,
+            _ctx: &impl crate::context::Context,
+        ) -> Result<ActionResult<Self::Output>, ActionError> {
+            state.count = self.mark;
+            Err(self.fail_with.clone())
+        }
+    }
+
+    fn mutate_fail(fail_with: ActionError, mark: u32) -> MutateThenFailAction {
+        MutateThenFailAction {
+            meta: ActionMetadata::new(
+                nebula_core::action_key!("test.mutate_fail"),
+                "MutateFail",
+                "Mutates state then fails",
+            ),
+            fail_with,
+            mark,
+        }
+    }
+
+    #[tokio::test]
+    async fn stateful_adapter_checkpoints_state_on_retryable_error() {
+        // Prove: an action that advances cursor/counter state and then returns
+        // Retryable must have its mutations flushed to the JSON state so the
+        // engine checkpoints the new position. Otherwise retry replays
+        // completed work.
+        let adapter = StatefulActionAdapter::new(mutate_fail(
+            ActionError::retryable("transient upstream error"),
+            42,
+        ));
+        let ctx = make_ctx();
+        let mut state = serde_json::json!({ "count": 0 });
+
+        let err = adapter
+            .execute(&serde_json::json!({}), &mut state, &ctx)
+            .await
+            .unwrap_err();
+
+        assert!(err.is_retryable(), "error must still be retryable");
+        assert_eq!(
+            state,
+            serde_json::json!({ "count": 42 }),
+            "state mutations before Err must be checkpointed"
+        );
+    }
+
+    #[tokio::test]
+    async fn stateful_adapter_checkpoints_state_on_fatal_error() {
+        // Symmetric invariant: even fatal errors must checkpoint state, so
+        // an operator debugging the failure can see the position at which
+        // the action gave up.
+        let adapter =
+            StatefulActionAdapter::new(mutate_fail(ActionError::fatal("schema mismatch"), 7));
+        let ctx = make_ctx();
+        let mut state = serde_json::json!({ "count": 0 });
+
+        let err = adapter
+            .execute(&serde_json::json!({}), &mut state, &ctx)
+            .await
+            .unwrap_err();
+
+        assert!(err.is_fatal());
+        assert_eq!(state, serde_json::json!({ "count": 7 }));
+    }
+
+    #[tokio::test]
+    async fn stateful_adapter_preserves_state_on_validation_error() {
+        // Deserialization failure happens BEFORE the typed action runs, so
+        // typed_state never existed and nothing should be written back. The
+        // input JSON must remain verbatim so the engine can decide how to
+        // recover (e.g., schema migration path outside the adapter).
+        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let ctx = make_ctx();
+        let bad = serde_json::json!("not a counter state");
+        let mut state = bad.clone();
+
+        let err = adapter
+            .execute(&serde_json::json!({}), &mut state, &ctx)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ActionError::Validation(_)));
+        assert_eq!(state, bad, "state must be untouched on deser failure");
     }
 
     // ── TriggerActionAdapter tests ────────────────────────────────────────────
