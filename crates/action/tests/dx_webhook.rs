@@ -118,7 +118,8 @@ async fn webhook_adapter_handle_event_emits_on_valid_secret() {
 
     adapter.start(&ctx).await.unwrap();
 
-    let event = IncomingEvent::new(br#"{"action":"push"}"#, &[("X-Secret", "mysecret")]);
+    let event =
+        IncomingEvent::try_new(br#"{"action":"push"}"#, &[("X-Secret", "mysecret")]).unwrap();
 
     let outcome = adapter.handle_event(event, &ctx).await.unwrap();
     assert!(outcome.will_emit());
@@ -132,7 +133,7 @@ async fn webhook_adapter_handle_event_skips_on_bad_secret() {
 
     adapter.start(&ctx).await.unwrap();
 
-    let event = IncomingEvent::new(br#"{"action":"push"}"#, &[("X-Secret", "wrong")]);
+    let event = IncomingEvent::try_new(br#"{"action":"push"}"#, &[("X-Secret", "wrong")]).unwrap();
 
     let outcome = adapter.handle_event(event, &ctx).await.unwrap();
     assert!(!outcome.will_emit());
@@ -151,7 +152,8 @@ async fn webhook_adapter_handle_event_before_start_fails() {
     let adapter = WebhookTriggerAdapter::new(webhook);
     let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
 
-    let event = IncomingEvent::new(br#"{"action":"push"}"#, &[("X-Secret", "mysecret")]);
+    let event =
+        IncomingEvent::try_new(br#"{"action":"push"}"#, &[("X-Secret", "mysecret")]).unwrap();
 
     let result = adapter.handle_event(event, &ctx).await;
     assert!(result.is_err());

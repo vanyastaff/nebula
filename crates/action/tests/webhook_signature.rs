@@ -27,7 +27,7 @@ fn valid_bare_hex_signature_accepted() {
     let body = br#"{"x":1}"#;
     let secret = b"whsec_test";
     let sig = sig_hex(secret, body);
-    let event = IncomingEvent::new(body, &[("X-Signature", &sig)]);
+    let event = IncomingEvent::try_new(body, &[("X-Signature", &sig)]).unwrap();
     assert_eq!(
         verify_hmac_sha256(&event, secret, "X-Signature").unwrap(),
         SignatureOutcome::Valid
@@ -39,7 +39,7 @@ fn valid_sha256_prefixed_signature_accepted() {
     let body = br#"{"x":1}"#;
     let secret = b"gh-secret";
     let sig = format!("sha256={}", sig_hex(secret, body));
-    let event = IncomingEvent::new(body, &[("X-Hub-Signature-256", &sig)]);
+    let event = IncomingEvent::try_new(body, &[("X-Hub-Signature-256", &sig)]).unwrap();
     assert_eq!(
         verify_hmac_sha256(&event, secret, "X-Hub-Signature-256").unwrap(),
         SignatureOutcome::Valid
@@ -50,7 +50,7 @@ fn valid_sha256_prefixed_signature_accepted() {
 fn wrong_secret_rejected() {
     let body = br#"{"x":1}"#;
     let sig = sig_hex(b"correct", body);
-    let event = IncomingEvent::new(body, &[("X-Signature", &sig)]);
+    let event = IncomingEvent::try_new(body, &[("X-Signature", &sig)]).unwrap();
     assert_eq!(
         verify_hmac_sha256(&event, b"wrong", "X-Signature").unwrap(),
         SignatureOutcome::Invalid
@@ -60,7 +60,7 @@ fn wrong_secret_rejected() {
 #[test]
 fn tampered_body_rejected() {
     let sig = sig_hex(b"k", b"original");
-    let event = IncomingEvent::new(b"tampered", &[("X-Signature", &sig)]);
+    let event = IncomingEvent::try_new(b"tampered", &[("X-Signature", &sig)]).unwrap();
     assert_eq!(
         verify_hmac_sha256(&event, b"k", "X-Signature").unwrap(),
         SignatureOutcome::Invalid
@@ -69,7 +69,7 @@ fn tampered_body_rejected() {
 
 #[test]
 fn missing_header_returns_missing() {
-    let event = IncomingEvent::new(b"body", &[]);
+    let event = IncomingEvent::try_new(b"body", &[]).unwrap();
     assert_eq!(
         verify_hmac_sha256(&event, b"k", "X-Signature").unwrap(),
         SignatureOutcome::Missing
@@ -81,7 +81,7 @@ fn header_lookup_is_case_insensitive() {
     let body = b"payload";
     let sig = sig_hex(b"k", body);
     // Header stored under lowercase key but queried with mixed case.
-    let event = IncomingEvent::new(body, &[("x-signature", &sig)]);
+    let event = IncomingEvent::try_new(body, &[("x-signature", &sig)]).unwrap();
     assert!(
         verify_hmac_sha256(&event, b"k", "X-Signature")
             .unwrap()
@@ -93,7 +93,7 @@ fn header_lookup_is_case_insensitive() {
 fn invalid_hex_returns_invalid_not_error() {
     // Not a panic, not an error — just Invalid. The action author's
     // `is_valid()` check handles this alongside the wrong-digest case.
-    let event = IncomingEvent::new(b"body", &[("X-Signature", "not-hex-zzz")]);
+    let event = IncomingEvent::try_new(b"body", &[("X-Signature", "not-hex-zzz")]).unwrap();
     assert_eq!(
         verify_hmac_sha256(&event, b"k", "X-Signature").unwrap(),
         SignatureOutcome::Invalid
@@ -104,7 +104,7 @@ fn invalid_hex_returns_invalid_not_error() {
 fn wrong_length_digest_rejected_without_panic() {
     // Valid hex but not the 32 bytes HMAC-SHA256 produces.
     // `verify_slice` handles the length mismatch in constant time.
-    let event = IncomingEvent::new(b"body", &[("X-Signature", "abcd")]);
+    let event = IncomingEvent::try_new(b"body", &[("X-Signature", "abcd")]).unwrap();
     assert_eq!(
         verify_hmac_sha256(&event, b"k", "X-Signature").unwrap(),
         SignatureOutcome::Invalid
@@ -115,7 +115,7 @@ fn wrong_length_digest_rejected_without_panic() {
 fn empty_secret_is_validation_error() {
     // An empty key accepts ANY input as valid — the only way to fail
     // closed is to refuse the operation entirely.
-    let event = IncomingEvent::new(b"body", &[("X-Signature", "deadbeef")]);
+    let event = IncomingEvent::try_new(b"body", &[("X-Signature", "deadbeef")]).unwrap();
     let err = verify_hmac_sha256(&event, b"", "X-Signature").unwrap_err();
     assert!(matches!(err, ActionError::Validation(_)));
 }

@@ -761,10 +761,43 @@ pub trait StatefulHandler: Send + Sync {
     ) -> Result<ActionResult<Value>, ActionError>;
 }
 
+/// Default maximum webhook body size accepted by [`IncomingEvent::try_new`]: 1 MiB.
+///
+/// Rationale: covers 99% of real-world webhook payloads. Reference
+/// providers:
+/// - Stripe: 256 KB per event
+/// - Slack: ~3 MB
+/// - GitHub push events: typically < 100 KB (release artifacts can hit 25 MB)
+/// - Twilio: 64 KB
+///
+/// For providers that need more, use
+/// [`IncomingEvent::try_new_with_limits`] and pass an explicit cap —
+/// we want oversize intake to be a deliberate decision visible in
+/// code review, not an accident.
+pub const DEFAULT_MAX_BODY_BYTES: usize = 1024 * 1024;
+
+/// Maximum header count accepted by [`IncomingEvent::try_new`].
+///
+/// RFC 9110 does not mandate a limit; most HTTP servers cap at 100.
+/// We allow 128 to leave headroom for providers that include many
+/// tracing/forwarding headers, while preventing an O(n²) CPU DoS if
+/// an action called `header()` in a loop against a huge attacker-
+/// supplied header set.
+pub const MAX_HEADER_COUNT: usize = 128;
+
 /// External event delivered to a trigger (HTTP request, message, etc.).
 ///
 /// Transport-agnostic: webhook layer constructs this from HTTP requests,
-/// message queue layer constructs it from queue messages.
+/// message queue layer constructs it from queue messages. The event is
+/// a **type boundary** between transport and action — size and header
+/// limits are enforced here at construction via
+/// [`try_new`](Self::try_new) and [`try_new_with_limits`](Self::try_new_with_limits).
+///
+/// Header keys are normalized to ASCII lowercase at construction, so
+/// [`header`](Self::header) is O(1). Duplicate keys collapse to the
+/// last value (acceptable for webhook signature verification — nobody
+/// signs `Set-Cookie`; if you need multi-valued headers, parse them
+/// from the underlying transport before constructing the event).
 ///
 /// `body` holds canonical raw bytes — use directly for HMAC signature
 /// verification (do NOT round-trip through `body_json()` for signing).
@@ -773,6 +806,7 @@ pub struct IncomingEvent {
     /// Raw payload body. Canonical bytes for signature verification.
     pub body: Vec<u8>,
     /// Headers / metadata (HTTP headers, message attributes, etc.).
+    /// Keys are stored lowercased for O(1) case-insensitive lookup.
     pub headers: HashMap<String, String>,
     /// Source identifier (URL path, topic name, queue name).
     #[serde(default)]
@@ -780,17 +814,63 @@ pub struct IncomingEvent {
 }
 
 impl IncomingEvent {
-    /// Create a new incoming event.
-    #[must_use]
-    pub fn new(body: &[u8], headers: &[(&str, &str)]) -> Self {
-        Self {
-            body: body.to_vec(),
-            headers: headers
-                .iter()
-                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-                .collect(),
-            source: String::new(),
+    /// Construct an event with the [`DEFAULT_MAX_BODY_BYTES`] body cap
+    /// and [`MAX_HEADER_COUNT`] header count cap.
+    ///
+    /// Header keys are normalized to ASCII lowercase at construction.
+    ///
+    /// For providers whose payloads exceed the defaults (e.g., GitHub
+    /// release events up to 25 MB), use
+    /// [`try_new_with_limits`](Self::try_new_with_limits).
+    ///
+    /// # Errors
+    ///
+    /// - [`ActionError::DataLimitExceeded`] if `body.len() > DEFAULT_MAX_BODY_BYTES`
+    /// - [`ActionError::Validation`] if `headers.len() > MAX_HEADER_COUNT`
+    pub fn try_new(body: &[u8], headers: &[(&str, &str)]) -> Result<Self, ActionError> {
+        Self::try_new_with_limits(body, headers, DEFAULT_MAX_BODY_BYTES, MAX_HEADER_COUNT)
+    }
+
+    /// Construct with explicit limits. Prefer [`try_new`](Self::try_new)
+    /// unless you know your provider exceeds the defaults.
+    ///
+    /// Header keys are normalized to ASCII lowercase at construction.
+    ///
+    /// # Errors
+    ///
+    /// - [`ActionError::DataLimitExceeded`] if `body.len() > max_body`
+    /// - [`ActionError::Validation`] if `headers.len() > max_headers`
+    pub fn try_new_with_limits(
+        body: &[u8],
+        headers: &[(&str, &str)],
+        max_body: usize,
+        max_headers: usize,
+    ) -> Result<Self, ActionError> {
+        if body.len() > max_body {
+            return Err(ActionError::DataLimitExceeded {
+                limit_bytes: max_body as u64,
+                actual_bytes: body.len() as u64,
+            });
         }
+        if headers.len() > max_headers {
+            return Err(ActionError::validation(format!(
+                "too many headers on incoming event: {} > {max_headers}",
+                headers.len()
+            )));
+        }
+
+        // Normalize keys to lowercase once so `header()` is O(1) and
+        // case-insensitive lookup does not allocate per call.
+        let mut map = HashMap::with_capacity(headers.len());
+        for (k, v) in headers {
+            map.insert(k.to_ascii_lowercase(), (*v).to_string());
+        }
+
+        Ok(Self {
+            body: body.to_vec(),
+            headers: map,
+            source: String::new(),
+        })
     }
 
     /// Set the source identifier.
@@ -800,16 +880,29 @@ impl IncomingEvent {
         self
     }
 
-    /// Get a header value by key (ASCII case-insensitive).
+    /// Get a header value by key (ASCII case-insensitive, O(1)).
     ///
-    /// HTTP headers are ASCII per RFC 7230, so ASCII case folding is sufficient
-    /// and avoids allocations on lookup.
+    /// Keys are normalized to lowercase at construction — HTTP headers
+    /// are ASCII per RFC 9110. Fast path: when the caller already
+    /// passes a lowercase key, lookup is allocation-free. Slow path:
+    /// a single fold to lowercase for mixed-case callers, still O(1)
+    /// vs the previous O(n) linear scan with per-entry
+    /// `eq_ignore_ascii_case`.
+    ///
+    /// Duplicate keys collapse to the last value stored during
+    /// construction — callers needing multi-valued header semantics
+    /// must parse them from the underlying transport.
     #[must_use]
     pub fn header(&self, key: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(key))
-            .map(|(_, v)| v.as_str())
+        // Fast path: key is already all-lowercase (or has no ASCII
+        // letters). Avoid the allocation from `to_ascii_lowercase`.
+        if !key.bytes().any(|b| b.is_ascii_uppercase()) {
+            self.headers.get(key).map(String::as_str)
+        } else {
+            self.headers
+                .get(&key.to_ascii_lowercase())
+                .map(String::as_str)
+        }
     }
 
     /// Get the body as a UTF-8 string slice.
@@ -819,6 +912,11 @@ impl IncomingEvent {
     }
 
     /// Parse the body as JSON.
+    ///
+    /// The body is already bounded by the construction-time limit (see
+    /// [`try_new`](Self::try_new) / [`try_new_with_limits`](Self::try_new_with_limits)),
+    /// so this call inherits that DoS protection without an additional
+    /// byte-size guard.
     ///
     /// # Errors
     ///
