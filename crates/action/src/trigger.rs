@@ -54,10 +54,16 @@ pub trait TriggerAction: Action {
 ///
 /// # Example
 ///
+/// Use [`verify_hmac_sha256`](crate::webhook::verify_hmac_sha256) from
+/// the `webhook` module for constant-time signature verification —
+/// naive `==` comparison on HMAC digests leaks the secret via a
+/// prefix-length timing side-channel.
+///
 /// ```rust,ignore
 /// use nebula_action::trigger::{WebhookAction, IncomingEvent, TriggerEventOutcome};
+/// use nebula_action::webhook::verify_hmac_sha256;
 ///
-/// struct GitHubWebhook { secret: String }
+/// struct GitHubWebhook { secret: Vec<u8> }
 ///
 /// impl WebhookAction for GitHubWebhook {
 ///     type State = WebhookReg;
@@ -66,15 +72,16 @@ pub trait TriggerAction: Action {
 ///         Ok(WebhookReg { hook_id: register(ctx).await? })
 ///     }
 ///
-///     async fn handle_request(&self, event: &IncomingEvent, state: &Self::State, ctx: &TriggerContext)
+///     async fn handle_request(&self, event: &IncomingEvent, _state: &Self::State, _ctx: &TriggerContext)
 ///         -> Result<TriggerEventOutcome, ActionError> {
-///         if !verify(&state.secret, &event.body, event.header("X-Hub-Signature-256")) {
+///         let outcome = verify_hmac_sha256(event, &self.secret, "X-Hub-Signature-256")?;
+///         if !outcome.is_valid() {
 ///             return Ok(TriggerEventOutcome::skip());
 ///         }
 ///         Ok(TriggerEventOutcome::emit(event.body_json()?))
 ///     }
 ///
-///     async fn on_deactivate(&self, state: WebhookReg, ctx: &TriggerContext) -> Result<(), ActionError> {
+///     async fn on_deactivate(&self, state: WebhookReg, _ctx: &TriggerContext) -> Result<(), ActionError> {
 ///         delete_hook(&state.hook_id).await
 ///     }
 /// }

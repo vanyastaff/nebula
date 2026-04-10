@@ -31,9 +31,16 @@ parking_lot = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
 
+# Crypto — webhook signature verification primitives (crates::webhook)
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+subtle = { workspace = true }
+
 [dev-dependencies]
 nebula-core = { path = "../core" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
+hex = { workspace = true }
 
 [lib]
 doctest = false

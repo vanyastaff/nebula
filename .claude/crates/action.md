@@ -43,8 +43,9 @@ Every action family lives in one file containing both the core trait and its DX 
 - `stateless.rs` — `StatelessAction` trait + function-backed adapters (`FnStatelessAction`, `FnStatelessCtxAction`, `stateless_fn`, `stateless_ctx_fn`). Previously split between `execution.rs` and `authoring.rs`.
 - `stateful.rs` — `StatefulAction` core + DX (`PaginatedAction`, `BatchAction`, `TransactionalAction`) + `macro_rules!` macros (`impl_paginated_action!`, `impl_batch_action!`, `impl_transactional_action!`). Macros generate `impl StatefulAction for $ty` — no blanket impls (Rust coherence forbids multiple). Engine never sees DX types.
 - `trigger.rs` — `TriggerAction` core (moved from `execution.rs`) + DX (`WebhookAction`, `PollAction`). Typed adapters (`WebhookTriggerAdapter`, `PollTriggerAdapter`) implement `TriggerHandler` directly. Registry convenience methods: `register_webhook()`, `register_poll()`.
-- `resource.rs` — `ResourceAction` trait (moved from `execution.rs`). Graph-level DI: configure/cleanup.
-- `error.rs` — `ActionError` + `ErrorCode` + `ActionErrorExt` (merged from old `ext.rs`).
+- `resource.rs` — `ResourceAction` trait (single `type Resource` after A4 collapse). Graph-level DI: configure/cleanup.
+- `webhook.rs` — webhook signature verification primitives (A5): `verify_hmac_sha256`, `hmac_sha256_compute`, `verify_tag_constant_time`, `SignatureOutcome` enum. Constant-time via `subtle::ConstantTimeEq`.
+- `error.rs` — `ActionError` + `RetryHintCode` (renamed from `ErrorCode` in M2) + `ActionErrorExt` (merged from old `ext.rs`).
 - `result.rs` — `ActionResult` variants, `BranchKey`, `BreakReason`, `PortKey`, `WaitCondition`, `continue_with()`, `break_completed()`, etc.
 - `handler.rs` — `ActionHandler` enum + `{Stateless,Stateful,Trigger,Resource,Agent}Handler` traits + adapters.
 
@@ -90,3 +91,4 @@ Every action family lives in one file containing both the core trait and its DX 
 <!-- reviewed: 2026-04-10 — A3: POLL_INTERVAL_FLOOR (100 ms) clamps configured poll_interval; busy-loop prevention. Silent error drops in PollTriggerAdapter replaced with tracing::warn!/debug! (temporary — Phase 5 migrates to ctx.logger + WarnThrottle). -->
 <!-- reviewed: 2026-04-10 — A4: ResourceAction collapsed to single associated `type Resource` (was Config + Instance). ResourceActionAdapter downcast is now a true invariant — mismatch is an engine bug, not a user footgun. `nebula_runtime::ActionRegistry::register_resource` lost its redundant A::Config/A::Instance bounds. New integration test: resource_roundtrip. -->
 <!-- reviewed: 2026-04-10 — M2: ErrorCode enum → RetryHintCode (disambiguates from nebula_error::Classify::code() framework taxonomy tag). ActionError::error_code() → retry_hint_code() returning Option<RetryHintCode> by value. retryable_with_code/fatal_with_code → *_with_hint. ActionErrorExt methods also renamed. Zero non-test callers in workspace — clean rename. -->
+<!-- reviewed: 2026-04-10 — A5: new module `nebula_action::webhook` with constant-time HMAC-SHA256 verification (verify_hmac_sha256, SignatureOutcome, hmac_sha256_compute, verify_tag_constant_time). Closes the timing side-channel that the previous doc example led authors to write. Fixed misleading doc example in trigger.rs. Added hmac/sha2/hex/subtle as direct deps; subtle newly added to workspace. 11 new integration tests in tests/webhook_signature.rs. -->

@@ -89,6 +89,8 @@ pub mod testing;
 pub mod trigger;
 /// Action package validation utilities.
 pub mod validation;
+/// Webhook signature verification primitives (HMAC-SHA256, constant-time).
+pub mod webhook;
 
 // ── Public re-exports ───────────────────────────────────────────────────────
 

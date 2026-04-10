@@ -99,6 +99,7 @@ lasso = { version = "0.7", features = ["multi-threaded"] }
 sha2 = "0.11"
 hmac = "0.13"
 hex = "0.4"
+subtle = "2.6"
 
 # HTTP
 reqwest = { version = "0.13", features = ["json"], default-features = false }
