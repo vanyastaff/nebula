@@ -56,7 +56,7 @@ pub enum MetadataCompatibilityError {
 ///
 /// Used by the engine for action discovery, capability checks, schema
 /// validation, and interface versioning.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActionMetadata {
     /// Unique key identifying this action type (e.g. `"http.request"`).
     pub key: ActionKey,
@@ -206,6 +206,39 @@ mod tests {
     #[test]
     fn interface_version_display() {
         assert_eq!(InterfaceVersion::new(1, 3).to_string(), "1.3");
+    }
+
+    #[test]
+    fn metadata_partial_eq_roundtrip() {
+        // Two metadata values built identically must compare equal —
+        // this is the guarantee downstream registries rely on for
+        // deduplication and cache-key checks.
+        let a = ActionMetadata::new(action_key!("http.request"), "HTTP", "desc")
+            .with_version(1, 2)
+            .with_isolation_level(IsolationLevel::CapabilityGated);
+        let b = ActionMetadata::new(action_key!("http.request"), "HTTP", "desc")
+            .with_version(1, 2)
+            .with_isolation_level(IsolationLevel::CapabilityGated);
+        assert_eq!(a, b);
+
+        let c = ActionMetadata::new(action_key!("http.request"), "HTTP", "desc").with_version(1, 3);
+        assert_ne!(a, c, "different minor version must break equality");
+    }
+
+    #[test]
+    fn metadata_serde_roundtrip() {
+        // Serialize → JSON → deserialize must round-trip cleanly.
+        // Engine persistence and cross-process plugin discovery both
+        // depend on this contract.
+        let original = ActionMetadata::new(action_key!("http.request"), "HTTP", "desc")
+            .with_version(2, 1)
+            .with_isolation_level(IsolationLevel::Isolated);
+
+        let json = serde_json::to_string(&original).expect("serialization succeeds");
+        let decoded: ActionMetadata =
+            serde_json::from_str(&json).expect("deserialization succeeds");
+
+        assert_eq!(original, decoded);
     }
 
     #[test]
