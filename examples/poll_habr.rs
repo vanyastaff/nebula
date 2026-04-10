@@ -140,7 +140,10 @@ impl PollAction for HabrRssPollAction {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let window = Duration::from_millis(2500);
-    println!("▶ poll_habr — running the trigger for {}ms", window.as_millis());
+    println!(
+        "▶ poll_habr — running the trigger for {}ms",
+        window.as_millis()
+    );
     println!();
 
     let ctx = TestContextBuilder::new();
@@ -156,7 +159,10 @@ async fn main() -> anyhow::Result<()> {
         println!("note:       {note}");
     }
     println!();
-    println!("emitted {} execution(s) over the window", report.emitted.len());
+    println!(
+        "emitted {} execution(s) over the window",
+        report.emitted.len()
+    );
     println!();
 
     for (i, evt) in report.emitted.iter().enumerate() {

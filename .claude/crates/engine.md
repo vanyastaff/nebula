@@ -23,3 +23,4 @@ Workflow execution orchestrator — frontier-based DAG scheduler.
 - Resume budget/input not persisted — defaults on resume (TODO).
 
 <!-- reviewed: 2026-04-09 — Phase 7.5: test handlers migrated from InternalHandler to StatelessAction, no architectural change -->
+<!-- reviewed: 2026-04-10 — mechanical import path update: nebula_action::execution::StatelessAction → nebula_action::stateless::StatelessAction (action crate module layout cleanup) -->

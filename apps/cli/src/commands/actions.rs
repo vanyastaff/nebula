@@ -2,9 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nebula_action::testing::SpyEmitter;
-use nebula_action::{
-    ActionContext, ActionHandler, ActionResult, BreakReason, TriggerContext,
-};
+use nebula_action::{ActionContext, ActionHandler, ActionResult, BreakReason, TriggerContext};
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 use nebula_runtime::ActionRegistry;
 use tokio_util::sync::CancellationToken;
@@ -163,9 +161,7 @@ pub async fn test(args: ActionsTestArgs) {
         ActionHandler::Stateful(h) => run_stateful(h.as_ref(), input, &ctx).await,
         ActionHandler::Trigger(h) => run_trigger(h.clone(), &input).await,
         other => {
-            eprintln!(
-                "error: `actions test` does not yet support this action kind: {other:?}"
-            );
+            eprintln!("error: `actions test` does not yet support this action kind: {other:?}");
             std::process::exit(2);
         }
     };
@@ -398,8 +394,7 @@ fn print_report(report: &TestReport, elapsed: std::time::Duration, format: Outpu
             }
             println!(
                 "Output:     {}",
-                serde_json::to_string_pretty(&report.output)
-                    .unwrap_or_else(|_| "null".to_owned())
+                serde_json::to_string_pretty(&report.output).unwrap_or_else(|_| "null".to_owned())
             );
         }
     }

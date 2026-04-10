@@ -23,7 +23,7 @@ use crate::result::ActionResult;
 /// checkpoint it between iterations, and `Clone` so it can snapshot before
 /// executing (rollback on failure).
 ///
-/// Cancellation is enforced by the runtime (same as [`StatelessAction`](crate::execution::StatelessAction)).
+/// Cancellation is enforced by the runtime (same as [`StatelessAction`](crate::stateless::StatelessAction)).
 pub trait StatefulAction: Action {
     /// Input type for each iteration.
     type Input: Send + Sync;

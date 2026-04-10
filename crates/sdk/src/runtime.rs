@@ -15,7 +15,7 @@
 //! # use nebula_action::testing::TestContextBuilder;
 //! # use serde_json::json;
 //! # async fn demo<A>(action: A) -> anyhow::Result<()>
-//! # where A: nebula_action::execution::StatefulAction + Send + Sync + 'static,
+//! # where A: nebula_action::stateful::StatefulAction + Send + Sync + 'static,
 //! #       A::Input: serde::de::DeserializeOwned + Send + Sync,
 //! #       A::Output: serde::Serialize + Send + Sync,
 //! #       A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
@@ -30,9 +30,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nebula_action::error::ActionError;
-use nebula_action::execution::{StatefulAction, StatelessAction};
 use nebula_action::handler::{StatefulHandler, StatelessHandler, TriggerHandler};
 use nebula_action::result::{ActionResult, BreakReason};
+use nebula_action::stateful::StatefulAction;
+use nebula_action::stateless::StatelessAction;
 use nebula_action::testing::TestContextBuilder;
 use nebula_action::trigger::{PollAction, WebhookAction};
 use nebula_action::{
@@ -299,9 +300,7 @@ fn extract_output(result: &ActionResult<Value>) -> Value {
     match result {
         ActionResult::Success { output }
         | ActionResult::Continue { output, .. }
-        | ActionResult::Break { output, .. } => {
-            output.as_value().cloned().unwrap_or(Value::Null)
-        }
+        | ActionResult::Break { output, .. } => output.as_value().cloned().unwrap_or(Value::Null),
         other => serde_json::json!(format!("{other:?}")),
     }
 }

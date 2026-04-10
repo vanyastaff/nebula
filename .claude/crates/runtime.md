@@ -33,3 +33,4 @@ Action execution layer — ActionRegistry, data policies, and MemoryQueue.
 - Depends on nebula-action, nebula-core, **nebula-sandbox**. Used by nebula-engine.
 
 <!-- reviewed: 2026-04-09 — Phase 7.5 ActionRegistry unification, ActionHandler enum dispatch, InternalHandler deleted -->
+<!-- reviewed: 2026-04-10 — mechanical import path update: nebula_action::execution::StatelessAction → nebula_action::stateless::StatelessAction (action crate module layout cleanup) -->

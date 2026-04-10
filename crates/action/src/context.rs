@@ -13,13 +13,13 @@ use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 use tokio_util::sync::CancellationToken;
 
 use crate::capability::{
-    ActionLogger, CredentialAccessor, ExecutionEmitter, ResourceAccessor, TriggerScheduler,
-    default_action_logger, default_credential_accessor, default_execution_emitter,
-    default_resource_accessor, default_trigger_scheduler,
+    ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerScheduler, default_action_logger,
+    default_execution_emitter, default_resource_accessor, default_trigger_scheduler,
 };
 use crate::error::ActionError;
-use nebula_credential::CredentialGuard;
-use nebula_credential::CredentialSnapshot;
+use nebula_credential::{
+    CredentialAccessor, CredentialGuard, CredentialSnapshot, default_credential_accessor,
+};
 
 /// Base trait for action execution contexts.
 ///
@@ -390,12 +390,11 @@ mod tests {
 
     use async_trait::async_trait;
     use nebula_credential::{
-        CredentialMetadata, CredentialSnapshot, SecretString, SecretToken, scheme::ConnectionUri,
+        CredentialAccessError, CredentialMetadata, CredentialSnapshot, SecretString, SecretToken,
+        scheme::ConnectionUri,
     };
 
-    use crate::capability::{
-        ActionLogLevel, ActionLogger, CredentialAccessError, ExecutionEmitter, TriggerScheduler,
-    };
+    use crate::capability::{ActionLogLevel, ActionLogger, ExecutionEmitter, TriggerScheduler};
 
     struct MockContext {
         token: CancellationToken,

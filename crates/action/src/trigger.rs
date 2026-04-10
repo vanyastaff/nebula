@@ -1,12 +1,19 @@
-//! DX convenience traits for common `TriggerAction` patterns.
+//! Core [`TriggerAction`] trait and DX convenience patterns.
 //!
-//! Each trait has a corresponding typed adapter that implements
-//! `TriggerHandler` directly.
-//! Register via convenience methods on `ActionRegistry`.
+//! A trigger action is a workflow starter — it lives outside the execution
+//! graph and emits new workflow executions in response to external events
+//! (webhooks, cron, polling, etc.). The runtime drives the `start`/`stop`
+//! lifecycle and receives workflow inputs through the trigger context.
 //!
-//! - `WebhookAction` — webhook lifecycle (register/handle/unregister)
+//! ## DX convenience traits
+//!
+//! Each convenience trait has a corresponding typed adapter that implements
+//! `TriggerHandler` directly. Register via convenience methods on
+//! `ActionRegistry`.
+//!
+//! - [`WebhookAction`] — webhook lifecycle (register/handle/unregister)
 //!   → `registry.register_webhook(action)`
-//! - `PollAction` — periodic polling with in-memory cursor
+//! - [`PollAction`] — periodic polling with in-memory cursor
 //!   → `registry.register_poll(action)`
 
 // Re-export engine-facing types for DX trait convenience.
@@ -19,6 +26,22 @@ use serde::{Serialize, de::DeserializeOwned};
 use crate::action::Action;
 use crate::context::TriggerContext;
 use crate::error::ActionError;
+
+/// Trigger action: workflow starter, lives outside the execution graph.
+///
+/// The runtime calls `start` to begin listening (e.g. webhook, poll); `stop`
+/// to tear down. Triggers emit new workflow executions; they do not run
+/// inside one.
+///
+/// Uses [`TriggerContext`] (workflow_id, trigger_id, cancellation), not
+/// [`Context`](crate::context::Context).
+pub trait TriggerAction: Action {
+    /// Start the trigger (register listener, schedule poll, etc.).
+    fn start(&self, ctx: &TriggerContext) -> impl Future<Output = Result<(), ActionError>> + Send;
+
+    /// Stop the trigger (unregister, cancel schedule).
+    fn stop(&self, ctx: &TriggerContext) -> impl Future<Output = Result<(), ActionError>> + Send;
+}
 
 /// Webhook trigger — register/handle/unregister lifecycle.
 ///

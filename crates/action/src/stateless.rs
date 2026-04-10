@@ -1,14 +1,88 @@
-//! Ergonomic authoring helpers for common action patterns.
+//! Core [`StatelessAction`] trait and function-backed DX adapters.
 //!
-//! This module provides low-boilerplate adapters for action authors.
+//! Stateless actions are pure functions from input to result — no state is
+//! kept between executions, and the engine may run multiple instances in
+//! parallel. For iterative execution with persistent state, use
+//! [`StatefulAction`](crate::stateful::StatefulAction).
+//!
+//! ## Cancellation
+//!
+//! Cancellation is handled by the runtime (e.g. `tokio::select!` between
+//! `execute` and `ctx.cancellation().cancelled()`). Implementations do not
+//! need to check cancellation unless they want cooperative checks at specific
+//! points.
+//!
+//! ## DX adapters
+//!
+//! - [`FnStatelessAction`] / [`stateless_fn`] — zero-boilerplate adapter for a
+//!   plain `async fn(Input) -> Result<Output, ActionError>`.
+//! - [`FnStatelessCtxAction`] / [`stateless_ctx_fn`] — context-aware variant
+//!   for closures that need credentials, resources, or the logger.
 
 use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::context::ActionContext;
+use crate::action::Action;
+use crate::context::{ActionContext, Context};
 use crate::dependency::ActionDependencies;
-use crate::{Action, ActionError, ActionMetadata, ActionResult, Context, StatelessAction};
+use crate::error::ActionError;
+use crate::metadata::ActionMetadata;
+use crate::result::ActionResult;
+
+/// Stateless action: pure function from input to result.
+///
+/// No state is kept between executions. The engine may run multiple
+/// instances in parallel. Use [`StatefulAction`](crate::stateful::StatefulAction)
+/// for iterative or stateful behavior.
+///
+/// # Cancellation
+///
+/// Cancellation is handled by the runtime (e.g. `tokio::select!` between
+/// `execute` and `ctx.cancellation().cancelled()`). Implementations do not
+/// need to check cancellation unless they want cooperative checks at specific
+/// points.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use nebula_action::{Action, StatelessAction, ActionContext, ActionResult, ActionError};
+///
+/// struct MyAction { meta: ActionMetadata }
+/// impl Action for MyAction { /* ... */ }
+///
+/// impl StatelessAction for MyAction {
+///     type Input = serde_json::Value;
+///     type Output = serde_json::Value;
+///
+///     async fn execute(&self, input: Self::Input, _ctx: &impl Context)
+///         -> Result<ActionResult<Self::Output>, ActionError>
+///     {
+///         Ok(ActionResult::success(input))
+///     }
+/// }
+/// ```
+pub trait StatelessAction: Action {
+    /// Input type for this action.
+    type Input: Send + Sync;
+    /// Output type produced on success (wrapped in [`ActionResult`]).
+    type Output: Send + Sync;
+
+    /// Execute the action with the given input and context.
+    ///
+    /// Returns [`ActionResult`] for flow control (Success, Skip, Branch, Wait, etc.)
+    /// or [`ActionError`] for retryable/fatal failures.
+    ///
+    /// The returned future must be `Send` so the runtime can run it in
+    /// `tokio::select!` with cancellation (no per-action cancellation boilerplate).
+    fn execute(
+        &self,
+        input: Self::Input,
+        ctx: &impl Context,
+    ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send;
+}
+
+// ── FnStatelessAction ───────────────────────────────────────────────────────
 
 /// Stateless action adapter backed by an async function/closure.
 ///
@@ -78,6 +152,8 @@ pub fn stateless_fn<F, Input, Output>(
 ) -> FnStatelessAction<F, Input, Output> {
     FnStatelessAction::new(metadata, func)
 }
+
+// ── FnStatelessCtxAction ────────────────────────────────────────────────────
 
 /// Stateless action adapter backed by a context-aware async function/closure.
 ///
@@ -161,18 +237,15 @@ where
         ctx: &impl Context,
     ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send {
         let action_ctx = match &self.base_ctx {
-            Some(base) => {
-                // Use capabilities from the base context, identity from runtime.
-                ActionContext::new(
-                    ctx.execution_id(),
-                    ctx.node_id(),
-                    ctx.workflow_id(),
-                    ctx.cancellation().clone(),
-                )
-                .with_resources(Arc::clone(&base.resources))
-                .with_credentials(Arc::clone(&base.credentials))
-                .with_logger(Arc::clone(&base.logger))
-            }
+            Some(base) => ActionContext::new(
+                ctx.execution_id(),
+                ctx.node_id(),
+                ctx.workflow_id(),
+                ctx.cancellation().clone(),
+            )
+            .with_resources(Arc::clone(&base.resources))
+            .with_credentials(Arc::clone(&base.credentials))
+            .with_logger(Arc::clone(&base.logger)),
             None => ActionContext::new(
                 ctx.execution_id(),
                 ctx.node_id(),
@@ -215,7 +288,6 @@ pub fn stateless_ctx_fn<F, Input, Output>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ActionContext;
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
     use tokio_util::sync::CancellationToken;
 
@@ -261,7 +333,6 @@ mod tests {
                 "Context-aware function action",
             ),
             |input, ctx: ActionContext| async move {
-                // Verify context identity is accessible
                 let _eid = ctx.execution_id;
                 Ok(input)
             },

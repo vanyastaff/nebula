@@ -10,14 +10,15 @@
 //! ## Core Types
 //!
 //! - [`Action`] — base trait providing identity and metadata
-//! - `SimpleAction` — zero-boilerplate action returning `Result<Output, Error>`
-//! - [`StatelessAction`] — stateless single-execution action with flow-control
+//! - [`StatelessAction`] — pure, stateless single-execution action
 //! - [`StatefulAction`] — iterative action with persistent state (Continue/Break)
 //! - [`TriggerAction`] — workflow starter (start/stop), outside execution graph
 //! - [`ResourceAction`] — graph-level DI (configure/cleanup), scoped to downstream branch
 //! - [`PaginatedAction`] — cursor-driven pagination (DX over StatefulAction)
 //! - [`BatchAction`] — fixed-size chunk processing (DX over StatefulAction)
 //! - [`TransactionalAction`] — saga pattern with compensation (DX over StatefulAction)
+//! - [`WebhookAction`] — webhook lifecycle (DX over TriggerAction)
+//! - [`PollAction`] — periodic polling (DX over TriggerAction)
 //! - [`ActionResult`] — execution result carrying data and flow-control intent
 //! - [`ActionOutput`] — first-class output type (value, binary, reference, stream)
 //! - [`ActionError`] — error type distinguishing retryable from fatal failures
@@ -54,9 +55,7 @@
 
 /// Base action trait defining identity and metadata.
 pub mod action;
-/// Ergonomic authoring helpers for low-boilerplate actions.
-pub mod authoring;
-/// Capability interfaces injected into contexts (resources, credentials, logger).
+/// Capability interfaces injected into contexts (resources, logger, trigger).
 pub mod capability;
 /// Runtime context provided to actions during execution.
 pub mod context;
@@ -64,14 +63,6 @@ pub mod context;
 pub mod dependency;
 /// Error types distinguishing retryable from fatal failures.
 pub mod error;
-/// Execution sub-traits (StatelessAction, etc.).
-pub mod execution;
-/// Extension traits for ergonomic error conversion in actions.
-pub mod ext;
-/// Credential guard — re-exported from [`nebula_credential`].
-pub mod guard {
-    pub use nebula_credential::CredentialGuard;
-}
 /// Dynamic handler contract for runtime (registry key → execute).
 pub mod handler;
 /// Assertion macros for testing action results (`assert_success!`, etc.).
@@ -84,15 +75,17 @@ pub mod output;
 pub mod port;
 /// Convenience re-exports for action authors.
 pub mod prelude;
+/// [`ResourceAction`] — graph-level dependency injection trait.
+pub mod resource;
 /// Execution result types carrying data and flow-control intent.
 pub mod result;
-/// Scoped credential accessor — enforces type-based access control.
-pub mod scoped;
-/// Core StatefulAction trait and DX convenience patterns.
+/// [`StatefulAction`] and DX patterns (paginated, batch, transactional).
 pub mod stateful;
+/// [`StatelessAction`] and function-backed DX adapters.
+pub mod stateless;
 /// Test utilities for action authors.
 pub mod testing;
-/// DX convenience types for common TriggerAction patterns (webhook, poll).
+/// [`TriggerAction`] and DX patterns (webhook, poll).
 pub mod trigger;
 /// Action package validation utilities.
 pub mod validation;
@@ -100,18 +93,16 @@ pub mod validation;
 // ── Public re-exports ───────────────────────────────────────────────────────
 
 pub use nebula_action_macros::Action;
+pub use nebula_credential::CredentialGuard;
+pub use nebula_parameter::{Parameter, ParameterCollection};
 
 pub use action::Action;
-pub use authoring::{FnStatelessAction, FnStatelessCtxAction, stateless_ctx_fn, stateless_fn};
 pub use capability::{
-    ActionLogLevel, ActionLogger, CredentialAccessError, CredentialAccessor, ExecutionEmitter,
-    NoopCredentialAccessor, ResourceAccessor, TriggerScheduler,
+    ActionLogLevel, ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerScheduler,
 };
 pub use context::{ActionContext, Context, TriggerContext};
 pub use dependency::ActionDependencies;
-pub use error::{ActionError, ErrorCode};
-pub use execution::{ResourceAction, StatelessAction, TriggerAction};
-pub use ext::ActionResultExt;
+pub use error::{ActionError, ActionErrorExt, ErrorCode};
 pub use handler::{
     ActionHandler, AgentHandler, IncomingEvent, PollTriggerAdapter, ResourceActionAdapter,
     ResourceHandler, StatefulActionAdapter, StatefulHandler, StatelessActionAdapter,
@@ -119,7 +110,6 @@ pub use handler::{
     WebhookTriggerAdapter,
 };
 pub use metadata::{ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError};
-pub use nebula_credential::CredentialGuard;
 pub use output::{
     ActionOutput, BinaryData, BinaryStorage, BufferConfig, CacheInfo, Cost, DataReference,
     DeferredOutput, DeferredRetryConfig, DeltaFormat, ExpectedOutput, OutputEnvelope, OutputMeta,
@@ -127,19 +117,20 @@ pub use output::{
     StreamOutput, StreamState, Timing, TokenUsage,
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
+pub use resource::ResourceAction;
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
-pub use scoped::ScopedCredentialAccessor;
 pub use stateful::{
     BatchAction, BatchItemResult, BatchState, PageResult, PaginatedAction, PaginationState,
     StatefulAction, TransactionPhase, TransactionState, TransactionalAction,
+};
+pub use stateless::{
+    FnStatelessAction, FnStatelessCtxAction, StatelessAction, stateless_ctx_fn, stateless_fn,
 };
 pub use testing::{
     SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
     TriggerTestHarness,
 };
-pub use trigger::{PollAction, WebhookAction};
+pub use trigger::{PollAction, TriggerAction, WebhookAction};
 pub use validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
 };
-
-pub use nebula_parameter::{Parameter, ParameterCollection};

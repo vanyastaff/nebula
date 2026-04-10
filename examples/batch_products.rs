@@ -73,9 +73,9 @@ impl BatchAction for DummyJsonProductsBatchAction {
         _ctx: &impl ActionContext,
     ) -> Result<Value, ActionError> {
         let url = format!("https://dummyjson.com/products/{item}");
-        let response = reqwest::get(&url).await.map_err(|e| {
-            ActionError::retryable(format!("HTTP error for product {item}: {e}"))
-        })?;
+        let response = reqwest::get(&url)
+            .await
+            .map_err(|e| ActionError::retryable(format!("HTTP error for product {item}: {e}")))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -85,9 +85,10 @@ impl BatchAction for DummyJsonProductsBatchAction {
             )));
         }
 
-        let raw: DummyJsonProductRaw = response.json().await.map_err(|e| {
-            ActionError::retryable(format!("parse error for product {item}: {e}"))
-        })?;
+        let raw: DummyJsonProductRaw = response
+            .json()
+            .await
+            .map_err(|e| ActionError::retryable(format!("parse error for product {item}: {e}")))?;
 
         Ok(json!({
             "id": raw.id,

@@ -436,8 +436,8 @@ mod tests {
     use nebula_action::context::Context;
     use nebula_action::dependency::ActionDependencies;
     use nebula_action::error::ActionError;
-    use nebula_action::execution::StatelessAction;
     use nebula_action::metadata::ActionMetadata;
+    use nebula_action::stateless::StatelessAction;
     use nebula_action::{ActionContext, TriggerContext};
     use nebula_core::action_key;
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};

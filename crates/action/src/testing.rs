@@ -13,17 +13,17 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
-use nebula_credential::CredentialSnapshot;
+use nebula_credential::{CredentialAccessError, CredentialAccessor, CredentialSnapshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::capability::{
-    ActionLogLevel, ActionLogger, CredentialAccessError, CredentialAccessor, ExecutionEmitter,
-    ResourceAccessor, TriggerScheduler,
+    ActionLogLevel, ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerScheduler,
 };
 use crate::context::{ActionContext, TriggerContext};
 use crate::error::ActionError;
-use crate::execution::{StatefulAction, TriggerAction};
 use crate::result::ActionResult;
+use crate::stateful::StatefulAction;
+use crate::trigger::TriggerAction;
 
 /// Builder for creating test [`ActionContext`] instances.
 ///

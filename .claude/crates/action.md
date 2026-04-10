@@ -13,12 +13,12 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - `ActionRegistry` lives in **`nebula-runtime`** (Phase 7.5), not in `nebula-action`. The protocol crate stays free of execution concerns.
 - `credential::<S>()` is the primary typed credential access path (returns `CredentialGuard<S>`). Renamed from `credential_by_type::<S>()` in Phase 2b (deprecated alias kept). `credential_by_id(id)` for string-based access (old `credential(id)` removed — name clash). `has_credential_id(id)` replaces `has_credential(id)` (deprecated alias kept). Legacy `credential_typed::<S>(id)` (string-based, consumes snapshot via `into_project::<S>()`, maps `SnapshotError` → `ActionError::Fatal`) preserved for backward compat.
 - `ErrorCode` enum (8 variants, `#[non_exhaustive]`) on `ActionError::Retryable` and `Fatal` — machine-readable classification for engine retry decisions (RateLimited, AuthExpired, UpstreamTimeout, etc.).
-- `ActionResultExt` trait — `.retryable()?` and `.fatal()?` ergonomic conversion on any `Result<T, E>`. Also `_with_code()` variants for ErrorCode attachment.
+- `ActionErrorExt` trait (in `error.rs`) — `.retryable()?` and `.fatal()?` ergonomic conversion on any `Result<T, E>`. Also `_with_code()` variants for ErrorCode attachment. Renamed from `ActionResultExt` on 2026-04-10 — name reflects that the trait produces `ActionError`, not `ActionResult`.
 - Error field: `Arc<anyhow::Error>` — preserves full error chain, Clone via Arc. Factory methods accept `impl Display + Debug + Send + Sync + 'static`.
 
-- `CredentialGuard<S: Zeroize>` — re-exported from `nebula-credential`. Deref + Zeroize on drop + !Serialize. Constructed in context methods via `CredentialGuard::new()`.
-- `credential::<S>()` on `ActionContext`/`TriggerContext` — type-based credential access via TypeId. Returns `CredentialGuard<S>`. Existing `credential_typed()` (string-based) and deprecated `credential_by_type()` kept for backward compat.
-- `CredentialAccessor`, `ScopedCredentialAccessor`, `NoopCredentialAccessor`, `CredentialAccessError` — canonical home is `nebula-credential`; re-exported from `nebula-action::capability` for backward compat. `From<CredentialAccessError> for ActionError` maps `AccessDenied` to `SandboxViolation`, others to `Fatal`.
+- `CredentialGuard<S: Zeroize>` — the **only** credential type re-exported from `nebula-action` (via `pub use nebula_credential::CredentialGuard` at `lib.rs`). Deref + Zeroize on drop + !Serialize. Constructed in context methods via `CredentialGuard::new()`.
+- `credential::<S>()` on `ActionContext`/`TriggerContext` — type-based credential access via TypeId. Returns `CredentialGuard<S>`.
+- `CredentialAccessor`, `ScopedCredentialAccessor`, `NoopCredentialAccessor`, `CredentialAccessError`, `default_credential_accessor` — NOT re-exported from `nebula-action` (purged 2026-04-10). Import directly from `nebula_credential` if building an `ActionContext` manually. Internally, `context.rs` / `testing.rs` use `nebula_credential::{CredentialAccessor, ...}` directly. `From<CredentialAccessError> for ActionError` still exists in `error.rs` and maps `AccessDenied` → `SandboxViolation`, others → `Fatal`.
 - `#[derive(Action)]` now works on structs with fields (not just unit structs) — enables `type Input = Self` pattern.
 
 - `ActionHandler` enum (5 variants: Stateless, Stateful, Trigger, Resource, Agent, `#[non_exhaustive]`) — engine match-dispatches. Replaces removed `InternalHandler`. Derives `Clone` (all variants are `Arc<dyn ...>`).
@@ -35,11 +35,21 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - `SpyEmitter` / `SpyScheduler`: test doubles capturing `emit()` and `schedule_after()` calls.
 - `TestResourceAccessor` uses `remove()` — a resource can only be acquired once per test (mirrors real acquire semantics).
 
-- `stateful.rs`: core `StatefulAction` (moved from `execution.rs`) + DX traits (`PaginatedAction`, `BatchAction`, `TransactionalAction`) + `macro_rules!` macros (`impl_paginated_action!`, `impl_batch_action!`, `impl_transactional_action!`). Macros generate `impl StatefulAction for $ty` — no blanket impls (Rust coherence forbids multiple). Engine never sees DX types. `execution.rs` re-exports `StatefulAction` for backward compat.
+## Module layout (reorganised 2026-04-10)
+
+Every action family lives in one file containing both the core trait and its DX adapters. The former grab-bag `execution.rs` / `authoring.rs` / `ext.rs` / `scoped.rs` files were deleted — no shims left behind.
+
+- `action.rs` — base `Action` trait (identity + metadata). 21 lines, intentionally left as its own file.
+- `stateless.rs` — `StatelessAction` trait + function-backed adapters (`FnStatelessAction`, `FnStatelessCtxAction`, `stateless_fn`, `stateless_ctx_fn`). Previously split between `execution.rs` and `authoring.rs`.
+- `stateful.rs` — `StatefulAction` core + DX (`PaginatedAction`, `BatchAction`, `TransactionalAction`) + `macro_rules!` macros (`impl_paginated_action!`, `impl_batch_action!`, `impl_transactional_action!`). Macros generate `impl StatefulAction for $ty` — no blanket impls (Rust coherence forbids multiple). Engine never sees DX types.
+- `trigger.rs` — `TriggerAction` core (moved from `execution.rs`) + DX (`WebhookAction`, `PollAction`). Typed adapters (`WebhookTriggerAdapter`, `PollTriggerAdapter`) implement `TriggerHandler` directly. Registry convenience methods: `register_webhook()`, `register_poll()`.
+- `resource.rs` — `ResourceAction` trait (moved from `execution.rs`). Graph-level DI: configure/cleanup.
+- `error.rs` — `ActionError` + `ErrorCode` + `ActionErrorExt` (merged from old `ext.rs`).
+- `result.rs` — `ActionResult` variants, `BranchKey`, `BreakReason`, `PortKey`, `WaitCondition`, `continue_with()`, `break_completed()`, etc.
+- `handler.rs` — `ActionHandler` enum + `{Stateless,Stateful,Trigger,Resource,Agent}Handler` traits + adapters.
+
 - `migrate_state(old: Value) -> Option<Self::State>` — default method on `StatefulAction`. Adapter calls on state deser failure. Returns `None` by default (error propagated).
 - `ActionResult::continue_with()`, `break_completed()`, `break_with_reason()`, `continue_with_delay()` — convenience constructors for stateful iteration results.
-
-- `trigger.rs`: DX traits for TriggerAction — `WebhookAction` (register/handle/unregister lifecycle) + `PollAction` (blocking poll loop with in-memory cursor). Typed adapters (`WebhookTriggerAdapter`, `PollTriggerAdapter`) implement `TriggerHandler` directly. Registry convenience methods: `register_webhook()`, `register_poll()`.
 - `IncomingEvent` — transport-agnostic event struct (body bytes + headers map + source). Lives in `handler.rs` (not `trigger.rs`) to avoid circular imports — re-exported from `trigger.rs`.
 - `TriggerEventOutcome` enum (Skip/Emit/EmitMany) on `TriggerHandler` — universal event ingress. `accepts_events()` + `handle_event()` with default error. `handle_event` takes typed `IncomingEvent` directly (NOT `Value`) — no JSON round-trip, no body bloat.
 - `WebhookTriggerAdapter` stores state as `RwLock<Option<Arc<State>>>`. `handle_event` clones the `Arc` under read lock and releases BEFORE await (prevents deadlock with concurrent start/stop). `handle_event` before `start()` returns Fatal error.
@@ -51,7 +61,7 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - **`ActionHandler` enum is now `Clone`** — all variants wrap `Arc<dyn ...>`, so cloning is cheap pointer copies. Required for owned-tuple lookups from the registry.
 
 ## Traps
-- `ActionError::retryable(...)` vs `ActionError::fatal(...)` — engine uses this to decide retry. Use `ActionResultExt` for ergonomic `.retryable()?` / `.fatal()?`.
+- `ActionError::retryable(...)` vs `ActionError::fatal(...)` — engine uses this to decide retry. Use `ActionErrorExt` for ergonomic `.retryable()?` / `.fatal()?`.
 - `FnStatelessAction` / `stateless_fn()` for closure-based actions (testing and one-off use). `FnStatelessCtxAction` / `stateless_ctx_fn()` for closures that need `ActionContext` (credentials, resources, logger). Use `.with_context(ctx)` to inject capabilities.
 - `CredentialGuard` does NOT impl Serialize — compile error if put in Output/State types. By design.
 - `InternalHandler` was deleted in Phase 7.5. Use `ActionHandler` enum exclusively.
@@ -69,4 +79,4 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 ## Relations
 - Depends on nebula-core, nebula-parameter, nebula-credential. Used by nebula-engine, nebula-runtime, nebula-sdk.
 
-<!-- reviewed: 2026-04-09 — Phase 7.5 ActionRegistry moved to nebula-runtime, InternalHandler deleted, StatefulHandler::execute borrows input -->
+<!-- reviewed: 2026-04-10 — module layout cleanup: execution.rs/authoring.rs/ext.rs/scoped.rs deleted; stateless/trigger/resource split into own files; ActionResultExt → ActionErrorExt in error.rs; credential re-exports purged (only CredentialGuard remains in public API) -->

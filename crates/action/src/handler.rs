@@ -29,10 +29,12 @@ use serde_json::Value;
 
 use crate::context::{ActionContext, TriggerContext};
 use crate::error::ActionError;
-use crate::execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 use crate::metadata::ActionMetadata;
+use crate::resource::ResourceAction;
 use crate::result::ActionResult;
-use crate::trigger::{PollAction, WebhookAction};
+use crate::stateful::StatefulAction;
+use crate::stateless::StatelessAction;
+use crate::trigger::{PollAction, TriggerAction, WebhookAction};
 
 /// Wraps a [`StatelessAction`] as a [`dyn StatelessHandler`].
 ///
@@ -912,8 +914,8 @@ mod tests {
     use crate::action::Action;
     use crate::context::Context;
     use crate::dependency::ActionDependencies;
-    use crate::execution::StatelessAction;
     use crate::metadata::ActionMetadata;
+    use crate::stateless::StatelessAction;
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 
     use super::*;
@@ -1343,7 +1345,7 @@ mod tests {
         }
     }
 
-    impl crate::execution::StatefulAction for CounterAction {
+    impl crate::stateful::StatefulAction for CounterAction {
         type Input = Value;
         type Output = Value;
         type State = CounterState;
@@ -1468,7 +1470,7 @@ mod tests {
         }
     }
 
-    impl crate::execution::TriggerAction for MockTriggerAction {
+    impl crate::trigger::TriggerAction for MockTriggerAction {
         async fn start(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
             self.started
                 .store(true, std::sync::atomic::Ordering::Release);
@@ -1541,7 +1543,7 @@ mod tests {
         }
     }
 
-    impl crate::execution::ResourceAction for MockResourceAction {
+    impl crate::resource::ResourceAction for MockResourceAction {
         type Config = String;
         type Instance = String;
 

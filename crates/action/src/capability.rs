@@ -1,11 +1,15 @@
 //! Capability module interfaces for action and trigger contexts.
 //!
 //! These traits are object-safe boundaries injected by runtime/engine so
-//! action code can access resources, credentials, and logging without
-//! coupling to concrete manager implementations.
+//! action code can access resources and logging without coupling to concrete
+//! manager implementations.
 //!
-//! Credential accessor types live in [`nebula_credential`] and are re-exported
-//! here for backward compatibility.
+//! Credential accessor types (`CredentialAccessor`, `CredentialAccessError`,
+//! `ScopedCredentialAccessor`, etc.) live in [`nebula_credential`] and are
+//! imported directly by consumers — `nebula-action` does not re-export them.
+//! Action authors interact with credentials through
+//! [`CredentialGuard`](nebula_credential::CredentialGuard) returned by
+//! [`ActionContext::credential`](crate::ActionContext::credential).
 
 use std::any::Any;
 use std::sync::Arc;
@@ -15,14 +19,6 @@ use async_trait::async_trait;
 use nebula_core::id::ExecutionId;
 
 use crate::ActionError;
-
-/// Re-exported from [`nebula_credential`]. Methods now return
-/// [`CredentialAccessError`] instead of `ActionError`.
-/// Use `From<CredentialAccessError> for ActionError` for conversion.
-pub use nebula_credential::{
-    CredentialAccessError, CredentialAccessor, NoopCredentialAccessor, ScopedCredentialAccessor,
-    default_credential_accessor,
-};
 
 /// Object-safe resource accessor injected into [`crate::ActionContext`].
 #[async_trait]
