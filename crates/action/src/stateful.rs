@@ -341,140 +341,18 @@ macro_rules! impl_batch_action {
     };
 }
 
-// ── TransactionalAction ─────────────────────────────────────────────────────
-
-/// Phase of the transactional action state machine.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum TransactionPhase {
-    /// Forward execution not yet started.
-    Pending,
-    /// Forward execution completed; compensation data stored.
-    Executed,
-    /// Compensation completed.
-    Compensated,
-}
-
-/// Persistent state for transactional actions (managed by `impl_transactional_action!`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TransactionState<T, C> {
-    /// Current phase.
-    pub phase: TransactionPhase,
-    /// Output from forward execution.
-    pub output: Option<T>,
-    /// Compensation data from forward execution.
-    pub compensation_data: Option<C>,
-}
-
-/// Saga-pattern transactional action.
-///
-/// Implement [`execute_tx`](TransactionalAction::execute_tx) and
-/// [`compensate`](TransactionalAction::compensate), then invoke
-/// `impl_transactional_action!`.
-///
-/// **Note:** Engine-level saga orchestration is post-v1. Compensation
-/// must be triggered explicitly.
-///
-/// ## State machine
-///
-/// The generated `StatefulAction::execute` follows a three-phase state machine:
-/// 1. **Pending** → calls `execute_tx`, stores output + compensation data, returns `Break(Completed)`
-/// 2. **Executed** → calls `compensate`, returns `Break(Custom("compensated"))` (input is ignored)
-/// 3. **Compensated** → returns `ActionError::Fatal` (already compensated)
-pub trait TransactionalAction: Action {
-    /// Input for forward execution.
-    type Input: Send + Sync;
-    /// Output from forward execution.
-    type Output: Serialize + DeserializeOwned + Clone + Send + Sync;
-    /// Data needed to compensate (undo) the forward execution.
-    type CompensationData: Serialize + DeserializeOwned + Clone + Send + Sync;
-
-    /// Forward operation. Returns output + compensation data.
-    ///
-    /// # Errors
-    ///
-    /// Return [`ActionError`] if the forward operation fails.
-    fn execute_tx(
-        &self,
-        input: Self::Input,
-        ctx: &impl Context,
-    ) -> impl Future<Output = Result<(Self::Output, Self::CompensationData), ActionError>> + Send;
-
-    /// Compensate (undo) the forward execution.
-    ///
-    /// # Errors
-    ///
-    /// Return [`ActionError`] if compensation fails.
-    fn compensate(
-        &self,
-        data: Self::CompensationData,
-        ctx: &impl Context,
-    ) -> impl Future<Output = Result<(), ActionError>> + Send;
-}
-
-/// Generate `impl StatefulAction` for a type that implements [`TransactionalAction`].
-#[macro_export]
-macro_rules! impl_transactional_action {
-    ($ty:ty) => {
-        impl $crate::stateful::StatefulAction for $ty {
-            type Input = <$ty as $crate::stateful::TransactionalAction>::Input;
-            type Output = <$ty as $crate::stateful::TransactionalAction>::Output;
-            type State = $crate::stateful::TransactionState<
-                <$ty as $crate::stateful::TransactionalAction>::Output,
-                <$ty as $crate::stateful::TransactionalAction>::CompensationData,
-            >;
-
-            fn init_state(&self) -> Self::State {
-                $crate::stateful::TransactionState {
-                    phase: $crate::stateful::TransactionPhase::Pending,
-                    output: None,
-                    compensation_data: None,
-                }
-            }
-
-            async fn execute(
-                &self,
-                input: Self::Input,
-                state: &mut Self::State,
-                ctx: &impl $crate::context::Context,
-            ) -> ::core::result::Result<
-                $crate::result::ActionResult<Self::Output>,
-                $crate::error::ActionError,
-            > {
-                use $crate::stateful::TransactionalAction as _;
-                match state.phase {
-                    $crate::stateful::TransactionPhase::Pending => {
-                        let (output, comp) = self.execute_tx(input, ctx).await?;
-                        state.phase = $crate::stateful::TransactionPhase::Executed;
-                        state.output = Some(output.clone());
-                        state.compensation_data = Some(comp);
-                        Ok($crate::ActionResult::break_completed(output))
-                    }
-                    $crate::stateful::TransactionPhase::Executed => {
-                        let data = state.compensation_data.clone().ok_or_else(|| {
-                            $crate::error::ActionError::fatal(
-                                "compensation data missing in Executed phase",
-                            )
-                        })?;
-                        self.compensate(data, ctx).await?;
-                        // Only consume after successful compensation — retryable errors
-                        // must leave the data intact for the next attempt.
-                        state.compensation_data.take();
-                        state.phase = $crate::stateful::TransactionPhase::Compensated;
-                        let output = state.output.clone().ok_or_else(|| {
-                            $crate::error::ActionError::fatal("output missing in Executed phase")
-                        })?;
-                        Ok($crate::ActionResult::break_with_reason(
-                            output,
-                            $crate::result::BreakReason::Custom("compensated".into()),
-                        ))
-                    }
-                    $crate::stateful::TransactionPhase::Compensated => {
-                        Err($crate::error::ActionError::fatal(
-                            "transactional action already compensated",
-                        ))
-                    }
-                }
-            }
-        }
-    };
-}
+// `TransactionalAction` + `TransactionPhase` + `TransactionState` +
+// `impl_transactional_action!` were removed on 2026-04-10 (M1). The
+// three-phase saga state machine was unreachable past the first
+// phase: `runtime::execute_stateful` only loops on
+// `ActionResult::Continue`, and the Pending arm returned
+// `break_completed(...)` — so the Executed / Compensated branches
+// were dead code under normal engine dispatch. The doc acknowledged
+// "engine-level saga orchestration is post-v1" but the trait looked
+// like a working three-phase saga to readers.
+//
+// Real saga orchestration (rollback triggers, saga state store,
+// compensation DAG) will land as an engine-level feature post-v1.
+// When it does, it will ship its own trait shape that cooperates
+// with the orchestrator, not a re-imagined `TransactionalAction`.
+// See `.claude/decisions.md` for the rationale note.

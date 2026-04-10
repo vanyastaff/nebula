@@ -26,7 +26,7 @@ pub use crate::port::{
 pub use crate::resource::ResourceAction;
 pub use crate::result::ActionResult;
 pub use crate::stateful::{
-    BatchAction, BatchItemResult, PageResult, PaginatedAction, StatefulAction, TransactionalAction,
+    BatchAction, BatchItemResult, PageResult, PaginatedAction, StatefulAction,
 };
 pub use crate::stateless::{FnStatelessAction, StatelessAction, stateless_fn};
 pub use crate::testing::{

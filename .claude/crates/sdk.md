@@ -7,7 +7,7 @@ Also owns the in-process `TestRuntime` harness for running single actions end-to
 - `runtime::TestRuntime` mirrors `ActionRegistry::register_*` API shape: one method per action kind (`run_stateless`, `run_stateful`, `run_poll`, `run_webhook`) — not a single `.run()` to avoid overlapping blanket impls in stable Rust.
 
 ## Key Decisions
-- `use nebula_sdk::prelude::*` gives everything for plugin authoring: all DX trait families (Stateful, Paginated, Batch, Transactional, Poll, Webhook), adapters, macros (`impl_paginated_action!`, `impl_batch_action!`, `impl_transactional_action!`), testing utilities (TestContextBuilder, Spy*), and the `TestRuntime`.
+- `use nebula_sdk::prelude::*` gives everything for plugin authoring: all DX trait families (Stateful, Paginated, Batch, Poll, Webhook), adapters, macros (`impl_paginated_action!`, `impl_batch_action!`), testing utilities (TestContextBuilder, Spy*), and the `TestRuntime`. `TransactionalAction` + `impl_transactional_action!` were removed 2026-04-10 (M1 — see action.md).
 - `testing` feature adds `tokio` re-export.
 - `TestRuntime::new(ctx)` consumes a `TestContextBuilder` (from nebula-action::testing), exposes `.with_stateful_cap(u32)` and `.with_trigger_window(Duration)` knobs, and each `run_*` is terminal (consumes self).
 - `RunReport { kind, output, iterations, duration, emitted, note }` is the single shape returned by all `run_*` methods — uniform consumption in examples/tests.
@@ -24,3 +24,4 @@ Also owns the in-process `TestRuntime` harness for running single actions end-to
 
 <!-- reviewed: 2026-04-08 — expanded prelude with StatelessAction, ActionDependencies, ActionContext, action_key!, descriptors -->
 <!-- reviewed: 2026-04-10 — added src/runtime.rs (TestRuntime + RunReport), expanded prelude with all DX traits + adapters + macros + Spy* + TestContextBuilder; examples/ now depends on nebula-sdk only -->
+<!-- reviewed: 2026-04-10 — M1: removed TransactionalAction + impl_transactional_action! re-exports from prelude (trait deleted in nebula-action). -->

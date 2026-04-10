@@ -16,7 +16,6 @@
 //! - [`ResourceAction`] — graph-level DI (configure/cleanup), scoped to downstream branch
 //! - [`PaginatedAction`] — cursor-driven pagination (DX over StatefulAction)
 //! - [`BatchAction`] — fixed-size chunk processing (DX over StatefulAction)
-//! - [`TransactionalAction`] — saga pattern with compensation (DX over StatefulAction)
 //! - [`WebhookAction`] — webhook lifecycle (DX over TriggerAction)
 //! - [`PollAction`] — periodic polling (DX over TriggerAction)
 //! - [`ActionResult`] — execution result carrying data and flow-control intent
@@ -123,7 +122,7 @@ pub use resource::ResourceAction;
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
 pub use stateful::{
     BatchAction, BatchItemResult, BatchState, PageResult, PaginatedAction, PaginationState,
-    StatefulAction, TransactionPhase, TransactionState, TransactionalAction,
+    StatefulAction,
 };
 pub use stateless::{
     FnStatelessAction, FnStatelessCtxAction, StatelessAction, stateless_ctx_fn, stateless_fn,

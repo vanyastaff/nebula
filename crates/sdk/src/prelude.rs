@@ -23,7 +23,7 @@ pub use nebula_action::{
 // DX trait families: stateful, trigger
 pub use nebula_action::result::BreakReason;
 pub use nebula_action::stateful::{
-    BatchAction, BatchItemResult, PageResult, PaginatedAction, StatefulAction, TransactionalAction,
+    BatchAction, BatchItemResult, PageResult, PaginatedAction, StatefulAction,
 };
 pub use nebula_action::trigger::{PollAction, WebhookAction};
 pub use nebula_action::{
@@ -33,7 +33,7 @@ pub use nebula_action::{
 
 // DX codegen macros — re-exported so authors can write `impl_paginated_action!(...)`
 // without reaching into `nebula_action::`.
-pub use nebula_action::{impl_batch_action, impl_paginated_action, impl_transactional_action};
+pub use nebula_action::{impl_batch_action, impl_paginated_action};
 
 // Testing harness — context builder, spy emitter/logger/scheduler.
 pub use nebula_action::testing::{
