@@ -1,0 +1,159 @@
+//! Integration tests for WebhookAction DX trait + WebhookTriggerAdapter.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use nebula_action::action::Action;
+use nebula_action::context::TriggerContext;
+use nebula_action::dependency::ActionDependencies;
+use nebula_action::error::ActionError;
+use nebula_action::handler::{
+    IncomingEvent, TriggerEventOutcome, TriggerHandler, WebhookTriggerAdapter,
+};
+use nebula_action::metadata::ActionMetadata;
+use nebula_action::testing::TestContextBuilder;
+use nebula_action::trigger::WebhookAction;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct WebhookReg {
+    hook_id: String,
+}
+
+struct TestWebhook {
+    meta: ActionMetadata,
+    secret: String,
+    activated: Arc<AtomicBool>,
+    deactivated: Arc<AtomicBool>,
+}
+
+impl ActionDependencies for TestWebhook {}
+impl Action for TestWebhook {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl WebhookAction for TestWebhook {
+    type State = WebhookReg;
+
+    async fn on_activate(&self, _ctx: &TriggerContext) -> Result<WebhookReg, ActionError> {
+        self.activated.store(true, Ordering::Relaxed);
+        Ok(WebhookReg {
+            hook_id: "hook_123".into(),
+        })
+    }
+
+    async fn handle_request(
+        &self,
+        event: &IncomingEvent,
+        _state: &WebhookReg,
+        _ctx: &TriggerContext,
+    ) -> Result<TriggerEventOutcome, ActionError> {
+        let sig = event.header("X-Secret").unwrap_or_default();
+        if sig != self.secret {
+            return Ok(TriggerEventOutcome::skip());
+        }
+        let payload = event
+            .body_json::<serde_json::Value>()
+            .map_err(|e| ActionError::validation(format!("bad json: {e}")))?;
+        Ok(TriggerEventOutcome::emit(payload))
+    }
+
+    async fn on_deactivate(
+        &self,
+        _state: WebhookReg,
+        _ctx: &TriggerContext,
+    ) -> Result<(), ActionError> {
+        self.deactivated.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+fn make_webhook() -> (TestWebhook, Arc<AtomicBool>, Arc<AtomicBool>) {
+    let activated = Arc::new(AtomicBool::new(false));
+    let deactivated = Arc::new(AtomicBool::new(false));
+    (
+        TestWebhook {
+            meta: ActionMetadata::new(
+                nebula_core::action_key!("test.webhook"),
+                "Test Webhook",
+                "Test webhook action",
+            ),
+            secret: "mysecret".into(),
+            activated: activated.clone(),
+            deactivated: deactivated.clone(),
+        },
+        activated,
+        deactivated,
+    )
+}
+
+#[tokio::test]
+async fn webhook_adapter_start_stores_state() {
+    let (webhook, activated, _) = make_webhook();
+    let adapter = WebhookTriggerAdapter::new(webhook);
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+
+    adapter.start(&ctx).await.unwrap();
+    assert!(activated.load(Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn webhook_adapter_stop_passes_stored_state() {
+    let (webhook, _, deactivated) = make_webhook();
+    let adapter = WebhookTriggerAdapter::new(webhook);
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+
+    adapter.start(&ctx).await.unwrap();
+    adapter.stop(&ctx).await.unwrap();
+    assert!(deactivated.load(Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn webhook_adapter_handle_event_emits_on_valid_secret() {
+    let (webhook, _, _) = make_webhook();
+    let adapter = WebhookTriggerAdapter::new(webhook);
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+
+    adapter.start(&ctx).await.unwrap();
+
+    let event = IncomingEvent::new(br#"{"action":"push"}"#, &[("X-Secret", "mysecret")]);
+
+    let outcome = adapter.handle_event(event, &ctx).await.unwrap();
+    assert!(outcome.will_emit());
+}
+
+#[tokio::test]
+async fn webhook_adapter_handle_event_skips_on_bad_secret() {
+    let (webhook, _, _) = make_webhook();
+    let adapter = WebhookTriggerAdapter::new(webhook);
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+
+    adapter.start(&ctx).await.unwrap();
+
+    let event = IncomingEvent::new(br#"{"action":"push"}"#, &[("X-Secret", "wrong")]);
+
+    let outcome = adapter.handle_event(event, &ctx).await.unwrap();
+    assert!(!outcome.will_emit());
+}
+
+#[tokio::test]
+async fn webhook_adapter_accepts_events() {
+    let (webhook, _, _) = make_webhook();
+    let adapter = WebhookTriggerAdapter::new(webhook);
+    assert!(adapter.accepts_events());
+}
+
+#[tokio::test]
+async fn webhook_adapter_handle_event_before_start_fails() {
+    let (webhook, _, _) = make_webhook();
+    let adapter = WebhookTriggerAdapter::new(webhook);
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+
+    let event = IncomingEvent::new(br#"{"action":"push"}"#, &[("X-Secret", "mysecret")]);
+
+    let result = adapter.handle_event(event, &ctx).await;
+    assert!(result.is_err());
+    nebula_action::assert_fatal!(result);
+}

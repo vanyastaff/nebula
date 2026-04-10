@@ -159,6 +159,40 @@ impl ActionRegistry {
         self.register(metadata, handler);
     }
 
+    /// Register a webhook action — wraps in [`WebhookTriggerAdapter`] automatically.
+    ///
+    /// The adapter handles activate/deactivate lifecycle, state storage, and
+    /// event ingress via `handle_event`.
+    ///
+    /// [`WebhookTriggerAdapter`]: crate::handler::WebhookTriggerAdapter
+    pub fn register_webhook<A>(&mut self, action: A)
+    where
+        A: crate::trigger::WebhookAction + Send + Sync + 'static,
+        <A as crate::trigger::WebhookAction>::State: Send + Sync,
+    {
+        let metadata = action.metadata().clone();
+        let handler =
+            ActionHandler::Trigger(Arc::new(crate::handler::WebhookTriggerAdapter::new(action)));
+        self.register(metadata, handler);
+    }
+
+    /// Register a poll action — wraps in [`PollTriggerAdapter`] automatically.
+    ///
+    /// The adapter runs a blocking poll loop in `start()` until cancellation.
+    ///
+    /// [`PollTriggerAdapter`]: crate::handler::PollTriggerAdapter
+    pub fn register_poll<A>(&mut self, action: A)
+    where
+        A: crate::trigger::PollAction + Send + Sync + 'static,
+        <A as crate::trigger::PollAction>::Cursor: Send + Sync,
+        <A as crate::trigger::PollAction>::Event: Send + Sync,
+    {
+        let metadata = action.metadata().clone();
+        let handler =
+            ActionHandler::Trigger(Arc::new(crate::handler::PollTriggerAdapter::new(action)));
+        self.register(metadata, handler);
+    }
+
     /// Register a resource action — wraps in [`ResourceActionAdapter`] automatically.
     ///
     /// [`ResourceActionAdapter`]: crate::handler::ResourceActionAdapter

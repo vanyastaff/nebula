@@ -20,10 +20,13 @@
 //!
 //! [`ActionRegistry::register_stateless`]: crate::registry::ActionRegistry::register_stateless
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::context::{ActionContext, TriggerContext};
@@ -31,6 +34,7 @@ use crate::error::ActionError;
 use crate::execution::{ResourceAction, StatefulAction, StatelessAction, TriggerAction};
 use crate::metadata::ActionMetadata;
 use crate::result::ActionResult;
+use crate::trigger::{PollAction, WebhookAction};
 
 /// Handler trait for action execution; runtime looks up by key and calls
 /// `execute` with JSON input and [`ActionContext`].
@@ -305,6 +309,178 @@ where
     }
 }
 
+// ── WebhookTriggerAdapter ─────────────────────────────────────────────────
+
+/// Wraps a [`WebhookAction`] as a [`dyn TriggerHandler`] with state management.
+///
+/// Stores state from `on_activate` in a `RwLock<Option<Arc<State>>>`. `handle_event`
+/// clones the `Arc` under the read lock and releases the lock BEFORE awaiting
+/// `handle_request` — prevents deadlock with concurrent `start`/`stop` taking a
+/// write lock (parking_lot RwLock is not reentrant and not async-aware).
+///
+/// `handle_event` before `start()` returns `ActionError::Fatal` (no silent default state).
+///
+/// Created automatically by [`ActionRegistry::register_webhook`].
+///
+/// [`ActionRegistry::register_webhook`]: crate::registry::ActionRegistry::register_webhook
+pub struct WebhookTriggerAdapter<A: WebhookAction> {
+    action: A,
+    state: RwLock<Option<Arc<A::State>>>,
+}
+
+impl<A: WebhookAction> WebhookTriggerAdapter<A> {
+    /// Wrap a typed webhook action.
+    #[must_use]
+    pub fn new(action: A) -> Self {
+        Self {
+            action,
+            state: RwLock::new(None),
+        }
+    }
+}
+
+#[async_trait]
+impl<A> TriggerHandler for WebhookTriggerAdapter<A>
+where
+    A: WebhookAction + Send + Sync + 'static,
+    A::State: Send + Sync,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        self.action.metadata()
+    }
+
+    async fn start(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
+        let new_state = self.action.on_activate(ctx).await?;
+        *self.state.write() = Some(Arc::new(new_state));
+        Ok(())
+    }
+
+    async fn stop(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
+        let stored = self.state.write().take();
+        match stored {
+            Some(arc_state) => {
+                // Consume Arc — in normal flow no concurrent handle_event holds it.
+                let owned = Arc::try_unwrap(arc_state).unwrap_or_else(|arc| (*arc).clone());
+                self.action.on_deactivate(owned, ctx).await
+            }
+            // stop() without prior start() — no-op, nothing to deactivate.
+            None => Ok(()),
+        }
+    }
+
+    fn accepts_events(&self) -> bool {
+        true
+    }
+
+    async fn handle_event(
+        &self,
+        event: IncomingEvent,
+        ctx: &TriggerContext,
+    ) -> Result<TriggerEventOutcome, ActionError> {
+        // Clone Arc under read lock; the guard drops at end of statement BEFORE
+        // the await on handle_request. Holding a parking_lot guard across .await
+        // would be unsound (non-Send) and risk re-entry panic with start/stop.
+        let state = self.state.read().as_ref().cloned().ok_or_else(|| {
+            ActionError::fatal("handle_event called before start — no state available")
+        })?;
+
+        self.action.handle_request(&event, &state, ctx).await
+    }
+}
+
+impl<A: WebhookAction> fmt::Debug for WebhookTriggerAdapter<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebhookTriggerAdapter")
+            .field("action", &self.action.metadata().key)
+            .finish_non_exhaustive()
+    }
+}
+
+// ── PollTriggerAdapter ────────────────────────────────────────────────────
+
+/// Wraps a [`PollAction`] as a [`dyn TriggerHandler`].
+///
+/// `start()` runs a blocking loop: sleep → poll → emit events.
+/// Cancellation via `TriggerContext::cancellation`.
+/// `stop()` is a no-op (cancellation token handles shutdown).
+///
+/// Created automatically by [`ActionRegistry::register_poll`].
+///
+/// [`ActionRegistry::register_poll`]: crate::registry::ActionRegistry::register_poll
+///
+/// # Error handling
+///
+/// - `ActionError::Fatal` from `poll()` stops the loop immediately
+/// - `ActionError::Retryable` skips the current cycle, continues at next interval
+/// - Emit failures are silently dropped (transient emitter issues don't kill the trigger)
+pub struct PollTriggerAdapter<A: PollAction> {
+    action: A,
+}
+
+impl<A: PollAction> PollTriggerAdapter<A> {
+    /// Wrap a typed poll action.
+    #[must_use]
+    pub fn new(action: A) -> Self {
+        Self { action }
+    }
+}
+
+#[async_trait]
+impl<A> TriggerHandler for PollTriggerAdapter<A>
+where
+    A: PollAction + Send + Sync + 'static,
+    A::Cursor: Send + Sync,
+    A::Event: Send + Sync,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        self.action.metadata()
+    }
+
+    async fn start(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
+        let mut cursor = A::Cursor::default();
+        let interval = self.action.poll_interval();
+
+        loop {
+            tokio::select! {
+                () = ctx.cancellation.cancelled() => {
+                    return Ok(());
+                }
+                () = tokio::time::sleep(interval) => {
+                    match self.action.poll(&mut cursor, ctx).await {
+                        Ok(events) => {
+                            for event in events {
+                                // Bad payload from a single event must not kill the trigger.
+                                let Ok(payload) = serde_json::to_value(&event) else {
+                                    continue;
+                                };
+                                // Transient emit failure — skip this event, continue polling.
+                                let _ = ctx.emitter.emit(payload).await;
+                            }
+                        }
+                        Err(e) if e.is_fatal() => return Err(e),
+                        Err(_) => {
+                            // Retryable poll error — skip this cycle, try next interval.
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn stop(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+        // Cancellation token handles shutdown — no-op.
+        Ok(())
+    }
+}
+
+impl<A: PollAction> fmt::Debug for PollTriggerAdapter<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PollTriggerAdapter")
+            .field("action", &self.action.metadata().key)
+            .finish_non_exhaustive()
+    }
+}
+
 // ── ResourceActionAdapter ──────────────────────────────────────────────────
 
 /// Wraps a [`ResourceAction`] as a [`dyn ResourceHandler`].
@@ -467,6 +643,115 @@ pub trait StatefulHandler: Send + Sync {
     ) -> Result<ActionResult<Value>, ActionError>;
 }
 
+/// External event delivered to a trigger (HTTP request, message, etc.).
+///
+/// Transport-agnostic: webhook layer constructs this from HTTP requests,
+/// message queue layer constructs it from queue messages.
+///
+/// `body` holds canonical raw bytes — use directly for HMAC signature
+/// verification (do NOT round-trip through `body_json()` for signing).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncomingEvent {
+    /// Raw payload body. Canonical bytes for signature verification.
+    pub body: Vec<u8>,
+    /// Headers / metadata (HTTP headers, message attributes, etc.).
+    pub headers: HashMap<String, String>,
+    /// Source identifier (URL path, topic name, queue name).
+    #[serde(default)]
+    pub source: String,
+}
+
+impl IncomingEvent {
+    /// Create a new incoming event.
+    #[must_use]
+    pub fn new(body: &[u8], headers: &[(&str, &str)]) -> Self {
+        Self {
+            body: body.to_vec(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+            source: String::new(),
+        }
+    }
+
+    /// Set the source identifier.
+    #[must_use]
+    pub fn with_source(mut self, source: impl Into<String>) -> Self {
+        self.source = source.into();
+        self
+    }
+
+    /// Get a header value by key (ASCII case-insensitive).
+    ///
+    /// HTTP headers are ASCII per RFC 7230, so ASCII case folding is sufficient
+    /// and avoids allocations on lookup.
+    #[must_use]
+    pub fn header(&self, key: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Get the body as a UTF-8 string slice.
+    #[must_use]
+    pub fn body_str(&self) -> Option<&str> {
+        std::str::from_utf8(&self.body).ok()
+    }
+
+    /// Parse the body as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the body is not valid JSON.
+    pub fn body_json<T: serde::de::DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
+        serde_json::from_slice(&self.body)
+    }
+}
+
+/// Outcome of processing an external event pushed to a trigger.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum TriggerEventOutcome {
+    /// Event filtered out — no workflow execution.
+    Skip,
+    /// Emit a single workflow execution with this input payload.
+    Emit(Value),
+    /// Emit multiple workflow executions (batch webhook, fan-out).
+    EmitMany(Vec<Value>),
+}
+
+impl TriggerEventOutcome {
+    /// Create a skip outcome.
+    #[must_use]
+    pub fn skip() -> Self {
+        Self::Skip
+    }
+
+    /// Create a single-emit outcome.
+    #[must_use]
+    pub fn emit(payload: Value) -> Self {
+        Self::Emit(payload)
+    }
+
+    /// Create a batch-emit outcome. Empty vec becomes `Skip`.
+    #[must_use]
+    pub fn emit_many(payloads: Vec<Value>) -> Self {
+        if payloads.is_empty() {
+            Self::Skip
+        } else {
+            Self::EmitMany(payloads)
+        }
+    }
+
+    /// Whether this outcome will emit any executions.
+    #[must_use]
+    pub fn will_emit(&self) -> bool {
+        !matches!(self, Self::Skip)
+    }
+}
+
 /// Trigger handler — start/stop lifecycle for workflow triggers.
 ///
 /// Uses [`TriggerContext`] (workflow_id, trigger_id, cancellation) instead
@@ -494,6 +779,34 @@ pub trait TriggerHandler: Send + Sync {
     ///
     /// Returns [`ActionError`] if the trigger cannot be stopped cleanly.
     async fn stop(&self, ctx: &TriggerContext) -> Result<(), ActionError>;
+
+    /// Whether this trigger accepts externally pushed events.
+    ///
+    /// Engine/webhook layer checks this before calling `handle_event`.
+    /// Default: `false`.
+    fn accepts_events(&self) -> bool {
+        false
+    }
+
+    /// Handle an external event pushed to this trigger.
+    ///
+    /// Only called when [`accepts_events`](Self::accepts_events) returns `true`.
+    /// Takes typed [`IncomingEvent`] directly — no serialization round-trip.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Fatal`] by default — triggers that don't accept
+    /// external events should never have this called.
+    async fn handle_event(
+        &self,
+        event: IncomingEvent,
+        ctx: &TriggerContext,
+    ) -> Result<TriggerEventOutcome, ActionError> {
+        let _ = (event, ctx);
+        Err(ActionError::fatal(
+            "trigger does not accept external events",
+        ))
+    }
 }
 
 /// Resource handler — configure/cleanup lifecycle for graph-scoped resources.
@@ -1372,5 +1685,33 @@ mod tests {
             action.metadata().key,
             nebula_core::action_key!("test.resource_action")
         );
+    }
+
+    #[test]
+    fn trigger_event_outcome_skip() {
+        let o = TriggerEventOutcome::skip();
+        assert!(!o.will_emit());
+        assert!(matches!(o, TriggerEventOutcome::Skip));
+    }
+
+    #[test]
+    fn trigger_event_outcome_emit() {
+        let o = TriggerEventOutcome::emit(serde_json::json!({"key": "val"}));
+        assert!(o.will_emit());
+        assert!(matches!(o, TriggerEventOutcome::Emit(_)));
+    }
+
+    #[test]
+    fn trigger_event_outcome_emit_many() {
+        let o = TriggerEventOutcome::emit_many(vec![serde_json::json!(1), serde_json::json!(2)]);
+        assert!(o.will_emit());
+        assert!(matches!(o, TriggerEventOutcome::EmitMany(v) if v.len() == 2));
+    }
+
+    #[test]
+    fn trigger_event_outcome_empty_emit_many_is_skip() {
+        let o = TriggerEventOutcome::emit_many(vec![]);
+        assert!(!o.will_emit());
+        assert!(matches!(o, TriggerEventOutcome::Skip));
     }
 }

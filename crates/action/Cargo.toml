@@ -32,7 +32,7 @@ tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 nebula-core = { path = "../core" }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 
 [lib]
 doctest = false

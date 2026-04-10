@@ -94,6 +94,8 @@ pub mod scoped;
 pub mod stateful;
 /// Test utilities for action authors.
 pub mod testing;
+/// DX convenience types for common TriggerAction patterns (webhook, poll).
+pub mod trigger;
 /// Action package validation utilities.
 pub mod validation;
 
@@ -116,9 +118,10 @@ pub use ext::ActionResultExt;
 // Reason: InternalHandler re-exported for backward compat during migration
 pub use handler::InternalHandler;
 pub use handler::{
-    ActionHandler, AgentHandler, ResourceActionAdapter, ResourceHandler, StatefulActionAdapter,
-    StatefulHandler, StatelessActionAdapter, StatelessHandler, TriggerActionAdapter,
-    TriggerHandler,
+    ActionHandler, AgentHandler, IncomingEvent, PollTriggerAdapter, ResourceActionAdapter,
+    ResourceHandler, StatefulActionAdapter, StatefulHandler, StatelessActionAdapter,
+    StatelessHandler, TriggerActionAdapter, TriggerEventOutcome, TriggerHandler,
+    WebhookTriggerAdapter,
 };
 pub use metadata::{ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError};
 pub use nebula_credential::CredentialGuard;
@@ -140,6 +143,7 @@ pub use testing::{
     SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
     TriggerTestHarness,
 };
+pub use trigger::{PollAction, WebhookAction};
 pub use validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
 };
