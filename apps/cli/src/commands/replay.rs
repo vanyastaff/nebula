@@ -72,18 +72,9 @@ pub async fn execute(args: ReplayArgs, quiet: bool) -> anyhow::Result<ExitCode> 
     }
 
     let metrics = MetricsRegistry::new();
-    let registry_for_sandbox = Arc::clone(&registry);
-    let executor: nebula_runtime::sandbox::ActionExecutor =
-        Arc::new(move |ctx, metadata, input| {
-            let registry = Arc::clone(&registry_for_sandbox);
-            let key = metadata.key.as_str().to_owned();
-            Box::pin(async move {
-                let handler = registry
-                    .get(&key)
-                    .map_err(|e| nebula_action::ActionError::fatal(e.to_string()))?;
-                handler.execute(input, ctx.inner()).await
-            })
-        });
+    let executor: nebula_runtime::sandbox::ActionExecutor = Arc::new(|_ctx, _metadata, input| {
+        Box::pin(async move { Ok(nebula_action::ActionResult::success(input)) })
+    });
 
     let sandbox = Arc::new(InProcessSandbox::new(executor));
     let runtime = Arc::new(ActionRuntime::new(

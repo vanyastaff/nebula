@@ -30,6 +30,47 @@ pub enum RuntimeError {
         actual_bytes: u64,
     },
 
+    /// The action key resolves to a trigger, which has its own start/stop
+    /// lifecycle and is not executable via `ActionRuntime::execute_action`.
+    /// Triggers run via the trigger runtime (separate from action execution).
+    #[classify(
+        category = "unsupported",
+        code = "RUNTIME:TRIGGER_NOT_EXECUTABLE",
+        retryable = false
+    )]
+    #[error("trigger '{key}' is not executable via ActionRuntime — use the trigger runtime")]
+    TriggerNotExecutable {
+        /// The action key that was looked up.
+        key: String,
+    },
+
+    /// The action key resolves to a resource, which has its own
+    /// configure/cleanup lifecycle scoped to a downstream subtree.
+    /// Resources are not executable via `ActionRuntime::execute_action`.
+    #[classify(
+        category = "unsupported",
+        code = "RUNTIME:RESOURCE_NOT_EXECUTABLE",
+        retryable = false
+    )]
+    #[error("resource '{key}' is not executable via ActionRuntime — use the resource graph")]
+    ResourceNotExecutable {
+        /// The action key that was looked up.
+        key: String,
+    },
+
+    /// The action key resolves to an agent action (Phase 9), which is not
+    /// yet supported by the runtime.
+    #[classify(
+        category = "unsupported",
+        code = "RUNTIME:AGENT_NOT_SUPPORTED",
+        retryable = false
+    )]
+    #[error("agent action '{key}' is not yet supported (Phase 9 work)")]
+    AgentNotSupportedYet {
+        /// The action key that was looked up.
+        key: String,
+    },
+
     /// Internal runtime error.
     #[classify(category = "internal", code = "RUNTIME:INTERNAL")]
     #[error("runtime error: {0}")]

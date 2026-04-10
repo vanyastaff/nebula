@@ -3,8 +3,8 @@
 //! The engine dispatches actions via [`ActionHandler`], a top-level enum whose
 //! variants wrap `Arc<dyn XxxHandler>` trait objects. Typed action authors write
 //! `impl StatelessAction<Input=T, Output=U>` and register via the registry's
-//! helper methods (e.g., [`ActionRegistry::register_stateless`]), which wraps
-//! the typed action in the corresponding adapter automatically.
+//! helper methods (e.g., `nebula_runtime::ActionRegistry::register_stateless`),
+//! which wraps the typed action in the corresponding adapter automatically.
 //!
 //! ## Handler traits
 //!
@@ -17,8 +17,6 @@
 //! - [`AgentHandler`] — autonomous agent (stub for Phase 9)
 //!
 //! [`ActionHandler`] is the top-level enum the engine dispatches on.
-//!
-//! [`ActionRegistry::register_stateless`]: crate::registry::ActionRegistry::register_stateless
 
 use std::collections::HashMap;
 use std::fmt;
@@ -36,26 +34,7 @@ use crate::metadata::ActionMetadata;
 use crate::result::ActionResult;
 use crate::trigger::{PollAction, WebhookAction};
 
-/// Handler trait for action execution; runtime looks up by key and calls
-/// `execute` with JSON input and [`ActionContext`].
-///
-/// This is the *internal* contract between registry and runtime. Action authors
-/// implement typed traits ([`StatelessAction`] etc.) and use adapters to
-/// convert to `dyn InternalHandler`.
-#[deprecated(since = "0.1.0", note = "use ActionHandler enum instead")]
-#[async_trait]
-pub trait InternalHandler: Send + Sync {
-    /// Get action metadata.
-    fn metadata(&self) -> &ActionMetadata;
-    /// Execute the action with the given input and execution context.
-    async fn execute(
-        &self,
-        input: serde_json::Value,
-        context: &ActionContext,
-    ) -> Result<ActionResult<serde_json::Value>, ActionError>;
-}
-
-/// Wraps a [`StatelessAction`] as a [`dyn InternalHandler`].
+/// Wraps a [`StatelessAction`] as a [`dyn StatelessHandler`].
 ///
 /// Handles JSON deserialization of input and serialization of output so the
 /// runtime can work with untyped JSON throughout, while action authors write
@@ -65,7 +44,7 @@ pub trait InternalHandler: Send + Sync {
 ///
 /// ```rust,ignore
 /// use nebula_action::{StatelessActionAdapter, StatelessAction, Action, ActionResult, ActionError};
-/// use nebula_action::handler::InternalHandler;
+/// use nebula_action::handler::StatelessHandler;
 ///
 /// struct EchoAction { meta: ActionMetadata }
 /// impl Action for EchoAction { ... }
@@ -79,7 +58,7 @@ pub trait InternalHandler: Send + Sync {
 ///     }
 /// }
 ///
-/// let handler: Arc<dyn InternalHandler> = Arc::new(StatelessActionAdapter::new(EchoAction { ... }));
+/// let handler: Arc<dyn StatelessHandler> = Arc::new(StatelessActionAdapter::new(EchoAction { ... }));
 /// ```
 pub struct StatelessActionAdapter<A> {
     action: A,
@@ -96,35 +75,6 @@ impl<A> StatelessActionAdapter<A> {
     #[must_use]
     pub fn into_inner(self) -> A {
         self.action
-    }
-}
-
-#[allow(deprecated)] // Reason: backward-compat bridge — InternalHandler is deprecated but still implemented
-#[async_trait]
-impl<A> InternalHandler for StatelessActionAdapter<A>
-where
-    A: StatelessAction + Send + Sync + 'static,
-    A::Input: serde::de::DeserializeOwned + Send + Sync,
-    A::Output: serde::Serialize + Send + Sync,
-{
-    fn metadata(&self) -> &ActionMetadata {
-        self.action.metadata()
-    }
-
-    async fn execute(
-        &self,
-        input: serde_json::Value,
-        context: &ActionContext,
-    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
-        let typed_input: A::Input = serde_json::from_value(input)
-            .map_err(|e| ActionError::validation(format!("input deserialization failed: {e}")))?;
-
-        let result = self.action.execute(typed_input, context).await?;
-
-        result.try_map_output(|output| {
-            serde_json::to_value(output)
-                .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
-        })
     }
 }
 
@@ -222,11 +172,12 @@ where
     /// or propagates errors from the underlying action.
     async fn execute(
         &self,
-        input: Value,
+        input: &Value,
         state: &mut Value,
         ctx: &ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
-        let typed_input: A::Input = serde_json::from_value(input)
+        // Adapter clones input ONCE per iteration to deserialize into typed A::Input.
+        let typed_input: A::Input = serde_json::from_value(input.clone())
             .map_err(|e| ActionError::validation(format!("input deserialization failed: {e}")))?;
 
         let mut typed_state: A::State = serde_json::from_value(state.clone()).or_else(|e| {
@@ -320,9 +271,7 @@ where
 ///
 /// `handle_event` before `start()` returns `ActionError::Fatal` (no silent default state).
 ///
-/// Created automatically by [`ActionRegistry::register_webhook`].
-///
-/// [`ActionRegistry::register_webhook`]: crate::registry::ActionRegistry::register_webhook
+/// Created automatically by `nebula_runtime::ActionRegistry::register_webhook`.
 pub struct WebhookTriggerAdapter<A: WebhookAction> {
     action: A,
     state: RwLock<Option<Arc<A::State>>>,
@@ -404,9 +353,7 @@ impl<A: WebhookAction> fmt::Debug for WebhookTriggerAdapter<A> {
 /// Cancellation via `TriggerContext::cancellation`.
 /// `stop()` is a no-op (cancellation token handles shutdown).
 ///
-/// Created automatically by [`ActionRegistry::register_poll`].
-///
-/// [`ActionRegistry::register_poll`]: crate::registry::ActionRegistry::register_poll
+/// Created automatically by `nebula_runtime::ActionRegistry::register_poll`.
 ///
 /// # Error handling
 ///
@@ -637,7 +584,7 @@ pub trait StatefulHandler: Send + Sync {
     /// Returns [`ActionError`] if execution fails (validation, retryable, or fatal).
     async fn execute(
         &self,
-        input: Value,
+        input: &Value,
         state: &mut Value,
         ctx: &ActionContext,
     ) -> Result<ActionResult<Value>, ActionError>;
@@ -884,6 +831,7 @@ pub trait AgentHandler: Send + Sync {
 ///
 /// Each variant wraps an `Arc<dyn XxxHandler>` so handlers can be shared
 /// across nodes in the workflow graph.
+#[derive(Clone)]
 #[non_exhaustive]
 pub enum ActionHandler {
     /// One-shot stateless execution.
@@ -955,7 +903,6 @@ impl fmt::Debug for ActionHandler {
 }
 
 #[cfg(test)]
-#[allow(deprecated)] // Reason: tests exercise both old InternalHandler and new handler traits
 mod tests {
     use std::sync::Arc;
 
@@ -1040,7 +987,7 @@ mod tests {
         let ctx = make_ctx();
 
         let input = serde_json::json!({ "a": 3, "b": 7 });
-        let result = InternalHandler::execute(&adapter, input, &ctx)
+        let result = StatelessHandler::execute(&adapter, input, &ctx)
             .await
             .unwrap();
 
@@ -1060,7 +1007,7 @@ mod tests {
         let ctx = make_ctx();
 
         let bad_input = serde_json::json!({ "x": "not a number" });
-        let err = InternalHandler::execute(&adapter, bad_input, &ctx)
+        let err = StatelessHandler::execute(&adapter, bad_input, &ctx)
             .await
             .unwrap_err();
         assert!(matches!(err, ActionError::Validation(_)));
@@ -1070,7 +1017,7 @@ mod tests {
     async fn adapter_exposes_metadata() {
         let adapter = StatelessActionAdapter::new(AddAction::new());
         assert_eq!(
-            InternalHandler::metadata(&adapter).key,
+            StatelessHandler::metadata(&adapter).key,
             nebula_core::action_key!("math.add")
         );
     }
@@ -1078,7 +1025,7 @@ mod tests {
     #[test]
     fn adapter_is_dyn_compatible() {
         let adapter = StatelessActionAdapter::new(AddAction::new());
-        let _: Arc<dyn InternalHandler> = Arc::new(adapter);
+        let _: Arc<dyn StatelessHandler> = Arc::new(adapter);
     }
 
     // ── Handler trait test helpers ─────────────────────────────────────────────
@@ -1126,13 +1073,13 @@ mod tests {
 
         async fn execute(
             &self,
-            input: Value,
+            input: &Value,
             state: &mut Value,
             _ctx: &ActionContext,
         ) -> Result<ActionResult<Value>, ActionError> {
             let count = state.as_u64().unwrap_or(0);
             *state = serde_json::json!(count + 1);
-            Ok(ActionResult::success(input))
+            Ok(ActionResult::success(input.clone()))
         }
     }
 
@@ -1454,7 +1401,7 @@ mod tests {
 
         // Iteration 1: count goes 0 → 1, Continue
         let result = handler
-            .execute(serde_json::json!({}), &mut state, &ctx)
+            .execute(&serde_json::json!({}), &mut state, &ctx)
             .await
             .unwrap();
         assert!(matches!(result, ActionResult::Continue { .. }));
@@ -1463,7 +1410,7 @@ mod tests {
 
         // Iteration 2: count goes 1 → 2, Continue
         let result = handler
-            .execute(serde_json::json!({}), &mut state, &ctx)
+            .execute(&serde_json::json!({}), &mut state, &ctx)
             .await
             .unwrap();
         assert!(matches!(result, ActionResult::Continue { .. }));
@@ -1472,7 +1419,7 @@ mod tests {
 
         // Iteration 3: count goes 2 → 3, Break
         let result = handler
-            .execute(serde_json::json!({}), &mut state, &ctx)
+            .execute(&serde_json::json!({}), &mut state, &ctx)
             .await
             .unwrap();
         assert!(matches!(result, ActionResult::Break { .. }));
@@ -1487,7 +1434,7 @@ mod tests {
         let mut bad_state = serde_json::json!("not a counter state");
 
         let err = adapter
-            .execute(serde_json::json!({}), &mut bad_state, &ctx)
+            .execute(&serde_json::json!({}), &mut bad_state, &ctx)
             .await
             .unwrap_err();
         assert!(matches!(err, ActionError::Validation(_)));

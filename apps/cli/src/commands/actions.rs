@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use nebula_action::ActionContext;
+use nebula_action::{ActionContext, ActionHandler};
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 use nebula_runtime::ActionRegistry;
 use tokio_util::sync::CancellationToken;
@@ -25,9 +25,8 @@ pub fn list(args: ActionsListArgs) {
         OutputFormat::Json => {
             let entries: Vec<serde_json::Value> = keys
                 .iter()
-                .filter_map(|k| registry.get(k).ok())
-                .map(|h| {
-                    let meta = h.metadata();
+                .filter_map(|k| registry.get(k))
+                .map(|(meta, _)| {
                     serde_json::json!({
                         "key": meta.key.as_str(),
                         "name": meta.name,
@@ -43,8 +42,7 @@ pub fn list(args: ActionsListArgs) {
             println!("{header}");
             println!("{}", "-".repeat(64));
             for key in &keys {
-                if let Ok(handler) = registry.get(key) {
-                    let meta = handler.metadata();
+                if let Some((meta, _)) = registry.get(key) {
                     println!(
                         "{:<12} {:<10} {:<8} {}",
                         meta.key.as_str(),
@@ -63,38 +61,35 @@ pub fn info(args: ActionsInfoArgs) {
     let registry = build_registry();
     let format = resolve_format(args.format);
 
-    match registry.get(&args.key) {
-        Ok(handler) => {
-            let meta = handler.metadata();
-            match format {
-                OutputFormat::Json => {
-                    let json = serde_json::json!({
-                        "key": meta.key.as_str(),
-                        "name": meta.name,
-                        "version": meta.version.to_string(),
-                        "description": meta.description,
-                        "isolation": format!("{:?}", meta.isolation_level),
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json).expect("json"));
-                }
-                OutputFormat::Text => {
-                    println!("Key:         {}", meta.key.as_str());
-                    println!("Name:        {}", meta.name);
-                    println!("Version:     {}", meta.version);
-                    println!("Description: {}", meta.description);
-                    println!("Isolation:   {:?}", meta.isolation_level);
-                    println!(
-                        "Parameters:  {}",
-                        if meta.parameters.is_empty() {
-                            "none"
-                        } else {
-                            "(defined)"
-                        }
-                    );
-                }
+    match registry.get_by_str(&args.key) {
+        Some((meta, _)) => match format {
+            OutputFormat::Json => {
+                let json = serde_json::json!({
+                    "key": meta.key.as_str(),
+                    "name": meta.name,
+                    "version": meta.version.to_string(),
+                    "description": meta.description,
+                    "isolation": format!("{:?}", meta.isolation_level),
+                });
+                println!("{}", serde_json::to_string_pretty(&json).expect("json"));
             }
-        }
-        Err(_) => {
+            OutputFormat::Text => {
+                println!("Key:         {}", meta.key.as_str());
+                println!("Name:        {}", meta.name);
+                println!("Version:     {}", meta.version);
+                println!("Description: {}", meta.description);
+                println!("Isolation:   {:?}", meta.isolation_level);
+                println!(
+                    "Parameters:  {}",
+                    if meta.parameters.is_empty() {
+                        "none"
+                    } else {
+                        "(defined)"
+                    }
+                );
+            }
+        },
+        None => {
             eprintln!("error: action '{}' not found", args.key);
             eprintln!();
             eprintln!("Available actions:");
@@ -113,13 +108,14 @@ pub async fn test(args: ActionsTestArgs) {
     let registry = build_registry();
     let format = resolve_format(args.format);
 
-    let handler = match registry.get(&args.key) {
-        Ok(h) => h,
-        Err(_) => {
+    let (meta, handler) = match registry.get_by_str(&args.key) {
+        Some(entry) => entry,
+        None => {
             eprintln!("error: action '{}' not found", args.key);
             let mut keys = registry.keys();
             keys.sort();
-            eprintln!("Available: {}", keys.join(", "));
+            let names: Vec<String> = keys.iter().map(|k| k.as_str().to_owned()).collect();
+            eprintln!("Available: {}", names.join(", "));
             std::process::exit(1);
         }
     };
@@ -140,7 +136,6 @@ pub async fn test(args: ActionsTestArgs) {
         CancellationToken::new(),
     );
 
-    let meta = handler.metadata();
     eprintln!("Testing: {} ({})", meta.name, meta.key);
     eprintln!(
         "Input:   {}",
@@ -149,7 +144,16 @@ pub async fn test(args: ActionsTestArgs) {
     eprintln!();
 
     let start = std::time::Instant::now();
-    let result = handler.execute(input, &ctx).await;
+    let result = match &handler {
+        ActionHandler::Stateless(h) => h.execute(input, &ctx).await,
+        other => {
+            eprintln!(
+                "error: `actions test` only supports stateless actions (got {:?})",
+                other
+            );
+            std::process::exit(2);
+        }
+    };
     let elapsed = start.elapsed();
 
     match result {

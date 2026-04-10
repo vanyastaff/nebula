@@ -7,16 +7,16 @@
 //!         -> gets ResourceHandle
 //!           -> downcasts to the concrete instance type
 
-#![allow(deprecated)] // Reason: tests still use InternalHandler during migration
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use nebula_action::InternalHandler;
+use nebula_action::ActionError;
+use nebula_action::action::Action;
+use nebula_action::context::Context;
+use nebula_action::dependency::ActionDependencies;
+use nebula_action::execution::StatelessAction;
 use nebula_action::metadata::ActionMetadata;
 use nebula_action::result::ActionResult;
-use nebula_action::{ActionContext, ActionError};
 use nebula_core::ActionKey;
 use nebula_core::Version;
 use nebula_core::action_key;
@@ -40,22 +40,27 @@ struct ResourceConsumerHandler {
     meta: ActionMetadata,
 }
 
-#[async_trait]
-impl InternalHandler for ResourceConsumerHandler {
+impl ActionDependencies for ResourceConsumerHandler {}
+impl Action for ResourceConsumerHandler {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl StatelessAction for ResourceConsumerHandler {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
     async fn execute(
         &self,
-        _input: serde_json::Value,
-        _ctx: &ActionContext,
-    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        _input: Self::Input,
+        _ctx: &impl Context,
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
         // TODO: Resource acquisition via context is not yet wired up.
         // For now, return a placeholder to keep the test compiling.
         Ok(ActionResult::success(
             serde_json::json!({ "resource_value": "mock-instance" }),
         ))
-    }
-
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
     }
 }
 
@@ -105,9 +110,9 @@ async fn action_acquires_resource_through_engine() {
 
     // 2. Build the action registry
     let registry = Arc::new(ActionRegistry::new());
-    registry.register(Arc::new(ResourceConsumerHandler {
+    registry.register_stateless(ResourceConsumerHandler {
         meta: meta(action_key!("resource-consumer")),
-    }));
+    });
 
     // 3. Build the engine with the resource manager attached
     let executor: ActionExecutor =
@@ -152,9 +157,9 @@ async fn full_resource_lifecycle_with_shutdown() {
 
     // 2. Build the action registry
     let registry = Arc::new(ActionRegistry::new());
-    registry.register(Arc::new(ResourceConsumerHandler {
+    registry.register_stateless(ResourceConsumerHandler {
         meta: meta(action_key!("resource-consumer")),
-    }));
+    });
 
     // 3. Build the engine with the resource manager attached
     let executor: ActionExecutor =
@@ -204,9 +209,9 @@ async fn full_resource_lifecycle_with_shutdown() {
 #[ignore = "resource acquisition via context not yet wired up"]
 async fn action_resource_fails_without_manager() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register(Arc::new(ResourceConsumerHandler {
+    registry.register_stateless(ResourceConsumerHandler {
         meta: meta(action_key!("resource-consumer")),
-    }));
+    });
 
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));

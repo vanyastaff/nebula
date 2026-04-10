@@ -1,6 +1,6 @@
 //! ProcessSandboxHandler — bridges ProcessSandbox into ActionRegistry.
 //!
-//! Implements `InternalHandler` so the engine can call community plugin
+//! Implements `StatelessHandler` so the engine can call community plugin
 //! actions through the process sandbox transparently.
 
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nebula_action::context::ActionContext;
 use nebula_action::error::ActionError;
-use nebula_action::handler::InternalHandler;
+use nebula_action::handler::StatelessHandler;
 use nebula_action::metadata::ActionMetadata;
 use nebula_action::result::ActionResult;
 
@@ -16,7 +16,7 @@ use crate::SandboxRunner;
 use crate::process::ProcessSandbox;
 use crate::runner::SandboxedContext;
 
-/// Wraps a [`ProcessSandbox`] as an [`InternalHandler`].
+/// Wraps a [`ProcessSandbox`] as a [`StatelessHandler`].
 ///
 /// Each `ProcessSandboxHandler` represents one action from a community plugin.
 /// When the engine calls `execute()`, it spawns the plugin binary with the
@@ -34,7 +34,7 @@ impl ProcessSandboxHandler {
 }
 
 #[async_trait]
-impl InternalHandler for ProcessSandboxHandler {
+impl StatelessHandler for ProcessSandboxHandler {
     fn metadata(&self) -> &ActionMetadata {
         &self.metadata
     }

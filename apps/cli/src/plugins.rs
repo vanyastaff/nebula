@@ -35,9 +35,9 @@ pub async fn discover_and_register(registry: &ActionRegistry) -> usize {
         let plugins = discovery::discover_directory(dir, DEFAULT_PLUGIN_TIMEOUT).await;
 
         for (plugin_name, handlers) in plugins {
-            for handler in handlers {
-                let key = handler.metadata().key.as_str().to_owned();
-                registry.register(handler);
+            for (metadata, handler) in handlers {
+                let key = metadata.key.as_str().to_owned();
+                registry.register(metadata, handler);
                 tracing::info!(action = %key, plugin = %plugin_name, "registered community action");
                 total += 1;
             }

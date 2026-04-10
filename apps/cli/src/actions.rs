@@ -8,6 +8,7 @@ use nebula_action::context::Context;
 use nebula_action::error::ActionError;
 use nebula_action::metadata::ActionMetadata;
 use nebula_action::result::ActionResult;
+use nebula_action::stateful::{PageResult, PaginatedAction};
 use nebula_action::{Action, ActionDependencies, StatelessAction};
 use nebula_core::action_key;
 use nebula_runtime::ActionRegistry;
@@ -24,6 +25,7 @@ pub fn register_builtins(registry: &ActionRegistry) {
     registry.register_stateless(DelayAction::new());
     registry.register_stateless(HttpGetAction::new());
     registry.register_stateless(HttpPostAction::new());
+    registry.register_stateful(PaginatedDemoAction::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -534,3 +536,57 @@ impl StatelessAction for HttpPostAction {
         })))
     }
 }
+
+// ---------------------------------------------------------------------------
+// paginated_demo — yields 3 pages of fake data via PaginatedAction DX trait
+// ---------------------------------------------------------------------------
+
+struct PaginatedDemoAction {
+    meta: ActionMetadata,
+}
+
+impl PaginatedDemoAction {
+    fn new() -> Self {
+        Self {
+            meta: ActionMetadata::new(
+                action_key!("paginated_demo"),
+                "Paginated Demo",
+                "Demo: yields 3 pages of fake data via PaginatedAction DX trait",
+            ),
+        }
+    }
+}
+
+impl ActionDependencies for PaginatedDemoAction {}
+impl Action for PaginatedDemoAction {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl PaginatedAction for PaginatedDemoAction {
+    type Input = serde_json::Value;
+    type Output = Vec<i32>;
+    type Cursor = u32;
+
+    fn max_pages(&self) -> u32 {
+        5
+    }
+
+    async fn fetch_page(
+        &self,
+        _input: &Self::Input,
+        cursor: Option<&u32>,
+        _ctx: &impl Context,
+    ) -> Result<PageResult<Vec<i32>, u32>, ActionError> {
+        let page = cursor.copied().unwrap_or(0);
+        let data: Vec<i32> = ((page * 10)..((page + 1) * 10)).map(|i| i as i32).collect();
+        let next = if page + 1 < 3 { Some(page + 1) } else { None };
+        Ok(PageResult {
+            data,
+            next_cursor: next,
+        })
+    }
+}
+
+nebula_action::impl_paginated_action!(PaginatedDemoAction);

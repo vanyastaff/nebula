@@ -45,6 +45,11 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - `WebhookTriggerAdapter` stores state as `RwLock<Option<Arc<State>>>`. `handle_event` clones the `Arc` under read lock and releases BEFORE await (prevents deadlock with concurrent start/stop). `handle_event` before `start()` returns Fatal error.
 - `PollTriggerAdapter::start()` blocks in a `tokio::select!` loop until cancellation. Fatal errors stop the loop, Retryable errors skip the cycle, emit failures silently dropped.
 
+- **Phase 7.5 (2026-04-09):** `ActionRegistry` moved to `nebula-runtime` (was in `nebula-action`). Protocol crate stays free of execution concerns and `dashmap` dependency. `use nebula_runtime::ActionRegistry`.
+- **`StatefulHandler::execute` borrows input** (`&Value`, not owned `Value`) — runtime stateful loop reuses input across iterations without per-iteration cloning. Adapter clones once internally for typed deserialization. User-level `StatefulAction::execute` is unchanged.
+- **`InternalHandler` deleted entirely.** All execution flows through `ActionHandler` enum dispatch in `nebula_runtime::ActionRuntime::run_handler`.
+- **`ActionHandler` enum is now `Clone`** — all variants wrap `Arc<dyn ...>`, so cloning is cheap pointer copies. Required for owned-tuple lookups from the registry.
+
 ## Traps
 - `ActionError::retryable(...)` vs `ActionError::fatal(...)` — engine uses this to decide retry. Use `ActionResultExt` for ergonomic `.retryable()?` / `.fatal()?`.
 - `FnStatelessAction` / `stateless_fn()` for closure-based actions (testing and one-off use). `FnStatelessCtxAction` / `stateless_ctx_fn()` for closures that need `ActionContext` (credentials, resources, logger). Use `.with_context(ctx)` to inject capabilities.
@@ -59,8 +64,9 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - `IncomingEvent` is in `handler.rs` not `trigger.rs` — re-exported from both for public API. Both `nebula_action::handler::IncomingEvent` and `nebula_action::trigger::IncomingEvent` work.
 - `ctx.cancellation` and `ctx.emitter` accessed as pub fields in PollTriggerAdapter — known tech debt, should be methods. Tracked for TriggerContext refactor.
 - `PollAction::Cursor` is in-memory only — resets to `Default` on every `start()`. Cross-restart persistence requires runtime storage integration (post-v1).
+- `ActionRegistry` is in `nebula-runtime`, NOT `nebula-action`. Importing from `nebula_action::ActionRegistry` will fail to compile.
 
 ## Relations
 - Depends on nebula-core, nebula-parameter, nebula-credential. Used by nebula-engine, nebula-runtime, nebula-sdk.
 
-<!-- reviewed: 2026-04-09 — Phase 7 DX trigger types (WebhookAction, PollAction, IncomingEvent, TriggerEventOutcome) -->
+<!-- reviewed: 2026-04-09 — Phase 7.5 ActionRegistry moved to nebula-runtime, InternalHandler deleted, StatefulHandler::execute borrows input -->

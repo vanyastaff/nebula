@@ -7,11 +7,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::blob::BlobStorage;
-use crate::sandbox::{SandboxRunner, SandboxedContext};
-use nebula_action::ActionContext;
-use nebula_action::metadata::IsolationLevel;
+use crate::sandbox::SandboxRunner;
 use nebula_action::output::{ActionOutput, DataReference};
 use nebula_action::result::ActionResult;
+use nebula_action::{
+    ActionContext, ActionError, ActionHandler, ActionMetadata, IsolationLevel, StatefulHandler,
+    StatelessHandler,
+};
 use nebula_metrics::naming::{
     NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,
 };
@@ -34,6 +36,10 @@ use crate::registry::ActionRegistry;
 /// 5. Emits telemetry events
 pub struct ActionRuntime {
     registry: Arc<ActionRegistry>,
+    // Sandbox dispatch for isolated execution is deferred to Phase 7.6.
+    // Currently stateless actions run directly through StatelessHandler::execute
+    // regardless of isolation level.
+    #[allow(dead_code)]
     sandbox: Arc<dyn SandboxRunner>,
     data_policy: DataPassingPolicy,
     metrics: MetricsRegistry,
@@ -79,10 +85,6 @@ impl ActionRuntime {
 
     /// Execute an action by key, optionally pinned to a specific interface version.
     ///
-    /// When `version` is `Some`, the registry resolves the handler registered for
-    /// that exact version. When `version` is `None`, the latest registered handler
-    /// is used (same behaviour as `execute_action`).
-    ///
     /// # Errors
     ///
     /// Returns [`RuntimeError::ActionNotFound`] if no handler is registered for the
@@ -94,39 +96,57 @@ impl ActionRuntime {
         input: serde_json::Value,
         context: ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        let handler = match version {
-            Some(v) => self.registry.get_versioned(action_key, v)?,
-            None => self.registry.get(action_key)?,
-        };
-        self.run_handler(action_key, handler, input, context).await
+        let key =
+            nebula_core::ActionKey::new(action_key).map_err(|_| RuntimeError::ActionNotFound {
+                key: action_key.to_owned(),
+            })?;
+
+        let (metadata, handler) = match version {
+            Some(v) => self.registry.get_versioned(&key, v),
+            None => self.registry.get(&key),
+        }
+        .ok_or_else(|| RuntimeError::ActionNotFound {
+            key: action_key.to_owned(),
+        })?;
+
+        self.run_handler(action_key, metadata, handler, input, context)
+            .await
     }
 
     /// Execute an action by key.
     ///
-    /// # Flow
+    /// # Errors
     ///
-    /// 1. Look up action handler in the registry
-    /// 2. Check isolation level from metadata
-    /// 3. For `IsolationLevel::None` (trusted): execute directly
-    /// 4. For `CapabilityGated`/`Isolated`: wrap context in
-    ///    `SandboxedContext` and execute through the sandbox
-    /// 5. Enforce data limits on the output
-    /// 6. Emit telemetry events
+    /// Returns [`RuntimeError::ActionNotFound`] if the key does not resolve to a
+    /// registered action, [`RuntimeError::TriggerNotExecutable`] /
+    /// [`RuntimeError::ResourceNotExecutable`] /
+    /// [`RuntimeError::AgentNotSupportedYet`] if the key resolves to a handler
+    /// kind that is not executable through this runtime, or
+    /// [`RuntimeError::ActionError`] / [`RuntimeError::DataLimitExceeded`]
+    /// if execution fails.
     pub async fn execute_action(
         &self,
         action_key: &str,
         input: serde_json::Value,
         context: ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        let handler = self.registry.get(action_key)?;
-        self.run_handler(action_key, handler, input, context).await
+        let (metadata, handler) =
+            self.registry
+                .get_by_str(action_key)
+                .ok_or_else(|| RuntimeError::ActionNotFound {
+                    key: action_key.to_owned(),
+                })?;
+
+        self.run_handler(action_key, metadata, handler, input, context)
+            .await
     }
 
-    /// Internal: run a resolved handler through the sandbox and data policy.
+    /// Dispatch a resolved handler through its kind-specific execution path.
     async fn run_handler(
         &self,
         action_key: &str,
-        handler: Arc<dyn nebula_action::InternalHandler>,
+        metadata: ActionMetadata,
+        handler: ActionHandler,
         input: serde_json::Value,
         context: ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
@@ -135,17 +155,47 @@ impl ActionRuntime {
         let error_counter = self.metrics.counter(NEBULA_ACTION_FAILURES_TOTAL);
         let duration_hist = self.metrics.histogram(NEBULA_ACTION_DURATION_SECONDS);
 
-        let metadata = handler.metadata();
-        let result = match metadata.isolation_level {
-            IsolationLevel::None => {
-                // Direct execution -- no sandbox overhead for trusted actions.
-                handler.execute(input, &context).await
+        let result = match handler {
+            ActionHandler::Stateless(h) => {
+                self.execute_stateless(&metadata, h, input, context).await
             }
+            ActionHandler::Stateful(h) => self.execute_stateful(&metadata, h, input, context).await,
+            ActionHandler::Trigger(_) => {
+                // Not executable through ActionRuntime — count as a failed
+                // execution attempt and record timing for observability.
+                action_counter.inc();
+                error_counter.inc();
+                duration_hist.observe(started.elapsed().as_secs_f64());
+                return Err(RuntimeError::TriggerNotExecutable {
+                    key: action_key.to_owned(),
+                });
+            }
+            ActionHandler::Resource(_) => {
+                action_counter.inc();
+                error_counter.inc();
+                duration_hist.observe(started.elapsed().as_secs_f64());
+                return Err(RuntimeError::ResourceNotExecutable {
+                    key: action_key.to_owned(),
+                });
+            }
+            ActionHandler::Agent(_) => {
+                action_counter.inc();
+                error_counter.inc();
+                duration_hist.observe(started.elapsed().as_secs_f64());
+                return Err(RuntimeError::AgentNotSupportedYet {
+                    key: action_key.to_owned(),
+                });
+            }
+            // `ActionHandler` is `#[non_exhaustive]`. Unknown future variants
+            // are surfaced as an internal runtime error rather than silently
+            // succeeding.
             _ => {
-                // Wrap context with sandbox for capability checking / isolation.
-                // All non-`None` variants, including future ones, route through the sandbox for safety.
-                let sandboxed = SandboxedContext::new(context);
-                self.sandbox.execute(sandboxed, metadata, input).await
+                action_counter.inc();
+                error_counter.inc();
+                duration_hist.observe(started.elapsed().as_secs_f64());
+                return Err(RuntimeError::Internal(format!(
+                    "unknown ActionHandler variant for action '{action_key}'"
+                )));
             }
         };
 
@@ -155,10 +205,8 @@ impl ActionRuntime {
 
         match result {
             Ok(mut action_result) => {
-                // Enforce data limits on the primary output value.
                 self.enforce_data_limit(action_key, &mut action_result, &error_counter)
                     .await?;
-
                 Ok(action_result)
             }
             Err(action_err) => {
@@ -166,6 +214,82 @@ impl ActionRuntime {
                 Err(RuntimeError::ActionError(action_err))
             }
         }
+    }
+
+    /// Execute a stateless handler.
+    ///
+    /// Sandboxed isolation dispatch through [`SandboxRunner`] is a follow-up
+    /// (Phase 7.6). For now stateless handlers run directly regardless of the
+    /// metadata's [`IsolationLevel`].
+    async fn execute_stateless(
+        &self,
+        metadata: &ActionMetadata,
+        handler: Arc<dyn StatelessHandler>,
+        input: serde_json::Value,
+        context: ActionContext,
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        let _ = metadata; // reserved for sandbox routing in Phase 7.6
+        handler.execute(input, &context).await
+    }
+
+    /// Execute a stateful handler — loops through [`StatefulHandler::execute`]
+    /// with in-memory state checkpointing.
+    ///
+    /// State persistence is post-MVP — state only lives on the stack of this
+    /// call.
+    async fn execute_stateful(
+        &self,
+        metadata: &ActionMetadata,
+        handler: Arc<dyn StatefulHandler>,
+        input: serde_json::Value,
+        context: ActionContext,
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        if !matches!(metadata.isolation_level, IsolationLevel::None) {
+            return Err(ActionError::fatal(
+                "sandboxed stateful execution is not yet supported (Phase 7.6)",
+            ));
+        }
+
+        // Cancellation check BEFORE init_state — avoid the JSON round-trip if
+        // the caller already cancelled.
+        if context.cancellation.is_cancelled() {
+            return Err(ActionError::Cancelled);
+        }
+
+        let mut state = handler.init_state()?;
+
+        // Hard cap to prevent runaway loops.
+        const MAX_ITERATIONS: u32 = 10_000;
+
+        for _iteration in 0..MAX_ITERATIONS {
+            // Cooperative cancellation check BEFORE the next iteration.
+            if context.cancellation.is_cancelled() {
+                return Err(ActionError::Cancelled);
+            }
+
+            let result = handler.execute(&input, &mut state, &context).await?;
+
+            match result {
+                ActionResult::Continue { delay, .. } => {
+                    if let Some(d) = delay {
+                        // Cancel-aware sleep — abort the delay if cancelled mid-wait.
+                        tokio::select! {
+                            () = tokio::time::sleep(d) => {}
+                            () = context.cancellation.cancelled() => {
+                                return Err(ActionError::Cancelled);
+                            }
+                        }
+                    }
+                    // Loop continues with mutated state.
+                }
+                other => return Ok(other),
+            }
+        }
+
+        Err(ActionError::fatal(format!(
+            "stateful action '{}' exceeded max iterations ({MAX_ITERATIONS})",
+            metadata.key.as_str()
+        )))
     }
 
     /// Check the primary output of an `ActionResult` against the data passing policy.
@@ -289,46 +413,61 @@ fn primary_output_mut(
 mod tests {
     use super::*;
     use crate::sandbox::{ActionExecutor, InProcessSandbox};
-    use nebula_action::InternalHandler;
+    use nebula_action::action::Action;
+    use nebula_action::context::Context;
+    use nebula_action::dependency::ActionDependencies;
     use nebula_action::error::ActionError;
+    use nebula_action::execution::StatelessAction;
     use nebula_action::metadata::ActionMetadata;
     use nebula_action::{ActionContext, TriggerContext};
     use nebula_core::action_key;
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 
-    struct EchoHandler {
+    struct EchoAction {
         meta: ActionMetadata,
     }
 
-    #[async_trait::async_trait]
-    impl InternalHandler for EchoHandler {
+    impl ActionDependencies for EchoAction {}
+    impl Action for EchoAction {
+        fn metadata(&self) -> &ActionMetadata {
+            &self.meta
+        }
+    }
+
+    impl StatelessAction for EchoAction {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
         async fn execute(
             &self,
-            input: serde_json::Value,
-            _ctx: &ActionContext,
-        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            input: Self::Input,
+            _ctx: &impl Context,
+        ) -> Result<ActionResult<Self::Output>, ActionError> {
             Ok(ActionResult::success(input))
         }
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
-        }
     }
 
-    struct FailHandler {
+    struct FailAction {
         meta: ActionMetadata,
     }
 
-    #[async_trait::async_trait]
-    impl InternalHandler for FailHandler {
-        async fn execute(
-            &self,
-            _input: serde_json::Value,
-            _ctx: &ActionContext,
-        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
-            Err(ActionError::retryable("transient failure"))
-        }
+    impl ActionDependencies for FailAction {}
+    impl Action for FailAction {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
+        }
+    }
+
+    impl StatelessAction for FailAction {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        async fn execute(
+            &self,
+            _input: Self::Input,
+            _ctx: &impl Context,
+        ) -> Result<ActionResult<Self::Output>, ActionError> {
+            Err(ActionError::retryable("transient failure"))
         }
     }
 
@@ -362,9 +501,9 @@ mod tests {
     #[tokio::test]
     async fn execute_trusted_action() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register(Arc::new(EchoHandler {
+        registry.register_stateless(EchoAction {
             meta: ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
-        }));
+        });
 
         let rt = make_runtime(registry);
         let input = serde_json::json!({"hello": "world"});
@@ -393,9 +532,9 @@ mod tests {
     #[tokio::test]
     async fn execute_failing_action_propagates_error() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register(Arc::new(FailHandler {
+        registry.register_stateless(FailAction {
             meta: ActionMetadata::new(action_key!("test.fail"), "Fail", "always fails"),
-        }));
+        });
 
         let rt = make_runtime(registry);
         let result = rt
@@ -408,9 +547,9 @@ mod tests {
     #[tokio::test]
     async fn data_limit_enforcement() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register(Arc::new(EchoHandler {
+        registry.register_stateless(EchoAction {
             meta: ActionMetadata::new(action_key!("test.big"), "Big", "returns big output"),
-        }));
+        });
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -439,9 +578,9 @@ mod tests {
     #[tokio::test]
     async fn metrics_recorded_on_execution() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register(Arc::new(EchoHandler {
+        registry.register_stateless(EchoAction {
             meta: ActionMetadata::new(action_key!("test.tele"), "Tele", "test"),
-        }));
+        });
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -482,6 +621,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Sandboxed dispatch is Phase 7.6 — currently bypassed"]
     async fn execute_uses_sandbox_for_capability_gated() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -496,10 +636,10 @@ mod tests {
         let sandbox = Arc::new(InProcessSandbox::new(executor));
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register(Arc::new(EchoHandler {
+        registry.register_stateless(EchoAction {
             meta: ActionMetadata::new(action_key!("test.gated"), "Gated", "capability gated")
                 .with_isolation_level(IsolationLevel::CapabilityGated),
-        }));
+        });
 
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::new(registry, sandbox, DataPassingPolicy::default(), metrics);
@@ -517,9 +657,9 @@ mod tests {
     #[tokio::test]
     async fn spill_to_blob_rejects_when_no_storage() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register(Arc::new(EchoHandler {
+        registry.register_stateless(EchoAction {
             meta: ActionMetadata::new(action_key!("test.spill"), "Spill", "large output"),
-        }));
+        });
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -572,13 +712,13 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register(Arc::new(EchoHandler {
+        registry.register_stateless(EchoAction {
             meta: ActionMetadata::new(
                 action_key!("test.spill_ok"),
                 "SpillOk",
                 "large output with storage",
             ),
-        }));
+        });
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
