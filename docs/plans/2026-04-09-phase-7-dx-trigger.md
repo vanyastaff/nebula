@@ -6,7 +6,7 @@
 
 **Architecture:** `IncomingEvent` and `TriggerEventOutcome` live in `handler.rs` (engine-facing types alongside `TriggerHandler`). New `crates/action/src/trigger.rs` — `WebhookAction` + `PollAction` DX traits, re-exports `IncomingEvent`. Each DX trait gets a typed adapter that implements `TriggerHandler` directly. `TriggerHandler::handle_event` takes `IncomingEvent` (typed), not `Value` — no serialization round-trip. `WebhookTriggerAdapter` stores state in `RwLock<Option<Arc<State>>>` for proper activate/deactivate lifecycle. `PollTriggerAdapter` runs blocking poll loop in `start()`. Registry gets `register_webhook()` / `register_poll()` convenience methods.
 
-**Tech Stack:** Rust 1.94, `serde`/`serde_json`, `async-trait`, `tokio` (time, select!), `tokio-util` (CancellationToken), `parking_lot` (Mutex for webhook state)
+**Tech Stack:** Rust 1.94, `serde`/`serde_json`, `async-trait`, `tokio` (time, select!), `tokio-util` (CancellationToken), `parking_lot` (RwLock for webhook state)
 
 **Prerequisites:** Phase 6 done. `TriggerAction`, `TriggerHandler`, `TriggerActionAdapter`, `TriggerTestHarness` exist.
 

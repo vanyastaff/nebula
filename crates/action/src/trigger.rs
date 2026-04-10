@@ -12,6 +12,8 @@
 // Re-export engine-facing types for DX trait convenience.
 pub use crate::handler::{IncomingEvent, TriggerEventOutcome};
 
+use std::future::Future;
+
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::action::Action;

@@ -746,9 +746,16 @@ impl TriggerEventOutcome {
     }
 
     /// Whether this outcome will emit any executions.
+    ///
+    /// Returns `false` for `Skip` and for `EmitMany(vec![])` constructed
+    /// directly (the `emit_many` constructor normalizes empty vecs to `Skip`).
     #[must_use]
     pub fn will_emit(&self) -> bool {
-        !matches!(self, Self::Skip)
+        match self {
+            Self::Skip => false,
+            Self::Emit(_) => true,
+            Self::EmitMany(v) => !v.is_empty(),
+        }
     }
 }
 
@@ -1713,5 +1720,12 @@ mod tests {
         let o = TriggerEventOutcome::emit_many(vec![]);
         assert!(!o.will_emit());
         assert!(matches!(o, TriggerEventOutcome::Skip));
+    }
+
+    #[test]
+    fn trigger_event_outcome_direct_empty_emit_many_will_emit_false() {
+        // Bypass the constructor — direct enum construction with empty vec.
+        let o: TriggerEventOutcome = TriggerEventOutcome::EmitMany(vec![]);
+        assert!(!o.will_emit());
     }
 }
